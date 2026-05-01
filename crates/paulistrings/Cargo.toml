@@ -1,0 +1,21 @@
+[package]
+name = "paulistrings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pauli string manipulation in Rust"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+num-complex = "0.4"
+hashbrown = "0.14"
+rustc-hash = "2"
+rayon = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pauli_ops"
+harness = false

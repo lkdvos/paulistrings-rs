@@ -1,0 +1,15 @@
+[package]
+name = "paulistrings-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for paulistrings"
+
+[lib]
+name = "_paulistrings"
+crate-type = ["cdylib"]
+
+[dependencies]
+paulistrings = { workspace = true }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }

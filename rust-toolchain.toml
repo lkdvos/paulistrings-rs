@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.94.0"
+# rustfmt and clippy are part of the default profile on stable; not listed
+# explicitly to avoid component-reinstall conflicts on machines with prior shims.

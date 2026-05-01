@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/paulistrings",
+    "crates/paulistrings-py",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lkdvos/paulistrings-rs"
+
+[workspace.dependencies]
+paulistrings = { path = "crates/paulistrings", version = "0.1.0" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1

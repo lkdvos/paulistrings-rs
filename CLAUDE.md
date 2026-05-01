@@ -47,7 +47,7 @@ Four design pillars, in priority order: (1) correctness of the Pauli algebra, (2
 
 ### Core data types
 
-- **`PauliString<const W: usize>`** — symplectic encoding `(x: [u64; W], z: [u64; W])` with `I=(0,0), X=(1,0), Z=(0,1), Y=(1,1)`. One word covers 64 qubits. `Copy + Pod + Zeroable`, `#[repr(C)]` with explicit padding so it's GPU-uploadable. The load-bearing trait is **`Ord`** (lex over concatenated words), not `Hash` — the engine is sort-based, not hashmap-based. Phase is `u8` in 0..=3 (i^phase) and lives only on the standalone string; once a string lands in a `PauliSum`, the phase is folded into the coefficient and the stored key is canonicalized to phase zero.
+- **`PauliString<const W: usize>`** — symplectic encoding `(x: [u64; W], z: [u64; W])` with `I=(0,0), X=(1,0), Z=(0,1), Y=(1,1)`. One word covers 64 qubits. `Copy + Pod + Zeroable`, `#[repr(C)]` with no padding so it's GPU-uploadable. The load-bearing trait is **`Ord`** (lex over concatenated words), not `Hash` — the engine is sort-based, not hashmap-based. There is no stored phase: `mul_assign` returns the `i^k` phase as a `u8` in `0..4`, and callers fold it into their `Complex64` coefficient at the boundary (e.g. when inserting into a `PauliSum` or `BuildAccumulator`).
 - **`PauliSum<const W: usize>`** — structure-of-arrays: parallel `Vec<[u64; W]>` for `x` and `z`, `Vec<Complex64>` for coefficients, plus `num_qubits`. **Invariant: sorted by `(x, z)` key, no duplicates.** SoA is chosen so coefficient-only and key-only scans get full cache utilization, and so each `Vec` maps directly to a GPU device buffer.
 
 ### The central algorithm: sort-merge (not hashmap)
@@ -74,6 +74,42 @@ These two traits are the research extension points.
 ### Ingestion vs propagation
 
 `BuildAccumulator<W>` (hashmap with `FxBuildHasher`, since Pauli bitstrings are already high-entropy) is the **ingestion path only** — Hamiltonian parsing, dict-construction, etc. `finalize()` produces a sorted/deduped `PauliSum`. It is **not** used inside the propagation loop; that's strictly sort-merge. There is, however, a planned small-sum fast path that falls back to hashmap merging below an empirical threshold.
+
+## Testing & TDD policy
+
+Development is test-driven. For each slice in
+`research/plans/2026-04-30-v0.1-tdd-slices.md`:
+
+1. **Red.** Write the smallest failing test that pins down the behavior.
+   Unit tests live next to the code in `#[cfg(test)] mod tests`. Cross-module
+   behavior goes in `crates/paulistrings/tests/`.
+2. **Green.** Implement the minimum to pass — `todo!()` becomes real code,
+   nothing more. Don't pre-build helpers for slices not yet started.
+3. **Refactor.** Only after green. No speculative generalization.
+
+Conventions:
+- Tests assert against hand-computed expected values, not against another
+  `todo!()`-implemented function. Where a reference exists (Pauli algebra
+  identities like `XZ = -iY`, `X` anticommutes with `Z`), encode it as a test.
+- For multi-qubit / multi-word logic, parameterize tests over `W ∈ {1, 2}`
+  so the const-generic surface is exercised early.
+- Property tests (via `proptest`) for algebraic laws once a slice has more
+  than ~5 example tests: associativity of multiplication, sortedness
+  invariant after merge, idempotence of `truncate(0.0)`, etc. Add `proptest`
+  as a dev-dependency only when the first property test is written —
+  not before.
+- Each slice's PR/commit lands tests + impl together; do not merge a slice
+  whose tests are `#[ignore]`d. Remove the `#[ignore]` placeholders in
+  `crates/paulistrings/tests/pauli_string.rs` as their slices land.
+- `cargo test` (workspace) must be green at every slice boundary.
+- Benchmarks (`cargo bench`) follow tests, not the other way around — never
+  tune a `todo!()`.
+- **At every phase boundary** (the Phase 1–11 groupings in
+  `research/plans/2026-04-30-v0.1-tdd-slices.md`): pause, summarize what
+  landed, and check in with the user before continuing to the next phase.
+  Commit the phase as a single logical unit only after the user confirms.
+  Do not roll multiple phases into one commit, and do not start the next
+  phase before the current one is committed.
 
 ## Repo layout
 

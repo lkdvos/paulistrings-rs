@@ -21,6 +21,9 @@ Seed file. Things to think through before committing to a core representation.
 - 64-qubit fast path vs. arbitrary-length via `SmallVec<[u64; N]>`?
 - Phase: `{+1, +i, -1, -i}` as `u8` mod 4 vs. complex coeff folded into the
   Pauli sum coefficient? Pure strings probably want the former.
+  *Resolved (v0.1): folded into the coefficient. `PauliString` carries no
+  phase; `mul_assign` returns the `i^k` exponent as a `u8` and callers fold
+  it into the relevant `Complex64` at the boundary. See plans/scope.md §3.1.*
 - SIMD: AVX2 / AVX-512 / NEON for batch multiplication of many strings against
   one. Worth measuring before designing the API around it.
 

@@ -25,7 +25,7 @@ impl<const W: usize> BuildAccumulator<W> {
     /// New empty accumulator targeting `num_qubits` qubits.
     pub fn new(num_qubits: usize) -> Self {
         Self {
-            map: HashMap::with_hasher(FxBuildHasher::default()),
+            map: HashMap::with_hasher(FxBuildHasher),
             num_qubits,
         }
     }
@@ -33,14 +33,16 @@ impl<const W: usize> BuildAccumulator<W> {
     /// Allocate up-front for at least `cap` distinct Pauli keys.
     pub fn with_capacity(num_qubits: usize, cap: usize) -> Self {
         Self {
-            map: HashMap::with_capacity_and_hasher(cap, FxBuildHasher::default()),
+            map: HashMap::with_capacity_and_hasher(cap, FxBuildHasher),
             num_qubits,
         }
     }
 
-    /// Add `c * p` to the accumulator. The phase on `p` is folded into `c`.
-    pub fn add_term(&mut self, _p: PauliString<W>, _c: Complex64) {
-        todo!("§8.2: split_phase(p), then *= c, then upsert into map")
+    /// Add `i^phase * c * p` to the accumulator. The caller provides the
+    /// phase as a separate `u8` (in `0..4`); it is folded into `c` before
+    /// the upsert. `p` is taken as-is and used as the map key.
+    pub fn add_term(&mut self, _p: PauliString<W>, _phase: u8, _c: Complex64) {
+        todo!("§8.2: fold i^phase into c, then upsert into map")
     }
 
     /// Sort, deduplicate, and emit a `PauliSum`.

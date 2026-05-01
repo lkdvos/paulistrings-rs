@@ -12,7 +12,9 @@ pub struct Clifford1Q {
     pub support: [u32; 1],
     /// Symplectic image: `[xx, xz, zx, zz]` over GF(2).
     pub symplectic: [u8; 4],
-    /// Sign byte for the Pauli image (one of `1, i, -1, -i` for each of X, Z).
+    /// Phase exponent `k` (in `0..4`) for the Pauli image of `X` and `Z`
+    /// respectively, i.e. the gate's action sends `X → i^k[0] · X_image` and
+    /// `Z → i^k[1] · Z_image`. `apply` folds these into the output coefficient.
     pub phase: [u8; 2],
 }
 
@@ -40,6 +42,9 @@ impl Channel<1> for Clifford1Q {
 pub struct Clifford2Q {
     pub support: [u32; 2],
     pub symplectic: [u8; 16],
+    /// Phase exponent `k` (in `0..4`) per generator; one entry for each of
+    /// `X₀, Z₀, X₁, Z₁`. `apply` folds these into the output coefficient
+    /// when the corresponding generator is present in the input.
     pub phase: [u8; 4],
 }
 

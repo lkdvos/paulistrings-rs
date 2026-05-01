@@ -195,6 +195,58 @@ impl<const W: usize> PauliSum<W> {
     }
 }
 
+#[cfg(test)]
+impl<const W: usize> PauliSum<W> {
+    /// Test-only helper: build a `PauliSum<W>` from `(pauli_str, coeff)`
+    /// pairs. Each `pauli_str` is a sequence of `I/X/Y/Z` characters where
+    /// index `i` of the string corresponds to qubit `i`. `Y` characters
+    /// fold one factor of `i` into the coefficient — the bitstring image
+    /// of `Y_canonical` is `(x=1, z=1)` with an implicit `i` factor, so
+    /// `Y_canonical = i · (x=1, z=1)`.
+    ///
+    /// `num_qubits` is taken from the length of the first string; all
+    /// other strings must match. Routes through `BuildAccumulator`, so
+    /// duplicate keys sum and exact-zero coefficients are dropped.
+    pub(crate) fn from_strings(terms: &[(&str, Complex64)]) -> Self {
+        use crate::phase::Phase;
+        assert!(!terms.is_empty(), "from_strings requires at least one term");
+        let num_qubits = terms[0].0.len();
+        assert!(num_qubits <= 64 * W, "num_qubits must fit in W*64 bits");
+        let mut acc = crate::accumulator::BuildAccumulator::<W>::new(num_qubits);
+        for (s, c) in terms {
+            assert_eq!(
+                s.len(),
+                num_qubits,
+                "all pauli strings must have the same length",
+            );
+            let mut x = [0u64; W];
+            let mut z = [0u64; W];
+            let mut phase = Phase::ONE;
+            for (i, ch) in s.chars().enumerate() {
+                let word = i / 64;
+                let bit = 1u64 << (i % 64);
+                match ch {
+                    'I' => {}
+                    'X' => x[word] |= bit,
+                    'Z' => z[word] |= bit,
+                    'Y' => {
+                        x[word] |= bit;
+                        z[word] |= bit;
+                        phase += Phase::I;
+                    }
+                    other => panic!(
+                        "unexpected Pauli char {:?} (expected I/X/Y/Z)",
+                        other
+                    ),
+                }
+            }
+            let p = PauliString::<W> { x, z };
+            acc.add_term(p, phase, *c);
+        }
+        acc.finalize()
+    }
+}
+
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
@@ -632,6 +684,133 @@ mod tests {
         assert_eq!(r.coeff()[1], Complex64::new(2.0, 0.0));
         assert_eq!(r.coeff()[2], Complex64::new(7.0, 0.0));
         r.assert_invariants();
+    }
+
+    // --- Slice 3.2: PauliSum::from_strings test helper -------------------
+
+    #[test]
+    fn from_strings_single_x_term() {
+        let s = PauliSum::<1>::from_strings(&[("XII", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.num_qubits(), 3);
+        assert_eq!(s.x()[0], [0b001u64]);
+        assert_eq!(s.z()[0], [0u64]);
+        assert_eq!(s.coeff()[0], Complex64::new(1.0, 0.0));
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn from_strings_x_z_combined() {
+        // "XZI": X on qubit 0, Z on qubit 1, I on qubit 2.
+        let s = PauliSum::<1>::from_strings(&[("XZI", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.x()[0], [0b001u64]);
+        assert_eq!(s.z()[0], [0b010u64]);
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn from_strings_y_includes_i_phase() {
+        // Y_canonical = i · (x=1, z=1). Caller writes coeff=1, stored is i.
+        let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.x()[0], [1u64]);
+        assert_eq!(s.z()[0], [1u64]);
+        assert_eq!(s.coeff()[0], Complex64::new(0.0, 1.0));
+    }
+
+    #[test]
+    fn from_strings_yy_phase_minus_one() {
+        // i^2 = -1.
+        let s = PauliSum::<1>::from_strings(&[("YY", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.coeff()[0], Complex64::new(-1.0, 0.0));
+    }
+
+    #[test]
+    fn from_strings_yyy_phase_minus_i() {
+        // i^3 = -i.
+        let s = PauliSum::<1>::from_strings(&[("YYY", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.coeff()[0], Complex64::new(0.0, -1.0));
+    }
+
+    #[test]
+    fn from_strings_yyyy_phase_one() {
+        // i^4 = 1.
+        let s = PauliSum::<1>::from_strings(&[("YYYY", Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.coeff()[0], Complex64::new(1.0, 0.0));
+    }
+
+    #[test]
+    fn from_strings_dedup_sums_coeffs() {
+        let s = PauliSum::<1>::from_strings(&[
+            ("XI", Complex64::new(1.0, 0.0)),
+            ("XI", Complex64::new(0.5, -0.25)),
+        ]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.coeff()[0], Complex64::new(1.5, -0.25));
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn from_strings_cancellation_drops_term() {
+        let s = PauliSum::<1>::from_strings(&[
+            ("XI", Complex64::new(1.0, 0.0)),
+            ("XI", Complex64::new(-1.0, 0.0)),
+            ("ZI", Complex64::new(2.0, 0.0)),
+        ]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.x()[0], [0u64]);
+        assert_eq!(s.z()[0], [1u64]);
+        assert_eq!(s.coeff()[0], Complex64::new(2.0, 0.0));
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn from_strings_sorts_lex_keys() {
+        // Insert out of order: ZI=(0,1), XI=(1,0), YI=(1,1) — lex sorted is
+        // ZI < XI < YI.
+        let s = PauliSum::<1>::from_strings(&[
+            ("YI", Complex64::new(1.0, 0.0)),
+            ("ZI", Complex64::new(2.0, 0.0)),
+            ("XI", Complex64::new(3.0, 0.0)),
+        ]);
+        assert_eq!(s.len(), 3);
+        assert_eq!((s.x()[0], s.z()[0]), ([0u64], [1u64])); // ZI
+        assert_eq!((s.x()[1], s.z()[1]), ([1u64], [0u64])); // XI
+        assert_eq!((s.x()[2], s.z()[2]), ([1u64], [1u64])); // YI (with i factor)
+        assert_eq!(s.coeff()[0], Complex64::new(2.0, 0.0));
+        assert_eq!(s.coeff()[1], Complex64::new(3.0, 0.0));
+        assert_eq!(s.coeff()[2], Complex64::new(0.0, 1.0));
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn from_strings_w2_qubit_64() {
+        // 65-character string: X at index 64 lands in word 1.
+        let mut s_chars: String = "I".repeat(65);
+        // Replace index 64 with 'X'.
+        unsafe {
+            let bytes = s_chars.as_bytes_mut();
+            bytes[64] = b'X';
+        }
+        let s = PauliSum::<2>::from_strings(&[(s_chars.as_str(), Complex64::new(1.0, 0.0))]);
+        assert_eq!(s.num_qubits(), 65);
+        assert_eq!(s.x()[0], [0u64, 1u64]);
+        assert_eq!(s.z()[0], [0u64, 0u64]);
+        s.assert_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected Pauli char")]
+    fn from_strings_panics_on_invalid_char() {
+        let _ = PauliSum::<1>::from_strings(&[("AB", Complex64::new(1.0, 0.0))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "all pauli strings must have the same length")]
+    fn from_strings_panics_on_length_mismatch() {
+        let _ = PauliSum::<1>::from_strings(&[
+            ("XI", Complex64::new(1.0, 0.0)),
+            ("XII", Complex64::new(1.0, 0.0)),
+        ]);
     }
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Placeholder while the core algebra is being implemented (§13 step 1).
 
-use paulistrings::PauliString;
+use paulistrings::{PauliString, Phase};
 
 #[test]
 fn identity_has_zero_bits() {
@@ -123,22 +123,22 @@ fn xx_commutes_with_zz() {
 
 #[test]
 fn x_times_z_gives_minus_i_y() {
-    // X·Z = -iY  →  bits (1,1) and phase 3 (i^3 = -i)
+    // X·Z = -iY  →  bits (1,1) and phase i^3 = -i.
     let mut p = PauliString::<1>::x(0);
     let phase = p.mul_assign(&PauliString::<1>::z(0));
     assert_eq!(p.x[0], 1);
     assert_eq!(p.z[0], 1);
-    assert_eq!(phase, 3);
+    assert_eq!(phase, Phase::MINUS_I);
 }
 
 #[test]
 fn z_times_x_gives_plus_i_y() {
-    // Z·X = iY  →  bits (1,1) and phase 1
+    // Z·X = iY  →  bits (1,1) and phase i.
     let mut p = PauliString::<1>::z(0);
     let phase = p.mul_assign(&PauliString::<1>::x(0));
     assert_eq!(p.x[0], 1);
     assert_eq!(p.z[0], 1);
-    assert_eq!(phase, 1);
+    assert_eq!(phase, Phase::I);
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn y_squared_is_identity() {
     let phase = p.mul_assign(&PauliString::<1>::y(0));
     assert_eq!(p.x[0], 0);
     assert_eq!(p.z[0], 0);
-    assert_eq!(phase, 0);
+    assert_eq!(phase, Phase::ONE);
 }
 
 #[test]
@@ -156,17 +156,17 @@ fn x_squared_is_identity() {
     let phase = p.mul_assign(&PauliString::<1>::x(0));
     assert_eq!(p.x[0], 0);
     assert_eq!(p.z[0], 0);
-    assert_eq!(phase, 0);
+    assert_eq!(phase, Phase::ONE);
 }
 
 #[test]
 fn x_times_y_gives_i_z() {
-    // X·Y = iZ  →  bits (0,1) and phase 1
+    // X·Y = iZ  →  bits (0,1) and phase i.
     let mut p = PauliString::<1>::x(0);
     let phase = p.mul_assign(&PauliString::<1>::y(0));
     assert_eq!(p.x[0], 0);
     assert_eq!(p.z[0], 1);
-    assert_eq!(phase, 1);
+    assert_eq!(phase, Phase::I);
 }
 
 #[test]
@@ -176,21 +176,20 @@ fn mul_value_returning_matches_in_place() {
     let (p, phase) = PauliString::<1>::x(0).mul(&PauliString::<1>::z(0));
     assert_eq!(p.x[0], 1);
     assert_eq!(p.z[0], 1);
-    assert_eq!(phase, 3);
+    assert_eq!(phase, Phase::MINUS_I);
 }
 
 #[test]
 fn mul_phase_accumulates_at_call_site() {
-    // Caller chains two multiplications and combines the returned phases
-    // mod 4. With a pre-existing factor of `i` (phase 1), then `X · Z = -iY`
-    // (phase 3): total phase = (1 + 3) mod 4 = 0, result Y.
+    // Caller chains two multiplications and combines the returned phases.
+    // With a pre-existing factor of `i`, then `X · Z = -iY` (phase -i):
+    // total phase = i + (-i) = 1 (Phase::ONE), result Y bits.
     let mut p = PauliString::<1>::x(0);
-    let mut total: u8 = 1; // pre-existing factor of i
-    let delta = p.mul_assign(&PauliString::<1>::z(0));
-    total = (total + delta) & 3;
+    let mut total = Phase::I;
+    total += p.mul_assign(&PauliString::<1>::z(0));
     assert_eq!(p.x[0], 1);
     assert_eq!(p.z[0], 1);
-    assert_eq!(total, 0);
+    assert_eq!(total, Phase::ONE);
 }
 
 #[test]
@@ -202,7 +201,7 @@ fn mul_multi_word_no_overflow() {
     assert_eq!(p.z[0], 0);
     assert_eq!(p.x[1], 1);
     assert_eq!(p.z[1], 1);
-    assert_eq!(phase, 3);
+    assert_eq!(phase, Phase::MINUS_I);
 }
 
 #[test]
@@ -308,14 +307,14 @@ mod props {
             let mut left = a;
             let p1 = left.mul_assign(&b);
             let p2 = left.mul_assign(&c);
-            let left_phase = (p1.wrapping_add(p2)) & 3;
+            let left_phase = p1 + p2;
 
             // Right-associated: (a·(b·c)).
             let mut bc = b;
             let q1 = bc.mul_assign(&c);
             let mut right = a;
             let q2 = right.mul_assign(&bc);
-            let right_phase = (q1.wrapping_add(q2)) & 3;
+            let right_phase = q1 + q2;
 
             prop_assert_eq!(left.x, right.x);
             prop_assert_eq!(left.z, right.z);

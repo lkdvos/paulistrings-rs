@@ -3,6 +3,7 @@
 #![allow(unused)]
 
 use super::{Channel, OutputBuffer};
+use crate::phase::Phase;
 use num_complex::Complex64;
 
 /// Single-qubit Clifford gate, parameterized by its symplectic 2x2 matrix.
@@ -12,10 +13,11 @@ pub struct Clifford1Q {
     pub support: [u32; 1],
     /// Symplectic image: `[xx, xz, zx, zz]` over GF(2).
     pub symplectic: [u8; 4],
-    /// Phase exponent `k` (in `0..4`) for the Pauli image of `X` and `Z`
-    /// respectively, i.e. the gate's action sends `X → i^k[0] · X_image` and
-    /// `Z → i^k[1] · Z_image`. `apply` folds these into the output coefficient.
-    pub phase: [u8; 2],
+    /// Phase factors for the Pauli image of `X` and `Z` respectively, i.e.
+    /// the gate's action sends `X → phase[0] · X_image` and
+    /// `Z → phase[1] · Z_image`. `apply` folds these into the output
+    /// coefficient.
+    pub phase: [Phase; 2],
 }
 
 impl Channel<1> for Clifford1Q {
@@ -42,10 +44,10 @@ impl Channel<1> for Clifford1Q {
 pub struct Clifford2Q {
     pub support: [u32; 2],
     pub symplectic: [u8; 16],
-    /// Phase exponent `k` (in `0..4`) per generator; one entry for each of
-    /// `X₀, Z₀, X₁, Z₁`. `apply` folds these into the output coefficient
-    /// when the corresponding generator is present in the input.
-    pub phase: [u8; 4],
+    /// Phase factor per generator; one entry for each of `X₀, Z₀, X₁, Z₁`.
+    /// `apply` folds these into the output coefficient when the
+    /// corresponding generator is present in the input.
+    pub phase: [Phase; 4],
 }
 
 impl Channel<1> for Clifford2Q {

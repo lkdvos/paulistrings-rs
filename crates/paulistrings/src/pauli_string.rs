@@ -13,6 +13,8 @@ use bytemuck::{Pod, Zeroable};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
+use crate::phase::Phase;
+
 /// A Pauli operator on up to `64 * W` qubits.
 ///
 /// Layout is `#[repr(C)]` so the type is `Pod` and can be reinterpreted as
@@ -78,10 +80,10 @@ impl<const W: usize> PauliString<W> {
         (0..W).map(|i| (self.x[i] | self.z[i]).count_ones()).sum()
     }
 
-    /// Multiply `self * other` in place. Returns `k` in `0..4` such that the
-    /// true product is `i^k * self_after_xor`.
+    /// Multiply `self * other` in place. Returns the `i^k` phase factor such
+    /// that the true product is `phase * self_after_xor`.
     #[inline]
-    pub fn mul_assign(&mut self, other: &Self) -> u8 {
+    pub fn mul_assign(&mut self, other: &Self) -> Phase {
         // Per-qubit: P(a,b) · P(c,d) = i^δ · P(a⊕c, b⊕d) where
         //   δ = 2·(b·c) + a·b + c·d − (a⊕c)·(b⊕d)   (mod 4)
         // (derived from P(a,b) = i^{a·b} X^a Z^b and ZX = -XZ).
@@ -102,12 +104,12 @@ impl<const W: usize> PauliString<W> {
             self.x[i] ^= c;
             self.z[i] ^= d;
         }
-        (delta & 3) as u8
+        Phase::new(delta as u8)
     }
 
     /// Value-returning multiply: `(self * other, phase)`.
     #[inline]
-    pub fn mul(mut self, other: &Self) -> (Self, u8) {
+    pub fn mul(mut self, other: &Self) -> (Self, Phase) {
         let phase = self.mul_assign(other);
         (self, phase)
     }

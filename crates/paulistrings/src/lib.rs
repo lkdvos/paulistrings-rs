@@ -15,6 +15,7 @@ pub mod circuit;
 pub mod engine;
 pub mod pauli_string;
 pub mod pauli_sum;
+pub mod phase;
 pub mod truncation;
 
 pub use accumulator::BuildAccumulator;
@@ -23,4 +24,5 @@ pub use circuit::Circuit;
 pub use engine::{propagate, Direction};
 pub use pauli_string::PauliString;
 pub use pauli_sum::PauliSum;
+pub use phase::Phase;
 pub use truncation::TruncationPolicy;

@@ -108,6 +108,11 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Value-returning multiply: `(self * other, phase)`.
+    ///
+    /// Not implemented as `std::ops::Mul` because the operation also
+    /// returns a `Phase` — calling sites need both the bits and the phase
+    /// to fold into a `Complex64` coefficient at the boundary.
+    #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn mul(mut self, other: &Self) -> (Self, Phase) {
         let phase = self.mul_assign(other);

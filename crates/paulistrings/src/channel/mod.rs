@@ -8,11 +8,13 @@
 #![allow(unused)]
 
 pub mod clifford;
+pub mod identity;
 pub mod noise;
 pub mod rotation;
 pub mod unitary;
 
 pub use clifford::{Clifford1Q, Clifford2Q};
+pub use identity::IdentityChannel;
 pub use noise::{AmplitudeDamping, Dephasing, Depolarizing};
 pub use rotation::PauliRotation;
 pub use unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
@@ -21,7 +23,7 @@ use num_complex::Complex64;
 
 /// Pre-allocated, fixed-capacity SoA scratch buffer for channel outputs.
 ///
-/// Sized by the engine to `n_in * Channel::MAX_FANOUT` so that `apply` can
+/// Sized by the engine to `n_in * channel.max_fanout()` so that `apply` can
 /// write without dynamic growth. Required for GPU correctness and for CPU
 /// hot-loop performance.
 pub struct OutputBuffer<'a, const W: usize> {
@@ -33,10 +35,33 @@ pub struct OutputBuffer<'a, const W: usize> {
 }
 
 impl<'a, const W: usize> OutputBuffer<'a, W> {
-    /// Append one term to the buffer.
+    /// Append one term to the buffer at the current cursor.
+    ///
+    /// Capacity is `self.x.len()`; the engine sizes the slices to
+    /// `channel.max_fanout()` per input term, so a `Channel::apply` body
+    /// must not push more than its declared `max_fanout`. Out-of-range
+    /// writes are caught by slice bounds-checking (and, in debug builds,
+    /// by an explicit assertion with a clearer message).
     #[inline]
-    pub fn push(&mut self, _x: [u64; W], _z: [u64; W], _c: Complex64) {
-        todo!("§6: bounds-check against MAX_FANOUT and write at *self.len; bump cursor")
+    pub fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+        debug_assert!(
+            *self.len < self.x.len(),
+            "OutputBuffer overflow: {} pushes into a buffer of capacity {}",
+            *self.len + 1,
+            self.x.len()
+        );
+        let i = *self.len;
+        self.x[i] = x;
+        self.z[i] = z;
+        self.coeff[i] = c;
+        *self.len = i + 1;
+    }
+
+    /// Reset the cursor to zero so the same backing storage can be reused
+    /// for the next input term without reallocation.
+    #[inline]
+    pub fn clear(&mut self) {
+        *self.len = 0;
     }
 }
 
@@ -64,4 +89,133 @@ pub trait Channel<const W: usize>: Send + Sync {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(clippy::type_complexity)]
+    fn alloc_bufs<const W: usize>(
+        n: usize,
+    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
+        (
+            vec![[0u64; W]; n],
+            vec![[0u64; W]; n],
+            vec![Complex64::new(0.0, 0.0); n],
+            0usize,
+        )
+    }
+
+    #[test]
+    fn push_writes_at_cursor_w1() {
+        let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(4);
+        {
+            let mut buf = OutputBuffer::<1> {
+                x: &mut x,
+                z: &mut z,
+                coeff: &mut c,
+                len: &mut len,
+            };
+            buf.push([0xAA], [0xBB], Complex64::new(1.0, 2.0));
+            buf.push([0xCC], [0xDD], Complex64::new(3.0, 4.0));
+            assert_eq!(*buf.len, 2);
+        }
+        assert_eq!(x[0], [0xAA]);
+        assert_eq!(z[0], [0xBB]);
+        assert_eq!(c[0], Complex64::new(1.0, 2.0));
+        assert_eq!(x[1], [0xCC]);
+        assert_eq!(z[1], [0xDD]);
+        assert_eq!(c[1], Complex64::new(3.0, 4.0));
+        // remaining slots untouched
+        assert_eq!(x[2], [0]);
+        assert_eq!(x[3], [0]);
+        assert_eq!(c[3], Complex64::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn push_writes_at_cursor_w2() {
+        let (mut x, mut z, mut c, mut len) = alloc_bufs::<2>(3);
+        {
+            let mut buf = OutputBuffer::<2> {
+                x: &mut x,
+                z: &mut z,
+                coeff: &mut c,
+                len: &mut len,
+            };
+            buf.push([0x11, 0x22], [0x33, 0x44], Complex64::new(5.0, 6.0));
+            assert_eq!(*buf.len, 1);
+        }
+        assert_eq!(x[0], [0x11, 0x22]);
+        assert_eq!(z[0], [0x33, 0x44]);
+        assert_eq!(c[0], Complex64::new(5.0, 6.0));
+    }
+
+    #[test]
+    #[should_panic]
+    fn push_panics_when_full() {
+        let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(2);
+        let mut buf = OutputBuffer::<1> {
+            x: &mut x,
+            z: &mut z,
+            coeff: &mut c,
+            len: &mut len,
+        };
+        buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+        buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+        buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+    }
+
+    #[test]
+    fn clear_resets_cursor() {
+        let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(4);
+        {
+            let mut buf = OutputBuffer::<1> {
+                x: &mut x,
+                z: &mut z,
+                coeff: &mut c,
+                len: &mut len,
+            };
+            buf.push([0xAA], [0xBB], Complex64::new(1.0, 0.0));
+            buf.push([0xCC], [0xDD], Complex64::new(2.0, 0.0));
+            assert_eq!(*buf.len, 2);
+            buf.clear();
+            assert_eq!(*buf.len, 0);
+            buf.push([0xEE], [0xFF], Complex64::new(3.0, 0.0));
+            assert_eq!(*buf.len, 1);
+        }
+        // The post-clear push lands at slot 0, overwriting the prior contents.
+        assert_eq!(x[0], [0xEE]);
+        assert_eq!(z[0], [0xFF]);
+        assert_eq!(c[0], Complex64::new(3.0, 0.0));
+        // Slot 1 was written before the clear and is left as-is.
+        assert_eq!(x[1], [0xCC]);
+        assert_eq!(z[1], [0xDD]);
+    }
+
+    #[test]
+    fn reuse_does_not_grow_backing_vecs() {
+        let cap = 4;
+        let mut x: Vec<[u64; 1]> = vec![[0u64; 1]; cap];
+        let mut z: Vec<[u64; 1]> = vec![[0u64; 1]; cap];
+        let mut c: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); cap];
+        assert_eq!(x.capacity(), cap);
+        assert_eq!(z.capacity(), cap);
+        assert_eq!(c.capacity(), cap);
+        let mut len = 0usize;
+        for i in 0..100u64 {
+            len = 0;
+            let mut buf = OutputBuffer::<1> {
+                x: &mut x,
+                z: &mut z,
+                coeff: &mut c,
+                len: &mut len,
+            };
+            buf.push([i], [0], Complex64::new(i as f64, 0.0));
+            buf.push([i + 1], [0], Complex64::new((i + 1) as f64, 0.0));
+        }
+        assert_eq!(x.capacity(), cap);
+        assert_eq!(z.capacity(), cap);
+        assert_eq!(c.capacity(), cap);
+    }
 }

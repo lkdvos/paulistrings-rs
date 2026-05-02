@@ -6,6 +6,11 @@
 //! fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop (§4).
 
 #![allow(unused)]
+// PyO3 0.22's `PyResult` return-type position triggers `useless_conversion`
+// against the scaffolded `todo!()` bodies in this crate. Phase 10 fills these
+// in; until then, suppress the lint at the crate root rather than annotate
+// every stub.
+#![allow(clippy::useless_conversion)]
 
 mod circuit;
 mod gates;

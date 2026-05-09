@@ -19,20 +19,14 @@ pub struct PauliRotation<const W: usize> {
     pub theta: f64,
 }
 
-impl<const W: usize> Channel<W> for PauliRotation<W> {
+impl<const W: usize> PauliRotation<W> {
+    /// Shared body of `apply` and `apply_adjoint`. The adjoint of
+    /// `exp(-i·θ·P/2)` is `exp(+i·θ·P/2) = exp(-i·(-θ)·P/2)`, so it's the
+    /// same conjugation rule with `theta → -theta`.
     #[inline]
-    fn max_fanout(&self) -> usize {
-        2
-    }
-
-    #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
-    }
-
-    #[inline]
-    fn apply(
+    fn apply_with_theta(
         &self,
+        theta: f64,
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
@@ -52,8 +46,8 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
             return;
         }
 
-        let cos_t = self.theta.cos();
-        let sin_t = self.theta.sin();
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
 
         // Term 1: cos(theta) * Q
         out.push(*input_x, *input_z, coeff * cos_t);
@@ -65,6 +59,40 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         let phase = prod.mul_assign(&gen);
         let total_phase = Phase::I + phase;
         out.push(prod.x, prod.z, total_phase.apply(coeff) * sin_t);
+    }
+}
+
+impl<const W: usize> Channel<W> for PauliRotation<W> {
+    #[inline]
+    fn max_fanout(&self) -> usize {
+        2
+    }
+
+    #[inline]
+    fn support(&self) -> &[u32] {
+        &self.support
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        self.apply_with_theta(self.theta, input_x, input_z, coeff, out);
+    }
+
+    #[inline]
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        self.apply_with_theta(-self.theta, input_x, input_z, coeff, out);
     }
 }
 

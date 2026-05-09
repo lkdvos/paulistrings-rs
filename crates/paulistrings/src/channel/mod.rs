@@ -89,6 +89,24 @@ pub trait Channel<const W: usize>: Send + Sync {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     );
+
+    /// Apply the channel's *adjoint* to a single input term, writing outputs
+    /// to `out`. Used by the engine in `Direction::Heisenberg` mode for
+    /// backpropagating observables.
+    ///
+    /// The default implementation is `self.apply(...)`, i.e. assumes the
+    /// channel is self-adjoint. Channels that are not self-adjoint
+    /// (`PauliRotation`, `Clifford1Q::s`) override this. The design doc
+    /// (§8) does not pin down a mechanism; this is the v0.1 convention.
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        self.apply(input_x, input_z, coeff, out);
+    }
 }
 
 #[cfg(test)]

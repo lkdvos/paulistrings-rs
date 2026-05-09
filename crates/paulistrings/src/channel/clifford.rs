@@ -78,6 +78,61 @@ impl Clifford1Q {
             phase: [Phase::ONE, Phase::MINUS_ONE, Phase::ONE, Phase::MINUS_ONE],
         }
     }
+
+    /// Conjugation table for `G†`. Inverts the Pauli permutation and conjugates
+    /// the per-input phases: if `G P_a G† = c_a · P_{f(a)}` then
+    /// `G† P_{f(a)} G = c_a* · P_a`.
+    ///
+    /// Self-inverse 1Q Cliffords (H, X, Y, Z) round-trip to themselves; `S`
+    /// returns `S†` (a distinct gate).
+    pub fn adjoint(&self) -> Self {
+        let mut out_pauli = [0u8; 4];
+        let mut phase = [Phase::ONE; 4];
+        for input_idx in 0u8..4 {
+            let f_a = self.out_pauli[input_idx as usize] as usize;
+            let c_a = self.phase[input_idx as usize];
+            out_pauli[f_a] = input_idx;
+            phase[f_a] = Phase::new((4 - c_a.exponent()) & 3);
+        }
+        Self {
+            support: self.support,
+            out_pauli,
+            phase,
+        }
+    }
+}
+
+impl Clifford1Q {
+    /// Shared body of `apply` and `apply_adjoint`. The two paths differ
+    /// only in which lookup table to use; pulling the lookup out of
+    /// `Channel::apply` keeps the bit-fiddling unduplicated.
+    #[inline]
+    fn apply_table<const W: usize>(
+        &self,
+        out_pauli: &[u8; 4],
+        phase: &[Phase; 4],
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        let q = self.support[0] as usize;
+        debug_assert!(q < 64 * W);
+        let word = q / 64;
+        let bit = q % 64;
+        let mask = 1u64 << bit;
+        let x_bit = ((input_x[word] >> bit) & 1) as u8;
+        let z_bit = ((input_z[word] >> bit) & 1) as u8;
+        let idx = (x_bit | (z_bit << 1)) as usize;
+        let op = out_pauli[idx];
+        let ox = (op & 1) as u64;
+        let oz = ((op >> 1) & 1) as u64;
+        let mut nx = *input_x;
+        let mut nz = *input_z;
+        nx[word] = (nx[word] & !mask) | (ox << bit);
+        nz[word] = (nz[word] & !mask) | (oz << bit);
+        out.push(nx, nz, phase[idx].apply(coeff));
+    }
 }
 
 impl<const W: usize> Channel<W> for Clifford1Q {
@@ -99,22 +154,19 @@ impl<const W: usize> Channel<W> for Clifford1Q {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
-        debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let mask = 1u64 << bit;
-        let x_bit = ((input_x[word] >> bit) & 1) as u8;
-        let z_bit = ((input_z[word] >> bit) & 1) as u8;
-        let idx = (x_bit | (z_bit << 1)) as usize;
-        let op = self.out_pauli[idx];
-        let ox = (op & 1) as u64;
-        let oz = ((op >> 1) & 1) as u64;
-        let mut nx = *input_x;
-        let mut nz = *input_z;
-        nx[word] = (nx[word] & !mask) | (ox << bit);
-        nz[word] = (nz[word] & !mask) | (oz << bit);
-        out.push(nx, nz, self.phase[idx].apply(coeff));
+        self.apply_table(&self.out_pauli, &self.phase, input_x, input_z, coeff, out);
+    }
+
+    #[inline]
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        let adj = self.adjoint();
+        self.apply_table(&adj.out_pauli, &adj.phase, input_x, input_z, coeff, out);
     }
 }
 
@@ -510,6 +562,63 @@ mod tests {
             assert_eq!(out, input, "H·H should be identity on {:?}", input);
             assert_eq!(c1 * c2, Complex64::new(1.0, 0.0), "phase should square to +1");
         }
+    }
+
+    // ---- Slice 6.5: Clifford1Q adjoint table ----
+
+    /// Self-adjoint 1Q Cliffords round-trip through `adjoint()` to themselves.
+    #[test]
+    fn h_x_y_z_are_self_adjoint() {
+        for gate in [
+            Clifford1Q::h(0),
+            Clifford1Q::x(0),
+            Clifford1Q::y(0),
+            Clifford1Q::z(0),
+        ] {
+            let adj = gate.adjoint();
+            assert_eq!(adj.out_pauli, gate.out_pauli);
+            assert_eq!(adj.phase, gate.phase);
+        }
+    }
+
+    /// `S` is not self-adjoint: its adjoint table differs in the phase
+    /// pattern, but `(S†)† = S` (involution).
+    #[test]
+    fn s_adjoint_inverts_table_and_is_involutive() {
+        let s = Clifford1Q::s(0);
+        let s_dag = s.adjoint();
+        // Forward: I→I(+1), X→Y(+1), Z→Z(+1), Y→-X(-1)
+        // Adjoint: I→I(+1), X→-Y(-1), Z→Z(+1), Y→X(+1)
+        assert_eq!(s_dag.out_pauli, [0, 3, 2, 1]);
+        assert_eq!(
+            s_dag.phase,
+            [Phase::ONE, Phase::MINUS_ONE, Phase::ONE, Phase::ONE]
+        );
+        // Involution: (S†)† = S.
+        let s_again = s_dag.adjoint();
+        assert_eq!(s_again.out_pauli, s.out_pauli);
+        assert_eq!(s_again.phase, s.phase);
+    }
+
+    /// `apply_adjoint` on `S` followed by `apply` on `S` round-trips X.
+    #[test]
+    fn s_apply_then_apply_adjoint_round_trips() {
+        let s = Clifford1Q::s(0);
+        let x_in = PauliString::<1>::x(0);
+        let (mid, c1) = apply_1q::<1>(&s, &x_in);
+        // mid = Y. Now apply S†.
+        let (mut bx, mut bz, mut bc, mut len) = alloc_buf::<1>();
+        let mut buf = OutputBuffer::<1> {
+            x: &mut bx,
+            z: &mut bz,
+            coeff: &mut bc,
+            len: &mut len,
+        };
+        s.apply_adjoint(&mid.x, &mid.z, c1, &mut buf);
+        assert_eq!(*buf.len, 1);
+        assert_eq!(bx[0], x_in.x);
+        assert_eq!(bz[0], x_in.z);
+        assert_eq!(bc[0], Complex64::new(1.0, 0.0));
     }
 
     // ---- Slice 4.4: Clifford2Q tables ----

@@ -78,6 +78,9 @@
 //! - [`propagate`] / [`Direction`] — the propagation entry point.
 //! - [`engine`] — the sort-merge pipeline (scan → sort → merge). Most
 //!   users will not call this directly; [`propagate`] is the front door.
+//! - [`examples`] — worked-example walkthroughs of full-scale simulations
+//!   (currently: a 2D transverse-field Ising quench on 4×4 and 6×6
+//!   lattices with embedded plot).
 //!
 //! # Choosing `W`
 //!
@@ -100,6 +103,7 @@ pub mod accumulator;
 pub mod channel;
 pub mod circuit;
 pub mod engine;
+pub mod examples;
 pub mod pauli_string;
 pub mod pauli_sum;
 pub mod phase;

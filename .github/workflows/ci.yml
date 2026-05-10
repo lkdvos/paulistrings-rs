@@ -39,6 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo test --doc -p paulistrings
+      - run: cargo build --examples -p paulistrings
 
   doc:
     name: doc

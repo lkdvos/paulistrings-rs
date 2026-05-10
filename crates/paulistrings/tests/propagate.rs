@@ -8,6 +8,7 @@
 use num_complex::Complex64;
 use paulistrings::engine::sort_merge::apply_layer;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
+use paulistrings::truncation::{CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase,
     TruncationPolicy,
@@ -277,6 +278,75 @@ fn propagate_heisenberg_reverses_channel_order() {
     assert_eq!(fwd.z()[0], PauliString::<1>::y(0).z);
     assert_eq!(heis.x()[0], PauliString::<1>::x(0).x);
     assert_eq!(heis.z()[0], PauliString::<1>::x(0).z);
+}
+
+/// Slice 7.2 end-to-end: `WeightCutoff(1)` threads through `apply_layer`
+/// and drops the weight-2 term during the merge.
+#[test]
+fn apply_layer_weight_cutoff_drops_high_weight() {
+    // Z on q0 (weight 1) + Z⊗Z on q0,q1 (weight 2).
+    let mut zz = PauliString::<2>::z(0);
+    let _ = zz.mul_assign(&PauliString::<2>::z(1));
+    let input = sum2(
+        2,
+        &[
+            (PauliString::<2>::z(0), Complex64::new(1.0, 0.0)),
+            (zz, Complex64::new(2.0, 0.0)),
+        ],
+    );
+    let id = IdentityChannel::new();
+    let out = apply_layer(&input, &id, &WeightCutoff(1));
+    assert_eq!(out.len(), 1);
+    let z0 = PauliString::<2>::z(0);
+    assert_eq!(out.x()[0], z0.x);
+    assert_eq!(out.z()[0], z0.z);
+    assert!(approx_eq(out.coeff()[0], Complex64::new(1.0, 0.0)));
+}
+
+/// Slice 7.3 end-to-end: `TopN(1)` threads through `propagate` via
+/// `finalize_layer`. After a single rotation that fans Z's input X into a
+/// (X, Y) superposition, the post-layer truncation must keep at most one
+/// term — confirming `finalize_layer` is invoked.
+#[test]
+fn propagate_top_n_truncates_each_layer() {
+    let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
+    let p = PauliString::<1>::z(0);
+    let mut circuit = Circuit::<1>::new(1);
+    circuit.push(PauliRotation::<1> {
+        support: vec![0],
+        gen_x: p.x,
+        gen_z: p.z,
+        theta: std::f64::consts::FRAC_PI_3,
+    });
+    let out = propagate(&circuit, input, &TopN(1), Direction::Forward);
+    assert!(out.len() <= 1);
+    // The X term has |cos(π/3)| = 0.5; the Y term has |sin(π/3)| ≈ 0.866;
+    // TopN(1) keeps the larger → Y.
+    assert_eq!(out.len(), 1);
+    let y = PauliString::<1>::y(0);
+    assert_eq!(out.x()[0], y.x);
+    assert_eq!(out.z()[0], y.z);
+    out.assert_invariants();
+}
+
+/// Slice 7.1 end-to-end: `CoefficientThreshold` threads through `apply_layer`
+/// and drops the sub-eps term during the merge. Using `IdentityChannel` keeps
+/// the algebra trivial — the test isolates the truncation behavior.
+#[test]
+fn apply_layer_with_threshold_drops_below_eps() {
+    let input = sum1(
+        1,
+        &[
+            (PauliString::<1>::z(0), Complex64::new(1.0, 0.0)),
+            (PauliString::<1>::x(0), Complex64::new(1e-12, 0.0)),
+        ],
+    );
+    let id = IdentityChannel::new();
+    let out = apply_layer(&input, &id, &CoefficientThreshold(1e-9));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out.x()[0], PauliString::<1>::z(0).x);
+    assert_eq!(out.z()[0], PauliString::<1>::z(0).z);
+    assert!(approx_eq(out.coeff()[0], Complex64::new(1.0, 0.0)));
 }
 
 #[test]

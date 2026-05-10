@@ -199,18 +199,16 @@ pub(crate) fn sort_phase<const W: usize>(
 /// The input slices are the populated prefix `[0..len)` of the sort_phase
 /// output; they must be sorted by `(x, z)` (`debug_assert`-checked). Adjacent
 /// runs of equal keys have their coefficients summed; runs whose summed
-/// coefficient is exactly `0+0i` are dropped.
-///
-/// Truncation (`keep_term`) is **not** woven in here yet — that's slice 7.1.
-/// The trait bound is kept on the signature so the wiring is in place; the
-/// `_policy` parameter is currently unused.
+/// coefficient is exactly `0+0i` are dropped, and `policy.keep_term` is
+/// consulted on the *summed* coefficient — terms it rejects are dropped here
+/// rather than in a post-pass (slice 7.1).
 pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     sorted_x: &[[u64; W]],
     sorted_z: &[[u64; W]],
     sorted_coeff: &[Complex64],
     len: usize,
     num_qubits: usize,
-    _policy: &T,
+    policy: &T,
 ) -> PauliSum<W> {
     debug_assert!(sorted_x.len() >= len);
     debug_assert_eq!(sorted_x.len(), sorted_z.len());
@@ -234,7 +232,7 @@ pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             "merge_phase: scratch is not sorted at index {}",
             i,
         );
-        if acc != zero {
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
             x.push(key_x);
             z.push(key_z);
             coeff.push(acc);
@@ -254,6 +252,7 @@ mod tests {
     use super::*;
     use crate::channel::{Clifford1Q, IdentityChannel, PauliRotation};
     use crate::pauli_string::PauliString;
+    use crate::truncation::CoefficientThreshold;
 
     const TOL: f64 = 1e-12;
 
@@ -586,6 +585,58 @@ mod tests {
         assert_eq!(out.x()[0], [1]);
         assert_eq!(out.z()[0], [0]);
         assert_eq!(out.coeff()[0], Complex64::new(5.0, 0.0));
+        out.assert_invariants();
+    }
+
+    /// Slice 7.1: the policy's `keep_term` runs inside the merge loop.
+    /// `CoefficientThreshold(1e-6)` drops the X term (coeff 1e-9) but keeps
+    /// the Z term (coeff 0.5).
+    #[test]
+    fn merge_phase_drops_below_threshold() {
+        let x: Vec<[u64; 1]> = vec![[0], [1]]; // Z, then X
+        let z: Vec<[u64; 1]> = vec![[1], [0]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(0.5, 0.0),
+            Complex64::new(1e-9, 0.0),
+        ];
+        let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out.x()[0], [0]);
+        assert_eq!(out.z()[0], [1]);
+        assert!(approx_eq(out.coeff()[0], Complex64::new(0.5, 0.0), TOL));
+        out.assert_invariants();
+    }
+
+    /// Slice 7.1: the threshold is checked *after* coefficients are summed,
+    /// not on individual scratch entries. Two Z terms with coeffs 0.5 and
+    /// -0.4999999 sum to 1e-7, which is below threshold 1e-6 — drop the
+    /// merged term, even though each summand individually exceeds 1e-6.
+    #[test]
+    fn merge_phase_threshold_applied_after_summation() {
+        let x: Vec<[u64; 1]> = vec![[0], [0]];
+        let z: Vec<[u64; 1]> = vec![[1], [1]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(0.5, 0.0),
+            Complex64::new(-0.4999999, 0.0),
+        ];
+        let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
+        assert_eq!(out.len(), 0);
+        out.assert_invariants();
+    }
+
+    /// `CoefficientThreshold(0.0)` keeps every (non-zero) summed term — the
+    /// no-op case for the new keep_term path.
+    #[test]
+    fn merge_phase_zero_threshold_keeps_everything() {
+        let x: Vec<[u64; 1]> = vec![[0], [0], [1]];
+        let z: Vec<[u64; 1]> = vec![[0], [1], [0]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.0, 0.0),
+            Complex64::new(3.0, 0.0),
+        ];
+        let out = merge_phase::<1, _>(&x, &z, &c, 3, 1, &CoefficientThreshold(0.0));
+        assert_eq!(out.len(), 3);
         out.assert_invariants();
     }
 

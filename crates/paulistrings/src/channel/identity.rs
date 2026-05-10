@@ -17,6 +17,7 @@ pub struct IdentityChannel {
 }
 
 impl IdentityChannel {
+    /// Construct an identity channel.
     pub const fn new() -> Self {
         Self { support: [] }
     }

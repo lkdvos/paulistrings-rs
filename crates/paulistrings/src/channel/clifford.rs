@@ -177,8 +177,14 @@ impl<const W: usize> Channel<W> for Clifford1Q {
 /// bits `(ox0 | (oz0 << 1) | (ox1 << 2) | (oz1 << 3))`.
 #[derive(Clone, Copy, Debug)]
 pub struct Clifford2Q {
+    /// The two qubits this gate acts on. Convention: `support[0]` is the
+    /// "first" qubit (e.g. CNOT control), `support[1]` the second.
     pub support: [u32; 2],
+    /// Output Pauli bits per input. 16 entries indexed by
+    /// `(x0 | (z0 << 1) | (x1 << 2) | (z1 << 3))`; each entry packs the
+    /// output bits in the same layout. `out_pauli[0]` is always `0`.
     pub out_pauli: [u8; 16],
+    /// Phase factor (`i^k`) per input. `phase[0]` is always [`Phase::ONE`].
     pub phase: [Phase; 16],
 }
 

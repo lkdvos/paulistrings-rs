@@ -30,6 +30,7 @@ source .venv/bin/activate
 cargo build --release
 cargo test
 cargo bench -p paulistrings
+cargo doc --no-deps -p paulistrings --open   # render rustdoc
 
 # Python
 maturin develop --release -m crates/paulistrings-py/Cargo.toml   # rebuild after Rust changes

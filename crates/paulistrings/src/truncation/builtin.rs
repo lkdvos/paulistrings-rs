@@ -1,4 +1,4 @@
-//! Built-in truncation policies and combinators. See §7.
+//! Built-in truncation policies and combinators. See design doc §7.
 
 #![allow(unused)]
 
@@ -6,8 +6,19 @@ use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 
-/// Drop terms whose coefficient magnitude falls below `epsilon`.
-pub struct CoefficientThreshold(pub f64);
+/// Drop terms whose coefficient magnitude is at most `epsilon`.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::CoefficientThreshold;
+/// let policy = CoefficientThreshold(1e-9);
+/// # let _ = policy;
+/// ```
+pub struct CoefficientThreshold(
+    /// Magnitude threshold. Terms with `|coeff| <= epsilon` are dropped.
+    pub f64,
+);
 
 impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     #[inline]
@@ -17,7 +28,18 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
-pub struct WeightCutoff(pub u32);
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::WeightCutoff;
+/// let policy = WeightCutoff(4);
+/// # let _ = policy;
+/// ```
+pub struct WeightCutoff(
+    /// Maximum allowed Pauli weight. Terms with weight `> k` are dropped.
+    pub u32,
+);
 
 impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     #[inline]
@@ -29,7 +51,19 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 
 /// Retain only the `n` terms with largest coefficient magnitude. Implemented
 /// as a `finalize_layer` partial sort (no per-term filter).
-pub struct TopN(pub usize);
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::TopN;
+/// let policy = TopN(1_000_000);
+/// # let _ = policy;
+/// ```
+pub struct TopN(
+    /// Number of terms to retain. Terms outside the top-`n` by magnitude
+    /// are dropped at layer finalization.
+    pub usize,
+);
 
 impl<const W: usize> TruncationPolicy<W> for TopN {
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
@@ -66,7 +100,20 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
 }
 
 /// Logical AND of two policies — both must accept.
-pub struct And<A, B>(pub A, pub B);
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::{And, CoefficientThreshold, WeightCutoff};
+/// let policy = And(CoefficientThreshold(1e-6), WeightCutoff(4));
+/// # let _ = policy;
+/// ```
+pub struct And<A, B>(
+    /// First policy. `keep_term` and `finalize_layer` both consult this first.
+    pub A,
+    /// Second policy.
+    pub B,
+);
 
 impl<const W: usize, A, B> TruncationPolicy<W> for And<A, B>
 where
@@ -85,7 +132,25 @@ where
 }
 
 /// Logical OR of two policies — either accepting is enough.
-pub struct Or<A, B>(pub A, pub B);
+///
+/// Only `keep_term` is combined disjunctively; `finalize_layer` falls through
+/// to the trait default (no-op) because the layer-finalization semantics of
+/// "either policy's finalize pass" are not well-defined.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::{Or, CoefficientThreshold, WeightCutoff};
+/// // Keep a term if |coeff| > 0.1 OR weight == 0 (identity).
+/// let policy = Or(CoefficientThreshold(0.1), WeightCutoff(0));
+/// # let _ = policy;
+/// ```
+pub struct Or<A, B>(
+    /// First policy.
+    pub A,
+    /// Second policy.
+    pub B,
+);
 
 impl<const W: usize, A, B> TruncationPolicy<W> for Or<A, B>
 where

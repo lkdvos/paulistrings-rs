@@ -5,17 +5,35 @@ use crate::pauli_string::PauliString;
 use crate::phase::Phase;
 use num_complex::Complex64;
 
-/// A rotation `U = exp(-i * theta * P / 2)`.
+/// A rotation `U = exp(-i · θ · P / 2)`.
 ///
 /// In the Heisenberg picture, conjugation by `U` either leaves the input
-/// invariant (if `[input, P] = 0`) or maps it to `cos(theta) * input +
-/// sin(theta) * i * input * P`. Hence `MAX_FANOUT = 2`.
+/// invariant (if `[input, P] = 0`) or maps it to `cos(θ) · input +
+/// sin(θ) · i · input · P`. Hence `MAX_FANOUT = 2`.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::channel::PauliRotation;
+/// use paulistrings::PauliString;
+///
+/// let gen = PauliString::<1>::z(0);
+/// let rot = PauliRotation::<1> {
+///     support: vec![0],
+///     gen_x: gen.x,
+///     gen_z: gen.z,
+///     theta: std::f64::consts::FRAC_PI_4,
+/// };
+/// # let _ = rot;
+/// ```
 pub struct PauliRotation<const W: usize> {
+    /// Qubits the generator `P` acts on (the channel's support).
     pub support: Vec<u32>,
-    /// X-part of the generator P, restricted to `support`.
+    /// X-part of the generator `P`, restricted to `support`.
     pub gen_x: [u64; W],
-    /// Z-part of the generator P, restricted to `support`.
+    /// Z-part of the generator `P`, restricted to `support`.
     pub gen_z: [u64; W],
+    /// Rotation angle in radians.
     pub theta: f64,
 }
 

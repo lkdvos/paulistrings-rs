@@ -1,10 +1,44 @@
-//! `PauliSum<W>` — weighted sum of Pauli strings in structure-of-arrays form.
+//! [`PauliSum<W>`] — weighted sum of Pauli strings in structure-of-arrays form.
+//!
+//! Storage is parallel `Vec<[u64; W]>` columns for the `x` and `z` parts plus
+//! a `Vec<Complex64>` for coefficients. SoA is chosen so coefficient-only and
+//! key-only scans get full cache utilization, and so each `Vec` maps directly
+//! to a GPU device buffer.
+//!
+//! **Invariant:** the `x` and `z` columns are sorted in lexicographic order as
+//! a single key, and no two entries share a key. Every public operation
+//! either preserves this invariant or returns a fresh [`PauliSum`] that does.
+//!
+//! Build a [`PauliSum`] from unsorted inputs via [`BuildAccumulator`]; once
+//! built, combine sums with [`PauliSum::add`] or scale coefficients with
+//! [`PauliSum::scale`].
 //!
 //! See design doc §3.2.
 //!
-//! Invariant: parallel arrays `x` and `z` are sorted in lexicographic order as
-//! a single key, and no two entries share a key. Every public operation
-//! either preserves this invariant or returns a fresh `PauliSum` that does.
+//! # Examples
+//!
+//! Construct the observable `Z₀ + 0.5·X₁` on two qubits via
+//! [`BuildAccumulator`], then merge in a second sum.
+//!
+//! ```
+//! use paulistrings::{BuildAccumulator, PauliString, PauliSum, Phase};
+//! use num_complex::Complex64;
+//!
+//! let mut acc = BuildAccumulator::<1>::new(2);
+//! acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+//! acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+//! let a = acc.finalize();
+//! assert_eq!(a.len(), 2);
+//!
+//! let mut acc2 = BuildAccumulator::<1>::new(2);
+//! acc2.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(-0.25, 0.0));
+//! let b = acc2.finalize();
+//!
+//! let merged = a.add(&b);
+//! assert_eq!(merged.len(), 2); // Z₀ + 0.25·X₁
+//! ```
+//!
+//! [`BuildAccumulator`]: crate::BuildAccumulator
 
 #![allow(unused)]
 
@@ -22,8 +56,12 @@ pub struct PauliSum<const W: usize> {
 }
 
 impl<const W: usize> PauliSum<W> {
-    /// Empty sum on `num_qubits` qubits. Caller is responsible for ensuring
-    /// `num_qubits <= 64 * W`.
+    /// Empty sum on `num_qubits` qubits.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `num_qubits > 64 · W`. Caller is responsible
+    /// for ensuring `num_qubits <= 64 · W`.
     pub fn empty(num_qubits: usize) -> Self {
         debug_assert!(num_qubits <= 64 * W);
         Self {
@@ -70,8 +108,32 @@ impl<const W: usize> PauliSum<W> {
         &self.coeff
     }
 
-    /// Sum of two `PauliSum`s. Linear-time merge; preserves the sorted invariant.
-    /// Terms whose coefficients sum to exactly `0+0i` are dropped.
+    /// Sum of two [`PauliSum`]s. Linear-time merge; preserves the sorted
+    /// invariant. Terms whose coefficients sum to exactly `0+0i` are dropped.
+    ///
+    /// # Examples
+    ///
+    /// Disjoint keys interleave in sort order; equal keys sum, and an
+    /// exact-zero combined coefficient drops the term.
+    ///
+    /// ```
+    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
+    /// use num_complex::Complex64;
+    ///
+    /// let mut a = BuildAccumulator::<1>::new(2);
+    /// a.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    /// a.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+    /// let a = a.finalize();
+    ///
+    /// let mut b = BuildAccumulator::<1>::new(2);
+    /// b.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(-1.0, 0.0));
+    /// let b = b.finalize();
+    ///
+    /// // Z₀ cancels exactly; only X₁ survives.
+    /// let r = a.add(&b);
+    /// assert_eq!(r.len(), 1);
+    /// assert_eq!(r.coeff()[0], Complex64::new(0.5, 0.0));
+    /// ```
     pub fn add(&self, other: &Self) -> Self {
         debug_assert_eq!(self.num_qubits, other.num_qubits);
         let n_a = self.x.len();

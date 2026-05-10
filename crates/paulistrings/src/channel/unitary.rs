@@ -11,8 +11,9 @@ use num_complex::Complex64;
 /// `MAX_FANOUT = 4` since each input Pauli on the support can map to a sum
 /// over all four basis Paulis.
 pub struct GeneralUnitary1Q {
+    /// The single qubit this gate acts on.
     pub support: [u32; 1],
-    /// 4x4 table: rows indexed by input Pauli (II, X, Z, Y in symplectic
+    /// 4x4 table: rows indexed by input Pauli (`I, X, Z, Y` in symplectic
     /// order), columns by output Pauli, entries are complex coefficients.
     pub table: [[Complex64; 4]; 4],
 }
@@ -39,7 +40,11 @@ impl Channel<1> for GeneralUnitary1Q {
 
 /// Generic 2-qubit unitary, stored as a 16x16 Pauli-expansion table.
 pub struct GeneralUnitary2Q {
+    /// The two qubits this gate acts on.
     pub support: [u32; 2],
+    /// 16x16 table: rows indexed by the 4-bit packed input Pauli on the
+    /// two support qubits, columns by the output Pauli, entries are
+    /// complex coefficients.
     pub table: [[Complex64; 16]; 16],
 }
 

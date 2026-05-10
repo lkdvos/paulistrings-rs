@@ -11,8 +11,18 @@ use num_complex::Complex64;
 /// identity on the support qubit is preserved unchanged; every non-identity
 /// Pauli on the support is multiplied by `1 - 4p/3`. Self-adjoint, so the
 /// default `apply_adjoint` from the trait is correct.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::channel::Depolarizing;
+/// let ch = Depolarizing { support: [3], p: 0.05 };
+/// # let _ = ch;
+/// ```
 pub struct Depolarizing {
+    /// The single qubit this channel acts on.
     pub support: [u32; 1],
+    /// Error probability `p ∈ [0, 1]`.
     pub p: f64,
 }
 
@@ -53,10 +63,12 @@ impl<const W: usize> Channel<W> for Depolarizing {
 /// Single-qubit dephasing noise with error probability `p`.
 ///
 /// Heisenberg dual: `E*(P) = (1-p) P + p Z P Z`. So I and Z are preserved;
-/// X and Y are scaled by `1 - 2p` (`Z X Z = -X`, `Z Y Z = -Y`). Equivalently,
+/// X and Y are scaled by `1 - 2p` (`Z·X·Z = -X`, `Z·Y·Z = -Y`). Equivalently,
 /// the scale fires iff the support qubit's `x_bit` is set. Self-adjoint.
 pub struct Dephasing {
+    /// The single qubit this channel acts on.
     pub support: [u32; 1],
+    /// Error probability `p ∈ [0, 1]`.
     pub p: f64,
 }
 
@@ -106,7 +118,10 @@ impl<const W: usize> Channel<W> for Dephasing {
 /// with this channel should be aware of that approximation. (The
 /// non-Heisenberg use-case is the common one and is exact.)
 pub struct AmplitudeDamping {
+    /// The single qubit this channel acts on.
     pub support: [u32; 1],
+    /// Damping parameter `γ ∈ [0, 1]`. The amplitude that escapes to the
+    /// `|0⟩` state per application.
     pub gamma: f64,
 }
 

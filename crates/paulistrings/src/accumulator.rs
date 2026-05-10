@@ -1,8 +1,18 @@
-//! `BuildAccumulator<W>` — hashmap-based ingestion path. See §8.2.
+//! [`BuildAccumulator<W>`] — hashmap-based ingestion path.
 //!
-//! Used to incrementally build a `PauliSum` from unsorted inputs (Hamiltonian
-//! parsing, Python dict construction, etc.). The accumulator is **not** used
-//! during propagation — that path is sort-merge only.
+//! Used to incrementally build a [`PauliSum`] from unsorted inputs
+//! (Hamiltonian parsing, Python dict construction, etc.). The accumulator is
+//! **not** used during propagation — that path is sort-merge only (see
+//! [`engine`]).
+//!
+//! See the [`PauliSum`] module for a worked example that walks
+//! [`BuildAccumulator::new`] → [`BuildAccumulator::add_term`] →
+//! [`BuildAccumulator::finalize`].
+//!
+//! See design doc §8.2.
+//!
+//! [`PauliSum`]: crate::PauliSum
+//! [`engine`]: crate::engine
 
 #![allow(unused)]
 
@@ -39,9 +49,26 @@ impl<const W: usize> BuildAccumulator<W> {
         }
     }
 
-    /// Add `phase * c * p` to the accumulator. The phase factor is folded
+    /// Add `phase · c · p` to the accumulator. The phase factor is folded
     /// into `c` before the upsert. `p` is taken as-is and used as the map
     /// key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
+    /// use num_complex::Complex64;
+    ///
+    /// let mut acc = BuildAccumulator::<1>::new(2);
+    /// // Add a Y-like term written as i · (X · Z) on qubit 0.
+    /// acc.add_term(
+    ///     PauliString::<1> { x: [1], z: [1] },
+    ///     Phase::I,
+    ///     Complex64::new(1.0, 0.0),
+    /// );
+    /// let sum = acc.finalize();
+    /// assert_eq!(sum.coeff()[0], Complex64::new(0.0, 1.0));
+    /// ```
     pub fn add_term(&mut self, p: PauliString<W>, phase: Phase, c: Complex64) {
         let contribution = phase.apply(c);
         self.map

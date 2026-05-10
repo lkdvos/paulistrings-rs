@@ -1,11 +1,35 @@
-//! `PauliString<W>` — symplectic-encoded Pauli operator on up to `64*W` qubits.
+//! [`PauliString<W>`] — symplectic-encoded Pauli operator on up to `64·W` qubits.
+//!
+//! Encoding: `I = (0, 0)`, `X = (1, 0)`, `Z = (0, 1)`, `Y = (1, 1)`.
+//! Multiplication XORs the `(x, z)` parts and returns the `i^k` phase factor
+//! — for `k ∈ 0..4` — that arises where X- and Z-bits coincide. The phase is
+//! not stored on the type; callers fold it into a `Complex64` coefficient at
+//! the boundary ([`PauliSum`], [`BuildAccumulator`], or [`Channel::apply`]).
+//!
+//! The load-bearing trait is [`Ord`] — the propagation engine is sort-based,
+//! not hashmap-based. `Hash` is implemented as an auxiliary for
+//! [`BuildAccumulator`].
 //!
 //! See design doc §3.1.
 //!
-//! Encoding: `I=(0,0)`, `X=(1,0)`, `Z=(0,1)`, `Y=(1,1)`. Multiplication XORs
-//! the `(x, z)` parts and returns the `i^k` phase factor — for `k` in `0..4`
-//! — that arises where X- and Z-bits coincide. The phase is not stored on
-//! the type; callers fold it into a `Complex64` coefficient at the boundary.
+//! # Examples
+//!
+//! `X · Z = -i·Y`: the XOR gives the Y bits and the returned [`Phase`] is the
+//! `-i` factor.
+//!
+//! ```
+//! use paulistrings::{PauliString, Phase};
+//!
+//! let mut p = PauliString::<1>::x(0);
+//! let phase = p.mul_assign(&PauliString::<1>::z(0));
+//! assert_eq!(p, PauliString::<1>::y(0));
+//! assert_eq!(phase, Phase::MINUS_I);
+//! ```
+//!
+//! [`PauliSum`]: crate::PauliSum
+//! [`BuildAccumulator`]: crate::BuildAccumulator
+//! [`Channel::apply`]: crate::Channel::apply
+//! [`Phase`]: crate::Phase
 
 #![allow(unused)]
 
@@ -15,19 +39,33 @@ use std::hash::{Hash, Hasher};
 
 use crate::phase::Phase;
 
-/// A Pauli operator on up to `64 * W` qubits.
+/// A Pauli operator on up to `64 · W` qubits.
 ///
 /// Layout is `#[repr(C)]` so the type is `Pod` and can be reinterpreted as
 /// bytes for serialization or upload to a GPU device. There is no stored
-/// phase: multiplication returns the `i^k` phase as a separate `u8` and
-/// callers fold it into their coefficient at the boundary.
+/// phase: multiplication returns the `i^k` phase as a separate [`Phase`]
+/// and callers fold it into their coefficient at the boundary.
 ///
-/// `Ord` is the load-bearing trait (the engine is sort-based, not
-/// hashmap-based); see §3.1.
+/// [`Ord`] is the load-bearing trait (the engine is sort-based, not
+/// hashmap-based).
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::PauliString;
+///
+/// let p = PauliString::<1>::x(3);
+/// assert_eq!(p.weight(), 1);
+/// assert!(p.commutes_with(&PauliString::<1>::x(0)));
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(C)]
 pub struct PauliString<const W: usize> {
+    /// X-part bitmask: bit `q` is set iff the Pauli on qubit `q` has an
+    /// X-component (i.e. is `X` or `Y`).
     pub x: [u64; W],
+    /// Z-part bitmask: bit `q` is set iff the Pauli on qubit `q` has a
+    /// Z-component (i.e. is `Z` or `Y`).
     pub z: [u64; W],
 }
 
@@ -36,6 +74,15 @@ unsafe impl<const W: usize> Pod for PauliString<W> {}
 
 impl<const W: usize> PauliString<W> {
     /// Identity Pauli string (all qubits `I`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::PauliString;
+    ///
+    /// let id = PauliString::<1>::identity();
+    /// assert_eq!(id.weight(), 0);
+    /// ```
     pub const fn identity() -> Self {
         Self {
             x: [0u64; W],
@@ -44,6 +91,20 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Single-qubit `X` Pauli on `qubit`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `qubit >= 64 · W`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::PauliString;
+    ///
+    /// let p = PauliString::<1>::x(2);
+    /// assert_eq!(p.x, [0b100]);
+    /// assert_eq!(p.z, [0]);
+    /// ```
     #[inline]
     pub fn x(qubit: u32) -> Self {
         debug_assert!((qubit as usize) < 64 * W);
@@ -52,8 +113,13 @@ impl<const W: usize> PauliString<W> {
         p
     }
 
-    /// Canonical Pauli `Y = (1, 1)` on `qubit`. The `i` factor in `Y = iXZ`
-    /// is the caller's concern.
+    /// Canonical Pauli `Y = (1, 1)` on `qubit`. The `i` factor in `Y = i · X · Z`
+    /// is the caller's concern — fold it into a [`Phase`] or coefficient at
+    /// the boundary.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `qubit >= 64 · W`.
     #[inline]
     pub fn y(qubit: u32) -> Self {
         debug_assert!((qubit as usize) < 64 * W);
@@ -66,6 +132,10 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Single-qubit `Z` Pauli on `qubit`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `qubit >= 64 · W`.
     #[inline]
     pub fn z(qubit: u32) -> Self {
         debug_assert!((qubit as usize) < 64 * W);
@@ -75,13 +145,36 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Number of non-identity qubits (Hamming weight of `x | z`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::PauliString;
+    ///
+    /// let mut p = PauliString::<1>::x(0);
+    /// p.mul_assign(&PauliString::<1>::z(1));
+    /// assert_eq!(p.weight(), 2);
+    /// ```
     #[inline]
     pub fn weight(&self) -> u32 {
         (0..W).map(|i| (self.x[i] | self.z[i]).count_ones()).sum()
     }
 
     /// Multiply `self * other` in place. Returns the `i^k` phase factor such
-    /// that the true product is `phase * self_after_xor`.
+    /// that the true product is `phase · self_after_xor`.
+    ///
+    /// # Examples
+    ///
+    /// `X · Z = -i·Y`: the bits XOR to `Y` and the phase is `-i`.
+    ///
+    /// ```
+    /// use paulistrings::{PauliString, Phase};
+    ///
+    /// let mut p = PauliString::<1>::x(0);
+    /// let phase = p.mul_assign(&PauliString::<1>::z(0));
+    /// assert_eq!(p, PauliString::<1>::y(0));
+    /// assert_eq!(phase, Phase::MINUS_I);
+    /// ```
     #[inline]
     pub fn mul_assign(&mut self, other: &Self) -> Phase {
         // Per-qubit: P(a,b) · P(c,d) = i^δ · P(a⊕c, b⊕d) where
@@ -122,13 +215,19 @@ impl<const W: usize> PauliString<W> {
     /// `true` iff every set bit lies on a qubit index `< num_qubits`.
     ///
     /// The engine and built-in channels preserve this bound by construction
-    /// (a channel only flips bits inside `support()`, which is bounded at
-    /// `Circuit` build time), so this check is not on the hot path. Use it
-    /// in `debug_assert!` at boundaries with custom `Channel` impls, in
-    /// `PauliSum::assert_invariants`, and in tests that exercise the
-    /// invariant directly.
+    /// (a channel only flips bits inside [`Channel::support`], which is
+    /// bounded at [`Circuit`] build time), so this check is not on the hot
+    /// path. Use it in `debug_assert!` at boundaries with custom [`Channel`]
+    /// impls, in `PauliSum::assert_invariants`, and in tests that exercise
+    /// the invariant directly.
     ///
-    /// Panics in debug builds if `num_qubits > 64 * W`.
+    /// # Panics
+    ///
+    /// Panics in debug builds if `num_qubits > 64 · W`.
+    ///
+    /// [`Channel`]: crate::Channel
+    /// [`Channel::support`]: crate::Channel::support
+    /// [`Circuit`]: crate::Circuit
     #[inline]
     pub fn is_within(&self, num_qubits: usize) -> bool {
         debug_assert!(num_qubits <= 64 * W);
@@ -147,7 +246,18 @@ impl<const W: usize> PauliString<W> {
         leak == 0
     }
 
-    /// `true` iff `self` and `other` commute.
+    /// `true` iff `self` and `other` commute as Pauli operators.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::PauliString;
+    ///
+    /// // X and Z anticommute.
+    /// assert!(!PauliString::<1>::x(0).commutes_with(&PauliString::<1>::z(0)));
+    /// // X on disjoint qubits commutes with anything on the other qubit.
+    /// assert!(PauliString::<1>::x(0).commutes_with(&PauliString::<1>::z(1)));
+    /// ```
     #[inline]
     pub fn commutes_with(&self, other: &Self) -> bool {
         let mut parity: u32 = 0;

@@ -1,9 +1,67 @@
-//! `Channel<W>` — unified abstraction for gates and noise. See §6.
+//! [`Channel<W>`] — unified abstraction for gates and noise.
 //!
-//! Every operation on a `PauliSum` (Clifford gate, Pauli rotation, arbitrary
-//! unitary, noise channel) maps a single Pauli string to a small weighted sum
-//! of Pauli strings. The trait formalizes that mapping; the engine consumes
-//! it via the sort-merge pipeline (§5).
+//! Every operation on a [`PauliSum`] (Clifford gate, Pauli rotation,
+//! arbitrary unitary, noise channel) maps a single Pauli string to a small
+//! weighted sum of Pauli strings. The trait formalizes that mapping; the
+//! engine consumes it via the sort-merge pipeline (see [`engine`]).
+//!
+//! Built-ins in this module:
+//!
+//! - [`Clifford1Q`], [`Clifford2Q`] — table-driven Clifford gates with
+//!   `MAX_FANOUT = 1`.
+//! - [`PauliRotation`] — `exp(-i·θ·P/2)` with `MAX_FANOUT = 2` (commuting
+//!   inputs collapse to fanout-1 at runtime).
+//! - [`GeneralUnitary1Q`], [`GeneralUnitary2Q`] — generic unitaries stored
+//!   as Pauli-expansion tables.
+//! - [`Depolarizing`], [`Dephasing`] — coefficient-rescaling noise
+//!   (`MAX_FANOUT = 1`).
+//! - [`AmplitudeDamping`] — the one built-in with `MAX_FANOUT = 2`.
+//! - [`IdentityChannel`] — pass-through, used in tests and as a neutral
+//!   composition element.
+//!
+//! See design doc §6.
+//!
+//! # Implementing a custom channel
+//!
+//! Implement the trait directly; the engine treats your type as just another
+//! `Box<dyn `[`Channel<W>`]`>` inside a [`Circuit`]. Three required methods
+//! plus an optional [`Channel::apply_adjoint`] override.
+//!
+//! ```
+//! use paulistrings::{Channel, OutputBuffer};
+//! use num_complex::Complex64;
+//!
+//! /// Multiplies every input coefficient by a complex factor, with no
+//! /// support and `MAX_FANOUT = 1`.
+//! struct GlobalPhase {
+//!     support: [u32; 0],
+//!     factor: Complex64,
+//! }
+//!
+//! impl<const W: usize> Channel<W> for GlobalPhase {
+//!     fn max_fanout(&self) -> usize { 1 }
+//!     fn support(&self) -> &[u32] { &self.support }
+//!     fn apply(
+//!         &self,
+//!         input_x: &[u64; W],
+//!         input_z: &[u64; W],
+//!         coeff: Complex64,
+//!         out: &mut OutputBuffer<'_, W>,
+//!     ) {
+//!         out.push(*input_x, *input_z, coeff * self.factor);
+//!     }
+//! }
+//!
+//! let ch = GlobalPhase {
+//!     support: [],
+//!     factor: Complex64::new(0.0, 1.0),
+//! };
+//! let _: Box<dyn Channel<1>> = Box::new(ch);
+//! ```
+//!
+//! [`PauliSum`]: crate::PauliSum
+//! [`engine`]: crate::engine
+//! [`Circuit`]: crate::Circuit
 
 #![allow(unused)]
 
@@ -23,12 +81,15 @@ use num_complex::Complex64;
 
 /// Pre-allocated, fixed-capacity SoA scratch buffer for channel outputs.
 ///
-/// Sized by the engine to `n_in * channel.max_fanout()` so that `apply` can
+/// Sized by the engine to `n_in · channel.max_fanout()` so that `apply` can
 /// write without dynamic growth. Required for GPU correctness and for CPU
-/// hot-loop performance.
+/// hot-loop performance. Channel impls write via [`OutputBuffer::push`].
 pub struct OutputBuffer<'a, const W: usize> {
+    /// X-part column. Length equals the buffer's capacity.
     pub x: &'a mut [[u64; W]],
+    /// Z-part column. Length equals the buffer's capacity.
     pub z: &'a mut [[u64; W]],
+    /// Coefficient column. Length equals the buffer's capacity.
     pub coeff: &'a mut [Complex64],
     /// Cursor into the slices; `apply` writes at `len` and advances.
     pub len: &'a mut usize,
@@ -67,11 +128,14 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
 
 /// Anything that maps a Pauli string to a small weighted sum of Pauli strings.
 ///
-/// `max_fanout` is a method (not an associated `const`) so the trait stays
-/// `dyn`-compatible — `Circuit` stores `Box<dyn Channel<W>>` to keep the
-/// channel set open for user extensions (§6). For built-in channels the
-/// returned value is a compile-time constant so the engine still gets
-/// constant-folded buffer sizing once the concrete type is in hand.
+/// [`Channel::max_fanout`] is a method (not an associated `const`) so the
+/// trait stays `dyn`-compatible — [`Circuit`](crate::Circuit) stores
+/// `Box<dyn Channel<W>>` to keep the channel set open for user extensions.
+/// For built-in channels the returned value is a compile-time constant so
+/// the engine still gets constant-folded buffer sizing once the concrete
+/// type is in hand.
+///
+/// See the [module-level docs](self) for an `impl Channel` example.
 pub trait Channel<const W: usize>: Send + Sync {
     /// Maximum number of output terms produced per input term. Used by the
     /// engine to size the scratch buffer up-front.

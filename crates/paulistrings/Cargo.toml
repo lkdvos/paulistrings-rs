@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Pauli string manipulation in Rust"
+documentation = "https://docs.rs/paulistrings"
+readme = "README.md"
+keywords = ["pauli", "quantum", "simulation", "physics", "operator"]
+categories = ["science", "simulation"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }

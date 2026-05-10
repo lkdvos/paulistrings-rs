@@ -1,7 +1,13 @@
 # paulistrings-rs
 
+[![CI](https://github.com/lkdvos/paulistrings-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/lkdvos/paulistrings-rs/actions/workflows/ci.yml)
+[![docs](https://github.com/lkdvos/paulistrings-rs/actions/workflows/docs.yml/badge.svg)](https://lkdvos.github.io/paulistrings-rs/)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
 Rust library for Pauli string manipulation, with Python bindings. Inspired by
 [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl).
+
+**Preview docs:** [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/) (rebuilt on every push to `main`).
 
 ## Layout
 
@@ -59,3 +65,9 @@ pytest benchmarks/python --benchmark-only
 ## Status
 
 v0.1 scaffolding. See `research/plans/` for the roadmap.
+
+## License
+
+Dual-licensed under the [MIT License](https://opensource.org/licenses/MIT) or
+[Apache License 2.0](https://opensource.org/licenses/Apache-2.0), at your
+option.

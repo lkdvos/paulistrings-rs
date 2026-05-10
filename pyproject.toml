@@ -21,3 +21,8 @@ manifest-path = "crates/paulistrings-py/Cargo.toml"
 module-name = "paulistrings._paulistrings"
 python-source = "python"
 features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+# Discover `test_*.py` (Python unit tests in `python/paulistrings/tests/`) and
+# `bench_*.py` (cross-library suites in `benchmarks/python/`).
+python_files = ["test_*.py", "bench_*.py"]

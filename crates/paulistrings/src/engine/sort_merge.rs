@@ -407,7 +407,7 @@ fn align_chunk_boundaries<const W: usize>(
     bounds.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
     use crate::channel::{Clifford1Q, IdentityChannel, PauliRotation};

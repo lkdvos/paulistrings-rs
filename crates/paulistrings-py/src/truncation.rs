@@ -2,23 +2,22 @@
 //!
 //! Python composition is via the `&` and `|` operators on the returned objects.
 
-#![allow(unused)]
-
+use crate::truncation_spec::{PolicySpec, PyTruncation};
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn coeff(_epsilon: f64) -> PyResult<PyObject> {
-    todo!("§11: return PyTruncation wrapping CoefficientThreshold")
+fn coeff(epsilon: f64) -> PyTruncation {
+    PyTruncation::new(PolicySpec::Coeff(epsilon))
 }
 
 #[pyfunction]
-fn weight(_k: u32) -> PyResult<PyObject> {
-    todo!("§11: return PyTruncation wrapping WeightCutoff")
+fn weight(k: u32) -> PyTruncation {
+    PyTruncation::new(PolicySpec::Weight(k))
 }
 
 #[pyfunction]
-fn topn(_n: usize) -> PyResult<PyObject> {
-    todo!("§11: return PyTruncation wrapping TopN")
+fn topn(n: usize) -> PyTruncation {
+    PyTruncation::new(PolicySpec::TopN(n))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

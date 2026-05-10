@@ -1,22 +1,21 @@
 //! `paulistrings._paulistrings.noise` submodule: noise channel factories. See §11.
 
-#![allow(unused)]
-
+use crate::channel_spec::{ChannelSpec, PyChannel};
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn depolarize(_p: f64, _qubit: u32) -> PyResult<PyObject> {
-    todo!("§11: return an opaque PyChannel wrapping Depolarizing")
+fn depolarize(p: f64, qubit: u32) -> PyChannel {
+    PyChannel::new(ChannelSpec::Depolarize { p, qubit })
 }
 
 #[pyfunction]
-fn dephase(_p: f64, _qubit: u32) -> PyResult<PyObject> {
-    todo!("§11: return an opaque PyChannel wrapping Dephasing")
+fn dephase(p: f64, qubit: u32) -> PyChannel {
+    PyChannel::new(ChannelSpec::Dephase { p, qubit })
 }
 
 #[pyfunction]
-fn amplitude_damping(_gamma: f64, _qubit: u32) -> PyResult<PyObject> {
-    todo!("§11: return an opaque PyChannel wrapping AmplitudeDamping")
+fn amplitude_damping(gamma: f64, qubit: u32) -> PyChannel {
+    PyChannel::new(ChannelSpec::AmplitudeDamping { gamma, qubit })
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

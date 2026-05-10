@@ -3,6 +3,7 @@
 #![allow(unused)]
 
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_sum::PauliSum;
@@ -87,15 +88,21 @@ where
 /// term's outputs into a flat scratch buffer.
 ///
 /// The caller pre-sizes the three slices to at least
-/// `input.len() * channel.max_fanout()`. Inputs are processed in order; for
-/// each input, the channel writes 0..`max_fanout()` outputs into the slice
-/// starting at the current cursor. The function returns the actual number
-/// of output terms written (which may be less than `n_in * max_fanout` when
-/// the channel produces variable per-input fanout, e.g. `PauliRotation`).
+/// `input.len() * channel.max_fanout()`. Each input `i` is assigned the
+/// disjoint slot `[i*mf, (i+1)*mf)` in the buffer; per-input fills run in
+/// parallel via `rayon::par_chunks_mut`, after which a sequential compaction
+/// pass packs the populated prefixes contiguously. The slot layout depends
+/// only on `(i, mf)` — not on the rayon thread count or scheduling — so the
+/// final byte layout is deterministic across thread pool sizes (slice 8.1).
+///
+/// The function returns the actual number of output terms written (which may
+/// be less than `n_in * max_fanout` when the channel produces variable
+/// per-input fanout, e.g. `PauliRotation`).
 ///
 /// `apply_fn` selects between forward (`Channel::apply`) and Heisenberg
 /// (`Channel::apply_adjoint`); the two scan-phase callers differ only in
-/// that one method call.
+/// that one method call. It is `Fn + Sync` so the rayon worker threads can
+/// share it.
 ///
 /// Output is *not* sorted — that's slice 6.2's job.
 fn scan_phase_with<const W: usize, C, F>(
@@ -104,32 +111,67 @@ fn scan_phase_with<const W: usize, C, F>(
     out_x: &mut [[u64; W]],
     out_z: &mut [[u64; W]],
     out_coeff: &mut [Complex64],
-    mut apply_fn: F,
+    apply_fn: F,
 ) -> usize
 where
     C: Channel<W> + ?Sized,
-    F: FnMut(&C, &[u64; W], &[u64; W], Complex64, &mut OutputBuffer<'_, W>),
+    F: Fn(&C, &[u64; W], &[u64; W], Complex64, &mut OutputBuffer<'_, W>) + Sync,
 {
     let mf = channel.max_fanout();
-    debug_assert!(out_x.len() >= input.len() * mf);
+    let n_in = input.len();
+    debug_assert!(out_x.len() >= n_in * mf);
     debug_assert_eq!(out_x.len(), out_z.len());
     debug_assert_eq!(out_x.len(), out_coeff.len());
-    let mut total = 0usize;
-    for i in 0..input.len() {
-        let upper = total + mf;
-        let mut local_len = 0usize;
-        {
+    if n_in == 0 || mf == 0 {
+        return 0;
+    }
+    let cap = n_in * mf;
+    let lens: Vec<usize> = out_x[..cap]
+        .par_chunks_mut(mf)
+        .zip(out_z[..cap].par_chunks_mut(mf))
+        .zip(out_coeff[..cap].par_chunks_mut(mf))
+        .enumerate()
+        .map(|(i, ((sx, sz), sc))| {
+            let mut local_len = 0usize;
             let mut buf = OutputBuffer::<W> {
-                x: &mut out_x[total..upper],
-                z: &mut out_z[total..upper],
-                coeff: &mut out_coeff[total..upper],
+                x: sx,
+                z: sz,
+                coeff: sc,
                 len: &mut local_len,
             };
             apply_fn(channel, &input.x[i], &input.z[i], input.coeff[i], &mut buf);
+            local_len
+        })
+        .collect();
+    compact_in_place(out_x, out_z, out_coeff, &lens, mf)
+}
+
+/// Pack the per-input populated prefixes `[i*mf, i*mf + lens[i])` into a
+/// contiguous prefix `[0..total)` of the three SoA buffers. Source and
+/// destination overlap, but the source index is always `>=` the destination,
+/// so `slice::copy_within` (memmove semantics) is correct.
+fn compact_in_place<const W: usize>(
+    out_x: &mut [[u64; W]],
+    out_z: &mut [[u64; W]],
+    out_coeff: &mut [Complex64],
+    lens: &[usize],
+    mf: usize,
+) -> usize {
+    let mut write = 0usize;
+    for (i, &len_i) in lens.iter().enumerate() {
+        if len_i == 0 {
+            continue;
         }
-        total += local_len;
+        let src = i * mf;
+        debug_assert!(write <= src);
+        if write != src {
+            out_x.copy_within(src..src + len_i, write);
+            out_z.copy_within(src..src + len_i, write);
+            out_coeff.copy_within(src..src + len_i, write);
+        }
+        write += len_i;
     }
-    total
+    write
 }
 
 /// Forward scan: dispatches each input through `Channel::apply`.
@@ -193,6 +235,14 @@ pub(crate) fn sort_phase<const W: usize>(
     out_coeff[..len].copy_from_slice(&new_c);
 }
 
+/// Empirical threshold below which the parallel merge's overhead dominates.
+/// Below this, `merge_phase` collapses to a single sequential chunk.
+const SMALL_MERGE_THRESHOLD: usize = 1024;
+
+/// SoA triple emitted by a per-chunk merge — the same shape as `PauliSum`'s
+/// internal storage, deferred into a `Vec` until concatenation.
+type ChunkOutput<const W: usize> = (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>);
+
 /// Phase 3: segmented reduction over the sorted scratch into a fresh
 /// `PauliSum`.
 ///
@@ -202,6 +252,14 @@ pub(crate) fn sort_phase<const W: usize>(
 /// coefficient is exactly `0+0i` are dropped, and `policy.keep_term` is
 /// consulted on the *summed* coefficient — terms it rejects are dropped here
 /// rather than in a post-pass (slice 7.1).
+///
+/// The reduction is parallelized via chunked segment-aware merging
+/// (slice 8.2 / design doc §9): the populated prefix is partitioned into
+/// `rayon::current_num_threads()` chunks whose boundaries are advanced
+/// forward to the next run break, so every run is fully contained in exactly
+/// one chunk. Each chunk runs the same per-run reduction independently;
+/// the boundary "reconciliation pass" is the alignment step itself, so the
+/// chunk results are concatenated without further merging.
 pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     sorted_x: &[[u64; W]],
     sorted_z: &[[u64; W]],
@@ -210,26 +268,100 @@ pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     num_qubits: usize,
     policy: &T,
 ) -> PauliSum<W> {
+    let nchunks = if len < SMALL_MERGE_THRESHOLD {
+        1
+    } else {
+        rayon::current_num_threads().max(1)
+    };
+    merge_phase_with_nchunks::<W, T>(
+        sorted_x,
+        sorted_z,
+        sorted_coeff,
+        len,
+        num_qubits,
+        policy,
+        nchunks,
+    )
+}
+
+/// `merge_phase` with an explicit chunk count. Public to the crate so tests
+/// can pin `nchunks` and force runs to straddle boundaries; `merge_phase`
+/// itself derives `nchunks` from `rayon::current_num_threads()`.
+pub(crate) fn merge_phase_with_nchunks<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    sorted_x: &[[u64; W]],
+    sorted_z: &[[u64; W]],
+    sorted_coeff: &[Complex64],
+    len: usize,
+    num_qubits: usize,
+    policy: &T,
+    nchunks: usize,
+) -> PauliSum<W> {
     debug_assert!(sorted_x.len() >= len);
     debug_assert_eq!(sorted_x.len(), sorted_z.len());
     debug_assert_eq!(sorted_x.len(), sorted_coeff.len());
+    if len == 0 {
+        return PauliSum::<W> {
+            x: Vec::new(),
+            z: Vec::new(),
+            coeff: Vec::new(),
+            num_qubits,
+        };
+    }
+    let bounds = align_chunk_boundaries(sorted_x, sorted_z, len, nchunks.max(1));
+    let chunk_results: Vec<ChunkOutput<W>> = bounds
+        .par_iter()
+        .map(|&(start, end)| {
+            merge_chunk::<W, T>(sorted_x, sorted_z, sorted_coeff, start, end, policy)
+        })
+        .collect();
+    let total: usize = chunk_results.iter().map(|(cx, _, _)| cx.len()).sum();
+    let mut x = Vec::with_capacity(total);
+    let mut z = Vec::with_capacity(total);
+    let mut coeff = Vec::with_capacity(total);
+    for (cx, cz, cc) in chunk_results {
+        x.extend(cx);
+        z.extend(cz);
+        coeff.extend(cc);
+    }
+    PauliSum::<W> {
+        x,
+        z,
+        coeff,
+        num_qubits,
+    }
+}
+
+/// Run the segmented reduction on the sub-range `[start..end)` of the sorted
+/// scratch. Caller must ensure runs are not split: `(sorted_x[start-1],
+/// sorted_z[start-1]) != (sorted_x[start], sorted_z[start])` whenever
+/// `start > 0`, and similarly at `end`. With that invariant, the chunk's
+/// reduction is identical to the sequential merge on the same sub-range —
+/// `keep_term` and the zero-drop check operate on fully-summed coefficients.
+fn merge_chunk<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    sorted_x: &[[u64; W]],
+    sorted_z: &[[u64; W]],
+    sorted_coeff: &[Complex64],
+    start: usize,
+    end: usize,
+    policy: &T,
+) -> ChunkOutput<W> {
     let zero = Complex64::new(0.0, 0.0);
-    let mut x = Vec::with_capacity(len);
-    let mut z = Vec::with_capacity(len);
-    let mut coeff = Vec::with_capacity(len);
-    let mut i = 0usize;
-    while i < len {
+    let mut x: Vec<[u64; W]> = Vec::new();
+    let mut z: Vec<[u64; W]> = Vec::new();
+    let mut coeff: Vec<Complex64> = Vec::new();
+    let mut i = start;
+    while i < end {
         let key_x = sorted_x[i];
         let key_z = sorted_z[i];
         let mut acc = sorted_coeff[i];
         let mut j = i + 1;
-        while j < len && sorted_x[j] == key_x && sorted_z[j] == key_z {
+        while j < end && sorted_x[j] == key_x && sorted_z[j] == key_z {
             acc += sorted_coeff[j];
             j += 1;
         }
         debug_assert!(
             i == 0 || (sorted_x[i - 1], sorted_z[i - 1]) <= (key_x, key_z),
-            "merge_phase: scratch is not sorted at index {}",
+            "merge_chunk: scratch is not sorted at index {}",
             i,
         );
         if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
@@ -239,12 +371,40 @@ pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         }
         i = j;
     }
-    PauliSum::<W> {
-        x,
-        z,
-        coeff,
-        num_qubits,
+    (x, z, coeff)
+}
+
+/// Partition `[0..len)` into `nchunks` non-empty sub-ranges whose interior
+/// boundaries land at run breaks. The "natural" boundary `len * k / nchunks`
+/// is advanced forward (or to `len`) until the keys at `t-1` and `t` differ.
+/// Boundaries that collapse onto each other are deduped, so the returned
+/// vector may contain fewer than `nchunks` chunks.
+fn align_chunk_boundaries<const W: usize>(
+    sorted_x: &[[u64; W]],
+    sorted_z: &[[u64; W]],
+    len: usize,
+    nchunks: usize,
+) -> Vec<(usize, usize)> {
+    if len == 0 {
+        return Vec::new();
     }
+    if nchunks <= 1 {
+        return vec![(0, len)];
+    }
+    let mut bounds: Vec<usize> = Vec::with_capacity(nchunks + 1);
+    bounds.push(0);
+    for k in 1..nchunks {
+        let mut t = (len * k) / nchunks;
+        // Advance to the start of a fresh run (or to `len`).
+        while t > 0 && t < len && sorted_x[t] == sorted_x[t - 1] && sorted_z[t] == sorted_z[t - 1]
+        {
+            t += 1;
+        }
+        bounds.push(t);
+    }
+    bounds.push(len);
+    bounds.dedup();
+    bounds.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 #[cfg(test)]
@@ -384,6 +544,51 @@ mod tests {
         let mut bc: Vec<Complex64> = vec![];
         let total = scan_phase(&input, &id, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 0);
+    }
+
+    /// Slice 8.1: same input under different rayon thread-pool sizes must
+    /// produce byte-identical output through `apply_layer`. Per-input slot
+    /// bounds depend only on `(i, mf)`, so the scan output is deterministic;
+    /// the merge phase processes runs in input order regardless of thread
+    /// count, so floating-point summation is bit-stable too.
+    #[test]
+    fn scan_determinism_across_thread_counts() {
+        // 16 distinct 2-qubit terms, fanout-1 channel (`H` on qubit 0).
+        let labels = ["I", "X", "Y", "Z"];
+        let mut owned: Vec<(String, Complex64)> = Vec::new();
+        let mut k: i64 = 0;
+        for a in &labels {
+            for b in &labels {
+                k += 1;
+                owned.push((
+                    format!("{}{}", a, b),
+                    Complex64::new(k as f64 * 0.13, k as f64 * 0.07),
+                ));
+            }
+        }
+        let strings: Vec<(&str, Complex64)> =
+            owned.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        let input = PauliSum::<1>::from_strings(&strings);
+        let h = Clifford1Q::h(0);
+        let policy = AlwaysKeep;
+
+        let run = |n: usize| -> PauliSum<1> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
+            pool.install(|| apply_layer(&input, &h, &policy))
+        };
+        let r1 = run(1);
+        let r2 = run(2);
+        let r4 = run(4);
+
+        assert_eq!(r1.x(), r2.x());
+        assert_eq!(r1.z(), r2.z());
+        assert_eq!(r1.coeff(), r2.coeff());
+        assert_eq!(r1.x(), r4.x());
+        assert_eq!(r1.z(), r4.z());
+        assert_eq!(r1.coeff(), r4.coeff());
     }
 
     /// Hand-built unsorted scratch becomes sorted; coeffs follow their keys.
@@ -656,5 +861,87 @@ mod tests {
         assert_eq!(out.x()[0], [0]);
         assert_eq!(out.z()[0], [1]);
         assert_eq!(out.coeff()[0], Complex64::new(2.0, 0.0));
+    }
+
+    /// Slice 8.2 stress: a run of identical keys straddles the `len/2`
+    /// boundary. With `nchunks = 2`, the natural boundary at index 4 lands
+    /// inside the Z-run; alignment must advance it forward to index 7 so
+    /// the Z-run merges into a single term. Lex `(x, z)` sort puts
+    /// `I < Z < X`.
+    #[test]
+    fn merge_phase_run_spans_chunk_boundary() {
+        // Sorted: I, I, Z, Z, Z, Z, Z, X, X   (len = 9, mid = 4 inside Z-run)
+        let x: Vec<[u64; 1]> = vec![[0], [0], [0], [0], [0], [0], [0], [1], [1]];
+        let z: Vec<[u64; 1]> = vec![[0], [0], [1], [1], [1], [1], [1], [0], [0]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(0.5, 0.0),
+            Complex64::new(0.5, 0.0),
+            Complex64::new(0.5, 0.0),
+            Complex64::new(0.5, 0.0),
+            Complex64::new(0.5, 0.0),
+            Complex64::new(2.0, 0.0),
+            Complex64::new(2.0, 0.0),
+        ];
+        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 9, 1, &AlwaysKeep, 2);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out.x()[0], [0]);
+        assert_eq!(out.z()[0], [0]);
+        assert_eq!(out.coeff()[0], Complex64::new(2.0, 0.0));
+        assert_eq!(out.x()[1], [0]);
+        assert_eq!(out.z()[1], [1]);
+        assert_eq!(out.coeff()[1], Complex64::new(2.5, 0.0));
+        assert_eq!(out.x()[2], [1]);
+        assert_eq!(out.z()[2], [0]);
+        assert_eq!(out.coeff()[2], Complex64::new(4.0, 0.0));
+        out.assert_invariants();
+    }
+
+    /// Slice 8.2: when the natural midpoint already falls at a run break,
+    /// alignment leaves it alone — chunks split exactly between runs.
+    #[test]
+    fn merge_phase_aligned_boundary_no_shift() {
+        // Sorted: I, I, I, X, X, X   (len = 6, mid = 3 lands on run break)
+        let x: Vec<[u64; 1]> = vec![[0], [0], [0], [1], [1], [1]];
+        let z: Vec<[u64; 1]> = vec![[0], [0], [0], [0], [0], [0]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.0, 0.0),
+            Complex64::new(3.0, 0.0),
+            Complex64::new(4.0, 0.0),
+            Complex64::new(5.0, 0.0),
+            Complex64::new(6.0, 0.0),
+        ];
+        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 6, 1, &AlwaysKeep, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.x()[0], [0]);
+        assert_eq!(out.z()[0], [0]);
+        assert_eq!(out.coeff()[0], Complex64::new(6.0, 0.0));
+        assert_eq!(out.x()[1], [1]);
+        assert_eq!(out.z()[1], [0]);
+        assert_eq!(out.coeff()[1], Complex64::new(15.0, 0.0));
+        out.assert_invariants();
+    }
+
+    /// Slice 8.2: degenerate input where every key collapses to one run.
+    /// All chunk boundaries advance to `len`; only one effective chunk.
+    #[test]
+    fn merge_phase_all_same_key_with_nchunks() {
+        let x: Vec<[u64; 1]> = vec![[0], [0], [0], [0], [0]];
+        let z: Vec<[u64; 1]> = vec![[1], [1], [1], [1], [1]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+        ];
+        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 5, 1, &AlwaysKeep, 4);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out.x()[0], [0]);
+        assert_eq!(out.z()[0], [1]);
+        assert_eq!(out.coeff()[0], Complex64::new(5.0, 0.0));
+        out.assert_invariants();
     }
 }

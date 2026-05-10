@@ -6,12 +6,11 @@
 //! against hand-computed Pauli algebra.
 
 use num_complex::Complex64;
-use paulistrings::engine::sort_merge::apply_layer;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
+use paulistrings::engine::sort_merge::apply_layer;
 use paulistrings::truncation::{CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase,
-    TruncationPolicy,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
 };
 
 const TOL: f64 = 1e-12;
@@ -145,7 +144,10 @@ fn apply_layer_pauli_rotation_pi_z_flips_x_sign() {
         }
     }
     assert!(approx_eq(found_x.unwrap(), Complex64::new(-1.0, 0.0)));
-    assert!(approx_eq(found_y.unwrap_or(Complex64::new(0.0, 0.0)), Complex64::new(0.0, 0.0)));
+    assert!(approx_eq(
+        found_y.unwrap_or(Complex64::new(0.0, 0.0)),
+        Complex64::new(0.0, 0.0)
+    ));
 }
 
 #[test]

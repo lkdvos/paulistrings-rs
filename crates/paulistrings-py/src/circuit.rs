@@ -71,9 +71,7 @@ impl Circuit {
         CircuitImpl::new_for(num_qubits)
             .map(|inner| Self { inner })
             .ok_or_else(|| {
-                PyValueError::new_err(
-                    "num_qubits exceeds largest monomorphized width (1024)",
-                )
+                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
             })
     }
 

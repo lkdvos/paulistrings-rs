@@ -71,14 +71,7 @@ where
         scan_phase(input, channel, &mut out_x, &mut out_z, &mut out_coeff)
     };
     sort_phase(&mut out_x, &mut out_z, &mut out_coeff, len);
-    let result = merge_phase::<W, T>(
-        &out_x,
-        &out_z,
-        &out_coeff,
-        len,
-        input.num_qubits(),
-        policy,
-    );
+    let result = merge_phase::<W, T>(&out_x, &out_z, &out_coeff, len, input.num_qubits(), policy);
     #[cfg(debug_assertions)]
     result.assert_invariants();
     result
@@ -182,9 +175,14 @@ pub(crate) fn scan_phase<const W: usize, C: Channel<W> + ?Sized>(
     out_z: &mut [[u64; W]],
     out_coeff: &mut [Complex64],
 ) -> usize {
-    scan_phase_with(input, channel, out_x, out_z, out_coeff, |c, x, z, co, out| {
-        c.apply(x, z, co, out)
-    })
+    scan_phase_with(
+        input,
+        channel,
+        out_x,
+        out_z,
+        out_coeff,
+        |c, x, z, co, out| c.apply(x, z, co, out),
+    )
 }
 
 /// Heisenberg scan: dispatches each input through `Channel::apply_adjoint`.
@@ -195,9 +193,14 @@ pub(crate) fn scan_phase_adjoint<const W: usize, C: Channel<W> + ?Sized>(
     out_z: &mut [[u64; W]],
     out_coeff: &mut [Complex64],
 ) -> usize {
-    scan_phase_with(input, channel, out_x, out_z, out_coeff, |c, x, z, co, out| {
-        c.apply_adjoint(x, z, co, out)
-    })
+    scan_phase_with(
+        input,
+        channel,
+        out_x,
+        out_z,
+        out_coeff,
+        |c, x, z, co, out| c.apply_adjoint(x, z, co, out),
+    )
 }
 
 /// Phase 2: stably sort the populated prefix `[0..len)` of the scratch
@@ -225,7 +228,9 @@ pub(crate) fn sort_phase<const W: usize>(
     // `[u64; W]`'s built-in `Ord` is lex over array elements, identical to
     // `PauliString::cmp`'s loop body.
     perm.sort_by(|&a, &b| {
-        out_x[a].cmp(&out_x[b]).then_with(|| out_z[a].cmp(&out_z[b]))
+        out_x[a]
+            .cmp(&out_x[b])
+            .then_with(|| out_z[a].cmp(&out_z[b]))
     });
     let new_x: Vec<[u64; W]> = perm.iter().map(|&i| out_x[i]).collect();
     let new_z: Vec<[u64; W]> = perm.iter().map(|&i| out_z[i]).collect();
@@ -396,8 +401,7 @@ fn align_chunk_boundaries<const W: usize>(
     for k in 1..nchunks {
         let mut t = (len * k) / nchunks;
         // Advance to the start of a fresh run (or to `len`).
-        while t > 0 && t < len && sorted_x[t] == sorted_x[t - 1] && sorted_z[t] == sorted_z[t - 1]
-        {
+        while t > 0 && t < len && sorted_x[t] == sorted_x[t - 1] && sorted_z[t] == sorted_z[t - 1] {
             t += 1;
         }
         bounds.push(t);
@@ -417,9 +421,7 @@ mod tests {
     const TOL: f64 = 1e-12;
 
     #[allow(clippy::type_complexity)]
-    fn alloc_bufs<const W: usize>(
-        n: usize,
-    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
+    fn alloc_bufs<const W: usize>(n: usize) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
         (
             vec![[0u64; W]; n],
             vec![[0u64; W]; n],
@@ -566,8 +568,7 @@ mod tests {
                 ));
             }
         }
-        let strings: Vec<(&str, Complex64)> =
-            owned.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        let strings: Vec<(&str, Complex64)> = owned.iter().map(|(s, c)| (s.as_str(), *c)).collect();
         let input = PauliSum::<1>::from_strings(&strings);
         let h = Clifford1Q::h(0);
         let policy = AlwaysKeep;
@@ -648,10 +649,10 @@ mod tests {
         let mut x: Vec<[u64; 1]> = vec![[0], [1], [0], [0]];
         let mut z: Vec<[u64; 1]> = vec![[1], [0], [1], [1]];
         let mut c: Vec<Complex64> = vec![
-            Complex64::new(1.0, 0.0), // Z (first)
+            Complex64::new(1.0, 0.0),  // Z (first)
             Complex64::new(99.0, 0.0), // X
-            Complex64::new(2.0, 0.0), // Z (second)
-            Complex64::new(3.0, 0.0), // Z (third)
+            Complex64::new(2.0, 0.0),  // Z (second)
+            Complex64::new(3.0, 0.0),  // Z (third)
         ];
         sort_phase(&mut x, &mut z, &mut c, 4);
         // Sorted order: Z, Z, Z, X. Z coeffs must come out in input order
@@ -800,10 +801,7 @@ mod tests {
     fn merge_phase_drops_below_threshold() {
         let x: Vec<[u64; 1]> = vec![[0], [1]]; // Z, then X
         let z: Vec<[u64; 1]> = vec![[1], [0]];
-        let c: Vec<Complex64> = vec![
-            Complex64::new(0.5, 0.0),
-            Complex64::new(1e-9, 0.0),
-        ];
+        let c: Vec<Complex64> = vec![Complex64::new(0.5, 0.0), Complex64::new(1e-9, 0.0)];
         let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
         assert_eq!(out.len(), 1);
         assert_eq!(out.x()[0], [0]);
@@ -820,10 +818,7 @@ mod tests {
     fn merge_phase_threshold_applied_after_summation() {
         let x: Vec<[u64; 1]> = vec![[0], [0]];
         let z: Vec<[u64; 1]> = vec![[1], [1]];
-        let c: Vec<Complex64> = vec![
-            Complex64::new(0.5, 0.0),
-            Complex64::new(-0.4999999, 0.0),
-        ];
+        let c: Vec<Complex64> = vec![Complex64::new(0.5, 0.0), Complex64::new(-0.4999999, 0.0)];
         let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
         assert_eq!(out.len(), 0);
         out.assert_invariants();

@@ -175,19 +175,31 @@ mod tests {
         let cut = WeightCutoff(2);
         // Identity: weight 0.
         assert!(<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[0], &[0], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         // X on q0: weight 1 (x bit set).
         assert!(<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[1], &[0], Complex64::new(1.0, 0.0)
+            &cut,
+            &[1],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         // X on q0, Z on q1: weight 2.
         assert!(<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[0b01], &[0b10], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0b01],
+            &[0b10],
+            Complex64::new(1.0, 0.0)
         ));
         // X on q0, Y on q1 (x+z), Z on q2: weight 3, dropped.
         assert!(!<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[0b011], &[0b110], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0b011],
+            &[0b110],
+            Complex64::new(1.0, 0.0)
         ));
     }
 
@@ -196,17 +208,29 @@ mod tests {
     fn weight_cutoff_zero_keeps_only_identity() {
         let cut = WeightCutoff(0);
         assert!(<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[0], &[0], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         // Any non-identity Pauli is dropped.
         assert!(!<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[1], &[0], Complex64::new(1.0, 0.0)
+            &cut,
+            &[1],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         assert!(!<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[0], &[1], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0],
+            &[1],
+            Complex64::new(1.0, 0.0)
         ));
         assert!(!<WeightCutoff as TruncationPolicy<1>>::keep_term(
-            &cut, &[1], &[1], Complex64::new(1.0, 0.0)
+            &cut,
+            &[1],
+            &[1],
+            Complex64::new(1.0, 0.0)
         ));
     }
 
@@ -216,11 +240,17 @@ mod tests {
         let cut = WeightCutoff(1);
         // X on qubit 64 alone: weight 1, kept.
         assert!(<WeightCutoff as TruncationPolicy<2>>::keep_term(
-            &cut, &[0u64, 1u64], &[0u64, 0u64], Complex64::new(1.0, 0.0)
+            &cut,
+            &[0u64, 1u64],
+            &[0u64, 0u64],
+            Complex64::new(1.0, 0.0)
         ));
         // X on qubit 0 AND X on qubit 64: weight 2, dropped.
         assert!(!<WeightCutoff as TruncationPolicy<2>>::keep_term(
-            &cut, &[1u64, 1u64], &[0u64, 0u64], Complex64::new(1.0, 0.0)
+            &cut,
+            &[1u64, 1u64],
+            &[0u64, 0u64],
+            Complex64::new(1.0, 0.0)
         ));
     }
 
@@ -329,15 +359,24 @@ mod tests {
         let policy = And(CoefficientThreshold(0.5), WeightCutoff(1));
         // (X, 1.0): |c|=1.0 > 0.5 ✓, weight=1 ≤ 1 ✓ → kept.
         assert!(<And<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[1], &[0], Complex64::new(1.0, 0.0)
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         // (X, 0.1): |c|=0.1 ≤ 0.5 ✗ → dropped.
         assert!(!<And<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[1], &[0], Complex64::new(0.1, 0.0)
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(0.1, 0.0)
         ));
         // (XZ, 1.0): weight 2 > 1 ✗ → dropped.
         assert!(!<And<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[0b01], &[0b10], Complex64::new(1.0, 0.0)
+            &policy,
+            &[0b01],
+            &[0b10],
+            Complex64::new(1.0, 0.0)
         ));
     }
 
@@ -347,15 +386,24 @@ mod tests {
         let policy = Or(CoefficientThreshold(0.5), WeightCutoff(0));
         // (I, 0.1): |c| fails (0.1 ≤ 0.5), but weight=0 passes → kept.
         assert!(<Or<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[0], &[0], Complex64::new(0.1, 0.0)
+            &policy,
+            &[0],
+            &[0],
+            Complex64::new(0.1, 0.0)
         ));
         // (X, 1.0): weight fails, but |c|=1.0 > 0.5 → kept.
         assert!(<Or<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[1], &[0], Complex64::new(1.0, 0.0)
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(1.0, 0.0)
         ));
         // (X, 0.1): both fail → dropped.
         assert!(!<Or<_, _> as TruncationPolicy<1>>::keep_term(
-            &policy, &[1], &[0], Complex64::new(0.1, 0.0)
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(0.1, 0.0)
         ));
     }
 }

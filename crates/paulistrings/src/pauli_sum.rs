@@ -296,10 +296,7 @@ impl<const W: usize> PauliSum<W> {
                         z[word] |= bit;
                         phase += Phase::I;
                     }
-                    other => panic!(
-                        "unexpected Pauli char {:?} (expected I/X/Y/Z)",
-                        other
-                    ),
+                    other => panic!("unexpected Pauli char {:?} (expected I/X/Y/Z)", other),
                 }
             }
             let p = PauliString::<W> { x, z };
@@ -738,10 +735,7 @@ mod tests {
         };
         let r = a.add(&b);
         assert_eq!(r.len(), 3);
-        assert_eq!(
-            r.x(),
-            &[[0u64, 1u64], [0u64, 2u64], [0u64, 4u64]][..]
-        );
+        assert_eq!(r.x(), &[[0u64, 1u64], [0u64, 2u64], [0u64, 4u64]][..]);
         assert_eq!(r.coeff()[0], Complex64::new(1.5, 0.0));
         assert_eq!(r.coeff()[1], Complex64::new(2.0, 0.0));
         assert_eq!(r.coeff()[2], Complex64::new(7.0, 0.0));

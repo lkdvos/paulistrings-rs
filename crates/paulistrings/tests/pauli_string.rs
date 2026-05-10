@@ -288,12 +288,12 @@ mod props {
     use proptest::prelude::*;
 
     fn arb_pauli_w2() -> impl Strategy<Value = PauliString<2>> {
-        (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>()).prop_map(
-            |(x0, x1, z0, z1)| PauliString::<2> {
+        (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>()).prop_map(|(x0, x1, z0, z1)| {
+            PauliString::<2> {
                 x: [x0, x1],
                 z: [z0, z1],
-            },
-        )
+            }
+        })
     }
 
     proptest! {

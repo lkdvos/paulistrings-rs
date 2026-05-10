@@ -92,10 +92,7 @@ impl PauliSumImpl {
 
     /// Build from a `{pauli_string: coefficient}` Python dict at the requested
     /// width. The width must already match `num_qubits` (caller's job).
-    pub fn from_strings_dict(
-        num_qubits: usize,
-        terms: &Bound<'_, PyDict>,
-    ) -> PyResult<Self> {
+    pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
         // The match arms call into the generic helper, which monomorphizes
         // the parser per width. Slice 10.2 will replace this match with a
         // macro that also covers from_strings, propagate, etc.
@@ -123,9 +120,9 @@ fn parse_terms<const W: usize>(
 ) -> PyResult<CorePauliSum<W>> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, terms.len());
     for (key, val) in terms.iter() {
-        let s: String = key.extract().map_err(|_| {
-            PyTypeError::new_err("PauliSum.from_strings keys must be str")
-        })?;
+        let s: String = key
+            .extract()
+            .map_err(|_| PyTypeError::new_err("PauliSum.from_strings keys must be str"))?;
         if s.len() != num_qubits {
             return Err(PyValueError::new_err(format!(
                 "Pauli string {:?} has length {}, expected {} (length must match num_qubits)",
@@ -189,9 +186,7 @@ impl PauliSum {
         PauliSumImpl::empty_for(num_qubits)
             .map(|inner| Self { inner })
             .ok_or_else(|| {
-                PyValueError::new_err(
-                    "num_qubits exceeds largest monomorphized width (1024)",
-                )
+                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
             })
     }
 
@@ -221,10 +216,7 @@ impl PauliSum {
     }
 
     /// Snapshot of the coefficient column as a 1-D NumPy `complex128` array.
-    fn coefficients_array<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> Bound<'py, PyArray1<Complex64>> {
+    fn coefficients_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<Complex64>> {
         self.inner.coeffs().into_pyarray_bound(py)
     }
 

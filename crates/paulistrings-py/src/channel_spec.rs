@@ -42,9 +42,7 @@ impl ChannelSpec {
             Self::X { qubit } => circuit.push(Clifford1Q::x(qubit)),
             Self::Y { qubit } => circuit.push(Clifford1Q::y(qubit)),
             Self::Z { qubit } => circuit.push(Clifford1Q::z(qubit)),
-            Self::Cnot { control, target } => {
-                circuit.push(Clifford2Q::cnot(control, target))
-            }
+            Self::Cnot { control, target } => circuit.push(Clifford2Q::cnot(control, target)),
             Self::Cz { q0, q1 } => circuit.push(Clifford2Q::cz(q0, q1)),
             Self::Swap { q0, q1 } => circuit.push(Clifford2Q::swap(q0, q1)),
             Self::Rz { theta, qubit } => {

@@ -16,7 +16,8 @@
 //! (`mul_assign`) via `iter_batched`.
 
 use criterion::{
-    criterion_group, criterion_main, AxisScale, BatchSize, BenchmarkId, Criterion, PlotConfiguration, Throughput,
+    criterion_group, criterion_main, AxisScale, BatchSize, BenchmarkId, Criterion,
+    PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
@@ -177,5 +178,10 @@ fn bench_apply_layer(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_mul_assign, bench_pauli_sum_add, bench_apply_layer);
+criterion_group!(
+    benches,
+    bench_mul_assign,
+    bench_pauli_sum_add,
+    bench_apply_layer
+);
 criterion_main!(benches);

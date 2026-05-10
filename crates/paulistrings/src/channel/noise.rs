@@ -200,7 +200,10 @@ mod tests {
     /// rescaling does not touch the I sector.
     #[test]
     fn depolarizing_passes_identity_through() {
-        let ch = Depolarizing { support: [0], p: 0.1 };
+        let ch = Depolarizing {
+            support: [0],
+            p: 0.1,
+        };
         let p = PauliString::<1>::identity();
         let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
         let mut buf = OutputBuffer::<1> {
@@ -222,7 +225,11 @@ mod tests {
         let p = 0.15;
         let ch = Depolarizing { support: [0], p };
         let scale = 1.0 - 4.0 * p / 3.0;
-        for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0), PauliString::<1>::z(0)] {
+        for pauli in [
+            PauliString::<1>::x(0),
+            PauliString::<1>::y(0),
+            PauliString::<1>::z(0),
+        ] {
             let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
             let mut buf = OutputBuffer::<1> {
                 x: &mut bx,
@@ -249,7 +256,10 @@ mod tests {
     /// qubit is in I-state).
     #[test]
     fn depolarizing_off_support_is_no_op() {
-        let ch = Depolarizing { support: [0], p: 0.2 };
+        let ch = Depolarizing {
+            support: [0],
+            p: 0.2,
+        };
         let p = PauliString::<1>::z(1);
         let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
         let mut buf = OutputBuffer::<1> {
@@ -295,7 +305,10 @@ mod tests {
     /// I and Z commute with Z, so dephasing leaves their coefficients alone.
     #[test]
     fn dephasing_preserves_i_and_z() {
-        let ch = Dephasing { support: [0], p: 0.3 };
+        let ch = Dephasing {
+            support: [0],
+            p: 0.3,
+        };
         for pauli in [PauliString::<1>::identity(), PauliString::<1>::z(0)] {
             let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
             let mut buf = OutputBuffer::<1> {
@@ -375,7 +388,10 @@ mod tests {
     /// preserved).
     #[test]
     fn amplitude_damping_passes_identity_through() {
-        let ch = AmplitudeDamping { support: [0], gamma: 0.3 };
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma: 0.3,
+        };
         let p = PauliString::<1>::identity();
         let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
         let mut buf = OutputBuffer::<1> {
@@ -401,7 +417,10 @@ mod tests {
     #[test]
     fn amplitude_damping_scales_x_and_y_by_sqrt() {
         let gamma = 0.2;
-        let ch = AmplitudeDamping { support: [0], gamma };
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma,
+        };
         let scale = (1.0 - gamma).sqrt();
         for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
             let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
@@ -431,7 +450,10 @@ mod tests {
     #[test]
     fn amplitude_damping_z_fans_out_to_z_plus_i() {
         let gamma = 0.25;
-        let ch = AmplitudeDamping { support: [0], gamma };
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma,
+        };
         let p = PauliString::<1>::z(0);
         let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
         let mut buf = OutputBuffer::<1> {
@@ -464,7 +486,10 @@ mod tests {
     #[test]
     fn amplitude_damping_w2_word_boundary() {
         let gamma = 0.4;
-        let ch = AmplitudeDamping { support: [64], gamma };
+        let ch = AmplitudeDamping {
+            support: [64],
+            gamma,
+        };
         let p = PauliString::<2>::z(64);
         let (mut bx, mut bz, mut bc, mut len) = make_buf::<2>(2);
         let mut buf = OutputBuffer::<2> {

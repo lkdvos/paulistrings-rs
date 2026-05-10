@@ -46,12 +46,7 @@ impl<'a, const W: usize> TruncationPolicy<W> for SpecPolicy<'a, W> {
 }
 
 #[inline]
-fn keep_spec<const W: usize>(
-    spec: &PolicySpec,
-    x: &[u64; W],
-    z: &[u64; W],
-    c: Complex64,
-) -> bool {
+fn keep_spec<const W: usize>(spec: &PolicySpec, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
     match spec {
         PolicySpec::Coeff(eps) => c.norm() > *eps,
         PolicySpec::Weight(k) => {

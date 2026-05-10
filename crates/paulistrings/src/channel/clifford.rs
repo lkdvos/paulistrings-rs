@@ -255,10 +255,10 @@ impl Clifford2Q {
         for idx in 0..16usize {
             // Decompose the input across the four generators.
             let bits = [
-                (idx & 1) as u8,         // x0
-                ((idx >> 1) & 1) as u8,  // z0
-                ((idx >> 2) & 1) as u8,  // x1
-                ((idx >> 3) & 1) as u8,  // z1
+                (idx & 1) as u8,        // x0
+                ((idx >> 1) & 1) as u8, // z0
+                ((idx >> 2) & 1) as u8, // x1
+                ((idx >> 3) & 1) as u8, // z1
             ];
 
             // Multiply the four generator images in X₀ Z₀ X₁ Z₁ order.
@@ -273,10 +273,7 @@ impl Clifford2Q {
             for (b, (img, ph)) in bits.iter().zip(gens.iter()) {
                 if *b == 1 {
                     let (gx, gz) = unpack4_to_word(*img);
-                    let mut acc = crate::pauli_string::PauliString::<1> {
-                        x: acc_x,
-                        z: acc_z,
-                    };
+                    let mut acc = crate::pauli_string::PauliString::<1> { x: acc_x, z: acc_z };
                     let other = crate::pauli_string::PauliString::<1> { x: gx, z: gz };
                     let mul_phase = acc.mul_assign(&other);
                     acc_x = acc.x;
@@ -566,7 +563,11 @@ mod tests {
             let (mid, c1) = apply_1q::<1>(&h, &input);
             let (out, c2) = apply_1q::<1>(&h, &mid);
             assert_eq!(out, input, "H·H should be identity on {:?}", input);
-            assert_eq!(c1 * c2, Complex64::new(1.0, 0.0), "phase should square to +1");
+            assert_eq!(
+                c1 * c2,
+                Complex64::new(1.0, 0.0),
+                "phase should square to +1"
+            );
         }
     }
 
@@ -752,7 +753,8 @@ mod tests {
                     got_c,
                     exp_phase.to_complex(),
                     "CNOT phase mismatch on (pa={}, pb={})",
-                    pa, pb
+                    pa,
+                    pb
                 );
             }
         }

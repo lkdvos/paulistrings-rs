@@ -81,11 +81,8 @@ impl<const W: usize> BuildAccumulator<W> {
     /// coefficient is exactly `0+0i` are dropped.
     pub fn finalize(self) -> PauliSum<W> {
         let zero = Complex64::new(0.0, 0.0);
-        let mut entries: Vec<(PauliString<W>, Complex64)> = self
-            .map
-            .into_iter()
-            .filter(|(_, c)| *c != zero)
-            .collect();
+        let mut entries: Vec<(PauliString<W>, Complex64)> =
+            self.map.into_iter().filter(|(_, c)| *c != zero).collect();
         entries.sort_by(|a, b| (&a.0.x, &a.0.z).cmp(&(&b.0.x, &b.0.z)));
         let n = entries.len();
         let mut x = Vec::with_capacity(n);
@@ -203,9 +200,17 @@ mod tests {
     #[test]
     fn finalize_w2_across_word_boundary() {
         let mut acc = BuildAccumulator::<2>::new(128);
-        acc.add_term(PauliString::<2>::x(64), Phase::ONE, Complex64::new(1.0, 0.0));
+        acc.add_term(
+            PauliString::<2>::x(64),
+            Phase::ONE,
+            Complex64::new(1.0, 0.0),
+        );
         acc.add_term(PauliString::<2>::x(0), Phase::ONE, Complex64::new(2.0, 0.0));
-        acc.add_term(PauliString::<2>::z(127), Phase::ONE, Complex64::new(3.0, 0.0));
+        acc.add_term(
+            PauliString::<2>::z(127),
+            Phase::ONE,
+            Complex64::new(3.0, 0.0),
+        );
         let s = acc.finalize();
         assert_eq!(s.len(), 3);
         s.assert_invariants();

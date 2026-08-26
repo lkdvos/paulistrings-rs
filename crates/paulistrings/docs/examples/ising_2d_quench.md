@@ -128,22 +128,27 @@ For a single-qubit Pauli `P`, `⟨+|P|+⟩` equals `1` when `P ∈ {I, X}` and
 ```
 
 So the expectation value is the sum of `Re(coeff)` over `PauliSum` terms
-whose `z`-bitmask is zero — a linear-time pass over the output sum.
+whose `z`-bitmask is zero — a linear-time pass over the output sum. That is
+exactly [`ProductState::XPlus`](crate::ProductState), so it is one call:
 
 ```rust,no_run
-use paulistrings::PauliSum;
+use paulistrings::{PauliSum, ProductState};
 
 fn expectation_plus_state(sum: &PauliSum<1>) -> f64 {
-    let zero = [0u64];
-    let mut total = 0.0;
-    for i in 0..sum.len() {
-        if sum.z()[i] == zero {
-            total += sum.coeff()[i].re;
-        }
-    }
-    total
+    // The observable is Hermitian, so the imaginary part is zero.
+    sum.expectation_product_state(ProductState::XPlus).re
 }
 ```
+
+The other two uniform product states work the same way:
+[`ZPlus`](crate::ProductState::ZPlus) for `|0…0⟩` (keep terms with no `x` bits)
+and [`YPlus`](crate::ProductState::YPlus) for `|+i…+i⟩` (keep terms whose `x` and
+`z` words agree, i.e. every factor is `I` or `Y`). For an observable against a
+state that is itself a Pauli sum, use
+[`PauliSum::overlap`](crate::PauliSum::overlap) instead.
+
+Until v0.2 B.10 this had to be hand-rolled against the raw SoA columns, because
+the crate exposed no expectation-value API at all.
 
 ## Putting it together
 

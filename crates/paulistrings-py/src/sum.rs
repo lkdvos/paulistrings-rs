@@ -8,7 +8,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
-use paulistrings::{propagate, Direction, PauliSum as CorePauliSum};
+use paulistrings::{propagate, Direction, PauliSum as CorePauliSum, ProductState};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict};
@@ -54,6 +54,39 @@ impl PauliSumImpl {
             Self::W4(s) => s.len(),
             Self::W8(s) => s.len(),
             Self::W16(s) => s.len(),
+        }
+    }
+
+    pub fn expectation(&self, state: ProductState) -> Complex64 {
+        match self {
+            Self::W1(s) => s.expectation_product_state(state),
+            Self::W2(s) => s.expectation_product_state(state),
+            Self::W4(s) => s.expectation_product_state(state),
+            Self::W8(s) => s.expectation_product_state(state),
+            Self::W16(s) => s.expectation_product_state(state),
+        }
+    }
+
+    pub fn identity_coefficient(&self) -> Complex64 {
+        match self {
+            Self::W1(s) => s.identity_coefficient(),
+            Self::W2(s) => s.identity_coefficient(),
+            Self::W4(s) => s.identity_coefficient(),
+            Self::W8(s) => s.identity_coefficient(),
+            Self::W16(s) => s.identity_coefficient(),
+        }
+    }
+
+    /// `None` when the two sums were monomorphized at different widths, which
+    /// can only happen if their qubit counts fall in different dispatch bands.
+    pub fn overlap(&self, other: &Self) -> Option<Complex64> {
+        match (self, other) {
+            (Self::W1(a), Self::W1(b)) => Some(a.overlap(b)),
+            (Self::W2(a), Self::W2(b)) => Some(a.overlap(b)),
+            (Self::W4(a), Self::W4(b)) => Some(a.overlap(b)),
+            (Self::W8(a), Self::W8(b)) => Some(a.overlap(b)),
+            (Self::W16(a), Self::W16(b)) => Some(a.overlap(b)),
+            _ => None,
         }
     }
 
@@ -213,6 +246,47 @@ impl PauliSum {
     /// Snapshot of the coefficient column as a list of Python complex values.
     fn coefficients(&self) -> Vec<Complex64> {
         self.inner.coeffs()
+    }
+
+    /// Expectation value in a uniform single-qubit product state.
+    ///
+    /// `state` is one of `"x+"` (`|+...+>`), `"y+"` (`|+i...+i>`) or `"z+"`
+    /// (`|0...0>`) — each the `+1` eigenstate of that Pauli on every qubit.
+    /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    #[pyo3(signature = (state="x+"))]
+    fn expectation(&self, state: &str) -> PyResult<Complex64> {
+        let st = match state {
+            "x+" | "X+" => ProductState::XPlus,
+            "y+" | "Y+" => ProductState::YPlus,
+            "z+" | "Z+" => ProductState::ZPlus,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown product state {other:?}; expected \"x+\", \"y+\" or \"z+\"",
+                )))
+            }
+        };
+        Ok(self.inner.expectation(st))
+    }
+
+    /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.
+    ///
+    /// On the Pauli basis this is `sum(conj(a_i) * b_i)` over shared keys.
+    fn overlap(&self, other: &Self) -> PyResult<Complex64> {
+        if self.inner.num_qubits() != other.inner.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "overlap: num_qubits mismatch ({} vs {})",
+                self.inner.num_qubits(),
+                other.inner.num_qubits(),
+            )));
+        }
+        self.inner.overlap(&other.inner).ok_or_else(|| {
+            PyValueError::new_err("overlap: sums were monomorphized at different widths")
+        })
+    }
+
+    /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
+    fn identity_coefficient(&self) -> Complex64 {
+        self.inner.identity_coefficient()
     }
 
     /// Snapshot of the coefficient column as a 1-D NumPy `complex128` array.

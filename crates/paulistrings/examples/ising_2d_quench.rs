@@ -23,7 +23,9 @@ use std::time::Instant;
 use num_complex::Complex64;
 use paulistrings::channel::PauliRotation;
 use paulistrings::truncation::{And, CoefficientThreshold, TopN};
-use paulistrings::{propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase};
+use paulistrings::{
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, ProductState,
+};
 
 /// Ising couplings: H = -J · ΣZZ - h · ΣX.
 const J: f64 = 1.0;
@@ -89,17 +91,14 @@ fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
 ///
 /// `|+⟩^⊗N` is a `+1` eigenstate of every single-qubit `X`, so
 /// `⟨+...+| P |+...+⟩` is `1` when every single-qubit factor of `P` is
-/// either `I` or `X` (i.e. the term's `z`-part is all zero) and `0`
-/// otherwise. The expectation is then `Σ Re(coeff)` over those terms.
+/// either `I` or `X` and `0` otherwise. That is exactly
+/// [`ProductState::XPlus`]; the observable is Hermitian here, so the
+/// imaginary part is zero and we take `.re`.
+///
+/// This used to be hand-rolled against the raw SoA columns, because the crate
+/// had no expectation-value API. It does as of v0.2 B.10.
 fn expectation_plus_state(sum: &PauliSum<1>) -> f64 {
-    let zero = [0u64];
-    let mut total = 0.0;
-    for i in 0..sum.len() {
-        if sum.z()[i] == zero {
-            total += sum.coeff()[i].re;
-        }
-    }
-    total
+    sum.expectation_product_state(ProductState::XPlus).re
 }
 
 /// Drive a single quench: returns the `(t, m_x)` time series.

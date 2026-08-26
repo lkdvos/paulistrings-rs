@@ -116,6 +116,6 @@ pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::{propagate, Direction};
 pub use pauli_string::PauliString;
-pub use pauli_sum::PauliSum;
+pub use pauli_sum::{PauliSum, ProductState};
 pub use phase::Phase;
 pub use truncation::TruncationPolicy;

@@ -43,8 +43,25 @@
 #![allow(unused)]
 
 use num_complex::Complex64;
+use std::cmp::Ordering;
 
 use crate::pauli_string::PauliString;
+
+/// A uniform single-qubit product state, for
+/// [`PauliSum::expectation_product_state`].
+///
+/// Each variant names the single-qubit Pauli whose `+1` eigenstate is taken on
+/// every qubit. These are the states quench experiments actually start from, and
+/// each one makes the expectation a masked scan rather than a simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductState {
+    /// `|+…+⟩`, the `+1` eigenstate of `X` on every qubit.
+    XPlus,
+    /// `|+i…+i⟩`, the `+1` eigenstate of `Y` on every qubit.
+    YPlus,
+    /// `|0…0⟩`, the `+1` eigenstate of `Z` on every qubit.
+    ZPlus,
+}
 
 /// Weighted sum of Pauli operators, stored SoA, sorted and deduplicated.
 #[derive(Clone, Debug, Default)]
@@ -232,6 +249,112 @@ impl<const W: usize> PauliSum<W> {
         self.coeff.truncate(w);
     }
 
+    /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
+    ///
+    /// The Pauli basis is orthogonal under the trace, so every non-identity term
+    /// is traceless and only this one contributes.
+    pub fn identity_coefficient(&self) -> Complex64 {
+        let zero_key = [0u64; W];
+        match self.find(&zero_key, &zero_key) {
+            Ok(i) => self.coeff[i],
+            Err(_) => Complex64::new(0.0, 0.0),
+        }
+    }
+
+    /// Hilbert-Schmidt overlap `tr(self† · other) / 2^n`.
+    ///
+    /// Because `tr(P† Q) = 2^n δ_{PQ}` on the Pauli basis, this is just
+    /// `Σ conj(a_i) · b_i` over the keys the two sums share — a single linear
+    /// merge over two sorted columns, `O(n + m)`.
+    ///
+    /// Use it to read a number out of a propagated operator: with `self` an
+    /// observable and `other` a density matrix in the Pauli basis, this is the
+    /// expectation value.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the two sums disagree about `num_qubits`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use num_complex::Complex64;
+    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
+    ///
+    /// let mut a = BuildAccumulator::<1>::with_capacity(4, 1);
+    /// a.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(2.0, 0.0));
+    /// let a = a.finalize();
+    ///
+    /// // Overlap with itself is the squared norm.
+    /// assert!((a.overlap(&a) - Complex64::new(4.0, 0.0)).norm() < 1e-12);
+    /// ```
+    pub fn overlap(&self, other: &Self) -> Complex64 {
+        debug_assert_eq!(
+            self.num_qubits, other.num_qubits,
+            "PauliSum::overlap: num_qubits mismatch",
+        );
+        let mut acc = Complex64::new(0.0, 0.0);
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < self.coeff.len() && j < other.coeff.len() {
+            match (&self.x[i], &self.z[i]).cmp(&(&other.x[j], &other.z[j])) {
+                Ordering::Less => i += 1,
+                Ordering::Greater => j += 1,
+                Ordering::Equal => {
+                    acc += self.coeff[i].conj() * other.coeff[j];
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        acc
+    }
+
+    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state.
+    ///
+    /// For each [`ProductState`] there is exactly one single-qubit Pauli with
+    /// expectation `1`; the others have expectation `0`. A Pauli string therefore
+    /// contributes iff every one of its factors is either `I` or that Pauli, in
+    /// which case it contributes its full coefficient. So this is a single masked
+    /// scan over the key columns, with no per-term algebra.
+    ///
+    /// Returns `Complex64` rather than `f64` because `self` need not be
+    /// Hermitian; take `.re` when it is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use num_complex::Complex64;
+    /// use paulistrings::pauli_sum::ProductState;
+    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
+    ///
+    /// let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
+    /// acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    /// acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(5.0, 0.0));
+    /// let sum = acc.finalize();
+    ///
+    /// // In |+...+>, <X> = 1 and <Z> = 0.
+    /// let e = sum.expectation_product_state(ProductState::XPlus);
+    /// assert!((e - Complex64::new(1.0, 0.0)).norm() < 1e-12);
+    /// ```
+    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
+        let mut acc = Complex64::new(0.0, 0.0);
+        for i in 0..self.coeff.len() {
+            let contributes = match state {
+                // |+>^n: every factor must be I or X, i.e. no z bits.
+                ProductState::XPlus => self.z[i] == [0u64; W],
+                // |0>^n: every factor must be I or Z, i.e. no x bits.
+                ProductState::ZPlus => self.x[i] == [0u64; W],
+                // |+i>^n: every factor must be I=(0,0) or Y=(1,1), i.e. the x
+                // and z words agree bit for bit.
+                ProductState::YPlus => self.x[i] == self.z[i],
+            };
+            if contributes {
+                acc += self.coeff[i];
+            }
+        }
+        acc
+    }
+
     /// Debug-only invariant check. No-op in release builds.
     #[cfg(debug_assertions)]
     pub fn assert_invariants(&self) {
@@ -309,6 +432,211 @@ impl<const W: usize> PauliSum<W> {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+
+    // ---- overlap / expectation (v0.2 B.10) ----
+    //
+    // Before this there was no way to get a *number* out of a propagated sum:
+    // examples/ising_2d_quench.rs hand-rolled its own observable against the raw
+    // SoA columns, a gap CLAUDE.md flagged.
+
+    fn b10_build<const W: usize>(
+        num_qubits: usize,
+        terms: &[(PauliString<W>, Complex64)],
+    ) -> PauliSum<W> {
+        let mut acc =
+            crate::accumulator::BuildAccumulator::<W>::with_capacity(num_qubits, terms.len());
+        for &(pp, c) in terms {
+            acc.add_term(pp, crate::phase::Phase::ONE, c);
+        }
+        acc.finalize()
+    }
+
+    #[test]
+    fn overlap_with_self_is_the_squared_norm() {
+        let a = b10_build::<1>(
+            8,
+            &[
+                (PauliString::<1>::x(0), Complex64::new(2.0, 0.0)),
+                (PauliString::<1>::z(3), Complex64::new(0.0, 3.0)),
+            ],
+        );
+        assert!((a.overlap(&a) - Complex64::new(13.0, 0.0)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn overlap_is_conjugate_symmetric() {
+        let a = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(1.0, 2.0))]);
+        let b = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(3.0, -1.0))]);
+        let ab = a.overlap(&b);
+        let ba = b.overlap(&a);
+        assert!((ab - ba.conj()).norm() < 1e-12, "{ab} vs conj({ba})");
+    }
+
+    #[test]
+    fn overlap_of_disjoint_supports_is_zero() {
+        let a = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
+        let b = b10_build::<1>(8, &[(PauliString::<1>::z(5), Complex64::new(1.0, 0.0))]);
+        assert!(a.overlap(&b).norm() < 1e-12);
+    }
+
+    #[test]
+    fn overlap_only_counts_shared_keys() {
+        let a = b10_build::<1>(
+            8,
+            &[
+                (PauliString::<1>::x(0), Complex64::new(2.0, 0.0)),
+                (PauliString::<1>::y(1), Complex64::new(5.0, 0.0)),
+            ],
+        );
+        let b = b10_build::<1>(
+            8,
+            &[
+                (PauliString::<1>::x(0), Complex64::new(3.0, 0.0)),
+                (PauliString::<1>::z(2), Complex64::new(7.0, 0.0)),
+            ],
+        );
+        assert!((a.overlap(&b) - Complex64::new(6.0, 0.0)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn overlap_handles_an_empty_operand() {
+        let a = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
+        let empty = PauliSum::<1>::empty(8);
+        assert!(a.overlap(&empty).norm() < 1e-12);
+        assert!(empty.overlap(&a).norm() < 1e-12);
+    }
+
+    #[test]
+    fn overlap_across_a_word_boundary_w2() {
+        let a = b10_build::<2>(
+            128,
+            &[
+                (PauliString::<2>::x(3), Complex64::new(1.0, 0.0)),
+                (PauliString::<2>::z(70), Complex64::new(2.0, 0.0)),
+            ],
+        );
+        let b = b10_build::<2>(128, &[(PauliString::<2>::z(70), Complex64::new(4.0, 0.0))]);
+        assert!((a.overlap(&b) - Complex64::new(8.0, 0.0)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn identity_coefficient_picks_out_the_trace() {
+        let a = b10_build::<1>(
+            8,
+            &[
+                (PauliString::<1>::identity(), Complex64::new(1.5, 0.0)),
+                (PauliString::<1>::x(0), Complex64::new(9.0, 0.0)),
+            ],
+        );
+        assert!((a.identity_coefficient() - Complex64::new(1.5, 0.0)).norm() < 1e-12);
+        let b = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(9.0, 0.0))]);
+        assert!(b.identity_coefficient().norm() < 1e-12);
+    }
+
+    #[test]
+    fn expectation_of_single_paulis_in_each_product_state() {
+        let cases = [
+            (PauliString::<1>::identity(), 1.0, 1.0, 1.0),
+            (PauliString::<1>::x(0), 1.0, 0.0, 0.0),
+            (PauliString::<1>::y(0), 0.0, 1.0, 0.0),
+            (PauliString::<1>::z(0), 0.0, 0.0, 1.0),
+        ];
+        for (pp, ex, ey, ez) in cases {
+            let s = b10_build::<1>(8, &[(pp, Complex64::new(1.0, 0.0))]);
+            assert!(
+                (s.expectation_product_state(ProductState::XPlus).re - ex).abs() < 1e-12,
+                "XPlus for {pp:?}",
+            );
+            assert!(
+                (s.expectation_product_state(ProductState::YPlus).re - ey).abs() < 1e-12,
+                "YPlus for {pp:?}",
+            );
+            assert!(
+                (s.expectation_product_state(ProductState::ZPlus).re - ez).abs() < 1e-12,
+                "ZPlus for {pp:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn expectation_of_multi_qubit_products() {
+        let mut xx = PauliString::<1>::x(0);
+        xx.mul_assign(&PauliString::<1>::x(1));
+        let mut xz = PauliString::<1>::x(0);
+        xz.mul_assign(&PauliString::<1>::z(1));
+        let mut yy = PauliString::<1>::y(0);
+        yy.mul_assign(&PauliString::<1>::y(1));
+
+        let s = b10_build::<1>(
+            8,
+            &[
+                (xx, Complex64::new(1.0, 0.0)),
+                (xz, Complex64::new(10.0, 0.0)),
+                (yy, Complex64::new(100.0, 0.0)),
+            ],
+        );
+        assert!((s.expectation_product_state(ProductState::XPlus).re - 1.0).abs() < 1e-12);
+        assert!((s.expectation_product_state(ProductState::YPlus).re - 100.0).abs() < 1e-12);
+        assert!(s.expectation_product_state(ProductState::ZPlus).re.abs() < 1e-12);
+    }
+
+    #[test]
+    fn expectation_is_linear_and_keeps_the_imaginary_part() {
+        let s = b10_build::<1>(
+            8,
+            &[
+                (PauliString::<1>::x(0), Complex64::new(1.0, 2.0)),
+                (PauliString::<1>::x(1), Complex64::new(3.0, -5.0)),
+            ],
+        );
+        let e = s.expectation_product_state(ProductState::XPlus);
+        assert!((e - Complex64::new(4.0, -3.0)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn expectation_across_a_word_boundary_w2() {
+        let s = b10_build::<2>(
+            128,
+            &[
+                (PauliString::<2>::x(70), Complex64::new(2.0, 0.0)),
+                (PauliString::<2>::z(70), Complex64::new(9.0, 0.0)),
+            ],
+        );
+        assert!((s.expectation_product_state(ProductState::XPlus).re - 2.0).abs() < 1e-12);
+        assert!((s.expectation_product_state(ProductState::ZPlus).re - 9.0).abs() < 1e-12);
+    }
+
+    /// The new API must reproduce the observable
+    /// `examples/ising_2d_quench.rs` hand-rolled, which is why it exists.
+    #[test]
+    fn expectation_xplus_matches_the_hand_rolled_reference() {
+        let mut rng = 0x2468u64 | 1;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut acc = crate::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
+        for _ in 0..500 {
+            let pp = PauliString::<1> {
+                x: [next() & 0xFFFF],
+                z: [next() & 0xFFFF],
+            };
+            let c = Complex64::new((next() as i64 as f64) / (i64::MAX as f64), 0.0);
+            acc.add_term(pp, crate::phase::Phase::ONE, c);
+        }
+        let sum = acc.finalize();
+
+        let mut want = 0.0f64;
+        for i in 0..sum.len() {
+            if sum.z()[i] == [0u64] {
+                want += sum.coeff()[i].re;
+            }
+        }
+        let got = sum.expectation_product_state(ProductState::XPlus).re;
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+    }
 
     #[test]
     fn assert_invariants_accepts_bits_within_num_qubits() {

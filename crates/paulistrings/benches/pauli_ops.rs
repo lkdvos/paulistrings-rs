@@ -1,33 +1,51 @@
 //! Criterion microbenches for the hot ops on the propagation path.
 //!
-//! Slice 11.1 in `research/plans/2026-04-30-v0.1-tdd-slices.md`. The goal is
-//! to lock in baseline numbers for the three operations that dominate a layer
-//! of propagation:
+//! Baseline surface for the v0.2 engine rewrite
+//! (`research/plans/2026-08-26-v0.2-tdd-slices.md`, slice A.2). v0.1 slice 11.1
+//! established only three benches; that covered exactly one point of the layer
+//! cost surface — `Clifford1Q::h`, which is fanout-1 and key-bijective, i.e. the
+//! *worst* case for the sort phase and the *best* case for the merge phase.
+//!
+//! What is measured here:
 //!
 //!   * `PauliString::mul_assign` — single-term multiplication (W ∈ {1, 2}).
-//!   * `PauliSum::add` — sorted merge of two SoA sums (N ∈ {10⁴, 10⁶}).
-//!   * `apply_layer` — full scan → sort → merge engine pass under a
-//!     fanout-1 Clifford (N ∈ {10⁴, 10⁶}).
+//!   * `PauliSum::add` — sorted merge of two SoA sums (N ∈ {10⁴, 10⁶}). This is
+//!     the useful reference point for `apply_layer`: a full two-pointer merge of
+//!     the same payload, with allocation, and no sort.
+//!   * `apply_layer` across the four structurally distinct channel classes
+//!     (see `apply_layer` group below), each in both the monomorphized and the
+//!     `dyn`-erased calling convention.
+//!   * `apply_layer` on dense vs low-weight inputs — the two occupancy regimes,
+//!     which matter for any support- or hash-derived bucketing.
+//!   * `propagate` over a multi-channel Trotter-shaped circuit, which is the
+//!     shape real workloads have (`examples/ising_2d_quench.rs` is 108 channels
+//!     per step).
+//!   * Thread scaling of one layer at 1/2/4/8/16/32 threads. v0.1 §9 claims
+//!     "near-linear scaling up to the memory bandwidth limit" and nothing in the
+//!     repo ever tested it.
 //!
 //! Inputs are built with a seeded `Xs64` xorshift so timings are reproducible
 //! across machines. Setup runs outside the timed region via
 //! `bench_with_input` / cached owned inputs; the bench body either reads the
-//! pre-built data (`add`, `apply_layer`) or clones a fresh mutable copy
-//! (`mul_assign`) via `iter_batched`.
+//! pre-built data or clones a fresh mutable copy via `iter_batched`.
 
+use criterion::measurement::WallTime;
 use criterion::{
-    criterion_group, criterion_main, AxisScale, BatchSize, BenchmarkId, Criterion,
+    criterion_group, criterion_main, AxisScale, BatchSize, BenchmarkGroup, BenchmarkId, Criterion,
     PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
-use paulistrings::channel::Clifford1Q;
+use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, Depolarizing, PauliRotation};
+use paulistrings::circuit::Circuit;
 use paulistrings::engine::sort_merge::apply_layer;
+use paulistrings::engine::{propagate, Direction};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::pauli_sum::PauliSum;
 use paulistrings::phase::Phase;
 use paulistrings::truncation::TruncationPolicy;
 use std::hint::black_box;
+use std::time::Duration;
 
 /// Xorshift64* — small, deterministic, no dev-dep.
 struct Xs64(u64);
@@ -68,9 +86,41 @@ fn random_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
     }
 }
 
+/// A Pauli string of Hamming weight `weight` over `num_qubits` qubits.
+///
+/// This is the *realistic* occupancy regime: physical Hamiltonians are
+/// low-weight, and `WeightCutoff` truncation keeps them that way. The dense
+/// `random_pauli` above is the opposite extreme. Any bucketing scheme derived
+/// from key bits behaves very differently on the two, so both are benched.
+fn low_weight_pauli<const W: usize>(
+    rng: &mut Xs64,
+    num_qubits: usize,
+    weight: usize,
+) -> PauliString<W> {
+    let mut p = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    for _ in 0..weight {
+        let q = (rng.next_u64() as usize) % num_qubits;
+        let word = q / 64;
+        let bit = 1u64 << (q % 64);
+        // Pick one of X, Z, Y (never I, or the weight would not be `weight`).
+        match rng.next_u64() % 3 {
+            0 => p.x[word] |= bit,
+            1 => p.z[word] |= bit,
+            _ => {
+                p.x[word] |= bit;
+                p.z[word] |= bit;
+            }
+        }
+    }
+    p
+}
+
 /// Build a sorted/deduplicated `PauliSum<W>` of length close to `n_terms`
-/// from random Pauli keys. Duplicates are unlikely at these widths but the
-/// accumulator handles them transparently; the resulting length may be
+/// from random dense Pauli keys. Duplicates are unlikely at these widths but
+/// the accumulator handles them transparently; the resulting length may be
 /// slightly less than `n_terms`.
 fn random_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
@@ -82,6 +132,42 @@ fn random_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> P
         acc.add_term(p, Phase::ONE, Complex64::new(re, im));
     }
     acc.finalize()
+}
+
+/// As `random_sum`, but with low-weight keys. Collisions are far more likely
+/// here, so the realized length can be noticeably below `n_terms`.
+fn low_weight_sum<const W: usize>(
+    n_terms: usize,
+    num_qubits: usize,
+    weight: usize,
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
+    for _ in 0..n_terms {
+        let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+    }
+    acc.finalize()
+}
+
+/// A weight-2 `ZZ` rotation on qubits `(q0, q1)` — the bond term of a
+/// transverse-field Ising Trotter step, and the single most common channel in
+/// real workloads. Fanout is data-dependent (1 when the input commutes with the
+/// generator, 2 when it does not), so on random input the realized fanout is
+/// ~1.5 and the merge phase actually has duplicates to combine.
+fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
+    let mut gen_z = [0u64; W];
+    gen_z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
+    gen_z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    PauliRotation::<W> {
+        support: vec![q0, q1],
+        gen_x: [0u64; W],
+        gen_z,
+        theta,
+    }
 }
 
 /// PauliString mul_assign — the inner hot loop of every channel that does a
@@ -151,27 +237,208 @@ fn bench_pauli_sum_add(c: &mut Criterion) {
     group.finish();
 }
 
-/// Full scan → sort → merge layer under a fanout-1 Clifford gate.
+/// One `apply_layer` case. `?Sized` on `C` so the same helper measures both the
+/// monomorphized call and the `dyn Channel<W>` call.
+fn layer_case<const W: usize, C>(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    label: String,
+    input: &PauliSum<W>,
+    ch: &C,
+) where
+    C: Channel<W> + ?Sized,
+{
+    let policy = AlwaysKeep;
+    group.throughput(Throughput::Elements(input.len() as u64));
+    group.bench_function(label, |bencher| {
+        bencher.iter(|| black_box(apply_layer(black_box(input), ch, &policy)))
+    });
+}
+
+/// Full scan → sort → merge layer, across the four structurally distinct
+/// channel classes. These differ in ways the engine is blind to today but that
+/// the v0.2 design keys off directly (v0.2 §2.3):
 ///
-/// `Clifford1Q::h(0)` has `max_fanout = 1` and a fixed 4-entry conjugation
-/// table, so the bench measures engine overhead (sort + segmented reduction)
-/// rather than channel inner-loop cost. The output cardinality equals the
-/// input cardinality (no duplicates from a permutation), which makes the
-/// per-element work easy to reason about.
+///   * `depolarizing` — keys bitwise **unchanged**, coefficients rescaled. The
+///     output is already sorted and duplicate-free, so the entire sort and merge
+///     is wasted work. Delta set `{0}`; v0.2 reads 1 input bucket per output.
+///   * `clifford1q_h` — key **bijection**, fanout 1. The merge is provably a
+///     no-op. Delta set is 1-dimensional; v0.2 reads 2 buckets.
+///   * `clifford2q_cnot` — key bijection on 2 qubits, fanout 1. Delta set is
+///     2-dimensional; v0.2 reads 4 buckets.
+///   * `rotation_zz` — fanout 2, **non-injective**: this is the only case where
+///     the merge phase has real work to do. Delta set `{0, gen}`, so v0.2 reads
+///     2 buckets regardless of generator weight.
+///
+/// Each is measured both monomorphized and `dyn`-erased. The `dyn` figure is the
+/// one that matters: `propagate` erases to `&dyn Channel<W>`
+/// (`engine/mod.rs:78`), so every real layer pays a vtable call *per input
+/// term*, which the monomorphized bench hides.
 fn bench_apply_layer(c: &mut Criterion) {
-    let mut group = c.benchmark_group("apply_layer_clifford1q_h");
+    let mut group = c.benchmark_group("apply_layer");
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
     let h = Clifford1Q::h(0);
-    let policy = AlwaysKeep;
+    let cnot = Clifford2Q::cnot(0, 1);
+    let depol = Depolarizing {
+        support: [0],
+        p: 0.05,
+    };
+    let rot = zz_rotation::<2>(0, 1, 0.1);
 
     for &n in &[10_000usize, 1_000_000usize] {
         let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+        if n >= 1_000_000 {
+            group.sample_size(10);
+            group.warm_up_time(Duration::from_millis(500));
+        } else {
+            group.sample_size(30);
+            group.warm_up_time(Duration::from_secs(1));
+        }
+
+        layer_case(&mut group, format!("depolarizing/{n}"), &input, &depol);
+        layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h);
+        layer_case(&mut group, format!("clifford2q_cnot/{n}"), &input, &cnot);
+        layer_case(&mut group, format!("rotation_zz/{n}"), &input, &rot);
+
+        // Same four, through the calling convention `propagate` actually uses.
+        let dyn_h: &dyn Channel<2> = &h;
+        let dyn_cnot: &dyn Channel<2> = &cnot;
+        let dyn_depol: &dyn Channel<2> = &depol;
+        let dyn_rot: &dyn Channel<2> = &rot;
+        layer_case(
+            &mut group,
+            format!("dyn_depolarizing/{n}"),
+            &input,
+            dyn_depol,
+        );
+        layer_case(&mut group, format!("dyn_clifford1q_h/{n}"), &input, dyn_h);
+        layer_case(
+            &mut group,
+            format!("dyn_clifford2q_cnot/{n}"),
+            &input,
+            dyn_cnot,
+        );
+        layer_case(&mut group, format!("dyn_rotation_zz/{n}"), &input, dyn_rot);
+    }
+
+    group.finish();
+}
+
+/// Dense vs low-weight input at fixed `n`.
+///
+/// Physical Hamiltonians are low-weight and `WeightCutoff` keeps them that way,
+/// so `low_weight` is the realistic regime while `dense` is what every existing
+/// bench used. The two have very different key distributions, which is exactly
+/// what decides whether a bucketing scheme balances (v0.2 §3.2) — a
+/// coordinate-projection hash collapses on the low-weight case and looks fine on
+/// the dense one.
+fn bench_apply_layer_occupancy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("apply_layer_occupancy");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let rot = zz_rotation::<2>(0, 1, 0.1);
+
+    let dense: PauliSum<2> = random_sum::<2>(n, 128, 0xDE_11_5E);
+    layer_case(&mut group, format!("dense/{}", dense.len()), &dense, &rot);
+
+    for &w in &[2usize, 4, 8] {
+        let sparse: PauliSum<2> =
+            low_weight_sum::<2>(n, 128, w, 0x5A_12_5E_u64.wrapping_add(w as u64));
+        layer_case(
+            &mut group,
+            format!("weight{w}/{}", sparse.len()),
+            &sparse,
+            &rot,
+        );
+    }
+
+    group.finish();
+}
+
+/// `propagate` over a Trotter-shaped circuit — the realistic call shape.
+///
+/// One first-order Trotter step on a 1-D transverse-field Ising chain of
+/// `num_qubits` sites: `num_qubits` ZZ bond rotations followed by `num_qubits`
+/// single-site X rotations. `examples/ising_2d_quench.rs` builds 108 channels
+/// per step for a 6×6 lattice, so per-layer fixed costs are multiplied by a
+/// large constant in any real run — which no existing bench captured.
+fn bench_propagate_trotter(c: &mut Criterion) {
+    let mut group = c.benchmark_group("propagate_trotter_step");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let num_qubits = 32usize;
+    let theta = 0.1;
+
+    let mut circuit = Circuit::<1>::new(num_qubits);
+    for q in 0..num_qubits {
+        let q0 = q as u32;
+        let q1 = ((q + 1) % num_qubits) as u32;
+        circuit.push(zz_rotation::<1>(q0, q1, 2.0 * theta));
+    }
+    for q in 0..num_qubits {
+        let qq = q as u32;
+        let gen = PauliString::<1>::x(qq);
+        circuit.push(PauliRotation::<1> {
+            support: vec![qq],
+            gen_x: gen.x,
+            gen_z: gen.z,
+            theta: 2.0 * theta,
+        });
+    }
+
+    // Kept small: a 64-channel circuit with fanout-2 channels and no truncation
+    // grows the sum by up to 2^64, so `n` here is the *starting* size and the
+    // bench measures early-growth behaviour, not steady state.
+    for &n in &[1_000usize, 10_000usize] {
+        let input: PauliSum<1> = low_weight_sum::<1>(n, num_qubits, 3, 0x77077 + n as u64);
         group.throughput(Throughput::Elements(input.len() as u64));
-        let sample_size = if n >= 1_000_000 { 10 } else { 30 };
-        group.sample_size(sample_size);
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |bencher, _| {
-            bencher.iter(|| black_box(apply_layer(black_box(&input), &h, &policy)))
+            bencher.iter(|| {
+                black_box(propagate(
+                    black_box(&circuit),
+                    input.clone(),
+                    &AlwaysKeep,
+                    Direction::Heisenberg,
+                ))
+            })
+        });
+    }
+
+    group.finish();
+}
+
+/// Thread scaling of a single layer.
+///
+/// v0.1 §9 claims "near-linear scaling up to the memory bandwidth limit" and
+/// nothing in the repo has ever measured it. The expectation for the current
+/// engine is *poor* scaling, because `sort_phase` is sequential
+/// (`sort_merge.rs:215`) — Amdahl bounds the whole layer by whatever fraction
+/// the sort takes. That fraction is precisely what v0.2 removes, so this group
+/// is the headline before/after comparison.
+///
+/// Uses a fanout-2 rotation so both the scan and the merge have real work.
+fn bench_thread_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("thread_scaling_rotation_1e6");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let rot = zz_rotation::<2>(0, 1, 0.1);
+    let policy = AlwaysKeep;
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    for &t in &[1usize, 2, 4, 8, 16, 32] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build()
+            .expect("failed to build rayon pool");
+        group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
+            bencher
+                .iter(|| pool.install(|| black_box(apply_layer(black_box(&input), &rot, &policy))))
         });
     }
 
@@ -182,6 +449,9 @@ criterion_group!(
     benches,
     bench_mul_assign,
     bench_pauli_sum_add,
-    bench_apply_layer
+    bench_apply_layer,
+    bench_apply_layer_occupancy,
+    bench_propagate_trotter,
+    bench_thread_scaling
 );
 criterion_main!(benches);

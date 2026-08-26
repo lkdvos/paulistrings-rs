@@ -40,3 +40,16 @@ docs.rs and the GitHub Pages preview render rustdoc without running any
 code; the plot is loaded from `raw.githubusercontent.com` and so must
 exist in the tree. Keeping the CSV alongside makes the plot regeneration
 a one-line Python invocation instead of a multi-minute Rust run.
+
+## Regenerating the committed output
+
+`output/ising_{4x4,6x6}.csv` come from `cargo run --release --example
+ising_2d_quench`; `docs/examples/img/ising_quench.svg` comes from
+`python plot_ising_quench.py` (needs matplotlib, e.g. via `./scripts/setup.sh`).
+
+**Known staleness:** the CSVs were regenerated in v0.2 B.7, when `TopN`'s
+tie-breaking became well-defined (see the "How sensitive is the answer" section
+of `../docs/examples/ising_2d_quench.md`). The SVG was *not* regenerated at the
+same time — matplotlib was unavailable on that machine. The curves it plots moved
+by at most 1.8% (4×4) and 0.12% (6×6), which is below the line width, so the
+figure is still an accurate picture; regenerate it when convenient.

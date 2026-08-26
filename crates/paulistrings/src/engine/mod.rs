@@ -6,10 +6,13 @@
 pub mod bucketed;
 pub mod sort_merge;
 
+use crate::bucket::hash::Gf2Hash;
+use crate::bucket::sum::{desired_bits, BucketedSum, DEFAULT_HASH_SEED, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
+use bucketed::{apply_layer_bucketed, LayerScratch};
 
 /// Propagation direction.
 ///
@@ -69,19 +72,55 @@ pub fn propagate<const W: usize, T>(
 where
     T: TruncationPolicy<W>,
 {
-    let mut sum = initial;
     let n = circuit.channels.len();
+    if n == 0 {
+        // No layers: return the input untouched, bit for bit.
+        return initial;
+    }
+
+    let adjoint = matches!(direction, Direction::Heisenberg);
+    let num_qubits = initial.num_qubits();
+
+    // Size the partition once, then let `rebucket` keep it in band. Note the
+    // bucket count depends on the thread count through the parallelism floor —
+    // which is safe only because the engine's output is bitwise independent of
+    // the bucket count (v0.2 §9.1), a property the tests pin directly.
+    let min_buckets = 4 * rayon::current_num_threads().max(1);
+    let bits = desired_bits(initial.len(), DEFAULT_TARGET_BUCKET_LEN, min_buckets);
+    let hash = Gf2Hash::<W>::new(num_qubits, bits, DEFAULT_HASH_SEED);
+
+    let mut sum = BucketedSum::from_sum(&initial, hash);
+    drop(initial);
+    let mut scratch = LayerScratch::<W>::new();
+
     for k in 0..n {
         let idx = match direction {
             Direction::Forward => k,
             Direction::Heisenberg => n - 1 - k,
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
-        sum = match direction {
-            Direction::Forward => sort_merge::apply_layer(&sum, ch, policy),
-            Direction::Heisenberg => sort_merge::apply_layer_adjoint(&sum, ch, policy),
-        };
-        policy.finalize_layer(&mut sum);
+
+        sum.rebucket(DEFAULT_TARGET_BUCKET_LEN, min_buckets);
+
+        match ch.prepare(sum.hash(), adjoint) {
+            Some(prep) => apply_layer_bucketed(&mut sum, &prep, policy, &mut scratch),
+            None => {
+                // The channel declined to be bucketed — support wider than the
+                // local maximum, or it writes outside its declared support. Fall
+                // back to the whole-sum v0.1 pipeline for this layer only. Correct,
+                // just not bucketed.
+                let flat = sum.to_sum();
+                let out = if adjoint {
+                    sort_merge::apply_layer_adjoint(&flat, ch, policy)
+                } else {
+                    sort_merge::apply_layer(&flat, ch, policy)
+                };
+                sum.refill_from_sum(&out);
+            }
+        }
+
+        policy.finalize_layer_bucketed(&mut sum);
     }
-    sum
+
+    sum.into_sum()
 }

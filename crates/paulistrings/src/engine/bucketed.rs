@@ -976,3 +976,109 @@ mod finalize_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tie_tests {
+    use super::tests::rand_sum;
+    use super::*;
+    use crate::bucket::hash::Gf2Hash;
+    use crate::pauli_sum::PauliSum;
+    use crate::truncation::builtin::TopN;
+
+    /// A sum whose coefficients take only a handful of distinct magnitudes, so
+    /// `TopN` is guaranteed to cut through a large tie group.
+    ///
+    /// This is not a contrived case: a symmetric Hamiltonian on a periodic
+    /// lattice produces many terms related by lattice symmetry with *exactly*
+    /// equal coefficients, which is why the 2D Ising example hits it.
+    fn tie_heavy_sum(n: usize, num_qubits: usize, seed: u64) -> PauliSum<1> {
+        let base = rand_sum::<1>(n, num_qubits, seed);
+        let mut acc = crate::accumulator::BuildAccumulator::<1>::with_capacity(num_qubits, n);
+        for i in 0..base.len() {
+            // Only 4 distinct magnitudes across the whole sum.
+            let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
+            acc.add_term(
+                PauliString::<1> {
+                    x: base.x()[i],
+                    z: base.z()[i],
+                },
+                Phase::ONE,
+                Complex64::new(mag, 0.0),
+            );
+        }
+        acc.finalize()
+    }
+
+    /// `TopN` must keep the same set regardless of the bucket partition, even
+    /// when the cut falls inside a tie group.
+    ///
+    /// Tie-breaking on flat position would fail this: flat position depends on
+    /// which bucket a term landed in, hence on the bucket count.
+    #[test]
+    fn top_n_is_bucket_count_independent_on_tied_magnitudes() {
+        let input = tie_heavy_sum(2000, 8, 0x7135);
+        let n = 700; // cuts inside the group of magnitude-0.5 terms
+        let reference = {
+            let hash = Gf2Hash::<1>::new(8, 0, 0x99);
+            let mut b = BucketedSum::from_sum(&input, hash);
+            TopN(n).finalize_layer_bucketed(&mut b);
+            b.into_sum()
+        };
+        for bits in [1u8, 2, 4, 6, 9] {
+            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
+            let mut b = BucketedSum::from_sum(&input, hash);
+            TopN(n).finalize_layer_bucketed(&mut b);
+            let got = b.into_sum();
+            assert_eq!(got.len(), reference.len(), "bits={bits}: length");
+            assert_eq!(
+                got.x(),
+                reference.x(),
+                "bits={bits}: TopN kept a different set of tied terms",
+            );
+            assert_eq!(got.coeff(), reference.coeff(), "bits={bits}: coefficients");
+        }
+    }
+
+    /// The bucketed and flat implementations must agree **on ties too**, not
+    /// just on distinct magnitudes. This is what lets the two engines produce
+    /// identical output on a symmetric Hamiltonian.
+    #[test]
+    fn top_n_bucketed_matches_flat_on_tied_magnitudes() {
+        let input = tie_heavy_sum(2000, 8, 0x7136);
+        for n in [3usize, 250, 700, 1200, 1900] {
+            let policy = TopN(n);
+            let mut flat = input.clone();
+            policy.finalize_layer(&mut flat);
+            for bits in [0u8, 2, 5, 9] {
+                let hash = Gf2Hash::<1>::new(8, bits, 0x99);
+                let mut b = BucketedSum::from_sum(&input, hash);
+                policy.finalize_layer_bucketed(&mut b);
+                let got = b.into_sum();
+                assert_eq!(got.len(), flat.len(), "n={n} bits={bits}: length");
+                assert_eq!(got.x(), flat.x(), "n={n} bits={bits}: keys differ on ties");
+                assert_eq!(got.coeff(), flat.coeff(), "n={n} bits={bits}: coeffs");
+            }
+        }
+    }
+
+    /// The same, across hash seeds: a different `H` permutes bucket membership
+    /// without changing anything about the magnitudes.
+    #[test]
+    fn top_n_is_hash_seed_independent_on_tied_magnitudes() {
+        let input = tie_heavy_sum(2000, 8, 0x7123);
+        let n = 700;
+        let reference = {
+            let hash = Gf2Hash::<1>::new(8, 5, 1);
+            let mut b = BucketedSum::from_sum(&input, hash);
+            TopN(n).finalize_layer_bucketed(&mut b);
+            b.into_sum()
+        };
+        for seed in [2u64, 3, 5, 8, 13] {
+            let hash = Gf2Hash::<1>::new(8, 5, seed);
+            let mut b = BucketedSum::from_sum(&input, hash);
+            TopN(n).finalize_layer_bucketed(&mut b);
+            let got = b.into_sum();
+            assert_eq!(got.x(), reference.x(), "seed={seed}: different set kept");
+        }
+    }
+}

@@ -18,4 +18,6 @@ pub mod hash;
 pub mod sum;
 
 pub use hash::{Gf2Hash, B_MAX_BITS};
-pub use sum::{BucketedSum, DEFAULT_TARGET_BUCKET_LEN, MIN_TERMS_PER_TASK};
+pub use sum::{
+    desired_bits, BucketedSum, DEFAULT_HASH_SEED, DEFAULT_TARGET_BUCKET_LEN, MIN_TERMS_PER_TASK,
+};

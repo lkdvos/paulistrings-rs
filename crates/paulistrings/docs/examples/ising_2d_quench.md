@@ -193,6 +193,29 @@ caps total memory. Loosening either preserves the curves at early times
 and only changes long-time behaviour (where the answer is already
 truncation-limited).
 
+### How sensitive is the answer to *which* terms `TopN` keeps?
+
+More than one might expect, and worth knowing before reading precision into
+these curves. `TopN` has to cut through groups of terms with **exactly equal**
+coefficient magnitude — unavoidable here, because lattice symmetry on a periodic
+lattice relates many Pauli strings and gives them identical weights. Which
+members of a tie group survive is a free choice.
+
+Changing that choice (v0.2 made the ordering well-defined; it previously
+depended on `select_nth_unstable_by`'s unspecified tie order) moves the
+trajectory by:
+
+| Lattice | max Δ⟨X_avg⟩ | max relative |
+|---------|--------------|--------------|
+| 4×4     | 0.0053       | 1.8%         |
+| 6×6     | 0.00037      | 0.12%        |
+
+So the 4×4 curve is good to about two significant figures at `TopN(50_000)`, not
+more, and the 6×6 is roughly fifteen times better resolved despite being the
+larger problem — the observable is an average over more sites, so the truncation
+error self-averages. Treat the difference between two truncation choices as the
+honest error bar; it is larger than any floating-point effect.
+
 # Result
 
 ![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](https://raw.githubusercontent.com/lkdvos/paulistrings-rs/main/crates/paulistrings/docs/examples/img/ising_quench.svg)

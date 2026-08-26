@@ -9,6 +9,36 @@ use super::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::PauliSum;
 
+/// Default seed for the partitioning hash.
+///
+/// Fixed so a `propagate` run is reproducible across processes. Exposed as a
+/// constant rather than hidden so a caller who needs a different partition (to
+/// rule out a pathological interaction with their Hamiltonian's structure) can
+/// build their own [`Gf2Hash`].
+pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Bucket bits for a sum of `len` terms: the smallest `b` with
+/// `len <= target << b`, clamped below by the parallelism floor.
+///
+/// Used to size the partition once at the start of `propagate`, so `from_sum`
+/// hashes in a single pass rather than being refined bit by bit.
+/// [`BucketedSum::rebucket`] keeps it in band afterwards, with hysteresis.
+pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
+    debug_assert!(target > 0);
+    let worth_splitting = len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
+    let mut floor = 0u8;
+    if worth_splitting {
+        while (1usize << floor) < min_buckets && floor < super::hash::B_MAX_BITS {
+            floor += 1;
+        }
+    }
+    let mut b = floor;
+    while b < super::hash::B_MAX_BITS && len > target.saturating_mul(1usize << b) {
+        b += 1;
+    }
+    b
+}
+
 /// Lexicographic `(x, z)` merge key. `[u64; W]`'s derived `Ord` is lex over
 /// elements, so this matches `PauliString::cmp` and `sort_phase` exactly.
 type MergeKey<const W: usize> = ([u64; W], [u64; W]);

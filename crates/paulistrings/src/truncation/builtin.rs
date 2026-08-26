@@ -91,11 +91,21 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
         let mut perm: Vec<usize> = (0..len).collect();
         // Partition descending by |coeff|: indices [0..n) hold the n largest.
+        //
+        // The tie-break on index is load-bearing, not cosmetic. `sum` is sorted
+        // by key, so index-ascending *is* key-ascending, which makes the retained
+        // set well defined even when the cut falls inside a group of exactly
+        // equal magnitudes -- as it does for any symmetric Hamiltonian, where
+        // lattice symmetry gives many terms identical coefficients. Without it
+        // the order is whatever `select_nth_unstable_by` happens to produce,
+        // which is unspecified, and the bucketed implementation below could not
+        // agree with this one.
         perm.select_nth_unstable_by(n - 1, |&a, &b| {
             sum.coeff[b]
                 .norm()
                 .partial_cmp(&sum.coeff[a].norm())
-                .unwrap()
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(&b))
         });
         perm.truncate(n);
         // The survivors of an already-sorted sum are still sorted once we
@@ -120,14 +130,17 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
     ///
     /// # Tie-breaking
     ///
-    /// The order is `|coeff|` descending, then flat position ascending, which is
-    /// total (positions are unique) and so leaves no genuine ambiguity — but
-    /// among *exactly equal* magnitudes at the cutoff, which terms survive
-    /// depends on the bucket partition. The flat implementation above is no more
-    /// specified: `select_nth_unstable_by` breaks ties arbitrarily. Equal
-    /// magnitudes at the boundary are pathological, and either choice is as good
-    /// as the other; it is called out so the difference is not mistaken for a
-    /// bug.
+    /// `|coeff|` descending, then **key** ascending — the same total order as the
+    /// flat implementation above, so the two agree exactly.
+    ///
+    /// Breaking ties on the key rather than on bucket position is required, not
+    /// stylistic. Bucket position depends on the partition, so a
+    /// position-based tie-break would make the retained set depend on the bucket
+    /// count and hence on the thread count, breaking §9.1. And ties are not a
+    /// corner case: any symmetric Hamiltonian gives many terms exactly equal
+    /// coefficients by lattice symmetry, so `TopN` routinely cuts through a large
+    /// tie group. The `then_with` is lazy, so the key comparison costs nothing
+    /// when magnitudes differ.
     fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
         let n = self.0;
         if sum.len() <= n {
@@ -148,24 +161,34 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
         offsets.push(total);
 
-        let mut ranked: Vec<(f64, u32)> = Vec::with_capacity(total);
-        for (b, &base) in offsets.iter().enumerate().take(nb) {
+        // (norm, bucket, index-within-bucket)
+        let mut ranked: Vec<(f64, u32, u32)> = Vec::with_capacity(total);
+        for b in 0..nb {
             let (_, _, coeff) = sum.bucket(b);
             for (i, c) in coeff.iter().enumerate() {
-                ranked.push((c.norm(), (base + i) as u32));
+                ranked.push((c.norm(), b as u32, i as u32));
             }
         }
 
-        ranked.select_nth_unstable_by(n - 1, |a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(core::cmp::Ordering::Equal)
-                .then_with(|| a.1.cmp(&b.1))
-        });
+        {
+            let view = &*sum;
+            ranked.select_nth_unstable_by(n - 1, |a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(core::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        let (ax, az, _) = view.bucket(a.1 as usize);
+                        let (bx, bz, _) = view.bucket(b.1 as usize);
+                        let ai = a.2 as usize;
+                        let bi = b.2 as usize;
+                        (&ax[ai], &az[ai]).cmp(&(&bx[bi], &bz[bi]))
+                    })
+            });
+        }
         ranked.truncate(n);
 
         let mut keep = vec![false; total];
-        for &(_, flat) in ranked.iter() {
-            keep[flat as usize] = true;
+        for &(_, b, i) in ranked.iter() {
+            keep[offsets[b as usize] + i as usize] = true;
         }
 
         for (b, cols) in sum.buckets_mut().iter_mut().enumerate() {

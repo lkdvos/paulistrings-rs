@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-v0.1 is **feature-complete except for `GeneralUnitary1Q/2Q`**. All eleven phases of `research/plans/2026-04-30-v0.1-tdd-slices.md` have landed: the full `PauliString` algebra, `PauliSum` bulk ops, the ingestion path, Clifford / rotation / noise channels, the truncation policies, the Rayon-parallel sort-merge engine, the Python bindings, and both benchmark harnesses.
+v0.1 is **feature-complete** (`GeneralUnitary1Q/2Q` landed in v0.2 B.9; there are no `todo!()`s left). All eleven phases of `research/plans/2026-04-30-v0.1-tdd-slices.md` have landed: the full `PauliString` algebra, `PauliSum` bulk ops, the ingestion path, Clifford / rotation / noise channels, the truncation policies, the Rayon-parallel sort-merge engine, the Python bindings, and both benchmark harnesses.
 `cargo test --workspace` is green (214 tests, none ignored) and `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for architecture; doc comments reference its section numbers (`§3.1`, `§5`, etc.) so the mapping back to the doc is direct.
 
@@ -12,11 +12,10 @@ Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for archi
 
 Known gaps — check these before assuming a feature works:
 
-- `channel/unitary.rs` — `GeneralUnitary1Q::apply` and `GeneralUnitary2Q::apply` are the only remaining `todo!()`s, and both types are hardcoded `impl Channel<1>` rather than generic over `W`. Finishing them is a rewrite, not a body fill. Neither is exposed in Python.
 - `engine/sort_merge.rs` — the design doc's O(n) **bucket** phase (§5) is not implemented, and **cannot be as specified**: its claim that concatenating support-bit buckets yields a sorted array is false, because a support qubit's key bits are not the most-significant bits of the sort key. See `research/notes/2026-08-26-why-s5-concatenation-fails.md` for a four-term counterexample. `Channel::support()`, added solely to feed that phase, is dead code the engine never calls. What ships instead is a *sequential* O(n log n) comparison sort allocating a permutation plus three `Vec`s per layer — the serial bottleneck in an otherwise parallel pipeline, and the thing v0.2 removes.
 - The small-sum hashmap fast path (§8.3) is unimplemented; `SMALL_SUM_THRESHOLD` is declared and never read. `#![allow(unused)]` in `lib.rs` and several modules masks this and similar dead code.
 - Slice 11.3 (profile-driven optimization) never ran. Baselines now exist: raw criterion + Ising output under `benchmarks/results/2026-08-26-ccqlin038/` (gitignored) with a committed summary in `research/notes/2026-08-26-v0.1-baselines.md`. Compare against those, on that host, before claiming a speedup.
-- CI runs Rust only (fmt, clippy, tests, doctests, examples, rustdoc). The PyO3 bindings and `python/paulistrings/tests/` are only ever validated locally.
+- CI runs Rust only (fmt, clippy, tests, doctests, examples, rustdoc). The PyO3 bindings and `python/paulistrings/tests/` are only ever validated locally — and note `python/paulistrings/tests/test_general_unitary.py` (v0.2 B.9) has **never been run**: no `maturin` or venv was available on the machine it was written on. It is compile-checked on the Rust side only.
 - No expectation-value / trace / overlap in the public API — `examples/ising_2d_quench.rs` hand-rolls its own. `PauliSum::from_strings` is still `pub(crate)` + `#[cfg(test)]`, so tests and examples build sums by hand.
 
 Public API change in v0.2 B.3: `PauliRotation`'s fields are now private and it is built with `PauliRotation::new(gen, theta)`, which **derives** the support from the generator. Previously `support` was caller-supplied and never validated against `gen_x`/`gen_z`; the bucketed engine reads `support()` to decide which bits to extract, so a mismatch would have been a silent miscompilation rather than a slow path. Accessors: `generator()`, `theta()`, `weight()`.

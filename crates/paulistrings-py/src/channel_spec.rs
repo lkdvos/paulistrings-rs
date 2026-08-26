@@ -6,8 +6,10 @@
 //! the appropriately monomorphized core channel and pushes it onto the
 //! `Circuit<W>`.
 
+use num_complex::Complex64;
 use paulistrings::channel::{
-    AmplitudeDamping, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, PauliRotation,
+    AmplitudeDamping, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, GeneralUnitary1Q,
+    GeneralUnitary2Q, PauliRotation,
 };
 use paulistrings::pauli_string::PauliString;
 use paulistrings::Circuit as CoreCircuit;
@@ -17,20 +19,72 @@ use pyo3::prelude::*;
 /// parameters so the spec is `Send + Sync` and width-agnostic.
 #[derive(Clone, Copy, Debug)]
 pub enum ChannelSpec {
-    H { qubit: u32 },
-    S { qubit: u32 },
-    X { qubit: u32 },
-    Y { qubit: u32 },
-    Z { qubit: u32 },
-    Cnot { control: u32, target: u32 },
-    Cz { q0: u32, q1: u32 },
-    Swap { q0: u32, q1: u32 },
-    Rz { theta: f64, qubit: u32 },
-    Rx { theta: f64, qubit: u32 },
-    Ry { theta: f64, qubit: u32 },
-    Depolarize { p: f64, qubit: u32 },
-    Dephase { p: f64, qubit: u32 },
-    AmplitudeDamping { gamma: f64, qubit: u32 },
+    H {
+        qubit: u32,
+    },
+    S {
+        qubit: u32,
+    },
+    X {
+        qubit: u32,
+    },
+    Y {
+        qubit: u32,
+    },
+    Z {
+        qubit: u32,
+    },
+    Cnot {
+        control: u32,
+        target: u32,
+    },
+    Cz {
+        q0: u32,
+        q1: u32,
+    },
+    Swap {
+        q0: u32,
+        q1: u32,
+    },
+    Rz {
+        theta: f64,
+        qubit: u32,
+    },
+    Rx {
+        theta: f64,
+        qubit: u32,
+    },
+    Ry {
+        theta: f64,
+        qubit: u32,
+    },
+    Depolarize {
+        p: f64,
+        qubit: u32,
+    },
+    Dephase {
+        p: f64,
+        qubit: u32,
+    },
+    AmplitudeDamping {
+        gamma: f64,
+        qubit: u32,
+    },
+    /// An arbitrary 1-qubit unitary, held as its 2x2 matrix.
+    ///
+    /// The matrix rather than the 4x4 Pauli-transfer matrix, so the spec stays
+    /// small and `Copy`; the PTM is computed once when the channel is
+    /// materialized onto a `Circuit<W>`, not per term.
+    Unitary1Q {
+        qubit: u32,
+        matrix: [[Complex64; 2]; 2],
+    },
+    /// An arbitrary 2-qubit unitary, held as its 4x4 matrix acting on `|q0 q1>`.
+    Unitary2Q {
+        q0: u32,
+        q1: u32,
+        matrix: [[Complex64; 4]; 4],
+    },
 }
 
 impl ChannelSpec {
@@ -74,6 +128,15 @@ impl ChannelSpec {
                     support: [qubit],
                     gamma,
                 });
+            }
+            // The 2x2 / 4x4 matrix is converted to a Pauli-transfer matrix here,
+            // once per circuit push, rather than being stored as a PTM in the
+            // spec (which would make the spec 4 KB and non-`Copy`).
+            Self::Unitary1Q { qubit, matrix } => {
+                circuit.push(GeneralUnitary1Q::from_matrix(qubit, matrix));
+            }
+            Self::Unitary2Q { q0, q1, matrix } => {
+                circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, matrix));
             }
         }
     }

@@ -151,4 +151,25 @@ impl Circuit {
                 .push_spec(&ChannelSpec::AmplitudeDamping { gamma, qubit });
         }
     }
+
+    fn unitary_1q(
+        &mut self,
+        qubit: u32,
+        matrix: numpy::PyReadonlyArray2<'_, num_complex::Complex64>,
+    ) -> pyo3::PyResult<()> {
+        let ch = crate::gates::unitary_1q_spec(qubit, matrix)?;
+        self.inner.push_spec(&ch);
+        Ok(())
+    }
+
+    fn unitary_2q(
+        &mut self,
+        q0: u32,
+        q1: u32,
+        matrix: numpy::PyReadonlyArray2<'_, num_complex::Complex64>,
+    ) -> pyo3::PyResult<()> {
+        let ch = crate::gates::unitary_2q_spec(q0, q1, matrix)?;
+        self.inner.push_spec(&ch);
+        Ok(())
+    }
 }

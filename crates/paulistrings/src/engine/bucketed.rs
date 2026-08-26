@@ -480,6 +480,41 @@ mod tests {
                 )),
             ),
             (
+                // General unitaries: a non-Clifford T gate (fanout 2) and a
+                // dense 2Q unitary (fanout up to 16), both as local PTMs.
+                "t_gate",
+                Box::new(crate::channel::GeneralUnitary1Q::from_matrix(
+                    2,
+                    [
+                        [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                        [
+                            Complex64::new(0.0, 0.0),
+                            Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
+                        ],
+                    ],
+                )),
+            ),
+            (
+                "general_2q",
+                Box::new({
+                    // sqrt(SWAP): dense enough to exercise a wide delta set.
+                    let h = Complex64::new(0.5, 0.5);
+                    let hc = Complex64::new(0.5, -0.5);
+                    let one = Complex64::new(1.0, 0.0);
+                    let zero = Complex64::new(0.0, 0.0);
+                    crate::channel::GeneralUnitary2Q::from_matrix(
+                        1,
+                        5,
+                        [
+                            [one, zero, zero, zero],
+                            [zero, h, hc, zero],
+                            [zero, hc, h, zero],
+                            [zero, zero, zero, one],
+                        ],
+                    )
+                }),
+            ),
+            (
                 // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
                 "rot_wide",
                 Box::new(PauliRotation::new(

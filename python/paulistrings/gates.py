@@ -13,5 +13,21 @@ swap = _gates.swap
 rz = _gates.rz
 rx = _gates.rx
 ry = _gates.ry
+unitary_1q = _gates.unitary_1q
+unitary_2q = _gates.unitary_2q
 
-__all__ = ["h", "s", "x", "y", "z", "cnot", "cz", "swap", "rz", "rx", "ry"]
+__all__ = [
+    "h",
+    "s",
+    "x",
+    "y",
+    "z",
+    "cnot",
+    "cz",
+    "swap",
+    "rz",
+    "rx",
+    "ry",
+    "unitary_1q",
+    "unitary_2q",
+]

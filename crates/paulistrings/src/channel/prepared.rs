@@ -749,6 +749,25 @@ mod tests {
                 n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), false),
                 n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), true),
             ),
+            (
+                // Included as of B.8: before the adjoint was implemented this
+                // was trivially equal, because apply_adjoint *was* apply.
+                "amp_damping",
+                n_bucket_deltas::<2, _>(
+                    &AmplitudeDamping {
+                        support: [5],
+                        gamma: 0.3,
+                    },
+                    false,
+                ),
+                n_bucket_deltas::<2, _>(
+                    &AmplitudeDamping {
+                        support: [5],
+                        gamma: 0.3,
+                    },
+                    true,
+                ),
+            ),
         ] {
             assert_eq!(fwd, adj, "{name}: adjoint fan-in differs from forward");
         }

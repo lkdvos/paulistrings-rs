@@ -112,11 +112,23 @@ impl<const W: usize> Channel<W> for Dephasing {
 /// - `Y → √(1-γ) Y`
 /// - `Z → (1-γ) Z + γ I`   (the only fanout-2 case)
 ///
-/// Not self-adjoint in general — the Heisenberg adjoint of amplitude damping
-/// is not amplitude damping itself. v0.1 uses the default `apply_adjoint =
-/// apply` placeholder; users propagating in `Direction::Heisenberg` mode
-/// with this channel should be aware of that approximation. (The
-/// non-Heisenberg use-case is the common one and is exact.)
+/// Not self-adjoint. `apply` above is the Heisenberg map `Φ†`; the adjoint is
+/// `Φ` itself, obtained by transposing the Pauli-transfer matrix (all four
+/// Paulis share a norm, so the Gram matrix is a multiple of the identity and the
+/// adjoint is the plain transpose):
+///
+/// - `I → I + γ Z`   (now the only fanout-2 case)
+/// - `X → √(1-γ) X`
+/// - `Y → √(1-γ) Y`
+/// - `Z → (1-γ) Z`
+///
+/// Note the fan-out moves from `Z` to `I`. Structurally: `Φ†` is unital
+/// (`Φ†(I) = I`, because `Φ` is trace-preserving), and `Φ` is trace-preserving
+/// (the `I` coefficient of `Φ(P)` depends only on the `I` coefficient of `P`),
+/// which are transposed statements of each other.
+///
+/// v0.1 used the default `apply_adjoint = apply`, documented as a knowingly-wrong
+/// approximation; that is fixed as of v0.2 B.8.
 pub struct AmplitudeDamping {
     /// The single qubit this channel acts on.
     pub support: [u32; 1],
@@ -171,12 +183,249 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
             _ => unreachable!(),
         }
     }
+
+    /// The Hilbert-Schmidt adjoint of [`Self::apply`] — the transpose of its
+    /// Pauli-transfer matrix. See the type's documentation for the derivation.
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        let q = self.support[0] as usize;
+        debug_assert!(q < 64 * W);
+        let word = q / 64;
+        let bit = q % 64;
+        let mask = 1u64 << bit;
+        let x_bit = (input_x[word] >> bit) & 1;
+        let z_bit = (input_z[word] >> bit) & 1;
+        match (x_bit, z_bit) {
+            (0, 0) => {
+                // I → I + γ Z. The fan-out sits here in the adjoint, where the
+                // forward map had it on Z.
+                out.push(*input_x, *input_z, coeff);
+                let mut nz = *input_z;
+                nz[word] |= mask;
+                out.push(*input_x, nz, coeff * self.gamma);
+            }
+            (1, _) => {
+                // X or Y → √(1-γ) · same, as in the forward map.
+                let scale = (1.0 - self.gamma).sqrt();
+                out.push(*input_x, *input_z, coeff * scale);
+            }
+            (0, 1) => {
+                // Z → (1-γ) Z, with no I component.
+                out.push(*input_x, *input_z, coeff * (1.0 - self.gamma));
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pauli_string::PauliString;
+
+    // ---- AmplitudeDamping adjoint (v0.2 B.8) ----
+    //
+    // v0.1 inherited `apply_adjoint = apply`, documented as a knowingly-wrong
+    // approximation and a silent trap for Heisenberg backpropagation. These pin
+    // the real adjoint: the transpose of the forward Pauli-transfer matrix.
+
+    /// Collect the outputs of `apply` or `apply_adjoint` on one input.
+    fn outputs<const W: usize>(
+        ch: &AmplitudeDamping,
+        adjoint: bool,
+        p: PauliString<W>,
+    ) -> Vec<(PauliString<W>, Complex64)> {
+        let mut bx = vec![[0u64; W]; 2];
+        let mut bz = vec![[0u64; W]; 2];
+        let mut bc = vec![Complex64::new(0.0, 0.0); 2];
+        let mut len = 0usize;
+        {
+            let mut out = OutputBuffer::<W> {
+                x: &mut bx,
+                z: &mut bz,
+                coeff: &mut bc,
+                len: &mut len,
+            };
+            let one = Complex64::new(1.0, 0.0);
+            if adjoint {
+                Channel::<W>::apply_adjoint(ch, &p.x, &p.z, one, &mut out);
+            } else {
+                Channel::<W>::apply(ch, &p.x, &p.z, one, &mut out);
+            }
+        }
+        (0..len)
+            .map(|i| (PauliString::<W> { x: bx[i], z: bz[i] }, bc[i]))
+            .collect()
+    }
+
+    /// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the
+    /// `I=0, X=1, Z=2, Y=3` packing.
+    fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
+        let basis = |idx: usize| -> PauliString<1> {
+            match idx {
+                0 => PauliString::<1>::identity(),
+                1 => PauliString::<1>::x(q),
+                2 => PauliString::<1>::z(q),
+                _ => PauliString::<1>::y(q),
+            }
+        };
+        let index_of = |p: &PauliString<1>| -> usize {
+            let bit = q % 64;
+            let xb = ((p.x[0] >> bit) & 1) as usize;
+            let zb = ((p.z[0] >> bit) & 1) as usize;
+            xb | (zb << 1)
+        };
+        let mut t = [[0.0f64; 4]; 4];
+        // `j` is the *column* (input basis element) while the row is computed
+        // from each output, so there is nothing to iterate over here.
+        #[allow(clippy::needless_range_loop)]
+        for j in 0..4 {
+            for (out_p, c) in outputs::<1>(ch, adjoint, basis(j)) {
+                t[index_of(&out_p)][j] += c.re;
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn adjoint_maps_identity_to_i_plus_gamma_z() {
+        let g = 0.3;
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma: g,
+        };
+        let got = outputs::<1>(&ch, true, PauliString::<1>::identity());
+        assert_eq!(got.len(), 2, "I should fan out to two terms in the adjoint");
+        assert_eq!(got[0].0, PauliString::<1>::identity());
+        assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+        assert_eq!(got[1].0, PauliString::<1>::z(0));
+        assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
+    }
+
+    #[test]
+    fn adjoint_scales_x_and_y_by_sqrt_one_minus_gamma() {
+        let g = 0.3;
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma: g,
+        };
+        let s = (1.0f64 - g).sqrt();
+        for p in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
+            let got = outputs::<1>(&ch, true, p);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].0, p);
+            assert!((got[0].1 - Complex64::new(s, 0.0)).norm() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn adjoint_maps_z_to_one_minus_gamma_z_with_no_identity_part() {
+        let g = 0.3;
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma: g,
+        };
+        let got = outputs::<1>(&ch, true, PauliString::<1>::z(0));
+        assert_eq!(got.len(), 1, "the adjoint's Z row has no I component");
+        assert_eq!(got[0].0, PauliString::<1>::z(0));
+        assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
+    }
+
+    /// The structural statement: the adjoint's PTM is the forward PTM
+    /// transposed. This is the property the fix is *for*, and it fails outright
+    /// under the old `apply_adjoint = apply` default.
+    #[test]
+    fn adjoint_ptm_is_the_transpose_of_the_forward_ptm() {
+        for &g in &[0.0, 0.15, 0.5, 0.99, 1.0] {
+            let ch = AmplitudeDamping {
+                support: [0],
+                gamma: g,
+            };
+            let fwd = ptm4(&ch, false, 0);
+            let adj = ptm4(&ch, true, 0);
+            for i in 0..4 {
+                for j in 0..4 {
+                    assert!(
+                        (adj[i][j] - fwd[j][i]).abs() < 1e-15,
+                        "gamma={g}: adj[{i}][{j}]={} vs fwd[{j}][{i}]={}",
+                        adj[i][j],
+                        fwd[j][i],
+                    );
+                }
+            }
+        }
+    }
+
+    /// `Φ†` is unital and `Φ` is trace-preserving — transposed statements of
+    /// each other, and both are physical requirements.
+    #[test]
+    fn forward_is_unital_and_adjoint_is_trace_preserving() {
+        for &g in &[0.0, 0.3, 1.0] {
+            let ch = AmplitudeDamping {
+                support: [0],
+                gamma: g,
+            };
+            // Unitality of the forward (Heisenberg) map: I -> I exactly.
+            let fwd_i = outputs::<1>(&ch, false, PauliString::<1>::identity());
+            assert_eq!(fwd_i.len(), 1, "gamma={g}");
+            assert_eq!(fwd_i[0].0, PauliString::<1>::identity());
+            assert!((fwd_i[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+
+            // Trace preservation of the adjoint: the I row of its PTM is
+            // [1, 0, 0, 0], i.e. the I component of the output depends only on
+            // the I component of the input, with unit weight.
+            let adj = ptm4(&ch, true, 0);
+            assert!((adj[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
+            for (j, &v) in adj[0].iter().enumerate().skip(1) {
+                assert!(v.abs() < 1e-15, "gamma={g}: adj[0][{j}] nonzero");
+            }
+        }
+    }
+
+    #[test]
+    fn adjoint_at_gamma_zero_is_the_identity_channel() {
+        let ch = AmplitudeDamping {
+            support: [0],
+            gamma: 0.0,
+        };
+        for p in [
+            PauliString::<1>::identity(),
+            PauliString::<1>::x(0),
+            PauliString::<1>::y(0),
+            PauliString::<1>::z(0),
+        ] {
+            let got: Vec<_> = outputs::<1>(&ch, true, p)
+                .into_iter()
+                .filter(|(_, c)| c.norm() > 1e-15)
+                .collect();
+            assert_eq!(got.len(), 1, "gamma=0 should not fan out");
+            assert_eq!(got[0].0, p);
+            assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn adjoint_respects_a_word_boundary_w2() {
+        let g = 0.4;
+        let ch = AmplitudeDamping {
+            support: [70],
+            gamma: g,
+        };
+        let got = outputs::<2>(&ch, true, PauliString::<2>::identity());
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].0, PauliString::<2>::z(70));
+        assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
+        // A term on the other side of the boundary is untouched.
+        let other = PauliString::<2>::x(3);
+        let got = outputs::<2>(&ch, true, other);
+        assert_eq!(got.len(), 2, "q=3 is I on the support, so it fans out");
+        assert_eq!(got[0].0, other);
+    }
 
     const TOL: f64 = 1e-12;
 

@@ -6,7 +6,7 @@ use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::PauliSum;
+use crate::pauli_sum::{PauliSum, ProductState};
 
 /// Default seed for the partitioning hash.
 ///
@@ -289,6 +289,44 @@ impl<const W: usize> BucketedSum<W> {
         self.len = sum.len();
     }
 
+    /// Expectation value in a uniform single-qubit product state, without
+    /// converting back to a [`PauliSum`].
+    ///
+    /// The same masked scan as
+    /// [`PauliSum::expectation_product_state`], run as a per-bucket parallel
+    /// reduction. This is what lets a driver hold one `BucketedSum` across many
+    /// [`propagate_bucketed`](crate::propagate_bucketed) calls and still read its
+    /// observable each step.
+    ///
+    /// # Summation order
+    ///
+    /// Partial sums are combined in bucket order, which is deterministic given
+    /// the partition but is **not** the globally-sorted order
+    /// `PauliSum::expectation_product_state` uses. Floating-point addition is not
+    /// associative, so the two can differ in the last bits — far below any
+    /// physically meaningful tolerance, but do not expect bitwise equality.
+    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
+        self.buckets
+            .par_iter()
+            .map(|cols| {
+                let mut acc = Complex64::new(0.0, 0.0);
+                for i in 0..cols.len() {
+                    let contributes = match state {
+                        ProductState::XPlus => cols.z[i] == [0u64; W],
+                        ProductState::ZPlus => cols.x[i] == [0u64; W],
+                        ProductState::YPlus => cols.x[i] == cols.z[i],
+                    };
+                    if contributes {
+                        acc += cols.coeff[i];
+                    }
+                }
+                acc
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
+    }
+
     /// Drop every term, keeping the hash and the bucket storage.
     pub fn clear(&mut self) {
         for cols in self.buckets.iter_mut() {
@@ -425,46 +463,38 @@ impl<const W: usize> BucketedSum<W> {
         self.buckets = merged;
     }
 
-    /// Bring the mean bucket occupancy back toward `target`.
+    /// Bring the bucket count to what [`desired_bits`] would choose for the
+    /// current length.
     ///
-    /// Hysteresis: refine only above `4 × target`, coarsen only below
-    /// `target / 4`. `n` swings by orders of magnitude every layer — fanout
-    /// grows it, truncation cuts it back — so acting on every small deviation
-    /// would thrash. Also keeps at least `4 × threads` buckets once there is
-    /// enough work to spread, so the bucket-parallel decomposition has slack to
-    /// load-balance (v0.2 §4.3).
+    /// # Why this is not hysteretic
     ///
-    /// All three constants are provisional; v0.2 §7.4 measures them.
+    /// It was, originally: refine only above `4 × target`, coarsen only below
+    /// `target / 4`, on the theory that `n` swings every layer (fanout grows it,
+    /// truncation cuts it back) and acting on every deviation would thrash.
+    ///
+    /// Measured, that band cost ~10% on the 2D Ising quench, because it lets the
+    /// steady state sit up to `4 ×` above target — 1562 terms per bucket instead
+    /// of 781 — and the per-bucket sort is `O(m log m)`. The guard was also
+    /// mostly redundant: bucket counts move in powers of two, so `desired_bits`
+    /// already only changes when `n` crosses a doubling, which for a
+    /// `TopN`-capped workload (the common case) is never.
+    ///
+    /// The residual risk is a sum that oscillates across a power-of-two boundary
+    /// on alternate layers, which would refine and coarsen repeatedly at `O(n)`
+    /// each. That is an accepted, unmeasured risk: no workload in the repo
+    /// exhibits it, and guarding it properly needs state this type does not
+    /// carry. Recorded rather than silently assumed away.
+    ///
+    /// Also keeps at least `min_buckets` buckets once there is enough work to
+    /// spread, so the bucket-parallel decomposition has slack to load-balance
+    /// (v0.2 §4.3).
     pub fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
-        let min_bits = {
-            let mut b = 0u8;
-            while (1usize << b) < min_buckets && b < super::hash::B_MAX_BITS {
-                b += 1;
-            }
-            b
-        };
-
-        // The parallelism floor applies only when there is enough work to be
-        // worth spreading. Note this is deliberately independent of `target`:
-        // a caller asking for huge buckets still wants its cores fed, but a
-        // 10-term sum wants neither.
-        let worth_splitting = self.len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
-        let floor_bits = if worth_splitting { min_bits } else { 0 };
-
-        // Grow while the mean is more than 4x the target.
-        while self.hash.bits() < super::hash::B_MAX_BITS
-            && self.len > 4 * target * self.num_buckets()
-        {
+        let want = desired_bits(self.len, target, min_buckets);
+        while self.hash.bits() < want {
             self.refine();
         }
-        // Grow to the parallelism floor.
-        while self.hash.bits() < floor_bits {
-            self.refine();
-        }
-        // Shrink while the mean is under a quarter of the target, never below
-        // the floor.
-        while self.hash.bits() > floor_bits && 4 * self.len < target * self.num_buckets() {
+        while self.hash.bits() > want {
             self.coarsen();
         }
     }
@@ -555,6 +585,55 @@ impl<const W: usize> BucketedSum<W> {
 // compile the lib tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod tests {
+    #[test]
+    fn bucketed_expectation_agrees_with_the_flat_version() {
+        // Not bitwise: partials are combined in bucket order, not global sorted
+        // order, and float addition is not associative. The tolerance below is
+        // ~1e5 times looser than the observed difference and ~1e5 times tighter
+        // than anything physically meaningful.
+        for &weight in &[2usize, 4] {
+            let sum = rand_low_weight_sum::<2>(20_000, 100, weight, 0xE1 + weight as u64);
+            let want = sum.expectation_product_state(ProductState::XPlus);
+            for bits in [0u8, 3, 7, 11] {
+                let h = Gf2Hash::<2>::new(100, bits, 0xE2);
+                let b = BucketedSum::from_sum(&sum, h);
+                let got = b.expectation_product_state(ProductState::XPlus);
+                assert!(
+                    (got - want).norm() < 1e-9,
+                    "weight={weight} bits={bits}: {got} vs {want}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bucketed_expectation_covers_all_three_states() {
+        let sum = rand_sum::<1>(5000, 20, 0xE3);
+        let h = Gf2Hash::<1>::new(20, 5, 0xE4);
+        let b = BucketedSum::from_sum(&sum, h);
+        for state in [
+            ProductState::XPlus,
+            ProductState::YPlus,
+            ProductState::ZPlus,
+        ] {
+            let got = b.expectation_product_state(state);
+            let want = sum.expectation_product_state(state);
+            assert!((got - want).norm() < 1e-9, "{state:?}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn bucketed_expectation_of_an_empty_sum_is_zero() {
+        let h = Gf2Hash::<1>::new(8, 3, 0xE5);
+        let b = BucketedSum::<1>::empty(8, h);
+        assert!(
+            b.expectation_product_state(ProductState::XPlus)
+                .norm()
+                .abs()
+                < 1e-15
+        );
+    }
+
     use super::*;
     use crate::accumulator::BuildAccumulator;
     use crate::phase::Phase;
@@ -884,15 +963,42 @@ mod tests {
     }
 
     #[test]
-    fn rebucket_is_hysteretic_not_twitchy() {
-        // Inside the band [target/4, 4*target] nothing should move, so a layer
-        // that nudges `n` up and down does not thrash rebucketing.
+    fn rebucket_is_a_no_op_when_already_at_the_target() {
+        // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves.
+        // (This test used to assert a 4x hysteresis band; that band was removed
+        // in C.4 after it measured ~10% slower on the Ising quench by parking the
+        // steady state up to 4x above target.)
         let sum = rand_sum::<2>(6400, 128, 0xD3);
         let h = Gf2Hash::<2>::new(128, 6, 0xC0DE); // 64 buckets, mean 100
         let mut b = BucketedSum::from_sum(&sum, h);
         let before = b.num_buckets();
         b.rebucket(100, 1);
-        assert_eq!(b.num_buckets(), before, "rebucket moved inside the band");
+        assert_eq!(
+            b.num_buckets(),
+            before,
+            "rebucket moved when already on target"
+        );
+    }
+
+    #[test]
+    fn rebucket_lands_on_desired_bits() {
+        // The contract after C.4: whatever the starting partition, `rebucket`
+        // converges on exactly what `desired_bits` would have chosen.
+        for &n in &[500usize, 6400, 60_000] {
+            let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
+            let want = desired_bits(sum.len(), 256, 8);
+            for start in [0u8, 3, 12] {
+                let h = Gf2Hash::<2>::new(128, start, 0xC0DE);
+                let mut b = BucketedSum::from_sum(&sum, h);
+                b.rebucket(256, 8);
+                assert_eq!(
+                    b.hash().bits(),
+                    want,
+                    "n={n} start={start}: did not converge on desired_bits",
+                );
+                b.assert_invariants();
+            }
+        }
     }
 
     #[test]

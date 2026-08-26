@@ -12,7 +12,9 @@ Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for archi
 
 The short version: partition the sum by a GF(2)-linear hash `h(v) = H·v`. Since channels act on keys by `v ↦ v ⊕ d` with `d` drawn from a small subspace, each *output* bucket gathers from 1/2/4/16 statically-known input buckets — so buckets are write-disjoint, duplicate keys can never straddle a bucket, and the global sort disappears. `propagate` converts in once, runs every layer bucketed, and converts out once.
 
-Measured: per-layer **8.6–54×** at 10⁶ terms, thread scaling **1.39× → 7.93×** (serial fraction ~74% → ~8%), 2D Ising quench **4.33×** end to end. One known regression: short circuits with no truncation and a rapidly growing sum, where the per-`propagate` conversion is not amortized — see results §5.
+Measured: per-layer **8.6–54×** at 10⁶ terms, thread scaling **1.39× → 7.93×** (serial fraction ~74% → ~8%), 2D Ising quench **4.69×** end to end. One known regression: short circuits with no truncation and a rapidly growing sum, where the per-`propagate` conversion is not amortized — see results §5.
+
+`propagate` converts in and out per call. For a *short* circuit applied repeatedly to a large sum (a Trotter driver), use **`propagate_bucketed`** instead and hold one `BucketedSum` across calls, reading observables with `BucketedSum::expectation_product_state`. `examples/ising_2d_quench.rs` does exactly that and is the reference for the pattern.
 
 `PauliSum` is unchanged and remains the public, globally-sorted type; `BucketedSum` is the propagation working form. The v0.1 engine is retained in `engine/sort_merge.rs` as the differential-testing oracle and as the per-layer fallback for a channel that declines to be prepared, and its `sort_phase` / `merge_into` are reused as the per-bucket kernels.
 

@@ -641,6 +641,42 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     group.finish();
 }
 
+/// Sweep the terms-per-bucket target, which sets the per-bucket sort size.
+///
+/// `DEFAULT_TARGET_BUCKET_LEN = 1024` was chosen from cache arithmetic alone (a
+/// `W=2` term is 48 B, so 1024 terms is ~48 KB against 1 MiB of L2 per core).
+/// This measures the curve instead of trusting that. Two effects pull against
+/// each other: larger buckets mean `O(m log m)` grows per element, smaller
+/// buckets mean more per-bucket fixed cost and more Rayon tasks.
+fn bench_bucket_size_sweep(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bucket_size_sweep_rotation_1e6");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x5_1EE0);
+    let rot = zz_rotation::<2>(0, 1, 0.1);
+    let policy = AlwaysKeep;
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    // bits chosen directly so the sweep is over bucket size, not over policy.
+    for &bits in &[4u8, 6, 8, 10, 12, 14] {
+        let per_bucket = n >> bits;
+        let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
+        let mut sum = BucketedSum::from_sum(&input, hash);
+        let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<2>::new();
+        group.bench_function(format!("{per_bucket}_per_bucket"), |bencher| {
+            bencher.iter(|| {
+                apply_layer_bucketed(&mut sum, black_box(&prep), &policy, &mut scratch);
+                black_box(sum.len())
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_mul_assign,
@@ -652,6 +688,7 @@ criterion_group!(
     bench_thread_scaling,
     bench_thread_scaling_bucketed,
     bench_bucket_conversion,
-    bench_finalize_top_n
+    bench_finalize_top_n,
+    bench_bucket_size_sweep
 );
 criterion_main!(benches);

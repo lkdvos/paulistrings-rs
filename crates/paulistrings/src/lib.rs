@@ -114,7 +114,7 @@ pub use accumulator::BuildAccumulator;
 pub use bucket::{BucketedSum, Gf2Hash};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use engine::{propagate, Direction};
+pub use engine::{default_min_buckets, propagate, propagate_bucketed, Direction};
 pub use pauli_string::PauliString;
 pub use pauli_sum::{PauliSum, ProductState};
 pub use phase::Phase;

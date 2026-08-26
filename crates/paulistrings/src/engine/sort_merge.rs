@@ -484,12 +484,7 @@ mod tests {
         // (fanout 1). Total = 3 outputs from 2 inputs.
         let p = PauliString::<1>::z(0);
         let theta = std::f64::consts::FRAC_PI_3;
-        let rot = PauliRotation::<1> {
-            support: vec![0],
-            gen_x: p.x,
-            gen_z: p.z,
-            theta,
-        };
+        let rot = PauliRotation::new(p, theta);
         let input = PauliSum::<1>::from_strings(&[
             ("X", Complex64::new(1.0, 0.0)),
             ("Z", Complex64::new(2.0, 0.0)),

@@ -47,30 +47,15 @@ impl ChannelSpec {
             Self::Swap { q0, q1 } => circuit.push(Clifford2Q::swap(q0, q1)),
             Self::Rz { theta, qubit } => {
                 let p = PauliString::<W>::z(qubit);
-                circuit.push(PauliRotation::<W> {
-                    support: vec![qubit],
-                    gen_x: p.x,
-                    gen_z: p.z,
-                    theta,
-                });
+                circuit.push(PauliRotation::new(p, theta));
             }
             Self::Rx { theta, qubit } => {
                 let p = PauliString::<W>::x(qubit);
-                circuit.push(PauliRotation::<W> {
-                    support: vec![qubit],
-                    gen_x: p.x,
-                    gen_z: p.z,
-                    theta,
-                });
+                circuit.push(PauliRotation::new(p, theta));
             }
             Self::Ry { theta, qubit } => {
                 let p = PauliString::<W>::y(qubit);
-                circuit.push(PauliRotation::<W> {
-                    support: vec![qubit],
-                    gen_x: p.x,
-                    gen_z: p.z,
-                    theta,
-                });
+                circuit.push(PauliRotation::new(p, theta));
             }
             Self::Depolarize { p, qubit } => {
                 circuit.push(Depolarizing {

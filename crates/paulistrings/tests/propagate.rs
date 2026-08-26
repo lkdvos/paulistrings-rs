@@ -123,12 +123,7 @@ fn apply_layer_pauli_rotation_pi_z_flips_x_sign() {
     // with a tiny coefficient. That's why the test uses approx_eq.
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
     let p = PauliString::<1>::z(0);
-    let rot = PauliRotation::<1> {
-        support: vec![0],
-        gen_x: p.x,
-        gen_z: p.z,
-        theta: std::f64::consts::PI,
-    };
+    let rot = PauliRotation::new(p, std::f64::consts::PI);
     let out = apply_layer(&input, &rot, &NoTruncation);
     // Two terms: X with coeff ≈ -1, Y with coeff ≈ 0. The Y term has a tiny
     // float remainder from sin(π), so it survives the merge but is within tol.
@@ -218,12 +213,7 @@ fn propagate_pauli_rotation_round_trip_via_heisenberg() {
     let p = PauliString::<1>::z(0);
     let theta = std::f64::consts::FRAC_PI_3;
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(PauliRotation::<1> {
-        support: vec![0],
-        gen_x: p.x,
-        gen_z: p.z,
-        theta,
-    });
+    circuit.push(PauliRotation::new(p, theta));
     let after_fwd = propagate(&circuit, input.clone(), &NoTruncation, Direction::Forward);
     let round_trip = propagate(&circuit, after_fwd, &NoTruncation, Direction::Heisenberg);
     // Find X coefficient, which should be ≈ 1 + 0i; tiny float remainder
@@ -314,12 +304,7 @@ fn propagate_top_n_truncates_each_layer() {
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
     let p = PauliString::<1>::z(0);
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(PauliRotation::<1> {
-        support: vec![0],
-        gen_x: p.x,
-        gen_z: p.z,
-        theta: std::f64::consts::FRAC_PI_3,
-    });
+    circuit.push(PauliRotation::new(p, std::f64::consts::FRAC_PI_3));
     let out = propagate(&circuit, input, &TopN(1), Direction::Forward);
     assert!(out.len() <= 1);
     // The X term has |cos(π/3)| = 0.5; the Y term has |sin(π/3)| ≈ 0.866;

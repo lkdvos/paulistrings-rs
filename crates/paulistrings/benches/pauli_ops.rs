@@ -159,15 +159,13 @@ fn low_weight_sum<const W: usize>(
 /// generator, 2 when it does not), so on random input the realized fanout is
 /// ~1.5 and the merge phase actually has duplicates to combine.
 fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
-    let mut gen_z = [0u64; W];
-    gen_z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
-    gen_z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
-    PauliRotation::<W> {
-        support: vec![q0, q1],
-        gen_x: [0u64; W],
-        gen_z,
-        theta,
-    }
+    let mut gen = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
+    gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    PauliRotation::new(gen, theta)
 }
 
 /// PauliString mul_assign — the inner hot loop of every channel that does a
@@ -381,12 +379,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
     for q in 0..num_qubits {
         let qq = q as u32;
         let gen = PauliString::<1>::x(qq);
-        circuit.push(PauliRotation::<1> {
-            support: vec![qq],
-            gen_x: gen.x,
-            gen_z: gen.z,
-            theta: 2.0 * theta,
-        });
+        circuit.push(PauliRotation::new(gen, 2.0 * theta));
     }
 
     // Kept small: a 64-channel circuit with fanout-2 channels and no truncation

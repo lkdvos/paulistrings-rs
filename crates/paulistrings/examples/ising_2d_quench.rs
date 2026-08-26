@@ -60,12 +60,7 @@ fn trotter_step(lx: usize, ly: usize, dt: f64) -> Circuit<1> {
             for partner in [right, down] {
                 let mut gen = PauliString::<1>::z(i);
                 gen.mul_assign(&PauliString::<1>::z(partner));
-                circuit.push(PauliRotation::<1> {
-                    support: vec![i, partner],
-                    gen_x: gen.x,
-                    gen_z: gen.z,
-                    theta: 2.0 * J * dt,
-                });
+                circuit.push(PauliRotation::new(gen, 2.0 * J * dt));
             }
         }
     }
@@ -73,12 +68,7 @@ fn trotter_step(lx: usize, ly: usize, dt: f64) -> Circuit<1> {
     // Transverse-field X rotations on every site.
     for site in 0..n as u32 {
         let gen = PauliString::<1>::x(site);
-        circuit.push(PauliRotation::<1> {
-            support: vec![site],
-            gen_x: gen.x,
-            gen_z: gen.z,
-            theta: 2.0 * H * dt,
-        });
+        circuit.push(PauliRotation::new(gen, 2.0 * H * dt));
     }
 
     circuit

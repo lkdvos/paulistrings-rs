@@ -19,6 +19,8 @@ Known gaps — check these before assuming a feature works:
 - CI runs Rust only (fmt, clippy, tests, doctests, examples, rustdoc). The PyO3 bindings and `python/paulistrings/tests/` are only ever validated locally.
 - No expectation-value / trace / overlap in the public API — `examples/ising_2d_quench.rs` hand-rolls its own. `PauliSum::from_strings` is still `pub(crate)` + `#[cfg(test)]`, so tests and examples build sums by hand.
 
+Public API change in v0.2 B.3: `PauliRotation`'s fields are now private and it is built with `PauliRotation::new(gen, theta)`, which **derives** the support from the generator. Previously `support` was caller-supplied and never validated against `gen_x`/`gen_z`; the bucketed engine reads `support()` to decide which bits to extract, so a mismatch would have been a silent miscompilation rather than a slow path. Accessors: `generator()`, `theta()`, `weight()`.
+
 One deliberate departure from the doc: `Channel::MAX_FANOUT` is a method `max_fanout(&self) -> usize`, not an associated `const`. This is required for `Box<dyn Channel<W>>` storage in `Circuit` (the channel set is open for user extensions, §6). Concrete impls return literal constants, so call sites through generics still constant-fold.
 
 ## Commands
@@ -66,7 +68,7 @@ Four design pillars, in priority order: (1) correctness of the Pauli algebra, (2
 When a channel acts, it perturbs only the bits in its support. A sorted input therefore stays *almost sorted* — order is preserved outside the support, perturbed only inside. Each layer is a three-phase pipeline:
 
 1. **Scan** — for each input term, channel writes ≤ `MAX_FANOUT` outputs into a pre-allocated buffer of size `n_in × MAX_FANOUT`. Embarrassingly parallel.
-2. **Bucket** — partition outputs into `2^(2|support|)` buckets indexed by support bits (4 buckets for 1Q, 16 for 2Q). Within each bucket relative order is inherited, so concatenation is sorted.
+2. **Bucket** — *never implemented, and the claim it rested on is false* (see the gap list above and `research/notes/2026-08-26-why-s5-concatenation-fails.md`). What ships is a sequential `O(n log n)` comparison sort. The design doc's text was: partition outputs into `2^(2|support|)` buckets indexed by support bits, within each bucket relative order is inherited, so concatenation is sorted — the last clause does not follow, because support bits are not the most-significant bits of the key.
 3. **Merge** — segmented reduction: adjacent equal keys combine, truncation `keep_term` is folded in.
 
 CPU and GPU implementations share this structure; only the parallelism mechanics differ (Rayon chunked scans vs CUB primitives). All parallelism is shared-nothing — no concurrent hashmap, no per-phase synchronization.

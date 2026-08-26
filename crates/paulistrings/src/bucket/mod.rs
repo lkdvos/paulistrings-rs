@@ -15,5 +15,7 @@
 //!   Deduplication is therefore bucket-local, and **there is no global sort**.
 
 pub mod hash;
+pub mod sum;
 
 pub use hash::{Gf2Hash, B_MAX_BITS};
+pub use sum::{BucketedSum, DEFAULT_TARGET_BUCKET_LEN, MIN_TERMS_PER_TASK};

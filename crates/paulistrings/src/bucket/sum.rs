@@ -55,7 +55,7 @@ impl<const W: usize> BucketCols<W> {
     }
 
     #[inline]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.coeff.len()
     }
 
@@ -94,6 +94,9 @@ impl<const W: usize> BucketCols<W> {
 #[derive(Clone, Debug)]
 pub struct BucketedSum<const W: usize> {
     buckets: Vec<BucketCols<W>>,
+    /// Retired bucket storage, kept for its capacity so a layer does not
+    /// allocate. See [`BucketedSum::begin_layer`].
+    spare: Vec<BucketCols<W>>,
     hash: Gf2Hash<W>,
     num_qubits: usize,
     len: usize,
@@ -135,6 +138,7 @@ impl<const W: usize> BucketedSum<W> {
 
         Self {
             buckets,
+            spare: Vec::new(),
             hash,
             num_qubits: sum.num_qubits(),
             len: n,
@@ -146,6 +150,7 @@ impl<const W: usize> BucketedSum<W> {
         let nb = hash.num_buckets();
         Self {
             buckets: (0..nb).map(|_| BucketCols::new()).collect(),
+            spare: Vec::new(),
             hash,
             num_qubits,
             len: 0,
@@ -363,6 +368,44 @@ impl<const W: usize> BucketedSum<W> {
         while self.hash.bits() > floor_bits && 4 * self.len < target * self.num_buckets() {
             self.coarsen();
         }
+    }
+
+    /// Start a layer: take the current buckets out as the layer's read-only
+    /// input, and hand back a cleared output set reusing the spare's capacity.
+    ///
+    /// The two must be separate allocations because a layer reads several input
+    /// buckets while writing one output bucket, so they cannot alias. Recycling
+    /// the spare is what keeps a layer allocation-free after the first
+    /// (v0.2 §4.2).
+    pub(crate) fn begin_layer(&mut self) -> (Vec<BucketCols<W>>, Vec<BucketCols<W>>) {
+        let input = std::mem::take(&mut self.buckets);
+        let mut out = std::mem::take(&mut self.spare);
+        out.truncate(input.len());
+        out.resize_with(input.len(), BucketCols::new);
+        for cols in out.iter_mut() {
+            cols.clear();
+        }
+        (input, out)
+    }
+
+    /// Finish a layer: install `output` and retire `input` as the new spare.
+    pub(crate) fn end_layer(&mut self, output: Vec<BucketCols<W>>, mut spare: Vec<BucketCols<W>>) {
+        self.len = output.iter().map(|c| c.len()).sum();
+        for cols in spare.iter_mut() {
+            cols.clear();
+        }
+        self.buckets = output;
+        self.spare = spare;
+    }
+
+    /// Mutable access to the buckets, for layers that can be applied in place.
+    pub(crate) fn buckets_mut(&mut self) -> &mut [BucketCols<W>] {
+        &mut self.buckets
+    }
+
+    /// Recompute the cached total after an in-place layer.
+    pub(crate) fn recount(&mut self) {
+        self.len = self.buckets.iter().map(|c| c.len()).sum();
     }
 
     /// Assert the structural invariant. Debug builds only.

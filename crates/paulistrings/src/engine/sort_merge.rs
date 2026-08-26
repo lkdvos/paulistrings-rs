@@ -350,10 +350,44 @@ fn merge_chunk<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     end: usize,
     policy: &T,
 ) -> ChunkOutput<W> {
-    let zero = Complex64::new(0.0, 0.0);
     let mut x: Vec<[u64; W]> = Vec::new();
     let mut z: Vec<[u64; W]> = Vec::new();
     let mut coeff: Vec<Complex64> = Vec::new();
+    merge_into::<W, T>(
+        sorted_x,
+        sorted_z,
+        sorted_coeff,
+        start,
+        end,
+        &mut x,
+        &mut z,
+        &mut coeff,
+        policy,
+    );
+    (x, z, coeff)
+}
+
+/// The segmented reduction itself, appending into caller-owned columns.
+///
+/// Extracted from `merge_chunk` so the bucketed engine can reuse it verbatim:
+/// per-bucket, this writes straight into the destination bucket's columns
+/// instead of growing three un-preallocated `Vec`s and copying again
+/// (v0.2 §6 step 4). `merge_chunk` now delegates here, so there is exactly one
+/// implementation of the reduction, zero-drop and `keep_term` semantics — the
+/// existing merge tests cover both callers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn merge_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    sorted_x: &[[u64; W]],
+    sorted_z: &[[u64; W]],
+    sorted_coeff: &[Complex64],
+    start: usize,
+    end: usize,
+    dst_x: &mut Vec<[u64; W]>,
+    dst_z: &mut Vec<[u64; W]>,
+    dst_coeff: &mut Vec<Complex64>,
+    policy: &T,
+) {
+    let zero = Complex64::new(0.0, 0.0);
     let mut i = start;
     while i < end {
         let key_x = sorted_x[i];
@@ -366,17 +400,16 @@ fn merge_chunk<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         }
         debug_assert!(
             i == 0 || (sorted_x[i - 1], sorted_z[i - 1]) <= (key_x, key_z),
-            "merge_chunk: scratch is not sorted at index {}",
+            "merge_into: scratch is not sorted at index {}",
             i,
         );
         if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
-            x.push(key_x);
-            z.push(key_z);
-            coeff.push(acc);
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
         }
         i = j;
     }
-    (x, z, coeff)
 }
 
 /// Partition `[0..len)` into `nchunks` non-empty sub-ranges whose interior

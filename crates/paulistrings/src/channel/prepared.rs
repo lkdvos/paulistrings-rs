@@ -32,6 +32,14 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 /// One key delta, with the amplitude it carries for each input support pattern.
 #[derive(Clone, Debug)]
 pub struct DeltaEntry<const W: usize> {
+    /// `δ = H·d`. Output bucket `β'` reads input bucket `β' ^ bucket_delta` for
+    /// this delta.
+    ///
+    /// Several entries may share a `bucket_delta`: with a dense random `H`,
+    /// `rank(H|_D) = dim D` and each is unique (v0.2 §2.6), but a collision is a
+    /// performance wart, not a correctness problem, and is handled by simply
+    /// having two entries name the same input bucket.
+    pub bucket_delta: u32,
     /// The delta in local support coordinates: bit `2j` is the x-bit of support
     /// qubit `j`, bit `2j+1` its z-bit.
     ///
@@ -48,21 +56,6 @@ pub struct DeltaEntry<const W: usize> {
     pub amp: [Complex64; LOCAL_DIM],
 }
 
-/// The deltas that map a given input bucket to a given output bucket.
-///
-/// Normally one member: with a dense random `H`, `rank(H|_D) = dim D` and each
-/// bucket delta has a unique preimage (v0.2 §2.6). More than one member means
-/// two distinct key deltas collided under `H`, which is a performance wart, not
-/// a correctness problem.
-#[derive(Clone, Debug)]
-pub struct DeltaGroup<const W: usize> {
-    /// `δ = H·d`, shared by every member. Output bucket `β'` reads input bucket
-    /// `β' ^ bucket_delta`.
-    pub bucket_delta: u32,
-    /// Members, ascending by `local_delta`.
-    pub members: Vec<DeltaEntry<W>>,
-}
-
 /// A channel with support on at most [`MAX_LOCAL_SUPPORT`] qubits, as a dense
 /// local Pauli-transfer matrix grouped by bucket delta.
 #[derive(Clone, Debug)]
@@ -71,8 +64,16 @@ pub struct LocalPtm<const W: usize> {
     qubits: [u32; MAX_LOCAL_SUPPORT],
     /// Number of support qubits, `0 ≤ k ≤ MAX_LOCAL_SUPPORT`.
     k: u8,
-    /// Groups, ordered by their smallest member `local_delta`.
-    groups: Vec<DeltaGroup<W>>,
+    /// The delta set, **ascending by `local_delta`**.
+    ///
+    /// Flat rather than grouped by `bucket_delta` on purpose. Grouping would
+    /// give better input-bucket locality, but the group order depends on `H·d`
+    /// and therefore on the bucket count, whereas the engine's summation order
+    /// for duplicate keys is observable through floating-point non-associativity.
+    /// Iterating a flat `local_delta`-ordered list keeps results identical across
+    /// bucket counts (v0.2 §9.1). Re-grouping for locality, with a tiebreak that
+    /// preserves this order, is a Phase C option.
+    deltas: Vec<DeltaEntry<W>>,
 }
 
 impl<const W: usize> LocalPtm<W> {
@@ -88,15 +89,26 @@ impl<const W: usize> LocalPtm<W> {
         &self.qubits[..self.k as usize]
     }
 
-    /// Delta groups, ordered by smallest member delta.
+    /// The delta set, ascending by `local_delta`. This is the order the engine
+    /// must gather in.
     #[inline]
-    pub fn groups(&self) -> &[DeltaGroup<W>] {
-        &self.groups
+    pub fn deltas(&self) -> &[DeltaEntry<W>] {
+        &self.deltas
     }
 
     /// Number of distinct key deltas, i.e. `|D|`.
+    #[inline]
     pub fn num_deltas(&self) -> usize {
-        self.groups.iter().map(|g| g.members.len()).sum()
+        self.deltas.len()
+    }
+
+    /// The distinct bucket deltas `h(D)`, ascending. Length is
+    /// `2^rank(H|_D)` — the number of input buckets each output bucket reads.
+    pub fn bucket_deltas(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.deltas.iter().map(|d| d.bucket_delta).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// Extract the local support pattern `s` of a key.
@@ -123,9 +135,7 @@ impl<const W: usize> LocalPtm<W> {
     /// `Clifford1Q::{x, y, z}` — which the baselines showed cost a full
     /// `O(n log n)` sort in v0.1 to multiply each coefficient by a scalar.
     pub fn is_key_preserving(&self) -> bool {
-        self.groups.len() == 1
-            && self.groups[0].members.len() == 1
-            && self.groups[0].members[0].local_delta == 0
+        self.deltas.len() == 1 && self.deltas[0].local_delta == 0
     }
 
     /// Lift a local delta to full-width XOR masks.
@@ -185,7 +195,7 @@ impl<const W: usize> Prepared<W> {
     /// length is `2^rank(H|_D)` — 1, 2, 4 or 16 for the built-ins (v0.2 §2.4).
     pub fn bucket_deltas(&self) -> Vec<u32> {
         match self {
-            Prepared::Local(p) => p.groups.iter().map(|g| g.bucket_delta).collect(),
+            Prepared::Local(p) => p.bucket_deltas(),
             Prepared::Rotation(r) => {
                 if r.bucket_delta_gen == r.bucket_delta_identity {
                     vec![r.bucket_delta_identity]
@@ -240,7 +250,7 @@ impl<const W: usize> Prepared<W> {
         let mut ptm = LocalPtm {
             qubits,
             k: k as u8,
-            groups: Vec::new(),
+            deltas: Vec::new(),
         };
 
         let table = probe_table(channel, &ptm, adjoint, false)?;
@@ -278,26 +288,15 @@ impl<const W: usize> Prepared<W> {
                 amp[s] = table[s][s ^ d];
             }
             let (mask_x, mask_z) = ptm.lift(d as u8);
-            let bucket_delta = hash.bucket_of(&mask_x, &mask_z);
-            let entry = DeltaEntry {
+            // `d` ascends over this loop, so `deltas` ends up sorted by
+            // `local_delta` with no explicit sort.
+            ptm.deltas.push(DeltaEntry {
+                bucket_delta: hash.bucket_of(&mask_x, &mask_z),
                 local_delta: d as u8,
                 mask_x,
                 mask_z,
                 amp,
-            };
-            match ptm
-                .groups
-                .iter_mut()
-                .find(|g| g.bucket_delta == bucket_delta)
-            {
-                // Groups therefore appear in order of their smallest member
-                // delta, and members ascend within a group.
-                Some(g) => g.members.push(entry),
-                None => ptm.groups.push(DeltaGroup {
-                    bucket_delta,
-                    members: vec![entry],
-                }),
-            }
+            });
         }
 
         Some(Prepared::Local(ptm))
@@ -452,20 +451,18 @@ mod tests {
         match prep {
             Prepared::Local(p) => {
                 let s = p.support_bits(x, z);
-                for g in p.groups() {
-                    for m in &g.members {
-                        let a = m.amp[s];
-                        if a == ZERO {
-                            continue;
-                        }
-                        let mut ox = *x;
-                        let mut oz = *z;
-                        for w in 0..W {
-                            ox[w] ^= m.mask_x[w];
-                            oz[w] ^= m.mask_z[w];
-                        }
-                        out.push((ox, oz, coeff * a));
+                for m in p.deltas() {
+                    let a = m.amp[s];
+                    if a == ZERO {
+                        continue;
                     }
+                    let mut ox = *x;
+                    let mut oz = *z;
+                    for w in 0..W {
+                        ox[w] ^= m.mask_x[w];
+                        oz[w] ^= m.mask_z[w];
+                    }
+                    out.push((ox, oz, coeff * a));
                 }
             }
             Prepared::Rotation(r) => {
@@ -835,7 +832,7 @@ mod tests {
             panic!("expected Local")
         };
         assert!(
-            p.groups().len() <= 2,
+            p.bucket_deltas().len() <= 2,
             "only 2 bucket values exist with 1 bit",
         );
         // No delta is dropped: the total member count is still |D| = 4.
@@ -845,27 +842,22 @@ mod tests {
     }
 
     #[test]
-    fn members_are_ascending_by_local_delta_within_each_group() {
-        // Determinism depends on iterating deltas in an order that does not
-        // depend on the bucket count (v0.2 §9.1). `local_delta` is that order.
-        let hash = Gf2Hash::<2>::new(128, 1, 0xC012);
-        let prep = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
-        let Prepared::Local(p) = prep else {
-            panic!("expected Local")
-        };
-        let mut prev_group_min = None;
-        for g in p.groups() {
-            for pair in g.members.windows(2) {
+    fn deltas_are_ascending_by_local_delta() {
+        // Determinism depends on gathering deltas in an order that does not
+        // depend on the bucket count (v0.2 §9.1). `local_delta` is that order,
+        // and it must hold even when bucket deltas collide (bits = 1 here).
+        for bits in [1u8, 4, 16] {
+            let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
+            let prep = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
+            let Prepared::Local(p) = prep else {
+                panic!("expected Local")
+            };
+            for pair in p.deltas().windows(2) {
                 assert!(
                     pair[0].local_delta < pair[1].local_delta,
-                    "members not ascending",
+                    "deltas not ascending at bits={bits}",
                 );
             }
-            let min = g.members[0].local_delta;
-            if let Some(prev) = prev_group_min {
-                assert!(prev < min, "groups not ordered by smallest member delta");
-            }
-            prev_group_min = Some(min);
         }
     }
 
@@ -879,10 +871,7 @@ mod tests {
             let Prepared::Local(p) = prep else {
                 panic!("expected Local")
             };
-            p.groups()
-                .iter()
-                .flat_map(|g| g.members.iter().map(|m| m.local_delta))
-                .collect()
+            p.deltas().iter().map(|m| m.local_delta).collect()
         };
         let reference = order(16);
         for bits in [1u8, 2, 4, 8, 12] {

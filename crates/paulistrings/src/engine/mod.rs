@@ -3,6 +3,7 @@
 //!
 //! See design doc §8 (loop) and §5 (sort-merge pipeline).
 
+pub mod bucketed;
 pub mod sort_merge;
 
 use crate::channel::Channel;

@@ -68,6 +68,7 @@
 pub mod clifford;
 pub mod identity;
 pub mod noise;
+pub mod prepared;
 pub mod rotation;
 pub mod unitary;
 
@@ -77,7 +78,9 @@ pub use noise::{AmplitudeDamping, Dephasing, Depolarizing};
 pub use rotation::PauliRotation;
 pub use unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
 
+use crate::bucket::hash::Gf2Hash;
 use num_complex::Complex64;
+use prepared::Prepared;
 
 /// Pre-allocated, fixed-capacity SoA scratch buffer for channel outputs.
 ///
@@ -170,6 +173,30 @@ pub trait Channel<const W: usize>: Send + Sync {
         out: &mut OutputBuffer<'_, W>,
     ) {
         self.apply(input_x, input_z, coeff, out);
+    }
+
+    /// Prepare this channel for one layer of the bucketed engine.
+    ///
+    /// The default derives a dense local Pauli-transfer matrix by probing
+    /// `apply` on the `4^|support|` local basis Paulis, so **a channel that
+    /// implements `apply` gets the bucketed engine for free** — the research
+    /// extensibility surface of §6 does not grow. Override only when the support
+    /// is wider than [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description
+    /// exists; among the built-ins, only `PauliRotation` above generator weight
+    /// 2 needs to.
+    ///
+    /// `None` means "this channel cannot be bucketed": the engine falls back to
+    /// the v0.1 whole-sum path, which is correct but slower. It is a performance
+    /// fallback, never a correctness compromise.
+    ///
+    /// # Contract
+    ///
+    /// Implementors must honour bounded support: the output amplitude may depend
+    /// on the input only through its bits at [`Channel::support`] positions.
+    /// Deriving assumes it; debug builds check it against an all-ones background,
+    /// and a property test checks it against randomized full-width inputs.
+    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+        Prepared::derive_local(self, hash, adjoint)
     }
 }
 

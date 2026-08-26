@@ -1,6 +1,8 @@
 //! Pauli rotation `exp(-i * theta * P / 2)`. See §6.
 
+use super::prepared::{Prepared, RotationPrep, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
+use crate::bucket::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
 use num_complex::Complex64;
@@ -176,6 +178,26 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         out: &mut OutputBuffer<'_, W>,
     ) {
         self.apply_with_theta(-self.theta, input_x, input_z, coeff, out);
+    }
+
+    /// At generator weight ≤ 2 the default table derivation applies and is
+    /// faster (the `i^k` phase gets baked in). Above that the table would be
+    /// `4^w × 4^w`, so fall back to the functional form: the delta set is still
+    /// just `{0, P}`, so only 2 buckets are read at *any* weight — only the
+    /// amplitude has to be computed per term.
+    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+        if self.weight() <= MAX_LOCAL_SUPPORT {
+            return Prepared::derive_local(self, hash, adjoint);
+        }
+        let theta = if adjoint { -self.theta } else { self.theta };
+        let gen = self.generator();
+        Some(Prepared::Rotation(RotationPrep {
+            gen,
+            cos: theta.cos(),
+            sin: theta.sin(),
+            bucket_delta_identity: 0,
+            bucket_delta_gen: hash.bucket_of_pauli(&gen),
+        }))
     }
 }
 

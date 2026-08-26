@@ -6,6 +6,7 @@ use super::TruncationPolicy;
 use crate::bucket::sum::BucketedSum;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 /// Drop terms whose coefficient magnitude is at most `epsilon`.
 ///
@@ -161,13 +162,27 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
         offsets.push(total);
 
-        // (norm, bucket, index-within-bucket)
+        // (norm, bucket, index-within-bucket).
+        //
+        // Built in parallel. The comparator below is a *total* order -- norm,
+        // then key, and keys are globally unique -- so the order in which
+        // `ranked` is assembled cannot affect which terms survive. Rayon's
+        // `collect` is order-preserving anyway, but the correctness argument does
+        // not rely on that.
+        let ranked_per_bucket: Vec<Vec<(f64, u32, u32)>> = (0..nb)
+            .into_par_iter()
+            .map(|b| {
+                let (_, _, coeff) = sum.bucket(b);
+                coeff
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.norm(), b as u32, i as u32))
+                    .collect()
+            })
+            .collect();
         let mut ranked: Vec<(f64, u32, u32)> = Vec::with_capacity(total);
-        for b in 0..nb {
-            let (_, _, coeff) = sum.bucket(b);
-            for (i, c) in coeff.iter().enumerate() {
-                ranked.push((c.norm(), b as u32, i as u32));
-            }
+        for chunk in ranked_per_bucket {
+            ranked.extend_from_slice(&chunk);
         }
 
         {
@@ -191,23 +206,29 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             keep[offsets[b as usize] + i as usize] = true;
         }
 
-        for (b, cols) in sum.buckets_mut().iter_mut().enumerate() {
-            let base = offsets[b];
-            let len = cols.len();
-            let mut write = 0usize;
-            for i in 0..len {
-                if !keep[base + i] {
-                    continue;
+        // Compaction is per-bucket and in place, so it parallelizes directly.
+        let keep_ref = &keep;
+        let offsets_ref = &offsets;
+        sum.buckets_mut()
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(b, cols)| {
+                let base = offsets_ref[b];
+                let len = cols.len();
+                let mut write = 0usize;
+                for i in 0..len {
+                    if !keep_ref[base + i] {
+                        continue;
+                    }
+                    cols.x[write] = cols.x[i];
+                    cols.z[write] = cols.z[i];
+                    cols.coeff[write] = cols.coeff[i];
+                    write += 1;
                 }
-                cols.x[write] = cols.x[i];
-                cols.z[write] = cols.z[i];
-                cols.coeff[write] = cols.coeff[i];
-                write += 1;
-            }
-            cols.x.truncate(write);
-            cols.z.truncate(write);
-            cols.coeff.truncate(write);
-        }
+                cols.x.truncate(write);
+                cols.z.truncate(write);
+                cols.coeff.truncate(write);
+            });
         sum.recount();
     }
 }

@@ -10,12 +10,17 @@
 //! 4. **Merge** — segmented reduction with the zero-drop and `keep_term`,
 //!    reusing [`merge_into`], writing straight into the destination bucket.
 //!
-//! Output buckets are write-disjoint (v0.2 §2.4), so step 2-4 for different `β'`
-//! never interact. This file is deliberately **sequential**: Phase C replaces the
-//! bucket loop with `par_iter_mut` and nothing else. Establishing correctness
-//! first is the point.
+//! Output buckets are write-disjoint (v0.2 §2.4), so steps 2-4 for different `β'`
+//! never interact: the bucket loop is a plain `par_iter_mut` with no atomics, no
+//! locks, and no reconciliation pass. That was the whole point of gathering
+//! rather than scattering (§6.1).
+//!
+//! Phase B established correctness with this loop sequential; C.1 changed exactly
+//! the two iterators and nothing else, which is why the differential and
+//! determinism tests carried over unchanged.
 
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 use super::sort_merge::{merge_into, sort_phase};
 use crate::bucket::sum::{BucketCols, BucketedSum};
@@ -100,31 +105,20 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 
     let (input, mut output) = sum.begin_layer();
 
-    // Iterating the *output* buckets is the parallel decomposition: each owns
-    // its destination and only reads `input`. Phase C replaces this with
-    // `par_iter_mut().enumerate()` and changes nothing else.
-    for (out_b, dst) in output.iter_mut().enumerate() {
-        let cap = gather_capacity(&input, out_b, prep);
-        scratch.reset(cap);
-        match prep {
-            Prepared::Local(ptm) => gather_local(&input, out_b, ptm, scratch),
-            Prepared::Rotation(r) => gather_rotation(&input, out_b, r, scratch),
+    // Iterating the *output* buckets is the parallel decomposition: each task owns
+    // its destination and only reads `input`. `scratch` is used for the
+    // single-threaded path; parallel tasks get their own via `for_each_init`.
+    let input_ref = &input;
+    if output.len() < MIN_BUCKETS_FOR_PARALLEL {
+        for (out_b, dst) in output.iter_mut().enumerate() {
+            fill_bucket::<W, T>(input_ref, out_b, dst, prep, policy, scratch);
         }
-        debug_assert!(scratch.len() <= cap, "gather exceeded its computed bound");
-
-        let len = scratch.len();
-        sort_phase(&mut scratch.x, &mut scratch.z, &mut scratch.coeff, len);
-
-        merge_into::<W, T>(
-            &scratch.x,
-            &scratch.z,
-            &scratch.coeff,
-            0,
-            len,
-            &mut dst.x,
-            &mut dst.z,
-            &mut dst.coeff,
-            policy,
+    } else {
+        output.par_iter_mut().enumerate().for_each_init(
+            LayerScratch::<W>::new,
+            |local, (out_b, dst)| {
+                fill_bucket::<W, T>(input_ref, out_b, dst, prep, policy, local);
+            },
         );
     }
 
@@ -132,6 +126,48 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
+}
+
+/// Below this many buckets there is nothing to spread, so skip Rayon entirely.
+///
+/// `desired_bits` already gives a small sum few buckets, so this mostly catches
+/// the `bits = 0` case where the bucketed path degenerates to a single
+/// whole-sum gather.
+const MIN_BUCKETS_FOR_PARALLEL: usize = 2;
+
+/// Gather, sort and merge one output bucket. The unit of parallel work.
+fn fill_bucket<const W: usize, T>(
+    input: &[BucketCols<W>],
+    out_b: usize,
+    dst: &mut BucketCols<W>,
+    prep: &Prepared<W>,
+    policy: &T,
+    scratch: &mut LayerScratch<W>,
+) where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    let cap = gather_capacity(input, out_b, prep);
+    scratch.reset(cap);
+    match prep {
+        Prepared::Local(ptm) => gather_local(input, out_b, ptm, scratch),
+        Prepared::Rotation(r) => gather_rotation(input, out_b, r, scratch),
+    }
+    debug_assert!(scratch.len() <= cap, "gather exceeded its computed bound");
+
+    let len = scratch.len();
+    sort_phase(&mut scratch.x, &mut scratch.z, &mut scratch.coeff, len);
+
+    merge_into::<W, T>(
+        &scratch.x,
+        &scratch.z,
+        &scratch.coeff,
+        0,
+        len,
+        &mut dst.x,
+        &mut dst.z,
+        &mut dst.coeff,
+        policy,
+    );
 }
 
 /// Exact upper bound on the gather for one output bucket: the total size of the
@@ -245,7 +281,7 @@ where
     T: TruncationPolicy<W> + ?Sized,
 {
     let amp = &ptm.deltas()[0].amp;
-    for cols in sum.buckets_mut() {
+    sum.buckets_mut().par_iter_mut().for_each(|cols| {
         let n = cols.len();
         let mut keep = 0usize;
         for i in 0..n {
@@ -263,14 +299,18 @@ where
         cols.x.truncate(keep);
         cols.z.truncate(keep);
         cols.coeff.truncate(keep);
-    }
+    });
     sum.recount();
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
 }
 
-#[cfg(test)]
+// Gated on `debug_assertions` because these tests call `assert_invariants`,
+// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
+// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
+// compile the lib tests in release mode, fail to build.
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
     use crate::accumulator::BuildAccumulator;
@@ -814,7 +854,11 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// Gated on `debug_assertions` because these tests call `assert_invariants`,
+// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
+// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
+// compile the lib tests in release mode, fail to build.
+#[cfg(all(test, debug_assertions))]
 mod finalize_tests {
     use super::tests::rand_sum;
     use super::*;
@@ -1012,8 +1056,94 @@ mod finalize_tests {
     }
 }
 
-#[cfg(test)]
+// Gated on `debug_assertions` because these tests call `assert_invariants`,
+// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
+// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
+// compile the lib tests in release mode, fail to build.
+#[cfg(all(test, debug_assertions))]
 mod tie_tests {
+    /// The C.1 determinism contract: byte-identical output across thread counts,
+    /// with the *engine* parallel. `apply_layer_bucketed` fixes the bucket count
+    /// here, so this isolates thread count from partition (the propagate-level
+    /// test in tests/propagate_bucketed.rs varies both together).
+    #[test]
+    fn parallel_output_is_byte_identical_across_thread_counts() {
+        use crate::channel::rotation::PauliRotation;
+        use crate::channel::Channel;
+
+        let input = rand_sum::<1>(4000, 10, 0xC1C1);
+        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.37);
+        let cnot = crate::channel::clifford::Clifford2Q::cnot(1, 5);
+
+        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
+            // 64 buckets: comfortably above MIN_BUCKETS_FOR_PARALLEL, so the
+            // parallel path is genuinely exercised.
+            let run = |threads: usize| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("pool")
+                    .install(|| {
+                        let hash = Gf2Hash::<1>::new(10, 6, 0xC1);
+                        let mut b = BucketedSum::from_sum(&input, hash);
+                        let prep = ch.prepare(b.hash(), false).unwrap();
+                        let mut scratch = LayerScratch::<1>::new();
+                        apply_layer_bucketed(
+                            &mut b,
+                            &prep,
+                            &super::tests::AlwaysKeep,
+                            &mut scratch,
+                        );
+                        b.into_sum()
+                    })
+            };
+            let reference = run(1);
+            for threads in [2usize, 4, 8, 16, 32] {
+                let got = run(threads);
+                assert_eq!(got.len(), reference.len(), "threads={threads}");
+                assert_eq!(got.x(), reference.x(), "threads={threads}: x keys");
+                assert_eq!(got.z(), reference.z(), "threads={threads}: z keys");
+                assert_eq!(
+                    got.coeff(),
+                    reference.coeff(),
+                    "threads={threads}: coefficients are not byte-identical",
+                );
+            }
+        }
+    }
+
+    /// The in-place rescale path is parallel too, and must give the same answer.
+    #[test]
+    fn parallel_rescale_is_byte_identical_across_thread_counts() {
+        use crate::channel::noise::Depolarizing;
+        use crate::channel::Channel;
+
+        let input = rand_sum::<1>(4000, 10, 0xC1C2);
+        let depol = Depolarizing {
+            support: [3],
+            p: 0.11,
+        };
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool")
+                .install(|| {
+                    let hash = Gf2Hash::<1>::new(10, 6, 0xC2);
+                    let mut b = BucketedSum::from_sum(&input, hash);
+                    let prep = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
+                    let mut scratch = LayerScratch::<1>::new();
+                    apply_layer_bucketed(&mut b, &prep, &super::tests::AlwaysKeep, &mut scratch);
+                    b.into_sum()
+                })
+        };
+        let reference = run(1);
+        for threads in [2usize, 8, 32] {
+            let got = run(threads);
+            assert_eq!(got.coeff(), reference.coeff(), "threads={threads}");
+        }
+    }
+
     use super::tests::rand_sum;
     use super::*;
     use crate::bucket::hash::Gf2Hash;

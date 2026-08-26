@@ -8,7 +8,13 @@ v0.1 is **feature-complete** (`GeneralUnitary1Q/2Q` landed in v0.2 B.9; there ar
 `cargo test --workspace` is green (214 tests, none ignored) and `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for architecture; doc comments reference its section numbers (`§3.1`, `§5`, etc.) so the mapping back to the doc is direct.
 
-**v0.2 is in progress: a GF(2)-linear bucketing engine.** Design in `research/plans/2026-08-26-v0.2-gf2-bucketing.md`, work order in `research/plans/2026-08-26-v0.2-tdd-slices.md`. It **supersedes v0.1 scope §5 (sort-merge) and §9 (parallelism)**, which are marked as such in place; every other v0.1 section stands. The short version: partition the sum by a GF(2)-linear hash `h(v) = H·v`; since channels act on keys by `v ↦ v ⊕ d` with `d` drawn from a small subspace, each *output* bucket gathers from 1/2/4/16 statically-known input buckets, so buckets are write-disjoint and duplicate keys can never straddle a bucket — which removes the global sort entirely. Nothing of v0.2 has landed yet; the description below is still the shipped v0.1 architecture.
+**v0.2 has landed: a GF(2)-linear bucketing engine.** Design in `research/plans/2026-08-26-v0.2-gf2-bucketing.md`, work order in `research/plans/2026-08-26-v0.2-tdd-slices.md`, measured results in `research/notes/2026-08-26-v0.2-results.md`. It **supersedes v0.1 scope §5 (sort-merge) and §9 (parallelism)**, which are marked as such in place; every other v0.1 section stands.
+
+The short version: partition the sum by a GF(2)-linear hash `h(v) = H·v`. Since channels act on keys by `v ↦ v ⊕ d` with `d` drawn from a small subspace, each *output* bucket gathers from 1/2/4/16 statically-known input buckets — so buckets are write-disjoint, duplicate keys can never straddle a bucket, and the global sort disappears. `propagate` converts in once, runs every layer bucketed, and converts out once.
+
+Measured: per-layer **8.6–54×** at 10⁶ terms, thread scaling **1.39× → 7.93×** (serial fraction ~74% → ~8%), 2D Ising quench **4.33×** end to end. One known regression: short circuits with no truncation and a rapidly growing sum, where the per-`propagate` conversion is not amortized — see results §5.
+
+`PauliSum` is unchanged and remains the public, globally-sorted type; `BucketedSum` is the propagation working form. The v0.1 engine is retained in `engine/sort_merge.rs` as the differential-testing oracle and as the per-layer fallback for a channel that declines to be prepared, and its `sort_phase` / `merge_into` are reused as the per-bucket kernels.
 
 Known gaps — check these before assuming a feature works:
 
@@ -63,6 +69,8 @@ Four design pillars, in priority order: (1) correctness of the Pauli algebra, (2
 - **`PauliSum<const W: usize>`** — structure-of-arrays: parallel `Vec<[u64; W]>` for `x` and `z`, `Vec<Complex64>` for coefficients, plus `num_qubits`. **Invariant: sorted by `(x, z)` key, no duplicates.** SoA is chosen so coefficient-only and key-only scans get full cache utilization, and so each `Vec` maps directly to a GPU device buffer.
 
 ### The central algorithm: sort-merge (not hashmap)
+
+**This section describes the superseded v0.1 engine, which is still present as the oracle. For the shipped path see the v0.2 design doc §2 and §6.**
 
 When a channel acts, it perturbs only the bits in its support. A sorted input therefore stays *almost sorted* — order is preserved outside the support, perturbed only inside. Each layer is a three-phase pipeline:
 

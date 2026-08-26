@@ -2,8 +2,7 @@
 //! doc §4.
 
 use num_complex::Complex64;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
@@ -38,14 +37,6 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     }
     b
 }
-
-/// Lexicographic `(x, z)` merge key. `[u64; W]`'s derived `Ord` is lex over
-/// elements, so this matches `PauliString::cmp` and `sort_phase` exactly.
-type MergeKey<const W: usize> = ([u64; W], [u64; W]);
-
-/// Min-heap over bucket heads for the `B`-way merge in
-/// [`BucketedSum::into_sum`], carrying the source bucket index alongside the key.
-type MergeHeap<const W: usize> = BinaryHeap<Reverse<(MergeKey<W>, usize)>>;
 
 /// Minimum terms per bucket for the parallelism floor to apply.
 ///
@@ -104,6 +95,62 @@ impl<const W: usize> BucketCols<W> {
     }
 }
 
+/// Merge two sorted runs. No coefficient combining: keys are globally unique.
+fn merge_two<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols<W> {
+    let mut out = BucketCols::<W>::new();
+    let total = a.len() + b.len();
+    out.x.reserve_exact(total);
+    out.z.reserve_exact(total);
+    out.coeff.reserve_exact(total);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        if (&a.x[i], &a.z[i]) <= (&b.x[j], &b.z[j]) {
+            out.push(a.x[i], a.z[i], a.coeff[i]);
+            i += 1;
+        } else {
+            out.push(b.x[j], b.z[j], b.coeff[j]);
+            j += 1;
+        }
+    }
+    while i < a.len() {
+        out.push(a.x[i], a.z[i], a.coeff[i]);
+        i += 1;
+    }
+    while j < b.len() {
+        out.push(b.x[j], b.z[j], b.coeff[j]);
+        j += 1;
+    }
+    out
+}
+
+/// Merge `B` sorted runs into one, by `log2(B)` rounds of pairwise merges.
+///
+/// Replaces a `BinaryHeap`-based `B`-way merge, which measured 147 ms at
+/// 10⁶ terms and 1024 buckets — 147 ns per element, because every pop does
+/// `log2(B)` comparisons against 32-byte keys scattered across 1024 runs, and
+/// the heap is inherently sequential.
+///
+/// The tree does the same `O(n log B)` comparisons but reads two sequential
+/// streams at a time, and every pair within a round is independent, so the rounds
+/// parallelize. It costs `log B` passes over the payload instead of one, which is
+/// the trade: sequential bandwidth for random access, and it wins.
+fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
+    if runs.is_empty() {
+        return BucketCols::new();
+    }
+    while runs.len() > 1 {
+        runs = runs
+            .par_chunks(2)
+            .map(|pair| match pair {
+                [a, b] => merge_two(a, b),
+                [a] => a.clone(),
+                _ => unreachable!("par_chunks(2) yields 1 or 2 elements"),
+            })
+            .collect();
+    }
+    runs.pop().expect("non-empty by the check above")
+}
+
 /// A Pauli sum partitioned by a GF(2)-linear hash — the propagation working
 /// form.
 ///
@@ -143,14 +190,21 @@ impl<const W: usize> BucketedSum<W> {
         let n = sum.len();
         let nb = hash.num_buckets();
 
-        // Hashing is the expensive part, so index once and count from the
-        // indices rather than hashing twice.
-        let mut idx: Vec<u32> = Vec::with_capacity(n);
+        // Hashing is the expensive part -- `b × 2W` AND+popcount-parity ops per
+        // term, and the only place in the whole design where it happens at all
+        // (v0.2 §2.6) -- so it runs in parallel, and the counts come from the
+        // resulting indices rather than from a second hashing pass.
+        //
+        // The scatter below stays sequential: buckets are separate allocations,
+        // so a parallel scatter would need every thread to write into every
+        // bucket. Measured, hashing dominates.
+        let idx: Vec<u32> = (0..n)
+            .into_par_iter()
+            .map(|i| hash.bucket_of(&sum.x()[i], &sum.z()[i]))
+            .collect();
         let mut counts: Vec<usize> = vec![0; nb];
-        for i in 0..n {
-            let b = hash.bucket_of(&sum.x()[i], &sum.z()[i]);
+        for &b in idx.iter() {
             counts[b as usize] += 1;
-            idx.push(b);
         }
 
         let mut buckets: Vec<BucketCols<W>> = Vec::with_capacity(nb);
@@ -193,46 +247,28 @@ impl<const W: usize> BucketedSum<W> {
     /// coefficient combining is needed: equal keys share a bucket and buckets
     /// are already deduplicated, so every key in the merge is distinct.
     pub fn into_sum(self) -> PauliSum<W> {
-        self.to_sum()
+        let num_qubits = self.num_qubits;
+        let merged = merge_runs(self.buckets);
+        PauliSum::<W> {
+            x: merged.x,
+            z: merged.z,
+            coeff: merged.coeff,
+            num_qubits,
+        }
     }
 
     /// Collapse to a globally-sorted [`PauliSum`] without consuming `self`.
     ///
-    /// Same `B`-way merge as [`Self::into_sum`]; used by the default
-    /// `finalize_layer_bucketed`, which has to hand a `&mut PauliSum` to a
-    /// policy that only knows how to work on the whole sum.
+    /// Clones the bucket storage and then runs the same merge as
+    /// [`Self::into_sum`]. Used by the default `finalize_layer_bucketed`, which
+    /// has to hand a `&mut PauliSum` to a policy that only understands the whole
+    /// sum; prefer `into_sum` on the hot path, which merges in place.
     pub fn to_sum(&self) -> PauliSum<W> {
-        let mut x: Vec<[u64; W]> = Vec::with_capacity(self.len);
-        let mut z: Vec<[u64; W]> = Vec::with_capacity(self.len);
-        let mut coeff: Vec<Complex64> = Vec::with_capacity(self.len);
-
-        // Min-heap over bucket heads, keyed by the same lexicographic
-        // `(x, z)` order `PauliString::cmp` and `sort_phase` use.
-        let mut heap: MergeHeap<W> = BinaryHeap::with_capacity(self.buckets.len());
-        let mut cursor: Vec<usize> = vec![0; self.buckets.len()];
-
-        for (b, cols) in self.buckets.iter().enumerate() {
-            if cols.len() > 0 {
-                heap.push(Reverse(((cols.x[0], cols.z[0]), b)));
-            }
-        }
-
-        while let Some(Reverse(((kx, kz), b))) = heap.pop() {
-            let i = cursor[b];
-            x.push(kx);
-            z.push(kz);
-            coeff.push(self.buckets[b].coeff[i]);
-            cursor[b] = i + 1;
-            if cursor[b] < self.buckets[b].len() {
-                let j = cursor[b];
-                heap.push(Reverse(((self.buckets[b].x[j], self.buckets[b].z[j]), b)));
-            }
-        }
-
+        let merged = merge_runs(self.buckets.clone());
         PauliSum::<W> {
-            x,
-            z,
-            coeff,
+            x: merged.x,
+            z: merged.z,
+            coeff: merged.coeff,
             num_qubits: self.num_qubits,
         }
     }
@@ -513,7 +549,11 @@ impl<const W: usize> BucketedSum<W> {
     }
 }
 
-#[cfg(test)]
+// Gated on `debug_assertions` because these tests call `assert_invariants`,
+// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
+// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
+// compile the lib tests in release mode, fail to build.
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
     use crate::accumulator::BuildAccumulator;

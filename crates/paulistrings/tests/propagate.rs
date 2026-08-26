@@ -313,6 +313,10 @@ fn propagate_top_n_truncates_each_layer() {
     let y = PauliString::<1>::y(0);
     assert_eq!(out.x()[0], y.x);
     assert_eq!(out.z()[0], y.z);
+    // `assert_invariants` is debug-only, and integration tests are also built
+    // by `cargo test --release`, so the call has to be gated or the release test
+    // binary does not compile.
+    #[cfg(debug_assertions)]
     out.assert_invariants();
 }
 

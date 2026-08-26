@@ -36,8 +36,10 @@ use criterion::{
 };
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
+use paulistrings::bucket::{BucketedSum, Gf2Hash, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, Depolarizing, PauliRotation};
 use paulistrings::circuit::Circuit;
+use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
 use paulistrings::engine::sort_merge::apply_layer;
 use paulistrings::engine::{propagate, Direction};
 use paulistrings::pauli_string::PauliString;
@@ -438,13 +440,218 @@ fn bench_thread_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+/// Bucket count the engine would pick for `n` terms at the given thread count.
+fn bits_for(n: usize, threads: usize) -> u8 {
+    paulistrings::bucket::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, 4 * threads)
+}
+
+/// One `apply_layer_bucketed` case, on an already-bucketed sum.
+///
+/// The layer is applied **in place, repeatedly**, with no per-iteration reset.
+/// That is sound rather than sloppy: every channel's delta set `D` is a subspace,
+/// so after one layer the key set is closed under `D` and the term count
+/// stabilizes — a rotation, for instance, produces `S ∪ (S ⊕ gen)` and then stops
+/// growing, because that set is already closed under `⊕ gen`. Criterion's warm-up
+/// reaches the fixed point before timing starts. Resetting instead would mean
+/// cloning or re-scattering a 10⁶-term sum per iteration, which would dominate
+/// the measurement.
+fn bucketed_layer_case<const W: usize, C>(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    label: String,
+    input: &PauliSum<W>,
+    ch: &C,
+    threads: usize,
+) where
+    C: Channel<W> + ?Sized,
+{
+    let policy = AlwaysKeep;
+    let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len(), threads), 0xBEEF);
+    let mut sum = BucketedSum::from_sum(input, hash);
+    let prep = ch
+        .prepare(sum.hash(), false)
+        .expect("channel could not be prepared");
+    let mut scratch = LayerScratch::<W>::new();
+
+    group.throughput(Throughput::Elements(input.len() as u64));
+    group.bench_function(label, |bencher| {
+        bencher.iter(|| {
+            apply_layer_bucketed(&mut sum, black_box(&prep), &policy, &mut scratch);
+            black_box(sum.len())
+        })
+    });
+}
+
+/// The v0.2 bucketed engine on the same four channel classes as
+/// `bench_apply_layer`, so the two groups are directly comparable.
+fn bench_apply_layer_bucketed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("apply_layer_bucketed");
+    group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
+
+    let h = Clifford1Q::h(0);
+    let cnot = Clifford2Q::cnot(0, 1);
+    let depol = Depolarizing {
+        support: [0],
+        p: 0.05,
+    };
+    let rot = zz_rotation::<2>(0, 1, 0.1);
+    let threads = rayon::current_num_threads().max(1);
+
+    for &n in &[10_000usize, 1_000_000usize] {
+        let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+        if n >= 1_000_000 {
+            group.sample_size(10);
+            group.warm_up_time(Duration::from_millis(500));
+        } else {
+            group.sample_size(30);
+            group.warm_up_time(Duration::from_secs(1));
+        }
+        bucketed_layer_case(
+            &mut group,
+            format!("depolarizing/{n}"),
+            &input,
+            &depol,
+            threads,
+        );
+        bucketed_layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h, threads);
+        bucketed_layer_case(
+            &mut group,
+            format!("clifford2q_cnot/{n}"),
+            &input,
+            &cnot,
+            threads,
+        );
+        bucketed_layer_case(
+            &mut group,
+            format!("rotation_zz/{n}"),
+            &input,
+            &rot,
+            threads,
+        );
+    }
+
+    group.finish();
+}
+
+/// Thread scaling of the bucketed engine, against `bench_thread_scaling`'s
+/// v0.1 numbers on the same input and channel.
+fn bench_thread_scaling_bucketed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("thread_scaling_bucketed_rotation_1e6");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let rot = zz_rotation::<2>(0, 1, 0.1);
+    let policy = AlwaysKeep;
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    for &t in &[1usize, 2, 4, 8, 16, 32] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build()
+            .expect("failed to build rayon pool");
+        // Bucket count is fixed per thread count exactly as `propagate` would
+        // choose it, so this measures the configuration users actually get.
+        let hash = Gf2Hash::<2>::new(128, bits_for(input.len(), t), 0xBEEF);
+        let mut sum = BucketedSum::from_sum(&input, hash);
+        let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<2>::new();
+        group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
+            bencher.iter(|| {
+                pool.install(|| {
+                    apply_layer_bucketed(&mut sum, black_box(&prep), &policy, &mut scratch);
+                    black_box(sum.len())
+                })
+            })
+        });
+    }
+
+    group.finish();
+}
+
+/// The conversion cost users pay once per `propagate` call, amortized over every
+/// layer in the circuit (4320 of them for one 6x6 Ising quench).
+fn bench_bucket_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bucket_conversion_1e6");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+    let threads = rayon::current_num_threads().max(1);
+    let bits = bits_for(input.len(), threads);
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    group.bench_function("from_sum", |bencher| {
+        bencher.iter(|| {
+            let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
+            black_box(BucketedSum::from_sum(black_box(&input), hash))
+        })
+    });
+
+    let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
+    let bucketed = BucketedSum::from_sum(&input, hash);
+    group.bench_function("to_sum", |bencher| {
+        bencher.iter(|| black_box(bucketed.to_sum()))
+    });
+
+    group.finish();
+}
+
+/// `TopN::finalize_layer_bucketed`, which `propagate` runs after **every**
+/// channel — 4320 times for one 6x6 Ising quench — so its per-call cost is
+/// multiplied by the layer count just as a layer's is.
+fn bench_finalize_top_n(c: &mut Criterion) {
+    let mut group = c.benchmark_group("finalize_top_n");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x70_9E);
+    let threads = rayon::current_num_threads().max(1);
+    let hash = Gf2Hash::<2>::new(128, bits_for(input.len(), threads), 0xBEEF);
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    // Keep 80%: enough that the cut is real but the sum does not collapse, so
+    // repeated application is stable and the measurement is of the selection
+    // rather than of a shrinking input.
+    let keep = (input.len() * 4) / 5;
+    group.bench_function("bucketed/keep80pct", |bencher| {
+        bencher.iter_batched_ref(
+            || BucketedSum::from_sum(&input, hash.clone()),
+            |sum| {
+                paulistrings::truncation::TopN(keep).finalize_layer_bucketed(sum);
+                black_box(sum.len())
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.bench_function("flat/keep80pct", |bencher| {
+        bencher.iter_batched_ref(
+            || input.clone(),
+            |sum| {
+                paulistrings::truncation::TopN(keep).finalize_layer(sum);
+                black_box(sum.len())
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_mul_assign,
     bench_pauli_sum_add,
     bench_apply_layer,
+    bench_apply_layer_bucketed,
     bench_apply_layer_occupancy,
     bench_propagate_trotter,
-    bench_thread_scaling
+    bench_thread_scaling,
+    bench_thread_scaling_bucketed,
+    bench_bucket_conversion,
+    bench_finalize_top_n
 );
 criterion_main!(benches);

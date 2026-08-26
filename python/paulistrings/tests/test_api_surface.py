@@ -1,7 +1,9 @@
 """Smoke-test that the public API surface from §11 is wired up.
 
-The bodies are still ``todo!()`` on the Rust side, so we only assert that the
-names exist and that constructors that don't call into stub bodies succeed.
+Deliberately shallow: this module only asserts that the names exist and that the
+constructors pick a width. Behavioral coverage lives in the sibling
+``test_pauli_sum``, ``test_circuit``, ``test_truncation``, and ``test_numpy``
+modules.
 """
 
 import paulistrings

@@ -4,9 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-This repo is **v0.1 scaffolding** — the module layout, types, and trait surfaces match the design document, but most algorithm bodies are `todo!()`. The shapes (`PauliString<W>`, `PauliSum<W>`, `Channel`, `TruncationPolicy`, `Direction`, `propagate`, `BuildAccumulator`, the sort-merge engine skeleton) are in place so cross-module signatures compile; the implementation order from §13 of the design doc governs which `todo!()` to fill in next. Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for architecture; the stub bodies reference its section numbers (`§3.1`, `§5`, etc.) so the mapping back to the doc is direct.
+v0.1 is **feature-complete except for `GeneralUnitary1Q/2Q`**. All eleven phases of `research/plans/2026-04-30-v0.1-tdd-slices.md` have landed: the full `PauliString` algebra, `PauliSum` bulk ops, the ingestion path, Clifford / rotation / noise channels, the truncation policies, the Rayon-parallel sort-merge engine, the Python bindings, and both benchmark harnesses.
+`cargo test --workspace` is green (214 tests, none ignored) and `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+Treat `research/plans/2026-04-30-v0.1-scope.md` as the source of truth for architecture; doc comments reference its section numbers (`§3.1`, `§5`, etc.) so the mapping back to the doc is direct.
 
-Real (non-stub) code so far: `PauliString` `Ord`/`Hash`/`Pod`/`Zeroable` + `identity`; `PauliSum::{empty, len, num_qubits, x, z, coeff, assert_invariants}`; the `And`/`Or` truncation combinators; `CoefficientThreshold::keep_term`; the Python width-dispatch enums and module registration. Everything else is a typed placeholder.
+Known gaps — check these before assuming a feature works:
+
+- `channel/unitary.rs` — `GeneralUnitary1Q::apply` and `GeneralUnitary2Q::apply` are the only remaining `todo!()`s, and both types are hardcoded `impl Channel<1>` rather than generic over `W`. Finishing them is a rewrite, not a body fill. Neither is exposed in Python.
+- `engine/sort_merge.rs` — the design doc's O(n) **bucket** phase (§5) is not implemented. `sort_phase` is a *sequential* O(n log n) comparison sort that allocates a permutation plus three `Vec`s per layer, making it the serial bottleneck in an otherwise parallel pipeline. It is the primary target of slice 11.3.
+- The small-sum hashmap fast path (§8.3) is unimplemented; `SMALL_SUM_THRESHOLD` is declared and never read. `#![allow(unused)]` in `lib.rs` and several modules masks this and similar dead code.
+- Slice 11.3 (profile-driven optimization) has not run, and no baselines are committed — `benchmarks/results/` is gitignored.
+- CI runs Rust only (fmt, clippy, tests, doctests, examples, rustdoc). The PyO3 bindings and `python/paulistrings/tests/` are only ever validated locally.
+- No expectation-value / trace / overlap in the public API — `examples/ising_2d_quench.rs` hand-rolls its own. `PauliSum::from_strings` is still `pub(crate)` + `#[cfg(test)]`, so tests and examples build sums by hand.
 
 One deliberate departure from the doc: `Channel::MAX_FANOUT` is a method `max_fanout(&self) -> usize`, not an associated `const`. This is required for `Box<dyn Channel<W>>` storage in `Circuit` (the channel set is open for user extensions, §6). Concrete impls return literal constants, so call sites through generics still constant-fold.
 

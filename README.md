@@ -64,7 +64,11 @@ pytest benchmarks/python --benchmark-only
 
 ## Status
 
-v0.1 scaffolding. See `research/plans/` for the roadmap.
+v0.1, feature-complete except for `GeneralUnitary1Q`/`GeneralUnitary2Q`. The core
+algebra, the sort-merge propagation engine, Clifford / rotation / noise channels,
+truncation policies, and the Python bindings are implemented and tested; the
+profile-driven optimization pass is still outstanding. See `research/plans/` for the
+roadmap and `CLAUDE.md` for the current list of known gaps.
 
 ## License
 

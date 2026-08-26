@@ -100,6 +100,7 @@
 #![allow(unused)]
 
 pub mod accumulator;
+pub mod bucket;
 pub mod channel;
 pub mod circuit;
 pub mod engine;
@@ -110,6 +111,7 @@ pub mod phase;
 pub mod truncation;
 
 pub use accumulator::BuildAccumulator;
+pub use bucket::Gf2Hash;
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::{propagate, Direction};

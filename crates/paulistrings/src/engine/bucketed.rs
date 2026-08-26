@@ -6,9 +6,10 @@
 //!    output bucket reads. No `n × MAX_FANOUT` over-allocation and no zero-fill.
 //! 2. **Gather** — for each key delta `d`, in canonical order, scan input bucket
 //!    `β' ^ h(d)` and emit `v ⊕ d` with amplitude `amp[support_bits(v)]`.
-//! 3. **Sort** the scratch, reusing [`sort_phase`].
+//! 3. **Sort** the scratch, reusing `sort_merge::sort_phase`.
 //! 4. **Merge** — segmented reduction with the zero-drop and `keep_term`,
-//!    reusing [`merge_into`], writing straight into the destination bucket.
+//!    reusing `sort_merge::merge_into`, writing straight into the destination
+//!    bucket.
 //!
 //! Output buckets are write-disjoint (v0.2 §2.4), so steps 2-4 for different `β'`
 //! never interact: the bucket loop is a plain `par_iter_mut` with no atomics, no

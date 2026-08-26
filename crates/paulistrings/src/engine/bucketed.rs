@@ -286,10 +286,10 @@ mod tests {
 
     const TOL: f64 = 1e-11;
 
-    struct AlwaysKeep;
+    pub(super) struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-    struct Xs64(u64);
+    pub(super) struct Xs64(u64);
     impl Xs64 {
         fn new(seed: u64) -> Self {
             Self(seed | 1)
@@ -304,7 +304,7 @@ mod tests {
         }
     }
 
-    fn word_mask(num_qubits: usize, word: usize) -> u64 {
+    pub(super) fn word_mask(num_qubits: usize, word: usize) -> u64 {
         let lo = 64 * word;
         if num_qubits >= lo + 64 {
             !0u64
@@ -315,7 +315,7 @@ mod tests {
         }
     }
 
-    fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    pub(super) fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
         let mut rng = Xs64::new(seed);
         let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
         for _ in 0..n {
@@ -336,7 +336,7 @@ mod tests {
     }
 
     /// Run one layer through the bucketed engine, converting in and out.
-    fn bucketed_layer<const W: usize, C, T>(
+    pub(super) fn bucketed_layer<const W: usize, C, T>(
         input: &PauliSum<W>,
         ch: &C,
         policy: &T,
@@ -361,7 +361,11 @@ mod tests {
     /// Keys must match exactly; coefficients only to tolerance, because the two
     /// engines sum duplicate keys in different orders and floating-point
     /// addition is not associative.
-    fn assert_sums_close<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
+    pub(super) fn assert_sums_close<const W: usize>(
+        got: &PauliSum<W>,
+        want: &PauliSum<W>,
+        what: &str,
+    ) {
         assert_eq!(got.len(), want.len(), "{what}: term count");
         assert_eq!(got.x(), want.x(), "{what}: x keys");
         assert_eq!(got.z(), want.z(), "{what}: z keys");
@@ -772,5 +776,203 @@ mod tests {
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
         let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod finalize_tests {
+    use super::tests::rand_sum;
+    use super::*;
+    use crate::bucket::hash::Gf2Hash;
+    use crate::channel::clifford::Clifford1Q;
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::Channel;
+    use crate::pauli_sum::PauliSum;
+    use crate::truncation::builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
+
+    /// `TopN` bucketed must keep exactly `n` terms, and the same *set* as the
+    /// flat implementation when there are no ties in magnitude.
+    #[test]
+    fn top_n_bucketed_matches_the_flat_implementation() {
+        let input = rand_sum::<1>(2000, 8, 0x1234);
+        for n in [1usize, 7, 100, 999, 1999, 5000] {
+            let policy = TopN(n);
+            let mut flat = input.clone();
+            policy.finalize_layer(&mut flat);
+
+            for bits in [0u8, 3, 6, 10] {
+                let hash = Gf2Hash::<1>::new(8, bits, 0x99);
+                let mut b = BucketedSum::from_sum(&input, hash);
+                policy.finalize_layer_bucketed(&mut b);
+                b.assert_invariants();
+                let got = b.into_sum();
+                assert_eq!(got.len(), flat.len(), "n={n} bits={bits}: length");
+                assert_eq!(got.x(), flat.x(), "n={n} bits={bits}: x keys");
+                assert_eq!(got.z(), flat.z(), "n={n} bits={bits}: z keys");
+                assert_eq!(got.coeff(), flat.coeff(), "n={n} bits={bits}: coeffs");
+            }
+        }
+    }
+
+    #[test]
+    fn top_n_bucketed_keeps_exactly_n_and_the_largest() {
+        let input = rand_sum::<1>(1000, 8, 0x4321);
+        let hash = Gf2Hash::<1>::new(8, 5, 0x99);
+        let mut b = BucketedSum::from_sum(&input, hash);
+        TopN(50).finalize_layer_bucketed(&mut b);
+        assert_eq!(b.len(), 50);
+        let got = b.into_sum();
+
+        // Every retained magnitude must be >= every dropped one.
+        let mut all: Vec<f64> = input.coeff().iter().map(|c| c.norm()).collect();
+        all.sort_by(|a, c| c.partial_cmp(a).unwrap());
+        let cutoff = all[49];
+        for c in got.coeff() {
+            assert!(c.norm() >= cutoff - 1e-15, "kept a below-cutoff term");
+        }
+    }
+
+    #[test]
+    fn top_n_zero_clears_and_preserves_the_invariant() {
+        let input = rand_sum::<1>(500, 8, 0x5555);
+        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
+        let mut b = BucketedSum::from_sum(&input, hash);
+        TopN(0).finalize_layer_bucketed(&mut b);
+        b.assert_invariants();
+        assert_eq!(b.len(), 0);
+        assert!(b.into_sum().is_empty());
+    }
+
+    #[test]
+    fn top_n_above_the_length_is_a_no_op() {
+        // Note `rand_sum` dedups, so the realized length is below the request
+        // at only 8 qubits; compare against it rather than the literal.
+        let input = rand_sum::<1>(300, 8, 0x6666);
+        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
+        let mut b = BucketedSum::from_sum(&input, hash);
+        TopN(10_000).finalize_layer_bucketed(&mut b);
+        assert_eq!(b.len(), input.len());
+        let got = b.into_sum();
+        assert_eq!(got.x(), input.x());
+        assert_eq!(got.coeff(), input.coeff());
+    }
+
+    #[test]
+    fn and_runs_both_finalizers_bucketed() {
+        // TopN(n) twice with different n must behave like the tighter one.
+        let input = rand_sum::<1>(1000, 8, 0x7777);
+        let policy = And(TopN(400), TopN(120));
+        let mut flat = input.clone();
+        policy.finalize_layer(&mut flat);
+
+        let hash = Gf2Hash::<1>::new(8, 5, 0x99);
+        let mut b = BucketedSum::from_sum(&input, hash);
+        policy.finalize_layer_bucketed(&mut b);
+        b.assert_invariants();
+        let got = b.into_sum();
+        assert_eq!(got.len(), 120);
+        assert_eq!(got.x(), flat.x());
+        assert_eq!(got.coeff(), flat.coeff());
+    }
+
+    #[test]
+    fn threshold_and_weight_and_or_finalizers_are_no_ops() {
+        // These three have no layer-finalization step; the bucketed override
+        // must leave the sum untouched rather than round-trip it.
+        let input = rand_sum::<1>(500, 8, 0x8888);
+        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
+        for tag in 0..3 {
+            let mut b = BucketedSum::from_sum(&input, hash.clone());
+            match tag {
+                0 => CoefficientThreshold(0.5).finalize_layer_bucketed(&mut b),
+                1 => WeightCutoff(2).finalize_layer_bucketed(&mut b),
+                _ => Or(CoefficientThreshold(0.5), WeightCutoff(2)).finalize_layer_bucketed(&mut b),
+            }
+            assert_eq!(b.len(), input.len(), "tag {tag} changed the sum");
+        }
+    }
+
+    /// The default trait implementation must keep a custom `finalize_layer`
+    /// working on the bucketed path, without the policy knowing about buckets.
+    #[test]
+    fn the_default_round_trip_preserves_a_custom_finalizer() {
+        /// Drops every term whose coefficient has negative real part — a global
+        /// pass expressed only as `finalize_layer`.
+        struct DropNegativeReal;
+        impl<const W: usize> TruncationPolicy<W> for DropNegativeReal {
+            fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+                let keep: Vec<bool> = sum.coeff().iter().map(|c| c.re >= 0.0).collect();
+                let mut w = 0usize;
+                for (i, &k) in keep.iter().enumerate() {
+                    if k {
+                        sum.x[w] = sum.x[i];
+                        sum.z[w] = sum.z[i];
+                        sum.coeff[w] = sum.coeff[i];
+                        w += 1;
+                    }
+                }
+                sum.x.truncate(w);
+                sum.z.truncate(w);
+                sum.coeff.truncate(w);
+            }
+        }
+
+        let input = rand_sum::<1>(800, 8, 0x9999);
+        let mut flat = input.clone();
+        DropNegativeReal.finalize_layer(&mut flat);
+        assert!(
+            flat.len() < input.len(),
+            "the custom policy dropped nothing"
+        );
+
+        for bits in [0u8, 3, 7] {
+            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
+            let mut b = BucketedSum::from_sum(&input, hash);
+            DropNegativeReal.finalize_layer_bucketed(&mut b);
+            b.assert_invariants();
+            let got = b.into_sum();
+            assert_eq!(got.len(), flat.len(), "bits={bits}");
+            assert_eq!(got.x(), flat.x(), "bits={bits}");
+            assert_eq!(got.coeff(), flat.coeff(), "bits={bits}");
+        }
+    }
+
+    /// Layer then finalize, repeatedly — the shape `propagate` will use.
+    #[test]
+    fn interleaved_layers_and_finalizers_match_the_v0_1_sequence() {
+        use crate::engine::sort_merge::apply_layer;
+
+        let input = rand_sum::<1>(1200, 8, 0xAAAA);
+        let policy = And(CoefficientThreshold(1e-9), TopN(300));
+        let chans: Vec<Box<dyn Channel<1>>> = vec![
+            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.37)),
+            Box::new(Clifford1Q::h(0)),
+            Box::new(PauliRotation::new(PauliString::<1>::x(5), 0.21)),
+        ];
+
+        let mut want = input.clone();
+        for ch in &chans {
+            want = apply_layer(&want, ch.as_ref(), &policy);
+            policy.finalize_layer(&mut want);
+        }
+
+        let hash = Gf2Hash::<1>::new(8, 5, 0xBB);
+        let mut b = BucketedSum::from_sum(&input, hash);
+        let mut scratch = LayerScratch::<1>::new();
+        for ch in &chans {
+            let prep = ch.prepare(b.hash(), false).unwrap();
+            apply_layer_bucketed(&mut b, &prep, &policy, &mut scratch);
+            policy.finalize_layer_bucketed(&mut b);
+        }
+        let got = b.into_sum();
+
+        assert_eq!(got.len(), want.len(), "term count after 3 truncated layers");
+        assert_eq!(got.x(), want.x(), "keys after 3 truncated layers");
+        for i in 0..got.len() {
+            assert!(
+                (got.coeff()[i] - want.coeff()[i]).norm() < 1e-11,
+                "coeff[{i}]",
+            );
+        }
     }
 }

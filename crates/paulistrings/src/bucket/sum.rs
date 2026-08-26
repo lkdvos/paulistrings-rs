@@ -163,6 +163,15 @@ impl<const W: usize> BucketedSum<W> {
     /// coefficient combining is needed: equal keys share a bucket and buckets
     /// are already deduplicated, so every key in the merge is distinct.
     pub fn into_sum(self) -> PauliSum<W> {
+        self.to_sum()
+    }
+
+    /// Collapse to a globally-sorted [`PauliSum`] without consuming `self`.
+    ///
+    /// Same `B`-way merge as [`Self::into_sum`]; used by the default
+    /// `finalize_layer_bucketed`, which has to hand a `&mut PauliSum` to a
+    /// policy that only knows how to work on the whole sum.
+    pub fn to_sum(&self) -> PauliSum<W> {
         let mut x: Vec<[u64; W]> = Vec::with_capacity(self.len);
         let mut z: Vec<[u64; W]> = Vec::with_capacity(self.len);
         let mut coeff: Vec<Complex64> = Vec::with_capacity(self.len);
@@ -196,6 +205,30 @@ impl<const W: usize> BucketedSum<W> {
             coeff,
             num_qubits: self.num_qubits,
         }
+    }
+
+    /// Replace the contents from a globally-sorted [`PauliSum`], keeping the
+    /// current hash and reusing bucket storage.
+    ///
+    /// The counterpart of [`Self::to_sum`]. `sum` must be sorted and
+    /// deduplicated, i.e. satisfy `PauliSum`'s invariant.
+    pub fn refill_from_sum(&mut self, sum: &PauliSum<W>) {
+        for cols in self.buckets.iter_mut() {
+            cols.clear();
+        }
+        for i in 0..sum.len() {
+            let b = self.hash.bucket_of(&sum.x()[i], &sum.z()[i]) as usize;
+            self.buckets[b].push(sum.x()[i], sum.z()[i], sum.coeff()[i]);
+        }
+        self.len = sum.len();
+    }
+
+    /// Drop every term, keeping the hash and the bucket storage.
+    pub fn clear(&mut self) {
+        for cols in self.buckets.iter_mut() {
+            cols.clear();
+        }
+        self.len = 0;
     }
 
     /// Total number of terms.

@@ -3,6 +3,7 @@
 #![allow(unused)]
 
 use super::TruncationPolicy;
+use crate::bucket::sum::BucketedSum;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 
@@ -25,6 +26,11 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
         c.norm() > self.0
     }
+
+    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
+    /// explicitly so the trait default's per-layer round trip is not paid for
+    /// nothing.
+    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -47,6 +53,11 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
         let weight: u32 = (0..W).map(|i| (x[i] | z[i]).count_ones()).sum();
         weight <= self.0
     }
+
+    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
+    /// explicitly so the trait default's per-layer round trip is not paid for
+    /// nothing.
+    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 /// Retain only the `n` terms with largest coefficient magnitude. Implemented
@@ -97,6 +108,85 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         sum.z = new_z;
         sum.coeff = new_c;
     }
+
+    /// Bucket-native top-`n`.
+    ///
+    /// Cheaper than the flat version, which allocates a permutation plus three
+    /// full-size gather `Vec`s and effectively re-sorts the sum every layer.
+    /// Here: one `O(n)` magnitude scan, one `select_nth_unstable` for the
+    /// threshold, then an in-place compaction per bucket. Per-bucket filtering
+    /// preserves within-bucket order automatically, so the invariant holds with
+    /// no re-sort.
+    ///
+    /// # Tie-breaking
+    ///
+    /// The order is `|coeff|` descending, then flat position ascending, which is
+    /// total (positions are unique) and so leaves no genuine ambiguity — but
+    /// among *exactly equal* magnitudes at the cutoff, which terms survive
+    /// depends on the bucket partition. The flat implementation above is no more
+    /// specified: `select_nth_unstable_by` breaks ties arbitrarily. Equal
+    /// magnitudes at the boundary are pathological, and either choice is as good
+    /// as the other; it is called out so the difference is not mistaken for a
+    /// bug.
+    fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
+        let n = self.0;
+        if sum.len() <= n {
+            return;
+        }
+        if n == 0 {
+            sum.clear();
+            return;
+        }
+
+        // Flat numbering over buckets, so a survivor can be marked in O(1).
+        let nb = sum.num_buckets();
+        let mut offsets: Vec<usize> = Vec::with_capacity(nb + 1);
+        let mut total = 0usize;
+        for b in 0..nb {
+            offsets.push(total);
+            total += sum.bucket_len(b);
+        }
+        offsets.push(total);
+
+        let mut ranked: Vec<(f64, u32)> = Vec::with_capacity(total);
+        for (b, &base) in offsets.iter().enumerate().take(nb) {
+            let (_, _, coeff) = sum.bucket(b);
+            for (i, c) in coeff.iter().enumerate() {
+                ranked.push((c.norm(), (base + i) as u32));
+            }
+        }
+
+        ranked.select_nth_unstable_by(n - 1, |a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        ranked.truncate(n);
+
+        let mut keep = vec![false; total];
+        for &(_, flat) in ranked.iter() {
+            keep[flat as usize] = true;
+        }
+
+        for (b, cols) in sum.buckets_mut().iter_mut().enumerate() {
+            let base = offsets[b];
+            let len = cols.len();
+            let mut write = 0usize;
+            for i in 0..len {
+                if !keep[base + i] {
+                    continue;
+                }
+                cols.x[write] = cols.x[i];
+                cols.z[write] = cols.z[i];
+                cols.coeff[write] = cols.coeff[i];
+                write += 1;
+            }
+            cols.x.truncate(write);
+            cols.z.truncate(write);
+            cols.coeff.truncate(write);
+        }
+        sum.recount();
+    }
 }
 
 /// Logical AND of two policies — both must accept.
@@ -128,6 +218,11 @@ where
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         self.0.finalize_layer(sum);
         self.1.finalize_layer(sum);
+    }
+
+    fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
+        self.0.finalize_layer_bucketed(sum);
+        self.1.finalize_layer_bucketed(sum);
     }
 }
 
@@ -161,6 +256,11 @@ where
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }
+
+    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
+    /// explicitly so the correct-but-slow trait default's round trip is not paid
+    /// once per layer for nothing.
+    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 #[cfg(all(test, debug_assertions))]

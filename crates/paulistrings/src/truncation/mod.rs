@@ -37,6 +37,7 @@ pub mod builtin;
 
 pub use builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
 
+use crate::bucket::sum::BucketedSum;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 
@@ -78,4 +79,23 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// Optional global pass after each circuit layer. May be non-local
     /// (e.g. partial sort for [`TopN`]).
     fn finalize_layer(&self, _sum: &mut PauliSum<W>) {}
+
+    /// The bucketed counterpart of [`finalize_layer`](Self::finalize_layer),
+    /// used by the v0.2 engine.
+    ///
+    /// The default is **correct for any policy**: it collapses the bucketed sum
+    /// to a sorted [`PauliSum`], runs `finalize_layer`, and re-partitions. So a
+    /// custom policy that only implements `finalize_layer` keeps working
+    /// unchanged — no silent loss of truncation.
+    ///
+    /// It is also the slow path: a `B`-way merge plus a re-scatter, per layer.
+    /// **If your policy has no layer-finalization step, override this to a
+    /// no-op** — as [`CoefficientThreshold`], [`WeightCutoff`] and [`Or`] do —
+    /// or you will pay a round trip per layer for nothing. Overriding it with a
+    /// bucket-native implementation, as [`TopN`] does, is better still.
+    fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
+        let mut flat = sum.to_sum();
+        self.finalize_layer(&mut flat);
+        sum.refill_from_sum(&flat);
+    }
 }

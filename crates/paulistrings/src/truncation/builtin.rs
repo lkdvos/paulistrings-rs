@@ -3,7 +3,6 @@
 #![allow(unused)]
 
 use super::TruncationPolicy;
-use crate::bucket::sum::BucketedSum;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -27,11 +26,6 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
         c.norm() > self.0
     }
-
-    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
-    /// explicitly so the trait default's per-layer round trip is not paid for
-    /// nothing.
-    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -54,11 +48,6 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
         let weight: u32 = (0..W).map(|i| (x[i] | z[i]).count_ones()).sum();
         weight <= self.0
     }
-
-    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
-    /// explicitly so the trait default's per-layer round trip is not paid for
-    /// nothing.
-    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 /// Retain only the `n` terms with largest coefficient magnitude. Implemented
@@ -78,71 +67,25 @@ pub struct TopN(
 );
 
 impl<const W: usize> TruncationPolicy<W> for TopN {
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-        let n = self.0;
-        let len = sum.coeff.len();
-        if len <= n {
-            return;
-        }
-        if n == 0 {
-            sum.x.clear();
-            sum.z.clear();
-            sum.coeff.clear();
-            return;
-        }
-        let mut perm: Vec<usize> = (0..len).collect();
-        // Partition descending by |coeff|: indices [0..n) hold the n largest.
-        //
-        // The tie-break on index is load-bearing, not cosmetic. `sum` is sorted
-        // by key, so index-ascending *is* key-ascending, which makes the retained
-        // set well defined even when the cut falls inside a group of exactly
-        // equal magnitudes -- as it does for any symmetric Hamiltonian, where
-        // lattice symmetry gives many terms identical coefficients. Without it
-        // the order is whatever `select_nth_unstable_by` happens to produce,
-        // which is unspecified, and the bucketed implementation below could not
-        // agree with this one.
-        perm.select_nth_unstable_by(n - 1, |&a, &b| {
-            sum.coeff[b]
-                .norm()
-                .partial_cmp(&sum.coeff[a].norm())
-                .unwrap_or(core::cmp::Ordering::Equal)
-                .then_with(|| a.cmp(&b))
-        });
-        perm.truncate(n);
-        // The survivors of an already-sorted sum are still sorted once we
-        // restore their original index order.
-        perm.sort_unstable();
-        let new_x: Vec<[u64; W]> = perm.iter().map(|&i| sum.x[i]).collect();
-        let new_z: Vec<[u64; W]> = perm.iter().map(|&i| sum.z[i]).collect();
-        let new_c: Vec<Complex64> = perm.iter().map(|&i| sum.coeff[i]).collect();
-        sum.x = new_x;
-        sum.z = new_z;
-        sum.coeff = new_c;
-    }
-
-    /// Bucket-native top-`n`.
+    /// Bucket-native top-`n` selection.
     ///
-    /// Cheaper than the flat version, which allocates a permutation plus three
-    /// full-size gather `Vec`s and effectively re-sorts the sum every layer.
-    /// Here: one `O(n)` magnitude scan, one `select_nth_unstable` for the
-    /// threshold, then an in-place compaction per bucket. Per-bucket filtering
-    /// preserves within-bucket order automatically, so the invariant holds with
-    /// no re-sort.
+    /// One `O(n)` magnitude scan, one `select_nth_unstable` for the threshold,
+    /// then an in-place compaction per bucket. Per-bucket filtering preserves
+    /// within-bucket order automatically, so the canonical-order invariant
+    /// holds with no re-sort. At a single bucket this degenerates to a plain
+    /// partial selection over the lex-sorted sum.
     ///
     /// # Tie-breaking
     ///
-    /// `|coeff|` descending, then **key** ascending — the same total order as the
-    /// flat implementation above, so the two agree exactly.
-    ///
-    /// Breaking ties on the key rather than on bucket position is required, not
-    /// stylistic. Bucket position depends on the partition, so a
-    /// position-based tie-break would make the retained set depend on the bucket
-    /// count and hence on the thread count, breaking §9.1. And ties are not a
-    /// corner case: any symmetric Hamiltonian gives many terms exactly equal
-    /// coefficients by lattice symmetry, so `TopN` routinely cuts through a large
-    /// tie group. The `then_with` is lazy, so the key comparison costs nothing
-    /// when magnitudes differ.
-    fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
+    /// `|coeff|` descending, then **key** ascending — a total order (keys are
+    /// globally unique), so the retained set is well defined even when the cut
+    /// falls inside a group of exactly equal magnitudes, and it is independent
+    /// of the partition (bucket position never enters the comparison). Ties
+    /// are not a corner case: any symmetric Hamiltonian gives many terms
+    /// exactly equal coefficients by lattice symmetry, so `TopN` routinely
+    /// cuts through a large tie group. The `then_with` is lazy, so the key
+    /// comparison costs nothing when magnitudes differ.
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
         if sum.len() <= n {
             return;
@@ -263,11 +206,6 @@ where
         self.0.finalize_layer(sum);
         self.1.finalize_layer(sum);
     }
-
-    fn finalize_layer_bucketed(&self, sum: &mut BucketedSum<W>) {
-        self.0.finalize_layer_bucketed(sum);
-        self.1.finalize_layer_bucketed(sum);
-    }
 }
 
 /// Logical OR of two policies — either accepting is enough.
@@ -300,11 +238,6 @@ where
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }
-
-    /// No-op, matching this policy's no-op `finalize_layer`. Overridden
-    /// explicitly so the correct-but-slow trait default's round trip is not paid
-    /// once per layer for nothing.
-    fn finalize_layer_bucketed(&self, _sum: &mut BucketedSum<W>) {}
 }
 
 #[cfg(all(test, debug_assertions))]
@@ -403,25 +336,26 @@ mod tests {
     #[test]
     fn top_n_keeps_largest_three_of_ten() {
         // Ten distinct (x, z) keys: x ∈ {0..10}, z=0. Sorted by x ascending.
-        let mut sum = PauliSum::<1> {
-            x: (1u64..=10).map(|i| [i]).collect(),
-            z: vec![[0u64]; 10],
-            // Magnitudes 10, 9, 8, ... in same order. So largest sit at the
-            // *front* of the sort order. We'll exercise back-loaded magnitudes
-            // in a separate test.
-            coeff: (1u64..=10)
+        // Magnitudes 10, 9, 8, ... in same order, so the largest sit at the
+        // *front* of the sort order; back-loaded magnitudes are exercised in a
+        // separate test.
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            (1u64..=10).map(|i| [i]).collect(),
+            vec![[0u64]; 10],
+            (1u64..=10)
                 .rev()
                 .map(|m| Complex64::new(m as f64, 0.0))
                 .collect(),
-            num_qubits: 4,
-        };
+            4,
+        );
         sum.assert_invariants();
         TopN(3).finalize_layer(&mut sum);
         assert_eq!(sum.len(), 3);
         // Survivors are the keys whose original magnitudes were 10, 9, 8 →
         // they sat at indices 0, 1, 2 → x = [1], [2], [3].
-        assert_eq!(sum.x(), &[[1u64], [2u64], [3u64]]);
-        let mags: Vec<f64> = sum.coeff().iter().map(|c| c.norm()).collect();
+        let (x, _, c) = sum.to_arrays();
+        assert_eq!(x, vec![[1u64], [2u64], [3u64]]);
+        let mags: Vec<f64> = c.iter().map(|c| c.norm()).collect();
         assert_eq!(mags, vec![10.0, 9.0, 8.0]);
         sum.assert_invariants();
     }
@@ -429,34 +363,30 @@ mod tests {
     /// Slice 7.3: `TopN(N) where N >= len` is a no-op.
     #[test]
     fn top_n_no_op_when_n_ge_len() {
-        let mut sum = PauliSum::<1> {
-            x: vec![[0], [0], [1]],
-            z: vec![[0], [1], [0]],
-            coeff: vec![
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            vec![[0], [0], [1]],
+            vec![[0], [1], [0]],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
             ],
-            num_qubits: 1,
-        };
-        let snapshot_x = sum.x().to_vec();
-        let snapshot_z = sum.z().to_vec();
-        let snapshot_c = sum.coeff().to_vec();
+            1,
+        );
+        let (snapshot_x, snapshot_z, snapshot_c) = sum.to_arrays();
         TopN(5).finalize_layer(&mut sum);
-        assert_eq!(sum.x(), snapshot_x.as_slice());
-        assert_eq!(sum.z(), snapshot_z.as_slice());
-        assert_eq!(sum.coeff(), snapshot_c.as_slice());
+        assert_eq!(sum.to_arrays(), (snapshot_x, snapshot_z, snapshot_c));
     }
 
     /// Slice 7.3: `TopN(0)` empties the sum.
     #[test]
     fn top_n_zero_empties_sum() {
-        let mut sum = PauliSum::<1> {
-            x: vec![[0], [1]],
-            z: vec![[1], [0]],
-            coeff: vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
-            num_qubits: 1,
-        };
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            vec![[0], [1]],
+            vec![[1], [0]],
+            vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
+            1,
+        );
         TopN(0).finalize_layer(&mut sum);
         assert!(sum.is_empty());
         sum.assert_invariants();
@@ -467,27 +397,28 @@ mod tests {
     #[test]
     fn top_n_preserves_sort_order() {
         // Five keys, magnitudes 1, 2, 3, 4, 5 (back-loaded).
-        let mut sum = PauliSum::<1> {
-            x: vec![[1], [2], [3], [4], [5]],
-            z: vec![[0]; 5],
-            coeff: vec![
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            vec![[1], [2], [3], [4], [5]],
+            vec![[0]; 5],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
                 Complex64::new(4.0, 0.0),
                 Complex64::new(5.0, 0.0),
             ],
-            num_qubits: 4,
-        };
+            4,
+        );
         sum.assert_invariants();
         TopN(3).finalize_layer(&mut sum);
         assert_eq!(sum.len(), 3);
         // Survivors: magnitudes 5, 4, 3 — keys x=[5], [4], [3] in the
         // original. Sort-order preservation means [3], [4], [5].
-        assert_eq!(sum.x(), &[[3u64], [4u64], [5u64]]);
+        let (x, _, c) = sum.to_arrays();
+        assert_eq!(x, vec![[3u64], [4u64], [5u64]]);
         assert_eq!(
-            sum.coeff(),
-            &[
+            c,
+            vec![
                 Complex64::new(3.0, 0.0),
                 Complex64::new(4.0, 0.0),
                 Complex64::new(5.0, 0.0),

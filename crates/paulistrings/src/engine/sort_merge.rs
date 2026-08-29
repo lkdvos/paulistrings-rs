@@ -59,19 +59,44 @@ where
     C: Channel<W> + ?Sized,
     T: TruncationPolicy<W> + ?Sized,
 {
-    let n_in = input.len();
+    // The v0.1 pipeline works on one flat, globally key-sorted stream. Merge
+    // the buckets down to that view first (`O(n log B)`), run the pipeline,
+    // and scatter the (still key-sorted) output back under the input's own
+    // hash — bitwise the same sequence the old flatten → apply → rescatter
+    // fallback performed.
+    let (in_x, in_z, in_coeff) = input.flatten_key_sorted();
+    let (in_x, in_z, in_coeff) = (&in_x[..], &in_z[..], &in_coeff[..]);
+    let n_in = in_x.len();
     let mf = channel.max_fanout();
     let cap = n_in * mf;
     let mut out_x: Vec<[u64; W]> = vec![[0u64; W]; cap];
     let mut out_z: Vec<[u64; W]> = vec![[0u64; W]; cap];
     let mut out_coeff: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); cap];
     let len = if adjoint {
-        scan_phase_adjoint(input, channel, &mut out_x, &mut out_z, &mut out_coeff)
+        scan_phase_adjoint(
+            in_x,
+            in_z,
+            in_coeff,
+            channel,
+            &mut out_x,
+            &mut out_z,
+            &mut out_coeff,
+        )
     } else {
-        scan_phase(input, channel, &mut out_x, &mut out_z, &mut out_coeff)
+        scan_phase(
+            in_x,
+            in_z,
+            in_coeff,
+            channel,
+            &mut out_x,
+            &mut out_z,
+            &mut out_coeff,
+        )
     };
     sort_phase(&mut out_x, &mut out_z, &mut out_coeff, len);
-    let result = merge_phase::<W, T>(&out_x, &out_z, &out_coeff, len, input.num_qubits(), policy);
+    let (x, z, coeff) = merge_phase::<W, T>(&out_x, &out_z, &out_coeff, len, policy);
+    let result =
+        PauliSum::from_key_sorted(&x, &z, &coeff, input.hash().clone(), input.num_qubits());
     #[cfg(debug_assertions)]
     result.assert_invariants();
     result
@@ -98,8 +123,11 @@ where
 /// share it.
 ///
 /// Output is *not* sorted — that's slice 6.2's job.
+#[allow(clippy::too_many_arguments)]
 fn scan_phase_with<const W: usize, C, F>(
-    input: &PauliSum<W>,
+    in_x: &[[u64; W]],
+    in_z: &[[u64; W]],
+    in_coeff: &[Complex64],
     channel: &C,
     out_x: &mut [[u64; W]],
     out_z: &mut [[u64; W]],
@@ -111,7 +139,9 @@ where
     F: Fn(&C, &[u64; W], &[u64; W], Complex64, &mut OutputBuffer<'_, W>) + Sync,
 {
     let mf = channel.max_fanout();
-    let n_in = input.len();
+    let n_in = in_x.len();
+    debug_assert_eq!(in_x.len(), in_z.len());
+    debug_assert_eq!(in_x.len(), in_coeff.len());
     debug_assert!(out_x.len() >= n_in * mf);
     debug_assert_eq!(out_x.len(), out_z.len());
     debug_assert_eq!(out_x.len(), out_coeff.len());
@@ -132,7 +162,7 @@ where
                 coeff: sc,
                 len: &mut local_len,
             };
-            apply_fn(channel, &input.x[i], &input.z[i], input.coeff[i], &mut buf);
+            apply_fn(channel, &in_x[i], &in_z[i], in_coeff[i], &mut buf);
             local_len
         })
         .collect();
@@ -169,14 +199,18 @@ fn compact_in_place<const W: usize>(
 
 /// Forward scan: dispatches each input through `Channel::apply`.
 pub(crate) fn scan_phase<const W: usize, C: Channel<W> + ?Sized>(
-    input: &PauliSum<W>,
+    in_x: &[[u64; W]],
+    in_z: &[[u64; W]],
+    in_coeff: &[Complex64],
     channel: &C,
     out_x: &mut [[u64; W]],
     out_z: &mut [[u64; W]],
     out_coeff: &mut [Complex64],
 ) -> usize {
     scan_phase_with(
-        input,
+        in_x,
+        in_z,
+        in_coeff,
         channel,
         out_x,
         out_z,
@@ -187,14 +221,18 @@ pub(crate) fn scan_phase<const W: usize, C: Channel<W> + ?Sized>(
 
 /// Heisenberg scan: dispatches each input through `Channel::apply_adjoint`.
 pub(crate) fn scan_phase_adjoint<const W: usize, C: Channel<W> + ?Sized>(
-    input: &PauliSum<W>,
+    in_x: &[[u64; W]],
+    in_z: &[[u64; W]],
+    in_coeff: &[Complex64],
     channel: &C,
     out_x: &mut [[u64; W]],
     out_z: &mut [[u64; W]],
     out_coeff: &mut [Complex64],
 ) -> usize {
     scan_phase_with(
-        input,
+        in_x,
+        in_z,
+        in_coeff,
         channel,
         out_x,
         out_z,
@@ -270,23 +308,14 @@ pub(crate) fn merge_phase<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     sorted_z: &[[u64; W]],
     sorted_coeff: &[Complex64],
     len: usize,
-    num_qubits: usize,
     policy: &T,
-) -> PauliSum<W> {
+) -> ChunkOutput<W> {
     let nchunks = if len < SMALL_MERGE_THRESHOLD {
         1
     } else {
         rayon::current_num_threads().max(1)
     };
-    merge_phase_with_nchunks::<W, T>(
-        sorted_x,
-        sorted_z,
-        sorted_coeff,
-        len,
-        num_qubits,
-        policy,
-        nchunks,
-    )
+    merge_phase_with_nchunks::<W, T>(sorted_x, sorted_z, sorted_coeff, len, policy, nchunks)
 }
 
 /// `merge_phase` with an explicit chunk count. Public to the crate so tests
@@ -297,20 +326,14 @@ pub(crate) fn merge_phase_with_nchunks<const W: usize, T: TruncationPolicy<W> + 
     sorted_z: &[[u64; W]],
     sorted_coeff: &[Complex64],
     len: usize,
-    num_qubits: usize,
     policy: &T,
     nchunks: usize,
-) -> PauliSum<W> {
+) -> ChunkOutput<W> {
     debug_assert!(sorted_x.len() >= len);
     debug_assert_eq!(sorted_x.len(), sorted_z.len());
     debug_assert_eq!(sorted_x.len(), sorted_coeff.len());
     if len == 0 {
-        return PauliSum::<W> {
-            x: Vec::new(),
-            z: Vec::new(),
-            coeff: Vec::new(),
-            num_qubits,
-        };
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let bounds = align_chunk_boundaries(sorted_x, sorted_z, len, nchunks.max(1));
     let chunk_results: Vec<ChunkOutput<W>> = bounds
@@ -328,12 +351,7 @@ pub(crate) fn merge_phase_with_nchunks<const W: usize, T: TruncationPolicy<W> + 
         z.extend(cz);
         coeff.extend(cc);
     }
-    PauliSum::<W> {
-        x,
-        z,
-        coeff,
-        num_qubits,
-    }
+    (x, z, coeff)
 }
 
 /// Run the segmented reduction on the sub-range `[start..end)` of the sorted
@@ -475,13 +493,14 @@ mod tests {
         ]);
         let id = IdentityChannel::new();
         let cap = input.len() * <IdentityChannel as Channel<1>>::max_fanout(&id);
+        let (ix, iz, ic) = input.to_arrays();
         let (mut bx, mut bz, mut bc) = alloc_bufs::<1>(cap);
-        let total = scan_phase(&input, &id, &mut bx, &mut bz, &mut bc);
+        let total = scan_phase(&ix, &iz, &ic, &id, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 2);
         for i in 0..total {
-            assert_eq!(bx[i], input.x()[i]);
-            assert_eq!(bz[i], input.z()[i]);
-            assert_eq!(bc[i], input.coeff()[i]);
+            assert_eq!(bx[i], input.bucket(0).0[i]);
+            assert_eq!(bz[i], input.bucket(0).1[i]);
+            assert_eq!(bc[i], input.bucket(0).2[i]);
         }
     }
 
@@ -495,8 +514,9 @@ mod tests {
         ]);
         let h = Clifford1Q::h(0);
         let cap = input.len() * <Clifford1Q as Channel<1>>::max_fanout(&h);
+        let (ix, iz, ic) = input.to_arrays();
         let (mut bx, mut bz, mut bc) = alloc_bufs::<1>(cap);
-        let total = scan_phase(&input, &h, &mut bx, &mut bz, &mut bc);
+        let total = scan_phase(&ix, &iz, &ic, &h, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 2);
         // Input order: from_strings sorts lex by (x, z) — Z (x=0,z=1) sorts
         // before X (x=1,z=0). So scan output[0] = H·Z = X, output[1] = H·X = Z.
@@ -523,8 +543,9 @@ mod tests {
             ("Z", Complex64::new(2.0, 0.0)),
         ]);
         let cap = input.len() * <PauliRotation<1> as Channel<1>>::max_fanout(&rot);
+        let (ix, iz, ic) = input.to_arrays();
         let (mut bx, mut bz, mut bc) = alloc_bufs::<1>(cap);
-        let total = scan_phase(&input, &rot, &mut bx, &mut bz, &mut bc);
+        let total = scan_phase(&ix, &iz, &ic, &rot, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 3);
         // from_strings sorts: Z (x=0,z=1) < X (x=1,z=0). So input[0] = Z,
         // input[1] = X.
@@ -547,16 +568,17 @@ mod tests {
     /// Multi-word: input on qubit 64 (word 1), `H` flips X↔Z within word 1.
     #[test]
     fn scan_w2_word_boundary() {
-        let input = PauliSum::<2> {
-            x: vec![[0u64, 1u64]], // X on qubit 64
-            z: vec![[0u64; 2]],
-            coeff: vec![Complex64::new(1.5, 0.0)],
-            num_qubits: 65,
-        };
+        let input = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 1u64]], // X on qubit 64
+            vec![[0u64; 2]],
+            vec![Complex64::new(1.5, 0.0)],
+            65,
+        );
         let h = Clifford1Q::h(64);
         let cap = input.len() * <Clifford1Q as Channel<2>>::max_fanout(&h);
+        let (ix, iz, ic) = input.to_arrays();
         let (mut bx, mut bz, mut bc) = alloc_bufs::<2>(cap);
-        let total = scan_phase(&input, &h, &mut bx, &mut bz, &mut bc);
+        let total = scan_phase(&ix, &iz, &ic, &h, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 1);
         // H·X = Z, on qubit 64 (word 1, bit 0).
         assert_eq!(bx[0], [0u64, 0u64]);
@@ -572,8 +594,62 @@ mod tests {
         let mut bx: Vec<[u64; 1]> = vec![];
         let mut bz: Vec<[u64; 1]> = vec![];
         let mut bc: Vec<Complex64> = vec![];
-        let total = scan_phase(&input, &id, &mut bx, &mut bz, &mut bc);
+        let (ix, iz, ic) = input.to_arrays();
+        let total = scan_phase(&ix, &iz, &ic, &id, &mut bx, &mut bz, &mut bc);
         assert_eq!(total, 0);
+    }
+
+    /// The oracle wrapper on a multi-bucket sum must be bitwise the old
+    /// flatten → flat-pipeline → rescatter round trip: flattening first and
+    /// running the layer on the resulting single-bucket sum gives the same
+    /// terms, bit for bit.
+    #[test]
+    fn fallback_layer_matches_old_round_trip_bitwise() {
+        use crate::channel::PauliRotation;
+
+        // 1500 terms ⇒ the accumulator splits the sum; the wrapper flattens.
+        let mut acc = crate::accumulator::BuildAccumulator::<1>::new(12);
+        let mut seed = 0x5A5Au64 | 1;
+        for _ in 0..1500 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let x = [seed & 0xFFF];
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let z = [seed & 0xFFF];
+            let c = Complex64::new((seed as i64 as f64) / (i64::MAX as f64), 0.0);
+            acc.add_term(PauliString::<1> { x, z }, crate::phase::Phase::ONE, c);
+        }
+        let input = acc.finalize();
+        assert!(input.num_buckets() > 1, "fixture must be multi-bucket");
+
+        let mut gen = PauliString::<1>::z(0);
+        gen.mul_assign(&PauliString::<1>::z(5));
+        let rot = PauliRotation::new(gen, 0.31);
+        let policy = CoefficientThreshold(1e-12);
+
+        let got = apply_layer(&input, &rot, &policy);
+
+        // Hand-rolled old sequence: flatten to a single-bucket sum, run the
+        // layer there (one bucket ⇒ the plain flat pipeline), compare terms.
+        let (fx, fz, fc) = input.flatten_key_sorted();
+        let flat_input = PauliSum::from_sorted_columns(fx, fz, fc, input.num_qubits());
+        let want = apply_layer(&flat_input, &rot, &policy);
+
+        let collect = |s: &PauliSum<1>| {
+            let mut v: Vec<([u64; 1], [u64; 1], Complex64)> =
+                s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
+            v.sort_unstable_by_key(|&(x, z, _)| (x, z));
+            v
+        };
+        assert_eq!(collect(&got), collect(&want));
+        assert_eq!(
+            got.hash().bits(),
+            input.hash().bits(),
+            "wrapper must rescatter under the input hash",
+        );
     }
 
     /// Slice 8.1: same input under different rayon thread-pool sizes must
@@ -612,12 +688,8 @@ mod tests {
         let r2 = run(2);
         let r4 = run(4);
 
-        assert_eq!(r1.x(), r2.x());
-        assert_eq!(r1.z(), r2.z());
-        assert_eq!(r1.coeff(), r2.coeff());
-        assert_eq!(r1.x(), r4.x());
-        assert_eq!(r1.z(), r4.z());
-        assert_eq!(r1.coeff(), r4.coeff());
+        assert_eq!(r1.to_arrays(), r2.to_arrays());
+        assert_eq!(r1.to_arrays(), r4.to_arrays());
     }
 
     /// Hand-built unsorted scratch becomes sorted; coeffs follow their keys.
@@ -749,10 +821,10 @@ mod tests {
         let x: Vec<[u64; 1]> = vec![];
         let z: Vec<[u64; 1]> = vec![];
         let c: Vec<Complex64> = vec![];
-        let out = merge_phase::<1, _>(&x, &z, &c, 0, 4, &AlwaysKeep);
-        assert!(out.is_empty());
-        assert_eq!(out.num_qubits(), 4);
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 0, &AlwaysKeep);
+        assert!(ox.is_empty());
+        assert!(oz.is_empty());
+        assert!(oc.is_empty());
     }
 
     #[test]
@@ -765,19 +837,18 @@ mod tests {
             Complex64::new(2.0, 0.0),
             Complex64::new(3.0, 0.0),
         ];
-        let out = merge_phase::<1, _>(&x, &z, &c, 3, 1, &AlwaysKeep);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out.x(), &[[0u64], [0u64], [1u64]]);
-        assert_eq!(out.z(), &[[0u64], [1u64], [0u64]]);
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 3, &AlwaysKeep);
+        assert_eq!(ox.len(), 3);
+        assert_eq!(ox, vec![[0u64], [0u64], [1u64]]);
+        assert_eq!(oz, vec![[0u64], [1u64], [0u64]]);
         assert_eq!(
-            out.coeff(),
-            &[
+            oc,
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
             ]
         );
-        out.assert_invariants();
     }
 
     #[test]
@@ -791,16 +862,15 @@ mod tests {
             Complex64::new(3.0, 0.0),
             Complex64::new(7.0, 0.0),
         ];
-        let out = merge_phase::<1, _>(&x, &z, &c, 4, 1, &AlwaysKeep);
-        assert_eq!(out.len(), 2);
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 4, &AlwaysKeep);
+        assert_eq!(ox.len(), 2);
         // Z with summed coeff 6, then X with 7.
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [1]);
-        assert_eq!(out.coeff()[0], Complex64::new(6.0, 0.0));
-        assert_eq!(out.x()[1], [1]);
-        assert_eq!(out.z()[1], [0]);
-        assert_eq!(out.coeff()[1], Complex64::new(7.0, 0.0));
-        out.assert_invariants();
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [1]);
+        assert_eq!(oc[0], Complex64::new(6.0, 0.0));
+        assert_eq!(ox[1], [1]);
+        assert_eq!(oz[1], [0]);
+        assert_eq!(oc[1], Complex64::new(7.0, 0.0));
     }
 
     #[test]
@@ -814,12 +884,11 @@ mod tests {
             Complex64::new(-1.0, 0.0),
             Complex64::new(5.0, 0.0),
         ];
-        let out = merge_phase::<1, _>(&x, &z, &c, 3, 1, &AlwaysKeep);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out.x()[0], [1]);
-        assert_eq!(out.z()[0], [0]);
-        assert_eq!(out.coeff()[0], Complex64::new(5.0, 0.0));
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 3, &AlwaysKeep);
+        assert_eq!(ox.len(), 1);
+        assert_eq!(ox[0], [1]);
+        assert_eq!(oz[0], [0]);
+        assert_eq!(oc[0], Complex64::new(5.0, 0.0));
     }
 
     /// Slice 7.1: the policy's `keep_term` runs inside the merge loop.
@@ -830,12 +899,11 @@ mod tests {
         let x: Vec<[u64; 1]> = vec![[0], [1]]; // Z, then X
         let z: Vec<[u64; 1]> = vec![[1], [0]];
         let c: Vec<Complex64> = vec![Complex64::new(0.5, 0.0), Complex64::new(1e-9, 0.0)];
-        let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
-        assert_eq!(out.len(), 1);
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [1]);
-        assert!(approx_eq(out.coeff()[0], Complex64::new(0.5, 0.0), TOL));
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 2, &CoefficientThreshold(1e-6));
+        assert_eq!(ox.len(), 1);
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [1]);
+        assert!(approx_eq(oc[0], Complex64::new(0.5, 0.0), TOL));
     }
 
     /// Slice 7.1: the threshold is checked *after* coefficients are summed,
@@ -847,9 +915,8 @@ mod tests {
         let x: Vec<[u64; 1]> = vec![[0], [0]];
         let z: Vec<[u64; 1]> = vec![[1], [1]];
         let c: Vec<Complex64> = vec![Complex64::new(0.5, 0.0), Complex64::new(-0.4999999, 0.0)];
-        let out = merge_phase::<1, _>(&x, &z, &c, 2, 1, &CoefficientThreshold(1e-6));
-        assert_eq!(out.len(), 0);
-        out.assert_invariants();
+        let (ox, _, _) = merge_phase::<1, _>(&x, &z, &c, 2, &CoefficientThreshold(1e-6));
+        assert_eq!(ox.len(), 0);
     }
 
     /// `CoefficientThreshold(0.0)` keeps every (non-zero) summed term — the
@@ -863,9 +930,8 @@ mod tests {
             Complex64::new(2.0, 0.0),
             Complex64::new(3.0, 0.0),
         ];
-        let out = merge_phase::<1, _>(&x, &z, &c, 3, 1, &CoefficientThreshold(0.0));
-        assert_eq!(out.len(), 3);
-        out.assert_invariants();
+        let (ox, _, _) = merge_phase::<1, _>(&x, &z, &c, 3, &CoefficientThreshold(0.0));
+        assert_eq!(ox.len(), 3);
     }
 
     /// Buffer with a populated prefix `[0..len)` and trailing junk: the
@@ -879,11 +945,11 @@ mod tests {
             Complex64::new(99.0, 0.0),
             Complex64::new(99.0, 0.0),
         ];
-        let out = merge_phase::<1, _>(&x, &z, &c, 1, 1, &AlwaysKeep);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [1]);
-        assert_eq!(out.coeff()[0], Complex64::new(2.0, 0.0));
+        let (ox, oz, oc) = merge_phase::<1, _>(&x, &z, &c, 1, &AlwaysKeep);
+        assert_eq!(ox.len(), 1);
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [1]);
+        assert_eq!(oc[0], Complex64::new(2.0, 0.0));
     }
 
     /// Slice 8.2 stress: a run of identical keys straddles the `len/2`
@@ -907,18 +973,17 @@ mod tests {
             Complex64::new(2.0, 0.0),
             Complex64::new(2.0, 0.0),
         ];
-        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 9, 1, &AlwaysKeep, 2);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [0]);
-        assert_eq!(out.coeff()[0], Complex64::new(2.0, 0.0));
-        assert_eq!(out.x()[1], [0]);
-        assert_eq!(out.z()[1], [1]);
-        assert_eq!(out.coeff()[1], Complex64::new(2.5, 0.0));
-        assert_eq!(out.x()[2], [1]);
-        assert_eq!(out.z()[2], [0]);
-        assert_eq!(out.coeff()[2], Complex64::new(4.0, 0.0));
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 9, &AlwaysKeep, 2);
+        assert_eq!(ox.len(), 3);
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [0]);
+        assert_eq!(oc[0], Complex64::new(2.0, 0.0));
+        assert_eq!(ox[1], [0]);
+        assert_eq!(oz[1], [1]);
+        assert_eq!(oc[1], Complex64::new(2.5, 0.0));
+        assert_eq!(ox[2], [1]);
+        assert_eq!(oz[2], [0]);
+        assert_eq!(oc[2], Complex64::new(4.0, 0.0));
     }
 
     /// Slice 8.2: when the natural midpoint already falls at a run break,
@@ -936,15 +1001,14 @@ mod tests {
             Complex64::new(5.0, 0.0),
             Complex64::new(6.0, 0.0),
         ];
-        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 6, 1, &AlwaysKeep, 2);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [0]);
-        assert_eq!(out.coeff()[0], Complex64::new(6.0, 0.0));
-        assert_eq!(out.x()[1], [1]);
-        assert_eq!(out.z()[1], [0]);
-        assert_eq!(out.coeff()[1], Complex64::new(15.0, 0.0));
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 6, &AlwaysKeep, 2);
+        assert_eq!(ox.len(), 2);
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [0]);
+        assert_eq!(oc[0], Complex64::new(6.0, 0.0));
+        assert_eq!(ox[1], [1]);
+        assert_eq!(oz[1], [0]);
+        assert_eq!(oc[1], Complex64::new(15.0, 0.0));
     }
 
     /// Slice 8.2: degenerate input where every key collapses to one run.
@@ -960,11 +1024,10 @@ mod tests {
             Complex64::new(1.0, 0.0),
             Complex64::new(1.0, 0.0),
         ];
-        let out = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 5, 1, &AlwaysKeep, 4);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out.x()[0], [0]);
-        assert_eq!(out.z()[0], [1]);
-        assert_eq!(out.coeff()[0], Complex64::new(5.0, 0.0));
-        out.assert_invariants();
+        let (ox, oz, oc) = merge_phase_with_nchunks::<1, _>(&x, &z, &c, 5, &AlwaysKeep, 4);
+        assert_eq!(ox.len(), 1);
+        assert_eq!(ox[0], [0]);
+        assert_eq!(oz[0], [1]);
+        assert_eq!(oc[0], Complex64::new(5.0, 0.0));
     }
 }

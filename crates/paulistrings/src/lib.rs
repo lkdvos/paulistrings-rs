@@ -13,9 +13,10 @@
 //! In priority order:
 //!
 //! 1. **Correctness** of the Pauli algebra — symplectic encoding, exact
-//!    phase tracking, sort-merge invariant restored after every layer.
-//! 2. **Performance** at 10⁶–10⁸ terms — structure-of-arrays storage,
-//!    sort-merge propagation engine, Rayon-parallel scan and merge.
+//!    phase tracking, the bucketed dedup invariant restored after every layer.
+//! 2. **Performance** at 10⁶–10⁸ terms — structure-of-arrays storage, a
+//!    GF(2)-linear bucket partition that keeps layers write-disjoint and
+//!    Rayon-parallel with no global sort.
 //! 3. **Extensibility** for research — open [`Channel`] and
 //!    [`TruncationPolicy`] traits with built-ins for Clifford gates,
 //!    Pauli rotations, depolarizing / dephasing / amplitude-damping noise,
@@ -58,8 +59,9 @@
 //! - [`PauliString`] — symplectic-encoded Pauli operator on up to `64·W`
 //!   qubits, `Copy + Pod`, `Ord`-comparable.
 //! - [`PauliSum`] — weighted sum of Pauli strings in structure-of-arrays
-//!   form. Sorted-and-deduplicated invariant maintained by every public
-//!   operation.
+//!   form, partitioned by a GF(2)-linear hash. Canonical order is (bucket,
+//!   then lex key) — plain lex for any sum of ≤ 1024 terms — and the
+//!   deduplicated invariant is maintained by every public operation.
 //! - [`BuildAccumulator`] — hashmap-based ingestion path. Used for
 //!   constructing a [`PauliSum`] from unsorted inputs (Hamiltonian
 //!   parsing, dict construction). Not used during propagation.
@@ -75,9 +77,12 @@
 //!   filters. Built-ins in [`truncation`]: [`truncation::CoefficientThreshold`],
 //!   [`truncation::WeightCutoff`], [`truncation::TopN`], plus the
 //!   [`truncation::And`] / [`truncation::Or`] combinators.
-//! - [`propagate`] / [`Direction`] — the propagation entry point.
-//! - [`engine`] — the sort-merge pipeline (scan → sort → merge). Most
-//!   users will not call this directly; [`propagate`] is the front door.
+//! - [`propagate`] / [`Direction`] — the propagation entry point. `sum`
+//!   is a single [`PauliSum`], bucketed for the run and returned bucketed;
+//!   there is no separate flat/working-form conversion to pay.
+//! - [`engine`] — the bucketed propagation engine, plus the retained v0.1
+//!   sort-merge pipeline as differential oracle and fallback. Most users
+//!   will not call either directly; [`propagate`] is the front door.
 //! - [`examples`] — worked-example walkthroughs of full-scale simulations
 //!   (currently: a 2D transverse-field Ising quench on 4×4 and 6×6
 //!   lattices with embedded plot).
@@ -111,10 +116,10 @@ pub mod phase;
 pub mod truncation;
 
 pub use accumulator::BuildAccumulator;
-pub use bucket::{BucketedSum, Gf2Hash};
+pub use bucket::Gf2Hash;
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use engine::{default_min_buckets, propagate, propagate_bucketed, Direction};
+pub use engine::{default_min_buckets, propagate, Direction};
 pub use pauli_string::PauliString;
 pub use pauli_sum::{PauliSum, ProductState};
 pub use phase::Phase;

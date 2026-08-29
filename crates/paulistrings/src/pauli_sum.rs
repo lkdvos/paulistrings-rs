@@ -1,19 +1,33 @@
 //! [`PauliSum<W>`] — weighted sum of Pauli strings in structure-of-arrays form.
 //!
-//! Storage is parallel `Vec<[u64; W]>` columns for the `x` and `z` parts plus
-//! a `Vec<Complex64>` for coefficients. SoA is chosen so coefficient-only and
-//! key-only scans get full cache utilization, and so each `Vec` maps directly
-//! to a GPU device buffer.
+//! Storage is per-bucket parallel `Vec<[u64; W]>` columns for the `x` and `z`
+//! parts plus a `Vec<Complex64>` for coefficients, partitioned by a
+//! GF(2)-linear hash ([`Gf2Hash`](crate::bucket::Gf2Hash)). SoA is chosen so
+//! coefficient-only and key-only scans get full cache utilization, and so each
+//! `Vec` maps directly to a GPU device buffer.
 //!
-//! **Invariant:** the `x` and `z` columns are sorted in lexicographic order as
-//! a single key, and no two entries share a key. Every public operation
-//! either preserves this invariant or returns a fresh [`PauliSum`] that does.
+//! # Canonical order
+//!
+//! **Terms are ordered by (bucket index `h(x, z)` ascending, then
+//! lexicographic `(x, z)` key within a bucket).** [`PauliSum::iter`] and
+//! [`PauliSum::to_arrays`] produce exactly this order, and no two entries
+//! share a key. Every public operation preserves the invariant or returns a
+//! fresh [`PauliSum`] that does.
+//!
+//! A single-bucket sum's canonical order is plain lexicographic `(x, z)` —
+//! `h ≡ 0` — and every sum of at most 1024 terms
+//! ([`DEFAULT_TARGET_BUCKET_LEN`](crate::bucket::DEFAULT_TARGET_BUCKET_LEN))
+//! is single-bucket when built through [`BuildAccumulator`], so small sums
+//! always come out lex-sorted. Larger sums interleave their buckets in an
+//! `H`-dependent order; compare them by key ([`PauliSum::get`],
+//! [`PauliSum::iter`]) rather than by position.
 //!
 //! Build a [`PauliSum`] from unsorted inputs via [`BuildAccumulator`]; once
 //! built, combine sums with [`PauliSum::add`] or scale coefficients with
 //! [`PauliSum::scale`].
 //!
-//! See design doc §3.2.
+//! See v0.1 design doc §3.2 and the v0.2 design doc §4 (storage), plus v0.3
+//! §4 (the single bucketed representation).
 //!
 //! # Examples
 //!
@@ -43,9 +57,10 @@
 #![allow(unused)]
 
 use num_complex::Complex64;
-use std::cmp::Ordering;
 
 use crate::pauli_string::PauliString;
+
+pub use crate::bucket::sum::PauliSum;
 
 /// A uniform single-qubit product state, for
 /// [`PauliSum::expectation_product_state`].
@@ -61,323 +76,6 @@ pub enum ProductState {
     YPlus,
     /// `|0…0⟩`, the `+1` eigenstate of `Z` on every qubit.
     ZPlus,
-}
-
-/// Weighted sum of Pauli operators, stored SoA, sorted and deduplicated.
-#[derive(Clone, Debug, Default)]
-pub struct PauliSum<const W: usize> {
-    pub(crate) x: Vec<[u64; W]>,
-    pub(crate) z: Vec<[u64; W]>,
-    pub(crate) coeff: Vec<Complex64>,
-    pub(crate) num_qubits: usize,
-}
-
-impl<const W: usize> PauliSum<W> {
-    /// Empty sum on `num_qubits` qubits.
-    ///
-    /// # Panics
-    ///
-    /// Panics in debug builds if `num_qubits > 64 · W`. Caller is responsible
-    /// for ensuring `num_qubits <= 64 · W`.
-    pub fn empty(num_qubits: usize) -> Self {
-        debug_assert!(num_qubits <= 64 * W);
-        Self {
-            x: Vec::new(),
-            z: Vec::new(),
-            coeff: Vec::new(),
-            num_qubits,
-        }
-    }
-
-    /// Number of qubits this sum is defined over.
-    #[inline]
-    pub fn num_qubits(&self) -> usize {
-        self.num_qubits
-    }
-
-    /// Number of non-identity terms after deduplication.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.coeff.len()
-    }
-
-    /// `true` iff the sum has no terms.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.coeff.is_empty()
-    }
-
-    /// Read-only view of the X-part column.
-    #[inline]
-    pub fn x(&self) -> &[[u64; W]] {
-        &self.x
-    }
-
-    /// Read-only view of the Z-part column.
-    #[inline]
-    pub fn z(&self) -> &[[u64; W]] {
-        &self.z
-    }
-
-    /// Read-only view of the coefficient column.
-    #[inline]
-    pub fn coeff(&self) -> &[Complex64] {
-        &self.coeff
-    }
-
-    /// Sum of two [`PauliSum`]s. Linear-time merge; preserves the sorted
-    /// invariant. Terms whose coefficients sum to exactly `0+0i` are dropped.
-    ///
-    /// # Examples
-    ///
-    /// Disjoint keys interleave in sort order; equal keys sum, and an
-    /// exact-zero combined coefficient drops the term.
-    ///
-    /// ```
-    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
-    /// use num_complex::Complex64;
-    ///
-    /// let mut a = BuildAccumulator::<1>::new(2);
-    /// a.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    /// a.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
-    /// let a = a.finalize();
-    ///
-    /// let mut b = BuildAccumulator::<1>::new(2);
-    /// b.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(-1.0, 0.0));
-    /// let b = b.finalize();
-    ///
-    /// // Z₀ cancels exactly; only X₁ survives.
-    /// let r = a.add(&b);
-    /// assert_eq!(r.len(), 1);
-    /// assert_eq!(r.coeff()[0], Complex64::new(0.5, 0.0));
-    /// ```
-    pub fn add(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.num_qubits, other.num_qubits);
-        let n_a = self.x.len();
-        let n_b = other.x.len();
-        let cap = n_a + n_b;
-        let mut x = Vec::with_capacity(cap);
-        let mut z = Vec::with_capacity(cap);
-        let mut coeff = Vec::with_capacity(cap);
-        let zero = Complex64::new(0.0, 0.0);
-        let (mut i, mut j) = (0usize, 0usize);
-        while i < n_a && j < n_b {
-            match (&self.x[i], &self.z[i]).cmp(&(&other.x[j], &other.z[j])) {
-                std::cmp::Ordering::Less => {
-                    x.push(self.x[i]);
-                    z.push(self.z[i]);
-                    coeff.push(self.coeff[i]);
-                    i += 1;
-                }
-                std::cmp::Ordering::Greater => {
-                    x.push(other.x[j]);
-                    z.push(other.z[j]);
-                    coeff.push(other.coeff[j]);
-                    j += 1;
-                }
-                std::cmp::Ordering::Equal => {
-                    let c = self.coeff[i] + other.coeff[j];
-                    if c != zero {
-                        x.push(self.x[i]);
-                        z.push(self.z[i]);
-                        coeff.push(c);
-                    }
-                    i += 1;
-                    j += 1;
-                }
-            }
-        }
-        while i < n_a {
-            x.push(self.x[i]);
-            z.push(self.z[i]);
-            coeff.push(self.coeff[i]);
-            i += 1;
-        }
-        while j < n_b {
-            x.push(other.x[j]);
-            z.push(other.z[j]);
-            coeff.push(other.coeff[j]);
-            j += 1;
-        }
-        Self {
-            x,
-            z,
-            coeff,
-            num_qubits: self.num_qubits,
-        }
-    }
-
-    /// Multiply every coefficient by `c` in place.
-    pub fn scale(&mut self, c: Complex64) {
-        for coeff in self.coeff.iter_mut() {
-            *coeff *= c;
-        }
-    }
-
-    /// Locate a Pauli key by binary search; returns `Ok(idx)` if present,
-    /// `Err(idx)` for the insertion point otherwise.
-    pub fn find(&self, x: &[u64; W], z: &[u64; W]) -> Result<usize, usize> {
-        let mut lo = 0;
-        let mut hi = self.x.len();
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match (&self.x[mid], &self.z[mid]).cmp(&(x, z)) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => return Ok(mid),
-            }
-        }
-        Err(lo)
-    }
-
-    /// Drop terms whose coefficient magnitude is `<= eps`. Preserves sort.
-    pub fn truncate_by_magnitude(&mut self, eps: f64) {
-        let n = self.coeff.len();
-        let mut w = 0;
-        for r in 0..n {
-            if self.coeff[r].norm() > eps {
-                if w != r {
-                    self.x[w] = self.x[r];
-                    self.z[w] = self.z[r];
-                    self.coeff[w] = self.coeff[r];
-                }
-                w += 1;
-            }
-        }
-        self.x.truncate(w);
-        self.z.truncate(w);
-        self.coeff.truncate(w);
-    }
-
-    /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
-    ///
-    /// The Pauli basis is orthogonal under the trace, so every non-identity term
-    /// is traceless and only this one contributes.
-    pub fn identity_coefficient(&self) -> Complex64 {
-        let zero_key = [0u64; W];
-        match self.find(&zero_key, &zero_key) {
-            Ok(i) => self.coeff[i],
-            Err(_) => Complex64::new(0.0, 0.0),
-        }
-    }
-
-    /// Hilbert-Schmidt overlap `tr(self† · other) / 2^n`.
-    ///
-    /// Because `tr(P† Q) = 2^n δ_{PQ}` on the Pauli basis, this is just
-    /// `Σ conj(a_i) · b_i` over the keys the two sums share — a single linear
-    /// merge over two sorted columns, `O(n + m)`.
-    ///
-    /// Use it to read a number out of a propagated operator: with `self` an
-    /// observable and `other` a density matrix in the Pauli basis, this is the
-    /// expectation value.
-    ///
-    /// # Panics
-    ///
-    /// Panics in debug builds if the two sums disagree about `num_qubits`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use num_complex::Complex64;
-    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
-    ///
-    /// let mut a = BuildAccumulator::<1>::with_capacity(4, 1);
-    /// a.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(2.0, 0.0));
-    /// let a = a.finalize();
-    ///
-    /// // Overlap with itself is the squared norm.
-    /// assert!((a.overlap(&a) - Complex64::new(4.0, 0.0)).norm() < 1e-12);
-    /// ```
-    pub fn overlap(&self, other: &Self) -> Complex64 {
-        debug_assert_eq!(
-            self.num_qubits, other.num_qubits,
-            "PauliSum::overlap: num_qubits mismatch",
-        );
-        let mut acc = Complex64::new(0.0, 0.0);
-        let (mut i, mut j) = (0usize, 0usize);
-        while i < self.coeff.len() && j < other.coeff.len() {
-            match (&self.x[i], &self.z[i]).cmp(&(&other.x[j], &other.z[j])) {
-                Ordering::Less => i += 1,
-                Ordering::Greater => j += 1,
-                Ordering::Equal => {
-                    acc += self.coeff[i].conj() * other.coeff[j];
-                    i += 1;
-                    j += 1;
-                }
-            }
-        }
-        acc
-    }
-
-    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state.
-    ///
-    /// For each [`ProductState`] there is exactly one single-qubit Pauli with
-    /// expectation `1`; the others have expectation `0`. A Pauli string therefore
-    /// contributes iff every one of its factors is either `I` or that Pauli, in
-    /// which case it contributes its full coefficient. So this is a single masked
-    /// scan over the key columns, with no per-term algebra.
-    ///
-    /// Returns `Complex64` rather than `f64` because `self` need not be
-    /// Hermitian; take `.re` when it is.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use num_complex::Complex64;
-    /// use paulistrings::pauli_sum::ProductState;
-    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
-    ///
-    /// let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
-    /// acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    /// acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(5.0, 0.0));
-    /// let sum = acc.finalize();
-    ///
-    /// // In |+...+>, <X> = 1 and <Z> = 0.
-    /// let e = sum.expectation_product_state(ProductState::XPlus);
-    /// assert!((e - Complex64::new(1.0, 0.0)).norm() < 1e-12);
-    /// ```
-    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
-        let mut acc = Complex64::new(0.0, 0.0);
-        for i in 0..self.coeff.len() {
-            let contributes = match state {
-                // |+>^n: every factor must be I or X, i.e. no z bits.
-                ProductState::XPlus => self.z[i] == [0u64; W],
-                // |0>^n: every factor must be I or Z, i.e. no x bits.
-                ProductState::ZPlus => self.x[i] == [0u64; W],
-                // |+i>^n: every factor must be I=(0,0) or Y=(1,1), i.e. the x
-                // and z words agree bit for bit.
-                ProductState::YPlus => self.x[i] == self.z[i],
-            };
-            if contributes {
-                acc += self.coeff[i];
-            }
-        }
-        acc
-    }
-
-    /// Debug-only invariant check. No-op in release builds.
-    #[cfg(debug_assertions)]
-    pub fn assert_invariants(&self) {
-        assert_eq!(self.x.len(), self.z.len());
-        assert_eq!(self.x.len(), self.coeff.len());
-        for i in 0..self.x.len() {
-            let term = PauliString::<W> {
-                x: self.x[i],
-                z: self.z[i],
-            };
-            assert!(
-                term.is_within(self.num_qubits),
-                "PauliSum term {} has bits beyond num_qubits={}",
-                i,
-                self.num_qubits,
-            );
-        }
-        for i in 1..self.x.len() {
-            let prev = (&self.x[i - 1], &self.z[i - 1]);
-            let cur = (&self.x[i], &self.z[i]);
-            assert!(prev < cur, "PauliSum out of order at {}", i);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -630,8 +328,8 @@ mod tests {
 
         let mut want = 0.0f64;
         for i in 0..sum.len() {
-            if sum.z()[i] == [0u64] {
-                want += sum.coeff()[i].re;
+            if sum.bucket(0).1[i] == [0u64] {
+                want += sum.bucket(0).2[i].re;
             }
         }
         let got = sum.expectation_product_state(ProductState::XPlus).re;
@@ -641,153 +339,131 @@ mod tests {
     #[test]
     fn assert_invariants_accepts_bits_within_num_qubits() {
         // num_qubits=50, single term with X on qubit 49 (in range).
-        let sum = PauliSum::<1> {
-            x: vec![[1u64 << 49]],
-            z: vec![[0u64; 1]],
-            coeff: vec![Complex64::new(1.0, 0.0)],
-            num_qubits: 50,
-        };
+        let sum = PauliSum::<1>::from_sorted_columns(
+            vec![[1u64 << 49]],
+            vec![[0u64; 1]],
+            vec![Complex64::new(1.0, 0.0)],
+            50,
+        );
         sum.assert_invariants();
     }
 
     #[test]
-    #[should_panic(expected = "beyond num_qubits")]
+    #[should_panic(expected = "exceeds num_qubits")]
     fn assert_invariants_rejects_bit_beyond_num_qubits() {
         // num_qubits=50, but X bit set at qubit 50 — must panic.
-        let sum = PauliSum::<1> {
-            x: vec![[1u64 << 50]],
-            z: vec![[0u64; 1]],
-            coeff: vec![Complex64::new(1.0, 0.0)],
-            num_qubits: 50,
-        };
+        let sum = PauliSum::<1>::from_sorted_columns(
+            vec![[1u64 << 50]],
+            vec![[0u64; 1]],
+            vec![Complex64::new(1.0, 0.0)],
+            50,
+        );
         sum.assert_invariants();
     }
 
     #[test]
-    #[should_panic(expected = "beyond num_qubits")]
+    #[should_panic(expected = "exceeds num_qubits")]
     fn assert_invariants_rejects_z_bit_beyond_num_qubits() {
         // Same as above but on the Z-part: invariant must check both parts.
-        let sum = PauliSum::<1> {
-            x: vec![[0u64; 1]],
-            z: vec![[1u64 << 60]],
-            coeff: vec![Complex64::new(1.0, 0.0)],
-            num_qubits: 50,
-        };
+        let sum = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64; 1]],
+            vec![[1u64 << 60]],
+            vec![Complex64::new(1.0, 0.0)],
+            50,
+        );
         sum.assert_invariants();
     }
 
     #[test]
-    #[should_panic(expected = "beyond num_qubits")]
+    #[should_panic(expected = "exceeds num_qubits")]
     fn assert_invariants_rejects_bit_in_unused_word() {
         // num_qubits=64 (one full word), W=2. Bit on qubit 64 lives in word 1
         // and is therefore out of range.
-        let sum = PauliSum::<2> {
-            x: vec![[0u64, 1u64]],
-            z: vec![[0u64; 2]],
-            coeff: vec![Complex64::new(1.0, 0.0)],
-            num_qubits: 64,
-        };
+        let sum = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 1u64]],
+            vec![[0u64; 2]],
+            vec![Complex64::new(1.0, 0.0)],
+            64,
+        );
         sum.assert_invariants();
     }
 
-    // --- Slice 2.1: find() -----------------------------------------------
+    // --- Slice 2.1: keyed lookup (get) -----------------------------------
 
     /// Three-term `PauliSum<1>` with sorted, distinct keys `K0 < K1 < K2`.
-    /// Used as the fixture for `find` hit/miss tests.
     fn three_term_sum_w1() -> PauliSum<1> {
         // K0 = (x=0, z=1), K1 = (x=1, z=0), K2 = (x=1, z=2). Sorted by lex
         // on (x, z): K0 has smallest x; K1, K2 share x but K1 has smaller z.
-        PauliSum::<1> {
-            x: vec![[0u64], [1u64], [1u64]],
-            z: vec![[1u64], [0u64], [2u64]],
-            coeff: vec![
+        PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64], [1u64]],
+            vec![[1u64], [0u64], [2u64]],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
             ],
-            num_qubits: 4,
-        }
+            4,
+        )
     }
 
     #[test]
-    fn find_on_empty_returns_err_zero() {
+    fn get_on_empty_is_none() {
         let s = PauliSum::<1>::empty(4);
-        assert_eq!(s.find(&[0u64], &[0u64]), Err(0));
+        assert_eq!(s.get(&[0u64], &[0u64]), None);
     }
 
     #[test]
-    fn find_hit_at_index_zero() {
+    fn get_hits_every_key_and_misses_between() {
         let s = three_term_sum_w1();
-        assert_eq!(s.find(&[0u64], &[1u64]), Ok(0));
+        assert_eq!(s.get(&[0u64], &[1u64]), Some(Complex64::new(1.0, 0.0)));
+        assert_eq!(s.get(&[1u64], &[0u64]), Some(Complex64::new(2.0, 0.0)));
+        assert_eq!(s.get(&[1u64], &[2u64]), Some(Complex64::new(3.0, 0.0)));
+        // Below the smallest, in a gap, and above the largest key.
+        assert_eq!(s.get(&[0u64], &[0u64]), None);
+        assert_eq!(s.get(&[1u64], &[1u64]), None);
+        assert_eq!(s.get(&[2u64], &[0u64]), None);
     }
 
     #[test]
-    fn find_hit_in_middle() {
-        let s = three_term_sum_w1();
-        assert_eq!(s.find(&[1u64], &[0u64]), Ok(1));
-    }
-
-    #[test]
-    fn find_hit_at_last() {
-        let s = three_term_sum_w1();
-        assert_eq!(s.find(&[1u64], &[2u64]), Ok(2));
-    }
-
-    #[test]
-    fn find_miss_below_min_returns_err_zero() {
-        let s = three_term_sum_w1();
-        // Identity (0, 0) is below K0=(0, 1) under lex.
-        assert_eq!(s.find(&[0u64], &[0u64]), Err(0));
-    }
-
-    #[test]
-    fn find_miss_in_gap_returns_insertion_point() {
-        let s = three_term_sum_w1();
-        // (1, 1) sits between K1=(1,0) and K2=(1,2): insertion point is 2.
-        assert_eq!(s.find(&[1u64], &[1u64]), Err(2));
-    }
-
-    #[test]
-    fn find_miss_above_max_returns_err_len() {
-        let s = three_term_sum_w1();
-        // (2, 0) is above all keys (largest x).
-        assert_eq!(s.find(&[2u64], &[0u64]), Err(3));
-    }
-
-    #[test]
-    fn find_lex_orders_x_before_z() {
+    fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
         // Two terms with K_a=(x=0, z=5) and K_b=(x=1, z=0). Despite z_a > z_b,
-        // x_a < x_b, so K_a < K_b. A lex-on-x-only impl would invert this.
-        let s = PauliSum::<1> {
-            x: vec![[0u64], [1u64]],
-            z: vec![[5u64], [0u64]],
-            coeff: vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
-            num_qubits: 4,
-        };
-        assert_eq!(s.find(&[0u64], &[5u64]), Ok(0));
-        assert_eq!(s.find(&[1u64], &[0u64]), Ok(1));
-        // (0, 6) is between them under lex(x, z): same x as K_a but larger z.
-        assert_eq!(s.find(&[0u64], &[6u64]), Err(1));
+        // x_a < x_b, so K_a < K_b in the canonical (lex) order of a
+        // single-bucket sum. A lex-on-x-only order would invert this.
+        let s = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64]],
+            vec![[5u64], [0u64]],
+            vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
+            4,
+        );
+        s.assert_invariants();
+        let (x, z, _) = s.to_arrays();
+        assert_eq!((x[0], z[0]), ([0u64], [5u64]));
+        assert_eq!((x[1], z[1]), ([1u64], [0u64]));
     }
 
     #[test]
-    fn find_w2_hit_across_word_boundary() {
+    fn get_w2_hit_across_word_boundary() {
         // W=2 sum, key bits live in word 1.
-        let s = PauliSum::<2> {
-            x: vec![[0u64, 1u64], [0u64, 1u64], [0u64, 2u64]],
-            z: vec![[0u64, 0u64], [0u64, 4u64], [0u64, 0u64]],
-            coeff: vec![
+        let s = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 1u64], [0u64, 1u64], [0u64, 2u64]],
+            vec![[0u64, 0u64], [0u64, 4u64], [0u64, 0u64]],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
             ],
-            num_qubits: 128,
-        };
+            128,
+        );
         s.assert_invariants();
-        assert_eq!(s.find(&[0u64, 1u64], &[0u64, 4u64]), Ok(1));
-        assert_eq!(s.find(&[0u64, 2u64], &[0u64, 0u64]), Ok(2));
-        // Miss between idx 0 and 1: same x, z between 0 and 4.
-        assert_eq!(s.find(&[0u64, 1u64], &[0u64, 1u64]), Err(1));
+        assert_eq!(
+            s.get(&[0u64, 1u64], &[0u64, 4u64]),
+            Some(Complex64::new(2.0, 0.0))
+        );
+        assert_eq!(
+            s.get(&[0u64, 2u64], &[0u64, 0u64]),
+            Some(Complex64::new(3.0, 0.0))
+        );
+        assert_eq!(s.get(&[0u64, 1u64], &[0u64, 1u64]), None);
     }
 
     // --- Slice 2.2: scale() ----------------------------------------------
@@ -797,8 +473,8 @@ mod tests {
         let mut s = three_term_sum_w1();
         s.scale(Complex64::new(0.0, 0.0));
         assert_eq!(s.len(), 3);
-        for c in s.coeff() {
-            assert_eq!(*c, Complex64::new(0.0, 0.0));
+        for (_, _, c) in s.iter() {
+            assert_eq!(c, Complex64::new(0.0, 0.0));
         }
         s.assert_invariants();
     }
@@ -806,23 +482,23 @@ mod tests {
     #[test]
     fn scale_by_one_is_identity() {
         let mut s = three_term_sum_w1();
-        let before: Vec<Complex64> = s.coeff().to_vec();
+        let (_, _, before) = s.to_arrays();
         s.scale(Complex64::new(1.0, 0.0));
-        assert_eq!(s.coeff(), before.as_slice());
+        assert_eq!(s.to_arrays().2, before);
     }
 
     #[test]
     fn scale_by_i_rotates_phases() {
-        let mut s = PauliSum::<1> {
-            x: vec![[0u64], [1u64]],
-            z: vec![[1u64], [0u64]],
-            coeff: vec![Complex64::new(2.0, 0.0), Complex64::new(0.0, -3.0)],
-            num_qubits: 4,
-        };
+        let mut s = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64]],
+            vec![[1u64], [0u64]],
+            vec![Complex64::new(2.0, 0.0), Complex64::new(0.0, -3.0)],
+            4,
+        );
         s.scale(Complex64::new(0.0, 1.0));
         // (2 + 0i) * i = 0 + 2i; (0 - 3i) * i = 3 + 0i.
-        assert_eq!(s.coeff()[0], Complex64::new(0.0, 2.0));
-        assert_eq!(s.coeff()[1], Complex64::new(3.0, 0.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 2.0));
+        assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
     }
 
     #[test]
@@ -855,66 +531,66 @@ mod tests {
     fn truncate_mixed_drops_only_below_threshold() {
         // Four sorted terms with magnitudes [0.1, 0.5, 1.0, 0.05]; eps=0.2
         // keeps 0.5 and 1.0 (originally at indices 1 and 2).
-        let mut s = PauliSum::<1> {
-            x: vec![[0u64], [0u64], [1u64], [1u64]],
-            z: vec![[1u64], [2u64], [0u64], [1u64]],
-            coeff: vec![
+        let mut s = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [0u64], [1u64], [1u64]],
+            vec![[1u64], [2u64], [0u64], [1u64]],
+            vec![
                 Complex64::new(0.1, 0.0),
                 Complex64::new(0.5, 0.0),
                 Complex64::new(1.0, 0.0),
                 Complex64::new(0.05, 0.0),
             ],
-            num_qubits: 4,
-        };
+            4,
+        );
         s.assert_invariants();
         s.truncate_by_magnitude(0.2);
         assert_eq!(s.len(), 2);
-        assert_eq!(s.x()[0], [0u64]);
-        assert_eq!(s.z()[0], [2u64]);
-        assert_eq!(s.coeff()[0], Complex64::new(0.5, 0.0));
-        assert_eq!(s.x()[1], [1u64]);
-        assert_eq!(s.z()[1], [0u64]);
-        assert_eq!(s.coeff()[1], Complex64::new(1.0, 0.0));
+        assert_eq!(s.bucket(0).0[0], [0u64]);
+        assert_eq!(s.bucket(0).1[0], [2u64]);
+        assert_eq!(s.bucket(0).2[0], Complex64::new(0.5, 0.0));
+        assert_eq!(s.bucket(0).0[1], [1u64]);
+        assert_eq!(s.bucket(0).1[1], [0u64]);
+        assert_eq!(s.bucket(0).2[1], Complex64::new(1.0, 0.0));
         s.assert_invariants();
     }
 
     #[test]
     fn truncate_drops_exact_zero_at_eps_zero() {
         // Include an exact (0+0i) term; eps=0 should drop only that one.
-        let mut s = PauliSum::<1> {
-            x: vec![[0u64], [1u64], [1u64]],
-            z: vec![[1u64], [0u64], [2u64]],
-            coeff: vec![
+        let mut s = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64], [1u64]],
+            vec![[1u64], [0u64], [2u64]],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(0.0, 0.0),
                 Complex64::new(2.0, 0.0),
             ],
-            num_qubits: 4,
-        };
+            4,
+        );
         s.truncate_by_magnitude(0.0);
         assert_eq!(s.len(), 2);
-        assert_eq!(s.x()[0], [0u64]);
-        assert_eq!(s.x()[1], [1u64]);
-        assert_eq!(s.z()[1], [2u64]);
+        assert_eq!(s.bucket(0).0[0], [0u64]);
+        assert_eq!(s.bucket(0).0[1], [1u64]);
+        assert_eq!(s.bucket(0).1[1], [2u64]);
         s.assert_invariants();
     }
 
     #[test]
     fn truncate_w2_preserves_sort() {
-        let mut s = PauliSum::<2> {
-            x: vec![[0u64, 0u64], [0u64, 1u64], [1u64, 0u64]],
-            z: vec![[0u64, 1u64], [0u64, 0u64], [0u64, 0u64]],
-            coeff: vec![
+        let mut s = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 0u64], [0u64, 1u64], [1u64, 0u64]],
+            vec![[0u64, 1u64], [0u64, 0u64], [0u64, 0u64]],
+            vec![
                 Complex64::new(0.01, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(0.005, 0.0),
             ],
-            num_qubits: 128,
-        };
+            128,
+        );
         s.assert_invariants();
         s.truncate_by_magnitude(0.1);
         assert_eq!(s.len(), 1);
-        assert_eq!(s.x()[0], [0u64, 1u64]);
+        assert_eq!(s.bucket(0).0[0], [0u64, 1u64]);
         s.assert_invariants();
     }
 
@@ -926,9 +602,7 @@ mod tests {
         let b = three_term_sum_w1();
         let r = a.add(&b);
         assert_eq!(r.len(), 3);
-        assert_eq!(r.x(), b.x());
-        assert_eq!(r.z(), b.z());
-        assert_eq!(r.coeff(), b.coeff());
+        assert_eq!(r.to_arrays(), b.to_arrays());
         r.assert_invariants();
     }
 
@@ -938,9 +612,7 @@ mod tests {
         let b = PauliSum::<1>::empty(4);
         let r = a.add(&b);
         assert_eq!(r.len(), 3);
-        assert_eq!(r.x(), a.x());
-        assert_eq!(r.z(), a.z());
-        assert_eq!(r.coeff(), a.coeff());
+        assert_eq!(r.to_arrays(), a.to_arrays());
         r.assert_invariants();
     }
 
@@ -948,30 +620,31 @@ mod tests {
     fn add_disjoint_keys_interleaves_in_sort_order() {
         // a has K0=(0,1), K2=(1,2); b has K1=(1,0), K3=(2,0).
         // Lex sort across the union: (0,1) < (1,0) < (1,2) < (2,0).
-        let a = PauliSum::<1> {
-            x: vec![[0u64], [1u64]],
-            z: vec![[1u64], [2u64]],
-            coeff: vec![Complex64::new(1.0, 0.0), Complex64::new(3.0, 0.0)],
-            num_qubits: 4,
-        };
-        let b = PauliSum::<1> {
-            x: vec![[1u64], [2u64]],
-            z: vec![[0u64], [0u64]],
-            coeff: vec![Complex64::new(2.0, 0.0), Complex64::new(4.0, 0.0)],
-            num_qubits: 4,
-        };
+        let a = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64]],
+            vec![[1u64], [2u64]],
+            vec![Complex64::new(1.0, 0.0), Complex64::new(3.0, 0.0)],
+            4,
+        );
+        let b = PauliSum::<1>::from_sorted_columns(
+            vec![[1u64], [2u64]],
+            vec![[0u64], [0u64]],
+            vec![Complex64::new(2.0, 0.0), Complex64::new(4.0, 0.0)],
+            4,
+        );
         let r = a.add(&b);
         assert_eq!(r.len(), 4);
-        assert_eq!(r.x(), &[[0u64], [1u64], [1u64], [2u64]][..]);
-        assert_eq!(r.z(), &[[1u64], [0u64], [2u64], [0u64]][..]);
+        let (rx, rz, rc) = r.to_arrays();
+        assert_eq!(rx, vec![[0u64], [1u64], [1u64], [2u64]]);
+        assert_eq!(rz, vec![[1u64], [0u64], [2u64], [0u64]]);
         assert_eq!(
-            r.coeff(),
-            &[
+            rc,
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
                 Complex64::new(4.0, 0.0),
-            ][..]
+            ]
         );
         r.assert_invariants();
     }
@@ -981,28 +654,31 @@ mod tests {
         let a = three_term_sum_w1();
         let r = a.add(&a);
         assert_eq!(r.len(), 3);
-        assert_eq!(r.x(), a.x());
-        assert_eq!(r.z(), a.z());
+        assert_eq!(r.to_arrays().0, a.to_arrays().0);
+        assert_eq!(r.to_arrays().1, a.to_arrays().1);
         for k in 0..3 {
-            assert_eq!(r.coeff()[k], a.coeff()[k] * Complex64::new(2.0, 0.0));
+            assert_eq!(
+                r.bucket(0).2[k],
+                a.bucket(0).2[k] * Complex64::new(2.0, 0.0)
+            );
         }
         r.assert_invariants();
     }
 
     #[test]
     fn add_cancellation_drops_term() {
-        let a = PauliSum::<1> {
-            x: vec![[1u64]],
-            z: vec![[0u64]],
-            coeff: vec![Complex64::new(1.0, 0.0)],
-            num_qubits: 4,
-        };
-        let b = PauliSum::<1> {
-            x: vec![[1u64]],
-            z: vec![[0u64]],
-            coeff: vec![Complex64::new(-1.0, 0.0)],
-            num_qubits: 4,
-        };
+        let a = PauliSum::<1>::from_sorted_columns(
+            vec![[1u64]],
+            vec![[0u64]],
+            vec![Complex64::new(1.0, 0.0)],
+            4,
+        );
+        let b = PauliSum::<1>::from_sorted_columns(
+            vec![[1u64]],
+            vec![[0u64]],
+            vec![Complex64::new(-1.0, 0.0)],
+            4,
+        );
         let r = a.add(&b);
         assert!(r.is_empty());
         r.assert_invariants();
@@ -1012,61 +688,65 @@ mod tests {
     fn add_mixed_cancellation_and_merge() {
         // a = {K1: 1, K2: 2, K3: 3}, b = {K1: -1, K2: 0.5, K4: 4}
         // K1 cancels, K2 sums to 2.5, K3 unique to a, K4 unique to b.
-        let a = PauliSum::<1> {
-            x: vec![[0u64], [1u64], [2u64]],
-            z: vec![[0u64], [0u64], [0u64]],
-            coeff: vec![
+        let a = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64], [2u64]],
+            vec![[0u64], [0u64], [0u64]],
+            vec![
                 Complex64::new(1.0, 0.0),
                 Complex64::new(2.0, 0.0),
                 Complex64::new(3.0, 0.0),
             ],
-            num_qubits: 4,
-        };
-        let b = PauliSum::<1> {
-            x: vec![[0u64], [1u64], [3u64]],
-            z: vec![[0u64], [0u64], [0u64]],
-            coeff: vec![
+            4,
+        );
+        let b = PauliSum::<1>::from_sorted_columns(
+            vec![[0u64], [1u64], [3u64]],
+            vec![[0u64], [0u64], [0u64]],
+            vec![
                 Complex64::new(-1.0, 0.0),
                 Complex64::new(0.5, 0.0),
                 Complex64::new(4.0, 0.0),
             ],
-            num_qubits: 4,
-        };
+            4,
+        );
         let r = a.add(&b);
         assert_eq!(r.len(), 3);
-        assert_eq!(r.x(), &[[1u64], [2u64], [3u64]][..]);
-        assert_eq!(r.z(), &[[0u64], [0u64], [0u64]][..]);
+        let (rx, rz, rc) = r.to_arrays();
+        assert_eq!(rx, vec![[1u64], [2u64], [3u64]]);
+        assert_eq!(rz, vec![[0u64], [0u64], [0u64]]);
         assert_eq!(
-            r.coeff(),
-            &[
+            rc,
+            vec![
                 Complex64::new(2.5, 0.0),
                 Complex64::new(3.0, 0.0),
                 Complex64::new(4.0, 0.0),
-            ][..]
+            ]
         );
         r.assert_invariants();
     }
 
     #[test]
     fn add_w2_across_word_boundary() {
-        let a = PauliSum::<2> {
-            x: vec![[0u64, 1u64], [0u64, 2u64]],
-            z: vec![[0u64, 0u64], [0u64, 0u64]],
-            coeff: vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
-            num_qubits: 128,
-        };
-        let b = PauliSum::<2> {
-            x: vec![[0u64, 1u64], [0u64, 4u64]],
-            z: vec![[0u64, 0u64], [0u64, 0u64]],
-            coeff: vec![Complex64::new(0.5, 0.0), Complex64::new(7.0, 0.0)],
-            num_qubits: 128,
-        };
+        let a = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 1u64], [0u64, 2u64]],
+            vec![[0u64, 0u64], [0u64, 0u64]],
+            vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
+            128,
+        );
+        let b = PauliSum::<2>::from_sorted_columns(
+            vec![[0u64, 1u64], [0u64, 4u64]],
+            vec![[0u64, 0u64], [0u64, 0u64]],
+            vec![Complex64::new(0.5, 0.0), Complex64::new(7.0, 0.0)],
+            128,
+        );
         let r = a.add(&b);
         assert_eq!(r.len(), 3);
-        assert_eq!(r.x(), &[[0u64, 1u64], [0u64, 2u64], [0u64, 4u64]][..]);
-        assert_eq!(r.coeff()[0], Complex64::new(1.5, 0.0));
-        assert_eq!(r.coeff()[1], Complex64::new(2.0, 0.0));
-        assert_eq!(r.coeff()[2], Complex64::new(7.0, 0.0));
+        assert_eq!(
+            r.to_arrays().0,
+            vec![[0u64, 1u64], [0u64, 2u64], [0u64, 4u64]]
+        );
+        assert_eq!(r.bucket(0).2[0], Complex64::new(1.5, 0.0));
+        assert_eq!(r.bucket(0).2[1], Complex64::new(2.0, 0.0));
+        assert_eq!(r.bucket(0).2[2], Complex64::new(7.0, 0.0));
         r.assert_invariants();
     }
 
@@ -1077,9 +757,9 @@ mod tests {
         let s = PauliSum::<1>::from_strings(&[("XII", Complex64::new(1.0, 0.0))]);
         assert_eq!(s.len(), 1);
         assert_eq!(s.num_qubits(), 3);
-        assert_eq!(s.x()[0], [0b001u64]);
-        assert_eq!(s.z()[0], [0u64]);
-        assert_eq!(s.coeff()[0], Complex64::new(1.0, 0.0));
+        assert_eq!(s.bucket(0).0[0], [0b001u64]);
+        assert_eq!(s.bucket(0).1[0], [0u64]);
+        assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
         s.assert_invariants();
     }
 
@@ -1087,8 +767,8 @@ mod tests {
     fn from_strings_x_z_combined() {
         // "XZI": X on qubit 0, Z on qubit 1, I on qubit 2.
         let s = PauliSum::<1>::from_strings(&[("XZI", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.x()[0], [0b001u64]);
-        assert_eq!(s.z()[0], [0b010u64]);
+        assert_eq!(s.bucket(0).0[0], [0b001u64]);
+        assert_eq!(s.bucket(0).1[0], [0b010u64]);
         s.assert_invariants();
     }
 
@@ -1096,30 +776,30 @@ mod tests {
     fn from_strings_y_includes_i_phase() {
         // Y_canonical = i · (x=1, z=1). Caller writes coeff=1, stored is i.
         let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.x()[0], [1u64]);
-        assert_eq!(s.z()[0], [1u64]);
-        assert_eq!(s.coeff()[0], Complex64::new(0.0, 1.0));
+        assert_eq!(s.bucket(0).0[0], [1u64]);
+        assert_eq!(s.bucket(0).1[0], [1u64]);
+        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 1.0));
     }
 
     #[test]
     fn from_strings_yy_phase_minus_one() {
         // i^2 = -1.
         let s = PauliSum::<1>::from_strings(&[("YY", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.coeff()[0], Complex64::new(-1.0, 0.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(-1.0, 0.0));
     }
 
     #[test]
     fn from_strings_yyy_phase_minus_i() {
         // i^3 = -i.
         let s = PauliSum::<1>::from_strings(&[("YYY", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.coeff()[0], Complex64::new(0.0, -1.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, -1.0));
     }
 
     #[test]
     fn from_strings_yyyy_phase_one() {
         // i^4 = 1.
         let s = PauliSum::<1>::from_strings(&[("YYYY", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.coeff()[0], Complex64::new(1.0, 0.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
     }
 
     #[test]
@@ -1129,7 +809,7 @@ mod tests {
             ("XI", Complex64::new(0.5, -0.25)),
         ]);
         assert_eq!(s.len(), 1);
-        assert_eq!(s.coeff()[0], Complex64::new(1.5, -0.25));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(1.5, -0.25));
         s.assert_invariants();
     }
 
@@ -1141,9 +821,9 @@ mod tests {
             ("ZI", Complex64::new(2.0, 0.0)),
         ]);
         assert_eq!(s.len(), 1);
-        assert_eq!(s.x()[0], [0u64]);
-        assert_eq!(s.z()[0], [1u64]);
-        assert_eq!(s.coeff()[0], Complex64::new(2.0, 0.0));
+        assert_eq!(s.bucket(0).0[0], [0u64]);
+        assert_eq!(s.bucket(0).1[0], [1u64]);
+        assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 0.0));
         s.assert_invariants();
     }
 
@@ -1157,12 +837,12 @@ mod tests {
             ("XI", Complex64::new(3.0, 0.0)),
         ]);
         assert_eq!(s.len(), 3);
-        assert_eq!((s.x()[0], s.z()[0]), ([0u64], [1u64])); // ZI
-        assert_eq!((s.x()[1], s.z()[1]), ([1u64], [0u64])); // XI
-        assert_eq!((s.x()[2], s.z()[2]), ([1u64], [1u64])); // YI (with i factor)
-        assert_eq!(s.coeff()[0], Complex64::new(2.0, 0.0));
-        assert_eq!(s.coeff()[1], Complex64::new(3.0, 0.0));
-        assert_eq!(s.coeff()[2], Complex64::new(0.0, 1.0));
+        assert_eq!((s.bucket(0).0[0], s.bucket(0).1[0]), ([0u64], [1u64])); // ZI
+        assert_eq!((s.bucket(0).0[1], s.bucket(0).1[1]), ([1u64], [0u64])); // XI
+        assert_eq!((s.bucket(0).0[2], s.bucket(0).1[2]), ([1u64], [1u64])); // YI (with i factor)
+        assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 0.0));
+        assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
+        assert_eq!(s.bucket(0).2[2], Complex64::new(0.0, 1.0));
         s.assert_invariants();
     }
 
@@ -1177,8 +857,8 @@ mod tests {
         }
         let s = PauliSum::<2>::from_strings(&[(s_chars.as_str(), Complex64::new(1.0, 0.0))]);
         assert_eq!(s.num_qubits(), 65);
-        assert_eq!(s.x()[0], [0u64, 1u64]);
-        assert_eq!(s.z()[0], [0u64, 0u64]);
+        assert_eq!(s.bucket(0).0[0], [0u64, 1u64]);
+        assert_eq!(s.bucket(0).1[0], [0u64, 0u64]);
         s.assert_invariants();
     }
 
@@ -1235,12 +915,7 @@ mod props {
                 z.push(kz);
                 coeff.push(c);
             }
-            PauliSum::<2> {
-                x,
-                z,
-                coeff,
-                num_qubits: 128,
-            }
+            PauliSum::<2>::from_sorted_columns(x, z, coeff, 128)
         })
     }
 
@@ -1255,15 +930,17 @@ mod props {
             let right = a.add(&b.add(&c));
             left.assert_invariants();
             right.assert_invariants();
-            prop_assert_eq!(left.x(), right.x());
-            prop_assert_eq!(left.z(), right.z());
-            prop_assert_eq!(left.coeff().len(), right.coeff().len());
-            for k in 0..left.coeff().len() {
-                let diff = left.coeff()[k] - right.coeff()[k];
+            let (lx, lz, lc) = left.to_arrays();
+            let (rx, rz, rc) = right.to_arrays();
+            prop_assert_eq!(lx, rx);
+            prop_assert_eq!(lz, rz);
+            prop_assert_eq!(lc.len(), rc.len());
+            for k in 0..lc.len() {
+                let diff = lc[k] - rc[k];
                 prop_assert!(
                     diff.norm() <= 1e-12,
                     "coeff mismatch at idx {}: lhs={:?} rhs={:?}",
-                    k, left.coeff()[k], right.coeff()[k]
+                    k, lc[k], rc[k]
                 );
             }
         }

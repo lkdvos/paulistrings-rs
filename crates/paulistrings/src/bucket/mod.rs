@@ -13,12 +13,20 @@
 //!   (1, 2, 4 or 16 for the built-in channels).
 //! * `h` is a function, so equal keys always land in the same bucket.
 //!   Deduplication is therefore bucket-local, and **there is no global sort**.
+//!
+//! [`hash`] defines the hash `Gf2Hash<W>` itself — the linear map, its delta
+//! set, and the bit-count policy (`desired_bits`) that ties bucket count to
+//! term count. [`sum`] holds the bucketed storage: `PauliSum<W>`'s
+//! column layout and the `refine`/`coarsen`/`rebucket` operations that keep
+//! the bucket count matched to the sum as it grows or shrinks. There is one
+//! `PauliSum` type, not a separate flat and bucketed form — a sum small
+//! enough to live in a single bucket is, by construction, plain lex-sorted.
 
 pub mod hash;
 pub mod sum;
 
 pub use hash::{Gf2Hash, B_MAX_BITS};
 pub use sum::{
-    desired_bits, BucketedSum, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
     MIN_TERMS_PER_TASK,
 };

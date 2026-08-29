@@ -36,7 +36,7 @@ use criterion::{
 };
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
-use paulistrings::bucket::{BucketedSum, Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
+use paulistrings::bucket::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, Depolarizing, PauliRotation};
 use paulistrings::circuit::Circuit;
 use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
@@ -465,7 +465,7 @@ fn bucketed_layer_case<const W: usize, C>(
 {
     let policy = AlwaysKeep;
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len()), 0xBEEF);
-    let mut sum = BucketedSum::from_sum(input, hash);
+    let mut sum = input.clone().with_hash(hash);
     let prep = ch
         .prepare(sum.hash(), false)
         .expect("channel could not be prepared");
@@ -535,7 +535,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
         // configuration users actually get, which makes the scaling
         // measurement purer than varying it per thread count would.
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut sum = BucketedSum::from_sum(&input, hash);
+        let mut sum = input.clone().with_hash(hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
@@ -551,37 +551,73 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     group.finish();
 }
 
-/// The conversion cost users pay once per `propagate` call, amortized over every
-/// layer in the circuit (4320 of them for one 6x6 Ising quench).
-fn bench_bucket_conversion(c: &mut Criterion) {
-    let mut group = c.benchmark_group("bucket_conversion_1e6");
+/// Partition maintenance that remains after v0.3 §4 removed the per-call
+/// conversions: a full repartition under a different hash (`with_hash`, the
+/// worst case — flatten plus rescatter).
+/// Cost of ingestion: `BuildAccumulator::finalize` picks the hash and scatters
+/// terms straight into their buckets, so there is no separate "convert a flat
+/// sum into a bucketed one" step to measure — this bench times exactly the
+/// cost that step used to have.
+fn bench_ingest_finalize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ingest_finalize_1e6");
     group.sample_size(20);
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
-    let bits = bits_for(input.len());
-    group.throughput(Throughput::Elements(input.len() as u64));
+    let num_qubits = 128;
+    group.throughput(Throughput::Elements(n as u64));
 
-    group.bench_function("from_sum", |bencher| {
-        bencher.iter(|| {
-            let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
-            black_box(BucketedSum::from_sum(black_box(&input), hash))
-        })
-    });
-
-    let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
-    let bucketed = BucketedSum::from_sum(&input, hash);
-    group.bench_function("to_sum", |bencher| {
-        bencher.iter(|| black_box(bucketed.to_sum()))
+    group.bench_function("finalize", |bencher| {
+        bencher.iter_batched(
+            || {
+                let mut rng = Xs64::new(0xC0FFEE);
+                let mut acc = BuildAccumulator::<2>::with_capacity(num_qubits, n);
+                for _ in 0..n {
+                    let p = random_pauli::<2>(&mut rng);
+                    let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+                    let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+                    acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+                }
+                acc
+            },
+            |acc| black_box(acc.finalize()),
+            BatchSize::LargeInput,
+        )
     });
 
     group.finish();
 }
 
-/// `TopN::finalize_layer_bucketed`, which `propagate` runs after **every**
-/// channel — 4320 times for one 6x6 Ising quench — so its per-call cost is
-/// multiplied by the layer count just as a layer's is.
+/// Cost of partition maintenance: a `refine` (double the bucket count) then a
+/// `coarsen` (halve it back) round trip, the remaining O(n) work a layer pays
+/// to keep the bucket count matched to the live term count.
+fn bench_rebucket(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rebucket_1e6");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    group.bench_function("refine_coarsen", |bencher| {
+        bencher.iter_batched(
+            || input.clone(),
+            |mut sum| {
+                sum.refine();
+                sum.coarsen();
+                black_box(sum.len())
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
+/// `TopN::finalize_layer`, which `propagate` runs after **every** channel —
+/// 4320 times for one 6x6 Ising quench — so its per-call cost is multiplied by
+/// the layer count just as a layer's is.
 fn bench_finalize_top_n(c: &mut Criterion) {
     let mut group = c.benchmark_group("finalize_top_n");
     group.sample_size(20);
@@ -598,16 +634,18 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     let keep = (input.len() * 4) / 5;
     group.bench_function("bucketed/keep80pct", |bencher| {
         bencher.iter_batched_ref(
-            || BucketedSum::from_sum(&input, hash.clone()),
+            || input.clone().with_hash(hash.clone()),
             |sum| {
-                paulistrings::truncation::TopN(keep).finalize_layer_bucketed(sum);
+                paulistrings::truncation::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
         )
     });
 
-    group.bench_function("flat/keep80pct", |bencher| {
+    // The same selection on the accumulator's own default partition — what a
+    // `propagate` caller actually gets at this size.
+    group.bench_function("default_partition/keep80pct", |bencher| {
         bencher.iter_batched_ref(
             || input.clone(),
             |sum| {
@@ -643,7 +681,7 @@ fn bench_bucket_size_sweep(c: &mut Criterion) {
     for &bits in &[4u8, 6, 8, 10, 12, 14] {
         let per_bucket = n >> bits;
         let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
-        let mut sum = BucketedSum::from_sum(&input, hash);
+        let mut sum = input.clone().with_hash(hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_function(format!("{per_bucket}_per_bucket"), |bencher| {
@@ -667,7 +705,8 @@ criterion_group!(
     bench_propagate_trotter,
     bench_thread_scaling,
     bench_thread_scaling_bucketed,
-    bench_bucket_conversion,
+    bench_ingest_finalize,
+    bench_rebucket,
     bench_finalize_top_n,
     bench_bucket_size_sweep
 );

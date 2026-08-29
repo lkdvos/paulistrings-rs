@@ -1,11 +1,11 @@
 //! `propagate` on the v0.2 bucketed engine, through the public API only.
 //!
-//! `tests/propagate.rs` predates the rewrite and still passes unmodified, but
-//! most of its cases call `apply_layer` directly and therefore exercise the v0.1
-//! whole-sum pipeline. This file drives equivalent behaviour through
-//! `propagate`, which now runs bucketed, plus the properties that are specific
-//! to the new engine: agreement with the v0.1 pipeline over a whole circuit, and
-//! byte-identical output across thread counts.
+//! `tests/propagate.rs` predates the rewrite and keeps its hand-computed
+//! expectations, but most of its cases call `apply_layer` directly and
+//! therefore exercise the v0.1 whole-sum pipeline. This file drives equivalent
+//! behaviour through `propagate`, which runs bucketed, plus the properties
+//! that are specific to the bucketed engine: agreement with the v0.1 pipeline
+//! over a whole circuit, and byte-identical output across thread counts.
 
 use num_complex::Complex64;
 use paulistrings::channel::{
@@ -69,6 +69,72 @@ fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<
     acc.finalize()
 }
 
+/// `(x, z, coeff)` triples sorted by the `(x, z)` key.
+///
+/// Keys are globally unique (the `PauliSum` invariant forbids duplicates), so
+/// this is a canonical, storage-order-independent view: two sums with the
+/// same terms produce the same triples regardless of which order their
+/// backing engine happened to store them in.
+fn canonical_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
+    let mut v: Vec<([u64; W], [u64; W], Complex64)> =
+        s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
+    v.sort_unstable_by_key(|&(x, z, _)| (x, z));
+    v
+}
+
+/// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
+fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: term count");
+    let got = canonical_triples(got);
+    let want = canonical_triples(want);
+    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
+        assert_eq!(
+            g.2, w.2,
+            "{what}: term {i} key {:?}/{:?} coeff {} vs {} (not bitwise equal)",
+            g.0, g.1, g.2, w.2,
+        );
+    }
+}
+
+/// Same keys; coefficients within `tol`, because the two engines can sum
+/// duplicate keys in different orders and floating-point addition is not
+/// associative.
+fn assert_terms_close<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, tol: f64, what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: term count");
+    let got = canonical_triples(got);
+    let want = canonical_triples(want);
+    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
+        let d = (g.2 - w.2).norm();
+        assert!(
+            d < tol,
+            "{what}: term {i} key {:?}/{:?} coeff {} vs {} (delta {d:e})",
+            g.0,
+            g.1,
+            g.2,
+            w.2,
+        );
+    }
+}
+
+/// Same keys, order-agnostic; coefficients are not compared (the ising quench
+/// tests check the expectation value separately, since the two engines' exact
+/// coefficients diverge under floating-point non-associativity long before
+/// any observable does).
+fn assert_same_keys<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: term count");
+    let got: Vec<_> = canonical_triples(got)
+        .into_iter()
+        .map(|(x, z, _)| (x, z))
+        .collect();
+    let want: Vec<_> = canonical_triples(want)
+        .into_iter()
+        .map(|(x, z, _)| (x, z))
+        .collect();
+    assert_eq!(got, want, "{what}: keys diverged");
+}
+
 fn one_term<const W: usize>(p: PauliString<W>, num_qubits: usize, c: Complex64) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
     acc.add_term(p, Phase::ONE, c);
@@ -93,9 +159,9 @@ fn h_conjugates_z_to_x() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 1);
-    assert_eq!(out.x()[0], [1]);
-    assert_eq!(out.z()[0], [0]);
-    assert!((out.coeff()[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
+    assert_eq!(out.bucket(0).0[0], [1]);
+    assert_eq!(out.bucket(0).1[0], [0]);
+    assert!((out.bucket(0).2[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
 }
 
 #[test]
@@ -108,9 +174,9 @@ fn s_conjugates_x_to_y_with_phase_plus_one() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 1);
-    assert_eq!(out.x()[0], [1]);
-    assert_eq!(out.z()[0], [1]);
-    assert!((out.coeff()[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
+    assert_eq!(out.bucket(0).0[0], [1]);
+    assert_eq!(out.bucket(0).1[0], [1]);
+    assert!((out.bucket(0).2[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
 }
 
 #[test]
@@ -123,8 +189,8 @@ fn cnot_propagates_z_on_the_control() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 1);
-    assert_eq!(out.z()[0], [0b11]);
-    assert_eq!(out.x()[0], [0]);
+    assert_eq!(out.bucket(0).1[0], [0b11]);
+    assert_eq!(out.bucket(0).0[0], [0]);
 }
 
 #[test]
@@ -137,8 +203,8 @@ fn cnot_propagates_x_on_the_target() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 1);
-    assert_eq!(out.x()[0], [0b11]);
-    assert_eq!(out.z()[0], [0]);
+    assert_eq!(out.bucket(0).0[0], [0b11]);
+    assert_eq!(out.bucket(0).1[0], [0]);
 }
 
 #[test]
@@ -153,9 +219,7 @@ fn identity_channel_passes_the_sum_through_unchanged() {
     );
     // Whole-slice equality: the bucketed round trip must be exact, not merely
     // order-preserving.
-    assert_eq!(out.x(), expect.x());
-    assert_eq!(out.z(), expect.z());
-    assert_eq!(out.coeff(), expect.coeff());
+    assert_eq!(out.to_arrays(), expect.to_arrays());
 }
 
 #[test]
@@ -168,8 +232,8 @@ fn word_boundary_qubit_64_w2() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 1);
-    assert_eq!(out.x()[0], [0, 1]);
-    assert_eq!(out.z()[0], [0, 0]);
+    assert_eq!(out.bucket(0).0[0], [0, 1]);
+    assert_eq!(out.bucket(0).1[0], [0, 0]);
 }
 
 #[test]
@@ -189,12 +253,12 @@ fn inputs_that_collide_under_the_channel_are_combined_and_resorted() {
         Direction::Forward,
     );
     assert_eq!(out.len(), 2);
-    assert_eq!(out.x()[0], [1]);
-    assert_eq!(out.z()[0], [0]); // X
-    assert!((out.coeff()[0] - Complex64::new(-2.0, 0.0)).norm() < TOL);
-    assert_eq!(out.x()[1], [1]);
-    assert_eq!(out.z()[1], [1]); // Y
-    assert!((out.coeff()[1] - Complex64::new(3.0, 0.0)).norm() < TOL);
+    assert_eq!(out.bucket(0).0[0], [1]);
+    assert_eq!(out.bucket(0).1[0], [0]); // X
+    assert!((out.bucket(0).2[0] - Complex64::new(-2.0, 0.0)).norm() < TOL);
+    assert_eq!(out.bucket(0).0[1], [1]);
+    assert_eq!(out.bucket(0).1[1], [1]); // Y
+    assert!((out.bucket(0).2[1] - Complex64::new(3.0, 0.0)).norm() < TOL);
 }
 
 #[test]
@@ -209,8 +273,8 @@ fn weight_cutoff_drops_high_weight_terms() {
     assert!(out.len() < input.len(), "nothing was dropped");
     for i in 0..out.len() {
         let p = PauliString::<1> {
-            x: out.x()[i],
-            z: out.z()[i],
+            x: out.bucket(0).0[i],
+            z: out.bucket(0).1[i],
         };
         assert!(p.weight() <= 2, "kept a weight-{} term", p.weight());
     }
@@ -238,12 +302,16 @@ fn rotation_round_trips_via_heisenberg_on_a_single_term() {
     let back = paulistrings::propagate(&circuit, fwd, &NoTruncation, Direction::Heisenberg);
     // Back to X with coefficient 1; the Y component cancels.
     let xs: Vec<usize> = (0..back.len())
-        .filter(|&i| back.coeff()[i].norm() > 1e-9)
+        .filter(|&i| back.bucket(0).2[i].norm() > 1e-9)
         .collect();
     assert_eq!(xs.len(), 1, "expected one surviving term, got {back:?}");
     let i = xs[0];
-    assert_eq!((back.x()[i], back.z()[i]), ([0b100], [0]), "should be X(2)");
-    assert!((back.coeff()[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
+    assert_eq!(
+        (back.bucket(0).0[i], back.bucket(0).1[i]),
+        ([0b100], [0]),
+        "should be X(2)"
+    );
+    assert!((back.bucket(0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
 }
 
 #[test]
@@ -258,15 +326,7 @@ fn rotation_round_trips_via_heisenberg_on_a_full_sum() {
     let policy = CoefficientThreshold(1e-12);
     let fwd = paulistrings::propagate(&circuit, input.clone(), &policy, Direction::Forward);
     let back = paulistrings::propagate(&circuit, fwd, &policy, Direction::Heisenberg);
-    assert_eq!(back.len(), input.len(), "round trip changed the term count");
-    assert_eq!(back.x(), input.x());
-    assert_eq!(back.z(), input.z());
-    for i in 0..back.len() {
-        assert!(
-            (back.coeff()[i] - input.coeff()[i]).norm() < 1e-10,
-            "coeff[{i}] did not round trip",
-        );
-    }
+    assert_terms_close(&back, &input, 1e-10, "round trip");
 }
 
 #[test]
@@ -301,7 +361,7 @@ fn heisenberg_reverses_the_channel_order() {
         Direction::Forward,
     );
     assert_eq!(
-        (fwd.x()[0], fwd.z()[0]),
+        (fwd.bucket(0).0[0], fwd.bucket(0).1[0]),
         ([1], [1]),
         "forward should give Y"
     );
@@ -313,7 +373,7 @@ fn heisenberg_reverses_the_channel_order() {
         Direction::Heisenberg,
     );
     assert_eq!(
-        (back.x()[0], back.z()[0]),
+        (back.bucket(0).0[0], back.bucket(0).1[0]),
         ([1], [0]),
         "heisenberg should give X",
     );
@@ -329,9 +389,7 @@ fn an_empty_circuit_returns_the_input_bit_for_bit() {
         &NoTruncation,
         Direction::Forward,
     );
-    assert_eq!(out.x(), expect.x());
-    assert_eq!(out.z(), expect.z());
-    assert_eq!(out.coeff(), expect.coeff());
+    assert_eq!(out.to_arrays(), expect.to_arrays());
 }
 
 // ---- whole-circuit agreement with the v0.1 pipeline ----
@@ -394,13 +452,7 @@ fn replay_v01<T: TruncationPolicy<1>>(
 }
 
 fn assert_close(got: &PauliSum<1>, want: &PauliSum<1>, what: &str) {
-    assert_eq!(got.len(), want.len(), "{what}: term count");
-    assert_eq!(got.x(), want.x(), "{what}: x keys");
-    assert_eq!(got.z(), want.z(), "{what}: z keys");
-    for i in 0..got.len() {
-        let d = (got.coeff()[i] - want.coeff()[i]).norm();
-        assert!(d < 1e-10, "{what}: coeff[{i}] delta {d:e}");
-    }
+    assert_terms_close(got, want, 1e-10, what);
 }
 
 #[test]
@@ -463,14 +515,7 @@ fn output_is_byte_identical_across_thread_counts() {
     let reference = run(1);
     for threads in [2usize, 4, 8, 16, 32] {
         let got = run(threads);
-        assert_eq!(got.len(), reference.len(), "threads={threads}: length");
-        assert_eq!(got.x(), reference.x(), "threads={threads}: x keys");
-        assert_eq!(got.z(), reference.z(), "threads={threads}: z keys");
-        assert_eq!(
-            got.coeff(),
-            reference.coeff(),
-            "threads={threads}: coefficients are not byte-identical",
-        );
+        assert_same_terms(&got, &reference, &format!("threads={threads}"));
     }
 }
 
@@ -509,10 +554,12 @@ fn ising_step_channels(lx: usize, ly: usize, dt: f64) -> Vec<Box<dyn Channel<1>>
 /// `⟨+…+|O|+…+⟩` — the observable the Ising example tracks. Sum of `Re(coeff)`
 /// over terms whose Z-part is empty.
 fn expectation_plus(sum: &PauliSum<1>) -> f64 {
+    // Accumulate in globally key-sorted order so the value is independent of
+    // how either engine happens to partition its sum.
     let mut total = 0.0;
-    for i in 0..sum.len() {
-        if sum.z()[i] == [0u64] {
-            total += sum.coeff()[i].re;
+    for (_, z, c) in canonical_triples(sum) {
+        if z == [0u64] {
+            total += c.re;
         }
     }
     total
@@ -557,13 +604,7 @@ fn ising_quench_trajectory_matches_the_v0_1_pipeline() {
         bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
         reference = replay_v01(&reference, &chans, &policy, Direction::Heisenberg);
 
-        assert_eq!(
-            bucketed.len(),
-            reference.len(),
-            "step {step}: term count diverged",
-        );
-        assert_eq!(bucketed.x(), reference.x(), "step {step}: x keys diverged");
-        assert_eq!(bucketed.z(), reference.z(), "step {step}: z keys diverged");
+        assert_same_keys(&bucketed, &reference, &format!("step {step}"));
 
         let a = expectation_plus(&bucketed);
         let b = expectation_plus(&reference);
@@ -615,13 +656,7 @@ fn ising_3x3_with_binding_top_n_matches_the_v0_1_pipeline() {
         if bucketed.len() == 1500 {
             binding = true;
         }
-        assert_eq!(bucketed.len(), reference.len(), "step {step}: term count");
-        assert_eq!(
-            bucketed.x(),
-            reference.x(),
-            "step {step}: kept different terms",
-        );
-        assert_eq!(bucketed.z(), reference.z(), "step {step}: z keys");
+        assert_same_keys(&bucketed, &reference, &format!("step {step}"));
         let a = expectation_plus(&bucketed);
         let b = expectation_plus(&reference);
         assert!((a - b).abs() < 1e-11, "step {step}: m_x {a} vs {b}");
@@ -663,12 +698,7 @@ fn ising_quench_with_top_n_matches_the_v0_1_pipeline() {
     for step in 1..=10 {
         bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
         reference = replay_v01(&reference, &chans, &policy, Direction::Heisenberg);
-        assert_eq!(bucketed.len(), reference.len(), "step {step}: term count");
-        assert_eq!(
-            bucketed.x(),
-            reference.x(),
-            "step {step}: TopN kept different terms",
-        );
+        assert_same_keys(&bucketed, &reference, &format!("step {step}"));
         let a = expectation_plus(&bucketed);
         let b = expectation_plus(&reference);
         assert!((a - b).abs() < 1e-11, "step {step}: m_x {a} vs {b}");

@@ -16,6 +16,9 @@
 
 #![allow(unused)]
 
+use crate::bucket::hash::Gf2Hash;
+use crate::bucket::sum::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
+use crate::bucket::DEFAULT_TARGET_BUCKET_LEN;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::PauliSum;
 use crate::phase::Phase;
@@ -67,7 +70,7 @@ impl<const W: usize> BuildAccumulator<W> {
     ///     Complex64::new(1.0, 0.0),
     /// );
     /// let sum = acc.finalize();
-    /// assert_eq!(sum.coeff()[0], Complex64::new(0.0, 1.0));
+    /// assert_eq!(sum.bucket(0).2[0], Complex64::new(0.0, 1.0));
     /// ```
     pub fn add_term(&mut self, p: PauliString<W>, phase: Phase, c: Complex64) {
         let contribution = phase.apply(c);
@@ -79,6 +82,12 @@ impl<const W: usize> BuildAccumulator<W> {
 
     /// Sort, deduplicate, and emit a `PauliSum`. Entries whose accumulated
     /// coefficient is exactly `0+0i` are dropped.
+    ///
+    /// The partition is chosen here, by [`desired_bits`] under the default
+    /// seed — so a sum of at most 1024 terms gets a single bucket (plain lex
+    /// canonical order), and a larger one starts out already sized for the
+    /// engine. The sort is by key only; each bucket then inherits key order
+    /// from the sorted stream during the scatter.
     pub fn finalize(self) -> PauliSum<W> {
         let zero = Complex64::new(0.0, 0.0);
         let mut entries: Vec<(PauliString<W>, Complex64)> =
@@ -93,12 +102,9 @@ impl<const W: usize> BuildAccumulator<W> {
             z.push(p.z);
             coeff.push(c);
         }
-        PauliSum {
-            x,
-            z,
-            coeff,
-            num_qubits: self.num_qubits,
-        }
+        let bits = desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+        let hash = Gf2Hash::new(self.num_qubits, bits, DEFAULT_HASH_SEED);
+        PauliSum::from_key_sorted(&x, &z, &coeff, hash, self.num_qubits)
     }
 }
 
@@ -123,7 +129,7 @@ mod tests {
         acc.add_term(p, Phase::ONE, Complex64::new(2.5, -1.0));
         let s = acc.finalize();
         assert_eq!(s.len(), 1);
-        assert_eq!(s.coeff()[0], Complex64::new(3.5, -1.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(3.5, -1.0));
         s.assert_invariants();
     }
 
@@ -133,7 +139,7 @@ mod tests {
         let p = PauliString::<1>::x(0);
         acc.add_term(p, Phase::ONE, Complex64::new(2.0, 3.0));
         let s = acc.finalize();
-        assert_eq!(s.coeff()[0], Complex64::new(2.0, 3.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 3.0));
     }
 
     #[test]
@@ -143,7 +149,7 @@ mod tests {
         // (2 + 3i) * i = -3 + 2i
         acc.add_term(p, Phase::I, Complex64::new(2.0, 3.0));
         let s = acc.finalize();
-        assert_eq!(s.coeff()[0], Complex64::new(-3.0, 2.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(-3.0, 2.0));
     }
 
     #[test]
@@ -152,7 +158,7 @@ mod tests {
         let p = PauliString::<1>::x(0);
         acc.add_term(p, Phase::MINUS_ONE, Complex64::new(2.0, 3.0));
         let s = acc.finalize();
-        assert_eq!(s.coeff()[0], Complex64::new(-2.0, -3.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(-2.0, -3.0));
     }
 
     #[test]
@@ -162,7 +168,7 @@ mod tests {
         // (2 + 3i) * -i = 3 - 2i
         acc.add_term(p, Phase::MINUS_I, Complex64::new(2.0, 3.0));
         let s = acc.finalize();
-        assert_eq!(s.coeff()[0], Complex64::new(3.0, -2.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(3.0, -2.0));
     }
 
     #[test]
@@ -187,13 +193,13 @@ mod tests {
         acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(2.0, 0.0));
         let s = acc.finalize();
         assert_eq!(s.len(), 3);
-        assert_eq!(s.x()[0], [0u64]);
-        assert_eq!(s.z()[0], [1u64]);
-        assert_eq!(s.coeff()[0], Complex64::new(1.0, 0.0));
-        assert_eq!(s.x()[1], [1u64]);
-        assert_eq!(s.coeff()[1], Complex64::new(2.0, 0.0));
-        assert_eq!(s.x()[2], [2u64]);
-        assert_eq!(s.coeff()[2], Complex64::new(3.0, 0.0));
+        assert_eq!(s.bucket(0).0[0], [0u64]);
+        assert_eq!(s.bucket(0).1[0], [1u64]);
+        assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
+        assert_eq!(s.bucket(0).0[1], [1u64]);
+        assert_eq!(s.bucket(0).2[1], Complex64::new(2.0, 0.0));
+        assert_eq!(s.bucket(0).0[2], [2u64]);
+        assert_eq!(s.bucket(0).2[2], Complex64::new(3.0, 0.0));
         s.assert_invariants();
     }
 
@@ -223,7 +229,45 @@ mod tests {
         let p = PauliString::<1>::x(0);
         acc.add_term(p, Phase::new(5), Complex64::new(2.0, 0.0));
         let s = acc.finalize();
-        assert_eq!(s.coeff()[0], Complex64::new(0.0, 2.0));
+        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 2.0));
+    }
+
+    #[test]
+    fn finalize_gives_one_bucket_at_or_below_1024_terms() {
+        // 1024 distinct single-qubit-word keys on 11 qubits (2^11 = 2048 ≥ 1024
+        // keys exist; use x-patterns 1..=1024).
+        let mut acc = BuildAccumulator::<1>::new(11);
+        for k in 1..=1024u64 {
+            acc.add_term(
+                PauliString::<1> { x: [k], z: [0] },
+                Phase::ONE,
+                Complex64::new(1.0, 0.0),
+            );
+        }
+        let s = acc.finalize();
+        assert_eq!(s.len(), 1024);
+        assert_eq!(s.num_buckets(), 1, "≤1024 terms must stay single-bucket");
+        s.assert_invariants();
+    }
+
+    #[test]
+    fn finalize_picks_desired_bits_above() {
+        use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS};
+        use crate::bucket::DEFAULT_TARGET_BUCKET_LEN;
+        let mut acc = BuildAccumulator::<1>::new(12);
+        for k in 1..=1500u64 {
+            acc.add_term(
+                PauliString::<1> { x: [k], z: [0] },
+                Phase::ONE,
+                Complex64::new(1.0, 0.0),
+            );
+        }
+        let s = acc.finalize();
+        assert_eq!(s.len(), 1500);
+        let want_bits = desired_bits(1500, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+        assert!(want_bits > 0, "1500 terms must split");
+        assert_eq!(s.num_buckets(), 1usize << want_bits);
+        s.assert_invariants();
     }
 
     #[test]

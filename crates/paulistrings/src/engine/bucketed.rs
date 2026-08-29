@@ -24,7 +24,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::sort_merge::{merge_into, sort_phase};
-use crate::bucket::sum::{BucketCols, BucketedSum};
+use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
@@ -86,7 +86,7 @@ impl<const W: usize> LayerScratch<W> {
 /// **summed** coefficients — the same contract as the v0.1 engine.
 /// `finalize_layer` is *not* called here; `propagate` owns that.
 pub fn apply_layer_bucketed<const W: usize, T>(
-    sum: &mut BucketedSum<W>,
+    sum: &mut PauliSum<W>,
     prep: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
@@ -277,7 +277,7 @@ fn gather_rotation<const W: usize>(
 /// Keys are untouched, so each bucket stays sorted and duplicate-free and no
 /// gather, sort or merge is needed. `keep_term` still applies, on the rescaled
 /// coefficient, and exact zeros are still dropped — matching the general path.
-fn rescale_in_place<const W: usize, T>(sum: &mut BucketedSum<W>, ptm: &LocalPtm<W>, policy: &T)
+fn rescale_in_place<const W: usize, T>(sum: &mut PauliSum<W>, ptm: &LocalPtm<W>, policy: &T)
 where
     T: TruncationPolicy<W> + ?Sized,
 {
@@ -390,35 +390,83 @@ mod tests {
         T: TruncationPolicy<W> + ?Sized,
     {
         let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
-        let mut b = BucketedSum::from_sum(input, hash);
+        let mut b = input.clone().with_hash(hash);
         let prep = ch
             .prepare(b.hash(), adjoint)
             .expect("channel could not be prepared");
         let mut scratch = LayerScratch::<W>::new();
         apply_layer_bucketed(&mut b, &prep, policy, &mut scratch);
-        b.into_sum()
+        b
     }
 
-    /// Keys must match exactly; coefficients only to tolerance, because the two
-    /// engines sum duplicate keys in different orders and floating-point
-    /// addition is not associative.
-    pub(super) fn assert_sums_close<const W: usize>(
+    /// `(x, z, coeff)` triples sorted by the `(x, z)` key.
+    ///
+    /// Keys are globally unique (the `PauliSum` invariant forbids duplicates),
+    /// so this is a canonical, storage-order-independent view: two sums with
+    /// the same terms produce the same triples regardless of which order their
+    /// backing engine happened to store them in.
+    pub(super) fn canonical_triples<const W: usize>(
+        s: &PauliSum<W>,
+    ) -> Vec<([u64; W], [u64; W], Complex64)> {
+        let mut v: Vec<([u64; W], [u64; W], Complex64)> =
+            s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
+        v.sort_unstable_by_key(|&(x, z, _)| (x, z));
+        v
+    }
+
+    /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
+    pub(super) fn assert_same_terms<const W: usize>(
         got: &PauliSum<W>,
         want: &PauliSum<W>,
         what: &str,
     ) {
         assert_eq!(got.len(), want.len(), "{what}: term count");
-        assert_eq!(got.x(), want.x(), "{what}: x keys");
-        assert_eq!(got.z(), want.z(), "{what}: z keys");
-        for i in 0..got.len() {
-            let d = (got.coeff()[i] - want.coeff()[i]).norm();
-            assert!(
-                d < TOL,
-                "{what}: coeff[{i}] {} vs {} (delta {d:e})",
-                got.coeff()[i],
-                want.coeff()[i],
+        let got = canonical_triples(got);
+        let want = canonical_triples(want);
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
+            assert_eq!(
+                g.2, w.2,
+                "{what}: term {i} key {:?}/{:?} coeff {} vs {} (not bitwise equal)",
+                g.0, g.1, g.2, w.2,
             );
         }
+    }
+
+    /// Same keys; coefficients within `tol`, because the two engines can sum
+    /// duplicate keys in different orders and floating-point addition is not
+    /// associative.
+    pub(super) fn assert_terms_close<const W: usize>(
+        got: &PauliSum<W>,
+        want: &PauliSum<W>,
+        tol: f64,
+        what: &str,
+    ) {
+        assert_eq!(got.len(), want.len(), "{what}: term count");
+        let got = canonical_triples(got);
+        let want = canonical_triples(want);
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
+            let d = (g.2 - w.2).norm();
+            assert!(
+                d < tol,
+                "{what}: term {i} key {:?}/{:?} coeff {} vs {} (delta {d:e})",
+                g.0,
+                g.1,
+                g.2,
+                w.2,
+            );
+        }
+    }
+
+    /// Keys must match exactly; coefficients only to tolerance — see
+    /// [`assert_terms_close`].
+    pub(super) fn assert_sums_close<const W: usize>(
+        got: &PauliSum<W>,
+        want: &PauliSum<W>,
+        what: &str,
+    ) {
+        assert_terms_close(got, want, TOL, what);
     }
 
     // ---- hand-checked behaviour ----
@@ -430,9 +478,10 @@ mod tests {
         let input = acc.finalize();
         let out = bucketed_layer(&input, &Clifford1Q::h(0), &AlwaysKeep, false, 4, 0x1);
         assert_eq!(out.len(), 1);
-        assert_eq!(out.x()[0], [1]);
-        assert_eq!(out.z()[0], [0]);
-        assert!((out.coeff()[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
+        let (x, z, c) = out.iter().next().unwrap();
+        assert_eq!(*x, [1]);
+        assert_eq!(*z, [0]);
+        assert!((c - Complex64::new(1.0, 0.0)).norm() < TOL);
     }
 
     #[test]
@@ -443,8 +492,9 @@ mod tests {
         // I⊗Z under CNOT(0 -> 1) becomes Z⊗Z.
         let out = bucketed_layer(&input, &Clifford2Q::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
         assert_eq!(out.len(), 1);
-        assert_eq!(out.z()[0], [0b11]);
-        assert_eq!(out.x()[0], [0]);
+        let (x, z, _) = out.iter().next().unwrap();
+        assert_eq!(*z, [0b11]);
+        assert_eq!(*x, [0]);
     }
 
     #[test]
@@ -581,9 +631,10 @@ mod tests {
                         apply_layer(&input, cr, &AlwaysKeep)
                     };
                     let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
-                    assert_sums_close(
+                    assert_terms_close(
                         &got,
                         &want,
+                        TOL,
                         &format!("{name} adjoint={adjoint} bits={bits}"),
                     );
                 }
@@ -633,9 +684,10 @@ mod tests {
                         apply_layer(&input, cr, &AlwaysKeep)
                     };
                     let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
-                    assert_sums_close(
+                    assert_terms_close(
                         &got,
                         &want,
+                        TOL,
                         &format!("{name} adjoint={adjoint} bits={bits}"),
                     );
                 }
@@ -654,16 +706,16 @@ mod tests {
         for bits in [0u8, 4, 9] {
             let got = bucketed_layer(&input, &rot, &CoefficientThreshold(1e-9), false, bits, 0x11);
             let want = apply_layer(&input, &rot, &CoefficientThreshold(1e-9));
-            assert_sums_close(&got, &want, &format!("threshold bits={bits}"));
+            assert_terms_close(&got, &want, TOL, &format!("threshold bits={bits}"));
 
             let got = bucketed_layer(&input, &rot, &WeightCutoff(4), false, bits, 0x11);
             let want = apply_layer(&input, &rot, &WeightCutoff(4));
-            assert_sums_close(&got, &want, &format!("weight bits={bits}"));
+            assert_terms_close(&got, &want, TOL, &format!("weight bits={bits}"));
 
             let policy = And(CoefficientThreshold(1e-9), WeightCutoff(5));
             let got = bucketed_layer(&input, &cnot, &policy, false, bits, 0x11);
             let want = apply_layer(&input, &cnot, &policy);
-            assert_sums_close(&got, &want, &format!("and bits={bits}"));
+            assert_terms_close(&got, &want, TOL, &format!("and bits={bits}"));
         }
     }
 
@@ -688,7 +740,7 @@ mod tests {
             let policy = CoefficientThreshold(1e-6);
             let got = bucketed_layer(&input, &rot, &policy, false, bits, 0x21);
             let want = apply_layer(&input, &rot, &policy);
-            assert_sums_close(&got, &want, &format!("post-sum threshold bits={bits}"));
+            assert_terms_close(&got, &want, TOL, &format!("post-sum threshold bits={bits}"));
         }
     }
 
@@ -722,7 +774,7 @@ mod tests {
             for bits in [0u8, 4, 8] {
                 let got = bucketed_layer(&input, cr, &AlwaysKeep, false, bits, 0x31);
                 let want = apply_layer(&input, cr, &AlwaysKeep);
-                assert_sums_close(&got, &want, &format!("{name} bits={bits}"));
+                assert_terms_close(&got, &want, TOL, &format!("{name} bits={bits}"));
             }
         }
     }
@@ -738,7 +790,7 @@ mod tests {
             let policy = And(CoefficientThreshold(0.3), WeightCutoff(4));
             let got = bucketed_layer(&input, &depol, &policy, false, bits, 0x41);
             let want = apply_layer(&input, &depol, &policy);
-            assert_sums_close(&got, &want, &format!("truncated rescale bits={bits}"));
+            assert_terms_close(&got, &want, TOL, &format!("truncated rescale bits={bits}"));
             assert!(got.len() < input.len(), "truncation dropped nothing");
         }
     }
@@ -757,14 +809,7 @@ mod tests {
             let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 0, 0x51);
             for bits in [1u8, 2, 3, 5, 8, 11] {
                 let got = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x51);
-                assert_eq!(got.len(), reference.len(), "bits={bits}: length");
-                assert_eq!(got.x(), reference.x(), "bits={bits}: x keys");
-                assert_eq!(got.z(), reference.z(), "bits={bits}: z keys");
-                assert_eq!(
-                    got.coeff(),
-                    reference.coeff(),
-                    "bits={bits}: coefficients are not bitwise identical",
-                );
+                assert_same_terms(&got, &reference, &format!("bits={bits}"));
             }
         }
     }
@@ -778,8 +823,7 @@ mod tests {
         let reference = bucketed_layer(&input, &rot, &AlwaysKeep, false, 6, 1);
         for seed in [2u64, 3, 5, 8, 13, 21] {
             let got = bucketed_layer(&input, &rot, &AlwaysKeep, false, 6, seed);
-            assert_eq!(got.coeff(), reference.coeff(), "seed={seed}");
-            assert_eq!(got.x(), reference.x(), "seed={seed}");
+            assert_same_terms(&got, &reference, &format!("seed={seed}"));
         }
     }
 
@@ -815,14 +859,14 @@ mod tests {
         }
 
         let hash = Gf2Hash::<1>::new(8, 5, 0x77);
-        let mut b = BucketedSum::from_sum(&input, hash);
+        let mut b = input.clone().with_hash(hash);
         let mut scratch = LayerScratch::<1>::new();
         for ch in &chans {
             let prep = ch.prepare(b.hash(), false).unwrap();
             apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
         }
-        let got = b.into_sum();
-        assert_sums_close(&got, &want, "six layers");
+        let got = b;
+        assert_terms_close(&got, &want, TOL, "six layers");
     }
 
     #[test]
@@ -834,7 +878,7 @@ mod tests {
         let want = apply_layer(&apply_layer(&input, &h, &AlwaysKeep), &rot, &AlwaysKeep);
 
         let hash = Gf2Hash::<1>::new(8, 2, 0x77);
-        let mut b = BucketedSum::from_sum(&input, hash);
+        let mut b = input.clone().with_hash(hash);
         let mut scratch = LayerScratch::<1>::new();
 
         let prep = h.prepare(b.hash(), false).unwrap();
@@ -843,7 +887,7 @@ mod tests {
         let prep = rot.prepare(b.hash(), false).unwrap();
         apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
 
-        assert_sums_close(&b.into_sum(), &want, "layer, rebucket, layer");
+        assert_terms_close(&b, &want, TOL, "layer, rebucket, layer");
     }
 
     #[test]
@@ -861,7 +905,7 @@ mod tests {
 // compile the lib tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod finalize_tests {
-    use super::tests::rand_sum;
+    use super::tests::{assert_same_terms, assert_terms_close, rand_sum};
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::Clifford1Q;
@@ -882,14 +926,11 @@ mod finalize_tests {
 
             for bits in [0u8, 3, 6, 10] {
                 let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-                let mut b = BucketedSum::from_sum(&input, hash);
-                policy.finalize_layer_bucketed(&mut b);
+                let mut b = input.clone().with_hash(hash);
+                policy.finalize_layer(&mut b);
                 b.assert_invariants();
-                let got = b.into_sum();
-                assert_eq!(got.len(), flat.len(), "n={n} bits={bits}: length");
-                assert_eq!(got.x(), flat.x(), "n={n} bits={bits}: x keys");
-                assert_eq!(got.z(), flat.z(), "n={n} bits={bits}: z keys");
-                assert_eq!(got.coeff(), flat.coeff(), "n={n} bits={bits}: coeffs");
+                let got = b;
+                assert_same_terms(&got, &flat, &format!("n={n} bits={bits}"));
             }
         }
     }
@@ -898,16 +939,16 @@ mod finalize_tests {
     fn top_n_bucketed_keeps_exactly_n_and_the_largest() {
         let input = rand_sum::<1>(1000, 8, 0x4321);
         let hash = Gf2Hash::<1>::new(8, 5, 0x99);
-        let mut b = BucketedSum::from_sum(&input, hash);
-        TopN(50).finalize_layer_bucketed(&mut b);
+        let mut b = input.clone().with_hash(hash);
+        TopN(50).finalize_layer(&mut b);
         assert_eq!(b.len(), 50);
-        let got = b.into_sum();
+        let got = b;
 
         // Every retained magnitude must be >= every dropped one.
-        let mut all: Vec<f64> = input.coeff().iter().map(|c| c.norm()).collect();
+        let mut all: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
         all.sort_by(|a, c| c.partial_cmp(a).unwrap());
         let cutoff = all[49];
-        for c in got.coeff() {
+        for (_, _, c) in got.iter() {
             assert!(c.norm() >= cutoff - 1e-15, "kept a below-cutoff term");
         }
     }
@@ -916,11 +957,11 @@ mod finalize_tests {
     fn top_n_zero_clears_and_preserves_the_invariant() {
         let input = rand_sum::<1>(500, 8, 0x5555);
         let hash = Gf2Hash::<1>::new(8, 4, 0x99);
-        let mut b = BucketedSum::from_sum(&input, hash);
-        TopN(0).finalize_layer_bucketed(&mut b);
+        let mut b = input.clone().with_hash(hash);
+        TopN(0).finalize_layer(&mut b);
         b.assert_invariants();
         assert_eq!(b.len(), 0);
-        assert!(b.into_sum().is_empty());
+        assert!(b.is_empty());
     }
 
     #[test]
@@ -929,12 +970,11 @@ mod finalize_tests {
         // at only 8 qubits; compare against it rather than the literal.
         let input = rand_sum::<1>(300, 8, 0x6666);
         let hash = Gf2Hash::<1>::new(8, 4, 0x99);
-        let mut b = BucketedSum::from_sum(&input, hash);
-        TopN(10_000).finalize_layer_bucketed(&mut b);
+        let mut b = input.clone().with_hash(hash);
+        TopN(10_000).finalize_layer(&mut b);
         assert_eq!(b.len(), input.len());
-        let got = b.into_sum();
-        assert_eq!(got.x(), input.x());
-        assert_eq!(got.coeff(), input.coeff());
+        let got = b;
+        assert_same_terms(&got, &input, "top_n above length");
     }
 
     #[test]
@@ -946,13 +986,12 @@ mod finalize_tests {
         policy.finalize_layer(&mut flat);
 
         let hash = Gf2Hash::<1>::new(8, 5, 0x99);
-        let mut b = BucketedSum::from_sum(&input, hash);
-        policy.finalize_layer_bucketed(&mut b);
+        let mut b = input.clone().with_hash(hash);
+        policy.finalize_layer(&mut b);
         b.assert_invariants();
-        let got = b.into_sum();
+        let got = b;
         assert_eq!(got.len(), 120);
-        assert_eq!(got.x(), flat.x());
-        assert_eq!(got.coeff(), flat.coeff());
+        assert_same_terms(&got, &flat, "and of two top_n");
     }
 
     #[test]
@@ -962,38 +1001,27 @@ mod finalize_tests {
         let input = rand_sum::<1>(500, 8, 0x8888);
         let hash = Gf2Hash::<1>::new(8, 4, 0x99);
         for tag in 0..3 {
-            let mut b = BucketedSum::from_sum(&input, hash.clone());
+            let mut b = input.clone().with_hash(hash.clone());
             match tag {
-                0 => CoefficientThreshold(0.5).finalize_layer_bucketed(&mut b),
-                1 => WeightCutoff(2).finalize_layer_bucketed(&mut b),
-                _ => Or(CoefficientThreshold(0.5), WeightCutoff(2)).finalize_layer_bucketed(&mut b),
+                0 => CoefficientThreshold(0.5).finalize_layer(&mut b),
+                1 => WeightCutoff(2).finalize_layer(&mut b),
+                _ => Or(CoefficientThreshold(0.5), WeightCutoff(2)).finalize_layer(&mut b),
             }
             assert_eq!(b.len(), input.len(), "tag {tag} changed the sum");
         }
     }
 
-    /// The default trait implementation must keep a custom `finalize_layer`
-    /// working on the bucketed path, without the policy knowing about buckets.
+    /// A custom `finalize_layer` written against the public surface (`retain`)
+    /// must act on the bucketed sum directly, and its result must not depend on
+    /// the partition.
     #[test]
-    fn the_default_round_trip_preserves_a_custom_finalizer() {
+    fn a_custom_finalizer_runs_on_the_bucketed_sum() {
         /// Drops every term whose coefficient has negative real part — a global
-        /// pass expressed only as `finalize_layer`.
+        /// pass expressed only as `finalize_layer`, via `retain`.
         struct DropNegativeReal;
         impl<const W: usize> TruncationPolicy<W> for DropNegativeReal {
             fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-                let keep: Vec<bool> = sum.coeff().iter().map(|c| c.re >= 0.0).collect();
-                let mut w = 0usize;
-                for (i, &k) in keep.iter().enumerate() {
-                    if k {
-                        sum.x[w] = sum.x[i];
-                        sum.z[w] = sum.z[i];
-                        sum.coeff[w] = sum.coeff[i];
-                        w += 1;
-                    }
-                }
-                sum.x.truncate(w);
-                sum.z.truncate(w);
-                sum.coeff.truncate(w);
+                sum.retain(|_x, _z, c| c.re >= 0.0);
             }
         }
 
@@ -1007,13 +1035,11 @@ mod finalize_tests {
 
         for bits in [0u8, 3, 7] {
             let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = BucketedSum::from_sum(&input, hash);
-            DropNegativeReal.finalize_layer_bucketed(&mut b);
+            let mut b = input.clone().with_hash(hash);
+            DropNegativeReal.finalize_layer(&mut b);
             b.assert_invariants();
-            let got = b.into_sum();
-            assert_eq!(got.len(), flat.len(), "bits={bits}");
-            assert_eq!(got.x(), flat.x(), "bits={bits}");
-            assert_eq!(got.coeff(), flat.coeff(), "bits={bits}");
+            let got = b;
+            assert_same_terms(&got, &flat, &format!("bits={bits}"));
         }
     }
 
@@ -1037,23 +1063,16 @@ mod finalize_tests {
         }
 
         let hash = Gf2Hash::<1>::new(8, 5, 0xBB);
-        let mut b = BucketedSum::from_sum(&input, hash);
+        let mut b = input.clone().with_hash(hash);
         let mut scratch = LayerScratch::<1>::new();
         for ch in &chans {
             let prep = ch.prepare(b.hash(), false).unwrap();
             apply_layer_bucketed(&mut b, &prep, &policy, &mut scratch);
-            policy.finalize_layer_bucketed(&mut b);
+            policy.finalize_layer(&mut b);
         }
-        let got = b.into_sum();
+        let got = b;
 
-        assert_eq!(got.len(), want.len(), "term count after 3 truncated layers");
-        assert_eq!(got.x(), want.x(), "keys after 3 truncated layers");
-        for i in 0..got.len() {
-            assert!(
-                (got.coeff()[i] - want.coeff()[i]).norm() < 1e-11,
-                "coeff[{i}]",
-            );
-        }
+        assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
     }
 }
 
@@ -1066,7 +1085,7 @@ mod tie_tests {
     /// The C.1 determinism contract: byte-identical output across thread counts,
     /// with the *engine* parallel. `apply_layer_bucketed` fixes the bucket count
     /// here, so this isolates thread count from partition (the propagate-level
-    /// test in tests/propagate_bucketed.rs varies both together).
+    /// test in tests/propagate_bucketed.rs exercises the public entry point).
     #[test]
     fn parallel_output_is_byte_identical_across_thread_counts() {
         use crate::channel::rotation::PauliRotation;
@@ -1086,7 +1105,7 @@ mod tie_tests {
                     .expect("pool")
                     .install(|| {
                         let hash = Gf2Hash::<1>::new(10, 6, 0xC1);
-                        let mut b = BucketedSum::from_sum(&input, hash);
+                        let mut b = input.clone().with_hash(hash);
                         let prep = ch.prepare(b.hash(), false).unwrap();
                         let mut scratch = LayerScratch::<1>::new();
                         apply_layer_bucketed(
@@ -1095,19 +1114,19 @@ mod tie_tests {
                             &super::tests::AlwaysKeep,
                             &mut scratch,
                         );
-                        b.into_sum()
+                        b
                     })
             };
             let reference = run(1);
             for threads in [2usize, 4, 8, 16, 32] {
                 let got = run(threads);
                 assert_eq!(got.len(), reference.len(), "threads={threads}");
-                assert_eq!(got.x(), reference.x(), "threads={threads}: x keys");
-                assert_eq!(got.z(), reference.z(), "threads={threads}: z keys");
+                // Identical fixed hash on both sides, so canonical order is
+                // shared and whole-column equality is the bitwise statement.
                 assert_eq!(
-                    got.coeff(),
-                    reference.coeff(),
-                    "threads={threads}: coefficients are not byte-identical",
+                    got.to_arrays(),
+                    reference.to_arrays(),
+                    "threads={threads}: output is not byte-identical",
                 );
             }
         }
@@ -1131,21 +1150,26 @@ mod tie_tests {
                 .expect("pool")
                 .install(|| {
                     let hash = Gf2Hash::<1>::new(10, 6, 0xC2);
-                    let mut b = BucketedSum::from_sum(&input, hash);
+                    let mut b = input.clone().with_hash(hash);
                     let prep = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
                     let mut scratch = LayerScratch::<1>::new();
                     apply_layer_bucketed(&mut b, &prep, &super::tests::AlwaysKeep, &mut scratch);
-                    b.into_sum()
+                    b
                 })
         };
         let reference = run(1);
         for threads in [2usize, 8, 32] {
             let got = run(threads);
-            assert_eq!(got.coeff(), reference.coeff(), "threads={threads}");
+            // Identical fixed hash on both sides: canonical order is shared.
+            assert_eq!(
+                got.to_arrays().2,
+                reference.to_arrays().2,
+                "threads={threads}"
+            );
         }
     }
 
-    use super::tests::rand_sum;
+    use super::tests::{assert_same_terms, rand_sum};
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
@@ -1160,14 +1184,11 @@ mod tie_tests {
     fn tie_heavy_sum(n: usize, num_qubits: usize, seed: u64) -> PauliSum<1> {
         let base = rand_sum::<1>(n, num_qubits, seed);
         let mut acc = crate::accumulator::BuildAccumulator::<1>::with_capacity(num_qubits, n);
-        for i in 0..base.len() {
+        for (i, (x, z, _)) in base.iter().enumerate() {
             // Only 4 distinct magnitudes across the whole sum.
             let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
             acc.add_term(
-                PauliString::<1> {
-                    x: base.x()[i],
-                    z: base.z()[i],
-                },
+                PauliString::<1> { x: *x, z: *z },
                 Phase::ONE,
                 Complex64::new(mag, 0.0),
             );
@@ -1186,22 +1207,20 @@ mod tie_tests {
         let n = 700; // cuts inside the group of magnitude-0.5 terms
         let reference = {
             let hash = Gf2Hash::<1>::new(8, 0, 0x99);
-            let mut b = BucketedSum::from_sum(&input, hash);
-            TopN(n).finalize_layer_bucketed(&mut b);
-            b.into_sum()
+            let mut b = input.clone().with_hash(hash);
+            TopN(n).finalize_layer(&mut b);
+            b
         };
         for bits in [1u8, 2, 4, 6, 9] {
             let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = BucketedSum::from_sum(&input, hash);
-            TopN(n).finalize_layer_bucketed(&mut b);
-            let got = b.into_sum();
-            assert_eq!(got.len(), reference.len(), "bits={bits}: length");
-            assert_eq!(
-                got.x(),
-                reference.x(),
-                "bits={bits}: TopN kept a different set of tied terms",
+            let mut b = input.clone().with_hash(hash);
+            TopN(n).finalize_layer(&mut b);
+            let got = b;
+            assert_same_terms(
+                &got,
+                &reference,
+                &format!("bits={bits}: TopN kept a different set of tied terms"),
             );
-            assert_eq!(got.coeff(), reference.coeff(), "bits={bits}: coefficients");
         }
     }
 
@@ -1217,12 +1236,14 @@ mod tie_tests {
             policy.finalize_layer(&mut flat);
             for bits in [0u8, 2, 5, 9] {
                 let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-                let mut b = BucketedSum::from_sum(&input, hash);
-                policy.finalize_layer_bucketed(&mut b);
-                let got = b.into_sum();
-                assert_eq!(got.len(), flat.len(), "n={n} bits={bits}: length");
-                assert_eq!(got.x(), flat.x(), "n={n} bits={bits}: keys differ on ties");
-                assert_eq!(got.coeff(), flat.coeff(), "n={n} bits={bits}: coeffs");
+                let mut b = input.clone().with_hash(hash);
+                policy.finalize_layer(&mut b);
+                let got = b;
+                assert_same_terms(
+                    &got,
+                    &flat,
+                    &format!("n={n} bits={bits}: keys or coeffs differ on ties"),
+                );
             }
         }
     }
@@ -1235,16 +1256,20 @@ mod tie_tests {
         let n = 700;
         let reference = {
             let hash = Gf2Hash::<1>::new(8, 5, 1);
-            let mut b = BucketedSum::from_sum(&input, hash);
-            TopN(n).finalize_layer_bucketed(&mut b);
-            b.into_sum()
+            let mut b = input.clone().with_hash(hash);
+            TopN(n).finalize_layer(&mut b);
+            b
         };
         for seed in [2u64, 3, 5, 8, 13] {
             let hash = Gf2Hash::<1>::new(8, 5, seed);
-            let mut b = BucketedSum::from_sum(&input, hash);
-            TopN(n).finalize_layer_bucketed(&mut b);
-            let got = b.into_sum();
-            assert_eq!(got.x(), reference.x(), "seed={seed}: different set kept");
+            let mut b = input.clone().with_hash(hash);
+            TopN(n).finalize_layer(&mut b);
+            let got = b;
+            assert_same_terms(
+                &got,
+                &reference,
+                &format!("seed={seed}: different set kept"),
+            );
         }
     }
 }

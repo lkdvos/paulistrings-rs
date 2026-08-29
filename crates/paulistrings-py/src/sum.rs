@@ -90,36 +90,49 @@ impl PauliSumImpl {
         }
     }
 
-    /// Snapshot of the coefficient column.
+    /// Snapshot of the coefficient column, in the sum's canonical order
+    /// (partition-bucket index ascending, then lexicographic `(x, z)`; equal
+    /// to plain lex order for sums of ≤ 1024 terms).
     pub fn coeffs(&self) -> Vec<Complex64> {
+        fn coeffs_of<const W: usize>(s: &CorePauliSum<W>) -> Vec<Complex64> {
+            let (_, _, c) = s.to_arrays();
+            c
+        }
         match self {
-            Self::W1(s) => s.coeff().to_vec(),
-            Self::W2(s) => s.coeff().to_vec(),
-            Self::W4(s) => s.coeff().to_vec(),
-            Self::W8(s) => s.coeff().to_vec(),
-            Self::W16(s) => s.coeff().to_vec(),
+            Self::W1(s) => coeffs_of(s),
+            Self::W2(s) => coeffs_of(s),
+            Self::W4(s) => coeffs_of(s),
+            Self::W8(s) => coeffs_of(s),
+            Self::W16(s) => coeffs_of(s),
         }
     }
 
-    /// `(width, x_flat, z_flat)` snapshot of the SoA columns. Both `x_flat`
-    /// and `z_flat` have length `len() * width`, and `width` is the active
-    /// monomorphization's `W`. Caller reshapes to `(len, width)`.
+    /// `(width, x_flat, z_flat)` snapshot of the SoA columns, in the sum's
+    /// canonical order (see [`Self::coeffs`]) — the same order across the
+    /// three exported arrays, since the order is a deterministic function of
+    /// the sum. Both `x_flat` and `z_flat` have length `len() * width`, and
+    /// `width` is the active monomorphization's `W`. Caller reshapes to
+    /// `(len, width)`.
     pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>) {
         fn flatten<const W: usize>(rows: &[[u64; W]]) -> Vec<u64> {
-            // SAFETY-equivalent: flat-copy via iteration. The W is small (≤16)
-            // and the array length is `len()`; this is not on the hot path.
+            // Flat-copy via iteration. The W is small (≤16) and the array
+            // length is `len()`; this is not on the hot path.
             let mut out = Vec::with_capacity(rows.len() * W);
             for r in rows {
                 out.extend_from_slice(r);
             }
             out
         }
+        fn xz_of<const W: usize>(s: &CorePauliSum<W>) -> (usize, Vec<u64>, Vec<u64>) {
+            let (x, z, _) = s.to_arrays();
+            (W, flatten(&x), flatten(&z))
+        }
         match self {
-            Self::W1(s) => (1, flatten(s.x()), flatten(s.z())),
-            Self::W2(s) => (2, flatten(s.x()), flatten(s.z())),
-            Self::W4(s) => (4, flatten(s.x()), flatten(s.z())),
-            Self::W8(s) => (8, flatten(s.x()), flatten(s.z())),
-            Self::W16(s) => (16, flatten(s.x()), flatten(s.z())),
+            Self::W1(s) => xz_of(s),
+            Self::W2(s) => xz_of(s),
+            Self::W4(s) => xz_of(s),
+            Self::W8(s) => xz_of(s),
+            Self::W16(s) => xz_of(s),
         }
     }
 

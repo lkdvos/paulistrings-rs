@@ -21,15 +21,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::bucket::{
-    desired_bits, BucketedSum, Gf2Hash, DEFAULT_HASH_SEED, DEFAULT_TARGET_BUCKET_LEN,
-};
 use paulistrings::channel::PauliRotation;
-use paulistrings::engine::bucketed::LayerScratch;
 use paulistrings::truncation::{And, CoefficientThreshold, TopN};
 use paulistrings::{
-    default_min_buckets, propagate_bucketed, BuildAccumulator, Circuit, Direction, PauliString,
-    PauliSum, Phase, ProductState,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, ProductState,
 };
 
 /// Ising couplings: H = -J · ΣZZ - h · ΣX.
@@ -112,37 +107,17 @@ fn run_quench(lx: usize, ly: usize, topn: usize) -> (Vec<f64>, Vec<f64>) {
     let step_circuit = trotter_step(lx, ly, DT);
     let policy = And(CoefficientThreshold(EPS), TopN(topn));
 
-    let initial = x_magnetization(lx, ly);
+    let mut observable = x_magnetization(lx, ly);
     let mut t_series = Vec::with_capacity(steps + 1);
     let mut m_series = Vec::with_capacity(steps + 1);
     t_series.push(0.0);
-    m_series.push(expectation_plus_state(&initial));
+    m_series.push(expectation_plus_state(&observable));
 
-    // Stay bucketed across all `steps` calls rather than using `propagate`,
-    // which converts in and out each time. This is the shape the conversion cost
-    // actually matters for: a short circuit (one Trotter step) applied many times
-    // to a large sum. See `research/notes/2026-08-26-v0.2-results.md` §5.
-    let num_qubits = lx * ly;
-    let hash = Gf2Hash::<1>::new(
-        num_qubits,
-        desired_bits(
-            initial.len(),
-            DEFAULT_TARGET_BUCKET_LEN,
-            default_min_buckets(),
-        ),
-        DEFAULT_HASH_SEED,
-    );
-    let mut observable = BucketedSum::from_sum(&initial, hash);
-    let mut scratch = LayerScratch::<1>::new();
-
+    // `PauliSum` *is* the bucketed working form, so repeated `propagate` calls
+    // on the same sum pay no conversion at either end; per-bucket storage
+    // capacity is retained inside `observable` from step to step.
     for k in 1..=steps {
-        propagate_bucketed(
-            &step_circuit,
-            &mut observable,
-            &policy,
-            Direction::Heisenberg,
-            &mut scratch,
-        );
+        observable = propagate(&step_circuit, observable, &policy, Direction::Heisenberg);
         t_series.push(k as f64 * DT);
         m_series.push(observable.expectation_product_state(ProductState::XPlus).re);
         eprintln!(

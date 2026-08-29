@@ -438,9 +438,11 @@ fn eleven_channel_circuit_matches_v0_1_under_truncation() {
 #[test]
 fn output_is_byte_identical_across_thread_counts() {
     // The v0.2 counterpart of sort_merge's `scan_determinism_across_thread_counts`.
-    // Stronger than it looks: `propagate` derives its bucket count from
-    // `rayon::current_num_threads()`, so this also asserts that results are
-    // independent of the partition itself.
+    // Pins thread-independence only: `propagate`'s bucket count is a fixed
+    // function of the term count (v0.3 §1), not of the thread count, so this
+    // test no longer varies the partition. Bucket-count independence is
+    // pinned directly by `output_is_bitwise_identical_across_bucket_counts`
+    // in `engine/bucketed.rs`.
     let input = rand_sum::<1>(2000, 8, 0x8D);
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {

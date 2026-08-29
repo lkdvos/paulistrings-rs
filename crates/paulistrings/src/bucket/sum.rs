@@ -54,6 +54,23 @@ pub const MIN_TERMS_PER_TASK: usize = 64;
 /// L2 per core on the reference host. Provisional — v0.2 §7.4 measures it.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
+/// Default floor on the bucket count.
+///
+/// Fixed, not thread-derived: `128 = 4×32` is the value the 32-thread
+/// reference host (ccqlin038) has always used, so this constant reproduces
+/// every committed baseline and the committed `examples/output/*.csv`
+/// trajectories exactly. Deriving the floor from `rayon::current_num_threads`
+/// instead would make the bucket count `B` — and therefore the output
+/// trajectory — depend on how many threads happen to be available, which is
+/// not a property we want: `B`-independence of the engine's output is a
+/// tested property (v0.2 §9.1), not a load-bearing invariant, and a fixed
+/// floor makes `B` a deterministic function of the term count `n` alone.
+///
+/// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone
+/// below that (e.g. `min_buckets = 2` would split at 128 terms), and we want
+/// "a sum of `<= 1024` terms gets a single bucket" to hold.
+pub const DEFAULT_MIN_BUCKETS: usize = 128;
+
 /// One bucket's structure-of-arrays columns.
 ///
 /// Capacity is retained across layers, which is the point of owning per-bucket

@@ -80,10 +80,10 @@ where
 
     let num_qubits = initial.num_qubits();
 
-    // Size the partition once, then let `rebucket` keep it in band. Note the
-    // bucket count depends on the thread count through the parallelism floor —
-    // which is safe only because the engine's output is bitwise independent of
-    // the bucket count (v0.2 §9.1), a property the tests pin directly.
+    // Size the partition once, then let `rebucket` keep it in band. The bucket
+    // count `B` is now a deterministic function of the term count alone (v0.3
+    // §1): bitwise independence of the engine's output from `B` is still
+    // tested (v0.2 §9.1), but it is no longer what makes this safe.
     let min_buckets = default_min_buckets();
     let bits = desired_bits(initial.len(), DEFAULT_TARGET_BUCKET_LEN, min_buckets);
     let hash = Gf2Hash::<W>::new(num_qubits, bits, DEFAULT_HASH_SEED);
@@ -96,8 +96,12 @@ where
 }
 
 /// Bucket-count floor: enough buckets that Rayon has slack to load-balance.
+///
+/// Fixed (v0.3 §1), not derived from `rayon::current_num_threads`: see
+/// [`crate::bucket::sum::DEFAULT_MIN_BUCKETS`] for why a thread-independent
+/// floor is what we want here.
 pub fn default_min_buckets() -> usize {
-    4 * rayon::current_num_threads().max(1)
+    crate::bucket::sum::DEFAULT_MIN_BUCKETS
 }
 
 /// Propagate a sum that is **already bucketed**, in place.

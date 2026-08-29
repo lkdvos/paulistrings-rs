@@ -36,7 +36,7 @@ use criterion::{
 };
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
-use paulistrings::bucket::{BucketedSum, Gf2Hash, DEFAULT_TARGET_BUCKET_LEN};
+use paulistrings::bucket::{BucketedSum, Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, Depolarizing, PauliRotation};
 use paulistrings::circuit::Circuit;
 use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
@@ -440,9 +440,9 @@ fn bench_thread_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-/// Bucket count the engine would pick for `n` terms at the given thread count.
-fn bits_for(n: usize, threads: usize) -> u8 {
-    paulistrings::bucket::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, 4 * threads)
+/// Bucket count the engine would pick for `n` terms.
+fn bits_for(n: usize) -> u8 {
+    paulistrings::bucket::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
 }
 
 /// One `apply_layer_bucketed` case, on an already-bucketed sum.
@@ -460,12 +460,11 @@ fn bucketed_layer_case<const W: usize, C>(
     label: String,
     input: &PauliSum<W>,
     ch: &C,
-    threads: usize,
 ) where
     C: Channel<W> + ?Sized,
 {
     let policy = AlwaysKeep;
-    let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len(), threads), 0xBEEF);
+    let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len()), 0xBEEF);
     let mut sum = BucketedSum::from_sum(input, hash);
     let prep = ch
         .prepare(sum.hash(), false)
@@ -494,7 +493,6 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
         p: 0.05,
     };
     let rot = zz_rotation::<2>(0, 1, 0.1);
-    let threads = rayon::current_num_threads().max(1);
 
     for &n in &[10_000usize, 1_000_000usize] {
         let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
@@ -505,28 +503,10 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
             group.sample_size(30);
             group.warm_up_time(Duration::from_secs(1));
         }
-        bucketed_layer_case(
-            &mut group,
-            format!("depolarizing/{n}"),
-            &input,
-            &depol,
-            threads,
-        );
-        bucketed_layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h, threads);
-        bucketed_layer_case(
-            &mut group,
-            format!("clifford2q_cnot/{n}"),
-            &input,
-            &cnot,
-            threads,
-        );
-        bucketed_layer_case(
-            &mut group,
-            format!("rotation_zz/{n}"),
-            &input,
-            &rot,
-            threads,
-        );
+        bucketed_layer_case(&mut group, format!("depolarizing/{n}"), &input, &depol);
+        bucketed_layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h);
+        bucketed_layer_case(&mut group, format!("clifford2q_cnot/{n}"), &input, &cnot);
+        bucketed_layer_case(&mut group, format!("rotation_zz/{n}"), &input, &rot);
     }
 
     group.finish();
@@ -550,9 +530,11 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
             .num_threads(t)
             .build()
             .expect("failed to build rayon pool");
-        // Bucket count is fixed per thread count exactly as `propagate` would
-        // choose it, so this measures the configuration users actually get.
-        let hash = Gf2Hash::<2>::new(128, bits_for(input.len(), t), 0xBEEF);
+        // Bucket count no longer depends on the thread count (v0.3 §1), so a
+        // fixed bit count across every thread count in this loop IS the
+        // configuration users actually get, which makes the scaling
+        // measurement purer than varying it per thread count would.
+        let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut sum = BucketedSum::from_sum(&input, hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
@@ -578,8 +560,7 @@ fn bench_bucket_conversion(c: &mut Criterion) {
 
     let n = 1_000_000usize;
     let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
-    let threads = rayon::current_num_threads().max(1);
-    let bits = bits_for(input.len(), threads);
+    let bits = bits_for(input.len());
     group.throughput(Throughput::Elements(input.len() as u64));
 
     group.bench_function("from_sum", |bencher| {
@@ -608,8 +589,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
 
     let n = 1_000_000usize;
     let input: PauliSum<2> = random_sum::<2>(n, 128, 0x70_9E);
-    let threads = rayon::current_num_threads().max(1);
-    let hash = Gf2Hash::<2>::new(128, bits_for(input.len(), threads), 0xBEEF);
+    let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
     group.throughput(Throughput::Elements(input.len() as u64));
 
     // Keep 80%: enough that the cut is real but the sum does not collapse, so

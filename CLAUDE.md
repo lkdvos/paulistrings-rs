@@ -16,6 +16,8 @@ Measured: per-layer **8.6–54×** at 10⁶ terms, thread scaling **1.39× → 7
 
 `propagate` converts in and out per call. For a *short* circuit applied repeatedly to a large sum (a Trotter driver), use **`propagate_bucketed`** instead and hold one `BucketedSum` across calls, reading observables with `BucketedSum::expectation_product_state`. `examples/ising_2d_quench.rs` does exactly that and is the reference for the pattern.
 
+**Next up — read `research/plans/2026-08-29-v0.3-followups.md` before starting engine work.** It carries six decisions from a review of the v0.2 branch, with an execution order and the gotchas that cost time last round. In brief: decouple the bucket count from the thread count; merge `PauliSum` and `BucketedSum` into one bucketed type whose canonical order is `(bucket, key)` (so a single-bucket sum is plain lex-sorted, and `into_sum`'s 78 ms B-way merge disappears); process buckets in *cosets* of `h(D)`, which removes the read amplification and makes layers in-place with per-thread scratch; and make `TopN` discard whole tie groups rather than splitting symmetry multiplets.
+
 `PauliSum` is unchanged and remains the public, globally-sorted type; `BucketedSum` is the propagation working form. The v0.1 engine is retained in `engine/sort_merge.rs` as the differential-testing oracle and as the per-layer fallback for a channel that declines to be prepared, and its `sort_phase` / `merge_into` are reused as the per-bucket kernels.
 
 Known gaps — check these before assuming a feature works:

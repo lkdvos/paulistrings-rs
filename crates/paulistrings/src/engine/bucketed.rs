@@ -23,9 +23,9 @@
 //! Determinism (v0.5 S1 policy): cosets are write-disjoint and work within one
 //! is sequential, so output is bitwise identical across thread counts *and*
 //! across repeat runs at a fixed bucket count and hash seed —
-//! `sort_rows_with_scratch`'s `sort_unstable_by` is a deterministic function
-//! of its input, even though it makes no promise about the relative order of
-//! equal keys. Across bucket counts or hash seeds, output agrees only to
+//! `sort_rows_with_scratch`'s key-only sort is a deterministic function
+//! of its input, even though equal-key order is no longer specified.
+//! Across bucket counts or hash seeds, output agrees only to
 //! floating-point tolerance: a different partition can gather equal-key
 //! contributions in a different order, and `f64` addition is not associative.
 //! (Through v0.3 a `u8` delta-tag column pinned that order to be
@@ -275,8 +275,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     // Each coset is a closed task: it reads and writes only its own chunk, so
     // the chunk loop needs no atomics, no cross-task locks, and no
     // reconciliation pass. Work within a task is sequential and deterministic
-    // (the per-run sort is an unstable-but-deterministic function of its
-    // input, v0.5 S1), so output is byte-identical across thread counts.
+    // (the per-run key-only sort is a deterministic function of its input,
+    // v0.5 S1), so output is byte-identical across thread counts.
     {
         // Size the worker pool before `staging` is borrowed below; keeping
         // existing slots preserves their high-water capacity.

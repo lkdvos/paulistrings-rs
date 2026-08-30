@@ -309,12 +309,24 @@ impl<const W: usize> SortScratch<W> {
 /// bucket-count- or hash-seed-independent (floating-point associativity
 /// variation across those axes is accepted), so the `u8` delta tag that used
 /// to break ties in `local_delta` order (the deleted `sort_phase_tagged`) is
-/// gone, and this sort is `sort_unstable_by` on the key alone — cheaper, and
-/// with one fewer column to carry through the gather. What must still hold —
-/// and does, structurally: cosets are write-disjoint, work within one is
-/// sequential, and `sort_unstable_by` is a deterministic function of its
-/// input, so **thread-count determinism and repeat-run determinism at fixed
-/// configuration** are unaffected. A later `merge_into` sums whatever order
+/// gone, and this sort compares the key alone — cheaper, and with one fewer
+/// column to carry through the gather.
+///
+/// The sort is the **stable** `sort_by`, but not for stability (nothing
+/// depends on equal-key order any more — an unstable sort would be
+/// semantically fine): it is for *adaptivity*. A gather run is a
+/// concatenation of per-delta streams, each drawn from one sorted source
+/// bucket — the identity stream arrives fully sorted, and an XOR-by-constant
+/// stream is piecewise sorted (order survives wherever the mask's high bits
+/// don't flip) — and Rust's stable driftsort detects and merges those natural
+/// ascending runs while the unstable pdqsort does not. Measured (v0.5 S1
+/// fix): switching this line to `sort_unstable_by` cost +77% on a 10⁶
+/// `rotation_zz` layer and +43% on CNOT.
+///
+/// What must still hold — and does, structurally: cosets are write-disjoint,
+/// work within one is sequential, and the sort is a deterministic function of
+/// its input, so **thread-count determinism and repeat-run determinism at
+/// fixed configuration** are unaffected. A later `merge_into` sums whatever order
 /// equal keys land in; that sum agrees with any other order to floating-point
 /// tolerance (real addition is associative; `f64` addition is not, only up to
 /// rounding), never bit-for-bit across a different order.
@@ -344,7 +356,7 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     }
     s.perm.clear();
     s.perm.extend(0..len as u32);
-    s.perm.sort_unstable_by(|&a, &b| {
+    s.perm.sort_by(|&a, &b| {
         x[a as usize]
             .cmp(&x[b as usize])
             .then_with(|| z[a as usize].cmp(&z[b as usize]))

@@ -1,0 +1,11 @@
+[package]
+name = "membench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "STREAM-style memory-bandwidth ceiling probe for the benchmark host"
+publish = false
+
+[dependencies]
+rayon = "1"

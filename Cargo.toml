@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/membench",
     "crates/paulistrings",
     "crates/paulistrings-py",
 ]
@@ -21,3 +22,14 @@ codegen-units = 1
 [profile.bench]
 lto = "fat"
 codegen-units = 1
+# Line tables let `perf record` on a criterion bench (via --profile-time)
+# attribute samples through the fat-LTO inlining; no codegen change.
+debug = "line-tables-only"
+
+# `perf record` / flamegraph builds: identical codegen to release (same LTO,
+# same codegen-units — profile what ships), plus the line/inline tables that
+# perf and addr2line need to expand inlined frames. See benchmarks/PROFILING.md.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

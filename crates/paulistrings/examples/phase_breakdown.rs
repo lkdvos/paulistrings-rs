@@ -87,6 +87,8 @@ Options:
                             of GB of RSS.
   --seed <u64|0xHEX>       RNG seed for the input sum (default: 0xC0FFEE)
   --format table|json|tsv  Output format (default: table)
+  --json-out FILE          Also append one JSON line per cell to FILE,
+                           regardless of --format (input for scripts/perf-viz.py)
   -h, --help               Print this message
 ";
 
@@ -150,6 +152,9 @@ struct Config {
     reps: usize,
     seed: u64,
     format: Format,
+    /// Sidecar file that gets one JSON line appended per cell, regardless of
+    /// the stdout `--format` — the input `scripts/perf-viz.py` renders.
+    json_out: Option<String>,
 }
 
 fn parse_usize(s: &str, flag: &str) -> Result<usize, String> {
@@ -203,6 +208,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut reps: usize = 8;
     let mut seed: u64 = 0xC0FFEE;
     let mut format = Format::Table;
+    let mut json_out: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -218,6 +224,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--reps" => reps = parse_usize(value, "--reps")?,
             "--seed" => seed = parse_seed(value)?,
             "--format" => format = parse_format(value)?,
+            "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
         }
         i += 2;
@@ -247,6 +254,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         reps,
         seed,
         format,
+        json_out,
     })
 }
 
@@ -727,10 +735,15 @@ fn print_table(cell: &CellResult) {
     println!();
 }
 
-#[allow(clippy::too_many_arguments)]
 fn print_json(cell: &CellResult) {
+    println!("{}", json_line(cell));
+}
+
+/// One cell as a single JSON line — shared by `--format json` (stdout) and
+/// `--json-out` (sidecar file for `scripts/perf-viz.py`).
+fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
-    println!(
+    format!(
         "{{\"layer\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\"qubits\":{},\"seed\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
@@ -768,7 +781,7 @@ fn print_json(cell: &CellResult) {
         s.terms_out,
         cell.vmrss_kb,
         cell.vmhwm_kb,
-    );
+    )
 }
 
 const TSV_HEADER: &str =
@@ -820,6 +833,17 @@ fn run<const W: usize>(cfg: &Config) {
         println!("{TSV_HEADER}");
     }
 
+    let mut sidecar = cfg.json_out.as_ref().map(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap_or_else(|e| {
+                eprintln!("phase_breakdown: cannot open --json-out '{path}': {e}");
+                std::process::exit(2);
+            })
+    });
+
     for &layer in &cfg.layers {
         for &threads in &cfg.threads {
             let cell = run_cell::<W>(layer, threads, cfg);
@@ -829,6 +853,13 @@ fn run<const W: usize>(cfg: &Config) {
                 Format::Table => print_table(&cell),
                 Format::Json => print_json(&cell),
                 Format::Tsv => print_tsv_row(&cell),
+            }
+            if let Some(f) = sidecar.as_mut() {
+                use std::io::Write;
+                writeln!(f, "{}", json_line(&cell)).unwrap_or_else(|e| {
+                    eprintln!("phase_breakdown: writing --json-out failed: {e}");
+                    std::process::exit(2);
+                });
             }
         }
     }

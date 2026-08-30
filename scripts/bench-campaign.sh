@@ -151,9 +151,12 @@ for item in "${items[@]}"; do
 
     probe)
       args="$item_rest"
+      # Every probe cell also lands as a JSON line in the campaign's probe
+      # sidecar, which perf-viz.py renders at the end of the run.
       # shellcheck disable=SC2086  # intentional word-splitting, see --help
       if ! (cargo run --offline --release --features phase-timing \
-        --example phase_breakdown -- $args) 2>&1 | tee -a "$out_file"; then
+        --example phase_breakdown -- $args \
+        --json-out "$out_dir/${campaign_name}-probe.json") 2>&1 | tee -a "$out_file"; then
         echo "  (phase_breakdown probe exited nonzero — continuing campaign)" \
           | tee -a "$out_file"
       fi
@@ -240,3 +243,13 @@ done
   echo
   echo "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"
 } >>"$out_file"
+
+# Render the campaign's HTML report from whatever JSON/txt this run (and
+# earlier runs of the same campaign name) left in $out_dir.
+if [[ -x scripts/perf-viz.py || -f scripts/perf-viz.py ]]; then
+  if python3 scripts/perf-viz.py "$out_dir/$campaign_name"; then
+    echo "report: $out_dir/${campaign_name}-report.html"
+  else
+    echo "  (perf-viz.py failed — campaign data is intact, re-run it by hand)" >&2
+  fi
+fi

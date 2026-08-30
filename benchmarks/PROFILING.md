@@ -18,7 +18,10 @@ repeatable, three-command loop:
      probe:'--n 1000000 --threads 1,8,32' \
      perf-stat:'--n 1000000 --threads 32 --layers rotation_zz'
    ```
-3. Diff against the last snapshot:
+3. Open the HTML report the campaign rendered at the end
+   (`benchmarks/results/<date>-<host>/<name>-report.html` — phase-breakdown
+   bars, throughput and scaling charts, criterion table, bandwidth ceilings;
+   self-contained, no network), then diff against the last snapshot:
    ```bash
    python3 scripts/criterion-report.py compare <old-snapshot>.json <new>.json
    ```
@@ -63,6 +66,13 @@ as prompts to look, not as pass/fail.
 - `python3 scripts/fit_scaling.py --group thread_scaling_bucketed_gu2q`
   (or `--group all`) — Amdahl/USL fits over a `thread_scaling*` criterion
   group.
+- `python3 scripts/perf-viz.py benchmarks/results/<date>-<host>/<campaign>`
+  — render one campaign's data (`.txt`, `.json`, `-probe.json`,
+  `-scaling-*.json`, plus the directory's `bandwidth.txt`) into a single
+  self-contained `<campaign>-report.html`; `--compare OLD.json` adds Δ%
+  columns to the criterion table. `bench-campaign.sh` runs this
+  automatically at the end of every campaign; the probe feeds it via its
+  `--json-out` sidecar (one JSON line per cell, independent of `--format`).
 
 ## Phase timing
 

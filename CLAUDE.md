@@ -152,3 +152,7 @@ Conventions:
 - Keep input generation deterministic (seeded RNG) and outside the timed region.
 - Report single-thread and multi-thread numbers separately for parallel ops.
 - When recording results to `benchmarks/results/<date>-<machine>/`, include commit hash, CPU, RAM, compiler version, BLAS (if any), thread count.
+- The `phase-timing` Cargo feature (`engine/stats.rs`) gates a per-phase timing breakdown of the propagation engine; it is measurement-only and never in the default feature set, and its non-perturbation of engine output is checked by the existing bitwise-identity tests (the fingerprint net, thread/bucket-count/seed determinism tests) running under the feature in CI.
+- The probe: `cargo run --release --features phase-timing --example phase_breakdown`.
+- `scripts/bench-campaign.sh` plus `benchmarks/PROFILING.md` is the canonical change → measure → compare workflow.
+- `crates/membench` + `scripts/bandwidth.sh` give the memory-bandwidth ceiling used for roofline comparisons.

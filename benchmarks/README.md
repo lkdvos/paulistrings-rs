@@ -36,8 +36,16 @@ BLAS (if any), and number of threads.
 ## Ground rules
 
 - Always benchmark `--release` / `cargo bench` (never debug).
-- Pin the CPU governor to `performance` and disable turbo if you want stable
-  numbers; otherwise run with enough samples that criterion's noise model copes.
+- The governor is `powersave` and unpinnable on the reference host (no root) —
+  rely on more samples and ratio metrics (IPC, % of bandwidth ceiling,
+  speedup, cycles/string) rather than absolute ms across days; see
+  `PROFILING.md`.
 - Report both single-thread and multi-thread numbers when the operation is
   parallel.
 - Keep input generation deterministic (seeded RNG) and outside the timed region.
+
+## Profiling
+
+For the phase-timing probe, flamegraphs, hardware counters, the memory-
+bandwidth roofline, and the standard change → measure → compare loop, see
+[`PROFILING.md`](PROFILING.md).

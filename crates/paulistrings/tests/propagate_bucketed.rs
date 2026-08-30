@@ -492,9 +492,10 @@ fn output_is_byte_identical_across_thread_counts() {
     // The v0.2 counterpart of sort_merge's `scan_determinism_across_thread_counts`.
     // Pins thread-independence only: `propagate`'s bucket count is a fixed
     // function of the term count (v0.3 §1), not of the thread count, so this
-    // test no longer varies the partition. Bucket-count independence is
-    // pinned directly by `output_is_bitwise_identical_across_bucket_counts`
-    // in `engine/bucketed.rs`.
+    // test no longer varies the partition. Bucket-count agreement (fp
+    // tolerance only, since v0.5 S1 — see the module doc in
+    // `engine/bucketed.rs`) is pinned directly by
+    // `output_agrees_across_bucket_counts_to_fp_tolerance` there.
     let input = rand_sum::<1>(2000, 8, 0x8D);
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {

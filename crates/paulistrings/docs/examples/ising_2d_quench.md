@@ -263,6 +263,18 @@ discard keeps the propagated sum strictly below the `TopN` cap whenever a
 boundary group straddles it, so later layers do less work. The 4×4 run stays
 under 2 s in both cases (its sum rarely approaches `TopN(50_000)`).
 
+v0.5 S1 dropped the engine's `u8` delta tag and its equal-key-order guarantee
+(floating-point associativity variation across bucket counts and hash seeds
+is now accepted, in exchange for a faster per-run sort). Regenerating both
+CSVs against that change moved neither trajectory at all: max |Δm_x| = 0.0
+(byte-identical output) on both lattices, because this circuit is built
+entirely from `PauliRotation` layers, which merge at most two contributions
+per output key — and two-operand floating-point addition is exactly
+commutative, so the relaxed policy has no observable effect here. A circuit
+with a wider fan-in channel (`GeneralUnitary2Q`, merging three or more
+contributions per key) would be expected to show a nonzero, FP-tolerance-size
+shift instead.
+
 # Result
 
 ![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](https://raw.githubusercontent.com/lkdvos/paulistrings-rs/main/crates/paulistrings/docs/examples/img/ising_quench.svg)

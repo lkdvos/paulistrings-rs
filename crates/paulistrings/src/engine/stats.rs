@@ -67,8 +67,9 @@ pub struct PhaseStats {
     pub size_ns: u64,
     /// Gather (input-major, output-major, or inline rotation — all variants).
     pub gather_ns: u64,
-    /// `sort_phase_tagged` over each gather run, including its per-run
-    /// allocations.
+    /// `sort_rows_with_scratch` over each gather run (v0.5 S1: unstable
+    /// key-only sort on worker-persistent scratch, no per-run allocation in
+    /// the steady state).
     pub sort_ns: u64,
     /// `merge_into` from each sorted run into the live bucket column.
     pub merge_ns: u64,
@@ -83,8 +84,8 @@ pub struct PhaseStats {
     pub runs: u64,
     /// Rows pushed into gather runs (= Σ run lengths entering sort/merge).
     /// The traffic multiplier for the roofline model: each gathered row is
-    /// one key+coeff+tag written by gather, then read and rewritten by sort
-    /// and read once more by merge.
+    /// one key+coeff written by gather (no tag column since v0.5 S1), then
+    /// read and rewritten by sort and read once more by merge.
     pub rows_gathered: u64,
     /// Σ over layers of the term count *before* the layer.
     pub terms_in: u64,

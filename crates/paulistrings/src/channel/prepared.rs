@@ -66,13 +66,18 @@ pub struct LocalPtm<const W: usize> {
     k: u8,
     /// The delta set, **ascending by `local_delta`**.
     ///
-    /// This order is the engine's canonical equal-key summation order, and it
-    /// must not depend on the bucket count: `local_delta` is `H`-independent
-    /// while `bucket_delta = H·d` is not, and duplicate-key summation order is
-    /// observable through floating-point non-associativity (v0.2 §9.1). The
-    /// coset engine gathers input-bucket-major for locality and restores this
-    /// order afterwards, by carrying each entry's index here as a tag through
-    /// the per-run sort (v0.3 §2, `sort_merge::sort_phase_tagged`).
+    /// Ascending `local_delta` is still the canonical construction order —
+    /// index 0 is the identity entry when present, and upcoming work relies
+    /// on that — but as of v0.5 S1 it no longer defines a bucket-count- or
+    /// hash-seed-independent summation order: the engine's per-run sort
+    /// (`sort_merge::sort_rows_with_scratch`) is key-only, so it no longer
+    /// carries each entry's index here as a tag to restore this order after
+    /// gathering input-bucket-major (that was v0.3 §2's
+    /// `sort_merge::sort_phase_tagged`, deleted in v0.5 S1 per the relaxed
+    /// determinism policy — see the v0.5 S1 slice notes and
+    /// `engine::bucketed`'s module doc). `local_delta` remains
+    /// `H`-independent while `bucket_delta = H·d` is not, which is why this
+    /// order was ever meaningful as a *canonical* one in the first place.
     deltas: Vec<DeltaEntry<W>>,
 }
 
@@ -89,8 +94,9 @@ impl<const W: usize> LocalPtm<W> {
         &self.qubits[..self.k as usize]
     }
 
-    /// The delta set, ascending by `local_delta` — the canonical equal-key
-    /// summation order; each entry's index here is its sort tag in the engine.
+    /// The delta set, ascending by `local_delta` — the canonical construction
+    /// order (see the field doc); as of v0.5 S1 the engine's per-run sort is
+    /// key-only, so an entry's index here is no longer used as a sort tag.
     #[inline]
     pub fn deltas(&self) -> &[DeltaEntry<W>] {
         &self.deltas

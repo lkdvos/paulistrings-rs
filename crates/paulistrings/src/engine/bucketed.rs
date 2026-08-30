@@ -12,19 +12,25 @@
 //!    per-member gather run exactly from the swapped-out lengths, **gather**
 //!    input-member-major — each term is loaded once and its whole fanout is
 //!    scattered to runs by the O(1) index identity
-//!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by
-//!    `(key, tag)` and **merge** straight into the member's live slot.
+//!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by key
+//!    alone and **merge** straight into the member's live slot.
 //! 3. Un-permute the handles, recount, assert invariants.
 //!
 //! The gather visits each input term exactly once (v0.2 §6.1's `|D| · n` read
 //! amplification is gone), and there is no second full-size buffer: peak memory
 //! is `n` plus per-worker scratch of one coset's working set.
 //!
-//! Determinism: cosets are write-disjoint, work within one is sequential, and
-//! duplicate keys are summed in ascending delta order — enforced by the tag
-//! column in `sort_merge::sort_phase_tagged`, not by gather order — so output
-//! is bitwise identical across thread counts *and* bucket counts, exactly as
-//! before (v0.2 §9.1).
+//! Determinism (v0.5 S1 policy): cosets are write-disjoint and work within one
+//! is sequential, so output is bitwise identical across thread counts *and*
+//! across repeat runs at a fixed bucket count and hash seed —
+//! `sort_rows_with_scratch`'s `sort_unstable_by` is a deterministic function
+//! of its input, even though it makes no promise about the relative order of
+//! equal keys. Across bucket counts or hash seeds, output agrees only to
+//! floating-point tolerance: a different partition can gather equal-key
+//! contributions in a different order, and `f64` addition is not associative.
+//! (Through v0.3 a `u8` delta-tag column pinned that order to be
+//! bucket-count-independent too, at a measured 5–14% cost; v0.5 drops the
+//! requirement and the tag with it — see `sort_merge::sort_rows_with_scratch`.)
 
 use std::sync::Mutex;
 
@@ -32,7 +38,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::coset::Gf2Span;
-use super::sort_merge::{merge_into, sort_phase_tagged};
+use super::sort_merge::{merge_into, sort_rows_with_scratch, SortScratch};
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -118,20 +124,26 @@ struct CosetScratch<const W: usize> {
     old: Vec<BucketCols<W>>,
     /// Per-output-member gather runs.
     runs: Vec<GatherRun<W>>,
+    /// Scratch for `sort_rows_with_scratch`'s per-run sort, reused across
+    /// every run in every coset this scratch instance handles.
+    sort: SortScratch<W>,
     /// This slot's busy-time phase counters, drained by
     /// `LayerScratch::take_stats`.
     #[cfg(feature = "phase-timing")]
     stats: CosetStats,
 }
 
-/// One output member's gather run: key columns, coefficients, and the delta
-/// tag that `sort_phase_tagged` breaks equal-key ties on.
+/// One output member's gather run: key columns and coefficients.
+///
+/// Through v0.3 this also carried a `u8` delta tag that
+/// `sort_merge::sort_phase_tagged` broke equal-key ties on, pinning
+/// bucket-count-independent summation order. v0.5 S1 drops that requirement
+/// (and the tag) — see the module doc and `sort_merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
 struct GatherRun<const W: usize> {
     x: Vec<[u64; W]>,
     z: Vec<[u64; W]>,
     coeff: Vec<Complex64>,
-    tag: Vec<u8>,
 }
 
 impl<const W: usize> GatherRun<W> {
@@ -140,22 +152,19 @@ impl<const W: usize> GatherRun<W> {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        self.tag.clear();
         if self.x.capacity() < cap {
             let extra = cap - self.x.capacity();
             self.x.reserve(extra);
             self.z.reserve(extra);
             self.coeff.reserve(extra);
-            self.tag.reserve(extra);
         }
     }
 
     #[inline]
-    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64, tag: u8) {
+    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.x.push(x);
         self.z.push(z);
         self.coeff.push(c);
-        self.tag.push(tag);
     }
 
     #[inline]
@@ -167,14 +176,13 @@ impl<const W: usize> GatherRun<W> {
 /// A prepared channel's delta set, annotated with each entry's coset
 /// coordinate (`span.coord_of(bucket_delta)`), computed once per layer.
 enum DeltaPlan<'p, const W: usize> {
-    /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`, whose index
-    /// `e` is also the entry's tag (ascending `local_delta` order).
+    /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`.
     Local {
         ptm: &'p LocalPtm<W>,
         coords: Vec<u32>,
     },
-    /// Wide rotation: two implicit entries, tag 0 = identity pass,
-    /// tag 1 = generator pass.
+    /// Wide rotation: two implicit entries, the identity pass and the
+    /// generator pass.
     Rotation {
         prep: &'p RotationPrep<W>,
         coord_identity: u32,
@@ -266,9 +274,9 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 
     // Each coset is a closed task: it reads and writes only its own chunk, so
     // the chunk loop needs no atomics, no cross-task locks, and no
-    // reconciliation pass. Work within a task is sequential and its summation
-    // order is fixed by the tag sort, so output is byte-identical across
-    // thread counts.
+    // reconciliation pass. Work within a task is sequential and deterministic
+    // (the per-run sort is an unstable-but-deterministic function of its
+    // input, v0.5 S1), so output is byte-identical across thread counts.
     {
         // Size the worker pool before `staging` is borrowed below; keeping
         // existing slots preserves their high-water capacity.
@@ -348,9 +356,14 @@ fn fill_coset<const W: usize, T>(
 {
     let m = chunk.len();
     #[cfg(feature = "phase-timing")]
-    let CosetScratch { old, runs, stats } = ws;
+    let CosetScratch {
+        old,
+        runs,
+        sort,
+        stats,
+    } = ws;
     #[cfg(not(feature = "phase-timing"))]
-    let CosetScratch { old, runs } = ws;
+    let CosetScratch { old, runs, sort } = ws;
     #[cfg(feature = "phase-timing")]
     let mut st = Stamp::now();
     old.resize_with(m, BucketCols::default);
@@ -386,11 +399,14 @@ fn fill_coset<const W: usize, T>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.size_ns);
 
-    // Gather. Two visit orders produce the same rows per run — `(key, tag)` is
-    // unique within a run, so the tag sort canonicalizes either order to the
-    // same sequence and the output is bitwise-identical (v0.2 §9.1). Which
-    // order is *faster* depends on `r`: input-major loads each term once but
-    // keeps `2^r` write streams open per task, and at `r = 4` those streams
+    // Gather. Two visit orders produce the same multiset of rows per run —
+    // only their arrival order differs, which the key-only sort below erases
+    // up to floating-point tolerance on any equal-key summation (v0.5 S1;
+    // through v0.3 a `(key, tag)` sort canonicalized either order to a
+    // bitwise-identical sequence — see `local_gather_orders_agree_to_fp_tolerance`
+    // for the v0.5 replacement). Which order is *faster* depends on `r`:
+    // input-major loads each term once but keeps `2^r` write streams open per
+    // task, and at `r = 4` those streams
     // plus the swapped coset no longer fit L2 — measured +48% on a 32-thread
     // `GeneralUnitary2Q` layer at 10⁶ terms. Output-major re-reads each input
     // bucket `2^r` times but the reads stay coset-local and there is a single
@@ -410,8 +426,7 @@ fn fill_coset<const W: usize, T>(
             coord_identity,
             coord_gen,
         } => {
-            // Tag 0 = the identity pass, tag 1 = the generator pass, matching
-            // the canonical `local_delta` order (0 before P). `cos`/`sin` stay
+            // The identity pass and the generator pass. `cos`/`sin` stay
             // hoisted; the `i^k` phase depends on 2w support bits and is
             // computed per anticommuting term, exactly as before.
             for (i, src) in old.iter().enumerate() {
@@ -421,18 +436,12 @@ fn fill_coset<const W: usize, T>(
                         z: src.z[t],
                     };
                     if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize].push(
-                            src.x[t],
-                            src.z[t],
-                            src.coeff[t],
-                            0,
-                        );
+                        runs[i ^ *coord_identity as usize].push(src.x[t], src.z[t], src.coeff[t]);
                     } else {
                         runs[i ^ *coord_identity as usize].push(
                             src.x[t],
                             src.z[t],
                             src.coeff[t] * prep.cos,
-                            0,
                         );
                         let mut prod = v;
                         let phase = prod.mul_assign(&prep.gen);
@@ -441,7 +450,6 @@ fn fill_coset<const W: usize, T>(
                             prod.x,
                             prod.z,
                             total.apply(src.coeff[t]) * prep.sin,
-                            1,
                         );
                     }
                 }
@@ -451,14 +459,14 @@ fn fill_coset<const W: usize, T>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.gather_ns);
 
-    // Sort each run by (key, tag) and merge into the member's live slot.
+    // Sort each run by key alone and merge into the member's live slot.
     for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
         let len = run.len();
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += len as u64;
         }
-        sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
+        sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut stats.sort_ns);
         merge_into::<W, T>(
@@ -498,10 +506,13 @@ fn fill_coset<const W: usize, T>(
 /// input-major's `2^r` open write streams. So every built-in channel takes
 /// the input-major path. The output-major branch survives, unmeasured, as a
 /// guard for a custom full-rank channel (`r = 4`: sixteen live gather runs
-/// per task), where the scatter working set doubles twice more; both paths
-/// produce bitwise-identical output (the `(key, tag)` sort canonicalizes
-/// either visit order — pinned by `local_gather_orders_are_bitwise_equivalent`),
-/// so the threshold is a pure performance knob.
+/// per task), where the scatter working set doubles twice more. Both paths
+/// gather the identical multiset of rows in different orders; since v0.5 S1
+/// the key-only sort no longer canonicalizes that to a bitwise-identical
+/// sequence (equal-key order can differ between the two), so the two orders
+/// agree only to floating-point tolerance — pinned by
+/// `local_gather_orders_agree_to_fp_tolerance` — and the threshold remains a
+/// pure performance knob, not a correctness one.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
 /// Input-major gather for a tabulated (`Local`) plan: each term is loaded
@@ -528,7 +539,7 @@ fn gather_local_input_major<const W: usize>(
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a, e as u8);
+                runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a);
             }
         }
     }
@@ -536,10 +547,11 @@ fn gather_local_input_major<const W: usize>(
 
 /// Output-major gather for a tabulated (`Local`) plan: for each output member,
 /// stream the one input bucket per delta entry and append to that member's run
-/// only. Rows land in (delta, input position) order — the same multiset as
-/// [`gather_local_input_major`] in a different order, which the `(key, tag)`
-/// sort erases: equal-key rows never share a tag, so both orders canonicalize
-/// to the identical sequence and the merged output is bitwise-equal.
+/// only. Rows land in (delta, input position) order — the same *multiset* as
+/// [`gather_local_input_major`] in a different order. Since v0.5 S1 the
+/// per-run sort is key-only, so it no longer canonicalizes the two orders to
+/// an identical sequence; they agree only up to floating-point tolerance on
+/// any equal-key summation (see `local_gather_orders_agree_to_fp_tolerance`).
 fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -561,7 +573,7 @@ fn gather_local_output_major<const W: usize>(
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                run.push(kx, kz, src.coeff[t] * a, e as u8);
+                run.push(kx, kz, src.coeff[t] * a);
             }
         }
     }
@@ -1116,13 +1128,18 @@ mod tests {
     }
 
     #[test]
-    fn output_is_bitwise_identical_across_bucket_counts() {
-        // The strong form of v0.2 §9.1: not merely close, but *bitwise* equal,
-        // which is what the canonical `local_delta` accumulation order buys.
-        // The GeneralUnitary2Q case is load-bearing: rotations and Cliffords
-        // merge at most two contributions per key, where any order is
-        // bitwise-equal by commutativity, so only a wide-delta channel can
-        // catch an ordering regression (see `sqrt_swap_w1`).
+    fn output_agrees_across_bucket_counts_to_fp_tolerance() {
+        // Through v0.3 this was the strong, *bitwise* form (v0.2 §9.1),
+        // guaranteed by the `u8` delta tag pinning equal-key summation order
+        // independent of the partition. v0.5 S1 drops that tag and the
+        // requirement with it: a different bucket count can gather a
+        // duplicate key's contributions in a different order, and `f64`
+        // addition is not associative, so only floating-point-tolerance
+        // agreement is expected now. The GeneralUnitary2Q case is
+        // load-bearing: rotations and Cliffords merge at most two
+        // contributions per key, where any order is bitwise-equal by
+        // commutativity, so only a wide-delta channel can exercise the
+        // relaxed axis at all (see `sqrt_swap_w1`).
         let input = rand_sum::<1>(2000, 8, 0x9001);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let cnot = Clifford2Q::cnot(1, 5);
@@ -1135,16 +1152,18 @@ mod tests {
             let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 0, 0x51);
             for bits in [1u8, 2, 3, 5, 8, 11] {
                 let got = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x51);
-                assert_same_terms(&got, &reference, &format!("bits={bits}"));
+                assert_terms_close(&got, &reference, TOL, &format!("bits={bits}"));
             }
         }
     }
 
     #[test]
-    fn output_is_bitwise_identical_across_hash_seeds() {
+    fn output_agrees_across_hash_seeds_to_fp_tolerance() {
         // A different `H` permutes which terms share a bucket but must not
-        // change the arithmetic. The GeneralUnitary2Q case is load-bearing
-        // for the same reason as in the bucket-count test above.
+        // change the arithmetic (up to v0.5 S1's relaxed, fp-tolerance policy
+        // — see `output_agrees_across_bucket_counts_to_fp_tolerance` above).
+        // The GeneralUnitary2Q case is load-bearing for the same reason as in
+        // the bucket-count test above.
         let input = rand_sum::<1>(2000, 8, 0x9002);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let gu2q = sqrt_swap_w1(1, 5);
@@ -1152,22 +1171,27 @@ mod tests {
             let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, 1);
             for seed in [2u64, 3, 5, 8, 13, 21] {
                 let got = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, seed);
-                assert_same_terms(&got, &reference, &format!("seed={seed}"));
+                assert_terms_close(&got, &reference, TOL, &format!("seed={seed}"));
             }
         }
     }
 
     #[test]
-    fn local_gather_orders_are_bitwise_equivalent() {
+    fn local_gather_orders_agree_to_fp_tolerance() {
         // The r-threshold hybrid ships output-major gathering for wide spans
         // (GeneralUnitary2Q) and input-major below the threshold. The two
-        // visit orders emit the same rows per run in different sequences, and
-        // the (key, tag) sort — under which equal-key rows never share a tag —
-        // must canonicalize both to the identical, bitwise-equal sequence.
-        // Note sqrt-SWAP's nonzero delta masks are {XX, ZZ, YY}-shaped, so its
-        // span has rank exactly 2 under any hash — the equivalence being
-        // pinned here is rank-independent (the sort argument never mentions
-        // r), so a rank-2 coset of four members exercises it fully.
+        // visit orders emit the same *multiset* of rows per run in different
+        // sequences. Through v0.3 the `(key, tag)` sort canonicalized both to
+        // an identical, bitwise-equal sequence; v0.5 S1's key-only sort makes
+        // no promise about a duplicate key's relative row order, so the two
+        // orders can gather a duplicate key's contributions in different
+        // orders and their *unmerged* rows need not line up element-wise
+        // anymore. What must still hold: merging each run's rows (summing
+        // duplicate keys) gives the same keys with the same totals, to
+        // floating-point tolerance. Note sqrt-SWAP's nonzero delta masks are
+        // {XX, ZZ, YY}-shaped, so its span has rank exactly 2 under any hash —
+        // the property pinned here is rank-independent (the argument never
+        // mentions r), so a rank-2 coset of four members exercises it fully.
         let input = rand_sum::<1>(2000, 8, 0xAB12);
         let gu2q = sqrt_swap_w1(1, 5);
         let hash = Gf2Hash::<1>::new(8, 5, 0x77);
@@ -1214,9 +1238,9 @@ mod tests {
             } else {
                 gather_local_input_major(&old, &mut runs, ptm, &coords);
             }
+            let mut scratch = SortScratch::<1>::default();
             for run in runs.iter_mut() {
-                let len = run.len();
-                sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
+                sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, &mut scratch);
             }
             runs
         };
@@ -1226,15 +1250,43 @@ mod tests {
             a.iter().map(GatherRun::len).sum::<usize>() > 0,
             "gather produced nothing — the coset assembly is wrong"
         );
-        // The tag column is comparator-only (never permuted), so the
-        // comparison is over the sorted keys and coefficients.
-        for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
-            assert_eq!(ra.x, rb.x, "run {j}: keys (x) diverge");
-            assert_eq!(ra.z, rb.z, "run {j}: keys (z) diverge");
-            assert_eq!(
-                ra.coeff, rb.coeff,
-                "run {j}: coefficients not bitwise equal"
+        // Merge (sum) each run's rows into unique-key triples before
+        // comparing, rather than comparing the sorted-but-unmerged rows
+        // element-wise: a duplicate key's rows can land in either relative
+        // order under the key-only sort, independent of visit order, so a
+        // raw element-wise comparison could see a spurious mismatch at a tie
+        // that has nothing to do with which order gathered it.
+        let merge_run = |run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
+            let len = run.x.len();
+            let mut mx = Vec::new();
+            let mut mz = Vec::new();
+            let mut mc = Vec::new();
+            merge_into::<1, AlwaysKeep>(
+                &run.x,
+                &run.z,
+                &run.coeff,
+                0,
+                len,
+                &mut mx,
+                &mut mz,
+                &mut mc,
+                &AlwaysKeep,
             );
+            (mx, mz, mc)
+        };
+        for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
+            let (max, maz, mac) = merge_run(ra);
+            let (mbx, mbz, mbc) = merge_run(rb);
+            assert_eq!(max, mbx, "run {j}: merged keys (x) diverge");
+            assert_eq!(maz, mbz, "run {j}: merged keys (z) diverge");
+            assert_eq!(mac.len(), mbc.len(), "run {j}: merged term count diverges");
+            for (i, (ca, cb)) in mac.iter().zip(mbc.iter()).enumerate() {
+                let d = (ca - cb).norm();
+                assert!(
+                    d < TOL,
+                    "run {j} term {i}: merged coefficients {ca} vs {cb} (delta {d:e})"
+                );
+            }
         }
     }
 
@@ -1536,8 +1588,11 @@ mod tests {
 
     /// A wide rotation whose generator hashes to bucket delta 0: the span is
     /// trivial (`r = 0`), each coset is a single bucket, and both passes gather
-    /// the same swapped-out bucket — the tag sort alone restores the canonical
-    /// identity-before-generator order.
+    /// the same swapped-out bucket. A rotation merges at most two
+    /// contributions per output key (see the doc on
+    /// `output_agrees_across_bucket_counts_to_fp_tolerance`), so float
+    /// addition is commutative here regardless of gather or sort order — this
+    /// stays a bitwise check even under v0.5 S1's relaxed policy.
     #[test]
     fn wide_rotation_with_colliding_bucket_delta() {
         // Weight-4 generator, wider than MAX_LOCAL_SUPPORT, so it prepares as
@@ -1647,7 +1702,8 @@ mod tests {
                 .sum();
             let old_cap: usize = sc.task.old.iter().map(|c| c.x.capacity()).sum();
             let run_cap: usize = sc.task.runs.iter().map(|r| r.x.capacity()).sum();
-            bucket_cap + old_cap + run_cap + sc.perm.capacity() + sc.staging.capacity()
+            let sort_cap = sc.task.sort.total_capacity();
+            bucket_cap + old_cap + run_cap + sort_cap + sc.perm.capacity() + sc.staging.capacity()
         };
 
         let mut snapshots = Vec::new();

@@ -278,47 +278,86 @@ pub(crate) fn sort_phase<const W: usize>(
     out_coeff[..len].copy_from_slice(&new_c);
 }
 
-/// [`sort_phase`] with a comparator-only tag column breaking ties on equal
-/// keys.
+/// Worker-persistent scratch for [`sort_rows_with_scratch`].
 ///
-/// Within one coset gather run, `(key, tag)` is unique: the tag is the delta
-/// entry's index in the canonical ascending-`local_delta` order, and for a
-/// fixed output key each entry contributes at most one row (its source key
-/// `k ⊕ d` is unique within the one bucket it lives in). Sorting by
-/// `(x, z, tag)` therefore needs no stability, and it reconstructs exactly the
-/// order that a delta-major gather followed by a stable key sort used to
-/// produce: keys ascending, equal keys in ascending delta order. That
-/// equal-key order is the engine's canonical, bucket-count-independent
-/// summation order (v0.2 §9.1); the tag enforces it now that the gather is
-/// input-bucket-major (v0.3 §2). The tag participates in comparisons only and
-/// is never permuted into the output.
-pub(crate) fn sort_phase_tagged<const W: usize>(
-    out_x: &mut [[u64; W]],
-    out_z: &mut [[u64; W]],
-    out_coeff: &mut [Complex64],
-    tag: &[u8],
-    len: usize,
+/// Held across coset tasks (one instance per `CosetScratch`, in turn one per
+/// Rayon worker, per `bucketed.rs`'s `LayerScratch`): `perm` and the `tmp_*`
+/// triple retain their high-water capacity across calls, so a run at or below
+/// a previously-seen size sorts without allocating.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SortScratch<const W: usize> {
+    perm: Vec<u32>,
+    tmp_x: Vec<[u64; W]>,
+    tmp_z: Vec<[u64; W]>,
+    tmp_c: Vec<Complex64>,
+}
+
+impl<const W: usize> SortScratch<W> {
+    /// Total heap capacity held across this scratch's buffers — a private
+    /// implementation detail exposed only for
+    /// `bucketed::tests::capacity_stabilizes_across_repeated_layers`, which
+    /// needs it to confirm the sort scratch's footprint stops growing too.
+    pub(crate) fn total_capacity(&self) -> usize {
+        self.perm.capacity() + self.tmp_x.capacity() + self.tmp_z.capacity() + self.tmp_c.capacity()
+    }
+}
+
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as
+/// reusable scratch.
+///
+/// v0.5 S1 policy: equal-key summation order is no longer required to be
+/// bucket-count- or hash-seed-independent (floating-point associativity
+/// variation across those axes is accepted), so the `u8` delta tag that used
+/// to break ties in `local_delta` order (the deleted `sort_phase_tagged`) is
+/// gone, and this sort is `sort_unstable_by` on the key alone — cheaper, and
+/// with one fewer column to carry through the gather. What must still hold —
+/// and does, structurally: cosets are write-disjoint, work within one is
+/// sequential, and `sort_unstable_by` is a deterministic function of its
+/// input, so **thread-count determinism and repeat-run determinism at fixed
+/// configuration** are unaffected. A later `merge_into` sums whatever order
+/// equal keys land in; that sum agrees with any other order to floating-point
+/// tolerance (real addition is associative; `f64` addition is not, only up to
+/// rounding), never bit-for-bit across a different order.
+///
+/// Scratch-swap capacity circulation: `s.perm` is filled with the identity
+/// permutation `0..len` and reordered by the sort; the caller's columns are
+/// then read out through the permutation directly into `s.tmp_*` (one pass,
+/// not two — `sort_phase_tagged` built a `Vec<usize>` perm and then a
+/// separate `collect` + `copy_from_slice` round trip per column), and finally
+/// each `tmp_*` is `mem::swap`ped with the caller's `Vec`. The caller ends up
+/// holding the sorted columns; `s` ends up holding the caller's pre-sort
+/// columns' storage (cleared next call) as its own scratch capacity — so
+/// capacity circulates between the live columns and the scratch instead of
+/// either side ever growing past its high-water mark.
+pub(crate) fn sort_rows_with_scratch<const W: usize>(
+    x: &mut Vec<[u64; W]>,
+    z: &mut Vec<[u64; W]>,
+    c: &mut Vec<Complex64>,
+    s: &mut SortScratch<W>,
 ) {
-    debug_assert!(out_x.len() >= len);
-    debug_assert!(tag.len() >= len);
-    debug_assert_eq!(out_x.len(), out_z.len());
-    debug_assert_eq!(out_x.len(), out_coeff.len());
+    let len = x.len();
+    debug_assert_eq!(len, z.len());
+    debug_assert_eq!(len, c.len());
+    debug_assert!(len <= u32::MAX as usize);
     if len < 2 {
         return;
     }
-    let mut perm: Vec<usize> = (0..len).collect();
-    perm.sort_by(|&a, &b| {
-        out_x[a]
-            .cmp(&out_x[b])
-            .then_with(|| out_z[a].cmp(&out_z[b]))
-            .then_with(|| tag[a].cmp(&tag[b]))
+    s.perm.clear();
+    s.perm.extend(0..len as u32);
+    s.perm.sort_unstable_by(|&a, &b| {
+        x[a as usize]
+            .cmp(&x[b as usize])
+            .then_with(|| z[a as usize].cmp(&z[b as usize]))
     });
-    let new_x: Vec<[u64; W]> = perm.iter().map(|&i| out_x[i]).collect();
-    let new_z: Vec<[u64; W]> = perm.iter().map(|&i| out_z[i]).collect();
-    let new_c: Vec<Complex64> = perm.iter().map(|&i| out_coeff[i]).collect();
-    out_x[..len].copy_from_slice(&new_x);
-    out_z[..len].copy_from_slice(&new_z);
-    out_coeff[..len].copy_from_slice(&new_c);
+    s.tmp_x.clear();
+    s.tmp_x.extend(s.perm.iter().map(|&i| x[i as usize]));
+    s.tmp_z.clear();
+    s.tmp_z.extend(s.perm.iter().map(|&i| z[i as usize]));
+    s.tmp_c.clear();
+    s.tmp_c.extend(s.perm.iter().map(|&i| c[i as usize]));
+    std::mem::swap(x, &mut s.tmp_x);
+    std::mem::swap(z, &mut s.tmp_z);
+    std::mem::swap(c, &mut s.tmp_c);
 }
 
 /// Empirical threshold below which the parallel merge's overhead dominates.
@@ -851,6 +890,115 @@ mod tests {
         let mut empty_c: Vec<Complex64> = vec![];
         sort_phase(&mut empty_x, &mut empty_z, &mut empty_c, 0);
         assert!(empty_x.is_empty());
+    }
+
+    // ---- `sort_rows_with_scratch` (v0.5 S1): migrated from the deleted
+    // ---- `sort_phase_tagged`'s coverage, minus the stability test (an
+    // ---- unstable sort makes no promise about equal-key order).
+
+    /// Sortedness: same fixture as `sort_phase_orders_by_lex_key`, through the
+    /// `Vec`-and-scratch API. Every key here is distinct, so the unstable
+    /// sort's ambiguity on ties never comes into play.
+    #[test]
+    fn sort_rows_with_scratch_orders_by_lex_key() {
+        let mut x: Vec<[u64; 1]> = vec![[1], [0], [0]];
+        let mut z: Vec<[u64; 1]> = vec![[0], [0], [1]];
+        let mut c: Vec<Complex64> = vec![
+            Complex64::new(7.0, 0.0), // X
+            Complex64::new(8.0, 0.0), // I
+            Complex64::new(9.0, 0.0), // Z
+        ];
+        let mut scratch = SortScratch::<1>::default();
+        sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
+        assert_eq!(x, vec![[0u64], [0u64], [1u64]]);
+        assert_eq!(z, vec![[0u64], [1u64], [0u64]]);
+        assert_eq!(
+            c,
+            vec![
+                Complex64::new(8.0, 0.0),
+                Complex64::new(9.0, 0.0),
+                Complex64::new(7.0, 0.0),
+            ]
+        );
+    }
+
+    /// Coefficient-permutation consistency: same fixture as
+    /// `sort_phase_w2_cross_word_priority` — a coefficient must follow its key
+    /// through the permutation, not just land in the right count.
+    #[test]
+    fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
+        let mut x: Vec<[u64; 2]> = vec![[1, 0], [0, 99]];
+        let mut z: Vec<[u64; 2]> = vec![[0, 0], [0, 0]];
+        let mut c: Vec<Complex64> = vec![Complex64::new(11.0, 0.0), Complex64::new(22.0, 0.0)];
+        let mut scratch = SortScratch::<2>::default();
+        sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
+        assert_eq!(x[0], [0, 99]);
+        assert_eq!(c[0], Complex64::new(22.0, 0.0));
+        assert_eq!(x[1], [1, 0]);
+        assert_eq!(c[1], Complex64::new(11.0, 0.0));
+    }
+
+    /// Empty/single-row: `len < 2` is a no-op short-circuit, same as
+    /// `sort_phase_len_lt_2_is_noop`.
+    #[test]
+    fn sort_rows_with_scratch_len_lt_2_is_noop() {
+        let mut x: Vec<[u64; 1]> = vec![[5]];
+        let mut z: Vec<[u64; 1]> = vec![[7]];
+        let mut c: Vec<Complex64> = vec![Complex64::new(1.0, 2.0)];
+        let mut scratch = SortScratch::<1>::default();
+        sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
+        assert_eq!(x[0], [5]);
+        assert_eq!(z[0], [7]);
+        assert_eq!(c[0], Complex64::new(1.0, 2.0));
+
+        let mut empty_x: Vec<[u64; 1]> = vec![];
+        let mut empty_z: Vec<[u64; 1]> = vec![];
+        let mut empty_c: Vec<Complex64> = vec![];
+        sort_rows_with_scratch(&mut empty_x, &mut empty_z, &mut empty_c, &mut scratch);
+        assert!(empty_x.is_empty());
+    }
+
+    /// Repeat-run byte-identity: the same input, sorted twice through the
+    /// same persistent `SortScratch` (mimicking one worker's scratch reused
+    /// across coset tasks), must come out bit-for-bit identical both times —
+    /// including at a duplicate key, where the unstable sort's tie order is
+    /// unspecified but must still be a *deterministic* function of the input.
+    /// This is the structural property thread-count and repeat-run
+    /// determinism actually rest on (see the doc on
+    /// `sort_rows_with_scratch`).
+    #[test]
+    fn sort_rows_with_scratch_is_byte_identical_across_repeated_runs() {
+        let orig_x: Vec<[u64; 1]> = vec![[2], [0], [2], [1]];
+        let orig_z: Vec<[u64; 1]> = vec![[0], [0], [0], [0]]; // (2,0) is a duplicate key
+        let orig_c: Vec<Complex64> = vec![
+            Complex64::new(10.0, 0.0),
+            Complex64::new(20.0, 0.0),
+            Complex64::new(30.0, 0.0),
+            Complex64::new(40.0, 0.0),
+        ];
+
+        let mut scratch = SortScratch::<1>::default();
+        let mut x1 = orig_x.clone();
+        let mut z1 = orig_z.clone();
+        let mut c1 = orig_c.clone();
+        sort_rows_with_scratch(&mut x1, &mut z1, &mut c1, &mut scratch);
+
+        // Reuse the same (now capacity-primed) scratch on a fresh copy of the
+        // same original input.
+        let mut x2 = orig_x.clone();
+        let mut z2 = orig_z.clone();
+        let mut c2 = orig_c.clone();
+        sort_rows_with_scratch(&mut x2, &mut z2, &mut c2, &mut scratch);
+
+        assert_eq!(x1, x2);
+        assert_eq!(z1, z2);
+        assert_eq!(c1, c2);
+        // Sanity: still sorted, and the duplicate key's two rows are exactly
+        // the two coefficients 10.0 and 30.0 (order between them unspecified).
+        assert_eq!(x1, vec![[0], [1], [2], [2]]);
+        let mut tied: Vec<f64> = vec![c1[2].re, c1[3].re];
+        tied.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(tied, vec![10.0, 30.0]);
     }
 
     /// Truncation policy that always keeps terms — exercises the trait bound

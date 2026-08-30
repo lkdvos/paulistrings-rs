@@ -858,13 +858,14 @@ dl.provenance dd { margin: 0; }
 .phase-stats {
   font-size: 0.82em;
   color: #333333;
+  font-variant-numeric: tabular-nums;
   display: grid;
   grid-template-columns: repeat(2, max-content);
   gap: 2px 18px;
   flex-shrink: 0;
 }
 .table-wrap { overflow-x: auto; margin: 10px 0; }
-table { border-collapse: collapse; width: 100%; font-size: 0.88em; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88em; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #eeeeee; white-space: nowrap; }
 th { color: #666666; font-weight: 600; background: #fafafa; }
 .delta-bad { color: #b3261e; font-weight: 600; }

@@ -1,29 +1,36 @@
-//! The bucketed layer engine. See v0.2 design doc §6.
+//! The bucketed layer engine. See v0.2 design doc §6 and v0.3 §2.
 //!
-//! One layer, for each output bucket `β'` independently:
+//! The unit of work is one **coset** of `span(h(D))` in the bucket-index space
+//! (`Gf2Span`): every output bucket in a coset reads only input buckets in
+//! that same coset, so a coset is a closed task that can work **in place** —
+//! its `2^r` bucket columns are swapped into thread scratch, and the emptied
+//! (capacity-retaining) slots become the write destinations. One layer:
 //!
-//! 1. **Size** the scratch exactly, from the lengths of the input buckets this
-//!    output bucket reads. No `n × MAX_FANOUT` over-allocation and no zero-fill.
-//! 2. **Gather** — for each key delta `d`, in canonical order, scan input bucket
-//!    `β' ^ h(d)` and emit `v ⊕ d` with amplitude `amp[support_bits(v)]`.
-//! 3. **Sort** the scratch, reusing `sort_merge::sort_phase`.
-//! 4. **Merge** — segmented reduction with the zero-drop and `keep_term`,
-//!    reusing `sort_merge::merge_into`, writing straight into the destination
-//!    bucket.
+//! 1. **Permute** the bucket *handles* into coset-contiguous order
+//!    (`Gf2Span::perm_index`); two `O(B)` handle moves bracket the layer.
+//! 2. Per coset: **swap** the member columns into scratch, **size** each
+//!    per-member gather run exactly from the swapped-out lengths, **gather**
+//!    input-member-major — each term is loaded once and its whole fanout is
+//!    scattered to runs by the O(1) index identity
+//!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by
+//!    `(key, tag)` and **merge** straight into the member's live slot.
+//! 3. Un-permute the handles, recount, assert invariants.
 //!
-//! Output buckets are write-disjoint (v0.2 §2.4), so steps 2-4 for different `β'`
-//! never interact: the bucket loop is a plain `par_iter_mut` with no atomics, no
-//! locks, and no reconciliation pass. That was the whole point of gathering
-//! rather than scattering (§6.1).
+//! The gather visits each input term exactly once (v0.2 §6.1's `|D| · n` read
+//! amplification is gone), and there is no second full-size buffer: peak memory
+//! is `n` plus per-worker scratch of one coset's working set.
 //!
-//! Phase B established correctness with this loop sequential; C.1 changed exactly
-//! the two iterators and nothing else, which is why the differential and
-//! determinism tests carried over unchanged.
+//! Determinism: cosets are write-disjoint, work within one is sequential, and
+//! duplicate keys are summed in ascending delta order — enforced by the tag
+//! column in `sort_merge::sort_phase_tagged`, not by gather order — so output
+//! is bitwise identical across thread counts *and* bucket counts, exactly as
+//! before (v0.2 §9.1).
 
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::sort_merge::{merge_into, sort_phase};
+use super::coset::Gf2Span;
+use super::sort_merge::{merge_into, sort_phase_tagged};
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -32,51 +39,120 @@ use crate::truncation::TruncationPolicy;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
-/// Reusable per-layer gather scratch.
+/// Reusable per-layer scratch.
 ///
-/// One instance per thread. Held by the caller rather than allocated per layer,
-/// because the whole point of the bucketed layout is that a layer allocates
-/// nothing after the first (v0.2 §4.2).
+/// Held by the caller across layers because a layer must allocate nothing
+/// after the first (v0.2 §4.2): every field retains its high-water capacity
+/// across cosets and layers. The serial path uses the caller's instance
+/// directly; the parallel path gives each Rayon worker its own coset
+/// working set (`CosetScratch`) via `for_each_init`.
 #[derive(Clone, Debug, Default)]
 pub struct LayerScratch<const W: usize> {
-    x: Vec<[u64; W]>,
-    z: Vec<[u64; W]>,
-    coeff: Vec<Complex64>,
+    /// The per-coset working set (serial path).
+    task: CosetScratch<W>,
+    /// The layer's handle permutation, `perm[β] = span.perm_index(β)`.
+    perm: Vec<u32>,
+    /// Staging area the bucket handles are permuted into. Holds handles only
+    /// while a layer runs; its elements carry no capacity of their own.
+    staging: Vec<BucketCols<W>>,
 }
 
 impl<const W: usize> LayerScratch<W> {
     /// An empty scratch.
     pub fn new() -> Self {
-        Self {
-            x: Vec::new(),
-            z: Vec::new(),
-            coeff: Vec::new(),
-        }
+        Self::default()
     }
+}
 
+/// One coset task's working set: the swapped-out input columns and the
+/// per-output-member gather runs.
+#[derive(Clone, Debug, Default)]
+struct CosetScratch<const W: usize> {
+    /// The coset's input columns, one slot per member, `mem::swap`ped with the
+    /// live bucket slots. After the swap the live slots hold these slots'
+    /// previous — cleared, capacity-retaining — columns, which is what makes
+    /// the layer in-place: bucket capacity circulates through here instead of
+    /// through a second full-sum copy.
+    old: Vec<BucketCols<W>>,
+    /// Per-output-member gather runs.
+    runs: Vec<GatherRun<W>>,
+}
+
+/// One output member's gather run: key columns, coefficients, and the delta
+/// tag that `sort_phase_tagged` breaks equal-key ties on.
+#[derive(Clone, Debug, Default)]
+struct GatherRun<const W: usize> {
+    x: Vec<[u64; W]>,
+    z: Vec<[u64; W]>,
+    coeff: Vec<Complex64>,
+    tag: Vec<u8>,
+}
+
+impl<const W: usize> GatherRun<W> {
     #[inline]
     fn reset(&mut self, cap: usize) {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
+        self.tag.clear();
         if self.x.capacity() < cap {
             let extra = cap - self.x.capacity();
             self.x.reserve(extra);
             self.z.reserve(extra);
             self.coeff.reserve(extra);
+            self.tag.reserve(extra);
         }
     }
 
     #[inline]
-    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64, tag: u8) {
         self.x.push(x);
         self.z.push(z);
         self.coeff.push(c);
+        self.tag.push(tag);
     }
 
     #[inline]
     fn len(&self) -> usize {
         self.coeff.len()
+    }
+}
+
+/// A prepared channel's delta set, annotated with each entry's coset
+/// coordinate (`span.coord_of(bucket_delta)`), computed once per layer.
+enum DeltaPlan<'p, const W: usize> {
+    /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`, whose index
+    /// `e` is also the entry's tag (ascending `local_delta` order).
+    Local {
+        ptm: &'p LocalPtm<W>,
+        coords: Vec<u32>,
+    },
+    /// Wide rotation: two implicit entries, tag 0 = identity pass,
+    /// tag 1 = generator pass.
+    Rotation {
+        prep: &'p RotationPrep<W>,
+        coord_identity: u32,
+        coord_gen: u32,
+    },
+}
+
+impl<'p, const W: usize> DeltaPlan<'p, W> {
+    fn new(prep: &'p Prepared<W>, span: &Gf2Span) -> Self {
+        match prep {
+            Prepared::Local(ptm) => DeltaPlan::Local {
+                ptm,
+                coords: ptm
+                    .deltas()
+                    .iter()
+                    .map(|d| span.coord_of(d.bucket_delta))
+                    .collect(),
+            },
+            Prepared::Rotation(r) => DeltaPlan::Rotation {
+                prep: r,
+                coord_identity: span.coord_of(r.bucket_delta_identity),
+                coord_gen: span.coord_of(r.bucket_delta_gen),
+            },
+        }
     }
 }
 
@@ -104,171 +180,203 @@ pub fn apply_layer_bucketed<const W: usize, T>(
         }
     }
 
-    let (input, mut output) = sum.begin_layer();
+    // The coset structure of this layer's bucket-delta set. `span(h(D))`
+    // rather than `h(D)` itself: an open-trait channel's delta set need not be
+    // XOR-closed, and only the span's cosets are guaranteed to partition.
+    let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
+    let plan = DeltaPlan::new(prep, &span);
+    let m = span.coset_size();
+    let num_cosets = span.num_cosets();
 
-    // Iterating the *output* buckets is the parallel decomposition: each task owns
-    // its destination and only reads `input`. `scratch` is used for the
-    // single-threaded path; parallel tasks get their own via `for_each_init`.
-    let input_ref = &input;
-    if output.len() < MIN_BUCKETS_FOR_PARALLEL {
-        for (out_b, dst) in output.iter_mut().enumerate() {
-            fill_bucket::<W, T>(input_ref, out_b, dst, prep, policy, scratch);
+    // Permute the bucket *handles* into coset-contiguous order: coset `c`
+    // owns `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis
+    // coordinate. Handles are three `Vec` headers; the term data never moves.
+    {
+        let buckets = sum.buckets_mut();
+        scratch.perm.clear();
+        scratch
+            .perm
+            .extend((0..buckets.len() as u32).map(|beta| span.perm_index(beta)));
+        scratch
+            .staging
+            .resize_with(buckets.len(), BucketCols::default);
+        for (beta, cols) in buckets.iter_mut().enumerate() {
+            scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
+        }
+    }
+
+    // Each coset is a closed task: it reads and writes only its own chunk, so
+    // the chunk loop needs no atomics, no locks, and no reconciliation pass.
+    // Work within a task is sequential and its summation order is fixed by the
+    // tag sort, so output is byte-identical across thread counts.
+    if num_cosets < MIN_COSETS_FOR_PARALLEL {
+        for chunk in scratch.staging.chunks_mut(m) {
+            fill_coset::<W, T>(chunk, &plan, policy, &mut scratch.task);
         }
     } else {
-        output.par_iter_mut().enumerate().for_each_init(
-            LayerScratch::<W>::new,
-            |local, (out_b, dst)| {
-                fill_bucket::<W, T>(input_ref, out_b, dst, prep, policy, local);
+        scratch.staging.par_chunks_mut(m).for_each_init(
+            CosetScratch::<W>::default,
+            |local, chunk| {
+                fill_coset::<W, T>(chunk, &plan, policy, local);
             },
         );
     }
 
-    sum.end_layer(output, input);
+    // Un-permute: every handle goes back to its bucket index, leaving the
+    // staging slots as empty, capacity-free defaults.
+    {
+        let buckets = sum.buckets_mut();
+        for (beta, cols) in buckets.iter_mut().enumerate() {
+            *cols = std::mem::take(&mut scratch.staging[scratch.perm[beta] as usize]);
+        }
+    }
+    sum.recount();
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
 }
 
-/// Below this many buckets there is nothing to spread, so skip Rayon entirely.
+/// Below this many cosets there is nothing to spread, so skip Rayon entirely.
 ///
 /// `desired_bits` already gives a small sum few buckets, so this mostly catches
-/// the `bits = 0` case where the bucketed path degenerates to a single
-/// whole-sum gather.
-const MIN_BUCKETS_FOR_PARALLEL: usize = 2;
+/// the `bits = 0` case (or `r = bits`), where one coset spans every bucket and
+/// the layer degenerates to a single whole-sum task on the same code path.
+const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
-/// Gather, sort and merge one output bucket. The unit of parallel work.
-fn fill_bucket<const W: usize, T>(
-    input: &[BucketCols<W>],
-    out_b: usize,
-    dst: &mut BucketCols<W>,
-    prep: &Prepared<W>,
+/// Gather, sort and merge one coset, in place. The unit of parallel work.
+///
+/// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis
+/// coordinate, serving as both input source and output destination.
+fn fill_coset<const W: usize, T>(
+    chunk: &mut [BucketCols<W>],
+    plan: &DeltaPlan<'_, W>,
     policy: &T,
-    scratch: &mut LayerScratch<W>,
+    ws: &mut CosetScratch<W>,
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let cap = gather_capacity(input, out_b, prep);
-    scratch.reset(cap);
-    match prep {
-        Prepared::Local(ptm) => gather_local(input, out_b, ptm, scratch),
-        Prepared::Rotation(r) => gather_rotation(input, out_b, r, scratch),
+    let m = chunk.len();
+    let CosetScratch { old, runs } = ws;
+    old.resize_with(m, BucketCols::default);
+    runs.resize_with(m, GatherRun::default);
+
+    // Swap the coset's columns out. The chunk slots inherit this scratch's
+    // cleared, capacity-retaining columns and become the write destinations —
+    // capacities circulate between buckets across cosets, which holds the
+    // steady state allocation-free in aggregate.
+    for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
+        std::mem::swap(slot, cols);
+        slot.clear();
     }
-    debug_assert!(scratch.len() <= cap, "gather exceeded its computed bound");
 
-    let len = scratch.len();
-    sort_phase(&mut scratch.x, &mut scratch.z, &mut scratch.coeff, len);
-
-    merge_into::<W, T>(
-        &scratch.x,
-        &scratch.z,
-        &scratch.coeff,
-        0,
-        len,
-        &mut dst.x,
-        &mut dst.z,
-        &mut dst.coeff,
-        policy,
-    );
-}
-
-/// Exact upper bound on the gather for one output bucket: the total size of the
-/// input buckets it reads, counted once per delta.
-fn gather_capacity<const W: usize>(
-    input: &[BucketCols<W>],
-    out_b: usize,
-    prep: &Prepared<W>,
-) -> usize {
-    match prep {
-        Prepared::Local(ptm) => ptm
-            .deltas()
-            .iter()
-            .map(|d| input[out_b ^ d.bucket_delta as usize].len())
-            .sum(),
-        Prepared::Rotation(r) => {
-            input[out_b ^ r.bucket_delta_identity as usize].len()
-                + input[out_b ^ r.bucket_delta_gen as usize].len()
-        }
-    }
-}
-
-/// The tabulated inner loop (v0.2 §2.6): one lookup on ≤ 4 extracted bits, one
-/// XOR with a precomputed mask, one complex multiply.
-///
-/// Deltas are visited in `local_delta` order, never grouped by input bucket.
-/// Grouping would give better locality, but the group order depends on `H·d` and
-/// hence on the bucket count, while duplicate-key summation order is observable
-/// through floating-point non-associativity. This order is bucket-count
-/// independent (v0.2 §9.1).
-fn gather_local<const W: usize>(
-    input: &[BucketCols<W>],
-    out_b: usize,
-    ptm: &LocalPtm<W>,
-    scratch: &mut LayerScratch<W>,
-) {
-    for d in ptm.deltas() {
-        let src = &input[out_b ^ d.bucket_delta as usize];
-        for i in 0..src.len() {
-            let s = ptm.support_bits(&src.x[i], &src.z[i]);
-            let a = d.amp[s];
-            if a == ZERO {
-                continue;
+    // Exact per-run capacity, counted once per delta entry — two entries
+    // colliding on one bucket delta count twice, matching the rows they can
+    // emit.
+    for (j, run) in runs.iter_mut().enumerate() {
+        let cap: usize = match plan {
+            DeltaPlan::Local { coords, .. } => {
+                coords.iter().map(|&c| old[j ^ c as usize].len()).sum()
             }
-            let mut kx = src.x[i];
-            let mut kz = src.z[i];
-            for w in 0..W {
-                kx[w] ^= d.mask_x[w];
-                kz[w] ^= d.mask_z[w];
-            }
-            scratch.push(kx, kz, src.coeff[i] * a);
-        }
+            DeltaPlan::Rotation {
+                coord_identity,
+                coord_gen,
+                ..
+            } => old[j ^ *coord_identity as usize].len() + old[j ^ *coord_gen as usize].len(),
+        };
+        run.reset(cap);
     }
-}
 
-/// Gather for a rotation whose generator is too wide to tabulate.
-///
-/// The delta set is still `{0, P}`, so only two buckets are read at any
-/// generator weight — but the `i^k` phase depends on `2w` support bits, so it is
-/// computed per term. `cos`/`sin` are hoisted (v0.1 recomputed them per term).
-/// Delta `0` is visited before delta `P`, matching the canonical `local_delta`
-/// order used by [`gather_local`].
-fn gather_rotation<const W: usize>(
-    input: &[BucketCols<W>],
-    out_b: usize,
-    r: &RotationPrep<W>,
-    scratch: &mut LayerScratch<W>,
-) {
-    // Delta 0: the input key survives, scaled by 1 (commuting) or cos (not).
-    {
-        let src = &input[out_b ^ r.bucket_delta_identity as usize];
-        for i in 0..src.len() {
-            let v = PauliString::<W> {
-                x: src.x[i],
-                z: src.z[i],
-            };
-            let c = if v.commutes_with(&r.gen) {
-                src.coeff[i]
-            } else {
-                src.coeff[i] * r.cos
-            };
-            scratch.push(src.x[i], src.z[i], c);
+    // Gather, input-member-major: each term is loaded once and its whole
+    // fanout is scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`. The
+    // arithmetic per row is identical to the per-output-bucket gather this
+    // replaces; only the visit order changed, and the tag sort makes that
+    // order unobservable (v0.2 §9.1).
+    match plan {
+        DeltaPlan::Local { ptm, coords } => {
+            for (i, src) in old.iter().enumerate() {
+                for t in 0..src.len() {
+                    let s = ptm.support_bits(&src.x[t], &src.z[t]);
+                    for (e, d) in ptm.deltas().iter().enumerate() {
+                        let a = d.amp[s];
+                        if a == ZERO {
+                            continue;
+                        }
+                        let mut kx = src.x[t];
+                        let mut kz = src.z[t];
+                        for w in 0..W {
+                            kx[w] ^= d.mask_x[w];
+                            kz[w] ^= d.mask_z[w];
+                        }
+                        runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a, e as u8);
+                    }
+                }
+            }
+        }
+        DeltaPlan::Rotation {
+            prep,
+            coord_identity,
+            coord_gen,
+        } => {
+            // Tag 0 = the identity pass, tag 1 = the generator pass, matching
+            // the canonical `local_delta` order (0 before P). `cos`/`sin` stay
+            // hoisted; the `i^k` phase depends on 2w support bits and is
+            // computed per anticommuting term, exactly as before.
+            for (i, src) in old.iter().enumerate() {
+                for t in 0..src.len() {
+                    let v = PauliString::<W> {
+                        x: src.x[t],
+                        z: src.z[t],
+                    };
+                    if v.commutes_with(&prep.gen) {
+                        runs[i ^ *coord_identity as usize].push(
+                            src.x[t],
+                            src.z[t],
+                            src.coeff[t],
+                            0,
+                        );
+                    } else {
+                        runs[i ^ *coord_identity as usize].push(
+                            src.x[t],
+                            src.z[t],
+                            src.coeff[t] * prep.cos,
+                            0,
+                        );
+                        let mut prod = v;
+                        let phase = prod.mul_assign(&prep.gen);
+                        let total = Phase::I + phase;
+                        runs[i ^ *coord_gen as usize].push(
+                            prod.x,
+                            prod.z,
+                            total.apply(src.coeff[t]) * prep.sin,
+                            1,
+                        );
+                    }
+                }
+            }
         }
     }
-    // Delta P: only anticommuting inputs contribute.
-    {
-        let src = &input[out_b ^ r.bucket_delta_gen as usize];
-        for i in 0..src.len() {
-            let v = PauliString::<W> {
-                x: src.x[i],
-                z: src.z[i],
-            };
-            if v.commutes_with(&r.gen) {
-                continue;
-            }
-            let mut prod = v;
-            let phase = prod.mul_assign(&r.gen);
-            let total = Phase::I + phase;
-            scratch.push(prod.x, prod.z, total.apply(src.coeff[i]) * r.sin);
-        }
+
+    // Sort each run by (key, tag) and merge into the member's live slot.
+    for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
+        let len = run.len();
+        sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
+        merge_into::<W, T>(
+            &run.x,
+            &run.z,
+            &run.coeff,
+            0,
+            len,
+            &mut dst.x,
+            &mut dst.z,
+            &mut dst.coeff,
+            policy,
+        );
+    }
+
+    // Leave `old` cleared so the next coset's swap hands its chunk clean,
+    // capacity-retaining columns. Runs are cleared by their own `reset`.
+    for cols in old.iter_mut() {
+        cols.clear();
     }
 }
 
@@ -797,15 +905,46 @@ mod tests {
 
     // ---- determinism ----
 
+    /// sqrt(SWAP) on two qubits: a wide delta set whose outputs can merge
+    /// three or more contributions into one key. That is the only regime
+    /// where the accumulation *order* is observable at all — with at most
+    /// two summands, float addition is commutative and any order gives the
+    /// same bits — so a determinism test without a channel like this cannot
+    /// see the delta-index tiebreak in the per-bucket sort.
+    fn sqrt_swap_w1(a: u32, b: u32) -> crate::channel::GeneralUnitary2Q {
+        let h = Complex64::new(0.5, 0.5);
+        let hc = Complex64::new(0.5, -0.5);
+        let one = Complex64::new(1.0, 0.0);
+        let zero = Complex64::new(0.0, 0.0);
+        crate::channel::GeneralUnitary2Q::from_matrix(
+            a,
+            b,
+            [
+                [one, zero, zero, zero],
+                [zero, h, hc, zero],
+                [zero, hc, h, zero],
+                [zero, zero, zero, one],
+            ],
+        )
+    }
+
     #[test]
     fn output_is_bitwise_identical_across_bucket_counts() {
         // The strong form of v0.2 §9.1: not merely close, but *bitwise* equal,
-        // which is what the canonical `local_delta` gather order buys. A
-        // group-by-bucket gather order would break this.
+        // which is what the canonical `local_delta` accumulation order buys.
+        // The GeneralUnitary2Q case is load-bearing: rotations and Cliffords
+        // merge at most two contributions per key, where any order is
+        // bitwise-equal by commutativity, so only a wide-delta channel can
+        // catch an ordering regression (see `sqrt_swap_w1`).
         let input = rand_sum::<1>(2000, 8, 0x9001);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let cnot = Clifford2Q::cnot(1, 5);
-        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
+        let gu2q = sqrt_swap_w1(1, 5);
+        for ch in [
+            &rot as &dyn Channel<1>,
+            &cnot as &dyn Channel<1>,
+            &gu2q as &dyn Channel<1>,
+        ] {
             let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 0, 0x51);
             for bits in [1u8, 2, 3, 5, 8, 11] {
                 let got = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x51);
@@ -817,13 +956,17 @@ mod tests {
     #[test]
     fn output_is_bitwise_identical_across_hash_seeds() {
         // A different `H` permutes which terms share a bucket but must not
-        // change the arithmetic.
+        // change the arithmetic. The GeneralUnitary2Q case is load-bearing
+        // for the same reason as in the bucket-count test above.
         let input = rand_sum::<1>(2000, 8, 0x9002);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let reference = bucketed_layer(&input, &rot, &AlwaysKeep, false, 6, 1);
-        for seed in [2u64, 3, 5, 8, 13, 21] {
-            let got = bucketed_layer(&input, &rot, &AlwaysKeep, false, 6, seed);
-            assert_same_terms(&got, &reference, &format!("seed={seed}"));
+        let gu2q = sqrt_swap_w1(1, 5);
+        for ch in [&rot as &dyn Channel<1>, &gu2q as &dyn Channel<1>] {
+            let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, 1);
+            for seed in [2u64, 3, 5, 8, 13, 21] {
+                let got = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, seed);
+                assert_same_terms(&got, &reference, &format!("seed={seed}"));
+            }
         }
     }
 
@@ -890,12 +1033,406 @@ mod tests {
         assert_terms_close(&b, &want, TOL, "layer, rebucket, layer");
     }
 
+    // ---- the fingerprint net (v0.3 §2, slice C0) ----
+
+    /// FNV-1a over the eight little-endian bytes of one `u64`.
+    ///
+    /// Written out rather than pulled from a crate so the constant stays part
+    /// of the test: the hardcoded fingerprints below are only meaningful next
+    /// to the exact mix that produced them.
+    fn fnv_fold(h: u64, v: u64) -> u64 {
+        let mut h = h;
+        for b in v.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    /// A u64 digest of the sum's *exact bits*, in canonical key order.
+    ///
+    /// Goes through [`canonical_triples`], hence only through the public
+    /// `iter()`, so it is blind to how the sum is partitioned or stored: the
+    /// digest depends on the term set and the coefficient bit patterns, and on
+    /// nothing else. Coefficients are folded as `f64::to_bits`, so a change of
+    /// one ULP — a different summation order for duplicate keys, say — moves
+    /// the digest.
+    fn layer_fingerprint<const W: usize>(s: &PauliSum<W>) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        h = fnv_fold(h, s.len() as u64);
+        for (x, z, c) in canonical_triples(s) {
+            for &w in x.iter().chain(z.iter()) {
+                h = fnv_fold(h, w);
+            }
+            h = fnv_fold(h, c.re.to_bits());
+            h = fnv_fold(h, c.im.to_bits());
+        }
+        h
+    }
+
+    /// The channels in the fingerprint net: one per prepared-path shape.
+    ///
+    /// `Clifford1Q::h` (2 deltas), `Clifford2Q::cnot` and `::swap` (4 deltas,
+    /// different tables), `GeneralUnitary2Q` (up to 16 deltas — the case §2's
+    /// coset walk changes most), a weight-2 `PauliRotation` (local PTM path), a
+    /// weight-4 `PauliRotation` (the `RotationPrep` path), `Depolarizing` (the
+    /// key-preserving `rescale_in_place` path) and `AmplitudeDamping`.
+    fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
+        vec![
+            ("clifford1q_h", Box::new(Clifford1Q::h(3))),
+            ("clifford2q_cnot", Box::new(Clifford2Q::cnot(1, 5))),
+            ("clifford2q_swap", Box::new(Clifford2Q::swap(1, 5))),
+            (
+                // sqrt(SWAP): non-Clifford, and dense enough to realize a wide
+                // delta set rather than collapsing to a permutation.
+                "general_unitary2q",
+                Box::new({
+                    let h = Complex64::new(0.5, 0.5);
+                    let hc = Complex64::new(0.5, -0.5);
+                    let one = Complex64::new(1.0, 0.0);
+                    let zero = Complex64::new(0.0, 0.0);
+                    crate::channel::GeneralUnitary2Q::from_matrix(
+                        1,
+                        5,
+                        [
+                            [one, zero, zero, zero],
+                            [zero, h, hc, zero],
+                            [zero, hc, h, zero],
+                            [zero, zero, zero, one],
+                        ],
+                    )
+                }),
+            ),
+            (
+                "rotation_zz",
+                Box::new(PauliRotation::new(
+                    {
+                        let mut g = PauliString::<2>::z(1);
+                        g.mul_assign(&PauliString::<2>::z(6));
+                        g
+                    },
+                    0.41,
+                )),
+            ),
+            (
+                // Weight 4 > MAX_LOCAL_SUPPORT, so this takes `gather_rotation`.
+                "rotation_w4",
+                Box::new(PauliRotation::new(
+                    {
+                        let mut g = PauliString::<2>::z(0);
+                        for q in [2u32, 4, 7] {
+                            g.mul_assign(&PauliString::<2>::x(q));
+                        }
+                        g
+                    },
+                    0.41,
+                )),
+            ),
+            (
+                "depolarizing",
+                Box::new(Depolarizing {
+                    support: [2],
+                    p: 0.07,
+                }),
+            ),
+            (
+                "amp_damping",
+                Box::new(AmplitudeDamping {
+                    support: [2],
+                    gamma: 0.3,
+                }),
+            ),
+        ]
+    }
+
+    /// Every `(channel, direction, bits)` fingerprint the current engine
+    /// produces, pinned to a literal. Order matches `fingerprint_channels`.
+    const LAYER_FINGERPRINTS: &[(&str, bool, u8, u64)] = &[
+        ("clifford1q_h", false, 2, 0x8a01_7283_1dac_9905),
+        ("clifford1q_h", false, 5, 0x8a01_7283_1dac_9905),
+        ("clifford1q_h", true, 2, 0x8a01_7283_1dac_9905),
+        ("clifford1q_h", true, 5, 0x8a01_7283_1dac_9905),
+        ("clifford2q_cnot", false, 2, 0x8d22_5efb_4856_044f),
+        ("clifford2q_cnot", false, 5, 0x8d22_5efb_4856_044f),
+        ("clifford2q_cnot", true, 2, 0x8d22_5efb_4856_044f),
+        ("clifford2q_cnot", true, 5, 0x8d22_5efb_4856_044f),
+        ("clifford2q_swap", false, 2, 0x5fe9_a80d_62af_1da9),
+        ("clifford2q_swap", false, 5, 0x5fe9_a80d_62af_1da9),
+        ("clifford2q_swap", true, 2, 0x5fe9_a80d_62af_1da9),
+        ("clifford2q_swap", true, 5, 0x5fe9_a80d_62af_1da9),
+        ("general_unitary2q", false, 2, 0x6a89_211e_1337_0d4b),
+        ("general_unitary2q", false, 5, 0x6a89_211e_1337_0d4b),
+        ("general_unitary2q", true, 2, 0x54b3_481c_3682_b7db),
+        ("general_unitary2q", true, 5, 0x54b3_481c_3682_b7db),
+        ("rotation_zz", false, 2, 0x79b5_287d_69fe_3049),
+        ("rotation_zz", false, 5, 0x79b5_287d_69fe_3049),
+        ("rotation_zz", true, 2, 0x0888_9337_8137_9549),
+        ("rotation_zz", true, 5, 0x0888_9337_8137_9549),
+        ("rotation_w4", false, 2, 0xd22c_2678_5d1a_6ec7),
+        ("rotation_w4", false, 5, 0xd22c_2678_5d1a_6ec7),
+        ("rotation_w4", true, 2, 0xda87_ea29_d292_f0c7),
+        ("rotation_w4", true, 5, 0xda87_ea29_d292_f0c7),
+        ("depolarizing", false, 2, 0x0c2d_0f88_a7cb_3051),
+        ("depolarizing", false, 5, 0x0c2d_0f88_a7cb_3051),
+        ("depolarizing", true, 2, 0x0c2d_0f88_a7cb_3051),
+        ("depolarizing", true, 5, 0x0c2d_0f88_a7cb_3051),
+        ("amp_damping", false, 2, 0xd3cf_d844_cd3d_2be8),
+        ("amp_damping", false, 5, 0xd3cf_d844_cd3d_2be8),
+        ("amp_damping", true, 2, 0x8b0f_59fb_c452_c0bf),
+        ("amp_damping", true, 5, 0x8b0f_59fb_c452_c0bf),
+    ];
+
+    /// Exact-bit characterization of one bucketed layer, across every
+    /// prepared-path shape, both directions and two bucket counts.
+    ///
+    /// The §2 coset rewrite must reproduce these EXACT u64s — a later red
+    /// fingerprint means the rewrite changed observable bits and must be
+    /// analyzed, never regenerated.
+    ///
+    /// The differential tests above compare against the v0.1 oracle to a
+    /// tolerance, which is the right net for "is the answer correct". This one
+    /// is the complementary net: it says nothing about correctness and
+    /// everything about *stability*, catching a reordered gather that stays
+    /// within tolerance but silently changes what users get.
+    #[test]
+    fn layer_fingerprints_are_stable() {
+        let input = rand_sum::<2>(2000, 10, 0xC05E7);
+        let channels = fingerprint_channels();
+        let mut got: Vec<(&str, bool, u8, u64)> = Vec::new();
+        for (name, ch) in &channels {
+            let cr: &dyn Channel<2> = ch.as_ref();
+            for &adjoint in &[false, true] {
+                for &bits in &[2u8, 5] {
+                    let out = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xF17E);
+                    got.push((name, adjoint, bits, layer_fingerprint(&out)));
+                }
+            }
+        }
+
+        // Printed so a deliberate re-pin is a copy-paste, never a guess. Run
+        // with `--nocapture` to see it.
+        for &(name, adjoint, bits, fp) in &got {
+            println!("(\"{name}\", {adjoint}, {bits}, {fp:#018x}),");
+        }
+
+        assert_eq!(
+            got.len(),
+            LAYER_FINGERPRINTS.len(),
+            "the net and the pinned table cover different cases"
+        );
+        for (g, w) in got.iter().zip(LAYER_FINGERPRINTS.iter()) {
+            assert_eq!(
+                (g.0, g.1, g.2),
+                (w.0, w.1, w.2),
+                "the net and the pinned table are out of order"
+            );
+            assert_eq!(
+                g.3, w.3,
+                "fingerprint changed for {} adjoint={} bits={}: {:#018x} != {:#018x}",
+                g.0, g.1, g.2, g.3, w.3,
+            );
+        }
+    }
+
     #[test]
     fn an_empty_sum_survives_a_layer() {
         let input = PauliSum::<1>::empty(8);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
         let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
         assert!(out.is_empty());
+    }
+
+    /// `bits = 0` means every bucket delta is 0, the span is trivial, and the
+    /// whole sum is one coset processed as a single serial task — the small-sum
+    /// degenerate case runs on the same code path, not a special one.
+    #[test]
+    fn single_bucket_sum_is_one_serial_coset() {
+        let input = rand_sum::<1>(600, 8, 0xB1);
+        for ch in [
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<1>::z(1);
+                    g.mul_assign(&PauliString::<1>::z(5));
+                    g
+                },
+                0.37,
+            )) as Box<dyn Channel<1>>,
+            Box::new(Clifford2Q::cnot(2, 6)),
+        ] {
+            let got = bucketed_layer(&input, ch.as_ref(), &AlwaysKeep, false, 0, 0xEE);
+            assert_eq!(got.num_buckets(), 1);
+            let want = apply_layer(&input, ch.as_ref(), &AlwaysKeep);
+            assert_same_terms(&got, &want, "bits=0 single coset");
+        }
+    }
+
+    /// A wide rotation whose generator hashes to bucket delta 0: the span is
+    /// trivial (`r = 0`), each coset is a single bucket, and both passes gather
+    /// the same swapped-out bucket — the tag sort alone restores the canonical
+    /// identity-before-generator order.
+    #[test]
+    fn wide_rotation_with_colliding_bucket_delta() {
+        // Weight-4 generator, wider than MAX_LOCAL_SUPPORT, so it prepares as
+        // Prepared::Rotation.
+        let mut gen = PauliString::<1>::z(0);
+        for q in [2u32, 4, 6] {
+            gen.mul_assign(&PauliString::<1>::x(q));
+        }
+        let rot = PauliRotation::new(gen, 0.53);
+        let input = rand_sum::<1>(800, 8, 0xC0111);
+
+        // Find a seed whose 3-bit hash sends the generator's key delta to
+        // bucket 0, which is exactly the H·P = 0 collision.
+        let bits = 3u8;
+        let mut chosen = None;
+        for seed in 0u64..4096 {
+            let hash = Gf2Hash::<1>::new(8, bits, seed);
+            if hash.bucket_of(&gen.x, &gen.z) == 0 {
+                chosen = Some(seed);
+                break;
+            }
+        }
+        let seed = chosen.expect("no seed with H·P = 0 in 4096 tries");
+
+        let hash = Gf2Hash::<1>::new(8, bits, seed);
+        let mut b = input.clone().with_hash(hash);
+        let prep = rot.prepare(b.hash(), false).unwrap();
+        match &prep {
+            Prepared::Rotation(r) => {
+                assert_eq!(
+                    r.bucket_delta_gen, r.bucket_delta_identity,
+                    "seed search failed to produce the collision"
+                );
+            }
+            _ => panic!("weight-4 rotation must prepare as Rotation"),
+        }
+        let mut scratch = LayerScratch::<1>::new();
+        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+
+        let want = apply_layer(&input, &rot, &AlwaysKeep);
+        assert_same_terms(&b, &want, "H·P = 0 collision");
+    }
+
+    /// One `LayerScratch` serves layers of every prepared shape back to back —
+    /// the coset scratch is shape-agnostic and only ever grows.
+    #[test]
+    fn in_place_layers_share_one_scratch_across_channel_types() {
+        let input = rand_sum::<2>(1500, 10, 0x5CA7C4);
+        let rot = PauliRotation::new(
+            {
+                let mut g = PauliString::<2>::z(1);
+                g.mul_assign(&PauliString::<2>::x(7));
+                g
+            },
+            0.29,
+        );
+        let cnot = Clifford2Q::cnot(3, 8);
+        let h = Complex64::new(0.5, 0.5);
+        let hc = Complex64::new(0.5, -0.5);
+        let one = Complex64::new(1.0, 0.0);
+        let zero = Complex64::new(0.0, 0.0);
+        let gu2q = crate::channel::GeneralUnitary2Q::from_matrix(
+            2,
+            6,
+            [
+                [one, zero, zero, zero],
+                [zero, h, hc, zero],
+                [zero, hc, h, zero],
+                [zero, zero, zero, one],
+            ],
+        );
+        let channels: [&dyn Channel<2>; 3] = [&rot, &cnot, &gu2q];
+
+        let hash = Gf2Hash::<2>::new(10, 5, 0xD00D);
+        let mut b = input.clone().with_hash(hash);
+        let mut scratch = LayerScratch::<2>::new();
+        let mut want = input;
+        for ch in channels {
+            let prep = ch.prepare(b.hash(), false).unwrap();
+            apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+            want = apply_layer(&want, ch, &AlwaysKeep);
+        }
+        assert_same_terms(&b, &want, "rot → cnot → gu2q through one scratch");
+    }
+
+    /// After the working set stops growing, repeated layers allocate nothing:
+    /// the total capacity held by the buckets and the scratch is identical
+    /// after layer `k` and layer `k + 1`.
+    #[test]
+    fn capacity_stabilizes_across_repeated_layers() {
+        let input = rand_sum::<1>(2000, 10, 0xCAFE);
+        let hash = Gf2Hash::<1>::new(10, 4, 0xF00);
+        let mut b = input.with_hash(hash);
+        let hgate = Clifford1Q::h(3);
+        let prep = hgate.prepare(b.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<1>::new();
+
+        let total_capacity = |s: &PauliSum<1>, sc: &LayerScratch<1>| -> usize {
+            let bucket_cap: usize = (0..s.num_buckets())
+                .map(|i| {
+                    let (x, _, _) = s.bucket(i);
+                    // Capacity is not observable through the slice view; go
+                    // through len as a proxy for the data, and measure the
+                    // scratch's real capacities, which are where growth lands.
+                    x.len()
+                })
+                .sum();
+            let old_cap: usize = sc.task.old.iter().map(|c| c.x.capacity()).sum();
+            let run_cap: usize = sc.task.runs.iter().map(|r| r.x.capacity()).sum();
+            bucket_cap + old_cap + run_cap + sc.perm.capacity() + sc.staging.capacity()
+        };
+
+        let mut snapshots = Vec::new();
+        for _ in 0..4 {
+            apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+            snapshots.push(total_capacity(&b, &scratch));
+        }
+        assert_eq!(
+            snapshots[2], snapshots[3],
+            "scratch/bucket footprint still growing at layer 4: {snapshots:?}"
+        );
+    }
+
+    /// A channel whose delta set is **not** XOR-closed: `{0, a, b}` with
+    /// `a ⊕ b` absent. `h(D)` is then not a subspace, and only the *span*'s
+    /// cosets partition the bucket space — a legal `Channel` impl that would
+    /// silently lose terms if the engine grouped by `h(D)` directly.
+    #[test]
+    fn coset_path_is_correct_for_a_non_subspace_delta_set() {
+        struct ThreeDeltas;
+        impl<const W: usize> Channel<W> for ThreeDeltas {
+            fn max_fanout(&self) -> usize {
+                3
+            }
+            fn support(&self) -> [u64; W] {
+                crate::channel::support_mask(&[0, 1])
+            }
+            fn apply(
+                &self,
+                input_x: &[u64; W],
+                input_z: &[u64; W],
+                coeff: Complex64,
+                out: &mut crate::channel::OutputBuffer<'_, W>,
+            ) {
+                // v (0.5) + v⊕x₀ (0.3) + v⊕x₁ (0.2): key deltas {0, a, b}
+                // with a ⊕ b = x₀x₁ never emitted.
+                out.push(*input_x, *input_z, coeff * 0.5);
+                let mut xa = *input_x;
+                xa[0] ^= 1;
+                out.push(xa, *input_z, coeff * 0.3);
+                let mut xb = *input_x;
+                xb[0] ^= 2;
+                out.push(xb, *input_z, coeff * 0.2);
+            }
+        }
+
+        let ch = ThreeDeltas;
+        let input = rand_sum::<1>(1200, 8, 0xAB5EA7);
+        let want = apply_layer(&input, &ch, &AlwaysKeep);
+        for bits in [0u8, 2, 5] {
+            let got = bucketed_layer(&input, &ch, &AlwaysKeep, false, bits, 0x7EA);
+            assert_same_terms(&got, &want, &format!("non-subspace deltas, bits={bits}"));
+        }
     }
 }
 
@@ -1096,7 +1633,7 @@ mod tie_tests {
         let cnot = crate::channel::clifford::Clifford2Q::cnot(1, 5);
 
         for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
-            // 64 buckets: comfortably above MIN_BUCKETS_FOR_PARALLEL, so the
+            // 64 buckets: comfortably above MIN_COSETS_FOR_PARALLEL, so the
             // parallel path is genuinely exercised.
             let run = |threads: usize| {
                 rayon::ThreadPoolBuilder::new()

@@ -35,23 +35,24 @@ use num_complex::Complex64;
 /// use paulistrings::{Channel, PauliString};
 ///
 /// let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_4);
-/// assert_eq!(rot.support(), &[0]);
+/// assert_eq!(Channel::<1>::support(&rot), [1u64 << 0]);
 /// assert_eq!(rot.weight(), 1);
 ///
 /// // A Y generator is one qubit of support, not two, even though it sets both
 /// // an x-bit and a z-bit.
 /// let rot_y = PauliRotation::new(PauliString::<1>::y(5), 0.1);
-/// assert_eq!(rot_y.support(), &[5]);
+/// assert_eq!(Channel::<1>::support(&rot_y), [1u64 << 5]);
 ///
 /// // Weight is the generator's Pauli weight, at any support size.
 /// let mut zz = PauliString::<1>::z(3);
 /// zz.mul_assign(&PauliString::<1>::z(9));
-/// assert_eq!(PauliRotation::new(zz, 0.1).support(), &[3, 9]);
+/// assert_eq!(
+///     Channel::<1>::support(&PauliRotation::new(zz, 0.1)),
+///     [(1u64 << 3) | (1u64 << 9)]
+/// );
 /// ```
 #[derive(Clone, Debug)]
 pub struct PauliRotation<const W: usize> {
-    /// Qubits the generator `P` acts on, ascending. Derived from the generator.
-    support: Vec<u32>,
     /// X-part of the generator `P`.
     gen_x: [u64; W],
     /// Z-part of the generator `P`.
@@ -67,17 +68,7 @@ impl<const W: usize> PauliRotation<W> {
     /// is non-identity there, i.e. iff `x_q | z_q`. A `Y` contributes one qubit,
     /// not two.
     pub fn new(gen: PauliString<W>, theta: f64) -> Self {
-        let mut support = Vec::new();
-        for w in 0..W {
-            let mut live = gen.x[w] | gen.z[w];
-            while live != 0 {
-                let bit = live.trailing_zeros();
-                support.push((64 * w) as u32 + bit);
-                live &= live - 1;
-            }
-        }
         Self {
-            support,
             gen_x: gen.x,
             gen_z: gen.z,
             theta,
@@ -102,7 +93,7 @@ impl<const W: usize> PauliRotation<W> {
     /// Number of qubits in the support, i.e. the generator's Pauli weight.
     #[inline]
     pub fn weight(&self) -> usize {
-        self.support.len()
+        self.generator().weight() as usize
     }
 
     /// Shared body of `apply` and `apply_adjoint`. The adjoint of
@@ -154,8 +145,8 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        core::array::from_fn(|w| self.gen_x[w] | self.gen_z[w])
     }
 
     #[inline]
@@ -213,7 +204,7 @@ mod tests {
     #[test]
     fn support_is_derived_from_a_weight_one_generator() {
         let rot = PauliRotation::new(PauliString::<1>::z(7), 0.3);
-        assert_eq!(rot.support(), &[7]);
+        assert_eq!(Channel::<1>::support(&rot), [1u64 << 7]);
         assert_eq!(rot.weight(), 1);
     }
 
@@ -222,7 +213,7 @@ mod tests {
         let mut gen = PauliString::<1>::z(2);
         gen.mul_assign(&PauliString::<1>::z(5));
         let rot = PauliRotation::new(gen, 0.3);
-        assert_eq!(rot.support(), &[2, 5]);
+        assert_eq!(Channel::<1>::support(&rot), [(1u64 << 2) | (1u64 << 5)]);
         assert_eq!(rot.weight(), 2);
     }
 
@@ -231,7 +222,7 @@ mod tests {
         // Y sets both the x-bit and the z-bit of a single qubit. Counting bits
         // instead of qubits would report weight 2 and extract the wrong support.
         let rot = PauliRotation::new(PauliString::<1>::y(11), 0.3);
-        assert_eq!(rot.support(), &[11]);
+        assert_eq!(Channel::<1>::support(&rot), [1u64 << 11]);
         assert_eq!(rot.weight(), 1);
     }
 
@@ -241,24 +232,24 @@ mod tests {
         gen.mul_assign(&PauliString::<2>::z(70));
         gen.mul_assign(&PauliString::<2>::y(64));
         let rot = PauliRotation::new(gen, 0.3);
-        // Ascending overall: word 0 bits first, then word 1.
-        assert_eq!(rot.support(), &[5, 64, 70]);
+        // Qubit 70 (word 1, bit 6) lands in mask[1], alongside qubit 64 (bit 0).
+        assert_eq!(
+            Channel::<2>::support(&rot),
+            [1u64 << 5, (1u64 << 0) | (1u64 << 6)]
+        );
         assert_eq!(rot.weight(), 3);
     }
 
     #[test]
-    fn support_is_ascending_and_deduplicated() {
+    fn support_is_deduplicated_across_x_and_z() {
         // Mixed x/z on overlapping qubits: q3 gets both an X and a Z (making a
-        // Y), so it must appear exactly once.
+        // Y), so it must appear as a single set bit, not double-counted.
         let mut gen = PauliString::<1>::x(3);
         gen.mul_assign(&PauliString::<1>::z(3));
         gen.mul_assign(&PauliString::<1>::x(1));
         let rot = PauliRotation::new(gen, 0.3);
-        assert_eq!(rot.support(), &[1, 3]);
-        let mut sorted = rot.support().to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.as_slice(), rot.support());
+        assert_eq!(Channel::<1>::support(&rot), [(1u64 << 1) | (1u64 << 3)]);
+        assert_eq!(rot.weight(), 2);
     }
 
     #[test]
@@ -266,8 +257,38 @@ mod tests {
         // Degenerate but representable: exp(-i*theta*I/2) is a global phase, so
         // it commutes with everything and fanout collapses to 1.
         let rot = PauliRotation::new(PauliString::<1>::identity(), 0.3);
-        assert!(rot.support().is_empty());
+        assert_eq!(Channel::<1>::support(&rot), [0u64]);
         assert_eq!(rot.weight(), 0);
+    }
+
+    /// The mask form directly: bit `q` set in `support()` iff qubit `q` is
+    /// non-identity in the generator (`gen_x[w] | gen_z[w]` per word).
+    #[test]
+    fn rotation_support_is_generator_mask() {
+        let mut gen = PauliString::<2>::z(3);
+        gen.mul_assign(&PauliString::<2>::x(70));
+        let rot = PauliRotation::new(gen, 0.7);
+        assert_eq!(
+            Channel::<2>::support(&rot),
+            [gen.x[0] | gen.z[0], gen.x[1] | gen.z[1]]
+        );
+    }
+
+    /// `weight()` is the popcount of the generator's support mask, at any
+    /// generator weight (including above `MAX_LOCAL_SUPPORT`).
+    #[test]
+    fn rotation_weight_is_popcount() {
+        for n in 0..=5u32 {
+            let mut gen = PauliString::<1>::identity();
+            for q in 0..n {
+                gen.mul_assign(&PauliString::<1>::z(q * 10));
+            }
+            let rot = PauliRotation::new(gen, 0.1);
+            let mask = Channel::<1>::support(&rot);
+            let popcount: u32 = mask.iter().map(|w| w.count_ones()).sum();
+            assert_eq!(rot.weight(), popcount as usize, "n={n}");
+            assert_eq!(rot.weight(), n as usize, "n={n}");
+        }
     }
 
     #[test]

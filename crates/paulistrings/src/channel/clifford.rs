@@ -8,7 +8,7 @@
 //! Encoding: a single-qubit Pauli is indexed by `(x_bit | (z_bit << 1))` —
 //! `I = 0, X = 1, Z = 2, Y = 3`. The output Pauli uses the same packing.
 
-use super::{Channel, OutputBuffer};
+use super::{support_mask, Channel, OutputBuffer};
 use crate::phase::Phase;
 use num_complex::Complex64;
 
@@ -142,8 +142,8 @@ impl<const W: usize> Channel<W> for Clifford1Q {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     #[inline]
@@ -335,8 +335,8 @@ impl<const W: usize> Channel<W> for Clifford2Q {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     #[inline]

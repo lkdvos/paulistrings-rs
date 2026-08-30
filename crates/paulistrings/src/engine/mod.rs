@@ -4,6 +4,7 @@
 //! See design doc §8 (loop) and §5 (sort-merge pipeline).
 
 pub mod bucketed;
+pub(crate) mod coset;
 pub mod sort_merge;
 
 use crate::bucket::sum::DEFAULT_TARGET_BUCKET_LEN;

@@ -34,13 +34,12 @@
 //! /// Multiplies every input coefficient by a complex factor, with no
 //! /// support and `MAX_FANOUT = 1`.
 //! struct GlobalPhase {
-//!     support: [u32; 0],
 //!     factor: Complex64,
 //! }
 //!
 //! impl<const W: usize> Channel<W> for GlobalPhase {
 //!     fn max_fanout(&self) -> usize { 1 }
-//!     fn support(&self) -> &[u32] { &self.support }
+//!     fn support(&self) -> [u64; W] { [0; W] }
 //!     fn apply(
 //!         &self,
 //!         input_x: &[u64; W],
@@ -53,7 +52,6 @@
 //! }
 //!
 //! let ch = GlobalPhase {
-//!     support: [],
 //!     factor: Complex64::new(0.0, 1.0),
 //! };
 //! let _: Box<dyn Channel<1>> = Box::new(ch);
@@ -129,6 +127,20 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
     }
 }
 
+/// Pack a list of qubit indices into a [`Channel::support`] bitmask.
+///
+/// Bit `q % 64` of word `q / 64` is set for each `q` in `qubits`. Order and
+/// duplicates in `qubits` do not matter — the result is a plain set.
+#[inline]
+pub fn support_mask<const W: usize>(qubits: &[u32]) -> [u64; W] {
+    let mut mask = [0u64; W];
+    for &q in qubits {
+        debug_assert!((q as usize) < 64 * W, "qubit {q} out of range for W={W}");
+        mask[q as usize / 64] |= 1u64 << (q % 64);
+    }
+    mask
+}
+
 /// Anything that maps a Pauli string to a small weighted sum of Pauli strings.
 ///
 /// [`Channel::max_fanout`] is a method (not an associated `const`) so the
@@ -144,9 +156,13 @@ pub trait Channel<const W: usize>: Send + Sync {
     /// engine to size the scratch buffer up-front.
     fn max_fanout(&self) -> usize;
 
-    /// Qubits this channel acts on. Outputs differ from inputs only at these
-    /// bit positions; the engine uses this for bucket layout (§5).
-    fn support(&self) -> &[u32];
+    /// Qubits this channel acts on, packed as one combined per-qubit bitmask
+    /// (bit `q` set iff qubit `q` is in the support), one word per `W`.
+    /// Outputs differ from inputs only at these bit positions; the engine
+    /// uses this for bucket layout (v0.2 §2, v0.3 §2).
+    ///
+    /// Build one with [`support_mask`] from a list of qubit indices.
+    fn support(&self) -> [u64; W];
 
     /// Apply the channel to a single input term, writing outputs to `out`.
     fn apply(
@@ -203,6 +219,29 @@ pub trait Channel<const W: usize>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- support_mask (v0.3 C.1) ----
+
+    #[test]
+    fn support_mask_packs_cross_word_qubits() {
+        // Qubit 70 at W=2 lands in word 1, bit 6.
+        let mask: [u64; 2] = support_mask(&[5, 70]);
+        assert_eq!(mask[0], 1u64 << 5);
+        assert_eq!(mask[1], 1u64 << 6);
+    }
+
+    #[test]
+    fn support_mask_is_order_and_duplicate_insensitive() {
+        let a: [u64; 1] = support_mask(&[3, 1, 3]);
+        let b: [u64; 1] = support_mask(&[1, 3]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn support_mask_of_empty_is_zero() {
+        let mask: [u64; 2] = support_mask(&[]);
+        assert_eq!(mask, [0, 0]);
+    }
 
     #[allow(clippy::type_complexity)]
     fn alloc_bufs<const W: usize>(

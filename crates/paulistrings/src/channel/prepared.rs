@@ -66,13 +66,13 @@ pub struct LocalPtm<const W: usize> {
     k: u8,
     /// The delta set, **ascending by `local_delta`**.
     ///
-    /// Flat rather than grouped by `bucket_delta` on purpose. Grouping would
-    /// give better input-bucket locality, but the group order depends on `H·d`
-    /// and therefore on the bucket count, whereas the engine's summation order
-    /// for duplicate keys is observable through floating-point non-associativity.
-    /// Iterating a flat `local_delta`-ordered list keeps results identical across
-    /// bucket counts (v0.2 §9.1). Re-grouping for locality, with a tiebreak that
-    /// preserves this order, is a Phase C option.
+    /// This order is the engine's canonical equal-key summation order, and it
+    /// must not depend on the bucket count: `local_delta` is `H`-independent
+    /// while `bucket_delta = H·d` is not, and duplicate-key summation order is
+    /// observable through floating-point non-associativity (v0.2 §9.1). The
+    /// coset engine gathers input-bucket-major for locality and restores this
+    /// order afterwards, by carrying each entry's index here as a tag through
+    /// the per-run sort (v0.3 §2, `sort_merge::sort_phase_tagged`).
     deltas: Vec<DeltaEntry<W>>,
 }
 
@@ -89,8 +89,8 @@ impl<const W: usize> LocalPtm<W> {
         &self.qubits[..self.k as usize]
     }
 
-    /// The delta set, ascending by `local_delta`. This is the order the engine
-    /// must gather in.
+    /// The delta set, ascending by `local_delta` — the canonical equal-key
+    /// summation order; each entry's index here is its sort tag in the engine.
     #[inline]
     pub fn deltas(&self) -> &[DeltaEntry<W>] {
         &self.deltas
@@ -231,21 +231,30 @@ impl<const W: usize> Prepared<W> {
     where
         C: Channel<W> + ?Sized,
     {
-        let support = channel.support();
-        let k = support.len();
+        let mask = channel.support();
+        // Popcount first, and bail before materializing anything, so a wide
+        // support never pays for qubit extraction it will just discard.
+        let k: usize = mask.iter().map(|w| w.count_ones() as usize).sum();
         if k > MAX_LOCAL_SUPPORT {
             return None;
         }
 
+        // Extract qubit indices ascending via per-word `trailing_zeros`. A
+        // bitmask is already a set, so this is automatically sorted and
+        // duplicate-free -- unlike the old `Vec<u32>` support list, there is
+        // no need to sort or check for a caller-supplied duplicate.
         let mut qubits = [0u32; MAX_LOCAL_SUPPORT];
-        qubits[..k].copy_from_slice(support);
-        // The packing assumes ascending support qubits; `Clifford2Q` and the
-        // derived `PauliRotation` support both satisfy this, but a custom
-        // channel might not, so normalize rather than trust.
-        qubits[..k].sort_unstable();
-        if k == 2 && qubits[0] == qubits[1] {
-            return None;
+        let mut n = 0usize;
+        for (w, &word) in mask.iter().enumerate() {
+            let mut live = word;
+            while live != 0 {
+                let bit = live.trailing_zeros();
+                qubits[n] = (64 * w) as u32 + bit;
+                n += 1;
+                live &= live - 1;
+            }
         }
+        debug_assert_eq!(n, k);
 
         let mut ptm = LocalPtm {
             qubits,
@@ -917,6 +926,34 @@ mod tests {
         ));
     }
 
+    /// The popcount check reads straight off the mask, independent of which
+    /// qubits are set or which word they land in.
+    #[test]
+    fn derive_local_rejects_popcount_gt_2() {
+        struct ThreeQubits;
+        impl<const W: usize> Channel<W> for ThreeQubits {
+            fn max_fanout(&self) -> usize {
+                1
+            }
+            fn support(&self) -> [u64; W] {
+                let mut mask = [0u64; W];
+                mask[0] = 0b111; // qubits 0, 1, 2 -- popcount 3
+                mask
+            }
+            fn apply(
+                &self,
+                input_x: &[u64; W],
+                input_z: &[u64; W],
+                coeff: Complex64,
+                out: &mut OutputBuffer<'_, W>,
+            ) {
+                out.push(*input_x, *input_z, coeff);
+            }
+        }
+        let hash = Gf2Hash::<1>::new(64, 8, 0x1);
+        assert!(Prepared::derive_local(&ThreeQubits, &hash, false).is_none());
+    }
+
     #[test]
     fn derive_refuses_a_channel_that_writes_outside_its_support() {
         // A deliberately broken channel: declares support [0] but also flips
@@ -927,8 +964,10 @@ mod tests {
             fn max_fanout(&self) -> usize {
                 1
             }
-            fn support(&self) -> &[u32] {
-                &[0]
+            fn support(&self) -> [u64; W] {
+                let mut mask = [0u64; W];
+                mask[0] = 1;
+                mask
             }
             fn apply(
                 &self,

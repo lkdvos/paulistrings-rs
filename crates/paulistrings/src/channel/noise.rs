@@ -2,7 +2,7 @@
 
 #![allow(unused)]
 
-use super::{Channel, OutputBuffer};
+use super::{support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
 
 /// Single-qubit depolarizing noise with error probability `p`.
@@ -33,8 +33,8 @@ impl<const W: usize> Channel<W> for Depolarizing {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     #[inline]
@@ -79,8 +79,8 @@ impl<const W: usize> Channel<W> for Dephasing {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     #[inline]
@@ -144,8 +144,8 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     fn apply(

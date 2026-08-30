@@ -37,7 +37,9 @@ use criterion::{
 use num_complex::Complex64;
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::bucket::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
-use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, Depolarizing, PauliRotation};
+use paulistrings::channel::{
+    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
+};
 use paulistrings::circuit::Circuit;
 use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
 use paulistrings::engine::sort_merge::apply_layer;
@@ -168,6 +170,52 @@ fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W>
     gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
     gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
     PauliRotation::new(gen, theta)
+}
+
+/// A Pauli generator of weight 4 on `qubits`, for a rotation whose support
+/// exceeds `MAX_LOCAL_SUPPORT` and therefore cannot be tabulated as a local PTM.
+///
+/// The delta set is still `{0, gen}` — 2 input buckets per output — but the
+/// `i^k` phase is computed per term rather than looked up, so this is the other
+/// half of the rotation cost surface from `zz_rotation`.
+fn wide_rotation<const W: usize>(qubits: [u32; 4], theta: f64) -> PauliRotation<W> {
+    let mut gen = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    // Mixed X/Z letters so the generator is not a product of commuting Zs.
+    for (i, &q) in qubits.iter().enumerate() {
+        let word = (q as usize) / 64;
+        let bit = 1u64 << (q % 64);
+        if i % 2 == 0 {
+            gen.z[word] |= bit;
+        } else {
+            gen.x[word] |= bit;
+        }
+    }
+    PauliRotation::new(gen, theta)
+}
+
+/// sqrt(SWAP) on `(q0, q1)` — a fixed non-Clifford two-qubit unitary.
+///
+/// Non-Clifford, so its Pauli-expansion table does not collapse to a
+/// permutation: the prepared delta set is wide (up to 16), which is the maximum
+/// bucket fan-in the engine ever sees.
+fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
+    let h = Complex64::new(0.5, 0.5);
+    let hc = Complex64::new(0.5, -0.5);
+    let one = Complex64::new(1.0, 0.0);
+    let zero = Complex64::new(0.0, 0.0);
+    GeneralUnitary2Q::from_matrix(
+        q0,
+        q1,
+        [
+            [one, zero, zero, zero],
+            [zero, h, hc, zero],
+            [zero, hc, h, zero],
+            [zero, zero, zero, one],
+        ],
+    )
 }
 
 /// PauliString mul_assign — the inner hot loop of every channel that does a
@@ -481,7 +529,17 @@ fn bucketed_layer_case<const W: usize, C>(
 }
 
 /// The v0.2 bucketed engine on the same four channel classes as
-/// `bench_apply_layer`, so the two groups are directly comparable.
+/// `bench_apply_layer`, so the two groups are directly comparable, plus the two
+/// extreme fan-in shapes that group does not have a v0.1 counterpart for.
+///
+///   * `general_unitary2q` — up to 16 deltas, so each output bucket gathers
+///     from 16 input buckets.
+///   * `rotation_w4` — 2 deltas, but a per-term phase computation instead of a
+///     table lookup.
+///
+/// Those two bracket the read amplification v0.3 §2 removes, so they need
+/// pre-§2 baselines. Measured at 10⁶ only: at 10⁴ the whole sum is in cache and
+/// fan-in costs nothing.
 fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_layer_bucketed");
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
@@ -493,6 +551,8 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
         p: 0.05,
     };
     let rot = zz_rotation::<2>(0, 1, 0.1);
+    let gu2q = sqrt_swap(0, 1);
+    let rot_w4 = wide_rotation::<2>([0, 1, 2, 3], 0.1);
 
     for &n in &[10_000usize, 1_000_000usize] {
         let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
@@ -507,6 +567,10 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
         bucketed_layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h);
         bucketed_layer_case(&mut group, format!("clifford2q_cnot/{n}"), &input, &cnot);
         bucketed_layer_case(&mut group, format!("rotation_zz/{n}"), &input, &rot);
+        if n >= 1_000_000 {
+            bucketed_layer_case(&mut group, format!("general_unitary2q/{n}"), &input, &gu2q);
+            bucketed_layer_case(&mut group, format!("rotation_w4/{n}"), &input, &rot_w4);
+        }
     }
 
     group.finish();
@@ -537,6 +601,53 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut sum = input.clone().with_hash(hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<2>::new();
+        group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
+            bencher.iter(|| {
+                pool.install(|| {
+                    apply_layer_bucketed(&mut sum, black_box(&prep), &policy, &mut scratch);
+                    black_box(sum.len())
+                })
+            })
+        });
+    }
+
+    group.finish();
+}
+
+/// Thread scaling on the widest delta set the engine has.
+///
+/// `bench_thread_scaling_bucketed` uses a 2-delta rotation, where each output
+/// bucket reads 2 input buckets. `GeneralUnitary2Q` reads 16, so the same input
+/// is streamed 16 times per layer — the read amplification v0.3 §2 removes by
+/// walking cosets of `h(D)` instead. If that amplification is bandwidth-bound
+/// then this group flattens earlier than the rotation one, and the gap between
+/// them is the size of the prize.
+///
+/// Threads are {1, 8, 32} rather than the full sweep: three points fix the
+/// curve's ends and its knee, and a 16-fold gather at 10⁶ terms is expensive
+/// enough that the full sweep would not pay for itself.
+fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
+    let mut group = c.benchmark_group("thread_scaling_bucketed_gu2q");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+
+    let n = 1_000_000usize;
+    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let gu2q = sqrt_swap(0, 1);
+    let policy = AlwaysKeep;
+    group.throughput(Throughput::Elements(input.len() as u64));
+
+    for &t in &[1usize, 8, 32] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build()
+            .expect("failed to build rayon pool");
+        // Same fixed bit count at every thread count, for the reason given in
+        // `bench_thread_scaling_bucketed`.
+        let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
+        let mut sum = input.clone().with_hash(hash);
+        let prep = Channel::<2>::prepare(&gu2q, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
             bencher.iter(|| {
@@ -705,6 +816,7 @@ criterion_group!(
     bench_propagate_trotter,
     bench_thread_scaling,
     bench_thread_scaling_bucketed,
+    bench_thread_scaling_bucketed_gu2q,
     bench_ingest_finalize,
     bench_rebucket,
     bench_finalize_top_n,

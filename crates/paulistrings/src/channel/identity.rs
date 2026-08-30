@@ -30,8 +30,8 @@ impl<const W: usize> Channel<W> for IdentityChannel {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        [0; W]
     }
 
     #[inline]
@@ -61,8 +61,8 @@ mod tests {
     #[test]
     fn support_is_empty() {
         let id = IdentityChannel::new();
-        assert_eq!(<IdentityChannel as Channel<1>>::support(&id), &[] as &[u32]);
-        assert_eq!(<IdentityChannel as Channel<2>>::support(&id), &[] as &[u32]);
+        assert_eq!(<IdentityChannel as Channel<1>>::support(&id), [0u64; 1]);
+        assert_eq!(<IdentityChannel as Channel<2>>::support(&id), [0u64; 2]);
     }
 
     #[test]

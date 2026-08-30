@@ -23,7 +23,7 @@
 //! [`Clifford1Q`]: super::clifford::Clifford1Q
 //! [`Clifford2Q`]: super::clifford::Clifford2Q
 
-use super::{Channel, OutputBuffer};
+use super::{support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
@@ -213,8 +213,8 @@ impl<const W: usize> Channel<W> for GeneralUnitary1Q {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     fn apply(
@@ -355,8 +355,8 @@ impl<const W: usize> Channel<W> for GeneralUnitary2Q {
     }
 
     #[inline]
-    fn support(&self) -> &[u32] {
-        &self.support
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
     }
 
     fn apply(

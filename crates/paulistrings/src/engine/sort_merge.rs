@@ -278,6 +278,49 @@ pub(crate) fn sort_phase<const W: usize>(
     out_coeff[..len].copy_from_slice(&new_c);
 }
 
+/// [`sort_phase`] with a comparator-only tag column breaking ties on equal
+/// keys.
+///
+/// Within one coset gather run, `(key, tag)` is unique: the tag is the delta
+/// entry's index in the canonical ascending-`local_delta` order, and for a
+/// fixed output key each entry contributes at most one row (its source key
+/// `k ⊕ d` is unique within the one bucket it lives in). Sorting by
+/// `(x, z, tag)` therefore needs no stability, and it reconstructs exactly the
+/// order that a delta-major gather followed by a stable key sort used to
+/// produce: keys ascending, equal keys in ascending delta order. That
+/// equal-key order is the engine's canonical, bucket-count-independent
+/// summation order (v0.2 §9.1); the tag enforces it now that the gather is
+/// input-bucket-major (v0.3 §2). The tag participates in comparisons only and
+/// is never permuted into the output.
+pub(crate) fn sort_phase_tagged<const W: usize>(
+    out_x: &mut [[u64; W]],
+    out_z: &mut [[u64; W]],
+    out_coeff: &mut [Complex64],
+    tag: &[u8],
+    len: usize,
+) {
+    debug_assert!(out_x.len() >= len);
+    debug_assert!(tag.len() >= len);
+    debug_assert_eq!(out_x.len(), out_z.len());
+    debug_assert_eq!(out_x.len(), out_coeff.len());
+    if len < 2 {
+        return;
+    }
+    let mut perm: Vec<usize> = (0..len).collect();
+    perm.sort_by(|&a, &b| {
+        out_x[a]
+            .cmp(&out_x[b])
+            .then_with(|| out_z[a].cmp(&out_z[b]))
+            .then_with(|| tag[a].cmp(&tag[b]))
+    });
+    let new_x: Vec<[u64; W]> = perm.iter().map(|&i| out_x[i]).collect();
+    let new_z: Vec<[u64; W]> = perm.iter().map(|&i| out_z[i]).collect();
+    let new_c: Vec<Complex64> = perm.iter().map(|&i| out_coeff[i]).collect();
+    out_x[..len].copy_from_slice(&new_x);
+    out_z[..len].copy_from_slice(&new_z);
+    out_coeff[..len].copy_from_slice(&new_c);
+}
+
 /// Empirical threshold below which the parallel merge's overhead dominates.
 /// Below this, `merge_phase` collapses to a single sequential chunk.
 const SMALL_MERGE_THRESHOLD: usize = 1024;

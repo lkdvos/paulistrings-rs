@@ -105,7 +105,7 @@ impl<const W: usize> BucketCols<W> {
     }
 
     #[inline]
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
@@ -245,9 +245,6 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
 #[derive(Clone, Debug)]
 pub struct PauliSum<const W: usize> {
     buckets: Vec<BucketCols<W>>,
-    /// Retired bucket storage, kept for its capacity so a layer does not
-    /// allocate. See [`PauliSum::begin_layer`].
-    spare: Vec<BucketCols<W>>,
     hash: Gf2Hash<W>,
     num_qubits: usize,
     len: usize,
@@ -306,7 +303,6 @@ impl<const W: usize> PauliSum<W> {
 
         Self {
             buckets,
-            spare: Vec::new(),
             hash,
             num_qubits,
             len: n,
@@ -333,7 +329,6 @@ impl<const W: usize> PauliSum<W> {
         let nb = hash.num_buckets();
         Self {
             buckets: (0..nb).map(|_| BucketCols::new()).collect(),
-            spare: Vec::new(),
             hash,
             num_qubits,
             len: 0,
@@ -353,7 +348,6 @@ impl<const W: usize> PauliSum<W> {
         let hash = Gf2Hash::new(num_qubits, 0, DEFAULT_HASH_SEED);
         Self {
             buckets: vec![BucketCols { x, z, coeff }],
-            spare: Vec::new(),
             hash,
             num_qubits,
             len: n,
@@ -403,12 +397,9 @@ impl<const W: usize> PauliSum<W> {
     /// pays the `O(n log B)` flatten.
     pub(crate) fn align_to(&self, target: &Gf2Hash<W>) -> Self {
         if !self.hash.same_rows_as(target) {
-            let mut copy = self.clone();
-            copy.spare = Vec::new();
-            return copy.with_hash(target.clone());
+            return self.clone().with_hash(target.clone());
         }
         let mut out = self.clone();
-        out.spare = Vec::new();
         while out.hash.bits() < target.bits() {
             out.refine();
         }
@@ -632,35 +623,7 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Start a layer: take the current buckets out as the layer's read-only
-    /// input, and hand back a cleared output set reusing the spare's capacity.
-    ///
-    /// The two must be separate allocations because a layer reads several input
-    /// buckets while writing one output bucket, so they cannot alias. Recycling
-    /// the spare is what keeps a layer allocation-free after the first
-    /// (v0.2 §4.2).
-    pub(crate) fn begin_layer(&mut self) -> (Vec<BucketCols<W>>, Vec<BucketCols<W>>) {
-        let input = std::mem::take(&mut self.buckets);
-        let mut out = std::mem::take(&mut self.spare);
-        out.truncate(input.len());
-        out.resize_with(input.len(), BucketCols::new);
-        for cols in out.iter_mut() {
-            cols.clear();
-        }
-        (input, out)
-    }
-
-    /// Finish a layer: install `output` and retire `input` as the new spare.
-    pub(crate) fn end_layer(&mut self, output: Vec<BucketCols<W>>, mut spare: Vec<BucketCols<W>>) {
-        self.len = output.iter().map(|c| c.len()).sum();
-        for cols in spare.iter_mut() {
-            cols.clear();
-        }
-        self.buckets = output;
-        self.spare = spare;
-    }
-
-    /// Mutable access to the buckets, for layers that can be applied in place.
+    /// Mutable access to the buckets, for layers that are applied in place.
     pub(crate) fn buckets_mut(&mut self) -> &mut [BucketCols<W>] {
         &mut self.buckets
     }
@@ -898,7 +861,6 @@ impl<const W: usize> PauliSum<W> {
         let len = buckets.iter().map(|c| c.len()).sum();
         Self {
             buckets,
-            spare: Vec::new(),
             hash: self.hash.clone(),
             num_qubits: self.num_qubits,
             len,

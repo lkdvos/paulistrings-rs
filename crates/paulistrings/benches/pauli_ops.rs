@@ -503,6 +503,12 @@ fn bits_for(n: usize) -> u8 {
 /// reaches the fixed point before timing starts. Resetting instead would mean
 /// cloning or re-scattering a 10⁶-term sum per iteration, which would dominate
 /// the measurement.
+///
+/// Because of that closure, `sum.len()` after warm-up can be up to ~2x the
+/// initial `input.len()` (e.g. a rotation's `S ∪ (S ⊕ gen)`). Elements =
+/// steady-state input terms per layer application, so the layer is applied a
+/// few times up front to reach the fixed point *before* throughput is read,
+/// rather than using the pre-closure `input.len()` as the denominator.
 fn bucketed_layer_case<const W: usize, C>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     label: String,
@@ -519,7 +525,13 @@ fn bucketed_layer_case<const W: usize, C>(
         .expect("channel could not be prepared");
     let mut scratch = LayerScratch::<W>::new();
 
-    group.throughput(Throughput::Elements(input.len() as u64));
+    // Warm to the fixed point before reading throughput.
+    for _ in 0..3 {
+        apply_layer_bucketed(&mut sum, &prep, &policy, &mut scratch);
+    }
+
+    // Elements = steady-state input terms per layer application.
+    group.throughput(Throughput::Elements(sum.len() as u64));
     group.bench_function(label, |bencher| {
         bencher.iter(|| {
             apply_layer_bucketed(&mut sum, black_box(&prep), &policy, &mut scratch);
@@ -578,15 +590,45 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
 
 /// Thread scaling of the bucketed engine, against `bench_thread_scaling`'s
 /// v0.1 numbers on the same input and channel.
+///
+/// As in `bucketed_layer_case`, the layer closes the key set under the
+/// rotation's delta span, so `sum.len()` after warm-up can be up to ~2x the
+/// initial `input.len()`. `input` is warmed to that fixed point once, before
+/// it is cloned per thread count, so every thread count starts from (and
+/// stays at) the same steady state, and elements = steady-state input terms
+/// per layer application.
 fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     let mut group = c.benchmark_group("thread_scaling_bucketed_rotation_1e6");
     group.sample_size(10);
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let mut input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
     let rot = zz_rotation::<2>(0, 1, 0.1);
     let policy = AlwaysKeep;
+
+    // Warm `input` itself to the fixed point once, before the per-thread-count
+    // clones below, so every thread count clones the same steady state.
+    //
+    // NOTE (2026-08-30): this also changed the bucket count — `bits_for` in
+    // the loop below now sees the *warmed* length, exactly as `propagate`'s
+    // per-layer rebucket would. Numbers from this group are therefore NOT
+    // comparable to the v0.3 campaign (which hashed the unwarmed 10^6-term
+    // input): the level shifts observed at the switch (rotation/32t
+    // ~6.3 -> ~5.0 ms, gu2q/32t ~34 -> ~15 ms) are bench-condition changes,
+    // not engine changes.
+    {
+        let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
+        let mut warm = input.clone().with_hash(hash);
+        let prep = Channel::<2>::prepare(&rot, warm.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<2>::new();
+        for _ in 0..3 {
+            apply_layer_bucketed(&mut warm, &prep, &policy, &mut scratch);
+        }
+        input = warm;
+    }
+
+    // Elements = steady-state input terms per layer application.
     group.throughput(Throughput::Elements(input.len() as u64));
 
     for &t in &[1usize, 2, 4, 8, 16, 32] {
@@ -627,15 +669,42 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
 /// Threads are {1, 8, 32} rather than the full sweep: three points fix the
 /// curve's ends and its knee, and a 16-fold gather at 10⁶ terms is expensive
 /// enough that the full sweep would not pay for itself.
+///
+/// As in `bench_thread_scaling_bucketed`, `input` is warmed to the fixed
+/// point once, before it is cloned per thread count, so elements =
+/// steady-state input terms per layer application.
 fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     let mut group = c.benchmark_group("thread_scaling_bucketed_gu2q");
     group.sample_size(10);
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let mut input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
     let gu2q = sqrt_swap(0, 1);
     let policy = AlwaysKeep;
+
+    // Warm `input` itself to the fixed point once, before the per-thread-count
+    // clones below, so every thread count clones the same steady state.
+    //
+    // NOTE (2026-08-30): this also changed the bucket count — `bits_for` in
+    // the loop below now sees the *warmed* length, exactly as `propagate`'s
+    // per-layer rebucket would. Numbers from this group are therefore NOT
+    // comparable to the v0.3 campaign (which hashed the unwarmed 10^6-term
+    // input): the level shifts observed at the switch (rotation/32t
+    // ~6.3 -> ~5.0 ms, gu2q/32t ~34 -> ~15 ms) are bench-condition changes,
+    // not engine changes.
+    {
+        let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
+        let mut warm = input.clone().with_hash(hash);
+        let prep = Channel::<2>::prepare(&gu2q, warm.hash(), false).unwrap();
+        let mut scratch = LayerScratch::<2>::new();
+        for _ in 0..3 {
+            apply_layer_bucketed(&mut warm, &prep, &policy, &mut scratch);
+        }
+        input = warm;
+    }
+
+    // Elements = steady-state input terms per layer application.
     group.throughput(Throughput::Elements(input.len() as u64));
 
     for &t in &[1usize, 8, 32] {

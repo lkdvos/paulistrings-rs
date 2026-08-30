@@ -26,6 +26,8 @@
 //! is bitwise identical across thread counts *and* bucket counts, exactly as
 //! before (v0.2 §9.1).
 
+use std::sync::Mutex;
+
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -44,9 +46,18 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 /// Held by the caller across layers because a layer must allocate nothing
 /// after the first (v0.2 §4.2): every field retains its high-water capacity
 /// across cosets and layers. The serial path uses the caller's instance
-/// directly; the parallel path gives each Rayon worker its own coset
-/// working set (`CosetScratch`) via `for_each_init`.
-#[derive(Clone, Debug, Default)]
+/// directly; the parallel path takes one slot of `workers` per Rayon worker
+/// thread, so scratch capacity is bounded by `threads × coset working set`
+/// and survives across cosets, layers, and `propagate` calls. (Rayon's
+/// `for_each_init` would instead construct its init value once per *split* —
+/// many times per layer — which reallocated these MB-scale buffers over and
+/// over; that churn measured as a 20–50% per-layer regression.)
+///
+/// A task's output cannot depend on which scratch slot it drew: the swap
+/// site clears every write destination before use, and gather runs reset on
+/// take — so worker→slot assignment varying run to run is unobservable,
+/// which is what keeps output byte-identical across thread counts.
+#[derive(Debug, Default)]
 pub struct LayerScratch<const W: usize> {
     /// The per-coset working set (serial path).
     task: CosetScratch<W>,
@@ -55,6 +66,11 @@ pub struct LayerScratch<const W: usize> {
     /// Staging area the bucket handles are permuted into. Holds handles only
     /// while a layer runs; its elements carry no capacity of their own.
     staging: Vec<BucketCols<W>>,
+    /// Worker-persistent coset working sets for the parallel path, one slot
+    /// per Rayon worker, indexed by `rayon::current_thread_index()`. Each
+    /// worker locks only its own slot, so the mutexes are uncontended; they
+    /// exist to make the shared borrow safe, not to arbitrate.
+    workers: Vec<Mutex<CosetScratch<W>>>,
 }
 
 impl<const W: usize> LayerScratch<W> {
@@ -191,7 +207,11 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     // Permute the bucket *handles* into coset-contiguous order: coset `c`
     // owns `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis
     // coordinate. Handles are three `Vec` headers; the term data never moves.
-    {
+    // At `r = 0` every coset is a single bucket and `perm_index` is the
+    // identity (`rank_of_rep` compresses over every bit), so the two handle
+    // passes are skipped and the chunk loop runs on the buckets directly.
+    let identity_perm = span.r() == 0;
+    if !identity_perm {
         let buckets = sum.buckets_mut();
         scratch.perm.clear();
         scratch
@@ -206,25 +226,51 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     }
 
     // Each coset is a closed task: it reads and writes only its own chunk, so
-    // the chunk loop needs no atomics, no locks, and no reconciliation pass.
-    // Work within a task is sequential and its summation order is fixed by the
-    // tag sort, so output is byte-identical across thread counts.
-    if num_cosets < MIN_COSETS_FOR_PARALLEL {
-        for chunk in scratch.staging.chunks_mut(m) {
-            fill_coset::<W, T>(chunk, &plan, policy, &mut scratch.task);
+    // the chunk loop needs no atomics, no cross-task locks, and no
+    // reconciliation pass. Work within a task is sequential and its summation
+    // order is fixed by the tag sort, so output is byte-identical across
+    // thread counts.
+    {
+        // Size the worker pool before `staging` is borrowed below; keeping
+        // existing slots preserves their high-water capacity.
+        if num_cosets >= MIN_COSETS_FOR_PARALLEL {
+            let pool = rayon::current_num_threads().max(1);
+            if scratch.workers.len() < pool {
+                scratch.workers.resize_with(pool, Mutex::default);
+            }
         }
-    } else {
-        scratch.staging.par_chunks_mut(m).for_each_init(
-            CosetScratch::<W>::default,
-            |local, chunk| {
-                fill_coset::<W, T>(chunk, &plan, policy, local);
-            },
-        );
+        let workers = &scratch.workers;
+        let chunks: &mut [BucketCols<W>] = if identity_perm {
+            sum.buckets_mut()
+        } else {
+            scratch.staging.as_mut_slice()
+        };
+        if num_cosets < MIN_COSETS_FOR_PARALLEL {
+            for chunk in chunks.chunks_mut(m) {
+                fill_coset::<W, T>(chunk, &plan, policy, &mut scratch.task);
+            }
+        } else {
+            chunks.par_chunks_mut(m).for_each(|chunk| {
+                // Inside `par_chunks_mut` the body always runs on a pool
+                // worker, so the index is present and below the pool size;
+                // the fresh-scratch arm is a defensive fallback only.
+                match rayon::current_thread_index() {
+                    Some(i) if i < workers.len() => {
+                        let mut ws = workers[i].lock().unwrap();
+                        fill_coset::<W, T>(chunk, &plan, policy, &mut ws);
+                    }
+                    _ => {
+                        let mut ws = CosetScratch::<W>::default();
+                        fill_coset::<W, T>(chunk, &plan, policy, &mut ws);
+                    }
+                }
+            });
+        }
     }
 
     // Un-permute: every handle goes back to its bucket index, leaving the
     // staging slots as empty, capacity-free defaults.
-    {
+    if !identity_perm {
         let buckets = sum.buckets_mut();
         for (beta, cols) in buckets.iter_mut().enumerate() {
             *cols = std::mem::take(&mut scratch.staging[scratch.perm[beta] as usize]);
@@ -286,30 +332,23 @@ fn fill_coset<const W: usize, T>(
         run.reset(cap);
     }
 
-    // Gather, input-member-major: each term is loaded once and its whole
-    // fanout is scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`. The
-    // arithmetic per row is identical to the per-output-bucket gather this
-    // replaces; only the visit order changed, and the tag sort makes that
-    // order unobservable (v0.2 §9.1).
+    // Gather. Two visit orders produce the same rows per run — `(key, tag)` is
+    // unique within a run, so the tag sort canonicalizes either order to the
+    // same sequence and the output is bitwise-identical (v0.2 §9.1). Which
+    // order is *faster* depends on `r`: input-major loads each term once but
+    // keeps `2^r` write streams open per task, and at `r = 4` those streams
+    // plus the swapped coset no longer fit L2 — measured +48% on a 32-thread
+    // `GeneralUnitary2Q` layer at 10⁶ terms. Output-major re-reads each input
+    // bucket `2^r` times but the reads stay coset-local and there is a single
+    // write stream, which is the cache behavior the per-output-bucket v0.2
+    // engine had. Only `Local` plans can reach `r ≥ 3` (a wide rotation has at
+    // most two bucket deltas).
     match plan {
         DeltaPlan::Local { ptm, coords } => {
-            for (i, src) in old.iter().enumerate() {
-                for t in 0..src.len() {
-                    let s = ptm.support_bits(&src.x[t], &src.z[t]);
-                    for (e, d) in ptm.deltas().iter().enumerate() {
-                        let a = d.amp[s];
-                        if a == ZERO {
-                            continue;
-                        }
-                        let mut kx = src.x[t];
-                        let mut kz = src.z[t];
-                        for w in 0..W {
-                            kx[w] ^= d.mask_x[w];
-                            kz[w] ^= d.mask_z[w];
-                        }
-                        runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a, e as u8);
-                    }
-                }
+            if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
+                gather_local_output_major(old, runs, ptm, coords);
+            } else {
+                gather_local_input_major(old, runs, ptm, coords);
             }
         }
         DeltaPlan::Rotation {
@@ -377,6 +416,84 @@ fn fill_coset<const W: usize, T>(
     // capacity-retaining columns. Runs are cleared by their own `reset`.
     for cols in old.iter_mut() {
         cols.clear();
+    }
+}
+
+/// Coset dimension at or above which the gather switches to output-major.
+///
+/// Measured at `r = 2` (both `Clifford2Q` and `GeneralUnitary2Q` — a 2Q
+/// channel whose delta masks have Pauli structure, like sqrt-SWAP's
+/// `{XX, ZZ, YY}`, spans only rank 2): output-major *loses* 14–22% at 10⁶
+/// terms, because re-reading each input bucket `2^r` times costs more than
+/// input-major's `2^r` open write streams. So every built-in channel takes
+/// the input-major path. The output-major branch survives, unmeasured, as a
+/// guard for a custom full-rank channel (`r = 4`: sixteen live gather runs
+/// per task), where the scatter working set doubles twice more; both paths
+/// produce bitwise-identical output (the `(key, tag)` sort canonicalizes
+/// either visit order — pinned by `local_gather_orders_are_bitwise_equivalent`),
+/// so the threshold is a pure performance knob.
+const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
+
+/// Input-major gather for a tabulated (`Local`) plan: each term is loaded
+/// once and its whole fanout is scattered by
+/// `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
+/// (input member, input position, delta) order.
+fn gather_local_input_major<const W: usize>(
+    old: &[BucketCols<W>],
+    runs: &mut [GatherRun<W>],
+    ptm: &LocalPtm<W>,
+    coords: &[u32],
+) {
+    for (i, src) in old.iter().enumerate() {
+        for t in 0..src.len() {
+            let s = ptm.support_bits(&src.x[t], &src.z[t]);
+            for (e, d) in ptm.deltas().iter().enumerate() {
+                let a = d.amp[s];
+                if a == ZERO {
+                    continue;
+                }
+                let mut kx = src.x[t];
+                let mut kz = src.z[t];
+                for w in 0..W {
+                    kx[w] ^= d.mask_x[w];
+                    kz[w] ^= d.mask_z[w];
+                }
+                runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a, e as u8);
+            }
+        }
+    }
+}
+
+/// Output-major gather for a tabulated (`Local`) plan: for each output member,
+/// stream the one input bucket per delta entry and append to that member's run
+/// only. Rows land in (delta, input position) order — the same multiset as
+/// [`gather_local_input_major`] in a different order, which the `(key, tag)`
+/// sort erases: equal-key rows never share a tag, so both orders canonicalize
+/// to the identical sequence and the merged output is bitwise-equal.
+fn gather_local_output_major<const W: usize>(
+    old: &[BucketCols<W>],
+    runs: &mut [GatherRun<W>],
+    ptm: &LocalPtm<W>,
+    coords: &[u32],
+) {
+    for (j, run) in runs.iter_mut().enumerate() {
+        for (e, d) in ptm.deltas().iter().enumerate() {
+            let src = &old[j ^ coords[e] as usize];
+            for t in 0..src.len() {
+                let s = ptm.support_bits(&src.x[t], &src.z[t]);
+                let a = d.amp[s];
+                if a == ZERO {
+                    continue;
+                }
+                let mut kx = src.x[t];
+                let mut kz = src.z[t];
+                for w in 0..W {
+                    kx[w] ^= d.mask_x[w];
+                    kz[w] ^= d.mask_z[w];
+                }
+                run.push(kx, kz, src.coeff[t] * a, e as u8);
+            }
+        }
     }
 }
 
@@ -967,6 +1084,87 @@ mod tests {
                 let got = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, seed);
                 assert_same_terms(&got, &reference, &format!("seed={seed}"));
             }
+        }
+    }
+
+    #[test]
+    fn local_gather_orders_are_bitwise_equivalent() {
+        // The r-threshold hybrid ships output-major gathering for wide spans
+        // (GeneralUnitary2Q) and input-major below the threshold. The two
+        // visit orders emit the same rows per run in different sequences, and
+        // the (key, tag) sort — under which equal-key rows never share a tag —
+        // must canonicalize both to the identical, bitwise-equal sequence.
+        // Note sqrt-SWAP's nonzero delta masks are {XX, ZZ, YY}-shaped, so its
+        // span has rank exactly 2 under any hash — the equivalence being
+        // pinned here is rank-independent (the sort argument never mentions
+        // r), so a rank-2 coset of four members exercises it fully.
+        let input = rand_sum::<1>(2000, 8, 0xAB12);
+        let gu2q = sqrt_swap_w1(1, 5);
+        let hash = Gf2Hash::<1>::new(8, 5, 0x77);
+        let sum = input.clone().with_hash(hash);
+        let prep = gu2q.prepare(sum.hash(), false).unwrap();
+        let Prepared::Local(ptm) = &prep else {
+            panic!("gu2q prepares to a Local plan");
+        };
+        let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
+        assert!(
+            span.r() >= 2,
+            "want a multi-member coset so the two visit orders actually differ; got r={}",
+            span.r()
+        );
+        let coords: Vec<u32> = ptm
+            .deltas()
+            .iter()
+            .map(|d| span.coord_of(d.bucket_delta))
+            .collect();
+        let m = span.coset_size();
+
+        // Assemble the rank-0 coset's member columns, ascending by coordinate.
+        let mut old: Vec<BucketCols<1>> = (0..m).map(|_| BucketCols::default()).collect();
+        for beta in 0..sum.num_buckets() as u32 {
+            let p = span.perm_index(beta) as usize;
+            if p < m {
+                let (bx, bz, bc) = sum.bucket(beta as usize);
+                old[p] = BucketCols {
+                    x: bx.to_vec(),
+                    z: bz.to_vec(),
+                    coeff: bc.to_vec(),
+                };
+            }
+        }
+
+        let gather = |output_major: bool| {
+            let mut runs: Vec<GatherRun<1>> = (0..m).map(|_| GatherRun::default()).collect();
+            for (j, run) in runs.iter_mut().enumerate() {
+                let cap: usize = coords.iter().map(|&c| old[j ^ c as usize].len()).sum();
+                run.reset(cap);
+            }
+            if output_major {
+                gather_local_output_major(&old, &mut runs, ptm, &coords);
+            } else {
+                gather_local_input_major(&old, &mut runs, ptm, &coords);
+            }
+            for run in runs.iter_mut() {
+                let len = run.len();
+                sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
+            }
+            runs
+        };
+        let a = gather(false);
+        let b = gather(true);
+        assert!(
+            a.iter().map(GatherRun::len).sum::<usize>() > 0,
+            "gather produced nothing — the coset assembly is wrong"
+        );
+        // The tag column is comparator-only (never permuted), so the
+        // comparison is over the sorted keys and coefficients.
+        for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(ra.x, rb.x, "run {j}: keys (x) diverge");
+            assert_eq!(ra.z, rb.z, "run {j}: keys (z) diverge");
+            assert_eq!(
+                ra.coeff, rb.coeff,
+                "run {j}: coefficients not bitwise equal"
+            );
         }
     }
 

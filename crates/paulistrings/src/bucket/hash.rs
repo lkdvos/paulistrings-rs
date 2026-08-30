@@ -192,16 +192,30 @@ impl<const W: usize> Gf2Hash<W> {
     pub fn bucket_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
         let mut acc: u32 = 0;
         for i in 0..self.bits as usize {
-            let rx = &self.rows_x[i];
-            let rz = &self.rows_z[i];
-            let mut parity: u32 = 0;
-            for w in 0..W {
-                parity ^= (x[w] & rx[w]).count_ones();
-                parity ^= (z[w] & rz[w]).count_ones();
-            }
-            acc |= (parity & 1) << i;
+            acc |= self.row_parity(x, z, i as u8) << i;
         }
         acc
+    }
+
+    /// One row of `H·v`: the parity of `(x & rows_x[row]) ^ (z & rows_z[row])`,
+    /// as `0` or `1`.
+    ///
+    /// [`Self::bucket_of`] is this evaluated for every row `0..bits` and
+    /// assembled into one `u32`; this is the single place that body lives, so
+    /// a caller that needs only the *new* bit a [`Self::refine`] just
+    /// introduced — [`crate::bucket::sum::PauliSum::refine`] — can get it in
+    /// `O(2W)` instead of paying `O(bits · 2W)` for the whole prefix (v0.5
+    /// §R2).
+    #[inline]
+    pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
+        let rx = &self.rows_x[row as usize];
+        let rz = &self.rows_z[row as usize];
+        let mut parity: u32 = 0;
+        for w in 0..W {
+            parity ^= (x[w] & rx[w]).count_ones();
+            parity ^= (z[w] & rz[w]).count_ones();
+        }
+        parity & 1
     }
 
     /// `h(v)` for a [`PauliString`]. Convenience wrapper over [`Self::bucket_of`].
@@ -411,6 +425,27 @@ mod tests {
         let h = Gf2Hash::<2>::new(70, 12, 0x7A);
         let dead = !((1u64 << (70 - 64)) - 1);
         assert_eq!(h.bucket_of(&[0, dead], &[0, dead]), 0);
+    }
+
+    // ---- row_parity (v0.5 §R2) ----
+
+    #[test]
+    fn row_parity_matches_bucket_of_bit_extraction() {
+        let h = Gf2Hash::<2>::new(128, B_MAX_BITS, 0xF00D);
+        let mut rng = Xs64::new(81);
+        for _ in 0..500 {
+            let p = rand_key::<2>(&mut rng, 128);
+            let full = h.bucket_of_pauli(&p);
+            for row in 0..B_MAX_BITS {
+                let bit = h.row_parity(&p.x, &p.z, row);
+                assert!(bit == 0 || bit == 1, "row_parity must return 0 or 1");
+                assert_eq!(
+                    bit,
+                    (full >> row) & 1,
+                    "row {row} disagrees with bucket_of's bit extraction",
+                );
+            }
+        }
     }
 
     // ---- refine / coarsen prefix consistency (v0.2 §2.7) ----

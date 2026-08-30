@@ -127,6 +127,50 @@ impl<const W: usize> BucketCols<W> {
     }
 }
 
+/// Split one input bucket into its "low" (kept in place) and "high" (new
+/// bucket at `b + old_nb`) halves under a hash that has just gained
+/// `new_bit` as its top bit.
+///
+/// Shared by [`PauliSum::refine`]'s serial and parallel branches, so there is
+/// exactly one implementation of the split (v0.5 §R2). `b` is the *old*
+/// bucket index, used only by the debug-only low-bits invariant check.
+fn refine_bucket<const W: usize>(
+    cols: &mut BucketCols<W>,
+    up: &mut BucketCols<W>,
+    hash: &Gf2Hash<W>,
+    new_bit: u8,
+    b: u32,
+) {
+    let _ = b; // referenced only inside the `cfg(debug_assertions)` block below
+    let n = cols.len();
+    let mut keep = 0usize;
+    for i in 0..n {
+        let bit = hash.row_parity(&cols.x[i], &cols.z[i], new_bit);
+        #[cfg(debug_assertions)]
+        {
+            let full = hash.bucket_of(&cols.x[i], &cols.z[i]);
+            debug_assert_eq!(
+                full & ((1u32 << new_bit) - 1),
+                b,
+                "refine: low bits must be preserved",
+            );
+        }
+        if bit == 1 {
+            up.push(cols.x[i], cols.z[i], cols.coeff[i]);
+        } else {
+            // Compact in place: `keep <= i` always, so this never overwrites
+            // an unread slot.
+            cols.x[keep] = cols.x[i];
+            cols.z[keep] = cols.z[i];
+            cols.coeff[keep] = cols.coeff[i];
+            keep += 1;
+        }
+    }
+    cols.x.truncate(keep);
+    cols.z.truncate(keep);
+    cols.coeff.truncate(keep);
+}
+
 /// Merge two sorted runs. No coefficient combining: keys are globally unique.
 fn merge_two<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols<W> {
     let mut out = BucketCols::<W>::new();
@@ -512,42 +556,41 @@ impl<const W: usize> PauliSum<W> {
 
     /// Double the bucket count, splitting each bucket in two.
     ///
-    /// One parity evaluation per term. The new index is `i` or `i + B` (the new
-    /// hash bit is the *high* bit), and both halves inherit the source bucket's
-    /// order, so nothing is re-sorted (v0.2 §2.7).
+    /// One [`Gf2Hash::row_parity`] evaluation per term against just the new
+    /// high bit — `O(n)` total, not `O(n · bits)` — since a term's bucket
+    /// under the old (shorter) hash prefix is exactly the bucket it is already
+    /// in; only whether the new bit is set decides which half it lands in.
+    /// The new index is `i` or `i + B` (the new hash bit is the *high* bit),
+    /// and both halves inherit the source bucket's order, so nothing is
+    /// re-sorted (v0.2 §2.7).
+    ///
+    /// Bucket pairs are independent — output bucket `b` and `b + old_nb`
+    /// depend only on input bucket `b` — so above [`MIN_TERMS_PER_TASK`] ×
+    /// [`DEFAULT_MIN_BUCKETS`] total terms (the same "worth splitting"
+    /// threshold [`desired_bits`] uses) the per-bucket work runs across Rayon
+    /// (v0.5 §R2); below it the sequential loop avoids per-task overhead on
+    /// a sum too small to benefit.
     pub fn refine(&mut self) {
         let old_nb = self.buckets.len();
         self.hash.refine();
         let new_bit = self.hash.bits() - 1;
+        let hash = &self.hash;
 
         // Take the old buckets out so the upper halves can reuse their storage.
         let mut old = std::mem::take(&mut self.buckets);
         let mut upper: Vec<BucketCols<W>> = (0..old_nb).map(|_| BucketCols::new()).collect();
 
-        for (b, cols) in old.iter_mut().enumerate() {
-            let mut keep = 0usize;
-            let n = cols.len();
-            for i in 0..n {
-                let full = self.hash.bucket_of(&cols.x[i], &cols.z[i]);
-                debug_assert_eq!(
-                    full & ((1u32 << new_bit) - 1),
-                    b as u32,
-                    "refine: low bits must be preserved",
-                );
-                if (full >> new_bit) & 1 == 1 {
-                    upper[b].push(cols.x[i], cols.z[i], cols.coeff[i]);
-                } else {
-                    // Compact in place: `keep <= i` always, so this never
-                    // overwrites an unread slot.
-                    cols.x[keep] = cols.x[i];
-                    cols.z[keep] = cols.z[i];
-                    cols.coeff[keep] = cols.coeff[i];
-                    keep += 1;
-                }
+        if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+            for (b, (cols, up)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
+                refine_bucket(cols, up, hash, new_bit, b as u32);
             }
-            cols.x.truncate(keep);
-            cols.z.truncate(keep);
-            cols.coeff.truncate(keep);
+        } else {
+            old.par_iter_mut()
+                .zip(upper.par_iter_mut())
+                .enumerate()
+                .for_each(|(b, (cols, up))| {
+                    refine_bucket(cols, up, hash, new_bit, b as u32);
+                });
         }
 
         old.extend(upper);
@@ -556,41 +599,31 @@ impl<const W: usize> PauliSum<W> {
 
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
     ///
-    /// A 2-way merge per pair. No coefficient combining: equal keys agree at
-    /// every prefix length, so they were already in the same source bucket.
+    /// A 2-way merge per pair via [`merge_two`] — no coefficient combining,
+    /// since equal keys agree at every prefix length and were already in the
+    /// same source bucket. Pairs are independent, so — same threshold and
+    /// rationale as [`Self::refine`] (v0.5 §R2) — this is a parallel map above
+    /// the worth-splitting threshold and a serial one below it.
     pub fn coarsen(&mut self) {
         self.hash.coarsen();
         let new_nb = self.buckets.len() / 2;
 
         let old = std::mem::take(&mut self.buckets);
         let (lower, upper) = old.split_at(new_nb);
-        let mut merged: Vec<BucketCols<W>> = Vec::with_capacity(new_nb);
 
-        for (lo, hi) in lower.iter().zip(upper.iter()) {
-            let mut out = BucketCols::<W>::new();
-            out.x.reserve_exact(lo.len() + hi.len());
-            out.z.reserve_exact(lo.len() + hi.len());
-            out.coeff.reserve_exact(lo.len() + hi.len());
-            let (mut i, mut j) = (0usize, 0usize);
-            while i < lo.len() && j < hi.len() {
-                if (&lo.x[i], &lo.z[i]) <= (&hi.x[j], &hi.z[j]) {
-                    out.push(lo.x[i], lo.z[i], lo.coeff[i]);
-                    i += 1;
-                } else {
-                    out.push(hi.x[j], hi.z[j], hi.coeff[j]);
-                    j += 1;
-                }
-            }
-            while i < lo.len() {
-                out.push(lo.x[i], lo.z[i], lo.coeff[i]);
-                i += 1;
-            }
-            while j < hi.len() {
-                out.push(hi.x[j], hi.z[j], hi.coeff[j]);
-                j += 1;
-            }
-            merged.push(out);
-        }
+        let merged: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+            lower
+                .iter()
+                .zip(upper.iter())
+                .map(|(lo, hi)| merge_two(lo, hi))
+                .collect()
+        } else {
+            lower
+                .par_iter()
+                .zip(upper.par_iter())
+                .map(|(lo, hi)| merge_two(lo, hi))
+                .collect()
+        };
 
         self.buckets = merged;
     }
@@ -1268,6 +1301,33 @@ mod tests {
             b.assert_invariants();
         }
         assert_eq!(b.num_buckets(), 1024);
+        assert_same_sum(&sum, &b);
+    }
+
+    #[test]
+    fn refine_and_coarsen_take_the_parallel_path_above_the_threshold() {
+        // v0.5 §R2: above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192)
+        // terms, refine/coarsen run their per-bucket work across Rayon
+        // instead of serially. Exercise that branch directly and check it
+        // produces the same invariants and content as the serial path.
+        let n = 10_000;
+        assert!(n >= DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK);
+        let sum = rand_sum::<2>(n, 128, 0xB7);
+        let h = Gf2Hash::<2>::new(128, 2, 0xC0DE);
+        let mut b = sum.clone().with_hash(h);
+
+        b.refine();
+        b.assert_invariants();
+        b.refine();
+        b.assert_invariants();
+        assert_eq!(b.num_buckets(), 16);
+        assert_same_sum(&sum, &b);
+
+        b.coarsen();
+        b.assert_invariants();
+        b.coarsen();
+        b.assert_invariants();
+        assert_eq!(b.num_buckets(), 4);
         assert_same_sum(&sum, &b);
     }
 

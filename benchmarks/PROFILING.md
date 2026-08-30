@@ -180,9 +180,12 @@ ceiling; the coset loop itself compares against the **all-core** ceiling
 for whatever placement was used to measure it.
 
 `perf-viz.py` computes this automatically per probe cell ("DRAM: X GB/s =
-Y% of ceiling") using `PhaseStats::rows_gathered` as `n_out`:
-`bytes/layer = terms_in×T + 4×rows_gathered×(T+1) + terms_out×T` with
-`T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path,
+Y% of ceiling") from `PhaseStats::rows_gathered` and `rows_sorted` (v0.5:
+the id stream skips the sort, and there is no tag byte):
+`bytes/layer = terms_in×T + 2×rows_gathered×T + 2×rows_sorted×T + terms_out×T`
+with `T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path
+(pre-v0.5 probe JSON without `rows_sorted` falls back to the old
+`4×rows_gathered×(T+1)` model),
 divided by the layer's wall time and by the membench **triad** ceiling at a
 comparable core count (1 / ≤8 / ≤16 / 32). Read it as a classification, not
 a gauge: **over 100% means the modeled traffic is mostly served from cache**

@@ -35,7 +35,8 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
-    /// `PauliSum::rebucket` before each layer (serial refine/coarsen).
+    /// `PauliSum::rebucket` before each layer (grow-only since v0.5 §R1;
+    /// refine parallelizes above the worth-splitting threshold, §R2).
     pub rebucket_ns: u64,
     /// `Channel::prepare` (PTM derivation; O(1) in the term count).
     pub prepare_ns: u64,
@@ -67,11 +68,13 @@ pub struct PhaseStats {
     pub size_ns: u64,
     /// Gather (input-major, output-major, or inline rotation — all variants).
     pub gather_ns: u64,
-    /// `sort_rows_with_scratch` over each gather run (v0.5 S1: unstable
-    /// key-only sort on worker-persistent scratch, no per-run allocation in
-    /// the steady state).
+    /// `sort_rows_with_scratch` over each run's rest stream (v0.5 S1/S2:
+    /// key-only adaptive sort on worker-persistent scratch, no per-run
+    /// allocation in the steady state; the pre-sorted id stream skips it).
     pub sort_ns: u64,
-    /// `merge_into` from each sorted run into the live bucket column.
+    /// `merge2_into` — the fused id/rest two-stream merge + reduction into
+    /// the live bucket column (v0.5 S2: includes interleaving the id rows,
+    /// which the single-stream pipeline used to pay for inside `sort_ns`).
     pub merge_ns: u64,
     /// Clearing the swapped-out columns at the end of each coset task.
     pub clear_ns: u64,

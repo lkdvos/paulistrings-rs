@@ -368,16 +368,35 @@ def dram_metric(row: dict, bandwidth_sections: list) -> Optional[dict]:
     threads = row.get("threads", 1) or 1
 
     if coset_loop_ns > 0 and rows_gathered is not None and rows_gathered > 0:
-        bytes_per_layer = (
-            (terms_in / layers) * T
-            + 4 * (rows_gathered / layers) * (T + 1)
-            + (terms_out / layers) * T
-        )
-        formula = (
-            f"({terms_in}/{layers})×{T} [gather in] + "
-            f"4×({rows_gathered}/{layers})×({T}+1) [tag r/w + sort r/w] + "
-            f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
-        )
+        rows_sorted = row.get("rows_sorted")
+        if rows_sorted is not None:
+            # v0.5 model: no tag byte; a gathered row is written by gather and
+            # read by merge (2T); the sorted subset is additionally read and
+            # rewritten by the sort (2T more).
+            bytes_per_layer = (
+                (terms_in / layers) * T
+                + 2 * (rows_gathered / layers) * T
+                + 2 * (rows_sorted / layers) * T
+                + (terms_out / layers) * T
+            )
+            formula = (
+                f"({terms_in}/{layers})×{T} [gather in] + "
+                f"2×({rows_gathered}/{layers})×{T} [gather w + merge r] + "
+                f"2×({rows_sorted}/{layers})×{T} [sort r/w] + "
+                f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
+            )
+        else:
+            # pre-v0.5 probe lines: tag byte + every row through the sort.
+            bytes_per_layer = (
+                (terms_in / layers) * T
+                + 4 * (rows_gathered / layers) * (T + 1)
+                + (terms_out / layers) * T
+            )
+            formula = (
+                f"({terms_in}/{layers})×{T} [gather in] + "
+                f"4×({rows_gathered}/{layers})×({T}+1) [tag r/w + sort r/w] + "
+                f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
+            )
     elif rescale_ns > 0 and coset_loop_ns == 0:
         bytes_per_layer = 2 * (terms_in / layers) * T
         formula = f"2×({terms_in}/{layers})×{T} [in-place r/w] = {bytes_per_layer:,.0f} B/layer"

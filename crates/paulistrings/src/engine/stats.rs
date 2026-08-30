@@ -81,6 +81,11 @@ pub struct PhaseStats {
     pub cosets: u64,
     /// Sort/merge runs executed (= Σ coset sizes).
     pub runs: u64,
+    /// Rows pushed into gather runs (= Σ run lengths entering sort/merge).
+    /// The traffic multiplier for the roofline model: each gathered row is
+    /// one key+coeff+tag written by gather, then read and rewritten by sort
+    /// and read once more by merge.
+    pub rows_gathered: u64,
     /// Σ over layers of the term count *before* the layer.
     pub terms_in: u64,
     /// Σ over layers of the term count *after* the layer (post-truncation).
@@ -110,6 +115,7 @@ impl PhaseStats {
         self.layers += o.layers;
         self.cosets += o.cosets;
         self.runs += o.runs;
+        self.rows_gathered += o.rows_gathered;
         self.terms_in += o.terms_in;
         self.terms_out += o.terms_out;
     }
@@ -124,6 +130,7 @@ impl PhaseStats {
         self.clear_ns += c.clear_ns;
         self.cosets += c.cosets;
         self.runs += c.runs;
+        self.rows_gathered += c.rows_gathered;
     }
 
     /// Sum of the wall-clock phase fields — approximately the total wall
@@ -171,6 +178,7 @@ pub(crate) struct CosetStats {
     pub(crate) clear_ns: u64,
     pub(crate) cosets: u64,
     pub(crate) runs: u64,
+    pub(crate) rows_gathered: u64,
 }
 
 /// Chained timestamp: `lap` records elapsed-since-last into a slot and

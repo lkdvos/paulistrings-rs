@@ -179,6 +179,17 @@ Serial phases (rebucket, recount) compare against the **single-core**
 ceiling; the coset loop itself compares against the **all-core** ceiling
 for whatever placement was used to measure it.
 
+`perf-viz.py` computes this automatically per probe cell ("DRAM: X GB/s =
+Y% of ceiling") using `PhaseStats::rows_gathered` as `n_out`:
+`bytes/layer = terms_in×T + 4×rows_gathered×(T+1) + terms_out×T` with
+`T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path,
+divided by the layer's wall time and by the membench **triad** ceiling at a
+comparable core count (1 / ≤8 / ≤16 / 32). Read it as a classification, not
+a gauge: **over 100% means the modeled traffic is mostly served from cache**
+(small per-coset working sets — not DRAM-bound); near 100% is genuinely at
+the wall (e.g. the Trotter step at 8 threads); far below 100% with high
+wall time points at latency, serial phases (gu2q's rebucket), or imbalance.
+
 Rule of thumb: at or above ~70% of the measured ceiling, the phase is
 bandwidth-bound — stop optimizing arithmetic. Far below the ceiling with
 a high LLC miss rate points at a latency/working-set problem instead.

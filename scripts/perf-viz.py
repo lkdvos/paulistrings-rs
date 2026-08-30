@@ -42,18 +42,48 @@ WALL_PHASES = [
 ]
 BUSY_PHASES = ["gather", "sort", "merge", "swap", "size", "clear"]
 
-# A single fixed color per phase name, shared between the wall and busy
-# palettes where names coincide is not required (the two groups are
-# disjoint) but each name maps to exactly one color everywhere it appears.
-_PALETTE = [
-    "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
-    "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
-    "#86bcb6", "#d37295",
-]
+# The one-bar-per-cell layout (v0.4 redesign) splits each row into a serial
+# family (the calling thread, drawn muted grey-blue) and a parallel family
+# (the coset-loop workers, drawn saturated) plus a hatched "idle" segment.
+# Every name below maps to exactly one color everywhere it appears in the
+# report — extending, not replacing, the phase->color contract.
+SERIAL_PHASES = [p for p in WALL_PHASES if p != "coset_loop"]
+OTHER_SERIAL = "other (serial)"
+BUSY_SUB = ["gather", "sort", "merge"]
+OTHER_BUSY = "other busy"
+IDLE = "idle (imbalance)"
+
+# Serial family: one hue (blue-grey), stepped dark->light — these segments
+# are almost always tiny slivers (see OTHER_SERIAL merge rule below), so
+# mutual distinguishability matters less than reading as "not the busy work".
+_SERIAL_COLORS = {
+    "rebucket": "#3f5c73",
+    "prepare": "#4f6d87",
+    "rescale": "#5f7992",
+    "span_plan": "#6f88a0",
+    "permute": "#7d93a8",
+    "unpermute": "#86a0b3",
+    "recount": "#93a7b8",
+    "finalize": "#9fb0bd",
+    "fallback": "#acb9c2",
+    OTHER_SERIAL: "#c7ced4",
+}
+# Parallel family: saturated categorical hues (blue/orange/aqua/violet),
+# validated CVD-safe in this adjacent order via the dataviz skill's
+# validate_palette.js (worst adjacent CVD deltaE 9.2, normal-vision 27.6).
+_BUSY_COLORS = {
+    "gather": "#2a78d6",
+    "sort": "#eb6834",
+    "merge": "#1baf7a",
+    OTHER_BUSY: "#4a3aa7",
+}
+IDLE_BASE = "#e3e1db"
+IDLE_STRIPE = "#c3c2b7"
 
 PHASE_COLOR = {}
-for _i, _name in enumerate(WALL_PHASES + BUSY_PHASES):
-    PHASE_COLOR[_name] = _PALETTE[_i % len(_PALETTE)]
+PHASE_COLOR.update(_SERIAL_COLORS)
+PHASE_COLOR.update(_BUSY_COLORS)
+PHASE_COLOR[IDLE] = IDLE_BASE
 
 LINE_COLORS = [
     "#4e79a7", "#e15759", "#59a14f", "#f28e2b", "#b07aa1",
@@ -192,7 +222,27 @@ def load_probe(path: Path, missing: list, malformed: dict) -> list:
             bad += 1
     if bad:
         malformed[path.name] = bad
-    return rows
+    return dedupe_probe_rows(rows)
+
+
+def dedupe_probe_rows(rows: list) -> list:
+    """Keep only the LAST line for each (layer, threads) key.
+
+    ``<prefix>-probe.json`` may contain multiple lines for the same
+    (layer, threads) pair from appended re-runs (e.g. a campaign resumed
+    after a partial run). Newer lines carry an extra ``rows_gathered``
+    field; older lines lack it, which ``dict.get`` already treats as
+    ``None`` — no special-casing needed here beyond picking the last line.
+    Order is preserved: rows are emitted in the position of each key's
+    last occurrence, so unrelated (layer, threads) groups keep their
+    original relative order in the file.
+    """
+    last_idx: dict = {}
+    for i, row in enumerate(rows):
+        key = (row.get("layer"), row.get("threads"))
+        last_idx[key] = i
+    keep = sorted(last_idx.values())
+    return [rows[i] for i in keep]
 
 
 def load_scaling_files(prefix: Path, missing: list) -> dict:
@@ -250,6 +300,123 @@ def load_bandwidth(dir_path: Path, missing: list) -> list:
     if current_label is not None and current_kernels:
         sections.append((current_label, current_kernels))
     return sections
+
+
+# --------------------------------------------------------------------------
+# DRAM traffic model (% of bandwidth ceiling)
+# --------------------------------------------------------------------------
+
+# Bandwidth.txt section chosen by thread count. Matched against the "==="
+# labels load_bandwidth() parses; keep in sync with membench's section names.
+_BW_SECTION_BY_THREADS = [
+    (1, "1 core, node0 local"),
+    (8, "node0, 8 physical"),
+    (16, "both sockets, 16 physical"),
+]
+_BW_SECTION_DEFAULT = "both sockets, 32 threads"
+
+
+def bandwidth_section_label(threads: int) -> str:
+    for max_t, label in _BW_SECTION_BY_THREADS:
+        if threads <= max_t:
+            return label
+    return _BW_SECTION_DEFAULT
+
+
+def triad_ceiling_gbps(bandwidth_sections: list, threads: int):
+    """Return (best_gbps, section_label) for the TRIAD kernel at this thread
+    count, or (None, section_label) if bandwidth.txt is absent/missing that
+    section."""
+    label = bandwidth_section_label(threads)
+    for sec_label, kmap in bandwidth_sections:
+        if sec_label == label:
+            return kmap.get("triad"), label
+    return None, label
+
+
+def dram_traffic_bytes_per_term(qubits: Optional[int]) -> Optional[int]:
+    """T = 16*ceil(qubits/64) + 16: key words (2 x [u64; W]) + a 16-byte
+    Complex64 coefficient, W = ceil(qubits/64)."""
+    if not qubits or qubits <= 0:
+        return None
+    w = math.ceil(qubits / 64)
+    return 16 * w + 16
+
+
+def dram_metric(row: dict, bandwidth_sections: list) -> Optional[dict]:
+    """Model DRAM traffic per layer for one probe row (Change 3).
+
+    Returns None if the metric cannot be modeled at all (no qubits/wall_ns).
+    Otherwise returns a dict with ``gbps`` (float or None), ``pct`` (float or
+    None, requires a matched bandwidth.txt section), and ``title`` — the
+    formula with this cell's numbers substituted, for a hover tooltip.
+    ``gbps`` is None when the byte model itself is inapplicable (neither the
+    coset-loop nor the in-place-rescale traffic shape matches this row).
+    """
+    qubits = row.get("qubits")
+    wall_ns = row.get("wall_ns", 0) or 0
+    layers = row.get("layers", 1) or 1
+    if not qubits or wall_ns <= 0 or layers <= 0:
+        return None
+
+    T = dram_traffic_bytes_per_term(qubits)
+    terms_in = row.get("terms_in", 0) or 0
+    terms_out = row.get("terms_out", 0) or 0
+    rows_gathered = row.get("rows_gathered")  # None on pre-v0.4 probe lines
+    coset_loop_ns = row.get("coset_loop_ns", 0) or 0
+    rescale_ns = row.get("rescale_ns", 0) or 0
+    threads = row.get("threads", 1) or 1
+
+    if coset_loop_ns > 0 and rows_gathered is not None and rows_gathered > 0:
+        bytes_per_layer = (
+            (terms_in / layers) * T
+            + 4 * (rows_gathered / layers) * (T + 1)
+            + (terms_out / layers) * T
+        )
+        formula = (
+            f"({terms_in}/{layers})×{T} [gather in] + "
+            f"4×({rows_gathered}/{layers})×({T}+1) [tag r/w + sort r/w] + "
+            f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
+        )
+    elif rescale_ns > 0 and coset_loop_ns == 0:
+        bytes_per_layer = 2 * (terms_in / layers) * T
+        formula = f"2×({terms_in}/{layers})×{T} [in-place r/w] = {bytes_per_layer:,.0f} B/layer"
+    else:
+        return {"gbps": None, "pct": None, "ceiling": None, "section": None, "title": None}
+
+    gbps = bytes_per_layer * layers / (wall_ns / 1e9) / 1e9
+    ceiling, section = triad_ceiling_gbps(bandwidth_sections, threads)
+    pct = (gbps / ceiling * 100.0) if ceiling else None
+
+    title = f"T = 16×ceil({qubits}/64)+16 = {T} B/term. bytes/layer = {formula}. "
+    title += f"GB/s = bytes×layers/(wall_ns/1e9)/1e9 = {gbps:.2f} GB/s."
+    if ceiling is not None:
+        title += f" Ceiling: '{section}' triad best_gbps = {ceiling:.2f} GB/s -> {pct:.1f}% of ceiling."
+        if pct > 100.0:
+            title += (
+                " Over 100% means most of the modeled traffic is served from cache,"
+                " not DRAM (the per-coset working set fits in L2/L3): this phase is"
+                " not DRAM-bound."
+            )
+    else:
+        title += f" No bandwidth.txt section '{section}' found — ceiling unavailable."
+
+    return {"gbps": gbps, "pct": pct, "ceiling": ceiling, "section": section, "title": title}
+
+
+def meter_bar_html(pct: Optional[float]) -> str:
+    """A thin 0-100% inline meter; clamps visually past 100% with a distinct
+    'over-full' color (the bar stays at full width, only the fill color
+    changes) since some layers genuinely exceed the modeled ceiling."""
+    if pct is None:
+        return ""
+    clamped = max(0.0, min(pct, 100.0))
+    cls = "meter-fill-over" if pct > 100.0 else "meter-fill"
+    return (
+        '<span class="dram-meter">'
+        f'<span class="{cls}" style="width:{clamped:.1f}%"></span>'
+        "</span>"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -324,59 +491,191 @@ def render_header(campaign_name: str, prov: Optional[dict]) -> str:
 
 def render_legend() -> str:
     parts = ['<div class="legend">']
-    parts.append('<div class="legend-group"><span class="legend-title">wall phases</span>')
-    for name in WALL_PHASES:
+    parts.append('<div class="legend-group"><span class="legend-title">serial (calling thread)</span>')
+    for name in SERIAL_PHASES + [OTHER_SERIAL]:
         parts.append(
             f'<span class="legend-item"><span class="swatch" '
             f'style="background:{PHASE_COLOR[name]}"></span>{esc(name)}</span>'
         )
     parts.append("</div>")
-    parts.append('<div class="legend-group"><span class="legend-title">busy (all workers)</span>')
-    for name in BUSY_PHASES:
+    parts.append(
+        '<div class="legend-group"><span class="legend-title">'
+        "parallel region (per-worker average)</span>"
+    )
+    for name in BUSY_SUB + [OTHER_BUSY]:
         parts.append(
             f'<span class="legend-item"><span class="swatch" '
             f'style="background:{PHASE_COLOR[name]}"></span>{esc(name)}</span>'
         )
+    parts.append(
+        '<span class="legend-item"><span class="swatch swatch-idle"></span>'
+        f"{esc(IDLE)}</span>"
+    )
     parts.append("</div>")
     parts.append("</div>")
+    parts.append(
+        '<p class="note phase-legend-note">Each bar is one layer’s wall time to '
+        "scale — shorter is faster. The parallel region is subdivided by what its "
+        "worker threads spent time on (averaged over threads); ‘idle’ is load "
+        "imbalance.</p>"
+    )
     return "\n".join(parts)
 
 
-def _stacked_bar_svg(
-    width: int,
-    height: int,
-    segments: list,
-    total: float,
-    label_prefix: str,
-) -> str:
-    """segments: list of (name, value_ns_or_units, per_layer_ms_for_title)."""
+def _text_color_for(bg_hex: str) -> str:
+    """White text on dark segment fills, near-black text on light ones."""
+    h = bg_hex.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#ffffff" if luminance < 140 else "#1a1a1a"
+
+
+def _slug(*parts) -> str:
+    s = "-".join(str(p) for p in parts)
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", s)
+
+
+def _segment_rect(
+    x: float, w: float, height: float, fill: str, title: str, name: str, per_ms: Optional[float] = None
+) -> list:
+    """One colored segment: a <rect> with a hover <title>, plus an inline
+    text label ("name" or, if there's more room, "name X ms") once the
+    segment is wide enough to hold it (~48px)."""
+    parts = [
+        f'<rect x="{x:.2f}" y="0" width="{w:.2f}" height="{height:.2f}" fill="{fill}">'
+        f"<title>{esc(title)}</title></rect>"
+    ]
+    label = None
+    if w >= 90 and per_ms is not None:
+        label = f"{name} {per_ms:.2f} ms"
+    elif w >= 48:
+        label = name
+    if label:
+        text_fill = "#1a1a1a" if fill.startswith("url(") else _text_color_for(fill)
+        parts.append(
+            svg_text(x + w / 2, height / 2 + 4, label, size=10, anchor="middle", fill=text_fill)
+        )
+    return parts
+
+
+def _phase_cell_svg(row: dict, group_max_ms: float, uid: str) -> str:
+    """One cell's bar: absolute length (scaled to the group's max ms/layer),
+    segmented into serial phases then the coset-loop's busy/idle breakdown.
+    See CLAUDE.md / the v0.4 perf-viz redesign for the segment layout."""
+    track_w = 460.0
+    label_room = 84.0
+    height = 24.0
+    width = track_w + label_room
+
+    wall_ns = row.get("wall_ns", 0) or 0
+    layers = row.get("layers", 1) or 1
+    threads_n = row.get("threads", 1) or 1
+    wall_ms = (wall_ns / 1e6 / layers) if layers else 0.0
+
+    bar_frac = 0.0
+    if group_max_ms > 0 and wall_ns > 0:
+        bar_frac = max(0.0, min(1.0, wall_ms / group_max_ms))
+    bar_w = bar_frac * track_w
+
     parts = [svg_open(width, height)]
-    parts.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="#f2f2f2"/>')
-    if total <= 0:
+    # faint background rail spanning the group's full scale
+    parts.append(f'<rect x="0" y="0" width="{track_w:.1f}" height="{height:.1f}" fill="#f2f2f2"/>')
+
+    if wall_ns <= 0 or bar_w <= 0:
         parts.append(svg_text(4, height / 2 + 4, "n/a", size=10, fill=MUTED_COLOR))
         parts.append("</svg>")
         return "\n".join(parts)
 
     x = 0.0
-    for name, value, per_ms in segments:
-        frac = value / total
-        seg_w = frac * width
-        if seg_w < width * 0.004:
-            # too thin to render, but still counted in total (hover info lost
-            # for this one — acceptable, it's sub-0.4%)
-            continue
-        color = PHASE_COLOR.get(name, "#999999")
-        title = f"{name}: {per_ms:.2f} ms/layer ({frac * 100:.1f}% of {label_prefix})"
-        parts.append(
-            f'<rect x="{x:.2f}" y="0" width="{seg_w:.2f}" height="{height}" '
-            f'fill="{color}"><title>{esc(title)}</title></rect>'
+
+    # --- 1. serial phases, in fixed order; sub-0.4%-of-wall ones merge ---
+    big = []
+    small = []
+    for name in SERIAL_PHASES:
+        v = row.get(f"{name}_ns", 0) or 0
+        frac = v / wall_ns
+        per_ms = (v / 1e6) / layers if layers else 0.0
+        (big if frac >= 0.004 else small).append((name, v, per_ms, frac))
+
+    for name, v, per_ms, frac in big:
+        seg_w = frac * bar_w
+        title = f"{name}: {per_ms:.3f} ms/layer ({frac * 100:.2f}% of wall)"
+        parts.extend(_segment_rect(x, seg_w, height, PHASE_COLOR[name], title, name, per_ms))
+        x += seg_w
+
+    small_total_ns = sum(v for _, v, _, _ in small)
+    if small_total_ns > 0:
+        frac = small_total_ns / wall_ns
+        seg_w = frac * bar_w
+        per_ms_total = (small_total_ns / 1e6) / layers if layers else 0.0
+        detail = ", ".join(f"{n} {m:.3f} ms" for n, _, m, _ in small if m > 0)
+        title = (
+            f"{OTHER_SERIAL}: {per_ms_total:.3f} ms/layer ({frac * 100:.2f}% of wall)"
+            + (f" — includes {detail} (each < 0.4% of wall)" if detail else "")
+        )
+        parts.extend(
+            _segment_rect(x, seg_w, height, PHASE_COLOR[OTHER_SERIAL], title, OTHER_SERIAL, per_ms_total)
         )
         x += seg_w
+
+    # --- 2. the coset-loop portion, subdivided by what workers were doing ---
+    coset_loop_ns = row.get("coset_loop_ns", 0) or 0
+    if coset_loop_ns > 0:
+        coset_frac = coset_loop_ns / wall_ns
+        coset_w = coset_frac * bar_w
+
+        other_busy_ns = sum((row.get(f"{n}_ns", 0) or 0) for n in BUSY_PHASES if n not in BUSY_SUB)
+        busy_raw = {n: (row.get(f"{n}_ns", 0) or 0) for n in BUSY_SUB}
+        busy_raw[OTHER_BUSY] = other_busy_ns
+        busy_total_ns = sum(busy_raw.values())
+
+        cx = x
+        for name in BUSY_SUB + [OTHER_BUSY]:
+            avg_ns = busy_raw[name] / threads_n
+            sub_frac = (avg_ns / coset_loop_ns) if coset_loop_ns else 0.0
+            sub_w = sub_frac * coset_w
+            per_ms = (avg_ns / 1e6) / layers if layers else 0.0
+            wall_frac = avg_ns / wall_ns if wall_ns else 0.0
+            title = (
+                f"{name}: {per_ms:.3f} ms/layer ({wall_frac * 100:.2f}% of wall, "
+                f"per-worker average over {threads_n} thread(s))"
+            )
+            parts.extend(_segment_rect(cx, sub_w, height, PHASE_COLOR[name], title, name, per_ms))
+            cx += sub_w
+
+        idle_ns = max(0.0, coset_loop_ns - busy_total_ns / threads_n)
+        idle_w = max(0.0, x + coset_w - cx)
+        if idle_w > 0.05:
+            par_eff = busy_total_ns / (coset_loop_ns * threads_n) if coset_loop_ns else None
+            idle_per_ms = (idle_ns / 1e6) / layers if layers else 0.0
+            idle_wall_frac = idle_ns / wall_ns if wall_ns else 0.0
+            title = (
+                f"{IDLE}: {idle_per_ms:.3f} ms/layer ({idle_wall_frac * 100:.2f}% of wall); "
+                f"parallel efficiency = {par_eff:.2f} (busy / (coset_loop × threads))"
+            )
+            pattern_id = f"idlehatch-{uid}"
+            parts.insert(
+                1,
+                f'<defs><pattern id="{pattern_id}" width="6" height="6" '
+                'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+                f'<rect width="6" height="6" fill="{IDLE_BASE}"/>'
+                f'<rect width="3" height="6" fill="{IDLE_STRIPE}"/>'
+                "</pattern></defs>",
+            )
+            parts.extend(
+                _segment_rect(cx, idle_w, height, f"url(#{pattern_id})", title, "idle", idle_per_ms)
+            )
+        x += coset_w
+
+    # value label at the bar's right end
+    parts.append(
+        svg_text(x + 6, height / 2 + 4, f"{wall_ms:.2f} ms", size=10.5, fill=TEXT_COLOR, weight="600")
+    )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
-def render_phase_breakdown(probe_rows: list) -> str:
+def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
     if not probe_rows:
         return '<p class="note">No probe sidecar (.-probe.json) found — phase breakdown unavailable.</p>'
 
@@ -387,64 +686,64 @@ def render_phase_breakdown(probe_rows: list) -> str:
 
     out = [render_legend()]
 
-    bar_w = 560
-    bar_h = 26
-    busy_h = 16
-
     for layer in sorted(groups):
         rows = sorted(groups[layer], key=lambda r: r.get("threads", 0))
         out.append(f'<h3 class="layer-name">{esc(layer)}</h3>')
+
+        group_max_ms = 0.0
+        for row in rows:
+            wall_ns = row.get("wall_ns", 0) or 0
+            layers = row.get("layers", 1) or 1
+            if wall_ns > 0 and layers:
+                group_max_ms = max(group_max_ms, wall_ns / 1e6 / layers)
+
         for row in rows:
             threads = row.get("threads", "?")
             wall_ns = row.get("wall_ns", 0) or 0
             layers = row.get("layers", 1) or 1
             terms_in = row.get("terms_in", 0) or 0
             vmhwm_kb = row.get("vmhwm_kb", 0) or 0
-
             wall_ms_per_layer = wall_ns / 1e6 / layers if layers else 0.0
-
-            wall_segments = []
-            for name in WALL_PHASES:
-                v = row.get(f"{name}_ns", 0) or 0
-                per_ms = (v / 1e6) / layers if layers else 0.0
-                wall_segments.append((name, v, per_ms))
-
-            busy_names = BUSY_PHASES
-            busy_values = {n: (row.get(f"{n}_ns", 0) or 0) for n in busy_names}
-            busy_total = sum(busy_values.values())
-            threads_n = row.get("threads", 1) or 1
-            busy_segments = []
-            for name in busy_names:
-                v = busy_values[name]
-                per_ms = (v / 1e6) / layers if layers else 0.0
-                busy_segments.append((name, v, per_ms))
-
-            wall_bar = _stacked_bar_svg(bar_w, bar_h, wall_segments, wall_ns, "wall")
-            busy_bar = _stacked_bar_svg(bar_w, busy_h, busy_segments, busy_total, "busy total")
-
             strings_per_s = terms_in / (wall_ns / 1e9) if wall_ns > 0 else None
-            coset_loop_ns = row.get("coset_loop_ns", 0) or 0
-            par_eff = None
-            if coset_loop_ns > 0:
-                par_eff = busy_total / (coset_loop_ns * threads_n)
-
             vmhwm_mb = vmhwm_kb / 1024.0
 
+            uid = _slug(layer, threads)
+            bar_svg = _phase_cell_svg(row, group_max_ms, uid)
+
+            metric = dram_metric(row, bandwidth_sections)
+            if metric is None or metric.get("gbps") is None:
+                dram_html = '<span class="dram-na">DRAM: —</span>'
+            elif metric["ceiling"] is None:
+                dram_html = (
+                    f'<span title="{esc(metric["title"])}">DRAM: {metric["gbps"]:.1f} GB/s</span>'
+                )
+            else:
+                over = " (cache-served)" if metric["pct"] > 100.0 else ""
+                dram_html = (
+                    f'<span class="dram-metric" title="{esc(metric["title"])}">'
+                    f'DRAM: {metric["gbps"]:.1f} GB/s = {metric["pct"]:.0f}% of ceiling{over}'
+                    f"{meter_bar_html(metric['pct'])}</span>"
+                )
+
             out.append('<div class="phase-row">')
-            out.append(f'<div class="phase-threads">threads = {esc(threads)}</div>')
-            out.append('<div class="phase-bars">')
-            out.append(f'<div class="wall-bar">{wall_bar}</div>')
-            out.append(f'<div class="busy-bar-wrap"><div class="busy-bar">{busy_bar}</div></div>')
-            out.append("</div>")
+            out.append(f'<div class="phase-threads">{esc(threads)} t</div>')
+            out.append(f'<div class="phase-bar">{bar_svg}</div>')
             out.append('<div class="phase-stats">')
-            out.append(f'<div>wall: {wall_ms_per_layer:.3f} ms/layer</div>')
-            out.append(f'<div>strings/s: {engineering(strings_per_s)}</div>')
-            if par_eff is not None:
-                out.append(f'<div>parallel eff.: {par_eff * 100:.1f}%</div>')
-            out.append(f'<div>VmHWM: {vmhwm_mb:.1f} MB</div>')
+            out.append(f"<div>wall: {wall_ms_per_layer:.3f} ms/layer</div>")
+            out.append(f"<div>strings/s: {engineering(strings_per_s)}</div>")
+            out.append(f"<div>{dram_html}</div>")
+            out.append(f"<div>VmHWM: {vmhwm_mb:.1f} MB</div>")
             out.append("</div>")
             out.append("</div>")
 
+    out.append(
+        '<p class="note">DRAM figure is a traffic model (see '
+        "<code>benchmarks/PROFILING.md</code>), not a measurement; ceiling = membench "
+        "triad at a comparable core count. Over 100% is not an error: it means the "
+        "modeled traffic is mostly served from cache rather than DRAM (small per-coset "
+        "working sets) — the phase is not DRAM-bound. Well below 100% with high wall "
+        "time points at latency, serial phases, or load imbalance instead.</p>"
+    )
     return "\n".join(out)
 
 
@@ -843,27 +1142,58 @@ dl.provenance dd { margin: 0; }
 .legend-title { color: #666666; font-weight: 600; margin-right: 4px; }
 .legend-item { display: inline-flex; align-items: center; gap: 4px; }
 .swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
+.swatch-idle {
+  width: 10px; height: 10px; display: inline-block; border-radius: 2px;
+  background: repeating-linear-gradient(45deg, #e3e1db, #e3e1db 2px, #c3c2b7 2px, #c3c2b7 4px);
+}
+.phase-legend-note { margin-top: 0; margin-bottom: 14px; }
 .phase-row {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 8px 0;
+  padding: 6px 0;
   border-bottom: 1px solid #f0f0f0;
   flex-wrap: wrap;
 }
-.phase-threads { width: 90px; font-weight: 600; font-size: 0.9em; flex-shrink: 0; }
-.phase-bars { flex: 1 1 auto; min-width: 300px; }
-.wall-bar { line-height: 0; }
-.busy-bar-wrap { margin-left: 24px; margin-top: 3px; line-height: 0; }
+.phase-threads {
+  width: 40px;
+  font-weight: 600;
+  font-size: 0.85em;
+  flex-shrink: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.phase-bar { line-height: 0; flex: 0 0 auto; }
 .phase-stats {
   font-size: 0.82em;
   color: #333333;
   font-variant-numeric: tabular-nums;
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 2px 18px;
-  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 0 0 auto;
 }
+.phase-stats > div { white-space: nowrap; }
+.dram-na { color: #999999; }
+.dram-metric { display: inline-flex; align-items: center; }
+.dram-meter {
+  display: inline-block;
+  position: relative;
+  width: 56px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 3px;
+  background: #e2e2e2;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.meter-fill, .meter-fill-over {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  border-radius: 3px;
+}
+.meter-fill { background: #2a78d6; }
+.meter-fill-over { background: #d03b3b; }
 .table-wrap { overflow-x: auto; margin: 10px 0; }
 table { border-collapse: collapse; width: 100%; font-size: 0.88em; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #eeeeee; white-space: nowrap; }
@@ -935,7 +1265,7 @@ def build_report(prefix: Path, compare_path: Optional[Path]) -> str:
     parts.append(render_header(campaign_name, prov))
 
     parts.append("<h2>Phase breakdown</h2>")
-    parts.append(render_phase_breakdown(probe_rows))
+    parts.append(render_phase_breakdown(probe_rows, bandwidth_sections))
 
     parts.append("<h2>Throughput vs threads</h2>")
     parts.append(render_throughput_chart(probe_rows))

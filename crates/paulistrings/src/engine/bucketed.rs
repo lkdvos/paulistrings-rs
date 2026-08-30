@@ -454,6 +454,10 @@ fn fill_coset<const W: usize, T>(
     // Sort each run by (key, tag) and merge into the member's live slot.
     for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
         let len = run.len();
+        #[cfg(feature = "phase-timing")]
+        {
+            stats.rows_gathered += len as u64;
+        }
         sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut stats.sort_ns);

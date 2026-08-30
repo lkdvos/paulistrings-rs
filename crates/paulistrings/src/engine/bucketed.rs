@@ -39,6 +39,9 @@ use crate::pauli_string::PauliString;
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
+#[cfg(feature = "phase-timing")]
+use super::stats::{CosetStats, PhaseStats, Stamp};
+
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Reusable per-layer scratch.
@@ -71,12 +74,35 @@ pub struct LayerScratch<const W: usize> {
     /// worker locks only its own slot, so the mutexes are uncontended; they
     /// exist to make the shared borrow safe, not to arbitrate.
     workers: Vec<Mutex<CosetScratch<W>>>,
+    /// Layer-level (wall-clock) phase counters; the per-coset busy-time
+    /// counters live in each `CosetScratch`.
+    #[cfg(feature = "phase-timing")]
+    pub(crate) stats: PhaseStats,
 }
 
 impl<const W: usize> LayerScratch<W> {
     /// An empty scratch.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Drain and return the accumulated phase counters: the layer-level
+    /// wall-clock fields plus every worker's busy-time counters, all zeroed
+    /// afterwards.
+    ///
+    /// Call between measured regions; counters accumulate across layers and
+    /// `propagate_with_scratch` calls until drained. Caveat: the defensive
+    /// fresh-scratch arm of the parallel coset loop (a worker with no pool
+    /// index) drops its counters — that arm is unreachable in practice.
+    #[cfg(feature = "phase-timing")]
+    pub fn take_stats(&mut self) -> PhaseStats {
+        let mut total = std::mem::take(&mut self.stats);
+        total.absorb_coset(&std::mem::take(&mut self.task.stats));
+        for slot in &self.workers {
+            let mut ws = slot.lock().unwrap();
+            total.absorb_coset(&std::mem::take(&mut ws.stats));
+        }
+        total
     }
 }
 
@@ -92,6 +118,10 @@ struct CosetScratch<const W: usize> {
     old: Vec<BucketCols<W>>,
     /// Per-output-member gather runs.
     runs: Vec<GatherRun<W>>,
+    /// This slot's busy-time phase counters, drained by
+    /// `LayerScratch::take_stats`.
+    #[cfg(feature = "phase-timing")]
+    stats: CosetStats,
 }
 
 /// One output member's gather run: key columns, coefficients, and the delta
@@ -185,6 +215,9 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
+    #[cfg(feature = "phase-timing")]
+    let mut st = Stamp::now();
+
     // Key-preserving channels (identity, depolarizing, dephasing, Pauli gates)
     // leave every key bitwise unchanged, so the output is already sorted and
     // duplicate-free. v0.1 paid a full O(n log n) sort to multiply each
@@ -192,6 +225,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     if let Prepared::Local(ptm) = prep {
         if ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
+            #[cfg(feature = "phase-timing")]
+            st.lap(&mut scratch.stats.rescale_ns);
             return;
         }
     }
@@ -203,6 +238,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     let plan = DeltaPlan::new(prep, &span);
     let m = span.coset_size();
     let num_cosets = span.num_cosets();
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut scratch.stats.span_plan_ns);
 
     // Permute the bucket *handles* into coset-contiguous order: coset `c`
     // owns `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis
@@ -224,6 +261,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
             scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
         }
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut scratch.stats.permute_ns);
 
     // Each coset is a closed task: it reads and writes only its own chunk, so
     // the chunk loop needs no atomics, no cross-task locks, and no
@@ -267,6 +306,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
             });
         }
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut scratch.stats.coset_loop_ns);
 
     // Un-permute: every handle goes back to its bucket index, leaving the
     // staging slots as empty, capacity-free defaults.
@@ -276,7 +317,11 @@ pub fn apply_layer_bucketed<const W: usize, T>(
             *cols = std::mem::take(&mut scratch.staging[scratch.perm[beta] as usize]);
         }
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut scratch.stats.unpermute_ns);
     sum.recount();
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut scratch.stats.recount_ns);
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
@@ -302,7 +347,12 @@ fn fill_coset<const W: usize, T>(
     T: TruncationPolicy<W> + ?Sized,
 {
     let m = chunk.len();
+    #[cfg(feature = "phase-timing")]
+    let CosetScratch { old, runs, stats } = ws;
+    #[cfg(not(feature = "phase-timing"))]
     let CosetScratch { old, runs } = ws;
+    #[cfg(feature = "phase-timing")]
+    let mut st = Stamp::now();
     old.resize_with(m, BucketCols::default);
     runs.resize_with(m, GatherRun::default);
 
@@ -314,6 +364,8 @@ fn fill_coset<const W: usize, T>(
         std::mem::swap(slot, cols);
         slot.clear();
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut stats.swap_ns);
 
     // Exact per-run capacity, counted once per delta entry — two entries
     // colliding on one bucket delta count twice, matching the rows they can
@@ -331,6 +383,8 @@ fn fill_coset<const W: usize, T>(
         };
         run.reset(cap);
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut stats.size_ns);
 
     // Gather. Two visit orders produce the same rows per run — `(key, tag)` is
     // unique within a run, so the tag sort canonicalizes either order to the
@@ -394,11 +448,15 @@ fn fill_coset<const W: usize, T>(
             }
         }
     }
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut stats.gather_ns);
 
     // Sort each run by (key, tag) and merge into the member's live slot.
     for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
         let len = run.len();
         sort_phase_tagged(&mut run.x, &mut run.z, &mut run.coeff, &run.tag, len);
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut stats.sort_ns);
         merge_into::<W, T>(
             &run.x,
             &run.z,
@@ -410,12 +468,20 @@ fn fill_coset<const W: usize, T>(
             &mut dst.coeff,
             policy,
         );
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut stats.merge_ns);
     }
 
     // Leave `old` cleared so the next coset's swap hands its chunk clean,
     // capacity-retaining columns. Runs are cleared by their own `reset`.
     for cols in old.iter_mut() {
         cols.clear();
+    }
+    #[cfg(feature = "phase-timing")]
+    {
+        st.lap(&mut stats.clear_ns);
+        stats.cosets += 1;
+        stats.runs += m as u64;
     }
 }
 

@@ -6,6 +6,8 @@
 pub mod bucketed;
 pub(crate) mod coset;
 pub mod sort_merge;
+#[cfg(feature = "phase-timing")]
+pub mod stats;
 
 use crate::bucket::sum::DEFAULT_TARGET_BUCKET_LEN;
 use crate::channel::Channel;
@@ -73,9 +75,30 @@ pub enum Direction {
 /// See design doc §8.1.
 pub fn propagate<const W: usize, T>(
     circuit: &Circuit<W>,
+    sum: PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+) -> PauliSum<W>
+where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    let mut scratch = LayerScratch::<W>::new();
+    propagate_with_scratch(circuit, sum, policy, direction, &mut scratch)
+}
+
+/// [`propagate`] with a caller-held [`LayerScratch`].
+///
+/// Behaves identically to [`propagate`] — it *is* the implementation — but
+/// lets the caller retain the scratch's high-water buffer capacity across
+/// calls (a Trotter driver stepping an observable), and, under the
+/// `phase-timing` feature, read the per-phase counters afterwards through
+/// [`LayerScratch::take_stats`].
+pub fn propagate_with_scratch<const W: usize, T>(
+    circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
     policy: &T,
     direction: Direction,
+    scratch: &mut LayerScratch<W>,
 ) -> PauliSum<W>
 where
     T: TruncationPolicy<W> + ?Sized,
@@ -86,7 +109,6 @@ where
     // (v0.3 §1): bitwise independence of the engine's output from `B` is still
     // tested (v0.2 §9.1), but it is no longer what makes this safe.
     let min_buckets = default_min_buckets();
-    let mut scratch = LayerScratch::<W>::new();
 
     for k in 0..n {
         let idx = match direction {
@@ -95,10 +117,28 @@ where
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
 
-        sum.rebucket(DEFAULT_TARGET_BUCKET_LEN, min_buckets);
+        #[cfg(feature = "phase-timing")]
+        let mut st = stats::Stamp::now();
+        #[cfg(feature = "phase-timing")]
+        {
+            scratch.stats.layers += 1;
+            scratch.stats.terms_in += sum.len() as u64;
+        }
 
-        match ch.prepare(sum.hash(), adjoint) {
-            Some(prep) => apply_layer_bucketed(&mut sum, &prep, policy, &mut scratch),
+        sum.rebucket(DEFAULT_TARGET_BUCKET_LEN, min_buckets);
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut scratch.stats.rebucket_ns);
+
+        let prep = ch.prepare(sum.hash(), adjoint);
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut scratch.stats.prepare_ns);
+
+        match prep {
+            Some(prep) => {
+                apply_layer_bucketed(&mut sum, &prep, policy, scratch);
+                #[cfg(feature = "phase-timing")]
+                st.rearm();
+            }
             None => {
                 // The channel declined to be bucketed — support wider than the
                 // local maximum, or it writes outside its declared support. Fall
@@ -110,10 +150,17 @@ where
                 } else {
                     sort_merge::apply_layer(&sum, ch, policy)
                 };
+                #[cfg(feature = "phase-timing")]
+                st.lap(&mut scratch.stats.fallback_ns);
             }
         }
 
         policy.finalize_layer(&mut sum);
+        #[cfg(feature = "phase-timing")]
+        {
+            st.lap(&mut scratch.stats.finalize_ns);
+            scratch.stats.terms_out += sum.len() as u64;
+        }
     }
     sum
 }

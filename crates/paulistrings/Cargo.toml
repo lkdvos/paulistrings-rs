@@ -14,6 +14,12 @@ categories = ["science", "simulation"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+# Compile per-phase timing counters into the engine (see `engine::stats`).
+# Measurement builds only — never enable by default: the default build must
+# stay byte- and performance-identical to an uninstrumented one.
+phase-timing = []
+
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 num-complex = "0.4"
@@ -28,3 +34,7 @@ proptest = "1"
 [[bench]]
 name = "pauli_ops"
 harness = false
+
+[[example]]
+name = "phase_breakdown"
+required-features = ["phase-timing"]

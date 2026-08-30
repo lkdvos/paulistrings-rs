@@ -767,7 +767,43 @@ fn bench_finalize_top_n(c: &mut Criterion) {
         )
     });
 
+    // Tie-dense: the same size and the same 80% cut, but only four distinct
+    // magnitudes, so the tie group at the threshold is ~25% of the sum. This is
+    // the shape a symmetric Hamiltonian produces, and it is the only shape that
+    // exercises the group-detection pass (v0.3 §3) on a non-trivial group —
+    // random coefficients give `count_eq == 1` and the counting reduce sees a
+    // degenerate case. The `random_sum` cases above stay as the contrast.
+    let tied: PauliSum<2> = tie_heavy_sum::<2>(n, 128, 0x70_9F);
+    let tied_hash = Gf2Hash::<2>::new(128, bits_for(tied.len()), 0xBEEF);
+    let tied_keep = (tied.len() * 4) / 5;
+    group.bench_function("bucketed/tie_heavy_keep80pct", |bencher| {
+        bencher.iter_batched_ref(
+            || tied.clone().with_hash(tied_hash.clone()),
+            |sum| {
+                paulistrings::truncation::TopN(tied_keep).finalize_layer(sum);
+                black_box(sum.len())
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
     group.finish();
+}
+
+/// As `random_sum`, but with only four distinct coefficient magnitudes, so any
+/// cut through it lands inside a tie group spanning a quarter of the sum.
+///
+/// Mirrors `engine::bucketed::tie_tests::tie_heavy_sum`; kept here because
+/// benches cannot reach into the crate's test modules.
+fn tie_heavy_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
+    for i in 0..n_terms {
+        let p = random_pauli::<W>(&mut rng);
+        let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
+        acc.add_term(p, Phase::ONE, Complex64::new(mag, 0.0));
+    }
+    acc.finalize()
 }
 
 /// Sweep the terms-per-bucket target, which sets the per-bucket sort size.

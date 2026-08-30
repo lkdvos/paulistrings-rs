@@ -47,9 +47,11 @@ a one-line Python invocation instead of a multi-minute Rust run.
 ising_2d_quench`; `docs/examples/img/ising_quench.svg` comes from
 `python plot_ising_quench.py` (needs matplotlib, e.g. via `./scripts/setup.sh`).
 
-**Known staleness:** the CSVs were regenerated in v0.2 B.7, when `TopN`'s
-tie-breaking became well-defined (see the "How sensitive is the answer" section
-of `../docs/examples/ising_2d_quench.md`). The SVG was *not* regenerated at the
-same time — matplotlib was unavailable on that machine. The curves it plots moved
-by at most 1.8% (4×4) and 0.12% (6×6), which is below the line width, so the
-figure is still an accurate picture; regenerate it when convenient.
+**Known staleness:** the CSVs were regenerated in v0.3 §3, when `TopN(n)`
+changed from "keep exactly `n`, key-ascending tiebreak" to "keep at most
+`n`, discarding the whole boundary tie group rather than splitting it" (see
+the "How sensitive is the answer" section of
+`../docs/examples/ising_2d_quench.md` for the full three-way comparison and
+numbers). The SVG was regenerated in the same pass via
+`module load modules/2.5-beta1 python/3.12.13` (Lmod-provided matplotlib
+3.11.0), so it matches the current CSVs.

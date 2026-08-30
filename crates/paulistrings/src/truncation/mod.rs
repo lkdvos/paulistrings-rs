@@ -10,8 +10,10 @@
 //! accept) or [`Or`] (either accepts).
 //!
 //! Built-ins: [`CoefficientThreshold`] drops terms below a magnitude;
-//! [`WeightCutoff`] drops terms above a Pauli weight; [`TopN`] keeps the `n`
-//! largest-magnitude terms via a layer-finalization partial sort.
+//! [`WeightCutoff`] drops terms above a Pauli weight; [`TopN`] keeps **at
+//! most** `n` largest-magnitude terms via a layer-finalization partial
+//! selection, never splitting a group of equal magnitudes (see [`TopN`] for
+//! the rule and its degenerate case).
 //!
 //! See design doc §7.
 //!

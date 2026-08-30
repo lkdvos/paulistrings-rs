@@ -18,7 +18,8 @@ pub enum PolicySpec {
     Coeff(f64),
     /// Drop terms with Pauli weight > k.
     Weight(u32),
-    /// Keep only the n largest-magnitude terms after each layer.
+    /// Keep **at most** n terms by magnitude after each layer, never splitting
+    /// a group of equal magnitudes. See `paulistrings::truncation::TopN`.
     TopN(usize),
     And(Box<PolicySpec>, Box<PolicySpec>),
     Or(Box<PolicySpec>, Box<PolicySpec>),

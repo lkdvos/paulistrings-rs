@@ -1904,7 +1904,7 @@ mod tie_tests {
         }
     }
 
-    use super::tests::{assert_same_terms, rand_sum};
+    use super::tests::{assert_same_terms, canonical_triples, rand_sum};
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
@@ -1931,11 +1931,42 @@ mod tie_tests {
         acc.finalize()
     }
 
-    /// `TopN` must keep the same set regardless of the bucket partition, even
-    /// when the cut falls inside a tie group.
+    /// A direct, deliberately naive transcription of the v0.3 §3 rule, used as
+    /// an oracle for the production `finalize_layer`.
     ///
-    /// Tie-breaking on flat position would fail this: flat position depends on
-    /// which bucket a term landed in, hence on the bucket count.
+    /// Full sort instead of a selection, `retain` instead of a per-bucket
+    /// compaction, no parallelism: nothing here shares code with the thing it
+    /// checks. Returns the surviving terms as canonical triples.
+    fn top_n_reference<const W: usize>(
+        sum: &PauliSum<W>,
+        n: usize,
+    ) -> Vec<([u64; W], [u64; W], Complex64)> {
+        let mut triples = canonical_triples(sum);
+        if triples.len() <= n {
+            return triples;
+        }
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut mags: Vec<f64> = triples.iter().map(|t| t.2.norm()).collect();
+        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
+        // `t` = the n-th largest magnitude.
+        let t = mags[n - 1];
+        let count_gt = mags.iter().filter(|&&m| m > t).count();
+        let count_eq = mags.iter().filter(|&&m| m == t).count();
+        // Keep the tie group iff it fits entirely.
+        let keep_tied = count_gt + count_eq <= n;
+        triples.retain(|(_, _, c)| {
+            let m = c.norm();
+            m > t || (keep_tied && m == t)
+        });
+        triples
+    }
+
+    /// The retained set is a pure function of the magnitude multiset, so it
+    /// cannot depend on the bucket partition. Checked on tie-dense data, where
+    /// a partition-sensitive rule (flat position, or the old key tiebreak read
+    /// through a bucket index) would show up.
     #[test]
     fn top_n_is_bucket_count_independent_on_tied_magnitudes() {
         let input = tie_heavy_sum(2000, 8, 0x7135);
@@ -1959,28 +1990,71 @@ mod tie_tests {
         }
     }
 
-    /// The bucketed and flat implementations must agree **on ties too**, not
-    /// just on distinct magnitudes. This is what lets the two engines produce
-    /// identical output on a symmetric Hamiltonian.
+    /// `finalize_layer` must agree with the §3 rule computed the obvious way,
+    /// on tie-dense data and across partitions. This is the semantics test: it
+    /// pins *which* terms survive, not merely that all partitions agree.
+    ///
+    /// The `n` sweep mixes arbitrary cut points (which straddle a group, since
+    /// there are only four magnitudes) with the *exact* group boundaries read
+    /// off the fixture (which fit). The assertions at the end fail the test if
+    /// it ever stops exercising one of the two branches.
     #[test]
-    fn top_n_bucketed_matches_flat_on_tied_magnitudes() {
+    fn top_n_matches_the_reference_rule_on_tied_magnitudes() {
         let input = tie_heavy_sum(2000, 8, 0x7136);
-        for n in [3usize, 250, 700, 1200, 1900] {
+        let len = input.len();
+
+        // Cumulative sizes of the magnitude groups, descending: an `n` equal to
+        // one of these is a cut that lands exactly on a group boundary.
+        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
+        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
+        let boundaries: Vec<usize> = (1..mags.len())
+            .filter(|&i| mags[i] != mags[i - 1])
+            .collect();
+        assert!(
+            boundaries.len() >= 2,
+            "fixture must have several magnitude groups, got {}",
+            boundaries.len() + 1
+        );
+
+        let mut sweep = vec![3usize, 250, 700, 1200, 1900];
+        sweep.extend_from_slice(&boundaries);
+        let mut saw_straddle = false;
+        let mut saw_fit = false;
+
+        for n in sweep {
+            let want = top_n_reference(&input, n);
+            // A straddling group is discarded whole, so fewer than `n` survive;
+            // a group that fits leaves exactly `n`.
+            assert!(want.len() <= n, "n={n}: rule must retain at most n");
+            if want.len() < n {
+                saw_straddle = true;
+            } else {
+                saw_fit = true;
+            }
+
             let policy = TopN(n);
-            let mut flat = input.clone();
-            policy.finalize_layer(&mut flat);
             for bits in [0u8, 2, 5, 9] {
                 let hash = Gf2Hash::<1>::new(8, bits, 0x99);
                 let mut b = input.clone().with_hash(hash);
                 policy.finalize_layer(&mut b);
-                let got = b;
-                assert_same_terms(
-                    &got,
-                    &flat,
-                    &format!("n={n} bits={bits}: keys or coeffs differ on ties"),
+                b.assert_invariants();
+                assert_eq!(
+                    canonical_triples(&b),
+                    want,
+                    "n={n} bits={bits} (len={len}): retained set differs from the \
+                     reference rule",
                 );
             }
         }
+
+        assert!(
+            saw_straddle,
+            "the n sweep no longer covers a straddling tie group"
+        );
+        assert!(
+            saw_fit,
+            "the n sweep no longer covers a tie group that fits"
+        );
     }
 
     /// The same, across hash seeds: a different `H` permutes bucket membership
@@ -2005,6 +2079,44 @@ mod tie_tests {
                 &reference,
                 &format!("seed={seed}: different set kept"),
             );
+        }
+    }
+
+    /// Tie-dense data multi-bucket: a straddling group leaves no member behind
+    /// in *any* bucket. The per-bucket compaction is where a partial drop would
+    /// hide, so this is checked on the real partition rather than at `B = 1`.
+    #[test]
+    fn top_n_drops_a_straddling_group_from_every_bucket() {
+        let input = tie_heavy_sum(2000, 8, 0x71C0);
+        let n = 700;
+        // t is the 700th largest magnitude; the group at t straddles the cut.
+        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
+        mags.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let t = mags[n - 1];
+        let count_gt = mags.iter().filter(|&&m| m > t).count();
+        let count_eq = mags.iter().filter(|&&m| m == t).count();
+        assert!(
+            count_gt + count_eq > n,
+            "fixture no longer straddles: gt={count_gt} eq={count_eq} n={n}"
+        );
+
+        for bits in [0u8, 3, 7] {
+            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
+            let mut b = input.clone().with_hash(hash);
+            TopN(n).finalize_layer(&mut b);
+            b.assert_invariants();
+            assert_eq!(
+                b.len(),
+                count_gt,
+                "bits={bits}: retained count must be exactly count(|c| > t)"
+            );
+            for nb in 0..b.num_buckets() {
+                let (_, _, coeff) = b.bucket(nb);
+                assert!(
+                    coeff.iter().all(|c| c.norm() > t),
+                    "bits={bits} bucket={nb}: a member of the discarded group survived"
+                );
+            }
         }
     }
 }

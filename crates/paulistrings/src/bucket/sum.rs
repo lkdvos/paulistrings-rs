@@ -28,7 +28,9 @@ pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Used to size the partition once at ingestion and at the start of
 /// `propagate`, so the initial scatter hashes in a single pass rather than
 /// being refined bit by bit.
-/// [`PauliSum::rebucket`] keeps it in band afterwards, with hysteresis.
+/// [`PauliSum::rebucket`] tracks it afterwards, but only upward (v0.5 §R1):
+/// it grows the partition to `desired_bits` when that exceeds the current
+/// count, and otherwise leaves the (larger) current count alone.
 pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     debug_assert!(target > 0);
     let worth_splitting = len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
@@ -71,7 +73,13 @@ pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 /// trajectory — depend on how many threads happen to be available, which is
 /// not a property we want: `B`-independence of the engine's output is a
 /// tested property (v0.2 §9.1), not a load-bearing invariant, and a fixed
-/// floor makes `B` a deterministic function of the term count `n` alone.
+/// floor keeps `B` deterministic. As of v0.5 §R1, [`PauliSum::rebucket`] is
+/// grow-only, so `B` is a deterministic function of the *history* of term
+/// counts — the running max of [`desired_bits`] over every layer seen so far
+/// — rather than of the instantaneous term count `n` alone. That history is
+/// still fully determined by the circuit and the starting sum, so output
+/// stays byte-identical across machines and thread counts; it just can no
+/// longer be recovered from `len()` at a single point in time.
 ///
 /// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone
 /// below that (e.g. `min_buckets = 2` would split at 128 terms), and we want
@@ -587,39 +595,39 @@ impl<const W: usize> PauliSum<W> {
         self.buckets = merged;
     }
 
-    /// Bring the bucket count to what [`desired_bits`] would choose for the
-    /// current length.
+    /// Bring the bucket count up to what [`desired_bits`] would choose for the
+    /// current length — but never down.
     ///
-    /// # Why this is not hysteretic
+    /// # Grow-only policy
     ///
-    /// It was, originally: refine only above `4 × target`, coarsen only below
-    /// `target / 4`, on the theory that `n` swings every layer (fanout grows it,
-    /// truncation cuts it back) and acting on every deviation would thrash.
+    /// A sum's bucket count is monotone non-decreasing over its lifetime: this
+    /// clamps the target to `self.hash.bits()`, so `rebucket` only ever refines,
+    /// never coarsens. The v0.4 baseline (`research/notes/2026-08-30-v0.4-perf-framework-baseline.md`)
+    /// measured that the previous "track `desired_bits` exactly, up or down"
+    /// policy made `rebucket` 74% of wall time on a sqrt-SWAP `GeneralUnitary2Q`
+    /// workload and 45–46% at ≥8 threads on the TFIM Trotter workload: term
+    /// counts oscillate every layer (fanout grows them, cancellation/truncation
+    /// cuts them back), so a sum sitting near a power-of-two boundary in
+    /// `desired_bits` would refine and coarsen on alternate layers, each an
+    /// `O(n · bits)` serial pass — exactly the "residual risk … accepted,
+    /// unmeasured" this doc comment used to record.
     ///
-    /// Measured, that band cost ~10% on the 2D Ising quench, because it lets the
-    /// steady state sit up to `4 ×` above target — 1562 terms per bucket instead
-    /// of 781 — and the per-bucket sort is `O(m log m)`. The guard was also
-    /// mostly redundant: bucket counts move in powers of two, so `desired_bits`
-    /// already only changes when `n` crosses a doubling, which for a
-    /// `TopN`-capped workload (the common case) is never.
-    ///
-    /// The residual risk is a sum that oscillates across a power-of-two boundary
-    /// on alternate layers, which would refine and coarsen repeatedly at `O(n)`
-    /// each. That is an accepted, unmeasured risk: no workload in the repo
-    /// exhibits it, and guarding it properly needs state this type does not
-    /// carry. Recorded rather than silently assumed away.
+    /// Keeping the larger partition instead is physically the right default:
+    /// operator support only grows under propagation until truncation cuts it,
+    /// and the cost of *not* coarsening back down is bounded — three empty `Vec`
+    /// headers per surplus bucket, not a term-proportional cost. A caller that
+    /// actually wants to shrink a sum (to reclaim memory between independent
+    /// circuits, say) still can, explicitly, via [`Self::with_hash`] or
+    /// [`Self::coarsen`]; `rebucket` itself no longer does it implicitly.
     ///
     /// Also keeps at least `min_buckets` buckets once there is enough work to
     /// spread, so the bucket-parallel decomposition has slack to load-balance
     /// (v0.2 §4.3).
     pub fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
-        let want = desired_bits(self.len, target, min_buckets);
+        let want = desired_bits(self.len, target, min_buckets).max(self.hash.bits());
         while self.hash.bits() < want {
             self.refine();
-        }
-        while self.hash.bits() > want {
-            self.coarsen();
         }
     }
 
@@ -788,6 +796,13 @@ impl<const W: usize> PauliSum<W> {
     /// Panics unless the two sums share a partition: same hash rows (same seed
     /// and qubit count) *and* the same bucket count. Combining sums under
     /// different partitions is [`Self::add`]'s job; overlap does not realign.
+    ///
+    /// Note that under the grow-only [`Self::rebucket`] policy (v0.5 §R1), two
+    /// sums can have equal `len()` but different bucket counts if they were
+    /// grown to different high-water marks along the way (e.g. one was built
+    /// directly at its final size, the other passed through a larger
+    /// intermediate sum and never coarsened back down). Align them with
+    /// [`Self::with_hash`] before calling if that is a possibility.
     pub fn overlap(&self, other: &Self) -> Complex64 {
         assert!(
             self.hash.same_rows_as(&other.hash),
@@ -1288,16 +1303,21 @@ mod tests {
     }
 
     #[test]
-    fn rebucket_shrinks_toward_the_target() {
+    fn rebucket_never_shrinks() {
+        // v0.5 §R1: rebucket only ever grows. 200 terms at target 256 wants far
+        // fewer than 1024 buckets, but starting at 1024 must stay at 1024 — the
+        // opposite of the old hysteretic-coarsening behavior this test used to
+        // pin down.
         let sum = rand_sum::<1>(200, 64, 0xD2);
         let h = Gf2Hash::<1>::new(64, 10, 0xC0DE);
         let mut b = sum.clone().with_hash(h);
         assert_eq!(b.num_buckets(), 1024);
         b.rebucket(256, 1);
         b.assert_invariants();
-        assert!(
-            b.num_buckets() < 1024,
-            "expected coarsening, still {} buckets",
+        assert_eq!(
+            b.num_buckets(),
+            1024,
+            "rebucket shrank from 1024 to {} buckets",
             b.num_buckets(),
         );
         assert_same_sum(&sum, &b);
@@ -1322,9 +1342,12 @@ mod tests {
     }
 
     #[test]
-    fn rebucket_lands_on_desired_bits() {
-        // The contract after C.4: whatever the starting partition, `rebucket`
-        // converges on exactly what `desired_bits` would have chosen.
+    fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
+        // v0.5 §R1: `rebucket` only grows, so it converges on exactly what
+        // `desired_bits` would have chosen only when the starting partition is
+        // at or below that — otherwise (e.g. `start = 12`, above every `want`
+        // in this table) the starting bit count is the high-water mark and
+        // survives unchanged. Both are `want.max(start)`.
         for &n in &[500usize, 6400, 60_000] {
             let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
             let want = desired_bits(sum.len(), 256, 8);
@@ -1334,12 +1357,48 @@ mod tests {
                 b.rebucket(256, 8);
                 assert_eq!(
                     b.hash().bits(),
-                    want,
-                    "n={n} start={start}: did not converge on desired_bits",
+                    want.max(start),
+                    "n={n} start={start}: expected max(want={want}, start={start})",
                 );
                 b.assert_invariants();
             }
         }
+    }
+
+    #[test]
+    fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
+        // Grow to a high bucket count from a large sum, then shrink the term
+        // count sharply (as truncation/cancellation would between layers) and
+        // rebucket again: the grow-only policy (v0.5 §R1) says the bucket count
+        // is a high-water mark, so it must not follow the length back down.
+        let sum = rand_sum::<2>(60_000, 128, 0xDA1);
+        let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
+        let mut b = sum.with_hash(h);
+        b.rebucket(256, 8);
+        let grown_bits = b.hash().bits();
+        assert!(
+            grown_bits > 0,
+            "sanity: rebucket should have grown from 0 bits"
+        );
+
+        // Shrink the term count sharply, well below what would justify
+        // `grown_bits` under `desired_bits`.
+        b.retain(|_, _, c| c.re > 0.995);
+        b.assert_invariants();
+        assert!(
+            b.len() < 512,
+            "sanity: shrink did not reduce len enough ({})",
+            b.len(),
+        );
+
+        b.rebucket(256, 8);
+        assert_eq!(
+            b.hash().bits(),
+            grown_bits,
+            "rebucket shrank the high-water mark from {grown_bits} to {}",
+            b.hash().bits(),
+        );
+        b.assert_invariants();
     }
 
     #[test]

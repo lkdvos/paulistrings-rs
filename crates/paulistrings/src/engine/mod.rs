@@ -105,9 +105,12 @@ where
 {
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
-    // The bucket count `B` is a deterministic function of the term count alone
-    // (v0.3 §1): bitwise independence of the engine's output from `B` is still
-    // tested (v0.2 §9.1), but it is no longer what makes this safe.
+    // The bucket count `B` is a deterministic function of the *history* of
+    // term counts (v0.5 §R1: `rebucket` is grow-only, so `B` is the running
+    // max of `desired_bits` over every layer so far, not the instantaneous
+    // length), which is itself fully determined by the circuit and the
+    // starting sum: bitwise independence of the engine's output from `B` is
+    // still tested (v0.2 §9.1), but it is no longer what makes this safe.
     let min_buckets = default_min_buckets();
 
     for k in 0..n {
@@ -169,7 +172,9 @@ where
 ///
 /// Fixed (v0.3 §1), not derived from `rayon::current_num_threads`: see
 /// [`crate::bucket::sum::DEFAULT_MIN_BUCKETS`] for why a thread-independent
-/// floor is what we want here.
+/// floor is what we want here. Combined with the grow-only `rebucket` policy
+/// (v0.5 §R1), this floor is a lower bound on `B` throughout a `propagate`
+/// call, not just at the layer where it was first crossed.
 pub fn default_min_buckets() -> usize {
     crate::bucket::sum::DEFAULT_MIN_BUCKETS
 }

@@ -38,7 +38,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::coset::Gf2Span;
-use super::sort_merge::{merge_into, sort_rows_with_scratch, SortScratch};
+use super::sort_merge::{merge2_into, sort_rows_with_scratch, SortScratch};
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -141,6 +141,16 @@ struct CosetScratch<const W: usize> {
 /// (and the tag) — see the module doc and `sort_merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
 struct GatherRun<const W: usize> {
+    /// The identity-delta stream (v0.5 S2): keys untouched, so it inherits the
+    /// source bucket's strictly-ascending, duplicate-free order and is never
+    /// sorted. `H·0 = 0` puts this stream in the member's own run, in source
+    /// position order; zero-amplitude skips only delete rows, preserving both
+    /// properties.
+    id_x: Vec<[u64; W]>,
+    id_z: Vec<[u64; W]>,
+    id_coeff: Vec<Complex64>,
+    /// Every other delta's rows — keys XOR'd by a constant mask, so generally
+    /// unsorted; canonicalized per run by `sort_rows_with_scratch`.
     x: Vec<[u64; W]>,
     z: Vec<[u64; W]>,
     coeff: Vec<Complex64>,
@@ -148,16 +158,32 @@ struct GatherRun<const W: usize> {
 
 impl<const W: usize> GatherRun<W> {
     #[inline]
-    fn reset(&mut self, cap: usize) {
+    fn reset(&mut self, cap_id: usize, cap_rest: usize) {
+        self.id_x.clear();
+        self.id_z.clear();
+        self.id_coeff.clear();
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        if self.x.capacity() < cap {
-            let extra = cap - self.x.capacity();
+        if self.id_x.capacity() < cap_id {
+            let extra = cap_id - self.id_x.capacity();
+            self.id_x.reserve(extra);
+            self.id_z.reserve(extra);
+            self.id_coeff.reserve(extra);
+        }
+        if self.x.capacity() < cap_rest {
+            let extra = cap_rest - self.x.capacity();
             self.x.reserve(extra);
             self.z.reserve(extra);
             self.coeff.reserve(extra);
         }
+    }
+
+    #[inline]
+    fn push_id(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+        self.id_x.push(x);
+        self.id_z.push(z);
+        self.id_coeff.push(c);
     }
 
     #[inline]
@@ -169,7 +195,7 @@ impl<const W: usize> GatherRun<W> {
 
     #[inline]
     fn len(&self) -> usize {
-        self.coeff.len()
+        self.id_coeff.len() + self.coeff.len()
     }
 }
 
@@ -180,6 +206,12 @@ enum DeltaPlan<'p, const W: usize> {
     Local {
         ptm: &'p LocalPtm<W>,
         coords: Vec<u32>,
+        /// Whether `deltas()[0]` is the identity delta (`local_delta == 0` —
+        /// entry 0 by the ascending construction order), whose stream the
+        /// gather routes into the run's pre-sorted `id` columns (v0.5 S2).
+        /// True for every built-in channel; a custom channel without it
+        /// gathers everything into the sorted rest stream.
+        has_identity: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
     /// generator pass.
@@ -193,14 +225,22 @@ enum DeltaPlan<'p, const W: usize> {
 impl<'p, const W: usize> DeltaPlan<'p, W> {
     fn new(prep: &'p Prepared<W>, span: &Gf2Span) -> Self {
         match prep {
-            Prepared::Local(ptm) => DeltaPlan::Local {
-                ptm,
-                coords: ptm
+            Prepared::Local(ptm) => {
+                let coords: Vec<u32> = ptm
                     .deltas()
                     .iter()
                     .map(|d| span.coord_of(d.bucket_delta))
-                    .collect(),
-            },
+                    .collect();
+                let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
+                // The identity delta hashes to bucket delta 0, whose coset
+                // coordinate is 0 — the id stream stays in its own member.
+                debug_assert!(!has_identity || coords[0] == 0);
+                DeltaPlan::Local {
+                    ptm,
+                    coords,
+                    has_identity,
+                }
+            }
             Prepared::Rotation(r) => DeltaPlan::Rotation {
                 prep: r,
                 coord_identity: span.coord_of(r.bucket_delta_identity),
@@ -382,19 +422,37 @@ fn fill_coset<const W: usize, T>(
 
     // Exact per-run capacity, counted once per delta entry — two entries
     // colliding on one bucket delta count twice, matching the rows they can
-    // emit.
+    // emit. Split by destination stream: the identity entry feeds the
+    // pre-sorted `id` columns, everything else the sorted rest (v0.5 S2).
     for (j, run) in runs.iter_mut().enumerate() {
-        let cap: usize = match plan {
-            DeltaPlan::Local { coords, .. } => {
-                coords.iter().map(|&c| old[j ^ c as usize].len()).sum()
+        let (cap_id, cap_rest): (usize, usize) = match plan {
+            DeltaPlan::Local {
+                coords,
+                has_identity,
+                ..
+            } => {
+                let mut id = 0usize;
+                let mut rest = 0usize;
+                for (e, &c) in coords.iter().enumerate() {
+                    let l = old[j ^ c as usize].len();
+                    if *has_identity && e == 0 {
+                        id += l;
+                    } else {
+                        rest += l;
+                    }
+                }
+                (id, rest)
             }
             DeltaPlan::Rotation {
                 coord_identity,
                 coord_gen,
                 ..
-            } => old[j ^ *coord_identity as usize].len() + old[j ^ *coord_gen as usize].len(),
+            } => (
+                old[j ^ *coord_identity as usize].len(),
+                old[j ^ *coord_gen as usize].len(),
+            ),
         };
-        run.reset(cap);
+        run.reset(cap_id, cap_rest);
     }
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.size_ns);
@@ -414,11 +472,15 @@ fn fill_coset<const W: usize, T>(
     // engine had. Only `Local` plans can reach `r ≥ 3` (a wide rotation has at
     // most two bucket deltas).
     match plan {
-        DeltaPlan::Local { ptm, coords } => {
+        DeltaPlan::Local {
+            ptm,
+            coords,
+            has_identity,
+        } => {
             if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
-                gather_local_output_major(old, runs, ptm, coords);
+                gather_local_output_major(old, runs, ptm, coords, *has_identity);
             } else {
-                gather_local_input_major(old, runs, ptm, coords);
+                gather_local_input_major(old, runs, ptm, coords, *has_identity);
             }
         }
         DeltaPlan::Rotation {
@@ -428,7 +490,11 @@ fn fill_coset<const W: usize, T>(
         } => {
             // The identity pass and the generator pass. `cos`/`sin` stay
             // hoisted; the `i^k` phase depends on 2w support bits and is
-            // computed per anticommuting term, exactly as before.
+            // computed per anticommuting term, exactly as before. Every term
+            // emits exactly one identity-pass row (full coefficient when it
+            // commutes, `cos`-scaled when it doesn't — kept even when
+            // `cos == 0`, see `merge2_into` on signed zeros), so the id
+            // stream is the whole source bucket in order: sorted, unique.
             for (i, src) in old.iter().enumerate() {
                 for t in 0..src.len() {
                     let v = PauliString::<W> {
@@ -436,9 +502,13 @@ fn fill_coset<const W: usize, T>(
                         z: src.z[t],
                     };
                     if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize].push(src.x[t], src.z[t], src.coeff[t]);
+                        runs[i ^ *coord_identity as usize].push_id(
+                            src.x[t],
+                            src.z[t],
+                            src.coeff[t],
+                        );
                     } else {
-                        runs[i ^ *coord_identity as usize].push(
+                        runs[i ^ *coord_identity as usize].push_id(
                             src.x[t],
                             src.z[t],
                             src.coeff[t] * prep.cos,
@@ -459,22 +529,25 @@ fn fill_coset<const W: usize, T>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.gather_ns);
 
-    // Sort each run by key alone and merge into the member's live slot.
+    // Sort each run's rest stream by key alone, then fuse the two-stream
+    // merge with the segmented reduction into the member's live slot: the id
+    // stream never moves through the sort at all (v0.5 S2).
     for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
-        let len = run.len();
         #[cfg(feature = "phase-timing")]
         {
-            stats.rows_gathered += len as u64;
+            stats.rows_gathered += run.len() as u64;
+            stats.rows_sorted += run.coeff.len() as u64;
         }
         sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut stats.sort_ns);
-        merge_into::<W, T>(
+        merge2_into::<W, T>(
+            &run.id_x,
+            &run.id_z,
+            &run.id_coeff,
             &run.x,
             &run.z,
             &run.coeff,
-            0,
-            len,
             &mut dst.x,
             &mut dst.z,
             &mut dst.coeff,
@@ -524,11 +597,22 @@ fn gather_local_input_major<const W: usize>(
     runs: &mut [GatherRun<W>],
     ptm: &LocalPtm<W>,
     coords: &[u32],
+    has_identity: bool,
 ) {
+    let rest_start = has_identity as usize;
     for (i, src) in old.iter().enumerate() {
         for t in 0..src.len() {
             let s = ptm.support_bits(&src.x[t], &src.z[t]);
-            for (e, d) in ptm.deltas().iter().enumerate() {
+            if has_identity {
+                // Entry 0 is the identity delta: masks are zero and
+                // `coords[0] == 0`, so the row lands in this member's own run
+                // with its key untouched — the pre-sorted id stream (v0.5 S2).
+                let a = ptm.deltas()[0].amp[s];
+                if a != ZERO {
+                    runs[i].push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                }
+            }
+            for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
                 let a = d.amp[s];
                 if a == ZERO {
                     continue;
@@ -557,9 +641,24 @@ fn gather_local_output_major<const W: usize>(
     runs: &mut [GatherRun<W>],
     ptm: &LocalPtm<W>,
     coords: &[u32],
+    has_identity: bool,
 ) {
+    let rest_start = has_identity as usize;
     for (j, run) in runs.iter_mut().enumerate() {
-        for (e, d) in ptm.deltas().iter().enumerate() {
+        if has_identity {
+            // Entry 0: masks zero, `coords[0] == 0` — the member's own bucket
+            // streams into the pre-sorted id columns (v0.5 S2).
+            let d = &ptm.deltas()[0];
+            let src = &old[j];
+            for t in 0..src.len() {
+                let s = ptm.support_bits(&src.x[t], &src.z[t]);
+                let a = d.amp[s];
+                if a != ZERO {
+                    run.push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                }
+            }
+        }
+        for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
             let src = &old[j ^ coords[e] as usize];
             for t in 0..src.len() {
                 let s = ptm.support_bits(&src.x[t], &src.z[t]);
@@ -1227,16 +1326,26 @@ mod tests {
             }
         }
 
+        let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
         let gather = |output_major: bool| {
             let mut runs: Vec<GatherRun<1>> = (0..m).map(|_| GatherRun::default()).collect();
             for (j, run) in runs.iter_mut().enumerate() {
-                let cap: usize = coords.iter().map(|&c| old[j ^ c as usize].len()).sum();
-                run.reset(cap);
+                let mut cap_id = 0usize;
+                let mut cap_rest = 0usize;
+                for (e, &c) in coords.iter().enumerate() {
+                    let l = old[j ^ c as usize].len();
+                    if has_identity && e == 0 {
+                        cap_id += l;
+                    } else {
+                        cap_rest += l;
+                    }
+                }
+                run.reset(cap_id, cap_rest);
             }
             if output_major {
-                gather_local_output_major(&old, &mut runs, ptm, &coords);
+                gather_local_output_major(&old, &mut runs, ptm, &coords, has_identity);
             } else {
-                gather_local_input_major(&old, &mut runs, ptm, &coords);
+                gather_local_input_major(&old, &mut runs, ptm, &coords, has_identity);
             }
             let mut scratch = SortScratch::<1>::default();
             for run in runs.iter_mut() {
@@ -1257,16 +1366,16 @@ mod tests {
         // raw element-wise comparison could see a spurious mismatch at a tie
         // that has nothing to do with which order gathered it.
         let merge_run = |run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
-            let len = run.x.len();
             let mut mx = Vec::new();
             let mut mz = Vec::new();
             let mut mc = Vec::new();
-            merge_into::<1, AlwaysKeep>(
+            merge2_into::<1, AlwaysKeep>(
+                &run.id_x,
+                &run.id_z,
+                &run.id_coeff,
                 &run.x,
                 &run.z,
                 &run.coeff,
-                0,
-                len,
                 &mut mx,
                 &mut mz,
                 &mut mc,

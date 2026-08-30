@@ -524,6 +524,78 @@ pub(crate) fn merge_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     }
 }
 
+/// Fused two-stream merge + segmented reduction (v0.5 S2).
+///
+/// `a` is a gather run's identity-delta stream: its keys are untouched source
+/// keys, so it inherits the bucket invariant — strictly ascending, no
+/// duplicates — and is **never sorted**. `b` is the run's remaining rows,
+/// canonicalized by `sort_rows_with_scratch` (ascending, duplicates allowed).
+/// The two-pointer walk consumes rows in global key order, seeding a key tie
+/// from the `a` row first and then adding the equal-key `b` rows in their
+/// sorted order; that order is deterministic for a fixed input but, per the
+/// v0.5 S1 policy, not specified across partitions. Zero-drop and `keep_term`
+/// see the fully summed coefficient — the same contract as [`merge_into`],
+/// which remains the single-stream form (and the whole story when `a` is
+/// empty: a channel with no identity delta gathers everything into `b`).
+///
+/// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
+/// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
+/// the sign of a zero sum, so the only zero test is on the final accumulator.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    a_x: &[[u64; W]],
+    a_z: &[[u64; W]],
+    a_c: &[Complex64],
+    b_x: &[[u64; W]],
+    b_z: &[[u64; W]],
+    b_c: &[Complex64],
+    dst_x: &mut Vec<[u64; W]>,
+    dst_z: &mut Vec<[u64; W]>,
+    dst_coeff: &mut Vec<Complex64>,
+    policy: &T,
+) {
+    let zero = Complex64::new(0.0, 0.0);
+    let (an, bn) = (a_c.len(), b_c.len());
+    debug_assert_eq!(an, a_x.len());
+    debug_assert_eq!(an, a_z.len());
+    debug_assert_eq!(bn, b_x.len());
+    debug_assert_eq!(bn, b_z.len());
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < an || j < bn {
+        // Take the smaller next key; on a tie the `a` row seeds the sum. After
+        // an `a` seed there is no second `a` row for the key (`a` is unique),
+        // and after a `b` seed every equal-key `a` row would have compared
+        // `<=`, so only `b` rows can extend the segment either way.
+        let take_a = j >= bn || (i < an && (a_x[i], a_z[i]) <= (b_x[j], b_z[j]));
+        let (key_x, key_z, mut acc) = if take_a {
+            debug_assert!(
+                i == 0 || (a_x[i - 1], a_z[i - 1]) < (a_x[i], a_z[i]),
+                "merge2_into: identity stream must be strictly ascending at {i}",
+            );
+            let t = (a_x[i], a_z[i], a_c[i]);
+            i += 1;
+            t
+        } else {
+            debug_assert!(
+                j == 0 || (b_x[j - 1], b_z[j - 1]) <= (b_x[j], b_z[j]),
+                "merge2_into: rest stream must be sorted at {j}",
+            );
+            let t = (b_x[j], b_z[j], b_c[j]);
+            j += 1;
+            t
+        };
+        while j < bn && b_x[j] == key_x && b_z[j] == key_z {
+            acc += b_c[j];
+            j += 1;
+        }
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
+        }
+    }
+}
+
 /// Partition `[0..len)` into `nchunks` non-empty sub-ranges whose interior
 /// boundaries land at run breaks. The "natural" boundary `len * k / nchunks`
 /// is advanced forward (or to `len`) until the keys at `t-1` and `t` differ.
@@ -1232,5 +1304,160 @@ mod tests {
         assert_eq!(ox[0], [0]);
         assert_eq!(oz[0], [1]);
         assert_eq!(oc[0], Complex64::new(5.0, 0.0));
+    }
+
+    // ---- merge2_into (v0.5 S2): fused id/rest merge + reduction ----
+
+    /// Reference for `merge2_into`: concatenate both streams, sort by key,
+    /// reduce with `merge_into`. Coefficients in these tests are small
+    /// integers, so `f64` addition is exact in any order and the comparison
+    /// can be `==` even where the two pipelines sum in different orders.
+    #[allow(clippy::type_complexity)]
+    fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+        a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
+        b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
+        policy: &T,
+    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
+        let mut rows: Vec<([u64; W], [u64; W], Complex64)> =
+            a.0.iter()
+                .zip(a.1)
+                .zip(a.2)
+                .map(|((&x, &z), &c)| (x, z, c))
+                .chain(b.0.iter().zip(b.1).zip(b.2).map(|((&x, &z), &c)| (x, z, c)))
+                .collect();
+        rows.sort_by_key(|&(x, z, _)| (x, z));
+        let (sx, sz, sc): (Vec<_>, Vec<_>, Vec<_>) =
+            rows.into_iter()
+                .fold((vec![], vec![], vec![]), |(mut x, mut z, mut c), r| {
+                    x.push(r.0);
+                    z.push(r.1);
+                    c.push(r.2);
+                    (x, z, c)
+                });
+        let mut ox = vec![];
+        let mut oz = vec![];
+        let mut oc = vec![];
+        merge_into(
+            &sx,
+            &sz,
+            &sc,
+            0,
+            sc.len(),
+            &mut ox,
+            &mut oz,
+            &mut oc,
+            policy,
+        );
+        (ox, oz, oc)
+    }
+
+    fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+        a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
+        b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
+        policy: &T,
+    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
+        let mut ox = vec![];
+        let mut oz = vec![];
+        let mut oc = vec![];
+        merge2_into(
+            a.0, a.1, a.2, b.0, b.1, b.2, &mut ox, &mut oz, &mut oc, policy,
+        );
+        (ox, oz, oc)
+    }
+
+    /// Randomized differential against the concat-sort-reduce reference:
+    /// unique sorted id keys, rest with duplicates and cross-stream
+    /// collisions, integer coefficients so any summation order is exact.
+    #[test]
+    fn merge2_matches_concat_sort_reduce() {
+        // Tiny xorshift so the cases are deterministic without new deps.
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..50 {
+            // id: strictly ascending unique keys (sorted subset of 0..24).
+            let mut id_keys: Vec<u64> = (0..24).filter(|_| next() % 2 == 0).collect();
+            id_keys.dedup();
+            let a_x: Vec<[u64; 1]> = id_keys.iter().map(|&k| [k]).collect();
+            let a_z: Vec<[u64; 1]> = id_keys.iter().map(|&k| [k >> 1]).collect();
+            let a_c: Vec<Complex64> = id_keys
+                .iter()
+                .map(|_| Complex64::new((next() % 7) as f64 - 3.0, (next() % 5) as f64 - 2.0))
+                .collect();
+            // rest: sorted, duplicates allowed, keys overlapping id's range.
+            let mut rest_keys: Vec<u64> = (0..(next() % 40)).map(|_| next() % 24).collect();
+            rest_keys.sort_unstable();
+            let b_x: Vec<[u64; 1]> = rest_keys.iter().map(|&k| [k]).collect();
+            let b_z: Vec<[u64; 1]> = rest_keys.iter().map(|&k| [k >> 1]).collect();
+            let b_c: Vec<Complex64> = rest_keys
+                .iter()
+                .map(|_| Complex64::new((next() % 9) as f64 - 4.0, 0.0))
+                .collect();
+
+            let got = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+            let want = merge2_reference((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+            assert_eq!(got, want, "case {case} diverged from the reference");
+        }
+    }
+
+    /// Both degenerate stream shapes: empty id (a channel with no identity
+    /// delta) reduces to plain `merge_into` behavior; empty rest (a fully
+    /// commuting coset) passes the unique id stream through the zero-drop
+    /// and policy filters untouched.
+    #[test]
+    fn merge2_handles_empty_streams() {
+        let x: Vec<[u64; 1]> = vec![[1], [2], [3]];
+        let z: Vec<[u64; 1]> = vec![[0], [0], [1]];
+        let c: Vec<Complex64> = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.0, 0.0),
+            Complex64::new(3.0, 0.0),
+        ];
+        let empty: (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) = (vec![], vec![], vec![]);
+
+        let id_only = run_merge2((&x, &z, &c), (&empty.0, &empty.1, &empty.2), &AlwaysKeep);
+        assert_eq!(id_only, (x.clone(), z.clone(), c.clone()));
+
+        let rest_only = run_merge2((&empty.0, &empty.1, &empty.2), (&x, &z, &c), &AlwaysKeep);
+        assert_eq!(rest_only, (x, z, c));
+    }
+
+    /// A cross-stream cancellation must drop the key entirely, and an
+    /// exact-zero id coefficient (a `θ = π/2` rotation's `cos`-scaled row)
+    /// must still participate: `-0.0 + 0.0 = +0.0` — pre-filtering zero rows
+    /// would flip the sign of a zero sum against the single-stream pipeline.
+    #[test]
+    fn merge2_cancellation_and_signed_zero() {
+        let a_x: Vec<[u64; 1]> = vec![[1], [2]];
+        let a_z: Vec<[u64; 1]> = vec![[0], [0]];
+        let a_c: Vec<Complex64> = vec![Complex64::new(-0.0, 0.0), Complex64::new(5.0, 0.0)];
+        let b_x: Vec<[u64; 1]> = vec![[1], [2]];
+        let b_z: Vec<[u64; 1]> = vec![[0], [0]];
+        let b_c: Vec<Complex64> = vec![Complex64::new(0.0, 0.0), Complex64::new(-5.0, 0.0)];
+        let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+        // Key [2]: exact cancellation, dropped. Key [1]: sums to +0.0 exactly
+        // (the sign a zero-row prefilter would get wrong), which the zero-drop
+        // then removes — matching merge_into on the concatenated streams.
+        assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
+    }
+
+    /// `keep_term` sees the fully summed coefficient, same as `merge_into`.
+    #[test]
+    fn merge2_policy_sees_summed_coefficient() {
+        let a_x: Vec<[u64; 1]> = vec![[3]];
+        let a_z: Vec<[u64; 1]> = vec![[0]];
+        let a_c: Vec<Complex64> = vec![Complex64::new(0.04, 0.0)];
+        let b_x: Vec<[u64; 1]> = vec![[3], [3]];
+        let b_z: Vec<[u64; 1]> = vec![[0], [0]];
+        let b_c: Vec<Complex64> = vec![Complex64::new(0.04, 0.0), Complex64::new(0.04, 0.0)];
+        // Each row is below the 0.1 threshold; the sum (0.12) is above it.
+        let policy = CoefficientThreshold(0.1);
+        let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &policy);
+        assert_eq!(ox, vec![[3u64]]);
+        assert!(approx_eq(oc[0], Complex64::new(0.12, 0.0), TOL));
     }
 }

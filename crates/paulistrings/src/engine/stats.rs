@@ -84,9 +84,15 @@ pub struct PhaseStats {
     pub runs: u64,
     /// Rows pushed into gather runs (= Σ run lengths entering sort/merge).
     /// The traffic multiplier for the roofline model: each gathered row is
-    /// one key+coeff written by gather (no tag column since v0.5 S1), then
-    /// read and rewritten by sort and read once more by merge.
+    /// one key+coeff written by gather (no tag column since v0.5 S1) and read
+    /// once more by merge; the `rows_sorted` subset is additionally read and
+    /// rewritten by the sort.
     pub rows_gathered: u64,
+    /// The subset of `rows_gathered` that went through the per-run sort —
+    /// the rest streams only. Identity-delta rows arrive pre-sorted and skip
+    /// the sort entirely (v0.5 S2), so `rows_gathered - rows_sorted` is the
+    /// sorted-volume saving the split buys.
+    pub rows_sorted: u64,
     /// Σ over layers of the term count *before* the layer.
     pub terms_in: u64,
     /// Σ over layers of the term count *after* the layer (post-truncation).
@@ -117,6 +123,7 @@ impl PhaseStats {
         self.cosets += o.cosets;
         self.runs += o.runs;
         self.rows_gathered += o.rows_gathered;
+        self.rows_sorted += o.rows_sorted;
         self.terms_in += o.terms_in;
         self.terms_out += o.terms_out;
     }
@@ -132,6 +139,7 @@ impl PhaseStats {
         self.cosets += c.cosets;
         self.runs += c.runs;
         self.rows_gathered += c.rows_gathered;
+        self.rows_sorted += c.rows_sorted;
     }
 
     /// Sum of the wall-clock phase fields — approximately the total wall
@@ -180,6 +188,7 @@ pub(crate) struct CosetStats {
     pub(crate) cosets: u64,
     pub(crate) runs: u64,
     pub(crate) rows_gathered: u64,
+    pub(crate) rows_sorted: u64,
 }
 
 /// Chained timestamp: `lap` records elapsed-since-last into a slot and

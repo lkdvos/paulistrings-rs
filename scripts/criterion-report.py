@@ -23,9 +23,16 @@ older Criterion output that lacks ``benchmark.json``).
 ``estimates.json`` timings are nanoseconds throughout (Criterion's own unit).
 
 Subcommands:
-  snapshot OUT.json [--filter SUBSTR]
+  snapshot OUT.json [--filter SUBSTR] [--merge]
       Walk target/criterion and write a JSON map of
       full_id -> {median_ns, mean_ns, stddev_ns, throughput_elems, melem_per_s}.
+      With --merge, an existing OUT.json is loaded first and updated with
+      the newly collected entries (new entries win on key collisions)
+      before writing back, instead of overwriting OUT.json outright. Tip:
+      run snapshot once per --filter group and --merge them into the same
+      file -- this is what bench-campaign.sh does for its criterion:
+      items, so one campaign's snapshot JSON accumulates every group
+      instead of the last group clobbering the earlier ones.
 
   compare OLD.json NEW.json [--threshold 5.0]
       Print a markdown comparison table. This is a reporting tool, not a
@@ -105,13 +112,31 @@ def collect_snapshot(criterion_dir: Path, filter_substr: Optional[str] = None) -
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
-    results = collect_snapshot(CRITERION_DIR, args.filter)
+    new_results = collect_snapshot(CRITERION_DIR, args.filter)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    results = new_results
+    merged_note = ""
+    if args.merge and out_path.is_file():
+        existing = _read_json(out_path)
+        if existing is None:
+            print(
+                f"criterion-report snapshot: --merge requested but {out_path} "
+                "could not be parsed as JSON -- overwriting it",
+                file=sys.stderr,
+            )
+        else:
+            existing.update(new_results)
+            results = existing
+            merged_note = (
+                f", merged into {len(existing)} total existing at {out_path}"
+            )
+
     out_path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
     print(
-        f"criterion-report snapshot: captured {len(results)} bench(es) "
-        f"from {CRITERION_DIR} -> {out_path}",
+        f"criterion-report snapshot: captured {len(new_results)} bench(es) "
+        f"from {CRITERION_DIR} -> {out_path}{merged_note}",
         file=sys.stderr,
     )
     return 0
@@ -199,7 +224,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap.add_argument(
         "--filter",
         default=None,
-        help="Only include benches whose full_id contains this substring.",
+        help=(
+            "Only include benches whose full_id contains this SUBSTRING "
+            "(plain substring match, not a regex or glob). Tip: run "
+            "snapshot once per group and --merge them into one file -- "
+            "this is what bench-campaign.sh's criterion: items do."
+        ),
+    )
+    p_snap.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "If OUT.json already exists, load it and update it with the "
+            "newly collected entries (new entries win on key collisions) "
+            "instead of overwriting it outright."
+        ),
     )
     p_snap.set_defaults(func=cmd_snapshot)
 

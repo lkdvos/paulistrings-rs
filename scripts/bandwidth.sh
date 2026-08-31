@@ -3,11 +3,12 @@
 # placement matrix, and cross-check against the uncore memory controllers.
 #
 # Run once per host (or after hardware changes); record the headline triad
-# numbers in a research note (see benchmarks/PROFILING.md). Placement masks
-# below are for ccqlin038's topology: 2 sockets, node0 phys CPUs 0-7
-# (HT 16-23), node1 phys 8-15 (HT 24-31). Adjust for other hosts.
+# numbers in a research note (see benchmarks/PROFILING.md). The placement
+# matrix (BANDWIDTH_RUNS) and the roofline ceiling labels (CEILING_MAP) come
+# from scripts/host-topology.sh, keyed on this host's `hostname -s`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/host-topology.sh
 
 MIB=${MIB:-512}
 REPS=${REPS:-5}
@@ -26,6 +27,10 @@ run() { # run <label> <threads> [prefix...]
     fi
 }
 
+# First stdout line: the ceiling-map perf-viz.py parses to label roofline
+# ceilings, so it lands at the top of bandwidth.txt when this is redirected.
+echo "# ceiling-map: ${CEILING_MAP}"
+
 echo "memory-bandwidth ceiling — $(hostname -f)"
 echo "date: $(date +%F)"
 echo "commit: $(git rev-parse HEAD)$(git diff --quiet || echo ' (dirty)')"
@@ -34,14 +39,13 @@ echo "load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
 echo "mib=$MIB reps=$REPS  (STREAM-convention nominal bytes; plain stores, RFO uncorrected)"
 echo
 
-run "1 core, node0 local"    1  numactl --cpunodebind=0 --membind=0
-run "1 core, node0 cpu / node1 mem (remote)" 1 numactl --cpunodebind=0 --membind=1
-run "node0, 8 physical"      8  numactl --cpunodebind=0 --membind=0
-run "node1, 8 physical"      8  numactl --cpunodebind=1 --membind=1
-run "node0, 8 phys + 8 HT"   16 taskset -c 0-7,16-23 numactl --membind=0
-run "both sockets, 16 physical" 16 taskset -c 0-15
-run "both sockets, 16 phys, interleaved pages" 16 numactl --interleave=all --physcpubind=0-15
-run "both sockets, 32 threads"  32
+for entry in "${BANDWIDTH_RUNS[@]}"; do
+    IFS='|' read -r label threads prefix <<<"$entry"
+    # shellcheck disable=SC2206  # intentional word-splitting of a
+    # host-topology-defined, space-separated prefix command into argv.
+    prefix_arr=($prefix)
+    run "$label" "$threads" "${prefix_arr[@]}"
+done
 
 echo "=== uncore cross-check (node0, 8 physical, read+triad) ==="
 # System-wide counters on a shared box: short window, and the alloc/first-touch

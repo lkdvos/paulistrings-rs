@@ -54,6 +54,7 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{low_weight_sum, rand_sum};
 use paulistrings::{
     propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
@@ -603,7 +604,7 @@ fn print_table(cell: &CellResult) {
     } else {
         0.0
     };
-    let overhead_ns = s.timer_reads() * 25;
+    let overhead_ns = s.timer_reads() * TIMER_READ_OVERHEAD_NS;
     let overhead_pct = if cell.wall_ns > 0 {
         overhead_ns as f64 / cell.wall_ns as f64 * 100.0
     } else {
@@ -611,9 +612,10 @@ fn print_table(cell: &CellResult) {
     };
     println!("  strings/s          = {strings_per_s:.3e}");
     println!(
-        "  timer overhead est = {:.3} us ({} reads x 25 ns) = {:.2}% of wall",
+        "  timer overhead est = {:.3} us ({} reads x {} ns) = {:.2}% of wall",
         overhead_ns as f64 / 1e3,
         s.timer_reads(),
+        TIMER_READ_OVERHEAD_NS,
         overhead_pct
     );
     println!(

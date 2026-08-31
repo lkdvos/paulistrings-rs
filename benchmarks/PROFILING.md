@@ -101,7 +101,7 @@ mixed in one `PhaseStats`:
 
 The probe (`cargo run --release --features phase-timing --example
 phase_breakdown`) prints its own timer-overhead estimate
-(`PhaseStats::timer_reads() × ~25 ns` on this class of hardware) next to
+(`PhaseStats::timer_reads() × stats::TIMER_READ_OVERHEAD_NS`) next to
 the breakdown, so you can see when the measurement is polluting itself
 (tiny cosets, many runs inflate the read count).
 

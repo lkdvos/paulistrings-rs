@@ -12,6 +12,9 @@
 // our code, so we silence it crate-wide.
 #![allow(clippy::useless_conversion)]
 
+#[macro_use]
+mod macros;
+
 mod channel_spec;
 mod circuit;
 mod gates;

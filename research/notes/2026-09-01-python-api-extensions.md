@@ -476,6 +476,31 @@ process-global). These live with the examples' own test collection, not CI.
 **Implementer must NOT:** add truncation kwargs to `propagate` itself; spawn or resize Rayon pools
 from Rust; rely on setting the env var after import.
 
+**Correction (measured), Wave 2 implementation, ccqlin038, 2026-08-31.** The thread-pinning facts
+above are half right and half wrong once `examples/common/harness.py` was actually built and run:
+
+- The 32-or-so threads visible right after `import paulistrings` are **numpy's, not Rayon's**.
+  `paulistrings` pulls in numpy transitively, and numpy's OpenBLAS spawns one thread per core at
+  *its* import — a bare `import numpy` alone takes the process from 1 thread to 32 on a 32-core
+  host, before `paulistrings` (or Rayon) enters the picture at all. So "with `RAYON_NUM_THREADS`
+  unset the process shows 33 threads immediately after import" was measuring OpenBLAS, not Rayon.
+- **Rayon's pool builds at the first `propagate` call, not at import.** Unset, the first propagate
+  takes the thread count from 32 → 64 (one worker per core); with `RAYON_NUM_THREADS=1` it goes
+  32 → 33 (exactly one worker). Import alone changes neither.
+- The "export before the interpreter starts" discipline is unaffected and remains load-bearing:
+  Rayon still reads the environment variable exactly once, when its global pool is first built, and
+  never resizes it — the correction only changes *when* that build happens (first propagate, not
+  import), not the rule that the variable must already be set by then.
+- Consequence for `assert_single_threaded`: an *absolute* "at most 2 threads" bound is unreachable
+  for any process in this suite, because OpenBLAS's pool is already counted before Rayon ever runs.
+  The shipped implementation checks the thread count **relative to a baseline sampled at
+  `harness` import time** (`IMPORT_THREAD_COUNT`) instead of an absolute constant.
+
+These facts, and the full reasoning above, live in `examples/common/harness.py`'s module
+docstring (`IMPORT_THREAD_COUNT`, `PINNED_RAYON_THREADS`, `rayon_worker_estimate`,
+`assert_single_threaded`) as the load-bearing copy; this note is the historical record of what was
+measured before implementation and where it needed correcting after.
+
 ---
 
 ## A8 — deferred designs (docs only, no code)

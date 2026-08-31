@@ -12,14 +12,12 @@ use num_complex::Complex64;
 /// bucket and the only effect is to copy the input through. `max_fanout()`
 /// is `1`.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct IdentityChannel {
-    support: [u32; 0],
-}
+pub struct IdentityChannel;
 
 impl IdentityChannel {
     /// Construct an identity channel.
     pub const fn new() -> Self {
-        Self { support: [] }
+        Self
     }
 }
 

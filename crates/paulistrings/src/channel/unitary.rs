@@ -23,7 +23,7 @@
 //! [`Clifford1Q`]: super::clifford::Clifford1Q
 //! [`Clifford2Q`]: super::clifford::Clifford2Q
 
-use super::{support_mask, Channel, OutputBuffer};
+use super::{qubit_loc, read_pauli, support_mask, write_pauli, Channel, OutputBuffer};
 use num_complex::Complex64;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
@@ -102,6 +102,25 @@ fn clean(v: Complex64, eps: f64) -> Complex64 {
 /// Tolerance below which a derived PTM entry is treated as an exact zero.
 const PTM_EPS: f64 = 1e-12;
 
+/// Materialize the effective PTM row for input index `s`: `table[s]`
+/// normally, or its transpose column `[table[t][s] for t]` when `transpose`
+/// is set (the Hilbert-Schmidt adjoint — see the module docs). Shared by
+/// [`apply_1q`] (`N = 4`) and [`apply_2q`] (`N = 16`); hoisting this out of
+/// the per-output loop means the transpose flag is tested once per call
+/// instead of once per emitted term.
+#[inline]
+fn effective_row<const N: usize>(
+    table: &[[Complex64; N]; N],
+    transpose: bool,
+    s: usize,
+) -> [Complex64; N] {
+    if transpose {
+        core::array::from_fn(|t| table[t][s])
+    } else {
+        table[s]
+    }
+}
+
 /// Generic 1-qubit unitary, stored as the Pauli expansion of its
 /// Heisenberg-picture action on `{I, X, Z, Y}` at the support qubit.
 ///
@@ -177,31 +196,20 @@ fn apply_1q<const W: usize>(
 ) {
     let q = qubit as usize;
     debug_assert!(q < 64 * W);
-    let word = q / 64;
-    let bit = q % 64;
-    let mask = 1u64 << bit;
-    let x_bit = (input_x[word] >> bit) & 1;
-    let z_bit = (input_z[word] >> bit) & 1;
-    let s = (x_bit | (z_bit << 1)) as usize;
+    let (word, bit, mask) = qubit_loc(q);
+    let s = read_pauli(input_x, input_z, word, bit);
 
     // Materialize the effective row once, so the transpose branch is hoisted out
     // of the loop instead of being retested per output.
-    let row: [Complex64; 4] = if transpose {
-        core::array::from_fn(|t| table[t][s])
-    } else {
-        table[s]
-    };
+    let row = effective_row(table, transpose, s);
 
     for (t, &c) in row.iter().enumerate() {
         if c == ZERO {
             continue;
         }
-        let ox = (t & 1) as u64;
-        let oz = ((t >> 1) & 1) as u64;
         let mut nx = *input_x;
         let mut nz = *input_z;
-        nx[word] = (nx[word] & !mask) | (ox << bit);
-        nz[word] = (nz[word] & !mask) | (oz << bit);
+        write_pauli(&mut nx, &mut nz, word, bit, mask, t);
         out.push(nx, nz, coeff * c);
     }
 }
@@ -319,20 +327,12 @@ fn apply_2q<const W: usize>(
     let q0 = support[0] as usize;
     let q1 = support[1] as usize;
     debug_assert!(q0 < 64 * W && q1 < 64 * W);
-    let (w0, b0) = (q0 / 64, q0 % 64);
-    let (w1, b1) = (q1 / 64, q1 % 64);
-    let (m0, m1) = (1u64 << b0, 1u64 << b1);
+    let (w0, b0, m0) = qubit_loc(q0);
+    let (w1, b1, m1) = qubit_loc(q1);
 
-    let s = (((input_x[w0] >> b0) & 1)
-        | (((input_z[w0] >> b0) & 1) << 1)
-        | (((input_x[w1] >> b1) & 1) << 2)
-        | (((input_z[w1] >> b1) & 1) << 3)) as usize;
+    let s = read_pauli(input_x, input_z, w0, b0) | (read_pauli(input_x, input_z, w1, b1) << 2);
 
-    let row: [Complex64; 16] = if transpose {
-        core::array::from_fn(|t| table[t][s])
-    } else {
-        table[s]
-    };
+    let row = effective_row(table, transpose, s);
 
     for (t, &c) in row.iter().enumerate() {
         if c == ZERO {
@@ -340,10 +340,8 @@ fn apply_2q<const W: usize>(
         }
         let mut nx = *input_x;
         let mut nz = *input_z;
-        nx[w0] = (nx[w0] & !m0) | (((t & 1) as u64) << b0);
-        nz[w0] = (nz[w0] & !m0) | ((((t >> 1) & 1) as u64) << b0);
-        nx[w1] = (nx[w1] & !m1) | ((((t >> 2) & 1) as u64) << b1);
-        nz[w1] = (nz[w1] & !m1) | ((((t >> 3) & 1) as u64) << b1);
+        write_pauli(&mut nx, &mut nz, w0, b0, m0, t & 3);
+        write_pauli(&mut nx, &mut nz, w1, b1, m1, (t >> 2) & 3);
         out.push(nx, nz, coeff * c);
     }
 }

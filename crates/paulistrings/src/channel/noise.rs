@@ -2,8 +2,31 @@
 
 #![allow(unused)]
 
-use super::{support_mask, Channel, OutputBuffer};
+use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
+
+/// Shared body of `Depolarizing::apply` and `Dephasing::apply`: both are pure
+/// coefficient rescalings on the support qubit that leave the key unchanged.
+/// They differ only in which local Pauli indices (`I=0, X=1, Z=2, Y=3`) are
+/// `affected` and in the `scale` applied to those — read the support qubit's
+/// packed Pauli index once and push the (possibly) rescaled coefficient.
+#[inline]
+fn rescale_on_support<const W: usize>(
+    support: u32,
+    scale: f64,
+    affected: impl FnOnce(usize) -> bool,
+    input_x: &[u64; W],
+    input_z: &[u64; W],
+    coeff: Complex64,
+    out: &mut OutputBuffer<'_, W>,
+) {
+    let q = support as usize;
+    debug_assert!(q < 64 * W);
+    let (word, bit, _mask) = qubit_loc(q);
+    let idx = read_pauli(input_x, input_z, word, bit);
+    let s = if affected(idx) { scale } else { 1.0 };
+    out.push(*input_x, *input_z, coeff * s);
+}
 
 /// Single-qubit depolarizing noise with error probability `p`.
 ///
@@ -45,18 +68,15 @@ impl<const W: usize> Channel<W> for Depolarizing {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
-        debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let x_bit = (input_x[word] >> bit) & 1;
-        let z_bit = (input_z[word] >> bit) & 1;
-        let scale = if (x_bit | z_bit) == 0 {
-            1.0
-        } else {
-            1.0 - 4.0 * self.p / 3.0
-        };
-        out.push(*input_x, *input_z, coeff * scale);
+        rescale_on_support(
+            self.support[0],
+            1.0 - 4.0 * self.p / 3.0,
+            |idx| idx != 0,
+            input_x,
+            input_z,
+            coeff,
+            out,
+        );
     }
 }
 
@@ -91,13 +111,15 @@ impl<const W: usize> Channel<W> for Dephasing {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
-        debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let x_bit = (input_x[word] >> bit) & 1;
-        let scale = if x_bit == 1 { 1.0 - 2.0 * self.p } else { 1.0 };
-        out.push(*input_x, *input_z, coeff * scale);
+        rescale_on_support(
+            self.support[0],
+            1.0 - 2.0 * self.p,
+            |idx| idx & 1 == 1,
+            input_x,
+            input_z,
+            coeff,
+            out,
+        );
     }
 }
 
@@ -157,27 +179,24 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
     ) {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let mask = 1u64 << bit;
-        let x_bit = (input_x[word] >> bit) & 1;
-        let z_bit = (input_z[word] >> bit) & 1;
-        match (x_bit, z_bit) {
-            (0, 0) => {
+        let (word, bit, mask) = qubit_loc(q);
+        let idx = read_pauli(input_x, input_z, word, bit);
+        match idx {
+            0 => {
                 // I → I.
                 out.push(*input_x, *input_z, coeff);
             }
-            (1, _) => {
+            1 | 3 => {
                 // X or Y → √(1-γ) · same.
                 let scale = (1.0 - self.gamma).sqrt();
                 out.push(*input_x, *input_z, coeff * scale);
             }
-            (0, 1) => {
+            2 => {
                 // Z → (1-γ) Z + γ I. Emit Z first (matches the order in the
                 // doc-comment), then I (with the support's z-bit cleared).
                 out.push(*input_x, *input_z, coeff * (1.0 - self.gamma));
                 let mut nz = *input_z;
-                nz[word] &= !mask;
+                set_bit(&mut nz, word, mask, false);
                 out.push(*input_x, nz, coeff * self.gamma);
             }
             _ => unreachable!(),
@@ -195,26 +214,23 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
     ) {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let mask = 1u64 << bit;
-        let x_bit = (input_x[word] >> bit) & 1;
-        let z_bit = (input_z[word] >> bit) & 1;
-        match (x_bit, z_bit) {
-            (0, 0) => {
+        let (word, bit, mask) = qubit_loc(q);
+        let idx = read_pauli(input_x, input_z, word, bit);
+        match idx {
+            0 => {
                 // I → I + γ Z. The fan-out sits here in the adjoint, where the
                 // forward map had it on Z.
                 out.push(*input_x, *input_z, coeff);
                 let mut nz = *input_z;
-                nz[word] |= mask;
+                set_bit(&mut nz, word, mask, true);
                 out.push(*input_x, nz, coeff * self.gamma);
             }
-            (1, _) => {
+            1 | 3 => {
                 // X or Y → √(1-γ) · same, as in the forward map.
                 let scale = (1.0 - self.gamma).sqrt();
                 out.push(*input_x, *input_z, coeff * scale);
             }
-            (0, 1) => {
+            2 => {
                 // Z → (1-γ) Z, with no I component.
                 out.push(*input_x, *input_z, coeff * (1.0 - self.gamma));
             }

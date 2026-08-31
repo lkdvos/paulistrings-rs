@@ -147,9 +147,6 @@ and [`YPlus`](crate::ProductState::YPlus) for `|+i…+i⟩` (keep terms whose `x
 state that is itself a Pauli sum, use
 [`PauliSum::overlap`](crate::PauliSum::overlap) instead.
 
-Until v0.2 B.10 this had to be hand-rolled against the raw SoA columns, because
-the crate exposed no expectation-value API at all.
-
 ## Putting it together
 
 The propagation entry point is [`propagate`](crate::propagate) with
@@ -194,7 +191,7 @@ tractable:
 | 6×6     | `1e-10`                | `200_000`  |
 
 The first drops floating-point noise (and exact cancellations); the second
-caps the sum at no more than `n` terms (v0.3: it can end up holding fewer —
+caps the sum at no more than `n` terms (it can end up holding fewer —
 see below). Loosening either preserves the curves at early times
 and only changes long-time behaviour (where the answer is already
 truncation-limited).
@@ -204,76 +201,41 @@ truncation-limited).
 More than one might expect, and worth knowing before reading precision into
 these curves. `TopN` has to cut through groups of terms with **exactly equal**
 coefficient magnitude — unavoidable here, because lattice symmetry on a periodic
-lattice relates many Pauli strings and gives them identical weights. Which
-members of a tie group survive — and, as of v0.3, whether the tie group
-survives at all — is a real design choice, not an implementation accident.
+lattice relates many Pauli strings and gives them identical weights.
 
-Three variants have existed:
+`TopN(n)` keeps at most `n` terms. When a tie group of equal-magnitude terms
+straddles the cutoff, the whole group is kept if it fits within `n`, and the
+whole group is discarded otherwise — a tie group is never split, and an
+all-tied sum truncates to empty. The rationale: on a symmetric lattice, a
+tie group at exactly-equal magnitude is a symmetry orbit, and truncation
+should commute with the lattice's symmetry group. Keeping part of an orbit
+while discarding the rest breaks a symmetry the exact operator has, so a
+group is kept or dropped as a whole instead.
 
-- **(a) pre-v0.2, unspecified order.** Ties at the cutoff were broken by
-  `select_nth_unstable_by`'s implementation-defined order — not reproducible
-  across Rust versions or even runs.
-- **(b) v0.2, key-ascending tiebreak.** Made the choice deterministic: within
-  a tie group at the cutoff, keep the `n` smallest-key terms. This was the
-  reference used for every CSV committed before v0.3. It always keeps
-  exactly `n` terms (once the sum has at least `n`).
-- **(c) v0.3, whole-group discard.** `TopN(n)` now keeps *at most* `n`
-  terms: if the tie group straddling the cutoff would fit entirely within
-  `n`, it is kept whole; if it would not fit, the *entire* group is
-  discarded rather than split. An all-tied sum is wiped to empty. The
-  retained count is therefore `≤ n`, and can be strictly less than `n`
-  whenever the boundary group doesn't fit.
+This is a real design choice, not the only defensible one. Alternative tie
+rules (for example, a deterministic split-the-group tiebreak that always
+keeps exactly `n` terms) move the final trajectory by:
 
-Each transition moves the trajectory by:
+| Lattice | max Δ⟨X_avg⟩ | max relative |
+|---------|--------------|---------------|
+| 4×4     | 0.0049       | 1.7%          |
+| 6×6     | 0.0012       | 0.37%         |
 
-| Lattice | (a) → (b) max Δ⟨X_avg⟩ | (a) → (b) max relative | (b) → (c) max Δ⟨X_avg⟩ | (b) → (c) max relative |
-|---------|------------------------|-------------------------|------------------------|-------------------------|
-| 4×4     | 0.0053                 | 1.8%                    | 0.00492                | 1.69%                   |
-| 6×6     | 0.00037                | 0.12%                   | 0.00120                | 0.37%                   |
-
-(final `⟨X_avg⟩` at `t = 2.0`, (b) → (c): 4×4 `0.304114 → 0.308620`, 6×6
-`0.323626 → 0.322427`.)
-
-Why (c) is the choice going forward: whole-group discard is the physically
-defensible rule. Truncation should commute with the lattice's symmetry group
-— a tie group here *is* a symmetry orbit, so keeping part of one and
-discarding the rest breaks a symmetry the exact operator has, while
-discarding the whole orbit does not. The tradeoff is that `TopN(n)` no
-longer guarantees exactly `n` terms: retention is now "at most `n`," and can
-land measurably below `n` when the boundary group is large relative to what's
-left of the budget — which is also why the 6×6 quench got faster under (c)
-(see below): a smaller retained sum every layer is less work every layer.
-
-Notice the 6×6 sensitivity from (b) to (c) (0.00120, 0.37%) is *larger* than
-the 6×6 sensitivity from (a) to (b) (0.00037, 0.12%) — about 3× as large.
-Going from "some deterministic tiebreak" to "no tiebreak, discard the
-group" moved the answer more than going from "no determinism at all" to
-"some deterministic tiebreak" did. Tie handling matters more than the (a)→(b)
-numbers alone suggested.
-
-So the 4×4 curve is good to a couple percent at `TopN(50_000)`, not more,
-and the 6×6 remains better resolved than the 4×4 despite being the larger
+So the 4×4 curve is good to a couple percent at `TopN(50_000)`, not more, and
+the 6×6 remains better resolved than the 4×4 despite being the larger
 problem — the observable is an average over more sites, so the truncation
 error self-averages. Treat the spread across truncation-tiebreak choices as
-the honest error bar; it is larger than any floating-point effect.
+the honest error bar; it is larger than any floating-point effect. The 6×6
+quench runs in ~11–12 s on the reference host.
 
-Wall-clock note: under the v0.3 rule the 6×6 run also got noticeably
-faster — about 11–12 s versus roughly 25–28 s under (b) — because whole-group
-discard keeps the propagated sum strictly below the `TopN` cap whenever a
-boundary group straddles it, so later layers do less work. The 4×4 run stays
-under 2 s in both cases (its sum rarely approaches `TopN(50_000)`).
-
-v0.5 S1 dropped the engine's `u8` delta tag and its equal-key-order guarantee
-(floating-point associativity variation across bucket counts and hash seeds
-is now accepted, in exchange for a faster per-run sort). Regenerating both
-CSVs against that change moved neither trajectory at all: max |Δm_x| = 0.0
-(byte-identical output) on both lattices, because this circuit is built
-entirely from `PauliRotation` layers, which merge at most two contributions
-per output key — and two-operand floating-point addition is exactly
-commutative, so the relaxed policy has no observable effect here. A circuit
-with a wider fan-in channel (`GeneralUnitary2Q`, merging three or more
-contributions per key) would be expected to show a nonzero, FP-tolerance-size
-shift instead.
+Equal-key floating-point summation order is otherwise unspecified in the
+engine: the merge is free to combine same-key contributions in whichever
+order suits its parallelism. This circuit is built entirely from
+`PauliRotation` layers, which merge at most two contributions per output
+key, and two-operand floating-point addition is exactly commutative, so the
+curves above are insensitive to that order. A channel with wider fan-in
+(e.g. `GeneralUnitary2Q`, merging three or more contributions per key) could
+show a nonzero, floating-point-tolerance-size shift instead.
 
 # Result
 

@@ -3,7 +3,7 @@
 
 use crate::truncation_spec::{PolicySpec, PyTruncation, SpecPolicy};
 use num_complex::Complex64;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
@@ -13,7 +13,7 @@ use paulistrings::{
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyComplex, PyDict};
+use pyo3::types::{PyAny, PyComplex, PyDict};
 
 /// Width-dispatch enum. The Python boundary picks the smallest width that
 /// fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
@@ -105,6 +105,42 @@ impl PauliSumImpl {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
         })
     }
+
+    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
+    /// of [`Self::xz_flat`] / [`Self::coeffs`]. See `PauliSum::from_arrays`
+    /// for the shape/dtype contract; this just picks the width band for
+    /// `num_qubits` and delegates.
+    pub fn from_arrays(
+        num_qubits: usize,
+        x: &PyReadonlyArray2<'_, u64>,
+        z: &PyReadonlyArray2<'_, u64>,
+        coefficients: &[Complex64],
+    ) -> PyResult<Self> {
+        let x_shape = x.as_array().shape().to_vec();
+        let z_shape = z.as_array().shape().to_vec();
+        if x_shape != z_shape {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_arrays: x.shape {:?} != z.shape {:?}",
+                x_shape, z_shape
+            )));
+        }
+        if x_shape[0] != coefficients.len() {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_arrays: coefficients length {} != x/z row count {}",
+                coefficients.len(),
+                x_shape[0]
+            )));
+        }
+        for_num_qubits!(num_qubits, |W| build_from_arrays::<W>(
+            num_qubits,
+            x,
+            z,
+            coefficients
+        )?)
+        .ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
+    }
 }
 
 /// Build a `PauliSum<W>` from a `{pauli_string: coefficient}` Python dict.
@@ -156,6 +192,94 @@ fn parse_terms<const W: usize>(
         acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
     }
     Ok(acc.finalize())
+}
+
+/// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually
+/// covers within `num_qubits` — `!0u64` for a word entirely below
+/// `num_qubits`, `0` for one entirely at or above it, and a low-bits mask for
+/// the boundary word. Any set bit outside this mask addresses a qubit that
+/// does not exist.
+fn word_mask(word: usize, num_qubits: usize) -> u64 {
+    let start = word * 64;
+    if start >= num_qubits {
+        0
+    } else {
+        let bits_in_word = (num_qubits - start).min(64);
+        if bits_in_word == 64 {
+            !0u64
+        } else {
+            (1u64 << bits_in_word) - 1
+        }
+    }
+}
+
+/// Build a `PauliSum<W>` from raw `(x, z, coefficients)` arrays.
+///
+/// `x`/`z` rows are symplectic keys in the Hermitian convention (no phase —
+/// every row is folded in with `Phase::ONE`, matching `parse_terms`). A row
+/// narrower than `W` words is zero-padded on the high side; a row wider than
+/// `W` is a `ValueError`, since silently truncating would drop data. Ingest
+/// goes through `BuildAccumulator`, so duplicate `(x, z)` rows sum their
+/// coefficients and rows that cancel to exact `0+0i` are dropped.
+fn build_from_arrays<const W: usize>(
+    num_qubits: usize,
+    x: &PyReadonlyArray2<'_, u64>,
+    z: &PyReadonlyArray2<'_, u64>,
+    coefficients: &[Complex64],
+) -> PyResult<CorePauliSum<W>> {
+    let xa = x.as_array();
+    let za = z.as_array();
+    let n = xa.shape()[0];
+    let w_in = xa.shape()[1];
+    if w_in > W {
+        return Err(PyValueError::new_err(format!(
+            "PauliSum.from_arrays: array width {w_in} exceeds the band width {W} \
+             for num_qubits={num_qubits}"
+        )));
+    }
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for row in 0..n {
+        let mut px = [0u64; W];
+        let mut pz = [0u64; W];
+        for j in 0..w_in {
+            px[j] = xa[[row, j]];
+            pz[j] = za[[row, j]];
+        }
+        for j in 0..w_in {
+            let mask = word_mask(j, num_qubits);
+            if px[j] & !mask != 0 || pz[j] & !mask != 0 {
+                return Err(PyValueError::new_err(format!(
+                    "PauliSum.from_arrays: row {row} has a bit set at or beyond qubit \
+                     {num_qubits} (word {j}, x={:#x}, z={:#x})",
+                    px[j], pz[j]
+                )));
+            }
+        }
+        acc.add_term(
+            PauliString::<W> { x: px, z: pz },
+            Phase::ONE,
+            coefficients[row],
+        );
+    }
+    Ok(acc.finalize())
+}
+
+/// Extract a Python 1-D array of `complex128` or a real-float dtype
+/// (`float64`, cast to a zero-imaginary complex) into a `Vec<Complex64>`.
+fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
+    if let Ok(arr) = val.extract::<PyReadonlyArray1<Complex64>>() {
+        return Ok(arr.as_array().to_vec());
+    }
+    if let Ok(arr) = val.extract::<PyReadonlyArray1<f64>>() {
+        return Ok(arr
+            .as_array()
+            .iter()
+            .map(|&re| Complex64::new(re, 0.0))
+            .collect());
+    }
+    Err(PyTypeError::new_err(
+        "PauliSum.from_arrays: coefficients must be a complex128 or float64 NumPy array",
+    ))
 }
 
 /// Extract a Python complex/float/int into `Complex64`.
@@ -322,6 +446,35 @@ impl PauliSum {
         num_qubits: usize,
     ) -> PyResult<Self> {
         let inner = PauliSumImpl::from_strings_dict(num_qubits, terms)?;
+        Ok(Self { inner })
+    }
+
+    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
+    /// of `x_array` / `z_array` / `coefficients_array`.
+    ///
+    /// `x` and `z` are `uint64` arrays of shape `(n_terms, w)`; `w` may be
+    /// anywhere from `1` up to the band width `num_qubits` picks (the same
+    /// width `.width` would report), and a narrower array is zero-padded on
+    /// ingest, so a sum exported at its own band and re-imported round-trips
+    /// exactly. `coefficients` is a 1-D array of length `n_terms`,
+    /// `complex128` or a real-float dtype (cast to a zero-imaginary complex).
+    ///
+    /// Rows are symplectic keys in the Hermitian convention — no phase is
+    /// applied, matching `from_strings`. Ingest routes through the same
+    /// `BuildAccumulator` `from_strings` uses: duplicate `(x, z)` rows sum
+    /// their coefficients, and rows whose accumulated coefficient is exact
+    /// `0+0i` are dropped. A set bit at or beyond qubit index `num_qubits` in
+    /// any row is a `ValueError`.
+    #[classmethod]
+    fn from_arrays(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        x: PyReadonlyArray2<'_, u64>,
+        z: PyReadonlyArray2<'_, u64>,
+        coefficients: &Bound<'_, PyAny>,
+        num_qubits: usize,
+    ) -> PyResult<Self> {
+        let coeffs = extract_complex_array(coefficients)?;
+        let inner = PauliSumImpl::from_arrays(num_qubits, &x, &z, &coeffs)?;
         Ok(Self { inner })
     }
 

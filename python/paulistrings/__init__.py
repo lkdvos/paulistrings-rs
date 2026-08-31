@@ -11,6 +11,7 @@ from . import _paulistrings
 from ._paulistrings import Circuit, PauliSum, PropagationStats, reset_log_cache
 from . import gates, noise, truncation
 from . import interop
+from . import io
 
 __all__ = [
     "Circuit",
@@ -20,5 +21,6 @@ __all__ = [
     "noise",
     "truncation",
     "interop",
+    "io",
     "reset_log_cache",
 ]

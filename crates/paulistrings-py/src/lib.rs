@@ -57,6 +57,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(reset_log_cache, m)?)?;
 
     m.add_class::<sum::PauliSum>()?;
+    m.add_class::<sum::PropagationStats>()?;
     m.add_class::<circuit::Circuit>()?;
     m.add_class::<channel_spec::PyChannel>()?;
     m.add_class::<truncation_spec::PyTruncation>()?;

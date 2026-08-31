@@ -122,7 +122,7 @@ pub use accumulator::BuildAccumulator;
 pub use bucket::Gf2Hash;
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use engine::bucketed::LayerScratch;
+pub use engine::bucketed::{LayerScratch, TermTrace};
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
 pub use engine::{default_min_buckets, propagate, propagate_with_scratch, Direction};

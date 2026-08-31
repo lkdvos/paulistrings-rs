@@ -7,7 +7,10 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
-use paulistrings::{propagate, Direction, PauliSum as CorePauliSum, ProductState};
+use paulistrings::{
+    propagate, propagate_with_scratch, Direction, LayerScratch, PauliSum as CorePauliSum,
+    ProductState, TermTrace,
+};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict};
@@ -158,6 +161,110 @@ fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     ))
 }
 
+/// `"forward"` (the default when `None`) or `"heisenberg"`.
+///
+/// Shared by `propagate` and `propagate_with_stats` so the accepted spellings
+/// and the error message cannot drift apart.
+fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
+    match direction.unwrap_or("forward") {
+        "forward" => Ok(Direction::Forward),
+        "heisenberg" => Ok(Direction::Heisenberg),
+        other => Err(PyValueError::new_err(format!(
+            "direction must be 'forward' or 'heisenberg', got {:?}",
+            other
+        ))),
+    }
+}
+
+/// Both propagation entry points require the sum and the circuit to agree on
+/// the qubit count (they would otherwise be monomorphized at different widths,
+/// which the width dispatch cannot pair up).
+fn check_num_qubits(sum: &PauliSumImpl, circuit: &crate::circuit::Circuit) -> PyResult<()> {
+    if sum.num_qubits() != circuit.inner.num_qubits() {
+        return Err(PyValueError::new_err(format!(
+            "PauliSum.num_qubits ({}) != Circuit.num_qubits ({})",
+            sum.num_qubits(),
+            circuit.inner.num_qubits()
+        )));
+    }
+    Ok(())
+}
+
+/// Per-layer term counts from `PauliSum.propagate_with_stats`.
+///
+/// A plain record with read-only attributes; `terms_in` and `terms_out` have
+/// one entry per layer applied, in application order (so *reverse* circuit
+/// order under `direction="heisenberg"`).
+#[pyclass(
+    frozen,
+    module = "paulistrings._paulistrings",
+    name = "PropagationStats"
+)]
+pub struct PropagationStats {
+    layers: usize,
+    terms_in: Vec<usize>,
+    terms_out: Vec<usize>,
+    peak_terms: usize,
+    final_terms: usize,
+}
+
+#[pymethods]
+impl PropagationStats {
+    /// Number of layers (channels) applied.
+    #[getter]
+    fn layers(&self) -> usize {
+        self.layers
+    }
+
+    /// Term count before each layer. `terms_in[k + 1] == terms_out[k]`.
+    #[getter]
+    fn terms_in(&self) -> Vec<usize> {
+        self.terms_in.clone()
+    }
+
+    /// Term count after each layer, i.e. **after** that layer's truncation.
+    #[getter]
+    fn terms_out(&self) -> Vec<usize> {
+        self.terms_out.clone()
+    }
+
+    /// Peak *resident* term count: `max(terms_in[0], terms_out...)`, or the
+    /// input's term count for a zero-layer circuit.
+    ///
+    /// This is how large the sum ever got *between* layers. The transient
+    /// in-layer expansion — after a channel's fanout, before the merge
+    /// deduplicates and truncation filters — is deliberately not measured;
+    /// capturing it would mean instrumenting the engine's hot loop. For a
+    /// memory figure, read peak RSS from `/proc/self/status` instead.
+    #[getter]
+    fn peak_terms(&self) -> usize {
+        self.peak_terms
+    }
+
+    /// Term count of the returned sum: `terms_out[-1]`, or the input's count
+    /// for a zero-layer circuit.
+    #[getter]
+    fn final_terms(&self) -> usize {
+        self.final_terms
+    }
+}
+
+impl PropagationStats {
+    /// Derive the Python-facing record from a core [`TermTrace`] plus the
+    /// length of the propagated sum (which is what "peak" falls back to when
+    /// no layer ran).
+    fn from_trace(trace: TermTrace, final_terms: usize) -> Self {
+        debug_assert_eq!(trace.terms_in.len(), trace.terms_out.len());
+        Self {
+            layers: trace.terms_out.len(),
+            peak_terms: trace.peak_terms().unwrap_or(final_terms),
+            final_terms,
+            terms_in: trace.terms_in,
+            terms_out: trace.terms_out,
+        }
+    }
+}
+
 #[pyclass(module = "paulistrings._paulistrings", name = "PauliSum")]
 pub struct PauliSum {
     pub(crate) inner: PauliSumImpl,
@@ -299,23 +406,8 @@ impl PauliSum {
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
     ) -> PyResult<Self> {
-        let dir = match direction.unwrap_or("forward") {
-            "forward" => Direction::Forward,
-            "heisenberg" => Direction::Heisenberg,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "direction must be 'forward' or 'heisenberg', got {:?}",
-                    other
-                )));
-            }
-        };
-        if self.inner.num_qubits() != circuit.inner.num_qubits() {
-            return Err(PyValueError::new_err(format!(
-                "PauliSum.num_qubits ({}) != Circuit.num_qubits ({})",
-                self.inner.num_qubits(),
-                circuit.inner.num_qubits()
-            )));
-        }
+        let dir = parse_direction(direction)?;
+        check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
@@ -347,5 +439,67 @@ impl PauliSum {
             })
             .map_err(PyValueError::new_err)?;
         Ok(Self { inner })
+    }
+
+    /// Propagate `self` through `circuit`, returning
+    /// `(evolved, PropagationStats)`.
+    ///
+    /// Arguments and semantics are `propagate`'s, exactly — the only
+    /// difference is that the engine records per-layer term counts (before
+    /// each layer, and after each layer's truncation) on the calling thread.
+    /// The counts come from length reads the layer loop already performs, so
+    /// the propagation itself is untouched: `evolved` agrees with
+    /// `propagate`'s result to floating-point tolerance.
+    ///
+    /// See `PropagationStats.peak_terms` for what "peak" does and does not
+    /// mean.
+    #[pyo3(signature = (circuit, policy=None, direction=None))]
+    fn propagate_with_stats(
+        &self,
+        py: Python<'_>,
+        circuit: &crate::circuit::Circuit,
+        policy: Option<&PyTruncation>,
+        direction: Option<&str>,
+    ) -> PyResult<(Self, PropagationStats)> {
+        let dir = parse_direction(direction)?;
+        check_num_qubits(&self.inner, circuit)?;
+        let no_op = PolicySpec::NoOp;
+        let spec: &PolicySpec = match policy {
+            Some(p) => &p.spec,
+            None => &no_op,
+        };
+        // GIL released for the propagation, as in `propagate` above. The
+        // trace is moved out of the locally-created scratch inside the
+        // closure — `LayerScratch` is not `Send`-shared with anything, it is
+        // built and dropped within this call.
+        let mut trace: Option<TermTrace> = None;
+        let inner = py
+            .allow_threads(|| -> Result<PauliSumImpl, &'static str> {
+                Ok(for_each_width_propagate!(
+                    &self.inner,
+                    &circuit.inner,
+                    |s, c, W| {
+                        let mut scratch = LayerScratch::<W>::new();
+                        scratch.enable_term_trace();
+                        let out = propagate_with_scratch(
+                            c,
+                            s.clone(),
+                            &SpecPolicy::<W>(spec),
+                            dir,
+                            &mut scratch,
+                        );
+                        trace = scratch.take_term_trace();
+                        out
+                    },
+                    else {
+                        // Unreachable for the same reason as in `propagate`.
+                        return Err("internal: PauliSum and Circuit width mismatch");
+                    }
+                ))
+            })
+            .map_err(PyValueError::new_err)?;
+        let trace = trace.expect("the trace is enabled before the layer loop runs");
+        let stats = PropagationStats::from_trace(trace, inner.len());
+        Ok((Self { inner }, stats))
     }
 }

@@ -5,6 +5,10 @@
 # Usage: scripts/perf-stat.sh [probe args...]
 #   e.g. scripts/perf-stat.sh --n 1000000 --threads 32 --layers rotation_zz
 #
+# PROBE=/path/to/binary skips the `cargo build` step and uses that prebuilt
+# executable instead (must already exist and be executable) -- e.g. for an
+# interleaved A/B comparison between two prebuilt binaries.
+#
 # Best used with a single (layer × threads) cell per invocation — cycles are
 # whole-process, so with several cells the cycles/string figure is a blend
 # (the script warns). Cycles-per-string is frequency-robust, which matters on
@@ -17,11 +21,24 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PROBE=target/release/examples/phase_breakdown
+# A caller-supplied prebuilt probe (PROBE=/path/to/binary, already built and
+# executable) skips the cargo build step entirely -- useful for the
+# interleaved A/B protocol in benchmarks/PROFILING.md, where the binaries
+# under comparison are built once up front and must not be rebuilt (or
+# overwritten in place) between runs.
+_probe_prebuilt=0
+if [[ -n "${PROBE:-}" && -x "${PROBE:-}" ]]; then
+    _probe_prebuilt=1
+fi
+PROBE=${PROBE:-target/release/examples/phase_breakdown}
 IDLE_SECS=${IDLE_SECS:-3}
 
-cargo build --release --offline --features phase-timing -p paulistrings \
-    --example phase_breakdown >/dev/null
+if [[ "$_probe_prebuilt" == "1" ]]; then
+    echo "perf-stat: using caller-supplied PROBE=$PROBE (skipping cargo build)"
+else
+    cargo build --release --offline --features phase-timing -p paulistrings \
+        --example phase_breakdown >/dev/null
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

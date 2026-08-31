@@ -15,15 +15,19 @@
 #   - Re-running the same campaign name on the same day/host appends to the
 #     existing file behind a rerun divider, rather than overwriting it.
 #   - `criterion:<filter>` re-snapshots target/criterion into
-#     <campaign-name>.json via criterion-report.py after every such item,
-#     scoped with the same --filter. Running more than one criterion:
-#     item in one campaign means the later snapshot overwrites the earlier
-#     one at that path (both filters' raw criterion text output are still
-#     preserved in the .txt file either way) -- run separate campaigns if
-#     you need independent JSON snapshots.
-#   - `probe:<args>` and `perf-stat:<args>` word-split <args> on spaces
-#     (no quoting of individual args is supported); pass them
-#     space-separated as one shell word, e.g. probe:"--width 2 --n 100000".
+#     <campaign-name>.json via `criterion-report.py snapshot --merge` after
+#     every such item, scoped with the same --filter. --merge means running
+#     more than one criterion: item in one campaign accumulates into the
+#     same JSON (each item's entries win for their own keys) instead of the
+#     later snapshot overwriting the earlier one.
+#   - `probe:<args>` and `perf-stat:<args>` are split into an argv array via
+#     `eval "args_arr=( ${item_rest} )"` rather than plain unquoted word
+#     splitting, so a quoted arg (e.g. probe:'--layers "a,b"') survives
+#     intact. This is a deliberate `eval` on a string that only ever comes
+#     from this script's own trusted argv (the campaign items an operator
+#     types on the command line, not external/untrusted input) -- treat it
+#     the same as any other shell-quoting trust boundary and don't route
+#     unreviewed input through it.
 
 set -euo pipefail
 
@@ -38,28 +42,38 @@ Items (parsed on the first ':'):
       cargo bench --offline -p paulistrings --bench pauli_ops -- "<filter>"
       then snapshots target/criterion into
       benchmarks/results/<date>-<host>/<campaign-name>.json via
-      scripts/criterion-report.py snapshot --filter "<filter>".
+      scripts/criterion-report.py snapshot --merge --filter "<filter>"
+      (--merge accumulates across multiple criterion: items in one
+      campaign instead of the later one overwriting the earlier).
 
   probe:<args>
       cargo run --offline --release --features phase-timing \
         --example phase_breakdown -- <args>
-      <args> is word-split on spaces (unquoted expansion by design) -- pass
-      it as a single shell word, e.g. probe:"--width 2 --n 1000000".
+      <args> is split into an argv array via `eval "args_arr=( ${args} )"`,
+      so ordinary shell quoting inside <args> is honored -- pass it as a
+      single shell word, e.g. probe:"--width 2 --n 1000000" or
+      probe:'--layers "a,b" --n 1000000'.
 
   perf-stat:<args>
-      scripts/perf-stat.sh <args>  (word-split the same way as probe:<args>)
+      scripts/perf-stat.sh <args>  (split into argv the same way as
+      probe:<args>)
       Prints a skip message instead of failing if the script doesn't exist
       yet.
 
   scaling:<placement>
       Runs `cargo bench --offline -p paulistrings --bench pauli_ops -- \
-      thread_scaling_bucketed` under a CPU-placement prefix.
-      <placement> is one of:
+      thread_scaling_bucketed` under a CPU-placement prefix looked up from
+      PLACEMENT_PREFIX in scripts/host-topology.sh (keyed on this host's
+      `hostname -s`). <placement> must be a key in that map -- an unknown
+      placement aborts with the valid list. On the reference host
+      (ccqlin038) the keys are:
         default  -- no prefix
         node0    -- numactl --cpunodebind=0 --membind=0
         phys16   -- taskset -c 0-15
         smt16    -- taskset -c 0-7,16-23 numactl --membind=0
         phys8    -- taskset -c 0-7 numactl --membind=0
+      An unrecognized host only has `default` -- add an entry to
+      scripts/host-topology.sh to calibrate placements for it.
 
   macro
       Times `cargo run --offline --release -p paulistrings --example
@@ -83,6 +97,8 @@ if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
   usage
   exit 0
 fi
+
+source scripts/host-topology.sh
 
 campaign_name=$1
 shift
@@ -142,7 +158,7 @@ for item in "${items[@]}"; do
         echo "  (criterion bench exited nonzero for filter '${filter}' — continuing campaign)" \
           | tee -a "$out_file"
       fi
-      if ! (python3 scripts/criterion-report.py snapshot "$snapshot_json" --filter "$filter") \
+      if ! (python3 scripts/criterion-report.py snapshot "$snapshot_json" --merge --filter "$filter") \
         2>&1 | tee -a "$out_file"; then
         echo "  (criterion-report.py snapshot failed — continuing campaign)" \
           | tee -a "$out_file"
@@ -150,12 +166,16 @@ for item in "${items[@]}"; do
       ;;
 
     probe)
-      args="$item_rest"
+      # Split item_rest into an argv array via eval rather than unquoted
+      # word-splitting, so quoted args survive. item_rest only ever comes
+      # from this script's own argv (an operator-typed campaign item), so
+      # this eval is over trusted input -- see the header comment.
+      args_arr=()
+      eval "args_arr=( ${item_rest} )"
       # Every probe cell also lands as a JSON line in the campaign's probe
       # sidecar, which perf-viz.py renders at the end of the run.
-      # shellcheck disable=SC2086  # intentional word-splitting, see --help
       if ! (cargo run --offline --release --features phase-timing \
-        --example phase_breakdown -- $args \
+        --example phase_breakdown -- "${args_arr[@]}" \
         --json-out "$out_dir/${campaign_name}-probe.json") 2>&1 | tee -a "$out_file"; then
         echo "  (phase_breakdown probe exited nonzero — continuing campaign)" \
           | tee -a "$out_file"
@@ -163,12 +183,13 @@ for item in "${items[@]}"; do
       ;;
 
     perf-stat)
-      args="$item_rest"
+      # See the probe: item above -- same eval-into-array rationale.
+      args_arr=()
+      eval "args_arr=( ${item_rest} )"
       if [[ ! -x scripts/perf-stat.sh ]]; then
         echo "  skip: scripts/perf-stat.sh not present yet" | tee -a "$out_file"
       else
-        # shellcheck disable=SC2086  # intentional word-splitting, see --help
-        if ! (scripts/perf-stat.sh $args) 2>&1 | tee -a "$out_file"; then
+        if ! (scripts/perf-stat.sh "${args_arr[@]}") 2>&1 | tee -a "$out_file"; then
           echo "  (perf-stat.sh exited nonzero — continuing campaign)" \
             | tee -a "$out_file"
         fi
@@ -177,18 +198,13 @@ for item in "${items[@]}"; do
 
     scaling)
       placement="$item_rest"
-      prefix=()
-      case "$placement" in
-        default) ;;
-        node0)  prefix=(numactl --cpunodebind=0 --membind=0) ;;
-        phys16) prefix=(taskset -c 0-15) ;;
-        smt16)  prefix=(taskset -c 0-7,16-23 numactl --membind=0) ;;
-        phys8)  prefix=(taskset -c 0-7 numactl --membind=0) ;;
-        *)
-          echo "error: unknown scaling placement '${placement}' (expected default|node0|phys16|smt16|phys8)" >&2
-          exit 1
-          ;;
-      esac
+      if [[ -z "${PLACEMENT_PREFIX[$placement]+set}" ]]; then
+        echo "error: unknown scaling placement '${placement}' (expected one of: ${!PLACEMENT_PREFIX[*]})" >&2
+        exit 1
+      fi
+      # shellcheck disable=SC2206  # intentional word-splitting of a
+      # host-topology-defined, space-separated prefix command into argv.
+      prefix=(${PLACEMENT_PREFIX[$placement]})
       if ! ("${prefix[@]}" cargo bench --offline -p paulistrings \
         --bench pauli_ops -- thread_scaling_bucketed) 2>&1 | tee -a "$out_file"; then
         echo "  (scaling run exited nonzero for placement '${placement}' — continuing campaign)" \

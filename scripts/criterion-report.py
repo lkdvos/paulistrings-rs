@@ -259,8 +259,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help=(
             "Percent |delta| above which a row is flagged REGRESSION/IMPROVED "
-            "(default 5.0, the measured noise floor on the reference host -- "
-            "see research/notes/2026-08-30-v0.3-results.md)."
+            "(default 5.0, the measured single-thread noise floor on the "
+            "reference host; see benchmarks/PROFILING.md for the full noise "
+            "figures and the A/B protocol for sub-noise effects)."
         ),
     )
     p_cmp.set_defaults(func=cmd_compare)

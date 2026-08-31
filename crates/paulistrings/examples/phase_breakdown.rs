@@ -44,19 +44,20 @@
 //! `PhaseStats` are read via [`LayerScratch::take_stats`] and its
 //! `/proc/self/status` `VmRSS` / `VmHWM` are sampled right after.
 //!
-//! `benches/pauli_ops.rs` and this example cannot share code (there is no
-//! shared test-support crate), so the `Xs64` RNG, `random_sum`, and the
-//! per-layer channel recipes below are deliberately duplicated from it —
-//! the existing convention (`tie_heavy_sum` is already duplicated the same
-//! way inside `engine/bucketed.rs`'s own test module).
+//! The input generators (`Xs64`, `rand_sum`, `low_weight_sum`) come from
+//! `paulistrings::test_support`, shared with `benches/pauli_ops.rs` and the
+//! crate's own tests. The per-layer channel recipes below are still duplicated
+//! from the bench, since they are bench-shaped fixtures rather than fixtures
+//! the library's tests use.
 
 use std::time::Instant;
 
 use num_complex::Complex64;
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::test_support::{low_weight_sum, rand_sum};
 use paulistrings::{
-    propagate_with_scratch, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
-    PauliSum, Phase, PhaseStats, TruncationPolicy,
+    propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
+    TruncationPolicy,
 };
 
 // ---------------------------------------------------------------------
@@ -260,123 +261,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 }
 
 // ---------------------------------------------------------------------
-// Input construction (duplicated from benches/pauli_ops.rs + the masking
-// fix in tests/propagate_scratch.rs::random_sum)
-// ---------------------------------------------------------------------
-
-/// Xorshift64* — small, deterministic, no dev-dep. Same recipe as
-/// `benches/pauli_ops.rs::Xs64`.
-struct Xs64(u64);
-
-impl Xs64 {
-    fn new(seed: u64) -> Self {
-        // Avoid the degenerate all-zero state.
-        Self(seed | 1)
-    }
-
-    #[inline]
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
-/// Build a sorted/deduplicated `PauliSum<W>` of length close to `n_terms`
-/// from random dense Pauli keys, masked per word so no bit `>= num_qubits`
-/// is ever set — `BuildAccumulator`/`PauliSum` assert this. Recipe from
-/// `tests/propagate_scratch.rs::random_sum`, not the unmasked
-/// `benches/pauli_ops.rs::random_pauli` (which relies on `num_qubits` being
-/// a multiple of 64).
-fn random_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for _ in 0..n_terms {
-        let mut p = PauliString::<W> {
-            x: [0; W],
-            z: [0; W],
-        };
-        for w in 0..W {
-            let lo = w * 64;
-            let mask = if num_qubits >= lo + 64 {
-                u64::MAX
-            } else if num_qubits > lo {
-                (1u64 << (num_qubits - lo)) - 1
-            } else {
-                0
-            };
-            p.x[w] = rng.next_u64() & mask;
-            p.z[w] = rng.next_u64() & mask;
-        }
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
-
-/// A Pauli string of Hamming weight `weight` over `num_qubits` qubits,
-/// verbatim from `benches/pauli_ops.rs::low_weight_pauli`. Index-bounded by
-/// construction (`q` is generated `mod num_qubits`), so — unlike
-/// `random_sum` above — it needs no separate masking pass.
-fn low_weight_pauli<const W: usize>(
-    rng: &mut Xs64,
-    num_qubits: usize,
-    weight: usize,
-) -> PauliString<W> {
-    let mut p = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    for _ in 0..weight {
-        let q = (rng.next_u64() as usize) % num_qubits;
-        let word = q / 64;
-        let bit = 1u64 << (q % 64);
-        match rng.next_u64() % 3 {
-            0 => p.x[word] |= bit,
-            1 => p.z[word] |= bit,
-            _ => {
-                p.x[word] |= bit;
-                p.z[word] |= bit;
-            }
-        }
-    }
-    p
-}
-
-/// As `random_sum`, but with low-weight keys — verbatim from
-/// `benches/pauli_ops.rs::low_weight_sum`.
-///
-/// The `trotter` layer uses this instead of `random_sum`: it is 64 *distinct*
-/// generators applied once each (not one generator repeated, which is what
-/// keeps rotation_zz/cnot/gu2q bounded — see `run_cell`'s doc comment), so a
-/// dense input can anticommute with most of them and blow up combinatorially
-/// (`benches/pauli_ops.rs` itself notes "grows the sum by up to 2^64" and
-/// deliberately benches only `low_weight_sum` inputs for exactly this
-/// reason). This is not a stylistic choice — a dense `random_sum` input was
-/// measured driving `trotter` past 50 GB RSS in well under a minute at only
-/// `n = 2000`.
-fn low_weight_sum<const W: usize>(
-    n_terms: usize,
-    num_qubits: usize,
-    weight: usize,
-    seed: u64,
-) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for _ in 0..n_terms {
-        let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
-
-// ---------------------------------------------------------------------
 // Per-layer channel recipes (duplicated from benches/pauli_ops.rs)
 // ---------------------------------------------------------------------
 
@@ -419,9 +303,9 @@ const TROTTER_QUBITS: usize = 32;
 /// `trotter` chains two full 64-layer circuit applications (the warm-up and
 /// the timed call — see the "chain them" step in `run_cell`) under
 /// `AlwaysKeep`, i.e. no truncation. Unlike rotation_zz/cnot/gu2q (a single
-/// generator repeated, which provably closes to a bounded key set —
-/// `low_weight_sum`'s doc comment), trotter is 64 *distinct* generators, and
-/// per-pass growth is a roughly n-independent multiplicative factor
+/// generator repeated, which provably closes to a bounded key set — see
+/// `run_cell`), trotter is 64 *distinct* generators, and per-pass growth is a
+/// roughly n-independent multiplicative factor
 /// (measured ~600-700x per pass at `weight = 3`, `TROTTER_QUBITS = 32`, so
 /// ~4-5×10^5x over the two chained passes). Left uncapped, `--n`'s default
 /// of 1_000_000 would try to materialize on the order of 10^11 terms.
@@ -541,11 +425,15 @@ fn parse_kb_field(s: &str) -> u64 {
 
 fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> CellResult {
     // `trotter` is 64 *distinct* generators applied once each, not one
-    // generator repeated (see the module doc and `low_weight_sum`'s doc
-    // comment): a dense `random_sum` input measurably runs away to tens of
-    // GB of RSS, so it alone gets a low-weight input sized to its own fixed
-    // qubit count instead of `--qubits`, and its own `--n` cap (see
-    // `TROTTER_MAX_N`).
+    // generator repeated — the latter provably closes to a bounded key set,
+    // which is what keeps rotation_zz/cnot/gu2q bounded here. A dense input
+    // can anticommute with most of 64 distinct generators and blow up
+    // combinatorially (`benches/pauli_ops.rs` puts it at "up to 2^64", and
+    // benches only low-weight inputs for that reason): a dense `rand_sum`
+    // input was measured driving this layer past 50 GB of RSS in well under a
+    // minute at only n = 2000. So trotter alone gets a low-weight input sized
+    // to its own fixed qubit count instead of `--qubits`, and its own `--n`
+    // cap (see `TROTTER_MAX_N`).
     let base = match layer {
         LayerKind::Trotter => {
             if cfg.n > TROTTER_MAX_N {
@@ -559,7 +447,7 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
             }
             low_weight_sum::<W>(cfg.n.min(TROTTER_MAX_N), TROTTER_QUBITS, 3, cfg.seed)
         }
-        _ => random_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
+        _ => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
     };
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps);
 

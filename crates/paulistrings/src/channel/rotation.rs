@@ -300,24 +300,9 @@ mod tests {
     }
 
     use super::*;
+    use crate::test_support::{alloc_bufs, approx_eq};
 
     const TOL: f64 = 1e-12;
-
-    #[allow(clippy::type_complexity)]
-    fn alloc_bufs<const W: usize>(
-        n: usize,
-    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-        (
-            vec![[0u64; W]; n],
-            vec![[0u64; W]; n],
-            vec![Complex64::new(0.0, 0.0); n],
-            0usize,
-        )
-    }
-
-    fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
-        (a - b).norm() <= tol
-    }
 
     /// `theta = 0` and the input/generator anticommute: the fanout-2 branch
     /// runs but `sin(0) = 0` makes the second term vanish.

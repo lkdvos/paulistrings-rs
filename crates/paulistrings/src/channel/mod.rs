@@ -277,6 +277,7 @@ pub trait Channel<const W: usize>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::alloc_bufs;
 
     // ---- support_mask (v0.3 C.1) ----
 
@@ -299,18 +300,6 @@ mod tests {
     fn support_mask_of_empty_is_zero() {
         let mask: [u64; 2] = support_mask(&[]);
         assert_eq!(mask, [0, 0]);
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn alloc_bufs<const W: usize>(
-        n: usize,
-    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-        (
-            vec![[0u64; W]; n],
-            vec![[0u64; W]; n],
-            vec![Complex64::new(0.0, 0.0); n],
-            0usize,
-        )
     }
 
     #[test]

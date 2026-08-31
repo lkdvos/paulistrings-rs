@@ -3,58 +3,17 @@
 //! scratch across calls does not leak state into the output. They run in both
 //! feature configurations (`--features phase-timing` must not change a bit).
 
-use num_complex::Complex64;
 use paulistrings::channel::{Clifford2Q, Depolarizing, PauliRotation};
+// `rand_sum_real` is byte-for-byte the generator this file used to define
+// inline: same xorshift stream, same masking, real coefficients only.
+use paulistrings::test_support::rand_sum_real;
 use paulistrings::{
-    propagate, propagate_with_scratch, BuildAccumulator, Circuit, Direction, LayerScratch,
-    PauliString, PauliSum, Phase, TruncationPolicy,
+    propagate, propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PauliSum,
+    TruncationPolicy,
 };
 
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-/// xorshift64* as in `benches/pauli_ops.rs` — deterministic, no `rand` dep.
-struct Xs64(u64);
-impl Xs64 {
-    fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
-fn random_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for _ in 0..n_terms {
-        let mut p = PauliString::<W> {
-            x: [0; W],
-            z: [0; W],
-        };
-        for w in 0..W {
-            // Mask each word down to the qubits it actually covers.
-            let lo = w * 64;
-            let mask = if num_qubits >= lo + 64 {
-                u64::MAX
-            } else if num_qubits > lo {
-                (1u64 << (num_qubits - lo)) - 1
-            } else {
-                0
-            };
-            p.x[w] = rng.next_u64() & mask;
-            p.z[w] = rng.next_u64() & mask;
-        }
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
-    }
-    acc.finalize()
-}
 
 fn test_circuit<const W: usize>() -> Circuit<W> {
     let mut c = Circuit::<W>::new(8);
@@ -95,7 +54,7 @@ fn check_equivalence<const W: usize>() {
     let circuit = test_circuit::<W>();
     let reference = propagate(
         &circuit,
-        random_sum::<W>(3000, 8, 0xFEED),
+        rand_sum_real::<W>(3000, 8, 0xFEED),
         &AlwaysKeep,
         Direction::Heisenberg,
     );
@@ -103,7 +62,7 @@ fn check_equivalence<const W: usize>() {
     let mut scratch = LayerScratch::<W>::new();
     let via_scratch = propagate_with_scratch(
         &circuit,
-        random_sum::<W>(3000, 8, 0xFEED),
+        rand_sum_real::<W>(3000, 8, 0xFEED),
         &AlwaysKeep,
         Direction::Heisenberg,
         &mut scratch,
@@ -114,13 +73,13 @@ fn check_equivalence<const W: usize>() {
     // left behind) must not change a bit of a second, different propagation.
     let ref2 = propagate(
         &circuit,
-        random_sum::<W>(2000, 8, 0xBEEF),
+        rand_sum_real::<W>(2000, 8, 0xBEEF),
         &AlwaysKeep,
         Direction::Forward,
     );
     let via2 = propagate_with_scratch(
         &circuit,
-        random_sum::<W>(2000, 8, 0xBEEF),
+        rand_sum_real::<W>(2000, 8, 0xBEEF),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,

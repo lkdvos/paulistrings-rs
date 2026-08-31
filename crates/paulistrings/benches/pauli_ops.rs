@@ -48,115 +48,21 @@ use paulistrings::engine::{propagate, Direction};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::pauli_sum::PauliSum;
 use paulistrings::phase::Phase;
+// The input generators are the shared fixtures. `rand_sum_unmasked` /
+// `tie_heavy_sum_unmasked` are the *unmasked, word-major* variants this file
+// has always used — a different draw order from `rand_sum`, so the committed
+// criterion baselines are pinned to them specifically.
+use paulistrings::test_support::{
+    low_weight_sum, rand_pauli, rand_sum_unmasked, tie_heavy_sum_unmasked, Xs64,
+};
 use paulistrings::truncation::TruncationPolicy;
 use std::hint::black_box;
 use std::time::Duration;
-
-/// Xorshift64* — small, deterministic, no dev-dep.
-struct Xs64(u64);
-
-impl Xs64 {
-    fn new(seed: u64) -> Self {
-        // Avoid the degenerate all-zero state.
-        Self(seed | 1)
-    }
-    #[inline]
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    #[inline]
-    fn next_array<const W: usize>(&mut self) -> [u64; W] {
-        let mut a = [0u64; W];
-        for slot in a.iter_mut() {
-            *slot = self.next_u64();
-        }
-        a
-    }
-}
 
 /// A truncation policy that never drops anything. Mirrors the `AlwaysKeep`
 /// helper in the engine tests; the trait default does what we want.
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-fn random_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
-    PauliString::<W> {
-        x: rng.next_array::<W>(),
-        z: rng.next_array::<W>(),
-    }
-}
-
-/// A Pauli string of Hamming weight `weight` over `num_qubits` qubits.
-///
-/// This is the *realistic* occupancy regime: physical Hamiltonians are
-/// low-weight, and `WeightCutoff` truncation keeps them that way. The dense
-/// `random_pauli` above is the opposite extreme. Any bucketing scheme derived
-/// from key bits behaves very differently on the two, so both are benched.
-fn low_weight_pauli<const W: usize>(
-    rng: &mut Xs64,
-    num_qubits: usize,
-    weight: usize,
-) -> PauliString<W> {
-    let mut p = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    for _ in 0..weight {
-        let q = (rng.next_u64() as usize) % num_qubits;
-        let word = q / 64;
-        let bit = 1u64 << (q % 64);
-        // Pick one of X, Z, Y (never I, or the weight would not be `weight`).
-        match rng.next_u64() % 3 {
-            0 => p.x[word] |= bit,
-            1 => p.z[word] |= bit,
-            _ => {
-                p.x[word] |= bit;
-                p.z[word] |= bit;
-            }
-        }
-    }
-    p
-}
-
-/// Build a sorted/deduplicated `PauliSum<W>` of length close to `n_terms`
-/// from random dense Pauli keys. Duplicates are unlikely at these widths but
-/// the accumulator handles them transparently; the resulting length may be
-/// slightly less than `n_terms`.
-fn random_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for _ in 0..n_terms {
-        let p = random_pauli::<W>(&mut rng);
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
-
-/// As `random_sum`, but with low-weight keys. Collisions are far more likely
-/// here, so the realized length can be noticeably below `n_terms`.
-fn low_weight_sum<const W: usize>(
-    n_terms: usize,
-    num_qubits: usize,
-    weight: usize,
-    seed: u64,
-) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for _ in 0..n_terms {
-        let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
 
 /// A weight-2 `ZZ` rotation on qubits `(q0, q1)` — the bond term of a
 /// transverse-field Ising Trotter step, and the single most common channel in
@@ -228,8 +134,8 @@ fn bench_mul_assign(c: &mut Criterion) {
 
     {
         let mut rng = Xs64::new(0xA11CE);
-        let a: PauliString<1> = random_pauli(&mut rng);
-        let b: PauliString<1> = random_pauli(&mut rng);
+        let a: PauliString<1> = rand_pauli(&mut rng);
+        let b: PauliString<1> = rand_pauli(&mut rng);
         group.bench_function("W=1", |bencher| {
             bencher.iter_batched(
                 || a,
@@ -243,8 +149,8 @@ fn bench_mul_assign(c: &mut Criterion) {
     }
     {
         let mut rng = Xs64::new(0xB0B);
-        let a: PauliString<2> = random_pauli(&mut rng);
-        let b: PauliString<2> = random_pauli(&mut rng);
+        let a: PauliString<2> = rand_pauli(&mut rng);
+        let b: PauliString<2> = rand_pauli(&mut rng);
         group.bench_function("W=2", |bencher| {
             bencher.iter_batched(
                 || a,
@@ -270,8 +176,8 @@ fn bench_pauli_sum_add(c: &mut Criterion) {
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
     for &n in &[10_000usize, 1_000_000usize] {
-        let a: PauliSum<2> = random_sum::<2>(n, 128, 0xADDA);
-        let b: PauliSum<2> = random_sum::<2>(n, 128, 0xADDB);
+        let a: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0xADDA);
+        let b: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0xADDB);
         let union_estimate = (a.len() + b.len()) as u64;
         group.throughput(Throughput::Elements(union_estimate));
         // The 10⁶ case runs ~tens of ms per iter; trim sample count so the
@@ -422,7 +328,7 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let rot_w4 = wide_rotation::<2>([0, 1, 2, 3], 0.1);
 
     for &n in &[10_000usize, 1_000_000usize] {
-        let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+        let input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0xC0FFEE);
         if n >= 1_000_000 {
             group.sample_size(10);
             group.warm_up_time(Duration::from_millis(500));
@@ -458,7 +364,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let mut input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let mut input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x74_12_EA_D5_u64);
     let rot = zz_rotation::<2>(0, 1, 0.1);
     let policy = AlwaysKeep;
 
@@ -534,7 +440,7 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let mut input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
+    let mut input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x74_12_EA_D5_u64);
     let gu2q = sqrt_swap(0, 1);
     let policy = AlwaysKeep;
 
@@ -608,7 +514,7 @@ fn bench_ingest_finalize(c: &mut Criterion) {
                 let mut rng = Xs64::new(0xC0FFEE);
                 let mut acc = BuildAccumulator::<2>::with_capacity(num_qubits, n);
                 for _ in 0..n {
-                    let p = random_pauli::<2>(&mut rng);
+                    let p = rand_pauli::<2>(&mut rng);
                     let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
                     let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
                     acc.add_term(p, Phase::ONE, Complex64::new(re, im));
@@ -632,7 +538,7 @@ fn bench_rebucket(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
+    let input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0xC0FFEE);
     group.throughput(Throughput::Elements(input.len() as u64));
 
     group.bench_function("refine_coarsen", |bencher| {
@@ -659,7 +565,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x70_9E);
+    let input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x70_9E);
     let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
     group.throughput(Throughput::Elements(input.len() as u64));
 
@@ -696,8 +602,8 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     // the shape a symmetric Hamiltonian produces, and it is the only shape that
     // exercises the group-detection pass (v0.3 §3) on a non-trivial group —
     // random coefficients give `count_eq == 1` and the counting reduce sees a
-    // degenerate case. The `random_sum` cases above stay as the contrast.
-    let tied: PauliSum<2> = tie_heavy_sum::<2>(n, 128, 0x70_9F);
+    // degenerate case. The `rand_sum_unmasked` cases above stay as the contrast.
+    let tied: PauliSum<2> = tie_heavy_sum_unmasked::<2>(n, 128, 0x70_9F);
     let tied_hash = Gf2Hash::<2>::new(128, bits_for(tied.len()), 0xBEEF);
     let tied_keep = (tied.len() * 4) / 5;
     group.bench_function("bucketed/tie_heavy_keep80pct", |bencher| {
@@ -714,22 +620,6 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     group.finish();
 }
 
-/// As `random_sum`, but with only four distinct coefficient magnitudes, so any
-/// cut through it lands inside a tie group spanning a quarter of the sum.
-///
-/// Mirrors `engine::bucketed::tie_tests::tie_heavy_sum`; kept here because
-/// benches cannot reach into the crate's test modules.
-fn tie_heavy_sum<const W: usize>(n_terms: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n_terms);
-    for i in 0..n_terms {
-        let p = random_pauli::<W>(&mut rng);
-        let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-        acc.add_term(p, Phase::ONE, Complex64::new(mag, 0.0));
-    }
-    acc.finalize()
-}
-
 /// Sweep the terms-per-bucket target, which sets the per-bucket sort size.
 ///
 /// `DEFAULT_TARGET_BUCKET_LEN = 1024` was chosen from cache arithmetic alone (a
@@ -743,7 +633,7 @@ fn bench_bucket_size_sweep(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x5_1EE0);
+    let input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x5_1EE0);
     let rot = zz_rotation::<2>(0, 1, 0.1);
     let policy = AlwaysKeep;
     group.throughput(Throughput::Elements(input.len() as u64));

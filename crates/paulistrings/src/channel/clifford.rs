@@ -360,15 +360,12 @@ impl<const W: usize> Channel<W> for Clifford2Q {
 mod tests {
     use super::*;
     use crate::pauli_string::PauliString;
+    use crate::test_support::alloc_bufs;
 
+    /// A one-row output buffer — every Clifford has `max_fanout == 1`.
     #[allow(clippy::type_complexity)]
     fn alloc_buf<const W: usize>() -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-        (
-            vec![[0u64; W]; 1],
-            vec![[0u64; W]; 1],
-            vec![Complex64::new(0.0, 0.0); 1],
-            0usize,
-        )
+        alloc_bufs::<W>(1)
     }
 
     /// Apply `gate` to `input` with coefficient 1 and return `(output, coeff)`.

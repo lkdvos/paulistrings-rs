@@ -401,6 +401,7 @@ mod tests {
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::prepared::Prepared;
     use crate::pauli_string::PauliString;
+    use crate::test_support::outputs;
 
     const TOL: f64 = 1e-12;
     const R: f64 = std::f64::consts::FRAC_1_SQRT_2;
@@ -410,36 +411,6 @@ mod tests {
     }
 
     type Term<const W: usize> = ([u64; W], [u64; W], Complex64);
-
-    fn outputs<const W: usize, C: Channel<W> + ?Sized>(
-        ch: &C,
-        adjoint: bool,
-        p: PauliString<W>,
-        coeff: Complex64,
-    ) -> Vec<Term<W>> {
-        let f = ch.max_fanout().max(1);
-        let mut bx = vec![[0u64; W]; f];
-        let mut bz = vec![[0u64; W]; f];
-        let mut bc = vec![ZERO; f];
-        let mut len = 0usize;
-        {
-            let mut out = OutputBuffer::<W> {
-                x: &mut bx,
-                z: &mut bz,
-                coeff: &mut bc,
-                len: &mut len,
-            };
-            if adjoint {
-                ch.apply_adjoint(&p.x, &p.z, coeff, &mut out);
-            } else {
-                ch.apply(&p.x, &p.z, coeff, &mut out);
-            }
-        }
-        let mut v: Vec<Term<W>> = (0..len).map(|i| (bx[i], bz[i], bc[i])).collect();
-        v.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-        v.retain(|t| t.2.norm() > 1e-15);
-        v
-    }
 
     /// Two channels agree on every local basis Pauli of the given support.
     fn assert_agrees_on_basis<const W: usize, A, B>(a: &A, b: &B, qubits: &[u32], what: &str)

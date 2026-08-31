@@ -11,6 +11,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
+#[cfg(any(test, debug_assertions))]
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::ProductState;
 

@@ -14,8 +14,6 @@
 //! [`PauliSum`]: crate::PauliSum
 //! [`engine`]: crate::engine
 
-#![allow(unused)]
-
 use crate::bucket::hash::Gf2Hash;
 use crate::bucket::sum::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
 use crate::bucket::DEFAULT_TARGET_BUCKET_LEN;
@@ -108,7 +106,7 @@ impl<const W: usize> BuildAccumulator<W> {
     }
 }
 
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

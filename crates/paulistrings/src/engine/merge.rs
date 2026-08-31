@@ -31,6 +31,7 @@ impl<const W: usize> SortScratch<W> {
     /// implementation detail exposed only for
     /// `bucketed::tests::capacity_stabilizes_across_repeated_layers`, which
     /// needs it to confirm the sort scratch's footprint stops growing too.
+    #[cfg(test)]
     pub(crate) fn total_capacity(&self) -> usize {
         self.perm.capacity() + self.tmp_x.capacity() + self.tmp_z.capacity() + self.tmp_c.capacity()
     }

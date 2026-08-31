@@ -1,7 +1,5 @@
 //! [`Circuit<W>`] — an ordered sequence of channels.
 
-#![allow(unused)]
-
 use crate::channel::Channel;
 
 /// A circuit on `num_qubits` qubits, stored as a heterogeneous list of

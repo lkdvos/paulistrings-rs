@@ -1,7 +1,5 @@
 //! Python `PauliSum` class with width-monomorphized backing storage. See §4, §11.
 
-#![allow(unused)]
-
 use crate::truncation_spec::{PolicySpec, PyTruncation, SpecPolicy};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
@@ -27,7 +25,7 @@ impl PauliSumImpl {
     /// Pick the smallest supported width for `num_qubits`. Returns `None` if
     /// `num_qubits` exceeds the largest monomorphized width (1024 qubits).
     pub fn empty_for(num_qubits: usize) -> Option<Self> {
-        for_num_qubits!(num_qubits, |W| CorePauliSum::empty(num_qubits))
+        for_num_qubits!(num_qubits, |W| CorePauliSum::<W>::empty(num_qubits))
     }
 
     pub fn num_qubits(&self) -> usize {

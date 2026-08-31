@@ -390,6 +390,7 @@ impl<const W: usize> PauliSum<W> {
     /// Test/oracle constructor: wrap globally key-sorted columns as a
     /// single-bucket sum (zero hash bits, default seed), whose canonical order
     /// is therefore exactly the given column order.
+    #[cfg(test)]
     pub(crate) fn from_sorted_columns(
         x: Vec<[u64; W]>,
         z: Vec<[u64; W]>,
@@ -743,32 +744,6 @@ impl<const W: usize> PauliSum<W> {
         });
     }
 
-    /// Drop terms whose coefficient magnitude is `<= eps`.
-    ///
-    /// The predicate is `norm() > eps` — in particular `eps = 0` still removes
-    /// an exactly-zero coefficient. Each bucket compacts in place and keeps its
-    /// order, so the surviving set is independent of the partition.
-    pub fn truncate_by_magnitude(&mut self, eps: f64) {
-        self.buckets.par_iter_mut().for_each(|cols| {
-            let n = cols.len();
-            let mut w = 0usize;
-            for r in 0..n {
-                if cols.coeff[r].norm() > eps {
-                    if w != r {
-                        cols.x[w] = cols.x[r];
-                        cols.z[w] = cols.z[r];
-                        cols.coeff[w] = cols.coeff[r];
-                    }
-                    w += 1;
-                }
-            }
-            cols.x.truncate(w);
-            cols.z.truncate(w);
-            cols.coeff.truncate(w);
-        });
-        self.recount();
-    }
-
     /// Keep only the terms for which `f(x, z, coeff)` is `true`.
     ///
     /// Order-preserving and in place, so the per-bucket sort and the
@@ -904,12 +879,12 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Assert the structural invariant. Debug builds only.
+    /// Assert the structural invariant. Debug builds and test builds only.
     ///
     /// Checks that every term is in its hash bucket, that each bucket is
     /// strictly ascending in `(x, z)` (so sorted *and* duplicate-free), that
     /// every key is within `num_qubits`, and that the cached length agrees.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, debug_assertions))]
     pub fn assert_invariants(&self) {
         assert_eq!(
             self.buckets.len(),
@@ -946,11 +921,7 @@ impl<const W: usize> PauliSum<W> {
     }
 }
 
-// Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
-// without it `cargo bench` and `cargo test --release`, which compile the lib
-// tests in release mode, fail to build.
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tests {
     #[test]
     fn bucketed_expectation_agrees_with_the_flat_version() {
@@ -1004,9 +975,9 @@ mod tests {
     use super::*;
     use crate::accumulator::BuildAccumulator;
     use crate::phase::Phase;
-    // `Xs64`, `word_mask` and `rand_sum` are the canonical fixtures from
+    // `Xs64` and `rand_sum` are the canonical fixtures from
     // `crate::test_support` — this module's copies were byte-identical.
-    use crate::test_support::{rand_sum, word_mask, Xs64};
+    use crate::test_support::{rand_sum, Xs64};
 
     /// Low-weight keys — the physically relevant regime, and the one where a
     /// badly chosen hash would collapse into one bucket.
@@ -1646,39 +1617,6 @@ mod tests {
             assert_eq!(b.len(), flat.len());
             assert_same_sum(&flat, &b);
         }
-    }
-
-    #[test]
-    fn truncate_by_magnitude_matches_flat_across_bits() {
-        for bits in [0u8, 4, 8] {
-            for &eps in &[0.0f64, 0.25, 0.5, 2.0] {
-                let sum = rand_sum::<2>(4000, 128, 0x103);
-                let h = Gf2Hash::<2>::new(128, bits, 0x104);
-                let mut b = sum.clone().with_hash(h);
-                let mut flat = sum.clone();
-                b.truncate_by_magnitude(eps);
-                flat.truncate_by_magnitude(eps);
-                b.assert_invariants();
-                assert_eq!(b.len(), flat.len(), "bits={bits} eps={eps} length");
-                assert_same_sum(&flat, &b);
-            }
-        }
-    }
-
-    #[test]
-    fn truncate_by_magnitude_drops_exact_zeros_at_eps_zero() {
-        // Mirrors the flat method: the predicate is `norm() > eps`, so eps = 0
-        // still removes an exactly-zero coefficient.
-        let mut acc = BuildAccumulator::<1>::new(8);
-        acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.0, 0.0));
-        acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
-        let sum = acc.finalize();
-        let mut b = sum.clone().with_hash(Gf2Hash::<1>::new(8, 3, 0x105));
-        b.truncate_by_magnitude(0.0);
-        b.assert_invariants();
-        assert_eq!(b.len(), 1);
-        let p = PauliString::<1>::z(1);
-        assert_eq!(b.get(&p.x, &p.z), Some(Complex64::new(1.0, 0.0)));
     }
 
     #[test]
@@ -2347,97 +2285,6 @@ mod tests {
         // (2 + 0i) * i = 0 + 2i; (0 - 3i) * i = 3 + 0i.
         assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 2.0));
         assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
-    }
-
-    // --- Slice 2.3: truncate_by_magnitude() ------------------------------
-
-    #[test]
-    fn truncate_eps_zero_is_noop_on_nonzero_terms() {
-        let mut s = three_term_sum_w1();
-        let before_len = s.len();
-        s.truncate_by_magnitude(0.0);
-        assert_eq!(s.len(), before_len);
-        s.assert_invariants();
-    }
-
-    #[test]
-    fn truncate_eps_above_max_empties() {
-        let mut s = three_term_sum_w1();
-        s.truncate_by_magnitude(10.0);
-        assert!(s.is_empty());
-        s.assert_invariants();
-    }
-
-    #[test]
-    fn truncate_mixed_drops_only_below_threshold() {
-        // Four sorted terms with magnitudes [0.1, 0.5, 1.0, 0.05]; eps=0.2
-        // keeps 0.5 and 1.0 (originally at indices 1 and 2).
-        let mut s = PauliSum::<1>::from_sorted_columns(
-            vec![[0u64], [0u64], [1u64], [1u64]],
-            vec![[1u64], [2u64], [0u64], [1u64]],
-            vec![
-                Complex64::new(0.1, 0.0),
-                Complex64::new(0.5, 0.0),
-                Complex64::new(1.0, 0.0),
-                Complex64::new(0.05, 0.0),
-            ],
-            4,
-        );
-        s.assert_invariants();
-        s.truncate_by_magnitude(0.2);
-        assert_eq!(s.len(), 2);
-        assert_eq!(s.bucket(0).0[0], [0u64]);
-        assert_eq!(s.bucket(0).1[0], [2u64]);
-        assert_eq!(s.bucket(0).2[0], Complex64::new(0.5, 0.0));
-        assert_eq!(s.bucket(0).0[1], [1u64]);
-        assert_eq!(s.bucket(0).1[1], [0u64]);
-        assert_eq!(s.bucket(0).2[1], Complex64::new(1.0, 0.0));
-        s.assert_invariants();
-    }
-
-    /// Unlike `truncate_by_magnitude_drops_exact_zeros_at_eps_zero` above,
-    /// this builds the sum through `from_sorted_columns`, so the exact zero
-    /// actually reaches `truncate_by_magnitude`: `BuildAccumulator::finalize`
-    /// filters exact zeros itself, which makes the accumulator-built version
-    /// of this case vacuous.
-    #[test]
-    fn truncate_drops_exact_zero_at_eps_zero() {
-        // Include an exact (0+0i) term; eps=0 should drop only that one.
-        let mut s = PauliSum::<1>::from_sorted_columns(
-            vec![[0u64], [1u64], [1u64]],
-            vec![[1u64], [0u64], [2u64]],
-            vec![
-                Complex64::new(1.0, 0.0),
-                Complex64::new(0.0, 0.0),
-                Complex64::new(2.0, 0.0),
-            ],
-            4,
-        );
-        s.truncate_by_magnitude(0.0);
-        assert_eq!(s.len(), 2);
-        assert_eq!(s.bucket(0).0[0], [0u64]);
-        assert_eq!(s.bucket(0).0[1], [1u64]);
-        assert_eq!(s.bucket(0).1[1], [2u64]);
-        s.assert_invariants();
-    }
-
-    #[test]
-    fn truncate_w2_preserves_sort() {
-        let mut s = PauliSum::<2>::from_sorted_columns(
-            vec![[0u64, 0u64], [0u64, 1u64], [1u64, 0u64]],
-            vec![[0u64, 1u64], [0u64, 0u64], [0u64, 0u64]],
-            vec![
-                Complex64::new(0.01, 0.0),
-                Complex64::new(2.0, 0.0),
-                Complex64::new(0.005, 0.0),
-            ],
-            128,
-        );
-        s.assert_invariants();
-        s.truncate_by_magnitude(0.1);
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.bucket(0).0[0], [0u64, 1u64]);
-        s.assert_invariants();
     }
 
     // --- Slice 2.4: add() ------------------------------------------------

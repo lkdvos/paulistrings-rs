@@ -672,7 +672,7 @@ mod tests {
                 // mul_assign, then multiply by `i` for the Y-decomposition).
                 let mut p = PauliString::<W>::x(control);
                 let _ = p.mul_assign(&PauliString::<W>::x(target));
-                let mut q = PauliString::<W>::z(control);
+                let q = PauliString::<W>::z(control);
                 let mp = p.mul_assign(&q);
                 // Y = i · X · Z, so the image is i · (X-image)(Z-image).
                 (p, Phase::I + mp)

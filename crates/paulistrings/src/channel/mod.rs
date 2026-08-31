@@ -61,8 +61,6 @@
 //! [`engine`]: crate::engine
 //! [`Circuit`]: crate::Circuit
 
-#![allow(unused)]
-
 pub mod clifford;
 pub mod identity;
 pub mod noise;
@@ -397,7 +395,7 @@ mod tests {
         assert_eq!(x.capacity(), cap);
         assert_eq!(z.capacity(), cap);
         assert_eq!(c.capacity(), cap);
-        let mut len = 0usize;
+        let mut len: usize;
         for i in 0..100u64 {
             len = 0;
             let mut buf = OutputBuffer::<1> {

@@ -1,12 +1,12 @@
 """Cross-library Python benchmark harness for ``paulistrings``.
 
-Slice 11.2 in ``research/plans/2026-04-30-v0.1-tdd-slices.md``.
-
-Compares ``paulistrings`` against the reference libraries listed in
-``CLAUDE.md`` ("Repo layout") on a small, fixed set of operations: ingestion,
-sum addition, and single-layer Heisenberg conjugation of a Pauli sum by a
-Clifford circuit. ``PauliStrings.jl`` is excluded — calling Julia from
-pytest would pull in PyJulia and isn't worth the wiring at v0.1.
+Compares ``paulistrings`` against ``qiskit.quantum_info.SparsePauliOp`` and
+``openfermion.QubitOperator`` on two operation groups: construction from
+string terms (``construct``) and single-layer Heisenberg conjugation of a
+Pauli sum by a Clifford circuit (``conjugate_clifford``). Backends that are
+not installed are skipped via ``pytest.importorskip``. ``PauliStrings.jl``
+is excluded — calling Julia from pytest would pull in PyJulia and isn't
+worth the wiring.
 
 Run with::
 

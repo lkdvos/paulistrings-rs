@@ -556,7 +556,7 @@ impl<const W: usize> PauliSum<W> {
 
     /// Double the bucket count, splitting each bucket in two.
     ///
-    /// One [`Gf2Hash::row_parity`] evaluation per term against just the new
+    /// One `Gf2Hash::row_parity` evaluation per term against just the new
     /// high bit — `O(n)` total, not `O(n · bits)` — since a term's bucket
     /// under the old (shorter) hash prefix is exactly the bucket it is already
     /// in; only whether the new bit is set decides which half it lands in.
@@ -599,7 +599,7 @@ impl<const W: usize> PauliSum<W> {
 
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
     ///
-    /// A 2-way merge per pair via [`merge_two`] — no coefficient combining,
+    /// A 2-way merge per pair via `merge_two` — no coefficient combining,
     /// since equal keys agree at every prefix length and were already in the
     /// same source bucket. Pairs are independent, so — same threshold and
     /// rationale as [`Self::refine`] (v0.5 §R2) — this is a parallel map above

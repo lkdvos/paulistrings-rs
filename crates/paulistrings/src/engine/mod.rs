@@ -92,7 +92,8 @@ where
 /// lets the caller retain the scratch's high-water buffer capacity across
 /// calls (a Trotter driver stepping an observable), and, under the
 /// `phase-timing` feature, read the per-phase counters afterwards through
-/// [`LayerScratch::take_stats`].
+/// `LayerScratch::take_stats` (the method — and so a resolvable doc link to
+/// it — exists only when that feature is enabled).
 pub fn propagate_with_scratch<const W: usize, T>(
     circuit: &Circuit<W>,
     mut sum: PauliSum<W>,

@@ -14,7 +14,13 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-benchmark>=4", "ruff", "maturin"]
-bench = ["pytest-benchmark>=4", "qiskit", "openfermion", "numpy"]
+bench = ["pytest-benchmark>=4", "qiskit", "openfermion", "numpy", "stim"]
+# The examples & benchmarks suite (`examples/`): circuit importers and the
+# ground-truth oracles in `examples/common/oracles.py` (qiskit Aer for the dense
+# reference, stim for the Clifford one), plus the report plots. Every
+# CI-visible test importorskips these, so the numpy-only CI job stays green
+# without them.
+examples = ["matplotlib", "stim", "qiskit", "qiskit-aer", "numpy"]
 
 [tool.maturin]
 manifest-path = "crates/paulistrings-py/Cargo.toml"

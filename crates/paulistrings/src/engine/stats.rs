@@ -23,9 +23,9 @@ use std::time::Instant;
 /// All `*_ns` fields are nanoseconds, summed over every layer since the
 /// counters were last drained. **Two clock domains are deliberately mixed**:
 ///
-/// - **Wall-clock phases** (`rebucket_ns` through `finalize_ns`, plus
-///   `fallback_ns`) are measured once per layer on the calling thread; per
-///   layer they sum to approximately the layer's wall time.
+/// - **Wall-clock phases** (`rebucket_ns` through `finalize_ns`) are measured
+///   once per layer on the calling thread; per layer they sum to approximately
+///   the layer's wall time.
 /// - **Worker busy-time phases** (`swap_ns` through `clear_ns`) are summed
 ///   across every coset task on every Rayon worker. Under a `t`-thread pool
 ///   they sum to `coset_loop_ns × t × efficiency`, **not** to
@@ -56,11 +56,6 @@ pub struct PhaseStats {
     pub recount_ns: u64,
     /// `TruncationPolicy::finalize_layer` after each layer.
     pub finalize_ns: u64,
-    /// Whole-sum v0.1 sort-merge fallback layers, undecomposed. Non-zero
-    /// means a channel declined `prepare` — unreachable with built-in
-    /// channels, so anything here is worth investigating before reading the
-    /// rest of the breakdown.
-    pub fallback_ns: u64,
     // -- worker busy time, summed over all coset tasks (see type docs) --
     /// Scratch resize + column swap-out at the top of each coset task.
     pub swap_ns: u64,
@@ -123,7 +118,6 @@ impl PhaseStats {
         self.unpermute_ns += o.unpermute_ns;
         self.recount_ns += o.recount_ns;
         self.finalize_ns += o.finalize_ns;
-        self.fallback_ns += o.fallback_ns;
         self.swap_ns += o.swap_ns;
         self.size_ns += o.size_ns;
         self.gather_ns += o.gather_ns;
@@ -167,7 +161,6 @@ impl PhaseStats {
             + self.unpermute_ns
             + self.recount_ns
             + self.finalize_ns
-            + self.fallback_ns
     }
 
     /// Sum of the worker busy-time phase fields (see the type docs for how

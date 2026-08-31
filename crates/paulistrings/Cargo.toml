@@ -19,6 +19,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 # Measurement builds only — never enable by default: the default build must
 # stay byte- and performance-identical to an uninstrumented one.
 phase-timing = []
+# Compile `src/test_support.rs` (the naive differential oracle and the shared
+# random-sum fixtures) into the library so integration tests, benches and
+# examples can use it. Enabled for the crate's own dev builds by the
+# self-dev-dependency below; never part of a published build's default set.
+test-utils = []
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -30,6 +35,10 @@ rayon = "1"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+# Self-dependency so the lib is built with `test-utils` for tests, benches and
+# examples; feature unification means one copy of the crate, with the module
+# present.
+paulistrings = { path = ".", features = ["test-utils"] }
 
 [[bench]]
 name = "pauli_ops"

@@ -80,9 +80,10 @@
 //! - [`propagate`] / [`Direction`] — the propagation entry point. `sum`
 //!   is a single [`PauliSum`], bucketed for the run and returned bucketed;
 //!   there is no separate flat/working-form conversion to pay.
-//! - [`engine`] — the bucketed propagation engine, plus the retained v0.1
-//!   sort-merge pipeline as differential oracle and fallback. Most users
-//!   will not call either directly; [`propagate`] is the front door.
+//! - [`engine`] — the bucketed propagation engine: [`engine::bucketed`] (the
+//!   coset layer loop), `engine::coset` (the GF(2) span and its cosets) and
+//!   `engine::merge` (the per-run sort and fused merge kernels). Most users
+//!   will not call any of them directly; [`propagate`] is the front door.
 //! - [`examples`] — worked-example walkthroughs of full-scale simulations
 //!   (currently: a 2D transverse-field Ising quench on 4×4 and 6×6
 //!   lattices with embedded plot).
@@ -113,6 +114,9 @@ pub mod examples;
 pub mod pauli_string;
 pub mod pauli_sum;
 pub mod phase;
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub mod test_support;
 pub mod truncation;
 
 pub use accumulator::BuildAccumulator;

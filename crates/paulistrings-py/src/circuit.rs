@@ -17,45 +17,20 @@ pub enum CircuitImpl {
 
 impl CircuitImpl {
     pub fn new_for(num_qubits: usize) -> Option<Self> {
-        match num_qubits {
-            0..=64 => Some(Self::W1(CoreCircuit::new(num_qubits))),
-            65..=128 => Some(Self::W2(CoreCircuit::new(num_qubits))),
-            129..=256 => Some(Self::W4(CoreCircuit::new(num_qubits))),
-            257..=512 => Some(Self::W8(CoreCircuit::new(num_qubits))),
-            513..=1024 => Some(Self::W16(CoreCircuit::new(num_qubits))),
-            _ => None,
-        }
+        for_num_qubits!(num_qubits, |W| CoreCircuit::new(num_qubits))
     }
 
     pub fn num_qubits(&self) -> usize {
-        match self {
-            Self::W1(c) => c.num_qubits,
-            Self::W2(c) => c.num_qubits,
-            Self::W4(c) => c.num_qubits,
-            Self::W8(c) => c.num_qubits,
-            Self::W16(c) => c.num_qubits,
-        }
+        for_each_width!(self, |c| c.num_qubits)
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            Self::W1(c) => c.len(),
-            Self::W2(c) => c.len(),
-            Self::W4(c) => c.len(),
-            Self::W8(c) => c.len(),
-            Self::W16(c) => c.len(),
-        }
+        for_each_width!(self, |c| c.len())
     }
 
     /// Push a width-erased channel spec onto the underlying circuit.
     pub fn push_spec(&mut self, spec: &ChannelSpec) {
-        match self {
-            Self::W1(c) => spec.push_into(c),
-            Self::W2(c) => spec.push_into(c),
-            Self::W4(c) => spec.push_into(c),
-            Self::W8(c) => spec.push_into(c),
-            Self::W16(c) => spec.push_into(c),
-        }
+        for_each_width!(self, |c| spec.push_into(c))
     }
 }
 

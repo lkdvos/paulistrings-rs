@@ -27,67 +27,29 @@ impl PauliSumImpl {
     /// Pick the smallest supported width for `num_qubits`. Returns `None` if
     /// `num_qubits` exceeds the largest monomorphized width (1024 qubits).
     pub fn empty_for(num_qubits: usize) -> Option<Self> {
-        match num_qubits {
-            0..=64 => Some(Self::W1(CorePauliSum::empty(num_qubits))),
-            65..=128 => Some(Self::W2(CorePauliSum::empty(num_qubits))),
-            129..=256 => Some(Self::W4(CorePauliSum::empty(num_qubits))),
-            257..=512 => Some(Self::W8(CorePauliSum::empty(num_qubits))),
-            513..=1024 => Some(Self::W16(CorePauliSum::empty(num_qubits))),
-            _ => None,
-        }
+        for_num_qubits!(num_qubits, |W| CorePauliSum::empty(num_qubits))
     }
 
     pub fn num_qubits(&self) -> usize {
-        match self {
-            Self::W1(s) => s.num_qubits(),
-            Self::W2(s) => s.num_qubits(),
-            Self::W4(s) => s.num_qubits(),
-            Self::W8(s) => s.num_qubits(),
-            Self::W16(s) => s.num_qubits(),
-        }
+        for_each_width!(self, |s| s.num_qubits())
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            Self::W1(s) => s.len(),
-            Self::W2(s) => s.len(),
-            Self::W4(s) => s.len(),
-            Self::W8(s) => s.len(),
-            Self::W16(s) => s.len(),
-        }
+        for_each_width!(self, |s| s.len())
     }
 
     pub fn expectation(&self, state: ProductState) -> Complex64 {
-        match self {
-            Self::W1(s) => s.expectation_product_state(state),
-            Self::W2(s) => s.expectation_product_state(state),
-            Self::W4(s) => s.expectation_product_state(state),
-            Self::W8(s) => s.expectation_product_state(state),
-            Self::W16(s) => s.expectation_product_state(state),
-        }
+        for_each_width!(self, |s| s.expectation_product_state(state))
     }
 
     pub fn identity_coefficient(&self) -> Complex64 {
-        match self {
-            Self::W1(s) => s.identity_coefficient(),
-            Self::W2(s) => s.identity_coefficient(),
-            Self::W4(s) => s.identity_coefficient(),
-            Self::W8(s) => s.identity_coefficient(),
-            Self::W16(s) => s.identity_coefficient(),
-        }
+        for_each_width!(self, |s| s.identity_coefficient())
     }
 
     /// `None` when the two sums were monomorphized at different widths, which
     /// can only happen if their qubit counts fall in different dispatch bands.
     pub fn overlap(&self, other: &Self) -> Option<Complex64> {
-        match (self, other) {
-            (Self::W1(a), Self::W1(b)) => Some(a.overlap(b)),
-            (Self::W2(a), Self::W2(b)) => Some(a.overlap(b)),
-            (Self::W4(a), Self::W4(b)) => Some(a.overlap(b)),
-            (Self::W8(a), Self::W8(b)) => Some(a.overlap(b)),
-            (Self::W16(a), Self::W16(b)) => Some(a.overlap(b)),
-            _ => None,
-        }
+        for_each_width_pair!((self, other), |a, b| a.overlap(b))
     }
 
     /// Snapshot of the coefficient column, in the sum's canonical order
@@ -98,13 +60,7 @@ impl PauliSumImpl {
             let (_, _, c) = s.to_arrays();
             c
         }
-        match self {
-            Self::W1(s) => coeffs_of(s),
-            Self::W2(s) => coeffs_of(s),
-            Self::W4(s) => coeffs_of(s),
-            Self::W8(s) => coeffs_of(s),
-            Self::W16(s) => coeffs_of(s),
-        }
+        for_each_width!(self, |s| coeffs_of(s))
     }
 
     /// `(width, x_flat, z_flat)` snapshot of the SoA columns, in the sum's
@@ -127,31 +83,15 @@ impl PauliSumImpl {
             let (x, z, _) = s.to_arrays();
             (W, flatten(&x), flatten(&z))
         }
-        match self {
-            Self::W1(s) => xz_of(s),
-            Self::W2(s) => xz_of(s),
-            Self::W4(s) => xz_of(s),
-            Self::W8(s) => xz_of(s),
-            Self::W16(s) => xz_of(s),
-        }
+        for_each_width!(self, |s| xz_of(s))
     }
 
     /// Build from a `{pauli_string: coefficient}` Python dict at the requested
     /// width. The width must already match `num_qubits` (caller's job).
     pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
-        // The match arms call into the generic helper, which monomorphizes
-        // the parser per width. Slice 10.2 will replace this match with a
-        // macro that also covers from_strings, propagate, etc.
-        match num_qubits {
-            0..=64 => Ok(Self::W1(parse_terms::<1>(num_qubits, terms)?)),
-            65..=128 => Ok(Self::W2(parse_terms::<2>(num_qubits, terms)?)),
-            129..=256 => Ok(Self::W4(parse_terms::<4>(num_qubits, terms)?)),
-            257..=512 => Ok(Self::W8(parse_terms::<8>(num_qubits, terms)?)),
-            513..=1024 => Ok(Self::W16(parse_terms::<16>(num_qubits, terms)?)),
-            _ => Err(PyValueError::new_err(
-                "num_qubits exceeds largest monomorphized width (1024)",
-            )),
-        }
+        for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
     }
 }
 
@@ -373,30 +313,18 @@ impl PauliSum {
             Some(p) => &p.spec,
             None => &no_op,
         };
-        let inner = match (&self.inner, &circuit.inner) {
-            (PauliSumImpl::W1(s), crate::circuit::CircuitImpl::W1(c)) => {
-                PauliSumImpl::W1(propagate(c, s.clone(), &SpecPolicy::<1>(spec), dir))
-            }
-            (PauliSumImpl::W2(s), crate::circuit::CircuitImpl::W2(c)) => {
-                PauliSumImpl::W2(propagate(c, s.clone(), &SpecPolicy::<2>(spec), dir))
-            }
-            (PauliSumImpl::W4(s), crate::circuit::CircuitImpl::W4(c)) => {
-                PauliSumImpl::W4(propagate(c, s.clone(), &SpecPolicy::<4>(spec), dir))
-            }
-            (PauliSumImpl::W8(s), crate::circuit::CircuitImpl::W8(c)) => {
-                PauliSumImpl::W8(propagate(c, s.clone(), &SpecPolicy::<8>(spec), dir))
-            }
-            (PauliSumImpl::W16(s), crate::circuit::CircuitImpl::W16(c)) => {
-                PauliSumImpl::W16(propagate(c, s.clone(), &SpecPolicy::<16>(spec), dir))
-            }
-            _ => {
+        let inner = for_each_width_propagate!(
+            &self.inner,
+            &circuit.inner,
+            |s, c, W| propagate(c, s.clone(), &SpecPolicy::<W>(spec), dir),
+            else {
                 // Same num_qubits but different widths is impossible because
                 // both width pickers map num_qubits to the same arm.
                 return Err(PyValueError::new_err(
                     "internal: PauliSum and Circuit width mismatch",
                 ));
             }
-        };
+        );
         Ok(Self { inner })
     }
 }

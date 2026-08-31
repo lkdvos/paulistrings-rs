@@ -141,6 +141,64 @@ pub fn support_mask<const W: usize>(qubits: &[u32]) -> [u64; W] {
     mask
 }
 
+// ---- Shared per-qubit bit extract/insert idiom ----
+//
+// Every built-in `Channel::apply`/`apply_adjoint` reads and/or overwrites the
+// two bit-planes (`x`, `z`) at one or two support qubits. These four helpers
+// are the common core of that idiom; private (not `pub`) so they're visible
+// to this module and its descendants (`clifford`, `unitary`, `noise`,
+// `identity`) but nowhere else — there's no reason for a custom `Channel`
+// impl outside this crate to reach for them, since `apply` only needs the
+// public `PauliString`/bit-array API.
+
+/// Decompose qubit index `q` into `(word, bit, mask)`: the index into a
+/// `[u64; W]` array, the bit position within that word, and `1u64 << bit`.
+#[inline(always)]
+fn qubit_loc(q: usize) -> (usize, usize, u64) {
+    let word = q / 64;
+    let bit = q % 64;
+    (word, bit, 1u64 << bit)
+}
+
+/// Read the packed single-qubit Pauli index (`x | (z << 1)`, i.e.
+/// `I=0, X=1, Z=2, Y=3` — the convention [`Clifford1Q`] and
+/// [`GeneralUnitary1Q`] both document) of the qubit at `(word, bit)`.
+#[inline(always)]
+fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usize) -> usize {
+    let x_bit = (x[word] >> bit) & 1;
+    let z_bit = (z[word] >> bit) & 1;
+    (x_bit | (z_bit << 1)) as usize
+}
+
+/// Overwrite the qubit at `(word, bit, mask)` of `(nx, nz)` with the packed
+/// Pauli index `p` (same `x | (z << 1)` encoding as [`read_pauli`]).
+#[inline(always)]
+fn write_pauli<const W: usize>(
+    nx: &mut [u64; W],
+    nz: &mut [u64; W],
+    word: usize,
+    bit: usize,
+    mask: u64,
+    p: usize,
+) {
+    let ox = (p & 1) as u64;
+    let oz = ((p >> 1) & 1) as u64;
+    nx[word] = (nx[word] & !mask) | (ox << bit);
+    nz[word] = (nz[word] & !mask) | (oz << bit);
+}
+
+/// Set (`value = true`) or clear (`value = false`) the single bit at
+/// `(word, mask)` of one bit-plane array. Used where only one of `x`/`z`
+/// changes, e.g. amplitude damping's `I ↔ Z` fan-out.
+#[inline(always)]
+fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bool) {
+    if value {
+        arr[word] |= mask;
+    } else {
+        arr[word] &= !mask;
+    }
+}
+
 /// Anything that maps a Pauli string to a small weighted sum of Pauli strings.
 ///
 /// [`Channel::max_fanout`] is a method (not an associated `const`) so the

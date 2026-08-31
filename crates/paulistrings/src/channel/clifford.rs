@@ -8,7 +8,7 @@
 //! Encoding: a single-qubit Pauli is indexed by `(x_bit | (z_bit << 1))` —
 //! `I = 0, X = 1, Z = 2, Y = 3`. The output Pauli uses the same packing.
 
-use super::{support_mask, Channel, OutputBuffer};
+use super::{qubit_loc, read_pauli, support_mask, write_pauli, Channel, OutputBuffer};
 use crate::phase::Phase;
 use num_complex::Complex64;
 
@@ -118,19 +118,12 @@ impl Clifford1Q {
     ) {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
-        let word = q / 64;
-        let bit = q % 64;
-        let mask = 1u64 << bit;
-        let x_bit = ((input_x[word] >> bit) & 1) as u8;
-        let z_bit = ((input_z[word] >> bit) & 1) as u8;
-        let idx = (x_bit | (z_bit << 1)) as usize;
-        let op = out_pauli[idx];
-        let ox = (op & 1) as u64;
-        let oz = ((op >> 1) & 1) as u64;
+        let (word, bit, mask) = qubit_loc(q);
+        let idx = read_pauli(input_x, input_z, word, bit);
+        let op = out_pauli[idx] as usize;
         let mut nx = *input_x;
         let mut nz = *input_z;
-        nx[word] = (nx[word] & !mask) | (ox << bit);
-        nz[word] = (nz[word] & !mask) | (oz << bit);
+        write_pauli(&mut nx, &mut nz, word, bit, mask, op);
         out.push(nx, nz, phase[idx].apply(coeff));
     }
 }
@@ -287,7 +280,7 @@ impl Clifford2Q {
             // side.
             let y_count = (bits[0] & bits[1]) + (bits[2] & bits[3]);
             acc_phase += Phase::new(y_count);
-            out_pauli[idx] = pack4_from_word(acc_x, acc_z, support);
+            out_pauli[idx] = pack4_from_word(acc_x, acc_z);
             phase[idx] = acc_phase;
         }
         Self {
@@ -307,25 +300,19 @@ const fn pack4(x0: u8, z0: u8, x1: u8, z1: u8) -> u8 {
 /// `PauliString<1>`-style `(x, z)` word pair, with the support qubits at
 /// positions 0 and 1 of the word. Used only inside table construction.
 fn unpack4_to_word(packed: u8) -> ([u64; 1], [u64; 1]) {
-    let x0 = (packed & 1) as u64;
-    let z0 = ((packed >> 1) & 1) as u64;
-    let x1 = ((packed >> 2) & 1) as u64;
-    let z1 = ((packed >> 3) & 1) as u64;
-    let x = x0 | (x1 << 1);
-    let z = z0 | (z1 << 1);
-    ([x], [z])
+    let mut x = [0u64; 1];
+    let mut z = [0u64; 1];
+    write_pauli(&mut x, &mut z, 0, 0, 1, (packed & 3) as usize);
+    write_pauli(&mut x, &mut z, 0, 1, 2, ((packed >> 2) & 3) as usize);
+    (x, z)
 }
 
 /// Inverse of `unpack4_to_word`: reads bits 0 and 1 of a single-word
-/// `(x, z)` pair and packs them back into the 4-bit encoding. The
-/// `support` argument is unused at runtime — kept for future-proofing
-/// once the helper moves out of test-only construction.
-fn pack4_from_word(x: [u64; 1], z: [u64; 1], _support: [u32; 2]) -> u8 {
-    let x0 = (x[0] & 1) as u8;
-    let z0 = (z[0] & 1) as u8;
-    let x1 = ((x[0] >> 1) & 1) as u8;
-    let z1 = ((z[0] >> 1) & 1) as u8;
-    pack4(x0, z0, x1, z1)
+/// `(x, z)` pair and packs them back into the 4-bit encoding.
+fn pack4_from_word(x: [u64; 1], z: [u64; 1]) -> u8 {
+    let p0 = read_pauli(&x, &z, 0, 0) as u8;
+    let p1 = read_pauli(&x, &z, 0, 1) as u8;
+    p0 | (p1 << 2)
 }
 
 impl<const W: usize> Channel<W> for Clifford2Q {
@@ -353,31 +340,17 @@ impl<const W: usize> Channel<W> for Clifford2Q {
         debug_assert!(q1 < 64 * W);
         debug_assert!(q0 != q1);
 
-        let w0 = q0 / 64;
-        let b0 = q0 % 64;
-        let w1 = q1 / 64;
-        let b1 = q1 % 64;
-        let m0 = 1u64 << b0;
-        let m1 = 1u64 << b1;
+        let (w0, b0, m0) = qubit_loc(q0);
+        let (w1, b1, m1) = qubit_loc(q1);
+        let idx =
+            read_pauli(input_x, input_z, w0, b0) | (read_pauli(input_x, input_z, w1, b1) << 2);
 
-        let x0 = ((input_x[w0] >> b0) & 1) as u8;
-        let z0 = ((input_z[w0] >> b0) & 1) as u8;
-        let x1 = ((input_x[w1] >> b1) & 1) as u8;
-        let z1 = ((input_z[w1] >> b1) & 1) as u8;
-        let idx = (x0 | (z0 << 1) | (x1 << 2) | (z1 << 3)) as usize;
-
-        let op = self.out_pauli[idx];
-        let ox0 = (op & 1) as u64;
-        let oz0 = ((op >> 1) & 1) as u64;
-        let ox1 = ((op >> 2) & 1) as u64;
-        let oz1 = ((op >> 3) & 1) as u64;
+        let op = self.out_pauli[idx] as usize;
 
         let mut nx = *input_x;
         let mut nz = *input_z;
-        nx[w0] = (nx[w0] & !m0) | (ox0 << b0);
-        nz[w0] = (nz[w0] & !m0) | (oz0 << b0);
-        nx[w1] = (nx[w1] & !m1) | (ox1 << b1);
-        nz[w1] = (nz[w1] & !m1) | (oz1 << b1);
+        write_pauli(&mut nx, &mut nz, w0, b0, m0, op & 3);
+        write_pauli(&mut nx, &mut nz, w1, b1, m1, (op >> 2) & 3);
 
         out.push(nx, nz, self.phase[idx].apply(coeff));
     }

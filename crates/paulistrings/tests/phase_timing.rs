@@ -88,7 +88,6 @@ fn stats_sum_approximates_total() {
         stats.rescale_ns, 0,
         "no key-preserving layer in this circuit"
     );
-    assert_eq!(stats.fallback_ns, 0, "built-ins never fall back");
     assert!(stats.coset_loop_ns > 0);
 
     // Busy time is measured strictly inside the coset-loop wall interval, so

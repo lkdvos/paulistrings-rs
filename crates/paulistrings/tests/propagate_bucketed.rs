@@ -1,18 +1,19 @@
-//! `propagate` on the v0.2 bucketed engine, through the public API only.
+//! `propagate` on the bucketed engine, through the public API only.
 //!
-//! `tests/propagate.rs` predates the rewrite and keeps its hand-computed
-//! expectations, but most of its cases call `apply_layer` directly and
-//! therefore exercise the v0.1 whole-sum pipeline. This file drives equivalent
-//! behaviour through `propagate`, which runs bucketed, plus the properties
-//! that are specific to the bucketed engine: agreement with the v0.1 pipeline
-//! over a whole circuit, and byte-identical output across thread counts.
+//! `tests/propagate.rs` holds the hand-computed algebra expectations. This
+//! file covers the properties specific to the bucketed engine: agreement with
+//! the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`,
+//! which replaced the retained v0.1 pipeline in that role) over whole
+//! circuits, and byte-identical output across thread counts.
 
 use num_complex::Complex64;
 use paulistrings::channel::{
     AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
     PauliRotation,
 };
-use paulistrings::engine::sort_merge::{apply_layer, apply_layer_adjoint};
+use paulistrings::test_support::{
+    assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
+};
 use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
@@ -23,103 +24,8 @@ const TOL: f64 = 1e-11;
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
 
-struct Xs64(u64);
-impl Xs64 {
-    fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
-fn word_mask(num_qubits: usize, word: usize) -> u64 {
-    let lo = 64 * word;
-    if num_qubits >= lo + 64 {
-        !0u64
-    } else if num_qubits <= lo {
-        0
-    } else {
-        (1u64 << (num_qubits - lo)) - 1
-    }
-}
-
-fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
-    for _ in 0..n {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
-        for w in 0..W {
-            let m = word_mask(num_qubits, w);
-            p.x[w] = rng.next_u64() & m;
-            p.z[w] = rng.next_u64() & m;
-        }
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
-
-/// `(x, z, coeff)` triples sorted by the `(x, z)` key.
-///
-/// Keys are globally unique (the `PauliSum` invariant forbids duplicates), so
-/// this is a canonical, storage-order-independent view: two sums with the
-/// same terms produce the same triples regardless of which order their
-/// backing engine happened to store them in.
-fn canonical_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
-    let mut v: Vec<([u64; W], [u64; W], Complex64)> =
-        s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
-    v.sort_unstable_by_key(|&(x, z, _)| (x, z));
-    v
-}
-
-/// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
-fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
-    assert_eq!(got.len(), want.len(), "{what}: term count");
-    let got = canonical_triples(got);
-    let want = canonical_triples(want);
-    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
-        assert_eq!(
-            g.2, w.2,
-            "{what}: term {i} key {:?}/{:?} coeff {} vs {} (not bitwise equal)",
-            g.0, g.1, g.2, w.2,
-        );
-    }
-}
-
-/// Same keys; coefficients within `tol`, because the two engines can sum
-/// duplicate keys in different orders and floating-point addition is not
-/// associative.
-fn assert_terms_close<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, tol: f64, what: &str) {
-    assert_eq!(got.len(), want.len(), "{what}: term count");
-    let got = canonical_triples(got);
-    let want = canonical_triples(want);
-    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
-        let d = (g.2 - w.2).norm();
-        assert!(
-            d < tol,
-            "{what}: term {i} key {:?}/{:?} coeff {} vs {} (delta {d:e})",
-            g.0,
-            g.1,
-            g.2,
-            w.2,
-        );
-    }
-}
-
 /// Same keys, order-agnostic; coefficients are not compared (the ising quench
-/// tests check the expectation value separately, since the two engines' exact
+/// tests check the expectation value separately, since engine and oracle
 /// coefficients diverge under floating-point non-associativity long before
 /// any observable does).
 fn assert_same_keys<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
@@ -317,9 +223,8 @@ fn rotation_round_trips_via_heisenberg_on_a_single_term() {
 #[test]
 fn rotation_round_trips_via_heisenberg_on_a_full_sum() {
     // On a many-term sum the cancellations are not bit-exact, so `U` then `U†`
-    // leaves residual terms at ~1e-17. `merge_into` drops only *exact* zeros --
-    // deliberately, matching v0.1 -- so a threshold is what makes the round trip
-    // clean. Without one the sum grows (396 terms in, 517 out here), which is
+    // leaves residual terms at ~1e-17. The merge drops only *exact* zeros --
+    // deliberately -- so a threshold is what makes the round trip clean. Without one the sum grows (396 terms in, 517 out here), which is
     // correct behaviour rather than a defect.
     let input = rand_sum::<1>(400, 8, 0x4D);
     let circuit = single(8, PauliRotation::new(PauliString::<1>::z(2), 0.7));
@@ -330,9 +235,9 @@ fn rotation_round_trips_via_heisenberg_on_a_full_sum() {
 }
 
 #[test]
-fn residual_growth_without_a_threshold_matches_v0_1() {
-    // The same no-threshold round trip, checked against the v0.1 pipeline: both
-    // engines must keep exactly the same residual terms.
+fn residual_growth_without_a_threshold_matches_the_naive_oracle() {
+    // The same no-threshold round trip, checked against the naive oracle: both
+    // must keep exactly the same residual terms.
     let input = rand_sum::<1>(400, 8, 0x4D);
     let chans: Vec<Box<dyn Channel<1>>> =
         vec![Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.7))];
@@ -341,8 +246,8 @@ fn residual_growth_without_a_threshold_matches_v0_1() {
     let fwd = paulistrings::propagate(&circuit, input.clone(), &NoTruncation, Direction::Forward);
     let back = paulistrings::propagate(&circuit, fwd, &NoTruncation, Direction::Heisenberg);
 
-    let want_fwd = replay_v01(&input, &chans, &NoTruncation, Direction::Forward);
-    let want_back = replay_v01(&want_fwd, &chans, &NoTruncation, Direction::Heisenberg);
+    let want_fwd = replay_naive(&input, &chans, &NoTruncation, Direction::Forward);
+    let want_back = replay_naive(&want_fwd, &chans, &NoTruncation, Direction::Heisenberg);
 
     assert_close(&back, &want_back, "no-threshold round trip");
 }
@@ -392,10 +297,10 @@ fn an_empty_circuit_returns_the_input_bit_for_bit() {
     assert_eq!(out.to_arrays(), expect.to_arrays());
 }
 
-// ---- whole-circuit agreement with the v0.1 pipeline ----
+// ---- whole-circuit agreement with the naive oracle ----
 
 /// Build a Trotter-shaped circuit plus the same channels as a flat list, so the
-/// v0.1 loop can be replayed by hand.
+/// propagation loop can be replayed by hand.
 fn mixed_channels() -> Vec<Box<dyn Channel<1>>> {
     let mut zz = PauliString::<1>::z(1);
     zz.mul_assign(&PauliString::<1>::z(4));
@@ -428,7 +333,10 @@ fn mixed_channels() -> Vec<Box<dyn Channel<1>>> {
     ]
 }
 
-fn replay_v01<T: TruncationPolicy<1>>(
+/// `propagate`'s loop, layer for layer, but with every layer computed by the
+/// naive oracle instead of the bucketed engine — the reference the
+/// whole-circuit tests below compare against.
+fn replay_naive<T: TruncationPolicy<1>>(
     input: &PauliSum<1>,
     chans: &[Box<dyn Channel<1>>],
     policy: &T,
@@ -436,16 +344,13 @@ fn replay_v01<T: TruncationPolicy<1>>(
 ) -> PauliSum<1> {
     let mut sum = input.clone();
     let n = chans.len();
+    let adjoint = matches!(direction, Direction::Heisenberg);
     for k in 0..n {
         let idx = match direction {
             Direction::Forward => k,
             Direction::Heisenberg => n - 1 - k,
         };
-        let ch = chans[idx].as_ref();
-        sum = match direction {
-            Direction::Forward => apply_layer(&sum, ch, policy),
-            Direction::Heisenberg => apply_layer_adjoint(&sum, ch, policy),
-        };
+        sum = naive_apply_layer(&sum, chans[idx].as_ref(), policy, adjoint);
         policy.finalize_layer(&mut sum);
     }
     sum
@@ -456,7 +361,7 @@ fn assert_close(got: &PauliSum<1>, want: &PauliSum<1>, what: &str) {
 }
 
 #[test]
-fn eleven_channel_circuit_matches_the_v0_1_pipeline() {
+fn eleven_channel_circuit_matches_the_naive_oracle() {
     let input = rand_sum::<1>(1500, 8, 0x6D);
     let chans = mixed_channels();
     let mut circuit = Circuit::<1>::new(8);
@@ -465,14 +370,14 @@ fn eleven_channel_circuit_matches_the_v0_1_pipeline() {
     }
 
     for direction in [Direction::Forward, Direction::Heisenberg] {
-        let want = replay_v01(&input, &chans, &NoTruncation, direction);
+        let want = replay_naive(&input, &chans, &NoTruncation, direction);
         let got = paulistrings::propagate(&circuit, input.clone(), &NoTruncation, direction);
         assert_close(&got, &want, &format!("{direction:?}"));
     }
 }
 
 #[test]
-fn eleven_channel_circuit_matches_v0_1_under_truncation() {
+fn eleven_channel_circuit_matches_the_naive_oracle_under_truncation() {
     let input = rand_sum::<1>(1500, 8, 0x7D);
     let chans = mixed_channels();
     let mut circuit = Circuit::<1>::new(8);
@@ -480,7 +385,7 @@ fn eleven_channel_circuit_matches_v0_1_under_truncation() {
         circuit.channels.push(ch);
     }
     let policy = And(CoefficientThreshold(1e-9), TopN(400));
-    let want = replay_v01(&input, &chans, &policy, Direction::Heisenberg);
+    let want = replay_naive(&input, &chans, &policy, Direction::Heisenberg);
     let got = paulistrings::propagate(&circuit, input, &policy, Direction::Heisenberg);
     assert_close(&got, &want, "truncated heisenberg");
 }
@@ -489,7 +394,6 @@ fn eleven_channel_circuit_matches_v0_1_under_truncation() {
 
 #[test]
 fn output_is_byte_identical_across_thread_counts() {
-    // The v0.2 counterpart of sort_merge's `scan_determinism_across_thread_counts`.
     // Pins thread-independence only: `propagate`'s bucket count is a fixed
     // function of the term count (v0.3 §1), not of the thread count, so this
     // test no longer varies the partition. Bucket-count agreement (fp
@@ -566,8 +470,8 @@ fn expectation_plus(sum: &PauliSum<1>) -> f64 {
     total
 }
 
-/// A full multi-step 2D Ising quench must give the same trajectory on both
-/// engines, step by step.
+/// A full multi-step 2D Ising quench must give the same trajectory through the
+/// engine and through the naive oracle, step by step.
 ///
 /// This is the shape that exposed the `TopN` tie-breaking bug: a symmetric
 /// Hamiltonian on a periodic lattice produces many terms with *exactly* equal
@@ -575,7 +479,7 @@ fn expectation_plus(sum: &PauliSum<1>) -> f64 {
 /// `TopN` so that any divergence is attributable to the engine rather than to a
 /// truncation choice.
 #[test]
-fn ising_quench_trajectory_matches_the_v0_1_pipeline() {
+fn ising_quench_trajectory_matches_the_naive_oracle() {
     let (lx, ly) = (2usize, 3usize); // 6 qubits: the sum saturates 4^6 = 4096 terms
     let n = lx * ly;
     let dt = 0.15;
@@ -603,7 +507,7 @@ fn ising_quench_trajectory_matches_the_v0_1_pipeline() {
 
     for step in 1..=10 {
         bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
-        reference = replay_v01(&reference, &chans, &policy, Direction::Heisenberg);
+        reference = replay_naive(&reference, &chans, &policy, Direction::Heisenberg);
 
         assert_same_keys(&bucketed, &reference, &format!("step {step}"));
 
@@ -621,11 +525,11 @@ fn ising_quench_trajectory_matches_the_v0_1_pipeline() {
 /// in-test analogue of what `examples/ising_2d_quench.rs` actually runs: real 2D
 /// topology, 27 channels per step, and truncation active from the first step.
 ///
-/// If the two engines agree here they agree in the example, so a difference
+/// If engine and oracle agree here they agree in the example, so a difference
 /// between the example's output and a previously committed reference must come
 /// from a change in truncation *semantics*, not from the engine.
 #[test]
-fn ising_3x3_with_binding_top_n_matches_the_v0_1_pipeline() {
+fn ising_3x3_with_binding_top_n_matches_the_naive_oracle() {
     let (lx, ly) = (3usize, 3usize);
     let n = lx * ly;
     let dt = 0.05;
@@ -653,7 +557,7 @@ fn ising_3x3_with_binding_top_n_matches_the_v0_1_pipeline() {
 
     for step in 1..=8 {
         bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
-        reference = replay_v01(&reference, &chans, &policy, Direction::Heisenberg);
+        reference = replay_naive(&reference, &chans, &policy, Direction::Heisenberg);
         if bucketed.len() == 1500 {
             binding = true;
         }
@@ -669,9 +573,9 @@ fn ising_3x3_with_binding_top_n_matches_the_v0_1_pipeline() {
 }
 
 /// The same quench *with* `TopN` active, which is what the shipped example does.
-/// Both engines must agree exactly, including on which tied terms `TopN` keeps.
+/// Engine and oracle must agree, including on which tied terms `TopN` keeps.
 #[test]
-fn ising_quench_with_top_n_matches_the_v0_1_pipeline() {
+fn ising_quench_with_top_n_matches_the_naive_oracle() {
     let (lx, ly) = (2usize, 3usize);
     let n = lx * ly;
     let dt = 0.15;
@@ -698,7 +602,7 @@ fn ising_quench_with_top_n_matches_the_v0_1_pipeline() {
 
     for step in 1..=10 {
         bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
-        reference = replay_v01(&reference, &chans, &policy, Direction::Heisenberg);
+        reference = replay_naive(&reference, &chans, &policy, Direction::Heisenberg);
         assert_same_keys(&bucketed, &reference, &format!("step {step}"));
         let a = expectation_plus(&bucketed);
         let b = expectation_plus(&reference);

@@ -635,7 +635,7 @@ fn print_cell_line(cell: &CellResult) {
 
 type PhaseGetter = fn(&PhaseStats) -> u64;
 
-const WALL_PHASES: [(&str, PhaseGetter); 10] = [
+const WALL_PHASES: [(&str, PhaseGetter); 9] = [
     ("rebucket", |s| s.rebucket_ns),
     ("prepare", |s| s.prepare_ns),
     ("rescale", |s| s.rescale_ns),
@@ -645,7 +645,6 @@ const WALL_PHASES: [(&str, PhaseGetter); 10] = [
     ("unpermute", |s| s.unpermute_ns),
     ("recount", |s| s.recount_ns),
     ("finalize", |s| s.finalize_ns),
-    ("fallback", |s| s.fallback_ns),
 ];
 
 const BUSY_PHASES: [(&str, PhaseGetter); 6] = [
@@ -748,7 +747,7 @@ fn json_line(cell: &CellResult) -> String {
         "{{\"layer\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\"qubits\":{},\"seed\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
-         \"recount_ns\":{},\"finalize_ns\":{},\"fallback_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
+         \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
          \"vmhwm_kb\":{}}}",
@@ -768,7 +767,6 @@ fn json_line(cell: &CellResult) -> String {
         s.unpermute_ns,
         s.recount_ns,
         s.finalize_ns,
-        s.fallback_ns,
         s.swap_ns,
         s.size_ns,
         s.gather_ns,
@@ -791,14 +789,14 @@ fn json_line(cell: &CellResult) -> String {
 const TSV_HEADER: &str =
     "layer\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
-fallback_ns\tswap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
+swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
 terms_in\tterms_out\tvmrss_kb\tvmhwm_kb";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.threads,
         cell.n,
@@ -815,7 +813,6 @@ fn print_tsv_row(cell: &CellResult) {
         s.unpermute_ns,
         s.recount_ns,
         s.finalize_ns,
-        s.fallback_ns,
         s.swap_ns,
         s.size_ns,
         s.gather_ns,

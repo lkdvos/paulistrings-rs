@@ -6,23 +6,25 @@
 //! cost surface — `Clifford1Q::h`, which is fanout-1 and key-bijective, i.e. the
 //! *worst* case for the sort phase and the *best* case for the merge phase.
 //!
+//! The groups that measured the retained v0.1 whole-sum pipeline (`apply_layer`,
+//! `apply_layer_occupancy`, `thread_scaling_rotation_1e6`) went away with it in
+//! v0.7 Stage 1; every other group and benchmark id is unchanged, so campaign
+//! comparisons across that boundary stay valid for the ids that remain.
+//!
 //! What is measured here:
 //!
 //!   * `PauliString::mul_assign` — single-term multiplication (W ∈ {1, 2}).
 //!   * `PauliSum::add` — sorted merge of two SoA sums (N ∈ {10⁴, 10⁶}). This is
-//!     the useful reference point for `apply_layer`: a full two-pointer merge of
-//!     the same payload, with allocation, and no sort.
-//!   * `apply_layer` across the four structurally distinct channel classes
-//!     (see `apply_layer` group below), each in both the monomorphized and the
-//!     `dyn`-erased calling convention.
-//!   * `apply_layer` on dense vs low-weight inputs — the two occupancy regimes,
-//!     which matter for any support- or hash-derived bucketing.
+//!     the useful reference point for one bucketed layer: a full two-pointer
+//!     merge of the same payload, with allocation, and no sort.
+//!   * `apply_layer_bucketed` across the structurally distinct channel classes
+//!     (see the group's own doc), plus the two extreme fan-in shapes.
 //!   * `propagate` over a multi-channel Trotter-shaped circuit, which is the
 //!     shape real workloads have (`examples/ising_2d_quench.rs` is 108 channels
 //!     per step).
-//!   * Thread scaling of one layer at 1/2/4/8/16/32 threads. v0.1 §9 claims
-//!     "near-linear scaling up to the memory bandwidth limit" and nothing in the
-//!     repo ever tested it.
+//!   * Thread scaling of one bucketed layer at 1/2/4/8/16/32 threads. v0.1 §9
+//!     claims "near-linear scaling up to the memory bandwidth limit" and nothing
+//!     in the repo ever tested it.
 //!
 //! Inputs are built with a seeded `Xs64` xorshift so timings are reproducible
 //! across machines. Setup runs outside the timed region via
@@ -42,7 +44,6 @@ use paulistrings::channel::{
 };
 use paulistrings::circuit::Circuit;
 use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
-use paulistrings::engine::sort_merge::apply_layer;
 use paulistrings::engine::{propagate, Direction};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::pauli_sum::PauliSum;
@@ -285,126 +286,6 @@ fn bench_pauli_sum_add(c: &mut Criterion) {
     group.finish();
 }
 
-/// One `apply_layer` case. `?Sized` on `C` so the same helper measures both the
-/// monomorphized call and the `dyn Channel<W>` call.
-fn layer_case<const W: usize, C>(
-    group: &mut BenchmarkGroup<'_, WallTime>,
-    label: String,
-    input: &PauliSum<W>,
-    ch: &C,
-) where
-    C: Channel<W> + ?Sized,
-{
-    let policy = AlwaysKeep;
-    group.throughput(Throughput::Elements(input.len() as u64));
-    group.bench_function(label, |bencher| {
-        bencher.iter(|| black_box(apply_layer(black_box(input), ch, &policy)))
-    });
-}
-
-/// Full scan → sort → merge layer, across the four structurally distinct
-/// channel classes. These differ in ways the engine is blind to today but that
-/// the v0.2 design keys off directly (v0.2 §2.3):
-///
-///   * `depolarizing` — keys bitwise **unchanged**, coefficients rescaled. The
-///     output is already sorted and duplicate-free, so the entire sort and merge
-///     is wasted work. Delta set `{0}`; v0.2 reads 1 input bucket per output.
-///   * `clifford1q_h` — key **bijection**, fanout 1. The merge is provably a
-///     no-op. Delta set is 1-dimensional; v0.2 reads 2 buckets.
-///   * `clifford2q_cnot` — key bijection on 2 qubits, fanout 1. Delta set is
-///     2-dimensional; v0.2 reads 4 buckets.
-///   * `rotation_zz` — fanout 2, **non-injective**: this is the only case where
-///     the merge phase has real work to do. Delta set `{0, gen}`, so v0.2 reads
-///     2 buckets regardless of generator weight.
-///
-/// Each is measured both monomorphized and `dyn`-erased. The `dyn` figure is the
-/// one that matters: `propagate` erases to `&dyn Channel<W>`
-/// (`engine/mod.rs:78`), so every real layer pays a vtable call *per input
-/// term*, which the monomorphized bench hides.
-fn bench_apply_layer(c: &mut Criterion) {
-    let mut group = c.benchmark_group("apply_layer");
-    group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
-
-    let h = Clifford1Q::h(0);
-    let cnot = Clifford2Q::cnot(0, 1);
-    let depol = Depolarizing {
-        support: [0],
-        p: 0.05,
-    };
-    let rot = zz_rotation::<2>(0, 1, 0.1);
-
-    for &n in &[10_000usize, 1_000_000usize] {
-        let input: PauliSum<2> = random_sum::<2>(n, 128, 0xC0FFEE);
-        if n >= 1_000_000 {
-            group.sample_size(10);
-            group.warm_up_time(Duration::from_millis(500));
-        } else {
-            group.sample_size(30);
-            group.warm_up_time(Duration::from_secs(1));
-        }
-
-        layer_case(&mut group, format!("depolarizing/{n}"), &input, &depol);
-        layer_case(&mut group, format!("clifford1q_h/{n}"), &input, &h);
-        layer_case(&mut group, format!("clifford2q_cnot/{n}"), &input, &cnot);
-        layer_case(&mut group, format!("rotation_zz/{n}"), &input, &rot);
-
-        // Same four, through the calling convention `propagate` actually uses.
-        let dyn_h: &dyn Channel<2> = &h;
-        let dyn_cnot: &dyn Channel<2> = &cnot;
-        let dyn_depol: &dyn Channel<2> = &depol;
-        let dyn_rot: &dyn Channel<2> = &rot;
-        layer_case(
-            &mut group,
-            format!("dyn_depolarizing/{n}"),
-            &input,
-            dyn_depol,
-        );
-        layer_case(&mut group, format!("dyn_clifford1q_h/{n}"), &input, dyn_h);
-        layer_case(
-            &mut group,
-            format!("dyn_clifford2q_cnot/{n}"),
-            &input,
-            dyn_cnot,
-        );
-        layer_case(&mut group, format!("dyn_rotation_zz/{n}"), &input, dyn_rot);
-    }
-
-    group.finish();
-}
-
-/// Dense vs low-weight input at fixed `n`.
-///
-/// Physical Hamiltonians are low-weight and `WeightCutoff` keeps them that way,
-/// so `low_weight` is the realistic regime while `dense` is what every existing
-/// bench used. The two have very different key distributions, which is exactly
-/// what decides whether a bucketing scheme balances (v0.2 §3.2) — a
-/// coordinate-projection hash collapses on the low-weight case and looks fine on
-/// the dense one.
-fn bench_apply_layer_occupancy(c: &mut Criterion) {
-    let mut group = c.benchmark_group("apply_layer_occupancy");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_millis(500));
-
-    let n = 1_000_000usize;
-    let rot = zz_rotation::<2>(0, 1, 0.1);
-
-    let dense: PauliSum<2> = random_sum::<2>(n, 128, 0xDE_11_5E);
-    layer_case(&mut group, format!("dense/{}", dense.len()), &dense, &rot);
-
-    for &w in &[2usize, 4, 8] {
-        let sparse: PauliSum<2> =
-            low_weight_sum::<2>(n, 128, w, 0x5A_12_5E_u64.wrapping_add(w as u64));
-        layer_case(
-            &mut group,
-            format!("weight{w}/{}", sparse.len()),
-            &sparse,
-            &rot,
-        );
-    }
-
-    group.finish();
-}
-
 /// `propagate` over a Trotter-shaped circuit — the realistic call shape.
 ///
 /// One first-order Trotter step on a 1-D transverse-field Ising chain of
@@ -447,41 +328,6 @@ fn bench_propagate_trotter(c: &mut Criterion) {
                     Direction::Heisenberg,
                 ))
             })
-        });
-    }
-
-    group.finish();
-}
-
-/// Thread scaling of a single layer.
-///
-/// v0.1 §9 claims "near-linear scaling up to the memory bandwidth limit" and
-/// nothing in the repo has ever measured it. The expectation for the current
-/// engine is *poor* scaling, because `sort_phase` is sequential
-/// (`sort_merge.rs:215`) — Amdahl bounds the whole layer by whatever fraction
-/// the sort takes. That fraction is precisely what v0.2 removes, so this group
-/// is the headline before/after comparison.
-///
-/// Uses a fanout-2 rotation so both the scan and the merge have real work.
-fn bench_thread_scaling(c: &mut Criterion) {
-    let mut group = c.benchmark_group("thread_scaling_rotation_1e6");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_millis(500));
-
-    let n = 1_000_000usize;
-    let input: PauliSum<2> = random_sum::<2>(n, 128, 0x74_12_EA_D5_u64);
-    let rot = zz_rotation::<2>(0, 1, 0.1);
-    let policy = AlwaysKeep;
-    group.throughput(Throughput::Elements(input.len() as u64));
-
-    for &t in &[1usize, 2, 4, 8, 16, 32] {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(t)
-            .build()
-            .expect("failed to build rayon pool");
-        group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
-            bencher
-                .iter(|| pool.install(|| black_box(apply_layer(black_box(&input), &rot, &policy))))
         });
     }
 
@@ -540,9 +386,18 @@ fn bucketed_layer_case<const W: usize, C>(
     });
 }
 
-/// The v0.2 bucketed engine on the same four channel classes as
-/// `bench_apply_layer`, so the two groups are directly comparable, plus the two
-/// extreme fan-in shapes that group does not have a v0.1 counterpart for.
+/// The bucketed engine on the four structurally distinct channel classes,
+/// plus the two extreme fan-in shapes.
+///
+///   * `depolarizing` — keys bitwise **unchanged**, coefficients rescaled;
+///     delta set `{0}`, so one input bucket per output.
+///   * `clifford1q_h` — key **bijection**, fanout 1; the delta set is
+///     1-dimensional, so two input buckets per output.
+///   * `clifford2q_cnot` — key bijection on 2 qubits, fanout 1; 2-dimensional
+///     delta set, four buckets.
+///   * `rotation_zz` — fanout 2, **non-injective**: the only case where the
+///     merge has real duplicate keys to combine. Delta set `{0, gen}`, so two
+///     buckets regardless of generator weight.
 ///
 ///   * `general_unitary2q` — up to 16 deltas, so each output bucket gathers
 ///     from 16 input buckets.
@@ -915,11 +770,8 @@ criterion_group!(
     benches,
     bench_mul_assign,
     bench_pauli_sum_add,
-    bench_apply_layer,
     bench_apply_layer_bucketed,
-    bench_apply_layer_occupancy,
     bench_propagate_trotter,
-    bench_thread_scaling,
     bench_thread_scaling_bucketed,
     bench_thread_scaling_bucketed_gu2q,
     bench_ingest_finalize,

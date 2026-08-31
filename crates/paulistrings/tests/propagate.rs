@@ -1,13 +1,25 @@
-//! Integration tests for the sort-merge engine and `propagate` (§5, §8.1).
+//! Integration tests for `propagate` against hand-computed Pauli algebra
+//! (§8.1).
 //!
-//! These tests exercise the public API end-to-end: construct a `PauliSum`
-//! via `BuildAccumulator`, apply a single channel through `apply_layer` (or
-//! a multi-channel `Circuit` through `propagate`), and check the result
-//! against hand-computed Pauli algebra.
+//! These tests exercise the public API end-to-end: construct a `PauliSum` via
+//! `BuildAccumulator`, push one or more channels onto a `Circuit`, propagate,
+//! and check the result against algebra worked out by hand. The single-channel
+//! cases used to call the v0.1 `apply_layer` directly; that pipeline is gone,
+//! so they now go through `propagate` on a one-channel circuit — which is the
+//! only way to drive one layer from outside the crate, and the path users
+//! actually take.
+//!
+//! Every fixture here is small enough to live in a single bucket (the
+//! partition is trivial below `DEFAULT_TARGET_BUCKET_LEN`), so `bucket(0)` is
+//! the whole sum in plain lexicographic key order and the positional
+//! assertions below are well defined.
+//!
+//! `tests/propagate_bucketed.rs` covers the bucketed-engine-specific
+//! properties: agreement with the naive oracle over whole circuits, and
+//! thread-count stability.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
-use paulistrings::engine::sort_merge::apply_layer;
+use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
 use paulistrings::truncation::{CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
@@ -15,8 +27,7 @@ use paulistrings::{
 
 const TOL: f64 = 1e-12;
 
-/// No-op truncation policy: keeps every term, no per-layer pass. Slice 6
-/// integration tests use this since `keep_term` integration is Phase 7.
+/// No-op truncation policy: keeps every term, no per-layer pass.
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
 
@@ -43,11 +54,47 @@ fn sum2(num_qubits: usize, terms: &[(PauliString<2>, Complex64)]) -> PauliSum<2>
     acc.finalize()
 }
 
+/// A one-channel circuit — the smallest unit `propagate` can drive.
+fn single<const W: usize, C: Channel<W> + 'static>(num_qubits: usize, ch: C) -> Circuit<W> {
+    let mut c = Circuit::<W>::new(num_qubits);
+    c.push(ch);
+    c
+}
+
+/// One forward layer of `ch` on `input`, with `policy` threaded through.
+fn layer1<C: Channel<1> + 'static, T: TruncationPolicy<1>>(
+    input: &PauliSum<1>,
+    num_qubits: usize,
+    ch: C,
+    policy: &T,
+) -> PauliSum<1> {
+    propagate(
+        &single(num_qubits, ch),
+        input.clone(),
+        policy,
+        Direction::Forward,
+    )
+}
+
+/// `layer1` at `W = 2`.
+fn layer2<C: Channel<2> + 'static, T: TruncationPolicy<2>>(
+    input: &PauliSum<2>,
+    num_qubits: usize,
+    ch: C,
+    policy: &T,
+) -> PauliSum<2> {
+    propagate(
+        &single(num_qubits, ch),
+        input.clone(),
+        policy,
+        Direction::Forward,
+    )
+}
+
 #[test]
-fn apply_layer_h_conjugates_z_to_x() {
+fn single_layer_h_conjugates_z_to_x() {
     let input = sum1(1, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
-    let h = Clifford1Q::h(0);
-    let out = apply_layer(&input, &h, &NoTruncation);
+    let out = layer1(&input, 1, Clifford1Q::h(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let x = PauliString::<1>::x(0);
     assert_eq!(out.bucket(0).0[0], x.x);
@@ -56,10 +103,9 @@ fn apply_layer_h_conjugates_z_to_x() {
 }
 
 #[test]
-fn apply_layer_h_conjugates_x_to_z() {
+fn single_layer_h_conjugates_x_to_z() {
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let h = Clifford1Q::h(0);
-    let out = apply_layer(&input, &h, &NoTruncation);
+    let out = layer1(&input, 1, Clifford1Q::h(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let z = PauliString::<1>::z(0);
     assert_eq!(out.bucket(0).0[0], z.x);
@@ -68,11 +114,10 @@ fn apply_layer_h_conjugates_x_to_z() {
 }
 
 #[test]
-fn apply_layer_s_conjugates_x_to_y() {
+fn single_layer_s_conjugates_x_to_y() {
     // S · X · S† = Y (with phase +1).
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let s = Clifford1Q::s(0);
-    let out = apply_layer(&input, &s, &NoTruncation);
+    let out = layer1(&input, 1, Clifford1Q::s(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let y = PauliString::<1>::y(0);
     assert_eq!(out.bucket(0).0[0], y.x);
@@ -81,18 +126,12 @@ fn apply_layer_s_conjugates_x_to_y() {
 }
 
 #[test]
-fn apply_layer_cnot_propagates_z_control() {
-    // CNOT(0,1) · (Z⊗I) · CNOT = Z⊗I (Z on the control commutes through).
-    // Wait — that's wrong; classical Pauli propagation: CNOT maps Z⊗I → Z⊗I
-    // (control Z stays put). Use the I⊗X case instead which actually moves:
-    // CNOT · (I⊗X) · CNOT = I⊗X (also stays — target X commutes through).
+fn single_layer_cnot_propagates_z_control() {
     // The non-trivial generators for CNOT(0,1) are X⊗I → X⊗X and I⊗Z → Z⊗Z.
     // Test the I⊗Z case: input Z on qubit 1 → Z on qubit 0 AND qubit 1.
     let input = sum2(2, &[(PauliString::<2>::z(1), Complex64::new(1.0, 0.0))]);
-    let cnot = Clifford2Q::cnot(0, 1);
-    let out = apply_layer(&input, &cnot, &NoTruncation);
+    let out = layer2(&input, 2, Clifford2Q::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
-    // Expected: Z on qubit 0 AND Z on qubit 1.
     let mut expected = PauliString::<2>::z(0);
     let _ = expected.mul_assign(&PauliString::<2>::z(1));
     assert_eq!(out.bucket(0).0[0], expected.x);
@@ -101,11 +140,10 @@ fn apply_layer_cnot_propagates_z_control() {
 }
 
 #[test]
-fn apply_layer_cnot_propagates_x_target() {
+fn single_layer_cnot_propagates_x_target() {
     // CNOT(0,1) · (X⊗I) · CNOT = X⊗X (X on the control fans out to target).
     let input = sum2(2, &[(PauliString::<2>::x(0), Complex64::new(1.0, 0.0))]);
-    let cnot = Clifford2Q::cnot(0, 1);
-    let out = apply_layer(&input, &cnot, &NoTruncation);
+    let out = layer2(&input, 2, Clifford2Q::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
     let mut expected = PauliString::<2>::x(0);
     let _ = expected.mul_assign(&PauliString::<2>::x(1));
@@ -115,18 +153,19 @@ fn apply_layer_cnot_propagates_x_target() {
 }
 
 #[test]
-fn apply_layer_pauli_rotation_pi_z_flips_x_sign() {
+fn single_layer_pauli_rotation_pi_z_flips_x_sign() {
     // exp(-i·π·Z/2) · X · exp(+i·π·Z/2) = -X.
-    // The PauliRotation::apply emits cos(θ)·X + sin(θ)·Y; at θ=π we get
-    // (-1)·X + 0·Y, the Y term cancels in the merge_phase via norm zero?
-    // No — sin(π) = 1.2246e-16 (not exact zero), so the Y term survives
-    // with a tiny coefficient. That's why the test uses approx_eq.
+    // `PauliRotation` emits cos(θ)·X + sin(θ)·Y; at θ=π that is (-1)·X plus a
+    // Y term with sin(π) = 1.2246e-16, which is not an exact zero and so
+    // survives the merge with a tiny coefficient. Hence approx_eq.
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
     let p = PauliString::<1>::z(0);
-    let rot = PauliRotation::new(p, std::f64::consts::PI);
-    let out = apply_layer(&input, &rot, &NoTruncation);
-    // Two terms: X with coeff ≈ -1, Y with coeff ≈ 0. The Y term has a tiny
-    // float remainder from sin(π), so it survives the merge but is within tol.
+    let out = layer1(
+        &input,
+        1,
+        PauliRotation::new(p, std::f64::consts::PI),
+        &NoTruncation,
+    );
     let x = PauliString::<1>::x(0);
     let y = PauliString::<1>::y(0);
     let mut found_x: Option<Complex64> = None;
@@ -146,7 +185,7 @@ fn apply_layer_pauli_rotation_pi_z_flips_x_sign() {
 }
 
 #[test]
-fn apply_layer_identity_channel_passes_sum_through() {
+fn single_layer_identity_channel_passes_sum_through() {
     let input = sum1(
         1,
         &[
@@ -154,25 +193,23 @@ fn apply_layer_identity_channel_passes_sum_through() {
             (PauliString::<1>::x(0), Complex64::new(2.0, 0.0)),
         ],
     );
-    let id = IdentityChannel::new();
-    let out = apply_layer(&input, &id, &NoTruncation);
+    let out = layer1(&input, 1, IdentityChannel::new(), &NoTruncation);
     assert_eq!(out.len(), 2);
     let (ox, oz, oc) = out.to_arrays();
     let (ix, iz, ic) = input.to_arrays();
     assert_eq!(ox, ix);
     assert_eq!(oz, iz);
-    for i in 0..oc.len() {
-        assert!(approx_eq(oc[i], ic[i]));
+    for (o, i) in oc.iter().zip(ic.iter()) {
+        assert!(approx_eq(*o, *i));
     }
 }
 
 #[test]
-fn apply_layer_w2_word_boundary() {
+fn single_layer_w2_word_boundary() {
     // H on qubit 64 conjugates Z(qubit 64) → X(qubit 64) — same as W=1
     // but with the bit in word 1.
     let input = sum2(65, &[(PauliString::<2>::z(64), Complex64::new(1.0, 0.0))]);
-    let h = Clifford1Q::h(64);
-    let out = apply_layer(&input, &h, &NoTruncation);
+    let out = layer2(&input, 65, Clifford1Q::h(64), &NoTruncation);
     assert_eq!(out.len(), 1);
     let x = PauliString::<2>::x(64);
     assert_eq!(out.bucket(0).0[0], x.x);
@@ -190,8 +227,8 @@ fn propagate_zero_channel_circuit_returns_input() {
     let (ix, iz, ic) = input.to_arrays();
     assert_eq!(ox, ix);
     assert_eq!(oz, iz);
-    for i in 0..oc.len() {
-        assert!(approx_eq(oc[i], ic[i]));
+    for (o, i) in oc.iter().zip(ic.iter()) {
+        assert!(approx_eq(*o, *i));
     }
 }
 
@@ -279,10 +316,10 @@ fn propagate_heisenberg_reverses_channel_order() {
     assert_eq!(heis.bucket(0).1[0], PauliString::<1>::x(0).z);
 }
 
-/// Slice 7.2 end-to-end: `WeightCutoff(1)` threads through `apply_layer`
-/// and drops the weight-2 term during the merge.
+/// Slice 7.2 end-to-end: `WeightCutoff(1)` threads through the layer and
+/// drops the weight-2 term during the merge.
 #[test]
-fn apply_layer_weight_cutoff_drops_high_weight() {
+fn single_layer_weight_cutoff_drops_high_weight() {
     // Z on q0 (weight 1) + Z⊗Z on q0,q1 (weight 2).
     let mut zz = PauliString::<2>::z(0);
     let _ = zz.mul_assign(&PauliString::<2>::z(1));
@@ -293,8 +330,7 @@ fn apply_layer_weight_cutoff_drops_high_weight() {
             (zz, Complex64::new(2.0, 0.0)),
         ],
     );
-    let id = IdentityChannel::new();
-    let out = apply_layer(&input, &id, &WeightCutoff(1));
+    let out = layer2(&input, 2, IdentityChannel::new(), &WeightCutoff(1));
     assert_eq!(out.len(), 1);
     let z0 = PauliString::<2>::z(0);
     assert_eq!(out.bucket(0).0[0], z0.x);
@@ -327,11 +363,11 @@ fn propagate_top_n_truncates_each_layer() {
     out.assert_invariants();
 }
 
-/// Slice 7.1 end-to-end: `CoefficientThreshold` threads through `apply_layer`
-/// and drops the sub-eps term during the merge. Using `IdentityChannel` keeps
+/// Slice 7.1 end-to-end: `CoefficientThreshold` threads through the layer and
+/// drops the sub-eps term during the merge. Using `IdentityChannel` keeps
 /// the algebra trivial — the test isolates the truncation behavior.
 #[test]
-fn apply_layer_with_threshold_drops_below_eps() {
+fn single_layer_with_threshold_drops_below_eps() {
     let input = sum1(
         1,
         &[
@@ -339,8 +375,12 @@ fn apply_layer_with_threshold_drops_below_eps() {
             (PauliString::<1>::x(0), Complex64::new(1e-12, 0.0)),
         ],
     );
-    let id = IdentityChannel::new();
-    let out = apply_layer(&input, &id, &CoefficientThreshold(1e-9));
+    let out = layer1(
+        &input,
+        1,
+        IdentityChannel::new(),
+        &CoefficientThreshold(1e-9),
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out.bucket(0).0[0], PauliString::<1>::z(0).x);
     assert_eq!(out.bucket(0).1[0], PauliString::<1>::z(0).z);
@@ -348,10 +388,10 @@ fn apply_layer_with_threshold_drops_below_eps() {
 }
 
 #[test]
-fn apply_layer_combines_inputs_that_collide_under_channel() {
+fn single_layer_combines_inputs_that_collide_under_channel() {
     // X and Y both on qubit 0, with coeffs 3 and 2. Apply S:
     //   S · X = Y (phase +1), S · Y = -X (phase -1).
-    // Output before merge: (Y, +3), (X, -2). After sort+merge: X with coeff
+    // Output before merge: (Y, +3), (X, -2). After the merge: X with coeff
     // -2 (sorted first since x=1, z=0), Y with coeff 3.
     let input = sum1(
         1,
@@ -360,13 +400,12 @@ fn apply_layer_combines_inputs_that_collide_under_channel() {
             (PauliString::<1>::y(0), Complex64::new(2.0, 0.0)),
         ],
     );
-    let s = Clifford1Q::s(0);
-    let out = apply_layer(&input, &s, &NoTruncation);
+    let out = layer1(&input, 1, Clifford1Q::s(0), &NoTruncation);
     assert_eq!(out.len(), 2);
     let x = PauliString::<1>::x(0);
     let y = PauliString::<1>::y(0);
-    // Sorted: X (x=1,z=0) before Y (x=1,z=1). Wait — they tie on x[0]=1, so
-    // z[0] decides: X has z=0, Y has z=1, so X < Y. Coeffs: X = -2, Y = 3.
+    // They tie on x[0]=1, so z[0] decides: X has z=0, Y has z=1, so X < Y.
+    // Coeffs: X = -2, Y = 3.
     assert_eq!(out.bucket(0).0[0], x.x);
     assert_eq!(out.bucket(0).1[0], x.z);
     assert!(approx_eq(out.bucket(0).2[0], Complex64::new(-2.0, 0.0)));

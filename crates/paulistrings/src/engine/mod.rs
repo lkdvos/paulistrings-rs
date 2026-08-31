@@ -1,15 +1,19 @@
-//! The propagation engine: front door [`propagate`], pipeline in
-//! [`sort_merge`].
+//! The propagation engine: front door [`propagate`], layer loop in
+//! [`bucketed`].
 //!
-//! See design doc §8 (loop) and §5 (sort-merge pipeline).
+//! One layer is a coset walk over the GF(2)-linear bucket partition (the
+//! crate-private `coset` module), with the per-run sort and fused merge kernels
+//! in the crate-private `merge` module. See v0.2 design doc §6 and v0.3 §2 for
+//! the layer, and v0.1 §8 for the propagation loop this module implements.
 
 pub mod bucketed;
 pub(crate) mod coset;
-pub mod sort_merge;
+pub(crate) mod merge;
 #[cfg(feature = "phase-timing")]
 pub mod stats;
 
 use crate::bucket::sum::DEFAULT_TARGET_BUCKET_LEN;
+use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::pauli_sum::PauliSum;
@@ -144,18 +148,22 @@ where
                 st.rearm();
             }
             None => {
-                // The channel declined to be bucketed — support wider than the
-                // local maximum, or it writes outside its declared support. Fall
-                // back to the whole-sum v0.1 pipeline for this layer only
-                // (`apply_layer` flattens, runs the flat pipeline, and scatters
-                // back under the same hash). Correct, just not bucketed.
-                sum = if adjoint {
-                    sort_merge::apply_layer_adjoint(&sum, ch, policy)
-                } else {
-                    sort_merge::apply_layer(&sum, ch, policy)
-                };
-                #[cfg(feature = "phase-timing")]
-                st.lap(&mut scratch.stats.fallback_ns);
+                // No built-in channel can reach this arm: every one of them has
+                // support ≤ MAX_LOCAL_SUPPORT except `PauliRotation`, which
+                // overrides `prepare` and returns `Prepared::Rotation` at any
+                // generator weight, and none writes outside its declared
+                // support. So this is only reachable from a user-supplied
+                // `Channel` impl, and it is a hard error rather than a slow
+                // path: the whole-sum v0.1 sort-merge fallback that used to
+                // absorb it is gone (v0.7 Stage 1).
+                let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
+                panic!(
+                    "layer {idx}: Channel::prepare declined, so this channel cannot be \
+                     propagated. The engine tabulates channels of support ≤ \
+                     {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a \
+                     channel must not write outside its declared support. See \
+                     research/notes/2026-08-31-local-ptm-generalization.md",
+                );
             }
         }
 
@@ -178,4 +186,58 @@ where
 /// call, not just at the layer where it was first crossed.
 pub fn default_min_buckets() -> usize {
     crate::bucket::sum::DEFAULT_MIN_BUCKETS
+}
+
+#[cfg(test)]
+mod tests {
+    use num_complex::Complex64;
+
+    use crate::accumulator::BuildAccumulator;
+    use crate::channel::{support_mask, Channel, OutputBuffer};
+    use crate::circuit::Circuit;
+    use crate::pauli_string::PauliString;
+    use crate::phase::Phase;
+    use crate::truncation::TruncationPolicy;
+
+    use super::{propagate, Direction};
+
+    struct AlwaysKeep;
+    impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
+
+    /// Support on three qubits, so `Prepared::derive_local` bails on the
+    /// popcount check and `prepare` returns `None`. Cribbed from
+    /// `channel::prepared::tests::derive_local_rejects_popcount_gt_2`.
+    struct ThreeQubits;
+    impl<const W: usize> Channel<W> for ThreeQubits {
+        fn max_fanout(&self) -> usize {
+            1
+        }
+        fn support(&self) -> [u64; W] {
+            support_mask(&[0, 1, 2])
+        }
+        fn apply(
+            &self,
+            input_x: &[u64; W],
+            input_z: &[u64; W],
+            coeff: Complex64,
+            out: &mut OutputBuffer<'_, W>,
+        ) {
+            out.push(*input_x, *input_z, coeff);
+        }
+    }
+
+    /// A channel that declines `prepare` is a hard error: the v0.1 whole-sum
+    /// fallback that used to absorb it is gone, so `propagate` panics with the
+    /// support weight and a pointer to the generalization note.
+    #[test]
+    #[should_panic(expected = "Channel::prepare declined")]
+    fn an_unpreparable_channel_panics() {
+        let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
+        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+        let sum = acc.finalize();
+
+        let mut circuit = Circuit::<1>::new(8);
+        circuit.push(ThreeQubits);
+        let _ = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
+    }
 }

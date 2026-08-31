@@ -34,7 +34,7 @@
 //! contributions in a different order, and `f64` addition is not associative.
 //! (Through v0.3 a `u8` delta-tag column pinned that order to be
 //! bucket-count-independent too, at a measured 5–14% cost; v0.5 drops the
-//! requirement and the tag with it — see `sort_merge::sort_rows_with_scratch`.)
+//! requirement and the tag with it — see `merge::sort_rows_with_scratch`.)
 
 use std::sync::Mutex;
 
@@ -42,7 +42,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::coset::Gf2Span;
-use super::sort_merge::{merge2_into, sort_rows_with_scratch, SortScratch};
+use super::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -139,10 +139,10 @@ struct CosetScratch<const W: usize> {
 
 /// One output member's gather run: key columns and coefficients.
 ///
-/// Through v0.3 this also carried a `u8` delta tag that
-/// `sort_merge::sort_phase_tagged` broke equal-key ties on, pinning
-/// bucket-count-independent summation order. v0.5 S1 drops that requirement
-/// (and the tag) — see the module doc and `sort_merge::sort_rows_with_scratch`.
+/// Through v0.3 this also carried a `u8` delta tag that the then-current
+/// `sort_phase_tagged` broke equal-key ties on, pinning bucket-count-independent
+/// summation order. v0.5 S1 drops that requirement (and the tag) — see the
+/// module doc and `merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
 struct GatherRun<const W: usize> {
     /// The identity-delta stream (v0.5 S2): keys untouched, so it inherits the
@@ -789,9 +789,9 @@ where
 }
 
 // Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
-// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
-// compile the lib tests in release mode, fail to build.
+// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
+// without it `cargo bench` and `cargo test --release`, which compile the lib
+// tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
@@ -802,60 +802,20 @@ mod tests {
     use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
-    use crate::engine::sort_merge::{apply_layer, apply_layer_adjoint};
     use crate::pauli_sum::PauliSum;
     use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
+
+    // The differential oracle and the shared fixtures live in
+    // `crate::test_support`; re-exported here so the sibling test modules keep
+    // reaching them through `super::tests::…`.
+    pub(super) use crate::test_support::{
+        assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
+    };
 
     const TOL: f64 = 1e-11;
 
     pub(super) struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-    pub(super) struct Xs64(u64);
-    impl Xs64 {
-        fn new(seed: u64) -> Self {
-            Self(seed | 1)
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-    }
-
-    pub(super) fn word_mask(num_qubits: usize, word: usize) -> u64 {
-        let lo = 64 * word;
-        if num_qubits >= lo + 64 {
-            !0u64
-        } else if num_qubits <= lo {
-            0
-        } else {
-            (1u64 << (num_qubits - lo)) - 1
-        }
-    }
-
-    pub(super) fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
-        let mut rng = Xs64::new(seed);
-        let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
-        for _ in 0..n {
-            let mut p = PauliString::<W> {
-                x: [0u64; W],
-                z: [0u64; W],
-            };
-            for w in 0..W {
-                let m = word_mask(num_qubits, w);
-                p.x[w] = rng.next_u64() & m;
-                p.z[w] = rng.next_u64() & m;
-            }
-            let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-            let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-            acc.add_term(p, Phase::ONE, Complex64::new(re, im));
-        }
-        acc.finalize()
-    }
 
     /// Run one layer through the bucketed engine, converting in and out.
     pub(super) fn bucketed_layer<const W: usize, C, T>(
@@ -878,66 +838,6 @@ mod tests {
         let mut scratch = LayerScratch::<W>::new();
         apply_layer_bucketed(&mut b, &prep, policy, &mut scratch);
         b
-    }
-
-    /// `(x, z, coeff)` triples sorted by the `(x, z)` key.
-    ///
-    /// Keys are globally unique (the `PauliSum` invariant forbids duplicates),
-    /// so this is a canonical, storage-order-independent view: two sums with
-    /// the same terms produce the same triples regardless of which order their
-    /// backing engine happened to store them in.
-    pub(super) fn canonical_triples<const W: usize>(
-        s: &PauliSum<W>,
-    ) -> Vec<([u64; W], [u64; W], Complex64)> {
-        let mut v: Vec<([u64; W], [u64; W], Complex64)> =
-            s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
-        v.sort_unstable_by_key(|&(x, z, _)| (x, z));
-        v
-    }
-
-    /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
-    pub(super) fn assert_same_terms<const W: usize>(
-        got: &PauliSum<W>,
-        want: &PauliSum<W>,
-        what: &str,
-    ) {
-        assert_eq!(got.len(), want.len(), "{what}: term count");
-        let got = canonical_triples(got);
-        let want = canonical_triples(want);
-        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-            assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
-            assert_eq!(
-                g.2, w.2,
-                "{what}: term {i} key {:?}/{:?} coeff {} vs {} (not bitwise equal)",
-                g.0, g.1, g.2, w.2,
-            );
-        }
-    }
-
-    /// Same keys; coefficients within `tol`, because the two engines can sum
-    /// duplicate keys in different orders and floating-point addition is not
-    /// associative.
-    pub(super) fn assert_terms_close<const W: usize>(
-        got: &PauliSum<W>,
-        want: &PauliSum<W>,
-        tol: f64,
-        what: &str,
-    ) {
-        assert_eq!(got.len(), want.len(), "{what}: term count");
-        let got = canonical_triples(got);
-        let want = canonical_triples(want);
-        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-            assert_eq!((g.0, g.1), (w.0, w.1), "{what}: term {i} key mismatch");
-            let d = (g.2 - w.2).norm();
-            assert!(
-                d < tol,
-                "{what}: term {i} key {:?}/{:?} coeff {} vs {} (delta {d:e})",
-                g.0,
-                g.1,
-                g.2,
-                w.2,
-            );
-        }
     }
 
     /// Keys must match exactly; coefficients only to tolerance — see
@@ -987,7 +887,7 @@ mod tests {
         let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
         // cos(pi/3)*X + sin(pi/3)*(i * X * Z) = 0.5*X - 0.866*Y
         assert_eq!(out.len(), 2);
-        let want = apply_layer(&input, &rot, &AlwaysKeep);
+        let want = naive_apply_layer(&input, &rot, &AlwaysKeep, false);
         assert_sums_close(&out, &want, "rotation fanout");
     }
 
@@ -996,11 +896,12 @@ mod tests {
     /// Every built-in channel, over both occupancy regimes, several bucket
     /// counts, forward and adjoint, against three policies.
     ///
-    /// This is the primary correctness net for the rewrite: the v0.1 engine is
-    /// the oracle (v0.2 §9.2). A disagreement is a bug in the new engine until
-    /// proven otherwise.
+    /// This is the primary correctness net for the engine: `naive_apply_layer`
+    /// is the oracle (v0.2 §9.2 — the role the retained v0.1 pipeline used to
+    /// play). A disagreement is a bug in the bucketed engine until proven
+    /// otherwise.
     #[test]
-    fn differential_against_sort_merge_w1_dense_collisions() {
+    fn differential_against_the_naive_oracle_w1_dense_collisions() {
         // Only 8 qubits, so 2000 random terms collide heavily under a rotation
         // (both `v` and `v ^ gen` are usually present) and the merge phase has
         // real duplicate runs to combine. This is the case that matters.
@@ -1106,11 +1007,7 @@ mod tests {
             let cr: &dyn Channel<1> = ch.as_ref();
             for &adjoint in &[false, true] {
                 for &bits in &[0u8, 1, 3, 6, 11] {
-                    let want = if adjoint {
-                        apply_layer_adjoint(&input, cr, &AlwaysKeep)
-                    } else {
-                        apply_layer(&input, cr, &AlwaysKeep)
-                    };
+                    let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
                     let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
                     assert_terms_close(
                         &got,
@@ -1124,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn differential_against_sort_merge_w2_sparse() {
+    fn differential_against_the_naive_oracle_w2_sparse() {
         // The other regime: wide keys, few collisions, word-boundary supports.
         let input = rand_sum::<2>(3000, 128, 0xBEEF);
         let channels: Vec<(&str, Box<dyn Channel<2>>)> = vec![
@@ -1159,11 +1056,7 @@ mod tests {
             let cr: &dyn Channel<2> = ch.as_ref();
             for &adjoint in &[false, true] {
                 for &bits in &[2u8, 5, 9] {
-                    let want = if adjoint {
-                        apply_layer_adjoint(&input, cr, &AlwaysKeep)
-                    } else {
-                        apply_layer(&input, cr, &AlwaysKeep)
-                    };
+                    let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
                     let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
                     assert_terms_close(
                         &got,
@@ -1186,23 +1079,23 @@ mod tests {
 
         for bits in [0u8, 4, 9] {
             let got = bucketed_layer(&input, &rot, &CoefficientThreshold(1e-9), false, bits, 0x11);
-            let want = apply_layer(&input, &rot, &CoefficientThreshold(1e-9));
+            let want = naive_apply_layer(&input, &rot, &CoefficientThreshold(1e-9), false);
             assert_terms_close(&got, &want, TOL, &format!("threshold bits={bits}"));
 
             let got = bucketed_layer(&input, &rot, &WeightCutoff(4), false, bits, 0x11);
-            let want = apply_layer(&input, &rot, &WeightCutoff(4));
+            let want = naive_apply_layer(&input, &rot, &WeightCutoff(4), false);
             assert_terms_close(&got, &want, TOL, &format!("weight bits={bits}"));
 
             let policy = And(CoefficientThreshold(1e-9), WeightCutoff(5));
             let got = bucketed_layer(&input, &cnot, &policy, false, bits, 0x11);
-            let want = apply_layer(&input, &cnot, &policy);
+            let want = naive_apply_layer(&input, &cnot, &policy, false);
             assert_terms_close(&got, &want, TOL, &format!("and bits={bits}"));
         }
     }
 
     #[test]
     fn keep_term_sees_the_summed_coefficient() {
-        // Port of sort_merge's `threshold_applied_after_summation`: two terms
+        // Port of the v0.1 `threshold_applied_after_summation`: two terms
         // that nearly cancel must be dropped by a threshold their individual
         // magnitudes would pass. A rotation at theta = pi/2 sends X and Y to the
         // same key with opposite-ish weights.
@@ -1220,7 +1113,7 @@ mod tests {
         for bits in [0u8, 3, 7] {
             let policy = CoefficientThreshold(1e-6);
             let got = bucketed_layer(&input, &rot, &policy, false, bits, 0x21);
-            let want = apply_layer(&input, &rot, &policy);
+            let want = naive_apply_layer(&input, &rot, &policy, false);
             assert_terms_close(&got, &want, TOL, &format!("post-sum threshold bits={bits}"));
         }
     }
@@ -1230,7 +1123,7 @@ mod tests {
     #[test]
     fn rescale_fast_path_agrees_with_the_general_path() {
         // Depolarizing/Dephasing/Pauli gates take `rescale_in_place`. Compare
-        // against the v0.1 engine, which has no such special case.
+        // against the naive oracle, which has no such special case.
         let input = rand_sum::<1>(1500, 8, 0x5A5A);
         let chans: Vec<(&str, Box<dyn Channel<1>>)> = vec![
             ("identity", Box::new(IdentityChannel::new())),
@@ -1254,7 +1147,7 @@ mod tests {
             let cr: &dyn Channel<1> = ch.as_ref();
             for bits in [0u8, 4, 8] {
                 let got = bucketed_layer(&input, cr, &AlwaysKeep, false, bits, 0x31);
-                let want = apply_layer(&input, cr, &AlwaysKeep);
+                let want = naive_apply_layer(&input, cr, &AlwaysKeep, false);
                 assert_terms_close(&got, &want, TOL, &format!("{name} bits={bits}"));
             }
         }
@@ -1270,7 +1163,7 @@ mod tests {
         for bits in [0u8, 5] {
             let policy = And(CoefficientThreshold(0.3), WeightCutoff(4));
             let got = bucketed_layer(&input, &depol, &policy, false, bits, 0x41);
-            let want = apply_layer(&input, &depol, &policy);
+            let want = naive_apply_layer(&input, &depol, &policy, false);
             assert_terms_close(&got, &want, TOL, &format!("truncated rescale bits={bits}"));
             assert!(got.len() < input.len(), "truncation dropped nothing");
         }
@@ -1527,7 +1420,8 @@ mod tests {
     #[test]
     fn many_layers_without_converting_out() {
         // The point of the bucketed form: convert in once, run many layers,
-        // convert out once. Compare against the same sequence through v0.1.
+        // convert out once. Compare against the same sequence through the
+        // naive oracle.
         let input = rand_sum::<1>(800, 8, 0x7001);
         let chans: Vec<Box<dyn Channel<1>>> = vec![
             Box::new(Clifford1Q::h(0)),
@@ -1550,7 +1444,7 @@ mod tests {
 
         let mut want = input.clone();
         for ch in &chans {
-            want = apply_layer(&want, ch.as_ref(), &AlwaysKeep);
+            want = naive_apply_layer(&want, ch.as_ref(), &AlwaysKeep, false);
         }
 
         let hash = Gf2Hash::<1>::new(8, 5, 0x77);
@@ -1570,7 +1464,12 @@ mod tests {
         let h = Clifford1Q::h(0);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
 
-        let want = apply_layer(&apply_layer(&input, &h, &AlwaysKeep), &rot, &AlwaysKeep);
+        let want = naive_apply_layer(
+            &naive_apply_layer(&input, &h, &AlwaysKeep, false),
+            &rot,
+            &AlwaysKeep,
+            false,
+        );
 
         let hash = Gf2Hash::<1>::new(8, 2, 0x77);
         let mut b = input.clone().with_hash(hash);
@@ -1813,8 +1712,10 @@ mod tests {
         ] {
             let got = bucketed_layer(&input, ch.as_ref(), &AlwaysKeep, false, 0, 0xEE);
             assert_eq!(got.num_buckets(), 1);
-            let want = apply_layer(&input, ch.as_ref(), &AlwaysKeep);
-            assert_same_terms(&got, &want, "bits=0 single coset");
+            let want = naive_apply_layer(&input, ch.as_ref(), &AlwaysKeep, false);
+            // Tolerance, not bitwise: the oracle sums equal keys in hashmap
+            // iteration order (v0.7 Stage 1 replaced the v0.1 pipeline here).
+            assert_terms_close(&got, &want, TOL, "bits=0 single coset");
         }
     }
 
@@ -1864,8 +1765,9 @@ mod tests {
         let mut scratch = LayerScratch::<1>::new();
         apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
 
-        let want = apply_layer(&input, &rot, &AlwaysKeep);
-        assert_same_terms(&b, &want, "H·P = 0 collision");
+        let want = naive_apply_layer(&input, &rot, &AlwaysKeep, false);
+        // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
+        assert_terms_close(&b, &want, TOL, "H·P = 0 collision");
     }
 
     /// One `LayerScratch` serves layers of every prepared shape back to back —
@@ -1905,9 +1807,10 @@ mod tests {
         for ch in channels {
             let prep = ch.prepare(b.hash(), false).unwrap();
             apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-            want = apply_layer(&want, ch, &AlwaysKeep);
+            want = naive_apply_layer(&want, ch, &AlwaysKeep, false);
         }
-        assert_same_terms(&b, &want, "rot → cnot → gu2q through one scratch");
+        // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
+        assert_terms_close(&b, &want, TOL, "rot → cnot → gu2q through one scratch");
     }
 
     /// After the working set stops growing, repeated layers allocate nothing:
@@ -1984,21 +1887,29 @@ mod tests {
 
         let ch = ThreeDeltas;
         let input = rand_sum::<1>(1200, 8, 0xAB5EA7);
-        let want = apply_layer(&input, &ch, &AlwaysKeep);
+        let want = naive_apply_layer(&input, &ch, &AlwaysKeep, false);
         for bits in [0u8, 2, 5] {
             let got = bucketed_layer(&input, &ch, &AlwaysKeep, false, bits, 0x7EA);
-            assert_same_terms(&got, &want, &format!("non-subspace deltas, bits={bits}"));
+            // Tolerance, not bitwise: three deltas can merge three
+            // contributions into one key, and the oracle sums them in hashmap
+            // iteration order.
+            assert_terms_close(
+                &got,
+                &want,
+                TOL,
+                &format!("non-subspace deltas, bits={bits}"),
+            );
         }
     }
 }
 
 // Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
-// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
-// compile the lib tests in release mode, fail to build.
+// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
+// without it `cargo bench` and `cargo test --release`, which compile the lib
+// tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod finalize_tests {
-    use super::tests::{assert_same_terms, assert_terms_close, rand_sum};
+    use super::tests::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::Clifford1Q;
@@ -2138,9 +2049,7 @@ mod finalize_tests {
 
     /// Layer then finalize, repeatedly — the shape `propagate` will use.
     #[test]
-    fn interleaved_layers_and_finalizers_match_the_v0_1_sequence() {
-        use crate::engine::sort_merge::apply_layer;
-
+    fn interleaved_layers_and_finalizers_match_the_naive_sequence() {
         let input = rand_sum::<1>(1200, 8, 0xAAAA);
         let policy = And(CoefficientThreshold(1e-9), TopN(300));
         let chans: Vec<Box<dyn Channel<1>>> = vec![
@@ -2151,7 +2060,7 @@ mod finalize_tests {
 
         let mut want = input.clone();
         for ch in &chans {
-            want = apply_layer(&want, ch.as_ref(), &policy);
+            want = naive_apply_layer(&want, ch.as_ref(), &policy, false);
             policy.finalize_layer(&mut want);
         }
 
@@ -2170,9 +2079,9 @@ mod finalize_tests {
 }
 
 // Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
-// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
-// compile the lib tests in release mode, fail to build.
+// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
+// without it `cargo bench` and `cargo test --release`, which compile the lib
+// tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod tie_tests {
     /// The C.1 determinism contract: byte-identical output across thread counts,

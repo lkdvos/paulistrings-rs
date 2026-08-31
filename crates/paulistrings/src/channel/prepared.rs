@@ -70,12 +70,11 @@ pub struct LocalPtm<const W: usize> {
     /// index 0 is the identity entry when present, and upcoming work relies
     /// on that — but as of v0.5 S1 it no longer defines a bucket-count- or
     /// hash-seed-independent summation order: the engine's per-run sort
-    /// (`sort_merge::sort_rows_with_scratch`) is key-only, so it no longer
+    /// (`engine::merge::sort_rows_with_scratch`) is key-only, so it no longer
     /// carries each entry's index here as a tag to restore this order after
-    /// gathering input-bucket-major (that was v0.3 §2's
-    /// `sort_merge::sort_phase_tagged`, deleted in v0.5 S1 per the relaxed
-    /// determinism policy — see the v0.5 S1 slice notes and
-    /// `engine::bucketed`'s module doc). `local_delta` remains
+    /// gathering input-bucket-major (that was v0.3 §2's `sort_phase_tagged`,
+    /// deleted in v0.5 S1 per the relaxed determinism policy — see the v0.5 S1
+    /// slice notes and `engine::bucketed`'s module doc). `local_delta` remains
     /// `H`-independent while `bucket_delta = H·d` is not, which is why this
     /// order was ever meaningful as a *canonical* one in the first place.
     deltas: Vec<DeltaEntry<W>>,
@@ -964,7 +963,8 @@ mod tests {
     fn derive_refuses_a_channel_that_writes_outside_its_support() {
         // A deliberately broken channel: declares support [0] but also flips
         // qubit 1. Deriving a local PTM for it would be silently wrong, so
-        // derivation must decline and let the engine use the whole-sum path.
+        // derivation must decline — and `propagate` then panics rather than
+        // silently propagating a contract violation.
         struct Liar;
         impl<const W: usize> Channel<W> for Liar {
             fn max_fanout(&self) -> usize {

@@ -406,17 +406,6 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Merge the buckets into globally key-sorted columns.
-    ///
-    /// An `O(n log B)` `B`-way tree merge; no coefficient combining is needed,
-    /// since equal keys always share a bucket and buckets are deduplicated.
-    /// This is how the v0.1 oracle pipeline gets its flat, globally-sorted
-    /// view of the sum; nothing on the bucketed hot path calls it.
-    pub(crate) fn flatten_key_sorted(&self) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
-        let merged = merge_runs(self.buckets.clone());
-        (merged.x, merged.z, merged.coeff)
-    }
-
     /// Repartition under `hash`, keeping every term.
     ///
     /// Flattens to a globally key-sorted stream and rescatters. The scatter is
@@ -696,8 +685,8 @@ impl<const W: usize> PauliSum<W> {
     /// [`Self::iter`].
     ///
     /// The columns are *not* globally key-sorted unless there is a single
-    /// bucket; a globally key-sorted flat view exists only crate-internally
-    /// (`flatten_key_sorted`), for the v0.1 oracle pipeline.
+    /// bucket. Sort the triples yourself if you need a canonical,
+    /// partition-independent view.
     pub fn to_arrays(&self) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
         let mut x = Vec::with_capacity(self.len);
         let mut z = Vec::with_capacity(self.len);
@@ -958,9 +947,9 @@ impl<const W: usize> PauliSum<W> {
 }
 
 // Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs` and
-// `sort_merge.rs`; without it `cargo bench` and `cargo test --release`, which
-// compile the lib tests in release mode, fail to build.
+// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
+// without it `cargo bench` and `cargo test --release`, which compile the lib
+// tests in release mode, fail to build.
 #[cfg(all(test, debug_assertions))]
 mod tests {
     #[test]
@@ -1872,23 +1861,6 @@ mod tests {
         let mut v = canonical_triples(b);
         v.sort_by(|p, q| (p.0, p.1).cmp(&(q.0, q.1)));
         v
-    }
-
-    #[test]
-    fn flatten_key_sorted_is_bitwise_to_sum() {
-        for bits in [0u8, 1, 7, 12] {
-            let sum = rand_sum::<2>(3000, 128, 0x301);
-            let h = Gf2Hash::<2>::new(128, bits, 0x302);
-            let b = sum.clone().with_hash(h);
-            let (x, z, c) = b.flatten_key_sorted();
-            let want = sorted_triples(&b);
-            assert_eq!(x.len(), want.len(), "bits={bits} length");
-            for (i, &(wx, wz, wc)) in want.iter().enumerate() {
-                assert_eq!(x[i], wx, "bits={bits} x at {i}");
-                assert_eq!(z[i], wz, "bits={bits} z at {i}");
-                assert_eq!(c[i], wc, "bits={bits} coeff at {i}");
-            }
-        }
     }
 
     #[test]

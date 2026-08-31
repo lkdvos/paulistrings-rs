@@ -7,7 +7,7 @@ submodules.
 """
 
 from . import _paulistrings
-from ._paulistrings import Circuit, PauliSum
+from ._paulistrings import Circuit, PauliSum, reset_log_cache
 from . import gates, noise, truncation
 
 __all__ = [
@@ -16,4 +16,5 @@ __all__ = [
     "gates",
     "noise",
     "truncation",
+    "reset_log_cache",
 ]

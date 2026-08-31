@@ -277,29 +277,40 @@ impl<const W: usize> Channel<W> for Depolarizing2Q {
 
 /// Single-qubit amplitude damping with parameter `gamma`.
 ///
-/// The only noise in the built-in set with genuine fan-out > 1. Heisenberg
-/// dual via Kraus operators `E_0 = |0⟩⟨0| + √(1-γ)|1⟩⟨1|` and
-/// `E_1 = √γ |0⟩⟨1|`:
+/// The only noise in the built-in set with genuine fan-out > 1, and the only
+/// one that is **not** self-adjoint — so it is the only built-in for which the
+/// `apply` / `apply_adjoint` orientation is observable.
 ///
-/// - `I → I`
-/// - `X → √(1-γ) X`
-/// - `Y → √(1-γ) Y`
-/// - `Z → (1-γ) Z + γ I`   (the only fanout-2 case)
+/// Kraus operators `K_0 = |0⟩⟨0| + √(1-γ)|1⟩⟨1|`, `K_1 = √γ |0⟩⟨1|`, and
+/// `K_0†K_0 + K_1†K_1 = I` (trace-preserving).
 ///
-/// Not self-adjoint. `apply` above is the Heisenberg map `Φ†`; the adjoint is
-/// `Φ` itself, obtained by transposing the Pauli-transfer matrix (all four
-/// Paulis share a norm, so the Gram matrix is a multiple of the identity and the
-/// adjoint is the plain transpose):
+/// [`Self::apply`] is the **Schrödinger** map `Φ(ρ) = K_0 ρ K_0† + K_1 ρ K_1†`,
+/// which is what `direction = "forward"` runs — the same orientation as every
+/// other channel, where `apply` is the conjugation `U P U†`:
 ///
-/// - `I → I + γ Z`   (now the only fanout-2 case)
+/// - `I → I + γ Z`   (the only fanout-2 case)
 /// - `X → √(1-γ) X`
 /// - `Y → √(1-γ) Y`
 /// - `Z → (1-γ) Z`
 ///
-/// Note the fan-out moves from `Z` to `I`. Structurally: `Φ†` is unital
+/// [`Self::apply_adjoint`] is the **Heisenberg** dual
+/// `Φ†(O) = K_0† O K_0 + K_1† O K_1`, which is what `direction = "heisenberg"`
+/// runs — the map for evolving an observable. It is the transpose of `Φ`'s
+/// Pauli-transfer matrix (all four Paulis share a Hilbert-Schmidt norm, so the
+/// Gram matrix is a multiple of the identity and the adjoint is the plain
+/// transpose):
+///
+/// - `I → I`
+/// - `X → √(1-γ) X`
+/// - `Y → √(1-γ) Y`
+/// - `Z → (1-γ) Z + γ I`   (now the only fanout-2 case)
+///
+/// Note the fan-out moves from `I` to `Z`. Structurally: `Φ†` is unital
 /// (`Φ†(I) = I`, because `Φ` is trace-preserving), and `Φ` is trace-preserving
 /// (the `I` coefficient of `Φ(P)` depends only on the `I` coefficient of `P`),
-/// which are transposed statements of each other.
+/// which are transposed statements of each other. A non-unital Heisenberg map
+/// would be unphysical: `⟨Z⟩` for a qubit already in `|0⟩` would decay instead
+/// of staying at 1 (see the tests below for the hand derivation).
 pub struct AmplitudeDamping {
     /// The single qubit this channel acts on.
     pub support: [u32; 1],
@@ -319,6 +330,7 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         support_mask(&self.support)
     }
 
+    /// The Schrödinger map `Φ`, run by `direction = "forward"`.
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -332,8 +344,13 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         let idx = read_pauli(input_x, input_z, word, bit);
         match idx {
             0 => {
-                // I → I.
+                // I → I + γ Z. The fan-out sits on the identity in Φ: the
+                // channel is non-unital, which is the same statement as its
+                // dual being trace-preserving.
                 out.push(*input_x, *input_z, coeff);
+                let mut nz = *input_z;
+                set_bit(&mut nz, word, mask, true);
+                out.push(*input_x, nz, coeff * self.gamma);
             }
             1 | 3 => {
                 // X or Y → √(1-γ) · same.
@@ -341,19 +358,18 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
                 out.push(*input_x, *input_z, coeff * scale);
             }
             2 => {
-                // Z → (1-γ) Z + γ I. Emit Z first (matches the order in the
-                // doc-comment), then I (with the support's z-bit cleared).
+                // Z → (1-γ) Z, with no I component (Φ preserves trace and
+                // `tr Z = 0`).
                 out.push(*input_x, *input_z, coeff * (1.0 - self.gamma));
-                let mut nz = *input_z;
-                set_bit(&mut nz, word, mask, false);
-                out.push(*input_x, nz, coeff * self.gamma);
             }
             _ => unreachable!(),
         }
     }
 
-    /// The Hilbert-Schmidt adjoint of [`Self::apply`] — the transpose of its
-    /// Pauli-transfer matrix. See the type's documentation for the derivation.
+    /// The Heisenberg dual `Φ†` — the Hilbert-Schmidt adjoint of
+    /// [`Self::apply`], i.e. the transpose of its Pauli-transfer matrix. Run by
+    /// `direction = "heisenberg"`. See the type's documentation for the
+    /// derivation.
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],
@@ -367,12 +383,8 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         let idx = read_pauli(input_x, input_z, word, bit);
         match idx {
             0 => {
-                // I → I + γ Z. The fan-out sits here in the adjoint, where the
-                // forward map had it on Z.
+                // I → I. `Φ†` is unital because `Φ` is trace-preserving.
                 out.push(*input_x, *input_z, coeff);
-                let mut nz = *input_z;
-                set_bit(&mut nz, word, mask, true);
-                out.push(*input_x, nz, coeff * self.gamma);
             }
             1 | 3 => {
                 // X or Y → √(1-γ) · same, as in the forward map.
@@ -380,8 +392,13 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
                 out.push(*input_x, *input_z, coeff * scale);
             }
             2 => {
-                // Z → (1-γ) Z, with no I component.
+                // Z → (1-γ) Z + γ I. The fan-out moves to Z in the dual. Emit
+                // Z first (matches the order in the doc-comment), then I (with
+                // the support's z-bit cleared).
                 out.push(*input_x, *input_z, coeff * (1.0 - self.gamma));
+                let mut nz = *input_z;
+                set_bit(&mut nz, word, mask, false);
+                out.push(*input_x, nz, coeff * self.gamma);
             }
             _ => unreachable!(),
         }
@@ -397,11 +414,42 @@ mod tests {
     use crate::phase::Phase;
     use crate::test_support::{alloc_bufs, approx_eq};
 
-    // ---- AmplitudeDamping adjoint ----
+    // ---- AmplitudeDamping: which map is `apply`, which is `apply_adjoint` ----
     //
-    // These pin the real adjoint: the transpose of the forward
-    // Pauli-transfer matrix. `apply_adjoint = apply` would be a silent trap
-    // for Heisenberg backpropagation.
+    // Hand-derived from the Kraus operators, writing `s = √(1-γ)`:
+    //
+    //     K₀ = [[1, 0], [0, s]],   K₁ = [[0, √γ], [0, 0]] = √γ·|0⟩⟨1|
+    //
+    // Completeness (so Φ is trace-preserving):
+    //     K₀†K₀ + K₁†K₁ = diag(1, 1-γ) + diag(0, γ) = I.
+    //
+    // Schrödinger map Φ(ρ) = K₀ρK₀† + K₁ρK₁†, on the Pauli basis, using
+    // diag(a, b) = ((a+b)/2)·I + ((a-b)/2)·Z:
+    //
+    //     Φ(I) = K₀K₀† + K₁K₁† = diag(1, 1-γ) + diag(γ, 0)
+    //          = diag(1+γ, 1-γ) = I + γ Z
+    //     Φ(Z) = diag(1, -(1-γ)) + γ·⟨1|Z|1⟩·|0⟩⟨0|
+    //          = diag(1, -(1-γ)) + diag(-γ, 0) = (1-γ) Z
+    //     Φ(X) = s X + γ·⟨1|X|1⟩·|0⟩⟨0| = s X        (⟨1|X|1⟩ = 0)
+    //     Φ(Y) = s Y                                 (same, ⟨1|Y|1⟩ = 0)
+    //
+    // Heisenberg dual Φ†(O) = K₀†OK₀ + K₁†OK₁:
+    //
+    //     Φ†(I) = K₀†K₀ + K₁†K₁ = I                  (unital, by completeness)
+    //     Φ†(Z) = diag(1, -(1-γ)) + γ·⟨0|Z|0⟩·|1⟩⟨1|
+    //           = diag(1, 2γ-1) = γ I + (1-γ) Z
+    //     Φ†(X) = s X + γ·⟨0|X|0⟩·|1⟩⟨1| = s X
+    //     Φ†(Y) = s Y
+    //
+    // `apply` is **Φ** — what `direction="forward"` runs — and `apply_adjoint`
+    // is **Φ†** — what `direction="heisenberg"` runs. That is the orientation
+    // every other channel already uses (`apply` is the Schrödinger conjugation
+    // `U P U†`, `apply_adjoint` the Heisenberg dual `U† P U`). The two are
+    // Pauli-transfer-matrix transposes of each other: all four Paulis share a
+    // Hilbert-Schmidt norm, so the Gram matrix is a multiple of the identity and
+    // the adjoint is the plain transpose. Note the fan-out sits on **I** for Φ
+    // and on **Z** for Φ†; swapping the two makes Heisenberg observable
+    // evolution non-unital, which is unphysical.
 
     /// Collect the outputs of `apply` or `apply_adjoint` on one input.
     ///
@@ -449,48 +497,128 @@ mod tests {
         t
     }
 
-    #[test]
-    fn adjoint_maps_identity_to_i_plus_gamma_z() {
-        let g = 0.3;
+    /// Both PTM rows of a damping channel on qubit `q`, checked against the
+    /// hand derivation at the top of this section. Generic in `W` so the
+    /// const-generic surface (and the word-boundary bit arithmetic) is
+    /// exercised at both widths.
+    fn check_both_maps<const W: usize>(q: u32, g: f64) {
         let ch = AmplitudeDamping {
-            support: [0],
-            gamma: g,
-        };
-        let got = outputs::<1>(&ch, true, PauliString::<1>::identity());
-        assert_eq!(got.len(), 2, "I should fan out to two terms in the adjoint");
-        assert_eq!(got[0].0, PauliString::<1>::identity());
-        assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
-        assert_eq!(got[1].0, PauliString::<1>::z(0));
-        assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
-    }
-
-    #[test]
-    fn adjoint_scales_x_and_y_by_sqrt_one_minus_gamma() {
-        let g = 0.3;
-        let ch = AmplitudeDamping {
-            support: [0],
+            support: [q],
             gamma: g,
         };
         let s = (1.0f64 - g).sqrt();
-        for p in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
-            let got = outputs::<1>(&ch, true, p);
-            assert_eq!(got.len(), 1);
-            assert_eq!(got[0].0, p);
-            assert!((got[0].1 - Complex64::new(s, 0.0)).norm() < 1e-15);
+        let id = PauliString::<W>::identity();
+        let zq = PauliString::<W>::z(q);
+
+        // Φ = `apply`: the fan-out is on I. `Φ(I) = I + γ Z`.
+        let got = outputs::<W>(&ch, false, id);
+        assert_eq!(got.len(), 2, "W={W}: Φ(I) has two terms");
+        assert_eq!(got[0].0, id);
+        assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+        assert_eq!(got[1].0, zq);
+        assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
+
+        // `Φ(Z) = (1-γ) Z`, with no identity component: Φ preserves trace and
+        // `tr Z = 0`, so the I coefficient must vanish.
+        let got = outputs::<W>(&ch, false, zq);
+        assert_eq!(got.len(), 1, "W={W}: Φ(Z) has no I component");
+        assert_eq!(got[0].0, zq);
+        assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
+
+        // Φ† = `apply_adjoint`: unital, so `Φ†(I) = I` exactly, fan-out 1.
+        let got = outputs::<W>(&ch, true, id);
+        assert_eq!(got.len(), 1, "W={W}: Φ†(I) must be I alone (unitality)");
+        assert_eq!(got[0].0, id);
+        assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+
+        // `Φ†(Z) = (1-γ) Z + γ I` — the adjoint's only fan-out row.
+        let got = outputs::<W>(&ch, true, zq);
+        assert_eq!(got.len(), 2, "W={W}: Φ†(Z) has two terms");
+        assert_eq!(got[0].0, zq);
+        assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
+        assert_eq!(got[1].0, id);
+        assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
+
+        // X and Y: the one row where Φ and Φ† agree, because `⟨1|X|1⟩` and
+        // `⟨0|X|0⟩` both vanish and the K₁ term drops out either way.
+        for p in [PauliString::<W>::x(q), PauliString::<W>::y(q)] {
+            for adjoint in [false, true] {
+                let got = outputs::<W>(&ch, adjoint, p);
+                assert_eq!(got.len(), 1, "W={W}: X/Y stay fan-out 1");
+                assert_eq!(got[0].0, p);
+                assert!((got[0].1 - Complex64::new(s, 0.0)).norm() < 1e-15);
+            }
         }
     }
 
+    /// `apply` is Φ (Schrödinger, fan-out on I) and `apply_adjoint` is Φ†
+    /// (Heisenberg, unital, fan-out on Z) — W=1.
     #[test]
-    fn adjoint_maps_z_to_one_minus_gamma_z_with_no_identity_part() {
-        let g = 0.3;
-        let ch = AmplitudeDamping {
-            support: [0],
-            gamma: g,
+    fn forward_is_phi_and_adjoint_is_phi_dagger_w1() {
+        check_both_maps::<1>(0, 0.3);
+        check_both_maps::<1>(5, 0.75);
+    }
+
+    /// Same, with the support qubit in word 1 at W=2.
+    #[test]
+    fn forward_is_phi_and_adjoint_is_phi_dagger_w2() {
+        check_both_maps::<2>(70, 0.3);
+        check_both_maps::<2>(64, 0.4);
+    }
+
+    /// The physics the orientation is *for*: Heisenberg-evolve `Z` through the
+    /// damping channel, then contract against a computational basis state.
+    ///
+    /// `⟨Z⟩_after = tr[Z Φ(ρ)] = tr[Φ†(Z) ρ]` with `Φ†(Z) = γ I + (1-γ) Z`:
+    ///
+    /// * `ρ = |0⟩⟨0|`  →  `γ·1 + (1-γ)·1 = 1` for every γ. A qubit already in
+    ///   `|0⟩` is the fixed point of amplitude damping and stays there.
+    /// * `ρ = |1⟩⟨1|`  →  `γ·1 + (1-γ)·(-1) = 2γ - 1`, rising from `-1` at
+    ///   `γ = 0` to `+1` at `γ = 1`: the excited state decays toward `|0⟩`.
+    ///
+    /// Under the swapped orientation the Heisenberg direction would apply Φ
+    /// instead, giving `(1-γ)·⟨Z⟩` — which sends `|0⟩` to `⟨Z⟩ = 1-γ < 1`,
+    /// i.e. a ground-state qubit spontaneously depolarizing.
+    #[test]
+    fn heisenberg_z_reproduces_the_damped_qubit_expectation() {
+        // `⟨b|P|b⟩` for a computational state whose qubits-in-|1⟩ are `ones`:
+        // any X or Y factor gives 0, each Z factor contributes `(-1)^bit`.
+        let expect = |p: &PauliString<1>, ones: u64| -> f64 {
+            if p.x[0] != 0 {
+                return 0.0;
+            }
+            if (p.z[0] & ones).count_ones() % 2 == 1 {
+                -1.0
+            } else {
+                1.0
+            }
         };
-        let got = outputs::<1>(&ch, true, PauliString::<1>::z(0));
-        assert_eq!(got.len(), 1, "the adjoint's Z row has no I component");
-        assert_eq!(got[0].0, PauliString::<1>::z(0));
-        assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
+        for &g in &[0.0, 0.3, 0.5, 1.0] {
+            let ch = AmplitudeDamping {
+                support: [0],
+                gamma: g,
+            };
+            let terms = outputs::<1>(&ch, true, PauliString::<1>::z(0));
+            let ev = |ones: u64| -> f64 {
+                terms
+                    .iter()
+                    .map(|(p, c)| {
+                        assert!(c.im.abs() < 1e-15, "damping keeps coefficients real");
+                        c.re * expect(p, ones)
+                    })
+                    .sum()
+            };
+            assert!(
+                (ev(0) - 1.0).abs() < 1e-15,
+                "gamma={g}: |0⟩ must stay at ⟨Z⟩ = 1, got {}",
+                ev(0),
+            );
+            assert!(
+                (ev(1) - (2.0 * g - 1.0)).abs() < 1e-15,
+                "gamma={g}: |1⟩ must give ⟨Z⟩ = 2γ-1, got {}",
+                ev(1),
+            );
+        }
     }
 
     /// The structural statement: the adjoint's PTM is the forward PTM
@@ -519,69 +647,77 @@ mod tests {
     }
 
     /// `Φ†` is unital and `Φ` is trace-preserving — transposed statements of
-    /// each other, and both are physical requirements.
+    /// each other, and both are physical requirements. Which map carries which
+    /// property is exactly what the orientation fixes.
     #[test]
-    fn forward_is_unital_and_adjoint_is_trace_preserving() {
+    fn adjoint_is_unital_and_forward_is_trace_preserving() {
         for &g in &[0.0, 0.3, 1.0] {
             let ch = AmplitudeDamping {
                 support: [0],
                 gamma: g,
             };
-            // Unitality of the forward (Heisenberg) map: I -> I exactly.
-            let fwd_i = outputs::<1>(&ch, false, PauliString::<1>::identity());
-            assert_eq!(fwd_i.len(), 1, "gamma={g}");
-            assert_eq!(fwd_i[0].0, PauliString::<1>::identity());
-            assert!((fwd_i[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+            // Unitality of the adjoint (Heisenberg) map: I -> I exactly.
+            let adj_i = outputs::<1>(&ch, true, PauliString::<1>::identity());
+            assert_eq!(adj_i.len(), 1, "gamma={g}");
+            assert_eq!(adj_i[0].0, PauliString::<1>::identity());
+            assert!((adj_i[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
 
-            // Trace preservation of the adjoint: the I row of its PTM is
+            // Trace preservation of the forward map: the I row of its PTM is
             // [1, 0, 0, 0], i.e. the I component of the output depends only on
             // the I component of the input, with unit weight.
-            let adj = ptm4(&ch, true, 0);
-            assert!((adj[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
-            for (j, &v) in adj[0].iter().enumerate().skip(1) {
-                assert!(v.abs() < 1e-15, "gamma={g}: adj[0][{j}] nonzero");
+            let fwd = ptm4(&ch, false, 0);
+            assert!((fwd[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
+            for (j, &v) in fwd[0].iter().enumerate().skip(1) {
+                assert!(v.abs() < 1e-15, "gamma={g}: fwd[0][{j}] nonzero");
             }
         }
     }
 
     #[test]
-    fn adjoint_at_gamma_zero_is_the_identity_channel() {
+    fn both_directions_at_gamma_zero_are_the_identity_channel() {
         let ch = AmplitudeDamping {
             support: [0],
             gamma: 0.0,
         };
-        for p in [
-            PauliString::<1>::identity(),
-            PauliString::<1>::x(0),
-            PauliString::<1>::y(0),
-            PauliString::<1>::z(0),
-        ] {
-            let got: Vec<_> = outputs::<1>(&ch, true, p)
-                .into_iter()
-                .filter(|(_, c)| c.norm() > 1e-15)
-                .collect();
-            assert_eq!(got.len(), 1, "gamma=0 should not fan out");
-            assert_eq!(got[0].0, p);
-            assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+        for adjoint in [false, true] {
+            for p in [
+                PauliString::<1>::identity(),
+                PauliString::<1>::x(0),
+                PauliString::<1>::y(0),
+                PauliString::<1>::z(0),
+            ] {
+                let got: Vec<_> = outputs::<1>(&ch, adjoint, p)
+                    .into_iter()
+                    .filter(|(_, c)| c.norm() > 1e-15)
+                    .collect();
+                assert_eq!(got.len(), 1, "gamma=0 should not fan out");
+                assert_eq!(got[0].0, p);
+                assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
+            }
         }
     }
 
     #[test]
-    fn adjoint_respects_a_word_boundary_w2() {
+    fn forward_respects_a_word_boundary_w2() {
         let g = 0.4;
         let ch = AmplitudeDamping {
             support: [70],
             gamma: g,
         };
-        let got = outputs::<2>(&ch, true, PauliString::<2>::identity());
+        // Φ's fan-out is on the identity, and the new Z lands in word 1.
+        let got = outputs::<2>(&ch, false, PauliString::<2>::identity());
         assert_eq!(got.len(), 2);
         assert_eq!(got[1].0, PauliString::<2>::z(70));
         assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
-        // A term on the other side of the boundary is untouched.
+        // A term on the other side of the boundary is untouched, but qubit 70
+        // is still in the identity sector, so Φ fans it out.
         let other = PauliString::<2>::x(3);
-        let got = outputs::<2>(&ch, true, other);
-        assert_eq!(got.len(), 2, "q=3 is I on the support, so it fans out");
+        let got = outputs::<2>(&ch, false, other);
+        assert_eq!(got.len(), 2, "q=3 is I on the support, so Φ fans out");
         assert_eq!(got[0].0, other);
+        let mut with_z = other;
+        assert_eq!(with_z.mul_assign(&PauliString::<2>::z(70)), Phase::ONE);
+        assert_eq!(got[1].0, with_z);
     }
 
     const TOL: f64 = 1e-12;
@@ -1170,10 +1306,11 @@ mod tests {
         assert!(approx_eq(bc[0], Complex64::new(scale, 0.0), TOL));
     }
 
-    /// I on the support is fixed by amplitude damping (fanout 1, coeff
-    /// preserved).
+    /// I on the support is fixed by the *adjoint* (Heisenberg) map — fanout 1,
+    /// coefficient preserved. That is unitality; `apply` instead fans I out to
+    /// `I + γ Z`.
     #[test]
-    fn amplitude_damping_passes_identity_through() {
+    fn amplitude_damping_adjoint_passes_identity_through() {
         let ch = AmplitudeDamping {
             support: [0],
             gamma: 0.3,
@@ -1186,7 +1323,7 @@ mod tests {
             coeff: &mut bc,
             len: &mut len,
         };
-        <AmplitudeDamping as Channel<1>>::apply(
+        <AmplitudeDamping as Channel<1>>::apply_adjoint(
             &ch,
             &p.x,
             &p.z,
@@ -1230,11 +1367,11 @@ mod tests {
         }
     }
 
-    /// Z on the support fans out to `(1-γ)·Z + γ·I`. The first emit is the
-    /// Z term, the second is the I term (z-bit cleared on the support
-    /// qubit).
+    /// In the adjoint (Heisenberg) map, Z on the support fans out to
+    /// `(1-γ)·Z + γ·I`. The first emit is the Z term, the second is the I term
+    /// (z-bit cleared on the support qubit).
     #[test]
-    fn amplitude_damping_z_fans_out_to_z_plus_i() {
+    fn amplitude_damping_adjoint_z_fans_out_to_z_plus_i() {
         let gamma = 0.25;
         let ch = AmplitudeDamping {
             support: [0],
@@ -1248,7 +1385,7 @@ mod tests {
             coeff: &mut bc,
             len: &mut len,
         };
-        <AmplitudeDamping as Channel<1>>::apply(
+        <AmplitudeDamping as Channel<1>>::apply_adjoint(
             &ch,
             &p.x,
             &p.z,
@@ -1267,10 +1404,10 @@ mod tests {
         assert!(approx_eq(bc[1], Complex64::new(gamma, 0.0), TOL));
     }
 
-    /// W=2: Z on qubit 64 fans out to (1-γ)·Z@64 + γ·I, with the I term's
-    /// z-bit cleared in word 1 only.
+    /// W=2, adjoint map: Z on qubit 64 fans out to (1-γ)·Z@64 + γ·I, with the
+    /// I term's z-bit cleared in word 1 only.
     #[test]
-    fn amplitude_damping_w2_word_boundary() {
+    fn amplitude_damping_adjoint_w2_word_boundary() {
         let gamma = 0.4;
         let ch = AmplitudeDamping {
             support: [64],
@@ -1284,7 +1421,7 @@ mod tests {
             coeff: &mut bc,
             len: &mut len,
         };
-        <AmplitudeDamping as Channel<2>>::apply(
+        <AmplitudeDamping as Channel<2>>::apply_adjoint(
             &ch,
             &p.x,
             &p.z,

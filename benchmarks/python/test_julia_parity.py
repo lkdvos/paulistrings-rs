@@ -405,9 +405,11 @@ VOCAB_CASES: list[tuple[str, dict[str, Any]]] = [
     ("pauli_rotation-XYZ", gate("pauli_rotation", [0, 1, 2], pauli="XYZ", theta=0.29)),
     ("depolarize", gate("depolarize", [0], p=0.13)),
     ("dephase", gate("dephase", [0], p=0.21)),
-    # `amplitude_damping` is deliberately NOT here: it is the one gate whose
-    # Heisenberg map differs between the engines. See
-    # test_amplitude_damping_direction_is_transposed below.
+    # The one non-self-adjoint noise channel, so the only one whose
+    # apply/apply_adjoint orientation is observable. It was excluded while the
+    # core had the two swapped; see
+    # test_amplitude_damping_heisenberg_is_the_unital_dual below.
+    ("amplitude_damping", gate("amplitude_damping", [0], gamma=0.3)),
     ("pauli_channel", gate("pauli_channel", [0], px=0.1, py=0.05, pz=0.2)),
     ("depolarize2", gate("depolarize2", [0, 1], p=0.4)),
     ("unitary_1q-T", gate("unitary_1q", [0], matrix=_T_GATE)),
@@ -476,37 +478,35 @@ def test_gate_vocabulary_parity(julia, label, gate_obj):
     assert not problems, f"gate {label!r} maps differently:\n  " + "\n  ".join(problems)
 
 
-def test_amplitude_damping_direction_is_transposed(julia):
-    """FINDING: `amplitude_damping` is transposed relative to the unitary channels.
+def test_amplitude_damping_heisenberg_is_the_unital_dual(julia):
+    """``amplitude_damping`` maps the same way as every other gate.
 
-    For every other gate in schema v1, ``direction="heisenberg"`` on this
-    engine reproduces jl's ``heisenberg=true`` exactly. ``amplitude_damping``
-    is the exception, and it is not a convention quibble — it is an internal
-    inconsistency in this repo's core:
+    ``AmplitudeDamping`` is the only built-in noise channel that is not
+    self-adjoint, so it is the only one whose ``apply`` / ``apply_adjoint``
+    orientation is observable at all. This test pins that orientation from both
+    sides, because it was once wrong (the two were swapped, so
+    ``direction="heisenberg"`` applied the Schrodinger channel; the mismatch
+    against jl is what surfaced it).
 
-    * ``Clifford1Q``/``Clifford2Q``/``PauliRotation``'s ``apply`` is the
-      Schrodinger conjugation ``U P U'`` (``channel/clifford.rs`` documents
-      ``S: X -> Y``, i.e. ``S X S'``), so ``apply_adjoint`` — what
-      ``direction="heisenberg"`` calls — is the Heisenberg dual ``U' P U``.
-    * ``AmplitudeDamping::apply`` (``channel/noise.rs``) is documented as, and
-      is, the *Heisenberg dual* ``Phi^dagger``: ``I -> I``,
-      ``Z -> (1-g) Z + g I``. Its ``apply_adjoint`` is ``Phi`` itself:
-      ``I -> I + g Z``.
+    Hand derivation, Kraus ``K0 = diag(1, sqrt(1-g))``, ``K1 = sqrt(g)|0><1|``:
 
-    So ``apply``/``apply_adjoint`` are swapped for this one channel relative
-    to the unitary ones, and ``direction="heisenberg"`` applies ``Phi``, not
-    ``Phi^dagger``. The Heisenberg dual of a trace-preserving channel must be
-    unital (``Phi^dagger(I) = I``); the map this engine applies in the
-    Heisenberg direction sends ``I -> I + g Z``, which is the Schrodinger
-    channel. ``Depolarizing`` and ``Dephasing`` are self-adjoint, so this is
-    invisible for them; ``AmplitudeDamping`` is the only channel that shows it.
+    * Schrodinger ``Phi(rho) = K0 rho K0' + K1 rho K1'``:
+      ``I -> I + g Z``, ``Z -> (1-g) Z``, ``X, Y -> sqrt(1-g) . same``.
+      Trace-preserving (``K0'K0 + K1'K1 = I``) and **not** unital.
+    * Heisenberg dual ``Phi'(O) = K0' O K0 + K1' O K1``:
+      ``I -> I``, ``Z -> (1-g) Z + g I``, ``X, Y -> sqrt(1-g) . same``.
+      **Unital**, which is forced: the dual of a trace-preserving map fixes
+      the identity.
 
-    This test pins both halves of the observed behaviour so a fix (or a
-    regression) is loud rather than silent. When the core is fixed, the
-    ``heisenberg`` half starts matching and this test must be updated in the
-    same commit, and ``amplitude_damping`` moved back into ``VOCAB_CASES``.
+    ``direction="heisenberg"`` must run ``Phi'`` — evolving an observable —
+    and that is jl's ``heisenberg=true``. ``direction="forward"`` runs ``Phi``,
+    which jl 0.8.2 has no Schrodinger picture for (see "Known gaps"), so it is
+    compared against the same jl reference only to confirm it *differs* in the
+    exact way the non-unital map must: no ``III`` term out of ``ZII``, and
+    spurious ``Z``-carrying terms out of the identity-on-q0 observables.
     """
     gates = [gate("amplitude_damping", [0], gamma=0.3)]
+    gamma = 0.3
 
     def task_for(direction: str) -> Task:
         return make_task(
@@ -524,21 +524,29 @@ def test_amplitude_damping_direction_is_transposed(julia):
     )
     assert jl.terms is not None
 
-    heis = compare_terms(_rust_terms(run_rust(task_for("heisenberg"))["evolved"], 3), jl.terms)
-    fwd = compare_terms(_rust_terms(run_rust(task_for("forward"))["evolved"], 3), jl.terms)
+    rust_heis = _rust_terms(run_rust(task_for("heisenberg"))["evolved"], 3)
+    rust_fwd = _rust_terms(run_rust(task_for("forward"))["evolved"], 3)
 
-    assert heis, (
-        "amplitude_damping now AGREES in the heisenberg direction — the core was "
-        "presumably fixed. Update this test and move the gate back into VOCAB_CASES."
+    heis = compare_terms(rust_heis, jl.terms)
+    assert not heis, (
+        "amplitude_damping disagrees with jl's heisenberg=true — check the "
+        "apply/apply_adjoint orientation in channel/noise.rs:\n  "
+        + "\n  ".join(heis)
     )
-    assert not fwd, (
-        "amplitude_damping no longer matches jl's heisenberg=true in the forward "
-        f"direction either; the transpose diagnosis needs redoing:\n  "
-        + "\n  ".join(fwd)
-    )
-    # The specific signature of the transpose: jl's unital map produces an
-    # identity term from Z, this engine's produces Z terms from identity-on-q0.
-    assert any("only in julia: ['III']" in p for p in heis), heis
+    # Unitality, hand-computed on the rust side too: the observable's
+    # `0.5 . ZII` is the only source of an identity term, contributing
+    # `0.5 . g`, and no observable term is `III` to begin with.
+    assert abs(rust_heis["III"] - 0.5 * gamma) < 1e-12, rust_heis["III"]
+
+    # The forward (Schrodinger) direction is the transpose, and must differ in
+    # exactly two ways: it produces no identity term from Z, and it fans the
+    # identity out to Z.
+    fwd = compare_terms(rust_fwd, jl.terms)
+    assert "III" not in rust_fwd, "Phi is not unital, so Z must not emit I"
+    assert any("only in julia: ['III']" in p for p in fwd), fwd
+    # `0.3 . IXI` picks up `0.3 . g . ZXI`, and likewise for IZI and IIY.
+    assert abs(rust_fwd["ZXI"] - 0.3 * gamma) < 1e-12, rust_fwd["ZXI"]
+    assert any("only in rust:" in p and "ZXI" in p for p in fwd), fwd
 
 
 def test_hermitian_y_sign(julia):

@@ -1731,10 +1731,12 @@ mod tests {
         ("depolarizing", false, 5, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 2, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 5, 0x0c2d_0f88_a7cb_3051),
-        ("amp_damping", false, 2, 0xd3cf_d844_cd3d_2be8),
-        ("amp_damping", false, 5, 0xd3cf_d844_cd3d_2be8),
-        ("amp_damping", true, 2, 0x8b0f_59fb_c452_c0bf),
-        ("amp_damping", true, 5, 0x8b0f_59fb_c452_c0bf),
+        // Re-pinned: `AmplitudeDamping`'s `apply`/`apply_adjoint` were swapped,
+        // so these two rows exchanged values (nothing else moved).
+        ("amp_damping", false, 2, 0x8b0f_59fb_c452_c0bf),
+        ("amp_damping", false, 5, 0x8b0f_59fb_c452_c0bf),
+        ("amp_damping", true, 2, 0xd3cf_d844_cd3d_2be8),
+        ("amp_damping", true, 5, 0xd3cf_d844_cd3d_2be8),
     ];
 
     /// Exact-bit characterization of one bucketed layer, across every

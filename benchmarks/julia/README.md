@@ -59,7 +59,7 @@ passes `-t{run.threads}`; the runner warns to stderr if `Threads.nthreads()` dis
 
 ## Parity gate result
 
-`pytest benchmarks/python/test_julia_parity.py` — 31 tests, all passing on ccqlin038
+`pytest benchmarks/python/test_julia_parity.py` — 32 tests, all passing on ccqlin038
 (julia 1.12.6, PauliPropagation 0.8.2, `RAYON_NUM_THREADS=1`).
 
 The headline case is a 6-qubit, 57-gate circuit (`h` ×6, then 3 × [5 × `cnot`, 6 × `rz`, 6 × `rx`]),
@@ -86,54 +86,52 @@ exercising weight truncation.
 Beyond the headline circuit, every schema-v1 gate name gets its own single-gate task compared
 **term by term** (coefficients to 1e-12, not just the contracted expectation, which is blind to a Y
 sign that cancels): `h s x y z cnot cz swap rz rx ry pauli_rotation depolarize dephase
-pauli_channel depolarize2 unitary_1q unitary_2q`, plus reversed-qubit variants of `cnot` and
-`unitary_2q` to catch a transposed index. All identical.
+amplitude_damping pauli_channel depolarize2 unitary_1q unitary_2q`, plus reversed-qubit variants of
+`cnot` and `unitary_2q` to catch a transposed index. All identical — **every** gate name in the
+vocabulary, with no exceptions.
 
-`amplitude_damping` is the one exception and it is a real mismatch — see the finding below.
+## RESOLVED: `amplitude_damping` was transposed relative to the unitary channels
 
-## FINDING: `amplitude_damping` is transposed relative to the unitary channels
+**Fixed in the core; this section is kept as the record of a real bug this baseline caught.** Until
+the fix, `AmplitudeDamping::apply` and `::apply_adjoint` in `channel/noise.rs` were swapped relative
+to the convention every other channel follows, so `direction="heisenberg"` applied the Schrödinger
+channel `Φ` instead of its dual `Φ†`.
 
-**This is a genuine semantics mismatch and it is not a convention quibble — it is an internal
-inconsistency in this repo's core.** Reported rather than papered over; the mapping in `runner.jl`
-is not fudged to hide it.
-
-Measured (`test_amplitude_damping_direction_is_transposed`, γ = 0.3, single
-`amplitude_damping` gate, 8-term 3-qubit observable):
+What was measured at the time (γ = 0.3, single `amplitude_damping` gate, 8-term 3-qubit observable):
 
 | | map applied to the qubit's Pauli |
 |---|---|
 | jl, `heisenberg=true` | `I → I`, `X,Y → √(1-γ)·same`, `Z → (1-γ)Z + γI` |
-| this engine, `direction="heisenberg"` | `I → I + γZ`, `X,Y → √(1-γ)·same`, `Z → (1-γ)Z` |
-| this engine, `direction="forward"` | **identical to jl's `heisenberg=true`** |
+| this engine, `direction="heisenberg"` (**before the fix**) | `I → I + γZ`, `X,Y → √(1-γ)·same`, `Z → (1-γ)Z` |
+| this engine, `direction="forward"` (**before the fix**) | identical to jl's `heisenberg=true` |
 
-Why this is an inconsistency, not a choice:
+Why that was an inconsistency, not a choice:
 
 * For unitary channels, `Channel::apply` in this core is the **Schrödinger** conjugation `U P U†` —
   `channel/clifford.rs` documents `S: X → Y`, i.e. `S X S†` (and `S† X S = -Y`, which is what
   `direction="heisenberg"` produces; probes.jl §P2 confirms jl agrees). So for unitaries
   `apply_adjoint` — what `direction="heisenberg"` calls — is the Heisenberg dual.
-* For `AmplitudeDamping` (`channel/noise.rs`), `apply` is documented as, and is, the **Heisenberg
-  dual** `Φ†` (`I → I`, `Z → (1-γ)Z + γI`), and `apply_adjoint` is `Φ` itself (`I → I + γZ`).
-* So `apply`/`apply_adjoint` are swapped for this one channel, and `direction="heisenberg"` applies
-  `Φ`, not `Φ†`. The Heisenberg dual of a trace-preserving channel is necessarily **unital**
-  (`Φ†(I) = I`, because `Φ` preserves trace); the map this engine applies in the Heisenberg
-  direction sends `I → I + γZ`, i.e. it is the Schrödinger channel.
-* `Depolarizing` and `Dephasing` are self-adjoint, so the swap is invisible for them.
-  `AmplitudeDamping` is the only built-in that exposes it.
+* `AmplitudeDamping` had it the other way round: `apply` was the **Heisenberg dual** `Φ†`
+  (`I → I`, `Z → (1-γ)Z + γI`) and `apply_adjoint` was `Φ` itself (`I → I + γZ`).
+* The Heisenberg dual of a trace-preserving channel is necessarily **unital** (`Φ†(I) = I`, because
+  `Φ` preserves trace), so a Heisenberg map sending `I → I + γZ` cannot be a dual at all. Physically:
+  `⟨Z⟩` for a qubit already in `|0⟩` — the fixed point of amplitude damping — decayed to `1-γ`
+  instead of staying at `1`.
+* `Depolarizing`, `Dephasing`, `PauliChannel` and `Depolarizing2Q` are self-adjoint, so the swap was
+  invisible for them. `AmplitudeDamping` is the only built-in that exposes it.
 
-Consequences until it is fixed:
+The fix swapped the two bodies, so `apply` is now `Φ` (`I → I + γZ`, `Z → (1-γ)Z`) and
+`apply_adjoint` is `Φ†` (`I → I`, `Z → (1-γ)Z + γI`), with the Kraus derivation written out in
+`channel/noise.rs`. Measured after the fix, same fixture:
 
-* A circuit mixing rotations/Cliffords with `amplitude_damping` **cannot** be made to agree with jl
-  in either direction — the unitaries need `direction="heisenberg"`, the damping needs
-  `direction="forward"`.
-* Any B2-style noisy benchmark that uses `amplitude_damping` in the Heisenberg picture is computing
-  the wrong dual, independently of PauliPropagation.jl.
-* `depolarize`, `dephase`, `pauli_channel` and `depolarize2` are unaffected (all self-adjoint), so
-  the noisy-utility showcase can proceed on those.
+| direction | terms (rust / jl) | max coefficient \|Δ\| vs jl `heisenberg=true` |
+|---|---|---|
+| heisenberg | 9 / 9, labels identical | **0** (bit-exact on all 9) |
+| forward | 11 / — | the transpose: no `III`, plus `ZXI ZZI ZIY` from the non-unital `I → I + γZ` |
 
-`test_amplitude_damping_direction_is_transposed` pins **both** halves (heisenberg disagrees, forward
-agrees) so that a fix, or a regression, is loud. When the core is fixed, that test must be updated
-and `amplitude_damping` moved back into `VOCAB_CASES` in the same commit.
+`test_amplitude_damping_heisenberg_is_the_unital_dual` now pins the fixed orientation from both
+sides, and `amplitude_damping` is back in `VOCAB_CASES` (the term-by-term sweep above).
+`direction="forward"` still cannot be compared against jl — see "Known gaps".
 
 ## Semantics probes
 
@@ -174,7 +172,7 @@ carries no phase of its own, and `coefftype` stays `Float64` throughout. Identic
 convention (CLAUDE.md §Known gaps). The same numbers come out of this engine:
 `s` with `direction="heisenberg"` gives `-1.0`, `rz(0.3)` gives `-sin(0.3)` on the `Y` term.
 
-This also pins the **direction mapping**, which is exact for every gate except `amplitude_damping`:
+This also pins the **direction mapping**, which is exact for every gate in the vocabulary:
 
 | task `run.direction` | jl kwarg | picture |
 |---|---|---|
@@ -282,7 +280,7 @@ Z : Dephasing(λ=2p=0.3)      -> [("Z", 1.0)]   | Z untouched
 |---|---|---|
 | `depolarize(p)` | `DepolarizingNoise(q, λ)` | `λ = 4p/3` (this repo's scale is `1 − 4p/3`) |
 | `dephase(p)` | `DephasingNoise(q, λ)` (`= PauliZNoise`) | `λ = 2p` (this repo's scale is `1 − 2p`) |
-| `amplitude_damping(γ)` | `AmplitudeDampingNoise(q, γ)` | 1:1 — but see the transpose finding above |
+| `amplitude_damping(γ)` | `AmplitudeDampingNoise(q, γ)` | 1:1 (the transpose bug above is fixed) |
 | `pauli_channel(px,py,pz)` | one diagonal-PTM `TransferMapGate` | dual `I→1`, `X→1−2(py+pz)`, `Y→1−2(px+pz)`, `Z→1−2(px+py)` |
 | `depolarize2(p)` | one diagonal-PTM `TransferMapGate` | dual `II→1`, all 15 others `→ 1−16p/15` |
 

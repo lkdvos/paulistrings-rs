@@ -79,6 +79,8 @@ impl<const W: usize> SortScratch<W> {
 // `#[inline]` is load-bearing: without it, moving this function between
 // modules measured ~6% slower single-threaded on the rotation family
 // (interleaved A/B, 3/3 pairs) — an LTO code-layout effect, not logic.
+// Hint the sort ONLY: adding `#[inline]` to `merge2_into` as well measured
+// +20-34% on criterion's apply_layer_bucketed/rotation_zz.
 #[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
@@ -138,9 +140,9 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
 /// compare it saves. Full data in the 2026-08-31 v0.6 results note.
 #[allow(clippy::too_many_arguments)]
-// `#[inline]` is load-bearing — same A/B-verified layout effect as on
-// `sort_rows_with_scratch` above.
-#[inline]
+// Deliberately NOT `#[inline]`: hinting this function measured +20-34% on
+// criterion's apply_layer_bucketed/rotation_zz (layout/icache), while the
+// `sort_rows_with_scratch` hint alone already recovers the probe path.
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
     a_z: &[[u64; W]],

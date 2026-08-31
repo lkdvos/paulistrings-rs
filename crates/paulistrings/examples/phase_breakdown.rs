@@ -750,7 +750,7 @@ fn json_line(cell: &CellResult) -> String {
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
          \"recount_ns\":{},\"finalize_ns\":{},\"fallback_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
-         \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
+         \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
          \"vmhwm_kb\":{}}}",
         cell.layer,
         cell.threads,
@@ -780,6 +780,7 @@ fn json_line(cell: &CellResult) -> String {
         s.runs,
         s.rows_gathered,
         s.rows_sorted,
+        s.rows_id,
         s.terms_in,
         s.terms_out,
         cell.vmrss_kb,
@@ -790,14 +791,14 @@ fn json_line(cell: &CellResult) -> String {
 const TSV_HEADER: &str =
     "layer\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
-fallback_ns\tswap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\t\
+fallback_ns\tswap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
 terms_in\tterms_out\tvmrss_kb\tvmhwm_kb";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.threads,
         cell.n,
@@ -826,6 +827,7 @@ fn print_tsv_row(cell: &CellResult) {
         s.runs,
         s.rows_gathered,
         s.rows_sorted,
+        s.rows_id,
         s.terms_in,
         s.terms_out,
         cell.vmrss_kb,

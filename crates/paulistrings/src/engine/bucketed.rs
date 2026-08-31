@@ -13,7 +13,11 @@
 //!    input-member-major — each term is loaded once and its whole fanout is
 //!    scattered to runs by the O(1) index identity
 //!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by key
-//!    alone and **merge** straight into the member's live slot.
+//!    alone and **merge** straight into the member's live slot. When the
+//!    identity delta's amplitude never vanishes (v0.6 G1d "dense": every
+//!    rotation and general unitary) the id stream's keys are the source
+//!    bucket's keys row for row, so the gather materializes only the
+//!    16-byte coefficients and the merge borrows the key columns in place.
 //! 3. Un-permute the handles, recount, assert invariants.
 //!
 //! The gather visits each input term exactly once (v0.2 §6.1's `|D| · n` read
@@ -144,8 +148,11 @@ struct GatherRun<const W: usize> {
     /// The identity-delta stream (v0.5 S2): keys untouched, so it inherits the
     /// source bucket's strictly-ascending, duplicate-free order and is never
     /// sorted. `H·0 = 0` puts this stream in the member's own run, in source
-    /// position order; zero-amplitude skips only delete rows, preserving both
-    /// properties.
+    /// position order. Under a **dense** identity plan (v0.6 G1d) only
+    /// `id_coeff` is populated — one coefficient per source row, aligned 1:1
+    /// with `old[j]`, whose key columns the merge borrows in place — and
+    /// `id_x`/`id_z` stay empty. Under a sparse plan all three columns are
+    /// filled with the zero-amplitude rows filtered out, exactly v0.5.
     id_x: Vec<[u64; W]>,
     id_z: Vec<[u64; W]>,
     id_coeff: Vec<Complex64>,
@@ -158,18 +165,21 @@ struct GatherRun<const W: usize> {
 
 impl<const W: usize> GatherRun<W> {
     #[inline]
-    fn reset(&mut self, cap_id: usize, cap_rest: usize) {
+    fn reset(&mut self, cap_id_keys: usize, cap_id_coeff: usize, cap_rest: usize) {
         self.id_x.clear();
         self.id_z.clear();
         self.id_coeff.clear();
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        if self.id_x.capacity() < cap_id {
-            let extra = cap_id - self.id_x.capacity();
+        if self.id_x.capacity() < cap_id_keys {
+            let extra = cap_id_keys - self.id_x.capacity();
             self.id_x.reserve(extra);
             self.id_z.reserve(extra);
-            self.id_coeff.reserve(extra);
+        }
+        if self.id_coeff.capacity() < cap_id_coeff {
+            self.id_coeff
+                .reserve(cap_id_coeff - self.id_coeff.capacity());
         }
         if self.x.capacity() < cap_rest {
             let extra = cap_rest - self.x.capacity();
@@ -212,6 +222,19 @@ enum DeltaPlan<'p, const W: usize> {
         /// True for every built-in channel; a custom channel without it
         /// gathers everything into the sorted rest stream.
         has_identity: bool,
+        /// Whether the identity entry's amplitude is nonzero for **every**
+        /// active support pattern (v0.6 G1d). Dense means each source row
+        /// emits exactly one id row with its key untouched — the id stream's
+        /// keys *are* the source bucket's key columns, row for row — so the
+        /// gather materializes only the 16-byte coefficient into `id_coeff`
+        /// and the merge borrows the keys from `old[j]` in place, saving the
+        /// 32-byte-per-row key write + re-read. True for
+        /// `GeneralUnitary1Q/2Q` and weight-≤2 rotations; false for
+        /// Cliffords (e.g. CNOT's id amp is nonzero on 4 of 16 patterns),
+        /// which keep the full v0.5 pre-filtered key+coeff materialization —
+        /// borrowing there would make the merge scan mostly-skipped rows,
+        /// measured +15–30% on cnot/h (v0.6 results note).
+        dense_identity: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
     /// generator pass.
@@ -235,10 +258,16 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 // The identity delta hashes to bucket delta 0, whose coset
                 // coordinate is 0 — the id stream stays in its own member.
                 debug_assert!(!has_identity || coords[0] == 0);
+                // Dense over the *active* patterns only: `amp` is sized
+                // LOCAL_DIM but the channel populates `4^k` entries.
+                let dim = 1usize << (2 * ptm.k());
+                let dense_identity =
+                    has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
                 DeltaPlan::Local {
                     ptm,
                     coords,
                     has_identity,
+                    dense_identity,
                 }
             }
             Prepared::Rotation(r) => DeltaPlan::Rotation {
@@ -424,11 +453,16 @@ fn fill_coset<const W: usize, T>(
     // colliding on one bucket delta count twice, matching the rows they can
     // emit. Split by destination stream: the identity entry feeds the
     // pre-sorted `id` columns, everything else the sorted rest (v0.5 S2).
+    // Under a dense identity (v0.6 G1d) the id *key* columns stay empty —
+    // the merge borrows the source bucket's keys — so only `id_coeff` needs
+    // capacity; a rotation's id stream is dense by construction (every row
+    // emits exactly one id row).
     for (j, run) in runs.iter_mut().enumerate() {
-        let (cap_id, cap_rest): (usize, usize) = match plan {
+        let (cap_id_keys, cap_id_coeff, cap_rest): (usize, usize, usize) = match plan {
             DeltaPlan::Local {
                 coords,
                 has_identity,
+                dense_identity,
                 ..
             } => {
                 let mut id = 0usize;
@@ -441,18 +475,19 @@ fn fill_coset<const W: usize, T>(
                         rest += l;
                     }
                 }
-                (id, rest)
+                (if *dense_identity { 0 } else { id }, id, rest)
             }
             DeltaPlan::Rotation {
                 coord_identity,
                 coord_gen,
                 ..
             } => (
+                0,
                 old[j ^ *coord_identity as usize].len(),
                 old[j ^ *coord_gen as usize].len(),
             ),
         };
-        run.reset(cap_id, cap_rest);
+        run.reset(cap_id_keys, cap_id_coeff, cap_rest);
     }
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.size_ns);
@@ -476,11 +511,12 @@ fn fill_coset<const W: usize, T>(
             ptm,
             coords,
             has_identity,
+            dense_identity,
         } => {
             if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
-                gather_local_output_major(old, runs, ptm, coords, *has_identity);
+                gather_local_output_major(old, runs, ptm, coords, *has_identity, *dense_identity);
             } else {
-                gather_local_input_major(old, runs, ptm, coords, *has_identity);
+                gather_local_input_major(old, runs, ptm, coords, *has_identity, *dense_identity);
             }
         }
         DeltaPlan::Rotation {
@@ -494,7 +530,10 @@ fn fill_coset<const W: usize, T>(
             // emits exactly one identity-pass row (full coefficient when it
             // commutes, `cos`-scaled when it doesn't — kept even when
             // `cos == 0`, see `merge2_into` on signed zeros), so the id
-            // stream is the whole source bucket in order: sorted, unique.
+            // stream is the whole source bucket in order: sorted, unique —
+            // and its keys are the source keys row for row, so only the
+            // coefficient is materialized; the merge borrows the keys from
+            // the source bucket in place (v0.6 G1d).
             for (i, src) in old.iter().enumerate() {
                 for t in 0..src.len() {
                     let v = PauliString::<W> {
@@ -502,17 +541,13 @@ fn fill_coset<const W: usize, T>(
                         z: src.z[t],
                     };
                     if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize].push_id(
-                            src.x[t],
-                            src.z[t],
-                            src.coeff[t],
-                        );
+                        runs[i ^ *coord_identity as usize]
+                            .id_coeff
+                            .push(src.coeff[t]);
                     } else {
-                        runs[i ^ *coord_identity as usize].push_id(
-                            src.x[t],
-                            src.z[t],
-                            src.coeff[t] * prep.cos,
-                        );
+                        runs[i ^ *coord_identity as usize]
+                            .id_coeff
+                            .push(src.coeff[t] * prep.cos);
                         let mut prod = v;
                         let phase = prod.mul_assign(&prep.gen);
                         let total = Phase::I + phase;
@@ -531,8 +566,12 @@ fn fill_coset<const W: usize, T>(
 
     // Sort each run's rest stream by key alone, then fuse the two-stream
     // merge with the segmented reduction into the member's live slot: the id
-    // stream never moves through the sort at all (v0.5 S2).
-    for (run, dst) in runs.iter_mut().zip(chunk.iter_mut()) {
+    // stream never moves through the sort at all (v0.5 S2). Under a dense
+    // identity plan the id stream's *keys* were never materialized either —
+    // they are the source bucket's own key columns, borrowed here, with the
+    // gathered `id_coeff` aligned to them row for row (v0.6 G1d); `H·0 = 0`
+    // means member `j`'s id source is `old[j]`.
+    for (j, (run, dst)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += run.len() as u64;
@@ -541,9 +580,33 @@ fn fill_coset<const W: usize, T>(
         sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut stats.sort_ns);
+        let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
+            DeltaPlan::Local {
+                dense_identity: true,
+                ..
+            } => {
+                let src = &old[j];
+                debug_assert_eq!(src.len(), run.id_coeff.len());
+                #[cfg(feature = "phase-timing")]
+                {
+                    stats.rows_id += src.len() as u64;
+                }
+                (&src.x, &src.z)
+            }
+            DeltaPlan::Local { .. } => (&run.id_x, &run.id_z),
+            DeltaPlan::Rotation { coord_identity, .. } => {
+                let src = &old[j ^ *coord_identity as usize];
+                debug_assert_eq!(src.len(), run.id_coeff.len());
+                #[cfg(feature = "phase-timing")]
+                {
+                    stats.rows_id += src.len() as u64;
+                }
+                (&src.x, &src.z)
+            }
+        };
         merge2_into::<W, T>(
-            &run.id_x,
-            &run.id_z,
+            a_x,
+            a_z,
             &run.id_coeff,
             &run.x,
             &run.z,
@@ -598,6 +661,7 @@ fn gather_local_input_major<const W: usize>(
     ptm: &LocalPtm<W>,
     coords: &[u32],
     has_identity: bool,
+    dense_identity: bool,
 ) {
     let rest_start = has_identity as usize;
     for (i, src) in old.iter().enumerate() {
@@ -608,7 +672,13 @@ fn gather_local_input_major<const W: usize>(
                 // `coords[0] == 0`, so the row lands in this member's own run
                 // with its key untouched — the pre-sorted id stream (v0.5 S2).
                 let a = ptm.deltas()[0].amp[s];
-                if a != ZERO {
+                if dense_identity {
+                    // Dense: `a` never vanishes and the stream is 1:1 with
+                    // the source rows, so only the coefficient is stored —
+                    // the merge borrows the keys from `old[i]` (v0.6 G1d).
+                    debug_assert!(a != ZERO);
+                    runs[i].id_coeff.push(src.coeff[t] * a);
+                } else if a != ZERO {
                     runs[i].push_id(src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
@@ -642,18 +712,23 @@ fn gather_local_output_major<const W: usize>(
     ptm: &LocalPtm<W>,
     coords: &[u32],
     has_identity: bool,
+    dense_identity: bool,
 ) {
     let rest_start = has_identity as usize;
     for (j, run) in runs.iter_mut().enumerate() {
         if has_identity {
             // Entry 0: masks zero, `coords[0] == 0` — the member's own bucket
-            // streams into the pre-sorted id columns (v0.5 S2).
+            // streams into the pre-sorted id columns (v0.5 S2); coefficient
+            // only when the identity is dense (v0.6 G1d, keys borrowed).
             let d = &ptm.deltas()[0];
             let src = &old[j];
             for t in 0..src.len() {
                 let s = ptm.support_bits(&src.x[t], &src.z[t]);
                 let a = d.amp[s];
-                if a != ZERO {
+                if dense_identity {
+                    debug_assert!(a != ZERO);
+                    run.id_coeff.push(src.coeff[t] * a);
+                } else if a != ZERO {
                     run.push_id(src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
@@ -1327,6 +1402,12 @@ mod tests {
         }
 
         let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
+        // gu2q's identity amplitude is dense, so the gather materializes only
+        // the id coefficients and the merge borrows the keys from the source
+        // bucket (v0.6 G1d) — mirrored below in `merge_run`.
+        let dim = 1usize << (2 * ptm.k());
+        let dense_identity = has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
+        assert!(dense_identity, "gu2q's identity amplitude must be dense");
         let gather = |output_major: bool| {
             let mut runs: Vec<GatherRun<1>> = (0..m).map(|_| GatherRun::default()).collect();
             for (j, run) in runs.iter_mut().enumerate() {
@@ -1340,12 +1421,12 @@ mod tests {
                         cap_rest += l;
                     }
                 }
-                run.reset(cap_id, cap_rest);
+                run.reset(0, cap_id, cap_rest);
             }
             if output_major {
-                gather_local_output_major(&old, &mut runs, ptm, &coords, has_identity);
+                gather_local_output_major(&old, &mut runs, ptm, &coords, has_identity, true);
             } else {
-                gather_local_input_major(&old, &mut runs, ptm, &coords, has_identity);
+                gather_local_input_major(&old, &mut runs, ptm, &coords, has_identity, true);
             }
             let mut scratch = SortScratch::<1>::default();
             for run in runs.iter_mut() {
@@ -1365,27 +1446,30 @@ mod tests {
         // order under the key-only sort, independent of visit order, so a
         // raw element-wise comparison could see a spurious mismatch at a tie
         // that has nothing to do with which order gathered it.
-        let merge_run = |run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
-            let mut mx = Vec::new();
-            let mut mz = Vec::new();
-            let mut mc = Vec::new();
-            merge2_into::<1, AlwaysKeep>(
-                &run.id_x,
-                &run.id_z,
-                &run.id_coeff,
-                &run.x,
-                &run.z,
-                &run.coeff,
-                &mut mx,
-                &mut mz,
-                &mut mc,
-                &AlwaysKeep,
-            );
-            (mx, mz, mc)
-        };
+        let merge_run =
+            |j: usize, run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
+                let src = &old[j];
+                assert_eq!(src.len(), run.id_coeff.len(), "dense id must be 1:1");
+                let mut mx = Vec::new();
+                let mut mz = Vec::new();
+                let mut mc = Vec::new();
+                merge2_into::<1, AlwaysKeep>(
+                    &src.x,
+                    &src.z,
+                    &run.id_coeff,
+                    &run.x,
+                    &run.z,
+                    &run.coeff,
+                    &mut mx,
+                    &mut mz,
+                    &mut mc,
+                    &AlwaysKeep,
+                );
+                (mx, mz, mc)
+            };
         for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
-            let (max, maz, mac) = merge_run(ra);
-            let (mbx, mbz, mbc) = merge_run(rb);
+            let (max, maz, mac) = merge_run(j, ra);
+            let (mbx, mbz, mbc) = merge_run(j, rb);
             assert_eq!(max, mbx, "run {j}: merged keys (x) diverge");
             assert_eq!(maz, mbz, "run {j}: merged keys (z) diverge");
             assert_eq!(mac.len(), mbc.len(), "run {j}: merged term count diverges");
@@ -1397,6 +1481,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// v0.6 G1d: the dense/sparse identity classification that decides
+    /// whether the merge borrows the id stream's keys from the source
+    /// bucket. Dense = the identity amplitude never vanishes over the
+    /// active support patterns; pinned per built-in so a PTM change that
+    /// silently flips a channel's path shows up here.
+    #[test]
+    fn identity_density_classification() {
+        let hash = Gf2Hash::<1>::new(12, 6, 0xD1CE);
+        let check = |ch: &dyn Channel<1>, want: bool, label: &str| {
+            let prep = ch.prepare(&hash, false).unwrap();
+            let span = Gf2Span::new(&prep.bucket_deltas(), 6);
+            match DeltaPlan::new(&prep, &span) {
+                DeltaPlan::Local { dense_identity, .. } => {
+                    assert_eq!(dense_identity, want, "{label}")
+                }
+                DeltaPlan::Rotation { .. } => panic!("{label}: expected a Local plan"),
+            }
+        };
+        // Dense: every source row emits an id row.
+        check(&sqrt_swap_w1(1, 5), true, "gu2q");
+        check(
+            &PauliRotation::new(PauliString::<1>::z(2), 0.3),
+            true,
+            "rot_z",
+        );
+        check(
+            &AmplitudeDamping {
+                support: [5],
+                gamma: 0.3,
+            },
+            true,
+            "amplitude_damping",
+        );
+        // Sparse: the id amplitude vanishes on some patterns (CNOT: 12 of
+        // 16; H: 2 of 4) — these keep the v0.5 materialized id stream.
+        check(&Clifford2Q::cnot(1, 4), false, "cnot");
+        check(&Clifford1Q::h(3), false, "h");
     }
 
     // ---- multi-layer, staying bucketed ----

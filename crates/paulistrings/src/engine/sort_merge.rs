@@ -528,8 +528,11 @@ pub(crate) fn merge_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
 ///
 /// `a` is a gather run's identity-delta stream: its keys are untouched source
 /// keys, so it inherits the bucket invariant — strictly ascending, no
-/// duplicates — and is **never sorted**. `b` is the run's remaining rows,
-/// canonicalized by `sort_rows_with_scratch` (ascending, duplicates allowed).
+/// duplicates — and is **never sorted**. (Under a dense identity plan the
+/// key slices are the *source bucket's own columns*, borrowed in place, with
+/// only the coefficients gathered — v0.6 G1d; this function cannot tell and
+/// need not care.) `b` is the run's remaining rows, canonicalized by
+/// `sort_rows_with_scratch` (ascending, duplicates allowed).
 /// The two-pointer walk consumes rows in global key order, seeding a key tie
 /// from the `a` row first and then adding the equal-key `b` rows in their
 /// sorted order; that order is deterministic for a fixed input but, per the
@@ -541,6 +544,12 @@ pub(crate) fn merge_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
 /// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
 /// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
 /// the sign of a zero sum, so the only zero test is on the final accumulator.
+///
+/// Do not restructure this walk into gallop + bulk segment copies (v0.6 M1):
+/// measured +20–35% merge busy on every real cell except 1t trotter, because
+/// the workloads' id/rest densities make the average id segment one or two
+/// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
+/// compare it saves. Full data in the 2026-08-31 v0.6 results note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],

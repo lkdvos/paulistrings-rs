@@ -96,6 +96,14 @@ pub struct PhaseStats {
     /// the sort entirely (v0.5 S2), so `rows_gathered - rows_sorted` is the
     /// sorted-volume saving the split buys.
     pub rows_sorted: u64,
+    /// The subset of the identity rows whose **keys** were never
+    /// materialized (v0.6 G1d): under a dense identity plan the merge
+    /// borrows the source bucket's key columns in place and only the
+    /// 16-byte coefficient moves through the run, so these rows cost
+    /// `2×16` bytes of run traffic instead of `2×T`. Zero for sparse
+    /// (Clifford) identity plans, which keep the full v0.5 key+coeff
+    /// materialization.
+    pub rows_id: u64,
     /// Σ over layers of the term count *before* the layer.
     pub terms_in: u64,
     /// Σ over layers of the term count *after* the layer (post-truncation).
@@ -127,6 +135,7 @@ impl PhaseStats {
         self.runs += o.runs;
         self.rows_gathered += o.rows_gathered;
         self.rows_sorted += o.rows_sorted;
+        self.rows_id += o.rows_id;
         self.terms_in += o.terms_in;
         self.terms_out += o.terms_out;
     }
@@ -143,6 +152,7 @@ impl PhaseStats {
         self.runs += c.runs;
         self.rows_gathered += c.rows_gathered;
         self.rows_sorted += c.rows_sorted;
+        self.rows_id += c.rows_id;
     }
 
     /// Sum of the wall-clock phase fields — approximately the total wall
@@ -192,6 +202,7 @@ pub(crate) struct CosetStats {
     pub(crate) runs: u64,
     pub(crate) rows_gathered: u64,
     pub(crate) rows_sorted: u64,
+    pub(crate) rows_id: u64,
 }
 
 /// Chained timestamp: `lap` records elapsed-since-last into a slot and

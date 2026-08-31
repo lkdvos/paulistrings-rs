@@ -180,11 +180,16 @@ ceiling; the coset loop itself compares against the **all-core** ceiling
 for whatever placement was used to measure it.
 
 `perf-viz.py` computes this automatically per probe cell ("DRAM: X GB/s =
-Y% of ceiling") from `PhaseStats::rows_gathered` and `rows_sorted` (v0.5:
-the id stream skips the sort, and there is no tag byte):
-`bytes/layer = terms_in×T + 2×rows_gathered×T + 2×rows_sorted×T + terms_out×T`
+Y% of ceiling") from `PhaseStats::rows_gathered`, `rows_sorted`, and
+`rows_id` (v0.5: the id stream skips the sort, and there is no tag byte;
+v0.6 G1d: a *dense* identity row — rotations, general unitaries —
+materializes only its 16-byte coefficient, its keys borrowed in place from
+the source bucket and modeled as coset-cache-resident):
+`bytes/layer = terms_in×T + 2×(rows_gathered−rows_id)×T + 2×rows_id×16 +
+2×rows_sorted×T + terms_out×T`
 with `T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path
-(pre-v0.5 probe JSON without `rows_sorted` falls back to the old
+(v0.5 probe JSON without `rows_id` prices every gathered row at full T;
+pre-v0.5 lines without `rows_sorted` fall back to the old
 `4×rows_gathered×(T+1)` model),
 divided by the layer's wall time and by the membench **triad** ceiling at a
 comparable core count (1 / ≤8 / ≤16 / 32). Read it as a classification, not

@@ -369,19 +369,32 @@ def dram_metric(row: dict, bandwidth_sections: list) -> Optional[dict]:
 
     if coset_loop_ns > 0 and rows_gathered is not None and rows_gathered > 0:
         rows_sorted = row.get("rows_sorted")
+        rows_id = row.get("rows_id")  # None before v0.6 G1d
         if rows_sorted is not None:
             # v0.5 model: no tag byte; a gathered row is written by gather and
             # read by merge (2T); the sorted subset is additionally read and
-            # rewritten by the sort (2T more).
+            # rewritten by the sort (2T more). From v0.6 G1d (`rows_id`
+            # present), a dense identity row materializes only its 16-byte
+            # coefficient — its keys are borrowed from the source bucket in
+            # place (modeled coset-cache-resident) — so those rows are priced
+            # at 2×16 instead of 2×T.
+            id_borrowed = rows_id or 0
             bytes_per_layer = (
                 (terms_in / layers) * T
-                + 2 * (rows_gathered / layers) * T
+                + 2 * ((rows_gathered - id_borrowed) / layers) * T
+                + 2 * (id_borrowed / layers) * 16
                 + 2 * (rows_sorted / layers) * T
                 + (terms_out / layers) * T
             )
+            id_note = (
+                f" + 2×({id_borrowed}/{layers})×16 [coeff-only id rows, keys borrowed]"
+                if rows_id is not None
+                else ""
+            )
             formula = (
                 f"({terms_in}/{layers})×{T} [gather in] + "
-                f"2×({rows_gathered}/{layers})×{T} [gather w + merge r] + "
+                f"2×({rows_gathered - id_borrowed}/{layers})×{T} [gather w + merge r]"
+                f"{id_note} + "
                 f"2×({rows_sorted}/{layers})×{T} [sort r/w] + "
                 f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
             )

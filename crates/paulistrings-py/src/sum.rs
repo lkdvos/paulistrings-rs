@@ -282,9 +282,14 @@ impl PauliSum {
     /// optional `Truncation` from the `truncation` submodule; if `None`, no
     /// per-term filtering is applied (the engine's merge phase still drops
     /// exact-zero terms).
+    ///
+    /// The GIL is released for the duration of the propagation, so Python
+    /// threads — including `logging` handlers draining the engine's per-layer
+    /// progress records — run while a long simulation is in flight.
     #[pyo3(signature = (circuit, policy=None, direction=None))]
     fn propagate(
         &self,
+        py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
@@ -311,18 +316,31 @@ impl PauliSum {
             Some(p) => &p.spec,
             None => &no_op,
         };
-        let inner = for_each_width_propagate!(
-            &self.inner,
-            &circuit.inner,
-            |s, c, W| propagate(c, s.clone(), &SpecPolicy::<W>(spec), dir),
-            else {
-                // Same num_qubits but different widths is impossible because
-                // both width pickers map num_qubits to the same arm.
-                return Err(PyValueError::new_err(
-                    "internal: PauliSum and Circuit width mismatch",
-                ));
-            }
-        );
+        // The whole simulation runs without the GIL: everything the engine
+        // touches is plain Rust data (`PauliSumImpl`, `CircuitImpl` and
+        // `PolicySpec` are all `Send + Sync`), so nothing here needs Python.
+        // Releasing it lets Python `logging` handlers — the consumers of the
+        // engine's per-layer progress records, bridged by `pyo3-log` — and any
+        // other Python thread run while a long propagate is in flight.
+        //
+        // The closure returns a `Result` so the (unreachable) width-mismatch
+        // arm can bail out of it; the error is turned into a Python exception
+        // after the GIL is reacquired.
+        let inner = py
+            .allow_threads(|| -> Result<PauliSumImpl, &'static str> {
+                Ok(for_each_width_propagate!(
+                    &self.inner,
+                    &circuit.inner,
+                    |s, c, W| propagate(c, s.clone(), &SpecPolicy::<W>(spec), dir),
+                    else {
+                        // Same num_qubits but different widths is impossible
+                        // because both width pickers map num_qubits to the
+                        // same arm.
+                        return Err("internal: PauliSum and Circuit width mismatch");
+                    }
+                ))
+            })
+            .map_err(PyValueError::new_err)?;
         Ok(Self { inner })
     }
 }

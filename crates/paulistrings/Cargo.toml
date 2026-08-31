@@ -31,10 +31,17 @@ num-complex = "0.4"
 hashbrown = "0.14"
 rustc-hash = "2"
 rayon = "1"
+# Progress logging through the `log` facade. Deliberately a plain (not
+# optional, not feature-gated) dependency: with no logger installed the
+# per-layer sites cost one relaxed atomic load and allocate nothing, so there
+# is nothing for a feature flag to buy. See `engine::propagate_with_scratch`.
+log = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+# Logger implementation for the examples/tests only (`RUST_LOG`-driven).
+env_logger = "0.11"
 # Self-dependency so the lib is built with `test-utils` for tests, benches and
 # examples; feature unification means one copy of the crate, with the module
 # present.

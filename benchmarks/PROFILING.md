@@ -242,3 +242,7 @@ loop is eating parallelism.
   — IPC, percent of the measured bandwidth ceiling, speedup ratios,
   cycles/string — over absolute millisecond figures when comparing across
   days.
+- Run every campaign with `RUST_LOG` **unset** (and no logger installed):
+  with no logger the engine's per-layer progress logging is a single static
+  level check and allocates nothing, whereas an enabled `debug` filter adds
+  a formatted line and a clock read per layer.

@@ -20,6 +20,11 @@ use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 use bucketed::{apply_layer_bucketed, LayerScratch};
 
+/// `log` target for the engine's progress events, so a consumer can filter
+/// them without touching the rest of the crate's (currently empty) logging.
+/// See the "Progress logging" section on [`propagate`].
+const LOG_TARGET: &str = "paulistrings::propagate";
+
 /// Propagation direction.
 ///
 /// [`Direction::Forward`] applies channels in order; [`Direction::Heisenberg`]
@@ -48,6 +53,22 @@ pub enum Direction {
 /// themselves; per-bucket storage capacity is retained inside the returned
 /// sum across calls. The bucket count is re-normalized against
 /// [`desired_bits`](crate::bucket::desired_bits) before every layer.
+///
+/// # Progress logging
+///
+/// Progress is reported through the [`log`] facade under the target
+/// `paulistrings::propagate`: one `INFO` line on entry (term count, channel
+/// count, direction), one `INFO` line on exit (layers applied, terms in → out,
+/// elapsed seconds), and one `DEBUG` line per layer (`layer k/n [name]:
+/// before -> after terms, ms`). Per-layer is `DEBUG` rather than `INFO`
+/// because a Trotter driver calls this hundreds of times. The layer name comes
+/// from [`Channel::debug_name`].
+///
+/// With no logger installed each site costs one relaxed atomic load and
+/// allocates nothing — in particular the per-layer clock read is itself behind
+/// the level check. To see the lines, install any `log` implementation, e.g.
+/// `env_logger::init()` in `main` plus
+/// `RUST_LOG=paulistrings=debug` in the environment.
 ///
 /// # Examples
 ///
@@ -98,6 +119,13 @@ where
 /// `phase-timing` feature, read the per-phase counters afterwards through
 /// `LayerScratch::take_stats` (the method — and so a resolvable doc link to
 /// it — exists only when that feature is enabled).
+///
+/// # Progress logging
+///
+/// This is where the events described under [`propagate`] are emitted: target
+/// `paulistrings::propagate`, `INFO` on entry and exit, `DEBUG` per layer.
+/// Every event is emitted on the calling thread, outside the engine's Rayon
+/// region, so a logger implementation never runs inside a parallel layer.
 pub fn propagate_with_scratch<const W: usize, T>(
     circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
@@ -118,12 +146,29 @@ where
     // still tested (v0.2 §9.1), but it is no longer what makes this safe.
     let min_buckets = default_min_buckets();
 
+    // Entry/exit INFO pair. One unconditional `Instant` pair per `propagate`
+    // call is negligible next to a single layer; the *per-layer* clock reads
+    // below are the ones that have to be gated.
+    let terms_in = sum.len();
+    let started = std::time::Instant::now();
+    log::info!(
+        target: LOG_TARGET,
+        "propagate: {terms_in} terms through {n} channels ({direction:?})",
+    );
+
     for k in 0..n {
         let idx = match direction {
             Direction::Forward => k,
             Direction::Heisenberg => n - 1 - k,
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
+
+        // Per-layer DEBUG progress. `log_enabled!` is a relaxed atomic load
+        // plus a compare, so a disabled logger costs one branch per layer and
+        // never reads the clock; `terms_before` is the cached length field.
+        let layer_t0 =
+            log::log_enabled!(target: LOG_TARGET, log::Level::Debug).then(std::time::Instant::now);
+        let terms_before = sum.len();
 
         #[cfg(feature = "phase-timing")]
         let mut st = stats::Stamp::now();
@@ -173,7 +218,30 @@ where
             st.lap(&mut scratch.stats.finalize_ns);
             scratch.stats.terms_out += sum.len() as u64;
         }
+
+        if let Some(t0) = layer_t0 {
+            log::debug!(
+                target: LOG_TARGET,
+                "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
+                k + 1,
+                n,
+                ch.debug_name(),
+                terms_before,
+                sum.len(),
+                t0.elapsed().as_secs_f64() * 1e3,
+            );
+        }
     }
+
+    log::info!(
+        target: LOG_TARGET,
+        "propagate: {} layers applied, {} -> {} terms, {:.3} s",
+        n,
+        terms_in,
+        sum.len(),
+        started.elapsed().as_secs_f64(),
+    );
+
     sum
 }
 

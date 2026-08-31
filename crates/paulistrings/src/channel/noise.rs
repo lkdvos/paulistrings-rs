@@ -1,4 +1,5 @@
-//! Noise channels: Depolarizing, Dephasing, AmplitudeDamping. See §6.
+//! Noise channels: Depolarizing, Dephasing, AmplitudeDamping. See
+//! ARCHITECTURE.md §Channels.
 
 use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
@@ -146,9 +147,6 @@ impl<const W: usize> Channel<W> for Dephasing {
 /// (`Φ†(I) = I`, because `Φ` is trace-preserving), and `Φ` is trace-preserving
 /// (the `I` coefficient of `Φ(P)` depends only on the `I` coefficient of `P`),
 /// which are transposed statements of each other.
-///
-/// v0.1 used the default `apply_adjoint = apply`, documented as a knowingly-wrong
-/// approximation; that is fixed as of v0.2 B.8.
 pub struct AmplitudeDamping {
     /// The single qubit this channel acts on.
     pub support: [u32; 1],
@@ -243,11 +241,11 @@ mod tests {
     use crate::pauli_string::PauliString;
     use crate::test_support::{alloc_bufs, approx_eq};
 
-    // ---- AmplitudeDamping adjoint (v0.2 B.8) ----
+    // ---- AmplitudeDamping adjoint ----
     //
-    // v0.1 inherited `apply_adjoint = apply`, documented as a knowingly-wrong
-    // approximation and a silent trap for Heisenberg backpropagation. These pin
-    // the real adjoint: the transpose of the forward Pauli-transfer matrix.
+    // These pin the real adjoint: the transpose of the forward
+    // Pauli-transfer matrix. `apply_adjoint = apply` would be a silent trap
+    // for Heisenberg backpropagation.
 
     /// Collect the outputs of `apply` or `apply_adjoint` on one input.
     ///

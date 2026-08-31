@@ -1,4 +1,4 @@
-"""Slice 10.4 — truncation factories + ``&`` / ``|`` composition.
+"""Truncation factories + ``&`` / ``|`` composition.
 
 Pin the policy semantics by running ``propagate`` through circuits whose
 output coefficients straddle the cutoff, and check both the simple factories

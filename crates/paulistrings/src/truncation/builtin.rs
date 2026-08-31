@@ -1,4 +1,4 @@
-//! Built-in truncation policies and combinators. See design doc §7.
+//! Built-in truncation policies and combinators. See ARCHITECTURE.md §Truncation.
 
 use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
@@ -250,7 +250,7 @@ where
 mod tests {
     use super::*;
 
-    /// Slice 7.2: `WeightCutoff(2)` keeps weights 0, 1, 2 and drops 3.
+    /// `WeightCutoff(2)` keeps weights 0, 1, 2 and drops 3.
     /// Identity I (weight 0), single X (1), XZ on qubits 0+1 (2) all kept;
     /// X on q0 + Y on q1 + Z on q2 (3) dropped.
     #[test]
@@ -286,7 +286,7 @@ mod tests {
         ));
     }
 
-    /// Slice 7.2: `WeightCutoff(0)` keeps only the identity.
+    /// `WeightCutoff(0)` keeps only the identity.
     #[test]
     fn weight_cutoff_zero_keeps_only_identity() {
         let cut = WeightCutoff(0);
@@ -317,7 +317,7 @@ mod tests {
         ));
     }
 
-    /// Slice 7.2: multi-word popcount. Qubit 64 lives in word 1, bit 0.
+    /// multi-word popcount. Qubit 64 lives in word 1, bit 0.
     #[test]
     fn weight_cutoff_w2_word_boundary() {
         let cut = WeightCutoff(1);
@@ -337,7 +337,7 @@ mod tests {
         ));
     }
 
-    /// Slice 7.3: ten distinct keys with decreasing |coeff| (10, 9, …, 1);
+    /// ten distinct keys with decreasing |coeff| (10, 9, …, 1);
     /// `TopN(3)` keeps the three with magnitudes 10, 9, 8.
     #[test]
     fn top_n_keeps_largest_three_of_ten() {
@@ -366,7 +366,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// Slice 7.3: `TopN(N) where N >= len` is a no-op.
+    /// `TopN(N) where N >= len` is a no-op.
     ///
     /// Checked at `N > len` *and* at `N == len`, because the tie rule only
     /// engages on the `len > n` path — an all-tied sum of exactly `n` terms
@@ -404,10 +404,10 @@ mod tests {
         tied.assert_invariants();
     }
 
-    /// §3: with all magnitudes distinct, the tie group at rank `n` has size
-    /// one and therefore always fits — so `TopN(n)` retains **exactly** `n`,
-    /// exactly as it did before the tie rule landed. This is the property that
-    /// keeps every generic workload's behaviour unchanged.
+    /// With all magnitudes distinct, the tie group at rank `n` has size one
+    /// and therefore always fits — so `TopN(n)` retains **exactly** `n`. This
+    /// is the property that keeps every generic workload's behaviour matching
+    /// a naive top-`n` selection.
     #[test]
     fn top_n_all_distinct_retains_exactly_n() {
         let mags = [7.0f64, 1.0, 5.0, 3.0, 9.0, 2.0, 8.0, 4.0];
@@ -427,7 +427,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// §3: a tie group straddling the cut is discarded **whole**, so fewer than
+    /// A tie group straddling the cut is discarded **whole**, so fewer than
     /// `n` terms survive and the retained count equals `count(|c| > t)`.
     ///
     /// Magnitudes 5, 4, 3, 3, 3, 2 with `n = 3`: the threshold `t` is 3, two
@@ -457,7 +457,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// §3: a tie group that ends exactly at rank `n` fits, so it is kept in
+    /// A tie group that ends exactly at rank `n` fits, so it is kept in
     /// full and exactly `n` terms survive.
     ///
     /// Magnitudes 5, 4, 3, 3, 2, 1 with `n = 4`: `t = 3`, `count(> t) = 2`,
@@ -481,7 +481,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// §3, the loud edge case: if **every** candidate ties at the threshold,
+    /// The loud edge case: if **every** candidate ties at the threshold,
     /// the group cannot fit and the whole sum is discarded. Documented on
     /// [`TopN`] itself; pinned here so it can never regress silently.
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// Slice 7.3: `TopN(0)` empties the sum.
+    /// `TopN(0)` empties the sum.
     #[test]
     fn top_n_zero_empties_sum() {
         let mut sum = PauliSum::<1>::from_sorted_columns(
@@ -526,7 +526,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// Slice 7.3: largest coefficients sit at the *end* of the sort order;
+    /// largest coefficients sit at the *end* of the sort order;
     /// the survivors must still be in (x, z) sort order, not magnitude order.
     #[test]
     fn top_n_preserves_sort_order() {

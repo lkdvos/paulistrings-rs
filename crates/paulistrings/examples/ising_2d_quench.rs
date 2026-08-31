@@ -96,9 +96,6 @@ fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
 /// either `I` or `X` and `0` otherwise. That is exactly
 /// [`ProductState::XPlus`]; the observable is Hermitian here, so the
 /// imaginary part is zero and we take `.re`.
-///
-/// This used to be hand-rolled against the raw SoA columns, because the crate
-/// had no expectation-value API. It does as of v0.2 B.10.
 fn expectation_plus_state(sum: &PauliSum<1>) -> f64 {
     sum.expectation_product_state(ProductState::XPlus).re
 }

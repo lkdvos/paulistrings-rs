@@ -1,10 +1,10 @@
 """``gates.unitary_1q`` / ``unitary_2q`` — arbitrary unitaries as Pauli-transfer
 matrices.
 
-These were ``todo!()`` in v0.1 and are implemented in v0.2 B.9. The Rust side is
-covered by ``crates/paulistrings/src/channel/unitary.rs``; this file checks the
-Python boundary: NumPy input handling, shape and unitarity validation, and that a
-unitary supplied as a matrix behaves like the equivalent named gate.
+The Rust side is covered by ``crates/paulistrings/src/channel/unitary.rs``;
+this file checks the Python boundary: NumPy input handling, shape and
+unitarity validation, and that a unitary supplied as a matrix behaves like the
+equivalent named gate.
 
 Note CI does not run these (see CLAUDE.md); run them locally with
 ``maturin develop --release`` followed by ``pytest python/paulistrings/tests``.

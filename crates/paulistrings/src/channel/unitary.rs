@@ -1,5 +1,5 @@
-//! General unitaries, stored as local Pauli-transfer matrices. See §6, and
-//! v0.2 §5.1.
+//! General unitaries, stored as local Pauli-transfer matrices. See
+//! ARCHITECTURE.md §Channels and §Prepared-Channels.
 //!
 //! A bounded-support channel *is* its local Pauli-transfer matrix, which is
 //! exactly the form the bucketed engine consumes — so these types need no
@@ -566,7 +566,7 @@ mod tests {
     }
 
     /// A dense 1Q unitary does reach the 4-bucket upper bound, and a dense 2Q one
-    /// reaches 16 — the values quoted in v0.2 §2.4 as upper bounds.
+    /// reaches 16 (see ARCHITECTURE.md §Bucketing).
     #[test]
     fn dense_unitaries_reach_the_quoted_bucket_fanin() {
         // A rotation about an axis with all three components mixes everything.
@@ -666,9 +666,8 @@ mod tests {
 
     // ---- prepared-form round trip ----
 
-    /// The derivation must recover exactly the table it was built from — the
-    /// point of v0.2 §5.1's claim that a bounded-support channel *is* its local
-    /// PTM.
+    /// The derivation must recover exactly the table it was built from — a
+    /// bounded-support channel *is* its local PTM.
     #[test]
     fn derive_local_recovers_the_table() {
         let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);

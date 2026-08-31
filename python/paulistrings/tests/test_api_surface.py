@@ -1,4 +1,4 @@
-"""Smoke-test that the public API surface from §11 is wired up.
+"""Smoke-test that the public API surface (ARCHITECTURE.md §Python-Bindings) is wired up.
 
 Deliberately shallow: this module only asserts that the names exist and that the
 constructors pick a width. Behavioral coverage lives in the sibling

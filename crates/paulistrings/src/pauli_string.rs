@@ -10,8 +10,6 @@
 //! not hashmap-based. `Hash` is implemented as an auxiliary for
 //! [`BuildAccumulator`].
 //!
-//! See design doc §3.1.
-//!
 //! # Examples
 //!
 //! `X · Z = -i·Y`: the XOR gives the Y bits and the returned [`Phase`] is the
@@ -300,7 +298,7 @@ impl<const W: usize> PartialOrd for PauliString<W> {
 }
 
 impl<const W: usize> Hash for PauliString<W> {
-    /// Auxiliary; only used by `BuildAccumulator` (§8.2). Not on the hot path.
+    /// Auxiliary; only used by `BuildAccumulator` for ingestion. Not on the hot path.
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.x.hash(state);
         self.z.hash(state);

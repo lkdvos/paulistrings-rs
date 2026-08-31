@@ -15,8 +15,6 @@
 //! selection, never splitting a group of equal magnitudes (see [`TopN`] for
 //! the rule and its degenerate case).
 //!
-//! See design doc §7.
-//!
 //! # Examples
 //!
 //! ```

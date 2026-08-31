@@ -1,5 +1,4 @@
-//! The GF(2)-linear bucket function `h(v) = H·v`. See v0.2 design doc §2.2,
-//! §2.7, §3.
+//! The GF(2)-linear bucket function `h(v) = H·v`. See ARCHITECTURE.md §Hash.
 
 use crate::pauli_string::PauliString;
 
@@ -8,7 +7,7 @@ use crate::pauli_string::PauliString;
 /// Rows for all `B_MAX_BITS` bits are generated up front so that
 /// [`Gf2Hash::refine`] is free: the active hash is always a *prefix* of the same
 /// fixed matrix, which is what makes bucket refinement a single parity pass
-/// rather than a re-hash (v0.2 §2.7).
+/// rather than a re-hash.
 pub const B_MAX_BITS: u8 = 20;
 
 /// Xorshift64 — deterministic row generation without pulling in an RNG crate.
@@ -64,12 +63,13 @@ fn word_mask(num_qubits: usize, word: usize) -> u64 {
 /// coordinates are almost always zero and essentially everything lands in bucket
 /// 0. A dense random `H` is a universal hash family on `GF(2)^{2n}` — for `m`
 /// distinct keys the maximum bucket load is `m/B + O(√(m log B / B))` with high
-/// probability, *independent of the input's structure*. See v0.2 §3.2, and the
-/// `occupancy_*` tests below, which pin the property.
+/// probability, *independent of the input's structure*. See
+/// ARCHITECTURE.md §Hash, and the `occupancy_*` tests below, which pin the
+/// property.
 ///
-/// Cost is `b × 2W` AND + popcount-parity operations, but by v0.2 §2.6 this is
-/// evaluated only at ingestion and at rehash — **never in the propagation
-/// loop**, where buckets are tracked structurally by XOR instead.
+/// Cost is `b × 2W` AND + popcount-parity operations, evaluated only at
+/// ingestion and at rehash — **never in the propagation loop**, where buckets
+/// are tracked structurally by XOR instead.
 ///
 /// # Examples
 ///
@@ -204,8 +204,7 @@ impl<const W: usize> Gf2Hash<W> {
     /// assembled into one `u32`; this is the single place that body lives, so
     /// a caller that needs only the *new* bit a [`Self::refine`] just
     /// introduced — [`crate::bucket::sum::PauliSum::refine`] — can get it in
-    /// `O(2W)` instead of paying `O(bits · 2W)` for the whole prefix (v0.5
-    /// §R2).
+    /// `O(2W)` instead of paying `O(bits · 2W)` for the whole prefix.
     #[inline]
     pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
         let rx = &self.rows_x[row as usize];
@@ -221,7 +220,7 @@ impl<const W: usize> Gf2Hash<W> {
     /// `h(v)` for a [`PauliString`]. Convenience wrapper over [`Self::bucket_of`].
     ///
     /// Also the form used for a channel's delta vectors at prepare time, where
-    /// `h(d)` is computed once per layer rather than per term (v0.2 §2.6).
+    /// `h(d)` is computed once per layer rather than per term.
     #[inline]
     pub fn bucket_of_pauli(&self, p: &PauliString<W>) -> u32 {
         self.bucket_of(&p.x, &p.z)
@@ -231,7 +230,7 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// Because the active hash is a *prefix* of a fixed matrix, refining splits
     /// each existing bucket in two and the within-bucket order is inherited by
-    /// both halves — an `O(n)` parity pass with no re-sorting (v0.2 §2.7).
+    /// both halves — an `O(n)` parity pass with no re-sorting.
     ///
     /// # Panics
     ///
@@ -271,7 +270,7 @@ impl<const W: usize> Gf2Hash<W> {
 mod tests {
     use super::*;
 
-    /// XOR two Pauli keys — the group operation on the key space (v0.2 §2.1).
+    /// XOR two Pauli keys — the group operation on the key space.
     fn xor<const W: usize>(a: &PauliString<W>, b: &PauliString<W>) -> PauliString<W> {
         let mut out = *a;
         for w in 0..W {
@@ -343,7 +342,7 @@ mod tests {
     #[test]
     fn identity_key_maps_to_bucket_zero() {
         // h(0) = 0 for any linear h. Documented wart: the identity string always
-        // lands in bucket 0 (v0.2 §3.2).
+        // lands in bucket 0.
         let h = Gf2Hash::<2>::new(128, 10, 0x1234);
         assert_eq!(h.bucket_of(&[0, 0], &[0, 0]), 0);
     }
@@ -358,7 +357,7 @@ mod tests {
         }
     }
 
-    // ---- linearity: the property everything else rests on (v0.2 §2.2) ----
+    // ---- linearity: the property everything else rests on ----
 
     #[test]
     fn linearity_hand_checked_w1() {
@@ -427,7 +426,7 @@ mod tests {
         assert_eq!(h.bucket_of(&[0, dead], &[0, dead]), 0);
     }
 
-    // ---- row_parity (v0.5 §R2) ----
+    // ---- row_parity ----
 
     #[test]
     fn row_parity_matches_bucket_of_bit_extraction() {
@@ -448,7 +447,7 @@ mod tests {
         }
     }
 
-    // ---- refine / coarsen prefix consistency (v0.2 §2.7) ----
+    // ---- refine / coarsen prefix consistency ----
 
     #[test]
     fn refine_preserves_the_low_bits() {
@@ -568,7 +567,7 @@ mod tests {
         assert_eq!(h.bucket_of(&[0], &[0]), 0);
     }
 
-    // ---- occupancy: what guards the choice of a dense random H (v0.2 §3.2) ----
+    // ---- occupancy: what guards the choice of a dense random H ----
 
     /// Bucket occupancy on **low-weight** keys, the physically relevant regime.
     ///
@@ -627,8 +626,8 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Linearity over arbitrary keys — the load-bearing algebraic property
-        /// (v0.2 §2.2). Everything about bucket prediction follows from it.
+        /// Linearity over arbitrary keys — the load-bearing algebraic property.
+        /// Everything about bucket prediction follows from it.
         #[test]
         fn hash_is_gf2_linear_w2(
             ax in any::<[u64; 2]>(), az in any::<[u64; 2]>(),

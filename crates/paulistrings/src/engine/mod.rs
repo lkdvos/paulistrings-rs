@@ -3,8 +3,8 @@
 //!
 //! One layer is a coset walk over the GF(2)-linear bucket partition (the
 //! crate-private `coset` module), with the per-run sort and fused merge kernels
-//! in the crate-private `merge` module. See v0.2 design doc §6 and v0.3 §2 for
-//! the layer, and v0.1 §8 for the propagation loop this module implements.
+//! in the crate-private `merge` module. See ARCHITECTURE.md §Engine for the
+//! layer and this module's propagation loop.
 
 pub mod bucketed;
 pub(crate) mod coset;
@@ -96,8 +96,6 @@ pub enum Direction {
 /// assert_eq!(x[0], [1]);
 /// assert_eq!(z[0], [0]);
 /// ```
-///
-/// See design doc §8.1.
 pub fn propagate<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
@@ -139,11 +137,12 @@ where
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
     // The bucket count `B` is a deterministic function of the *history* of
-    // term counts (v0.5 §R1: `rebucket` is grow-only, so `B` is the running
-    // max of `desired_bits` over every layer so far, not the instantaneous
-    // length), which is itself fully determined by the circuit and the
-    // starting sum: bitwise independence of the engine's output from `B` is
-    // still tested (v0.2 §9.1), but it is no longer what makes this safe.
+    // term counts (`rebucket` is grow-only, so `B` is the running max of
+    // `desired_bits` over every layer so far, not the instantaneous length),
+    // which is itself fully determined by the circuit and the starting sum.
+    // Bitwise independence of the engine's output from `B` is tested, but
+    // agreement is only required to floating-point tolerance
+    // (ARCHITECTURE.md §Determinism).
     let min_buckets = default_min_buckets();
 
     // Entry/exit INFO pair. One unconditional `Instant` pair per `propagate`
@@ -199,8 +198,7 @@ where
                 // generator weight, and none writes outside its declared
                 // support. So this is only reachable from a user-supplied
                 // `Channel` impl, and it is a hard error rather than a slow
-                // path: the whole-sum v0.1 sort-merge fallback that used to
-                // absorb it is gone (v0.7 Stage 1).
+                // path: there is no whole-sum fallback to absorb it.
                 let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
                 panic!(
                     "layer {idx}: Channel::prepare declined, so this channel cannot be \
@@ -247,11 +245,12 @@ where
 
 /// Bucket-count floor: enough buckets that Rayon has slack to load-balance.
 ///
-/// Fixed (v0.3 §1), not derived from `rayon::current_num_threads`: see
+/// Fixed, not derived from `rayon::current_num_threads`: see
 /// [`crate::bucket::sum::DEFAULT_MIN_BUCKETS`] for why a thread-independent
-/// floor is what we want here. Combined with the grow-only `rebucket` policy
-/// (v0.5 §R1), this floor is a lower bound on `B` throughout a `propagate`
-/// call, not just at the layer where it was first crossed.
+/// floor is what we want here (ARCHITECTURE.md §Bucket-Policy). Combined
+/// with the grow-only `rebucket` policy, this floor is a lower bound on `B`
+/// throughout a `propagate` call, not just at the layer where it was first
+/// crossed.
 pub fn default_min_buckets() -> usize {
     crate::bucket::sum::DEFAULT_MIN_BUCKETS
 }
@@ -294,8 +293,8 @@ mod tests {
         }
     }
 
-    /// A channel that declines `prepare` is a hard error: the v0.1 whole-sum
-    /// fallback that used to absorb it is gone, so `propagate` panics with the
+    /// A channel that declines `prepare` is a hard error: there is no
+    /// whole-sum fallback to absorb it, so `propagate` panics with the
     /// support weight and a pointer to the generalization note.
     #[test]
     #[should_panic(expected = "Channel::prepare declined")]

@@ -1,15 +1,8 @@
 //! Criterion microbenches for the hot ops on the propagation path.
 //!
-//! Baseline surface for the v0.2 engine rewrite
-//! (`research/plans/2026-08-26-v0.2-tdd-slices.md`, slice A.2). v0.1 slice 11.1
-//! established only three benches; that covered exactly one point of the layer
-//! cost surface — `Clifford1Q::h`, which is fanout-1 and key-bijective, i.e. the
-//! *worst* case for the sort phase and the *best* case for the merge phase.
-//!
-//! The groups that measured the retained v0.1 whole-sum pipeline (`apply_layer`,
-//! `apply_layer_occupancy`, `thread_scaling_rotation_1e6`) went away with it in
-//! v0.7 Stage 1; every other group and benchmark id is unchanged, so campaign
-//! comparisons across that boundary stay valid for the ids that remain.
+//! `Clifford1Q::h`, fanout-1 and key-bijective, is the *worst* case for the
+//! sort phase and the *best* case for the merge phase — one point on the
+//! layer cost surface, not representative on its own.
 //!
 //! What is measured here:
 //!
@@ -22,9 +15,8 @@
 //!   * `propagate` over a multi-channel Trotter-shaped circuit, which is the
 //!     shape real workloads have (`examples/ising_2d_quench.rs` is 108 channels
 //!     per step).
-//!   * Thread scaling of one bucketed layer at 1/2/4/8/16/32 threads. v0.1 §9
-//!     claims "near-linear scaling up to the memory bandwidth limit" and nothing
-//!     in the repo ever tested it.
+//!   * Thread scaling of one bucketed layer at 1/2/4/8/16/32 threads, against
+//!     the memory-bandwidth ceiling in ARCHITECTURE.md §Performance-Model.
 //!
 //! Inputs are built with a seeded `Xs64` xorshift so timings are reproducible
 //! across machines. Setup runs outside the timed region via
@@ -310,9 +302,10 @@ fn bucketed_layer_case<const W: usize, C>(
 ///   * `rotation_w4` — 2 deltas, but a per-term phase computation instead of a
 ///     table lookup.
 ///
-/// Those two bracket the read amplification v0.3 §2 removes, so they need
-/// pre-§2 baselines. Measured at 10⁶ only: at 10⁴ the whole sum is in cache and
-/// fan-in costs nothing.
+/// Those two bracket the read amplification from fan-in
+/// (ARCHITECTURE.md §Bucketing — up to 16 input buckets per output bucket
+/// for a dense two-qubit unitary). Measured at 10⁶ only: at 10⁴ the whole
+/// sum is in cache and fan-in costs nothing.
 fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_layer_bucketed");
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
@@ -349,8 +342,7 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
     group.finish();
 }
 
-/// Thread scaling of the bucketed engine, against `bench_thread_scaling`'s
-/// v0.1 numbers on the same input and channel.
+/// Thread scaling of the bucketed engine on a single rotation layer.
 ///
 /// As in `bucketed_layer_case`, the layer closes the key set under the
 /// rotation's delta span, so `sum.len()` after warm-up can be up to ~2x the
@@ -369,15 +361,9 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     let policy = AlwaysKeep;
 
     // Warm `input` itself to the fixed point once, before the per-thread-count
-    // clones below, so every thread count clones the same steady state.
-    //
-    // NOTE (2026-08-30): this also changed the bucket count — `bits_for` in
-    // the loop below now sees the *warmed* length, exactly as `propagate`'s
-    // per-layer rebucket would. Numbers from this group are therefore NOT
-    // comparable to the v0.3 campaign (which hashed the unwarmed 10^6-term
-    // input): the level shifts observed at the switch (rotation/32t
-    // ~6.3 -> ~5.0 ms, gu2q/32t ~34 -> ~15 ms) are bench-condition changes,
-    // not engine changes.
+    // clones below, so every thread count clones the same steady state. This
+    // also means `bits_for` in the loop below sees the *warmed* length,
+    // exactly as `propagate`'s per-layer rebucket would.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut warm = input.clone().with_hash(hash);
@@ -397,10 +383,11 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
             .num_threads(t)
             .build()
             .expect("failed to build rayon pool");
-        // Bucket count no longer depends on the thread count (v0.3 §1), so a
-        // fixed bit count across every thread count in this loop IS the
-        // configuration users actually get, which makes the scaling
-        // measurement purer than varying it per thread count would.
+        // Bucket count does not depend on the thread count
+        // (ARCHITECTURE.md §Bucket-Policy), so a fixed bit count across
+        // every thread count in this loop IS the configuration users
+        // actually get, which makes the scaling measurement purer than
+        // varying it per thread count would.
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut sum = input.clone().with_hash(hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
@@ -422,10 +409,12 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
 ///
 /// `bench_thread_scaling_bucketed` uses a 2-delta rotation, where each output
 /// bucket reads 2 input buckets. `GeneralUnitary2Q` reads 16, so the same input
-/// is streamed 16 times per layer — the read amplification v0.3 §2 removes by
-/// walking cosets of `h(D)` instead. If that amplification is bandwidth-bound
-/// then this group flattens earlier than the rotation one, and the gap between
-/// them is the size of the prize.
+/// is streamed 16 times per layer — read amplification the engine bounds by
+/// walking cosets of `h(D)` rather than gathering globally
+/// (ARCHITECTURE.md §Bucketing). If that amplification is bandwidth-bound
+/// then this group flattens earlier than the rotation one, and the gap
+/// between them is the
+/// size of the prize.
 ///
 /// Threads are {1, 8, 32} rather than the full sweep: three points fix the
 /// curve's ends and its knee, and a 16-fold gather at 10⁶ terms is expensive
@@ -445,15 +434,9 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     let policy = AlwaysKeep;
 
     // Warm `input` itself to the fixed point once, before the per-thread-count
-    // clones below, so every thread count clones the same steady state.
-    //
-    // NOTE (2026-08-30): this also changed the bucket count — `bits_for` in
-    // the loop below now sees the *warmed* length, exactly as `propagate`'s
-    // per-layer rebucket would. Numbers from this group are therefore NOT
-    // comparable to the v0.3 campaign (which hashed the unwarmed 10^6-term
-    // input): the level shifts observed at the switch (rotation/32t
-    // ~6.3 -> ~5.0 ms, gu2q/32t ~34 -> ~15 ms) are bench-condition changes,
-    // not engine changes.
+    // clones below, so every thread count clones the same steady state. This
+    // also means `bits_for` in the loop below sees the *warmed* length,
+    // exactly as `propagate`'s per-layer rebucket would.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut warm = input.clone().with_hash(hash);
@@ -492,13 +475,11 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     group.finish();
 }
 
-/// Partition maintenance that remains after v0.3 §4 removed the per-call
-/// conversions: a full repartition under a different hash (`with_hash`, the
-/// worst case — flatten plus rescatter).
+/// Partition maintenance cost: a full repartition under a different hash
+/// (`with_hash`, the worst case — flatten plus rescatter).
 /// Cost of ingestion: `BuildAccumulator::finalize` picks the hash and scatters
 /// terms straight into their buckets, so there is no separate "convert a flat
-/// sum into a bucketed one" step to measure — this bench times exactly the
-/// cost that step used to have.
+/// sum into a bucketed one" step to measure.
 fn bench_ingest_finalize(c: &mut Criterion) {
     let mut group = c.benchmark_group("ingest_finalize_1e6");
     group.sample_size(20);
@@ -600,9 +581,10 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     // Tie-dense: the same size and the same 80% cut, but only four distinct
     // magnitudes, so the tie group at the threshold is ~25% of the sum. This is
     // the shape a symmetric Hamiltonian produces, and it is the only shape that
-    // exercises the group-detection pass (v0.3 §3) on a non-trivial group —
-    // random coefficients give `count_eq == 1` and the counting reduce sees a
-    // degenerate case. The `rand_sum_unmasked` cases above stay as the contrast.
+    // exercises the group-detection pass (ARCHITECTURE.md §Truncation) on a
+    // non-trivial group — random coefficients give `count_eq == 1` and the
+    // counting reduce sees a degenerate case. The `rand_sum_unmasked` cases
+    // above stay as the contrast.
     let tied: PauliSum<2> = tie_heavy_sum_unmasked::<2>(n, 128, 0x70_9F);
     let tied_hash = Gf2Hash::<2>::new(128, bits_for(tied.len()), 0xBEEF);
     let tied_keep = (tied.len() * 4) / 5;

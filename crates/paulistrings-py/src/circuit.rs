@@ -1,4 +1,4 @@
-//! Python `Circuit` class. See §11.
+//! Python `Circuit` class. See ARCHITECTURE.md §Python-Bindings.
 
 use crate::channel_spec::{ChannelSpec, PyChannel};
 use paulistrings::Circuit as CoreCircuit;

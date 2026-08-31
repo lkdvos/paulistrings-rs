@@ -40,8 +40,8 @@ pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
-    /// `PauliSum::rebucket` before each layer (grow-only since v0.5 §R1;
-    /// refine parallelizes above the worth-splitting threshold, §R2).
+    /// `PauliSum::rebucket` before each layer (grow-only; refine
+    /// parallelizes above the worth-splitting threshold — ARCHITECTURE.md §Bucket-Policy).
     pub rebucket_ns: u64,
     /// `Channel::prepare` (PTM derivation; O(1) in the term count).
     pub prepare_ns: u64,
@@ -68,13 +68,12 @@ pub struct PhaseStats {
     pub size_ns: u64,
     /// Gather (input-major, output-major, or inline rotation — all variants).
     pub gather_ns: u64,
-    /// `sort_rows_with_scratch` over each run's rest stream (v0.5 S1/S2:
-    /// key-only adaptive sort on worker-persistent scratch, no per-run
-    /// allocation in the steady state; the pre-sorted id stream skips it).
+    /// `sort_rows_with_scratch` over each run's rest stream: a key-only
+    /// adaptive sort on worker-persistent scratch, no per-run allocation in
+    /// the steady state; the pre-sorted id stream skips it.
     pub sort_ns: u64,
     /// `merge2_into` — the fused id/rest two-stream merge + reduction into
-    /// the live bucket column (v0.5 S2: includes interleaving the id rows,
-    /// which the single-stream pipeline used to pay for inside `sort_ns`).
+    /// the live bucket column, including interleaving the id rows.
     pub merge_ns: u64,
     /// Clearing the swapped-out columns at the end of each coset task.
     pub clear_ns: u64,
@@ -87,21 +86,20 @@ pub struct PhaseStats {
     pub runs: u64,
     /// Rows pushed into gather runs (= Σ run lengths entering sort/merge).
     /// The traffic multiplier for the roofline model: each gathered row is
-    /// one key+coeff written by gather (no tag column since v0.5 S1) and read
-    /// once more by merge; the `rows_sorted` subset is additionally read and
-    /// rewritten by the sort.
+    /// one key+coeff written by gather and read once more by merge; the
+    /// `rows_sorted` subset is additionally read and rewritten by the sort.
     pub rows_gathered: u64,
     /// The subset of `rows_gathered` that went through the per-run sort —
     /// the rest streams only. Identity-delta rows arrive pre-sorted and skip
-    /// the sort entirely (v0.5 S2), so `rows_gathered - rows_sorted` is the
+    /// the sort entirely, so `rows_gathered - rows_sorted` is the
     /// sorted-volume saving the split buys.
     pub rows_sorted: u64,
     /// The subset of the identity rows whose **keys** were never
-    /// materialized (v0.6 G1d): under a dense identity plan the merge
+    /// materialized: under a dense identity plan the merge
     /// borrows the source bucket's key columns in place and only the
     /// 16-byte coefficient moves through the run, so these rows cost
     /// `2×16` bytes of run traffic instead of `2×T`. Zero for sparse
-    /// (Clifford) identity plans, which keep the full v0.5 key+coeff
+    /// (Clifford) identity plans, which keep the full key+coeff
     /// materialization.
     pub rows_id: u64,
     /// Σ over layers of the term count *before* the layer.

@@ -2,9 +2,10 @@
 //!
 //! `tests/propagate.rs` holds the hand-computed algebra expectations. This
 //! file covers the properties specific to the bucketed engine: agreement with
-//! the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`,
-//! which replaced the retained v0.1 pipeline in that role) over whole
-//! circuits, and byte-identical output across thread counts.
+//! the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`)
+//! over whole circuits, and byte-identical output across thread counts (a
+//! convenience tripwire, not a correctness requirement — see
+//! ARCHITECTURE.md §Determinism).
 
 use num_complex::Complex64;
 use paulistrings::channel::{
@@ -395,11 +396,12 @@ fn eleven_channel_circuit_matches_the_naive_oracle_under_truncation() {
 #[test]
 fn output_is_byte_identical_across_thread_counts() {
     // Pins thread-independence only: `propagate`'s bucket count is a fixed
-    // function of the term count (v0.3 §1), not of the thread count, so this
-    // test no longer varies the partition. Bucket-count agreement (fp
-    // tolerance only, since v0.5 S1 — see the module doc in
-    // `engine/bucketed.rs`) is pinned directly by
-    // `output_agrees_across_bucket_counts_to_fp_tolerance` there.
+    // function of the term count, not of the thread count
+    // (ARCHITECTURE.md §Bucket-Policy), so this test does not vary the
+    // partition. Bucket-count agreement (fp tolerance only — see
+    // ARCHITECTURE.md §Determinism) is
+    // pinned directly by `output_agrees_across_bucket_counts_to_fp_tolerance`
+    // in the `engine/bucketed.rs` module doc.
     let input = rand_sum::<1>(2000, 8, 0x8D);
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {

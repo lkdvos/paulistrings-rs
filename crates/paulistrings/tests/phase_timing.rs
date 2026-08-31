@@ -5,9 +5,9 @@
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::channel::{Depolarizing, PauliRotation};
-// `rand_sum_real::<1>` is byte-for-byte the generator this file used to define
-// inline — at `W = 1` its per-word masking loop reduces to the single
-// `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`) matches.
+// `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
+// single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
+// matches the other propagation test files' fixtures.
 use paulistrings::test_support::rand_sum_real;
 use paulistrings::{
     propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,

@@ -1,8 +1,6 @@
-//! GF(2)-linear bucket partitioning of a Pauli sum. See
-//! `research/plans/2026-08-26-v0.2-gf2-bucketing.md` (v0.2 §2-§4), which
-//! supersedes v0.1 scope §5 and §9.
+//! GF(2)-linear bucket partitioning of a Pauli sum. See ARCHITECTURE.md §Bucketing.
 //!
-//! The propagation engine no longer maintains one global sorted order. Instead
+//! The propagation engine does not maintain one global sorted order. Instead
 //! the sum is partitioned by a GF(2)-linear hash `h(v) = H·v` of the Pauli key.
 //! Two properties make that partition useful, and both follow from linearity:
 //!

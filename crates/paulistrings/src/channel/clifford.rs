@@ -1,4 +1,4 @@
-//! Clifford gates (table-driven, branchless). See §6.
+//! Clifford gates (table-driven, branchless). See ARCHITECTURE.md §Channels.
 //!
 //! A Clifford `G` conjugates each single-qubit Pauli `P` to `± P'` for some
 //! Pauli `P'`. We precompute the full lookup table at construction so
@@ -407,7 +407,7 @@ mod tests {
         PauliString::<W>::y(qubit)
     }
 
-    // ---- Slice 4.3: Clifford1Q tables ----
+    // ---- Clifford1Q tables ----
 
     #[test]
     fn h_on_qubit_0_w1() {
@@ -541,7 +541,7 @@ mod tests {
         }
     }
 
-    // ---- Slice 6.5: Clifford1Q adjoint table ----
+    // ---- Clifford1Q adjoint table ----
 
     /// Self-adjoint 1Q Cliffords round-trip through `adjoint()` to themselves.
     #[test]
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(bc[0], Complex64::new(1.0, 0.0));
     }
 
-    // ---- Slice 4.4: Clifford2Q tables ----
+    // ---- Clifford2Q tables ----
 
     /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using
     /// `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli

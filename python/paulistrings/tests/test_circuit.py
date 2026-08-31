@@ -1,4 +1,4 @@
-"""Slice 10.3 — channel/circuit factories.
+"""Channel/circuit factories.
 
 Pin the canonical conjugation identities through the Python boundary so a
 regression on the wiring is caught here rather than only in the Rust core.
@@ -72,9 +72,9 @@ def test_cnot_propagates_z_i_to_z_z():
     c.cnot(0, 1)
     out = s.propagate(c)
     assert coeffs_close(out.coefficients(), [1 + 0j])
-    # The output should be the single key Z⊗Z = "ZZ" = (x=0, z=3).
-    # We don't expose x()/z() yet (slice 10.5), so just assert length and
-    # coefficient — the cross-validation tests in core/integration cover bits.
+    # The output should be the single key Z⊗Z = "ZZ" = (x=0, z=3); just
+    # assert length and coefficient here — see test_numpy.py for the
+    # x_array()/z_array() bit-layout checks.
     assert len(out) == 1
 
 

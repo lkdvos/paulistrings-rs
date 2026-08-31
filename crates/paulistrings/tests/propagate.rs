@@ -1,13 +1,10 @@
-//! Integration tests for `propagate` against hand-computed Pauli algebra
-//! (§8.1).
+//! Integration tests for `propagate` against hand-computed Pauli algebra.
 //!
 //! These tests exercise the public API end-to-end: construct a `PauliSum` via
 //! `BuildAccumulator`, push one or more channels onto a `Circuit`, propagate,
-//! and check the result against algebra worked out by hand. The single-channel
-//! cases used to call the v0.1 `apply_layer` directly; that pipeline is gone,
-//! so they now go through `propagate` on a one-channel circuit — which is the
-//! only way to drive one layer from outside the crate, and the path users
-//! actually take.
+//! and check the result against algebra worked out by hand. Single-channel
+//! cases go through `propagate` on a one-channel circuit — the only way to
+//! drive one layer from outside the crate, and the path users actually take.
 //!
 //! Every fixture here is small enough to live in a single bucket (the
 //! partition is trivial below `DEFAULT_TARGET_BUCKET_LEN`), so `bucket(0)` is
@@ -315,7 +312,7 @@ fn propagate_heisenberg_reverses_channel_order() {
     assert_eq!(heis.bucket(0).1[0], PauliString::<1>::x(0).z);
 }
 
-/// Slice 7.2 end-to-end: `WeightCutoff(1)` threads through the layer and
+/// `WeightCutoff(1)` threads through the layer and
 /// drops the weight-2 term during the merge.
 #[test]
 fn single_layer_weight_cutoff_drops_high_weight() {
@@ -337,7 +334,7 @@ fn single_layer_weight_cutoff_drops_high_weight() {
     assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
-/// Slice 7.3 end-to-end: `TopN(1)` threads through `propagate` via
+/// `TopN(1)` threads through `propagate` via
 /// `finalize_layer`. After a single rotation that fans Z's input X into a
 /// (X, Y) superposition, the post-layer truncation must keep at most one
 /// term — confirming `finalize_layer` is invoked.
@@ -362,7 +359,7 @@ fn propagate_top_n_truncates_each_layer() {
     out.assert_invariants();
 }
 
-/// Slice 7.1 end-to-end: `CoefficientThreshold` threads through the layer and
+/// `CoefficientThreshold` threads through the layer and
 /// drops the sub-eps term during the merge. Using `IdentityChannel` keeps
 /// the algebra trivial — the test isolates the truncation behavior.
 #[test]

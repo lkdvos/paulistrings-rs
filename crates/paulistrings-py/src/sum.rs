@@ -8,8 +8,8 @@ use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
-    propagate, propagate_with_scratch, Direction, LayerScratch, PauliSum as CorePauliSum,
-    ProductState, TermTrace,
+    propagate, propagate_with_scratch, Direction, LayerScratch, PauliAxis,
+    PauliSum as CorePauliSum, ProductBasis, ProductState, TermTrace,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -40,8 +40,18 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.len())
     }
 
-    pub fn expectation(&self, state: ProductState) -> Complex64 {
+    /// Uniform product state: the same `+1` eigenstate on every qubit.
+    pub fn expectation_uniform(&self, state: ProductState) -> Complex64 {
         for_each_width!(self, |s| s.expectation_product_state(state))
+    }
+
+    /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. The
+    /// caller has already checked that there is exactly one entry per qubit,
+    /// so the resulting masks have no bit set past `num_qubits`.
+    pub fn expectation_labels(&self, axes: &[(PauliAxis, bool)]) -> Complex64 {
+        for_each_width!(self, |s| s.expectation_product_basis(
+            &ProductBasis::from_axes(axes.iter().copied())
+        ))
     }
 
     pub fn identity_coefficient(&self) -> Complex64 {
@@ -159,6 +169,24 @@ fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     Err(PyTypeError::new_err(
         "expected complex, float, or int coefficient",
     ))
+}
+
+/// One character of a per-qubit product-state label, in qiskit's
+/// `Statevector.from_label` alphabet: `0`/`1` are the `Z` eigenstates, `+`/`-`
+/// the `X` ones and `r`/`l` the `Y` ones. `None` for anything else.
+///
+/// Returns `(axis, minus)`, which is exactly what `ProductBasis::from_axes`
+/// consumes.
+fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
+    Some(match ch {
+        '0' => (PauliAxis::Z, false),
+        '1' => (PauliAxis::Z, true),
+        '+' => (PauliAxis::X, false),
+        '-' => (PauliAxis::X, true),
+        'r' => (PauliAxis::Y, false),
+        'l' => (PauliAxis::Y, true),
+        _ => return None,
+    })
 }
 
 /// `"forward"` (the default when `None`) or `"heisenberg"`.
@@ -311,24 +339,64 @@ impl PauliSum {
         self.inner.coeffs()
     }
 
-    /// Expectation value in a uniform single-qubit product state.
+    /// Expectation value in a single-qubit product state.
     ///
-    /// `state` is one of `"x+"` (`|+...+>`), `"y+"` (`|+i...+i>`) or `"z+"`
-    /// (`|0...0>`) — each the `+1` eigenstate of that Pauli on every qubit.
-    /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    /// `state` is either a **uniform** name — `"x+"` (`|+...+>`), `"y+"`
+    /// (`|+i...+i>`) or `"z+"` (`|0...0>`), each the `+1` eigenstate of that
+    /// Pauli on every qubit, matched case-insensitively — or a **per-qubit
+    /// label string** of exactly `num_qubits` characters, where character `i`
+    /// gives qubit `i`'s state in qiskit's `Statevector.from_label` alphabet:
+    ///
+    /// | label | state | axis |
+    /// |---|---|---|
+    /// | `0` / `1` | `\|0>` / `\|1>` | Z ± |
+    /// | `+` / `-` | `\|+>` / `\|->` | X ± |
+    /// | `r` / `l` | `\|+i>` / `\|-i>` | Y ± |
+    ///
+    /// The label characters are case-sensitive (`r`/`l`, not `R`/`L`), so a
+    /// mistyped uniform name is an error rather than a silent reinterpretation.
+    /// Qubit indexing matches `from_strings`.
+    ///
+    /// Cost is one masked pass over the terms in either case — never an
+    /// expansion over basis states. Returns a Python complex; take `.real`
+    /// when the operator is Hermitian.
     #[pyo3(signature = (state="x+"))]
     fn expectation(&self, state: &str) -> PyResult<Complex64> {
-        let st = match state {
-            "x+" | "X+" => ProductState::XPlus,
-            "y+" | "Y+" => ProductState::YPlus,
-            "z+" | "Z+" => ProductState::ZPlus,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown product state {other:?}; expected \"x+\", \"y+\" or \"z+\"",
-                )))
-            }
+        // The uniform names win first, case-insensitively, so `"x+"` keeps
+        // meaning |+...+> at any qubit count. They cannot collide with a label
+        // string: `x`, `y` and `z` are not in the per-qubit alphabet.
+        let uniform = match state.to_ascii_lowercase().as_str() {
+            "x+" => Some(ProductState::XPlus),
+            "y+" => Some(ProductState::YPlus),
+            "z+" => Some(ProductState::ZPlus),
+            _ => None,
         };
-        Ok(self.inner.expectation(st))
+        if let Some(st) = uniform {
+            return Ok(self.inner.expectation_uniform(st));
+        }
+        let num_qubits = self.inner.num_qubits();
+        let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
+        for (q, ch) in state.chars().enumerate() {
+            match parse_state_label(ch) {
+                Some(entry) => axes.push(entry),
+                None => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown product state {state:?}: {ch:?} at qubit {q} is not a per-qubit \
+                         label; expected a character from \"01+-rl\" (0/1 = Z±, +/- = X±, \
+                         r/l = Y±), or one of the uniform names \"x+\", \"y+\", \"z+\"",
+                    )))
+                }
+            }
+        }
+        if axes.len() != num_qubits {
+            return Err(PyValueError::new_err(format!(
+                "unknown product state {state:?}: a per-qubit label string over \"01+-rl\" needs \
+                 one character per qubit (got {}, num_qubits is {num_qubits}); the uniform names \
+                 are \"x+\", \"y+\", \"z+\"",
+                axes.len(),
+            )));
+        }
+        Ok(self.inner.expectation_labels(&axes))
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.

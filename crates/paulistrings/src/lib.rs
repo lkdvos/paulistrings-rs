@@ -127,6 +127,6 @@ pub use engine::bucketed::{LayerScratch, TermTrace};
 pub use engine::stats::PhaseStats;
 pub use engine::{default_min_buckets, propagate, propagate_with_scratch, Direction};
 pub use pauli_string::PauliString;
-pub use pauli_sum::{PauliSum, ProductState};
+pub use pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
 pub use phase::Phase;
 pub use truncation::TruncationPolicy;

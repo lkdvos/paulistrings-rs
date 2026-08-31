@@ -13,7 +13,9 @@ use rayon::prelude::*;
 use super::hash::Gf2Hash;
 #[cfg(any(test, debug_assertions))]
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::ProductState;
+#[cfg(test)]
+use crate::pauli_sum::PauliAxis;
+use crate::pauli_sum::{ProductBasis, ProductState};
 
 /// Default seed for the partitioning hash.
 ///
@@ -461,6 +463,10 @@ impl<const W: usize> PauliSum<W> {
     /// what lets a driver hold one sum across many [`propagate`](crate::propagate)
     /// calls and still read its observable each step.
     ///
+    /// The uniform states are the special cases of [`ProductBasis`] with sign
+    /// `+1` everywhere, so this is a thin wrapper over
+    /// [`Self::expectation_product_basis`] — there is exactly one scan.
+    ///
     /// Returns `Complex64` rather than `f64` because `self` need not be
     /// Hermitian; take `.re` when it is.
     ///
@@ -472,18 +478,54 @@ impl<const W: usize> PauliSum<W> {
     /// bits — far below any physically meaningful tolerance, but do not expect
     /// bitwise equality across different hashes or bucket counts.
     pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
+        self.expectation_product_basis(&ProductBasis::<W>::uniform(state))
+    }
+
+    /// Expectation value `⟨ψ|O|ψ⟩` in an arbitrary single-qubit product state.
+    ///
+    /// `basis` gives each qubit its own axis and sign; see [`ProductBasis`] for
+    /// the per-word match condition and the sign rule this evaluates. A term
+    /// contributes its coefficient — negated when an odd number of the sites
+    /// in its support are `-1` eigenstates — iff every non-identity factor
+    /// equals that qubit's axis exactly. Cost is one pass over the key columns
+    /// as a per-bucket parallel reduction, `O(terms · W)`, with no expansion
+    /// over basis states.
+    ///
+    /// Mask bits at qubit indices `>= num_qubits()` are irrelevant: a stored
+    /// key never has one set there.
+    ///
+    /// Returns `Complex64` rather than `f64` because `self` need not be
+    /// Hermitian; take `.re` when it is.
+    ///
+    /// # Summation order
+    ///
+    /// As in [`Self::expectation_product_state`] — partials are combined in
+    /// bucket order, so two partitions of the same terms can differ in the
+    /// last bits.
+    pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.buckets
             .par_iter()
             .map(|cols| {
                 let mut acc = Complex64::new(0.0, 0.0);
                 for i in 0..cols.len() {
-                    let contributes = match state {
-                        ProductState::XPlus => cols.z[i] == [0u64; W],
-                        ProductState::ZPlus => cols.x[i] == [0u64; W],
-                        ProductState::YPlus => cols.x[i] == cols.z[i],
-                    };
-                    if contributes {
-                        acc += cols.coeff[i];
+                    // `mismatch` stays zero iff every word's non-identity
+                    // sites carry exactly the local axis Pauli; `sign_bits`
+                    // counts the `-1` eigenstates inside the support.
+                    let mut mismatch = 0u64;
+                    let mut sign_bits = 0u32;
+                    for w in 0..W {
+                        let x = cols.x[i][w];
+                        let z = cols.z[i][w];
+                        let sup = x | z;
+                        mismatch |= (x ^ (sup & basis.ax_x[w])) | (z ^ (sup & basis.ax_z[w]));
+                        sign_bits += (sup & basis.neg[w]).count_ones();
+                    }
+                    if mismatch == 0 {
+                        if sign_bits & 1 == 0 {
+                            acc += cols.coeff[i];
+                        } else {
+                            acc -= cols.coeff[i];
+                        }
                     }
                 }
                 acc
@@ -974,7 +1016,7 @@ mod tests {
     use crate::phase::Phase;
     // `Xs64` and `rand_sum` are the canonical fixtures from
     // `crate::test_support` — this module's copies were byte-identical.
-    use crate::test_support::{rand_sum, Xs64};
+    use crate::test_support::{low_weight_sum, rand_sum, Xs64};
 
     /// Low-weight keys — the physically relevant regime, and the one where a
     /// badly chosen hash would collapse into one bucket.
@@ -2137,6 +2179,313 @@ mod tests {
         }
         let got = sum.expectation_product_state(ProductState::XPlus).re;
         assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+    }
+
+    // --- non-uniform product states (ProductBasis) ---------------------
+    //
+    // Every expected value below is the product of single-qubit Bloch-vector
+    // components, hand-derived once here:
+    //
+    //   |0⟩ = Z+:  ⟨Z⟩ = +1,  ⟨X⟩ = ⟨Y⟩ = 0
+    //   |1⟩ = Z-:  ⟨Z⟩ = -1,  ⟨X⟩ = ⟨Y⟩ = 0
+    //   |+⟩ = X+:  ⟨X⟩ = +1,  ⟨Y⟩ = ⟨Z⟩ = 0
+    //   |-⟩ = X-:  ⟨X⟩ = -1,  ⟨Y⟩ = ⟨Z⟩ = 0
+    //   |r⟩ = Y+ = (|0⟩ + i|1⟩)/√2:  ⟨Y⟩ = +1,  ⟨X⟩ = ⟨Z⟩ = 0
+    //   |l⟩ = Y- = (|0⟩ - i|1⟩)/√2:  ⟨Y⟩ = -1,  ⟨X⟩ = ⟨Z⟩ = 0
+    //
+    // and ⟨I⟩ = 1 in every state. Off-axis components vanish because two
+    // distinct single-qubit Paulis anticommute.
+
+    /// Per-qubit label string → [`ProductBasis`], in the alphabet the Python
+    /// binding accepts (qiskit `Statevector.from_label`): `0`/`1` = Z±,
+    /// `+`/`-` = X±, `r`/`l` = Y±. Character `i` addresses qubit `i`.
+    ///
+    /// Deliberately spelled out here rather than shared with the binding: the
+    /// test's job is to encode the convention independently.
+    fn basis_from_labels<const W: usize>(labels: &str) -> ProductBasis<W> {
+        ProductBasis::<W>::from_axes(labels.chars().map(|ch| match ch {
+            '0' => (PauliAxis::Z, false),
+            '1' => (PauliAxis::Z, true),
+            '+' => (PauliAxis::X, false),
+            '-' => (PauliAxis::X, true),
+            'r' => (PauliAxis::Y, false),
+            'l' => (PauliAxis::Y, true),
+            other => panic!("unexpected label {other:?}"),
+        }))
+    }
+
+    /// Differential oracle: `⟨ψ|O|ψ⟩` evaluated one qubit at a time straight
+    /// from the Bloch table above, sharing no code with the masked scan.
+    fn naive_labelled_expectation<const W: usize>(sum: &PauliSum<W>, labels: &str) -> Complex64 {
+        let mut total = Complex64::new(0.0, 0.0);
+        for (x, z, c) in sum.iter() {
+            let mut factor = 1.0f64;
+            for (q, label) in labels.chars().enumerate() {
+                let bx = (x[q / 64] >> (q % 64)) & 1 == 1;
+                let bz = (z[q / 64] >> (q % 64)) & 1 == 1;
+                factor *= match (bx, bz, label) {
+                    (false, false, _) => 1.0, // identity factor: no constraint
+                    (true, false, '+') => 1.0,
+                    (true, false, '-') => -1.0,
+                    (false, true, '0') => 1.0,
+                    (false, true, '1') => -1.0,
+                    (true, true, 'r') => 1.0,
+                    (true, true, 'l') => -1.0,
+                    _ => 0.0, // off-axis Pauli: zero overlap
+                };
+            }
+            total += c * factor;
+        }
+        total
+    }
+
+    fn expect_close<const W: usize>(sum: &PauliSum<W>, labels: &str, want: f64) {
+        let got = sum.expectation_product_basis(&basis_from_labels::<W>(labels));
+        assert!(
+            (got - Complex64::new(want, 0.0)).norm() < 1e-12,
+            "state {labels:?}: got {got}, want {want}",
+        );
+    }
+
+    fn single_qubit_labels_against_every_pauli<const W: usize>() {
+        // (label, ⟨I⟩, ⟨X⟩, ⟨Y⟩, ⟨Z⟩) — the Bloch table above, transposed.
+        let cases = [
+            ('0', 1.0, 0.0, 0.0, 1.0),
+            ('1', 1.0, 0.0, 0.0, -1.0),
+            ('+', 1.0, 1.0, 0.0, 0.0),
+            ('-', 1.0, -1.0, 0.0, 0.0),
+            ('r', 1.0, 0.0, 1.0, 0.0),
+            ('l', 1.0, 0.0, -1.0, 0.0),
+        ];
+        for (label, ei, ex, ey, ez) in cases {
+            let labels = label.to_string();
+            for (pauli, want) in [("I", ei), ("X", ex), ("Y", ey), ("Z", ez)] {
+                let s = PauliSum::<W>::from_strings(&[(pauli, Complex64::new(1.0, 0.0))]);
+                let got = s.expectation_product_basis(&basis_from_labels::<W>(&labels));
+                assert!(
+                    (got - Complex64::new(want, 0.0)).norm() < 1e-12,
+                    "⟨{label}|{pauli}|{label}⟩ = {got}, want {want} (W={W})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn single_qubit_labels_against_every_pauli_w1() {
+        single_qubit_labels_against_every_pauli::<1>();
+    }
+
+    #[test]
+    fn single_qubit_labels_against_every_pauli_w2() {
+        single_qubit_labels_against_every_pauli::<2>();
+    }
+
+    fn multi_qubit_products_compose_per_qubit_signs<const W: usize>() {
+        // ⟨01|Z⊗Z|01⟩ = ⟨0|Z|0⟩·⟨1|Z|1⟩ = (+1)(-1) = -1.
+        let zz = PauliSum::<W>::from_strings(&[("ZZ", Complex64::new(1.0, 0.0))]);
+        expect_close(&zz, "01", -1.0);
+        expect_close(&zz, "10", -1.0);
+        expect_close(&zz, "00", 1.0);
+        expect_close(&zz, "11", 1.0); // (-1)(-1)
+
+        // State |0⟩|+⟩|r⟩: axes Z, X, Y, every sign +1.
+        let zxy = PauliSum::<W>::from_strings(&[("ZXY", Complex64::new(1.0, 0.0))]);
+        expect_close(&zxy, "0+r", 1.0);
+        // X on the Y-axis qubit is off-axis → the whole term drops.
+        let zxx = PauliSum::<W>::from_strings(&[("ZXX", Complex64::new(1.0, 0.0))]);
+        expect_close(&zxx, "0+r", 0.0);
+        // Identity factors are ignored, whatever that qubit's label is.
+        let ziy = PauliSum::<W>::from_strings(&[("ZIY", Complex64::new(1.0, 0.0))]);
+        expect_close(&ziy, "0+r", 1.0);
+        expect_close(&ziy, "0-r", 1.0);
+        expect_close(&ziy, "01r", 1.0);
+
+        // State |1⟩|-⟩|l⟩: the same axes with all three signs flipped, so a
+        // weight-3 term picks up (-1)^3 = -1.
+        expect_close(&zxy, "1-l", -1.0);
+        // Only the two non-identity sites' signs count: (-1)·(-1) = +1.
+        expect_close(&ziy, "1-l", 1.0);
+        // A single flipped site: -1.
+        expect_close(&zxy, "1+r", -1.0);
+        expect_close(&zxy, "0-r", -1.0);
+        expect_close(&zxy, "0+l", -1.0);
+        // Two flipped sites: +1.
+        expect_close(&zxy, "1-r", 1.0);
+    }
+
+    #[test]
+    fn multi_qubit_products_compose_per_qubit_signs_w1() {
+        multi_qubit_products_compose_per_qubit_signs::<1>();
+    }
+
+    #[test]
+    fn multi_qubit_products_compose_per_qubit_signs_w2() {
+        multi_qubit_products_compose_per_qubit_signs::<2>();
+    }
+
+    fn an_off_axis_pauli_never_matches<const W: usize>() {
+        // The subset-match trap: `X` on a Y-axis qubit must NOT contribute,
+        // even though the Y axis has its x-bit set — the match is an equality
+        // on both halves of the key, not `x & !ax_x == 0`. ⟨r|X|r⟩ = 0.
+        let off_axis = [
+            ('r', "X"),
+            ('r', "Z"),
+            ('l', "X"),
+            ('l', "Z"),
+            ('+', "Y"),
+            ('+', "Z"),
+            ('-', "Y"),
+            ('0', "X"),
+            ('0', "Y"),
+            ('1', "X"),
+            ('1', "Y"),
+        ];
+        for (label, pauli) in off_axis {
+            let s = PauliSum::<W>::from_strings(&[(pauli, Complex64::new(3.0, -4.0))]);
+            let got = s.expectation_product_basis(&basis_from_labels::<W>(&label.to_string()));
+            assert!(
+                got.norm() < 1e-12,
+                "⟨{label}|{pauli}|{label}⟩ = {got}, want 0 (W={W})",
+            );
+        }
+        // Mixed: one off-axis factor kills a term whose other factors match.
+        let s = PauliSum::<W>::from_strings(&[("XXX", Complex64::new(1.0, 0.0))]);
+        expect_close(&s, "++r", 0.0);
+        expect_close(&s, "+++", 1.0);
+    }
+
+    #[test]
+    fn an_off_axis_pauli_never_matches_w1() {
+        an_off_axis_pauli_never_matches::<1>();
+    }
+
+    #[test]
+    fn an_off_axis_pauli_never_matches_w2() {
+        an_off_axis_pauli_never_matches::<2>();
+    }
+
+    #[test]
+    fn labelled_expectation_is_linear_and_keeps_the_imaginary_part() {
+        // ⟨1|Z|1⟩ = -1 and ⟨1|I|1⟩ = +1, so this is -(1+2i) + (3-5i).
+        let s = PauliSum::<1>::from_strings(&[
+            ("Z", Complex64::new(1.0, 2.0)),
+            ("I", Complex64::new(3.0, -5.0)),
+        ]);
+        let got = s.expectation_product_basis(&basis_from_labels::<1>("1"));
+        assert!((got - Complex64::new(2.0, -7.0)).norm() < 1e-12, "{got}");
+    }
+
+    #[test]
+    fn labels_across_the_word_boundary_are_independent_w2() {
+        // 128 qubits, |0…0⟩ except qubit 64, which is |1⟩ — its sign bit lives
+        // in word 1 of `neg`, so a word-0-only implementation would miss it.
+        let mut labels: String = "0".repeat(128);
+        labels.replace_range(64..65, "1");
+        let basis = basis_from_labels::<2>(&labels);
+        let cases = [
+            (PauliString::<2>::z(0), 1.0),   // qubit 0 is |0⟩
+            (PauliString::<2>::z(64), -1.0), // qubit 64 is |1⟩
+            (PauliString::<2>::x(64), 0.0),  // off-axis on a Z qubit
+        ];
+        for (p, want) in cases {
+            let s = b10_build::<2>(128, &[(p, Complex64::new(1.0, 0.0))]);
+            let got = s.expectation_product_basis(&basis);
+            assert!(
+                (got - Complex64::new(want, 0.0)).norm() < 1e-12,
+                "{p:?}: got {got}, want {want}",
+            );
+        }
+        // Z on both sides of the boundary: (+1)·(-1) = -1.
+        let mut z0z64 = PauliString::<2>::z(0);
+        z0z64.mul_assign(&PauliString::<2>::z(64));
+        let s = b10_build::<2>(128, &[(z0z64, Complex64::new(1.0, 0.0))]);
+        let got = s.expectation_product_basis(&basis);
+        assert!((got - Complex64::new(-1.0, 0.0)).norm() < 1e-12, "{got}");
+    }
+
+    #[test]
+    fn labelled_expectation_of_an_empty_sum_is_zero() {
+        let h = Gf2Hash::<1>::new(8, 3, 0xE6);
+        let b = PauliSum::<1>::empty_with_hash(8, h);
+        let got = b.expectation_product_basis(&basis_from_labels::<1>("01+-rl01"));
+        assert!(got.norm() < 1e-15, "{got}");
+    }
+
+    fn uniform_states_agree_with_their_label_spellings<const W: usize>() {
+        let num_qubits = 50 * W;
+        let sum = rand_sum::<W>(4000, num_qubits, 0xA40 + W as u64);
+        for (state, label) in [
+            (ProductState::XPlus, '+'),
+            (ProductState::YPlus, 'r'),
+            (ProductState::ZPlus, '0'),
+        ] {
+            let want = sum.expectation_product_state(state);
+            let labels: String = std::iter::repeat_n(label, num_qubits).collect();
+            let got = sum.expectation_product_basis(&basis_from_labels::<W>(&labels));
+            assert!(
+                (got - want).norm() < 1e-12,
+                "{state:?} vs {label:?}: {got} vs {want} (W={W})",
+            );
+        }
+    }
+
+    #[test]
+    fn uniform_states_agree_with_their_label_spellings_w1() {
+        uniform_states_agree_with_their_label_spellings::<1>();
+    }
+
+    #[test]
+    fn uniform_states_agree_with_their_label_spellings_w2() {
+        uniform_states_agree_with_their_label_spellings::<2>();
+    }
+
+    fn labelled_expectation_agrees_with_the_naive_reference<const W: usize>() {
+        // 33 qubits per word so W=2 straddles the boundary at 64.
+        let num_qubits = 33 * W;
+        let alphabet: Vec<char> = "01+-rl".chars().collect();
+        let mut rng = Xs64::new(0xB40 + W as u64);
+        let labels: String = (0..num_qubits)
+            .map(|_| alphabet[(rng.next_u64() % 6) as usize])
+            .collect();
+        for &weight in &[1usize, 2, 3] {
+            let sum = low_weight_sum::<W>(3000, num_qubits, weight, 0xB50 + weight as u64);
+            let want = naive_labelled_expectation(&sum, &labels);
+            let got = sum.expectation_product_basis(&basis_from_labels::<W>(&labels));
+            assert!(
+                (got - want).norm() < 1e-9,
+                "W={W} weight={weight}: {got} vs {want}",
+            );
+        }
+    }
+
+    #[test]
+    fn labelled_expectation_agrees_with_the_naive_reference_w1() {
+        labelled_expectation_agrees_with_the_naive_reference::<1>();
+    }
+
+    #[test]
+    fn labelled_expectation_agrees_with_the_naive_reference_w2() {
+        labelled_expectation_agrees_with_the_naive_reference::<2>();
+    }
+
+    #[test]
+    fn bucketed_labelled_expectation_agrees_across_partitions() {
+        // The sign parity is accumulated inside a bucket, so a partition
+        // change must not move the value (beyond float re-association).
+        let alphabet: Vec<char> = "01+-rl".chars().collect();
+        let mut rng = Xs64::new(0xB60);
+        let labels: String = (0..100)
+            .map(|_| alphabet[(rng.next_u64() % 6) as usize])
+            .collect();
+        let basis = basis_from_labels::<2>(&labels);
+        let sum = low_weight_sum::<2>(20_000, 100, 3, 0xB61);
+        let want = sum.expectation_product_basis(&basis);
+        for bits in [0u8, 3, 7, 11] {
+            let h = Gf2Hash::<2>::new(100, bits, 0xB62);
+            let b = sum.clone().with_hash(h);
+            let got = b.expectation_product_basis(&basis);
+            assert!((got - want).norm() < 1e-9, "bits={bits}: {got} vs {want}");
+        }
     }
 
     #[test]

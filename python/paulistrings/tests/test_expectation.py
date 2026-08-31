@@ -1,5 +1,8 @@
 """``PauliSum.expectation`` / ``overlap`` / ``identity_coefficient``.
 
+The uniform ``state`` shorthands (``"x+"``, ``"y+"``, ``"z+"``) live here;
+per-qubit label strings (``"01+-"``) are covered by ``test_product_states.py``.
+
 Note CI does not run these (see CLAUDE.md); run locally with
 ``maturin develop --release`` then ``pytest python/paulistrings/tests``.
 """

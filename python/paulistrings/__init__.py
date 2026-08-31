@@ -8,14 +8,17 @@ re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 """
 
 from . import _paulistrings
-from ._paulistrings import Circuit, PauliSum, reset_log_cache
+from ._paulistrings import Circuit, PauliSum, PropagationStats, reset_log_cache
 from . import gates, noise, truncation
+from . import interop
 
 __all__ = [
     "Circuit",
     "PauliSum",
+    "PropagationStats",
     "gates",
     "noise",
     "truncation",
+    "interop",
     "reset_log_cache",
 ]

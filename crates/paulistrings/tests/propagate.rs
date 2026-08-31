@@ -20,6 +20,7 @@
 
 use num_complex::Complex64;
 use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
+use paulistrings::test_support::approx_eq;
 use paulistrings::truncation::{CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
@@ -30,10 +31,6 @@ const TOL: f64 = 1e-12;
 /// No-op truncation policy: keeps every term, no per-layer pass.
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
-
-fn approx_eq(a: Complex64, b: Complex64) -> bool {
-    (a - b).norm() <= TOL
-}
 
 /// Build a `PauliSum<1>` from a list of `(PauliString, coeff)` pairs via
 /// `BuildAccumulator`. Public-API alternative to the test-only
@@ -99,7 +96,7 @@ fn single_layer_h_conjugates_z_to_x() {
     let x = PauliString::<1>::x(0);
     assert_eq!(out.bucket(0).0[0], x.x);
     assert_eq!(out.bucket(0).1[0], x.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -110,7 +107,7 @@ fn single_layer_h_conjugates_x_to_z() {
     let z = PauliString::<1>::z(0);
     assert_eq!(out.bucket(0).0[0], z.x);
     assert_eq!(out.bucket(0).1[0], z.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -122,7 +119,7 @@ fn single_layer_s_conjugates_x_to_y() {
     let y = PauliString::<1>::y(0);
     assert_eq!(out.bucket(0).0[0], y.x);
     assert_eq!(out.bucket(0).1[0], y.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -136,7 +133,7 @@ fn single_layer_cnot_propagates_z_control() {
     let _ = expected.mul_assign(&PauliString::<2>::z(1));
     assert_eq!(out.bucket(0).0[0], expected.x);
     assert_eq!(out.bucket(0).1[0], expected.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -149,7 +146,7 @@ fn single_layer_cnot_propagates_x_target() {
     let _ = expected.mul_assign(&PauliString::<2>::x(1));
     assert_eq!(out.bucket(0).0[0], expected.x);
     assert_eq!(out.bucket(0).1[0], expected.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -177,10 +174,11 @@ fn single_layer_pauli_rotation_pi_z_flips_x_sign() {
             found_y = Some(out.bucket(0).2[i]);
         }
     }
-    assert!(approx_eq(found_x.unwrap(), Complex64::new(-1.0, 0.0)));
+    assert!(approx_eq(found_x.unwrap(), Complex64::new(-1.0, 0.0), TOL));
     assert!(approx_eq(
         found_y.unwrap_or(Complex64::new(0.0, 0.0)),
-        Complex64::new(0.0, 0.0)
+        Complex64::new(0.0, 0.0),
+        TOL
     ));
 }
 
@@ -200,7 +198,7 @@ fn single_layer_identity_channel_passes_sum_through() {
     assert_eq!(ox, ix);
     assert_eq!(oz, iz);
     for (o, i) in oc.iter().zip(ic.iter()) {
-        assert!(approx_eq(*o, *i));
+        assert!(approx_eq(*o, *i, TOL));
     }
 }
 
@@ -214,7 +212,7 @@ fn single_layer_w2_word_boundary() {
     let x = PauliString::<2>::x(64);
     assert_eq!(out.bucket(0).0[0], x.x);
     assert_eq!(out.bucket(0).1[0], x.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -228,7 +226,7 @@ fn propagate_zero_channel_circuit_returns_input() {
     assert_eq!(ox, ix);
     assert_eq!(oz, iz);
     for (o, i) in oc.iter().zip(ic.iter()) {
-        assert!(approx_eq(*o, *i));
+        assert!(approx_eq(*o, *i, TOL));
     }
 }
 
@@ -242,7 +240,7 @@ fn propagate_two_h_layers_is_identity() {
     assert_eq!(out.len(), 1);
     assert_eq!(out.bucket(0).0[0], PauliString::<1>::z(0).x);
     assert_eq!(out.bucket(0).1[0], PauliString::<1>::z(0).z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -266,7 +264,7 @@ fn propagate_pauli_rotation_round_trip_via_heisenberg() {
             found_x = Some(round_trip.bucket(0).2[i]);
         }
     }
-    assert!(approx_eq(found_x.unwrap(), Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(found_x.unwrap(), Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -287,7 +285,8 @@ fn propagate_clifford_s_round_trip_via_heisenberg() {
     assert_eq!(round_trip.bucket(0).1[0], PauliString::<1>::x(0).z);
     assert!(approx_eq(
         round_trip.bucket(0).2[0],
-        Complex64::new(1.0, 0.0)
+        Complex64::new(1.0, 0.0),
+        TOL
     ));
 }
 
@@ -335,7 +334,7 @@ fn single_layer_weight_cutoff_drops_high_weight() {
     let z0 = PauliString::<2>::z(0);
     assert_eq!(out.bucket(0).0[0], z0.x);
     assert_eq!(out.bucket(0).1[0], z0.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 /// Slice 7.3 end-to-end: `TopN(1)` threads through `propagate` via
@@ -384,7 +383,7 @@ fn single_layer_with_threshold_drops_below_eps() {
     assert_eq!(out.len(), 1);
     assert_eq!(out.bucket(0).0[0], PauliString::<1>::z(0).x);
     assert_eq!(out.bucket(0).1[0], PauliString::<1>::z(0).z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
 }
 
 #[test]
@@ -408,8 +407,12 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
     // Coeffs: X = -2, Y = 3.
     assert_eq!(out.bucket(0).0[0], x.x);
     assert_eq!(out.bucket(0).1[0], x.z);
-    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(-2.0, 0.0)));
+    assert!(approx_eq(
+        out.bucket(0).2[0],
+        Complex64::new(-2.0, 0.0),
+        TOL
+    ));
     assert_eq!(out.bucket(0).0[1], y.x);
     assert_eq!(out.bucket(0).1[1], y.z);
-    assert!(approx_eq(out.bucket(0).2[1], Complex64::new(3.0, 0.0)));
+    assert!(approx_eq(out.bucket(0).2[1], Complex64::new(3.0, 0.0), TOL));
 }

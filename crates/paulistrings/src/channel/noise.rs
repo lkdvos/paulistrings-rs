@@ -243,6 +243,7 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
 mod tests {
     use super::*;
     use crate::pauli_string::PauliString;
+    use crate::test_support::{alloc_bufs, approx_eq};
 
     // ---- AmplitudeDamping adjoint (v0.2 B.8) ----
     //
@@ -251,32 +252,20 @@ mod tests {
     // the real adjoint: the transpose of the forward Pauli-transfer matrix.
 
     /// Collect the outputs of `apply` or `apply_adjoint` on one input.
+    ///
+    /// Emission order, zeros included — these tests assert on row *positions*,
+    /// so the normalizing `test_support::outputs` would not do.
     fn outputs<const W: usize>(
         ch: &AmplitudeDamping,
         adjoint: bool,
         p: PauliString<W>,
     ) -> Vec<(PauliString<W>, Complex64)> {
-        let mut bx = vec![[0u64; W]; 2];
-        let mut bz = vec![[0u64; W]; 2];
-        let mut bc = vec![Complex64::new(0.0, 0.0); 2];
-        let mut len = 0usize;
-        {
-            let mut out = OutputBuffer::<W> {
-                x: &mut bx,
-                z: &mut bz,
-                coeff: &mut bc,
-                len: &mut len,
-            };
-            let one = Complex64::new(1.0, 0.0);
-            if adjoint {
-                Channel::<W>::apply_adjoint(ch, &p.x, &p.z, one, &mut out);
-            } else {
-                Channel::<W>::apply(ch, &p.x, &p.z, one, &mut out);
-            }
-        }
-        (0..len)
-            .map(|i| (PauliString::<W> { x: bx[i], z: bz[i] }, bc[i]))
-            .collect()
+        crate::test_support::raw_outputs::<W, AmplitudeDamping>(
+            ch,
+            adjoint,
+            p,
+            Complex64::new(1.0, 0.0),
+        )
     }
 
     /// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the
@@ -445,22 +434,6 @@ mod tests {
 
     const TOL: f64 = 1e-12;
 
-    #[allow(clippy::type_complexity)]
-    fn make_buf<const W: usize>(
-        cap: usize,
-    ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-        (
-            vec![[0u64; W]; cap],
-            vec![[0u64; W]; cap],
-            vec![Complex64::new(0.0, 0.0); cap],
-            0,
-        )
-    }
-
-    fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
-        (a - b).norm() <= tol
-    }
-
     /// Identity on the support qubit is preserved exactly — coefficient
     /// rescaling does not touch the I sector.
     #[test]
@@ -470,7 +443,7 @@ mod tests {
             p: 0.1,
         };
         let p = PauliString::<1>::identity();
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
         let mut buf = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
@@ -495,7 +468,7 @@ mod tests {
             PauliString::<1>::y(0),
             PauliString::<1>::z(0),
         ] {
-            let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
+            let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
             let mut buf = OutputBuffer::<1> {
                 x: &mut bx,
                 z: &mut bz,
@@ -526,7 +499,7 @@ mod tests {
             p: 0.2,
         };
         let p = PauliString::<1>::z(1);
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
         let mut buf = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
@@ -547,7 +520,7 @@ mod tests {
         let scale = 1.0 - 4.0 * p / 3.0;
         // X on qubit 64 → word-1 x-bit set.
         let pauli = PauliString::<2>::x(64);
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<2>(1);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(1);
         let mut buf = OutputBuffer::<2> {
             x: &mut bx,
             z: &mut bz,
@@ -575,7 +548,7 @@ mod tests {
             p: 0.3,
         };
         for pauli in [PauliString::<1>::identity(), PauliString::<1>::z(0)] {
-            let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
+            let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
             let mut buf = OutputBuffer::<1> {
                 x: &mut bx,
                 z: &mut bz,
@@ -603,7 +576,7 @@ mod tests {
         let ch = Dephasing { support: [0], p };
         let scale = 1.0 - 2.0 * p;
         for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
-            let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(1);
+            let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
             let mut buf = OutputBuffer::<1> {
                 x: &mut bx,
                 z: &mut bz,
@@ -631,7 +604,7 @@ mod tests {
         let ch = Dephasing { support: [64], p };
         let scale = 1.0 - 2.0 * p;
         let pauli = PauliString::<2>::x(64);
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<2>(1);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(1);
         let mut buf = OutputBuffer::<2> {
             x: &mut bx,
             z: &mut bz,
@@ -658,7 +631,7 @@ mod tests {
             gamma: 0.3,
         };
         let p = PauliString::<1>::identity();
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
         let mut buf = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
@@ -688,7 +661,7 @@ mod tests {
         };
         let scale = (1.0 - gamma).sqrt();
         for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
-            let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
+            let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
             let mut buf = OutputBuffer::<1> {
                 x: &mut bx,
                 z: &mut bz,
@@ -720,7 +693,7 @@ mod tests {
             gamma,
         };
         let p = PauliString::<1>::z(0);
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<1>(2);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
         let mut buf = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
@@ -756,7 +729,7 @@ mod tests {
             gamma,
         };
         let p = PauliString::<2>::z(64);
-        let (mut bx, mut bz, mut bc, mut len) = make_buf::<2>(2);
+        let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(2);
         let mut buf = OutputBuffer::<2> {
             x: &mut bx,
             z: &mut bz,

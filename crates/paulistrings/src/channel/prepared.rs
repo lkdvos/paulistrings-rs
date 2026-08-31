@@ -405,22 +405,9 @@ mod tests {
     use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
     use crate::channel::rotation::PauliRotation;
 
-    const TOL: f64 = 1e-12;
+    use crate::test_support::Xs64;
 
-    struct Xs64(u64);
-    impl Xs64 {
-        fn new(seed: u64) -> Self {
-            Self(seed | 1)
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-    }
+    const TOL: f64 = 1e-12;
 
     type Term<const W: usize> = ([u64; W], [u64; W], Complex64);
 

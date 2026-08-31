@@ -197,13 +197,10 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::approx_eq;
     use crate::truncation::CoefficientThreshold;
 
     const TOL: f64 = 1e-12;
-
-    fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
-        (a - b).norm() <= tol
-    }
 
     /// Truncation policy that always keeps terms — exercises the trait bound
     /// without filtering anything out.

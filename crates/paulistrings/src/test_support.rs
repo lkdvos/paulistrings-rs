@@ -106,6 +106,16 @@ impl Xs64 {
         self.0 = x;
         x
     }
+
+    /// `W` consecutive draws, word 0 first.
+    #[inline]
+    pub fn next_array<const W: usize>(&mut self) -> [u64; W] {
+        let mut a = [0u64; W];
+        for slot in a.iter_mut() {
+            *slot = self.next_u64();
+        }
+        a
+    }
 }
 
 /// Mask of the bits of word `word` that belong to a `num_qubits`-qubit key.
@@ -144,6 +154,228 @@ pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> Pauli
         acc.add_term(p, Phase::ONE, Complex64::new(re, im));
     }
     acc.finalize()
+}
+
+/// As [`rand_sum`], but coefficients are **real** — one draw per term instead
+/// of two.
+///
+/// A separate generator rather than a flag because the draw order differs
+/// (`…, re` versus `…, re, im`), so the two produce completely different
+/// streams from the same seed. Fixtures seeded through this one are pinned to
+/// it; do not "unify" the two.
+pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for _ in 0..n {
+        let mut p = PauliString::<W> {
+            x: [0u64; W],
+            z: [0u64; W],
+        };
+        for w in 0..W {
+            let m = word_mask(num_qubits, w);
+            p.x[w] = rng.next_u64() & m;
+            p.z[w] = rng.next_u64() & m;
+        }
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
+    }
+    acc.finalize()
+}
+
+/// A dense random key with **no** masking: all `W` `x` words first, then all
+/// `W` `z` words.
+///
+/// Valid only when `num_qubits` is a multiple of 64 — every bit it sets must be
+/// a live qubit or `BuildAccumulator` will reject the term. The draw order is
+/// word-major (`x[0..W]` then `z[0..W]`), *not* the per-word interleave
+/// [`rand_sum`] uses, so the two disagree from `W = 2` up.
+pub fn rand_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
+    PauliString::<W> {
+        x: rng.next_array::<W>(),
+        z: rng.next_array::<W>(),
+    }
+}
+
+/// `n` dense random terms built from [`rand_pauli`] — the benchmark input
+/// recipe, whose seeds are pinned by the committed criterion baselines.
+///
+/// Distinct stream from [`rand_sum`]; see [`rand_pauli`] for why.
+pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for _ in 0..n {
+        let p = rand_pauli::<W>(&mut rng);
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+    }
+    acc.finalize()
+}
+
+/// A Pauli string of Hamming weight `weight` over `num_qubits` qubits.
+///
+/// This is the *realistic* occupancy regime: physical Hamiltonians are
+/// low-weight, and `WeightCutoff` truncation keeps them that way. The dense
+/// [`rand_pauli`] is the opposite extreme. Any bucketing scheme derived from
+/// key bits behaves very differently on the two, so both are benched.
+///
+/// Index-bounded by construction (`q` is drawn `mod num_qubits`), so — unlike
+/// [`rand_pauli`] — it needs no masking pass and is safe at any qubit count.
+pub fn low_weight_pauli<const W: usize>(
+    rng: &mut Xs64,
+    num_qubits: usize,
+    weight: usize,
+) -> PauliString<W> {
+    let mut p = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    for _ in 0..weight {
+        let q = (rng.next_u64() as usize) % num_qubits;
+        let word = q / 64;
+        let bit = 1u64 << (q % 64);
+        // Pick one of X, Z, Y (never I, or the weight would not be `weight`).
+        match rng.next_u64() % 3 {
+            0 => p.x[word] |= bit,
+            1 => p.z[word] |= bit,
+            _ => {
+                p.x[word] |= bit;
+                p.z[word] |= bit;
+            }
+        }
+    }
+    p
+}
+
+/// As [`rand_sum_unmasked`], but with low-weight keys from
+/// [`low_weight_pauli`]. Collisions are far more likely here, so the realized
+/// length can be noticeably below `n`.
+pub fn low_weight_sum<const W: usize>(
+    n: usize,
+    num_qubits: usize,
+    weight: usize,
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for _ in 0..n {
+        let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+    }
+    acc.finalize()
+}
+
+/// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any
+/// cut through the sum lands inside a tie group spanning a quarter of it.
+///
+/// Not a contrived case: a symmetric Hamiltonian on a periodic lattice
+/// produces many terms related by lattice symmetry with *exactly* equal
+/// coefficients, which is why the 2D Ising example hits it — and why `TopN`
+/// has a tie rule at all (v0.3 §3).
+pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    let base = rand_sum::<W>(n, num_qubits, seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for (i, (x, z, _)) in base.iter().enumerate() {
+        let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
+        acc.add_term(
+            PauliString::<W> { x: *x, z: *z },
+            Phase::ONE,
+            Complex64::new(mag, 0.0),
+        );
+    }
+    acc.finalize()
+}
+
+/// [`tie_heavy_sum`] over [`rand_pauli`] keys instead of [`rand_sum`] ones —
+/// the benchmark variant, whose seeds are pinned by the criterion baselines.
+///
+/// Same tie structure, different key stream (and no coefficient draws at all,
+/// so it is not merely a re-magnituded [`rand_sum_unmasked`]).
+pub fn tie_heavy_sum_unmasked<const W: usize>(
+    n: usize,
+    num_qubits: usize,
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for i in 0..n {
+        let p = rand_pauli::<W>(&mut rng);
+        let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
+        acc.add_term(p, Phase::ONE, Complex64::new(mag, 0.0));
+    }
+    acc.finalize()
+}
+
+/// Output-buffer columns plus a zeroed cursor, sized for `n` rows.
+///
+/// Returned as a tuple rather than an [`OutputBuffer`] because the buffer
+/// borrows its columns: the caller has to own them, then build the borrow in a
+/// narrower scope.
+#[allow(clippy::type_complexity)]
+pub fn alloc_bufs<const W: usize>(
+    n: usize,
+) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
+    (
+        vec![[0u64; W]; n],
+        vec![[0u64; W]; n],
+        vec![ZERO; n],
+        0usize,
+    )
+}
+
+/// Complex numbers equal to within `tol`.
+pub fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
+    (a - b).norm() <= tol
+}
+
+/// One channel application, normalized the way the merge phase would leave it:
+/// exact-ish zeros dropped and rows sorted by key.
+///
+/// Use this to compare two channels' *mathematical* action. When the emission
+/// order or the presence of a zero row is itself the thing under test, use
+/// [`raw_outputs`] instead.
+pub fn outputs<const W: usize, C: Channel<W> + ?Sized>(
+    ch: &C,
+    adjoint: bool,
+    p: PauliString<W>,
+    coeff: Complex64,
+) -> Vec<([u64; W], [u64; W], Complex64)> {
+    let mut v = raw_outputs(ch, adjoint, p, coeff)
+        .into_iter()
+        .map(|(q, c)| (q.x, q.z, c))
+        .collect::<Vec<_>>();
+    v.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    v.retain(|t| t.2.norm() > 1e-15);
+    v
+}
+
+/// One channel application, exactly as emitted: buffer order, zeros included.
+pub fn raw_outputs<const W: usize, C: Channel<W> + ?Sized>(
+    ch: &C,
+    adjoint: bool,
+    p: PauliString<W>,
+    coeff: Complex64,
+) -> Vec<(PauliString<W>, Complex64)> {
+    let f = ch.max_fanout().max(1);
+    let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<W>(f);
+    {
+        let mut out = OutputBuffer::<W> {
+            x: &mut bx,
+            z: &mut bz,
+            coeff: &mut bc,
+            len: &mut len,
+        };
+        if adjoint {
+            ch.apply_adjoint(&p.x, &p.z, coeff, &mut out);
+        } else {
+            ch.apply(&p.x, &p.z, coeff, &mut out);
+        }
+    }
+    (0..len)
+        .map(|i| (PauliString::<W> { x: bx[i], z: bz[i] }, bc[i]))
+        .collect()
 }
 
 /// `(x, z, coeff)` triples sorted by the `(x, z)` key.

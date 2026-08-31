@@ -2171,32 +2171,12 @@ mod tie_tests {
         }
     }
 
-    use super::tests::{assert_same_terms, canonical_triples, rand_sum};
+    use super::tests::{assert_same_terms, canonical_triples};
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
+    use crate::test_support::{rand_sum, tie_heavy_sum};
     use crate::truncation::builtin::TopN;
-
-    /// A sum whose coefficients take only a handful of distinct magnitudes, so
-    /// `TopN` is guaranteed to cut through a large tie group.
-    ///
-    /// This is not a contrived case: a symmetric Hamiltonian on a periodic
-    /// lattice produces many terms related by lattice symmetry with *exactly*
-    /// equal coefficients, which is why the 2D Ising example hits it.
-    fn tie_heavy_sum(n: usize, num_qubits: usize, seed: u64) -> PauliSum<1> {
-        let base = rand_sum::<1>(n, num_qubits, seed);
-        let mut acc = crate::accumulator::BuildAccumulator::<1>::with_capacity(num_qubits, n);
-        for (i, (x, z, _)) in base.iter().enumerate() {
-            // Only 4 distinct magnitudes across the whole sum.
-            let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-            acc.add_term(
-                PauliString::<1> { x: *x, z: *z },
-                Phase::ONE,
-                Complex64::new(mag, 0.0),
-            );
-        }
-        acc.finalize()
-    }
 
     /// A direct, deliberately naive transcription of the v0.3 §3 rule, used as
     /// an oracle for the production `finalize_layer`.
@@ -2236,7 +2216,7 @@ mod tie_tests {
     /// through a bucket index) would show up.
     #[test]
     fn top_n_is_bucket_count_independent_on_tied_magnitudes() {
-        let input = tie_heavy_sum(2000, 8, 0x7135);
+        let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
         let n = 700; // cuts inside the group of magnitude-0.5 terms
         let reference = {
             let hash = Gf2Hash::<1>::new(8, 0, 0x99);
@@ -2267,7 +2247,7 @@ mod tie_tests {
     /// it ever stops exercising one of the two branches.
     #[test]
     fn top_n_matches_the_reference_rule_on_tied_magnitudes() {
-        let input = tie_heavy_sum(2000, 8, 0x7136);
+        let input = tie_heavy_sum::<1>(2000, 8, 0x7136);
         let len = input.len();
 
         // Cumulative sizes of the magnitude groups, descending: an `n` equal to
@@ -2328,7 +2308,7 @@ mod tie_tests {
     /// without changing anything about the magnitudes.
     #[test]
     fn top_n_is_hash_seed_independent_on_tied_magnitudes() {
-        let input = tie_heavy_sum(2000, 8, 0x7123);
+        let input = tie_heavy_sum::<1>(2000, 8, 0x7123);
         let n = 700;
         let reference = {
             let hash = Gf2Hash::<1>::new(8, 5, 1);
@@ -2354,7 +2334,7 @@ mod tie_tests {
     /// hide, so this is checked on the real partition rather than at `B = 1`.
     #[test]
     fn top_n_drops_a_straddling_group_from_every_bucket() {
-        let input = tie_heavy_sum(2000, 8, 0x71C0);
+        let input = tie_heavy_sum::<1>(2000, 8, 0x71C0);
         let n = 700;
         // t is the 700th largest magnitude; the group at t straddles the cut.
         let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();

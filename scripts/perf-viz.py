@@ -12,7 +12,11 @@ renders whichever of the following exist (see the docstrings on each
     <prefix>.json                      criterion snapshot (criterion-report.py format)
     <prefix>-probe.json                one JSON object per line, engine phase timings
     <prefix>-scaling-<placement>.json  criterion snapshot, thread-scaling groups
-    bandwidth.txt (same directory)     memory-bandwidth ceiling sections
+    bandwidth.txt (same directory)     memory-bandwidth ceiling sections; an optional
+                                        leading "# ceiling-map: ..." header (see
+                                        scripts/bandwidth.sh) picks which section is the
+                                        roofline ceiling per thread count, else a
+                                        hard-coded ccqlin038-shaped table is used
 
 Output is written to ``<prefix>-report.html`` and its path printed on
 success. Exits 1 only when *none* of the input files exist.
@@ -264,17 +268,64 @@ def load_scaling_files(prefix: Path, missing: list) -> dict:
     return result
 
 
-def load_bandwidth(dir_path: Path, missing: list) -> list:
-    """Parse bandwidth.txt into a list of (section_label, {kernel: best_gbps})."""
+def parse_ceiling_map(line: str) -> Optional[dict]:
+    """Parse a ``# ceiling-map: <key>=<label>;...`` header line (emitted as
+    the first line of bandwidth.txt by scripts/bandwidth.sh) into
+    ``{threads_int: section_label, ..., "default": section_label}``.
+
+    Keys are thread counts or the literal ``default``; labels must match a
+    ``=== <label> ===`` section name elsewhere in the same file (not
+    validated here — an unmatched label just means that ceiling stays
+    unavailable, handled by ``triad_ceiling_gbps``). Unparseable entries
+    (bad int, no ``=``, empty label) are skipped rather than raising, so a
+    partially-malformed header still contributes whatever it can. Returns
+    ``None`` if the line isn't a ceiling-map header at all, or nothing
+    usable was parsed from it.
+    """
+    m = re.match(r"^#\s*ceiling-map:\s*(.+)$", line.strip())
+    if not m:
+        return None
+    result: dict = {}
+    for entry in m.group(1).split(";"):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        key, _, label = entry.partition("=")
+        key = key.strip()
+        label = label.strip()
+        if not label:
+            continue
+        if key == "default":
+            result["default"] = label
+        else:
+            try:
+                result[int(key)] = label
+            except ValueError:
+                continue  # unknown/malformed key: ignore, keep the rest
+    return result or None
+
+
+def load_bandwidth(dir_path: Path, missing: list) -> tuple:
+    """Parse bandwidth.txt into (sections, ceiling_map).
+
+    ``sections`` is a list of (section_label, {kernel: best_gbps}).
+    ``ceiling_map`` is the parsed ``# ceiling-map:`` header (see
+    ``parse_ceiling_map``) or ``None`` when the file has no such header —
+    callers fall back to the hard-coded ``_BW_SECTION_BY_THREADS`` /
+    ``_BW_SECTION_DEFAULT`` in that case, so older campaign dirs render the
+    same as before this map became data-driven.
+    """
     path = dir_path / "bandwidth.txt"
     if not path.exists():
         missing.append("bandwidth.txt")
-        return []
+        return [], None
     try:
         lines = path.read_text(errors="replace").splitlines()
     except OSError:
         missing.append("bandwidth.txt")
-        return []
+        return [], None
+
+    ceiling_map = parse_ceiling_map(lines[0]) if lines else None
 
     sections = []
     current_label = None
@@ -299,15 +350,18 @@ def load_bandwidth(dir_path: Path, missing: list) -> list:
             current_kernels[kernel] = best_gbps
     if current_label is not None and current_kernels:
         sections.append((current_label, current_kernels))
-    return sections
+    return sections, ceiling_map
 
 
 # --------------------------------------------------------------------------
 # DRAM traffic model (% of bandwidth ceiling)
 # --------------------------------------------------------------------------
 
-# Bandwidth.txt section chosen by thread count. Matched against the "==="
-# labels load_bandwidth() parses; keep in sync with membench's section names.
+# Fallback bandwidth.txt section chosen by thread count, used only when the
+# file has no ``# ceiling-map:`` header (see parse_ceiling_map) — i.e. older
+# campaign dirs, or a bandwidth.sh predating that header. Matched against the
+# "===" labels load_bandwidth() parses; this hard-codes ccqlin038's topology,
+# which is exactly the hidden coupling the header line exists to remove.
 _BW_SECTION_BY_THREADS = [
     (1, "1 core, node0 local"),
     (8, "node0, 8 physical"),
@@ -316,21 +370,39 @@ _BW_SECTION_BY_THREADS = [
 _BW_SECTION_DEFAULT = "both sockets, 32 threads"
 
 
-def bandwidth_section_label(threads: int) -> str:
+def bandwidth_section_label(threads: int, ceiling_map: Optional[dict] = None) -> str:
+    """Which bandwidth.txt section is the roofline ceiling for ``threads``.
+
+    When ``ceiling_map`` is given (parsed from a bandwidth.txt
+    ``# ceiling-map:`` header — see ``parse_ceiling_map``), it entirely
+    replaces the hard-coded table below: numeric keys are matched the same
+    way (smallest key >= threads), falling back to its own ``"default"``
+    entry. Absent a map (old campaign dirs, or bandwidth.txt with no
+    header), the hard-coded ccqlin038-shaped table is used, unchanged.
+    """
+    if ceiling_map:
+        numeric_keys = sorted(k for k in ceiling_map if isinstance(k, int))
+        for max_t in numeric_keys:
+            if threads <= max_t:
+                return ceiling_map[max_t]
+        return ceiling_map.get("default", _BW_SECTION_DEFAULT)
     for max_t, label in _BW_SECTION_BY_THREADS:
         if threads <= max_t:
             return label
     return _BW_SECTION_DEFAULT
 
 
-def triad_ceiling_gbps(bandwidth_sections: list, threads: int):
+def triad_ceiling_gbps(bandwidth_sections: list, threads: int, ceiling_map: Optional[dict] = None):
     """Return (best_gbps, section_label) for the TRIAD kernel at this thread
-    count, or (None, section_label) if bandwidth.txt is absent/missing that
-    section."""
-    label = bandwidth_section_label(threads)
+    count, or (None, section_label) if bandwidth.txt is absent, missing that
+    section, the section has no triad kernel line, or (defensively) the
+    triad line reads zero — all of those mean "no usable ceiling", not a
+    crash."""
+    label = bandwidth_section_label(threads, ceiling_map)
     for sec_label, kmap in bandwidth_sections:
         if sec_label == label:
-            return kmap.get("triad"), label
+            triad = kmap.get("triad")
+            return (triad if triad else None), label
     return None, label
 
 
@@ -343,7 +415,7 @@ def dram_traffic_bytes_per_term(qubits: Optional[int]) -> Optional[int]:
     return 16 * w + 16
 
 
-def dram_metric(row: dict, bandwidth_sections: list) -> Optional[dict]:
+def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict] = None) -> Optional[dict]:
     """Model DRAM traffic per layer for one probe row (Change 3).
 
     Returns None if the metric cannot be modeled at all (no qubits/wall_ns).
@@ -417,12 +489,18 @@ def dram_metric(row: dict, bandwidth_sections: list) -> Optional[dict]:
         return {"gbps": None, "pct": None, "ceiling": None, "section": None, "title": None}
 
     gbps = bytes_per_layer * layers / (wall_ns / 1e9) / 1e9
-    ceiling, section = triad_ceiling_gbps(bandwidth_sections, threads)
+    ceiling, section = triad_ceiling_gbps(bandwidth_sections, threads, ceiling_map)
+    # A ceiling of exactly 0 is nonsensical (and would divide-by-zero below);
+    # treat it the same as "no ceiling found" rather than propagating a
+    # falsy-but-not-None value that would otherwise dodge the `is not None`
+    # checks downstream and format a None pct.
+    if not ceiling or ceiling <= 0:
+        ceiling = None
     pct = (gbps / ceiling * 100.0) if ceiling else None
 
     title = f"T = 16×ceil({qubits}/64)+16 = {T} B/term. bytes/layer = {formula}. "
     title += f"GB/s = bytes×layers/(wall_ns/1e9)/1e9 = {gbps:.2f} GB/s."
-    if ceiling is not None:
+    if ceiling is not None and pct is not None:
         title += f" Ceiling: '{section}' triad best_gbps = {ceiling:.2f} GB/s -> {pct:.1f}% of ceiling."
         if pct > 100.0:
             title += (
@@ -714,7 +792,7 @@ def _phase_cell_svg(row: dict, group_max_cpu_ms: float, uid: str) -> str:
     return "\n".join(parts)
 
 
-def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
+def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_map: Optional[dict] = None) -> str:
     if not probe_rows:
         return '<p class="note">No probe sidecar (.-probe.json) found — phase breakdown unavailable.</p>'
 
@@ -723,7 +801,30 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
         layer = row.get("layer", "?")
         groups.setdefault(layer, []).append(row)
 
+    # Precompute each row's DRAM metric once (reused below by identity, since
+    # `groups` holds the same row dicts as `probe_rows`) and use the pass to
+    # decide up front whether any ceiling was actually available — missing
+    # bandwidth.txt, or a ceiling map/section that doesn't cover the thread
+    # counts this campaign used, degrades every row to "GB/s only, no % of
+    # ceiling" rather than crashing; say so once instead of 32 times over.
+    metrics_by_id = {id(row): dram_metric(row, bandwidth_sections, ceiling_map) for row in probe_rows}
+    any_dram = any(m is not None and m.get("gbps") is not None for m in metrics_by_id.values())
+    any_ceiling = any(m is not None and m.get("ceiling") is not None for m in metrics_by_id.values())
+
     out = [render_legend()]
+    out.append(
+        '<p class="note">How to read the DRAM figure: &gt;100% of ceiling means the '
+        "modeled traffic is largely served from cache, not DRAM (not bandwidth-bound); "
+        "&asymp;100% means the phase is at the memory wall; a low percentage alongside "
+        "high wall time means it is latency-, serial-, or imbalance-bound instead, not "
+        "bandwidth-bound.</p>"
+    )
+    if any_dram and not any_ceiling:
+        out.append(
+            '<p class="note">Bandwidth ceilings unavailable for this campaign (no '
+            "bandwidth.txt, or none of its sections match the thread counts used here) "
+            "— DRAM figures below show modeled GB/s only, with no % of ceiling.</p>"
+        )
 
     for layer in sorted(groups):
         rows = sorted(groups[layer], key=lambda r: r.get("threads", 0))
@@ -753,7 +854,7 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
             uid = _slug(layer, threads)
             bar_svg = _phase_cell_svg(row, group_max_cpu_ms, uid)
 
-            metric = dram_metric(row, bandwidth_sections)
+            metric = metrics_by_id[id(row)]
             if metric is None or metric.get("gbps") is None:
                 dram_html = '<span class="dram-na">DRAM: —</span>'
             elif metric["ceiling"] is None:
@@ -782,10 +883,8 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
     out.append(
         '<p class="note">DRAM figure is a traffic model (see '
         "<code>benchmarks/PROFILING.md</code>), not a measurement; ceiling = membench "
-        "triad at a comparable core count. Over 100% is not an error: it means the "
-        "modeled traffic is mostly served from cache rather than DRAM (small per-coset "
-        "working sets) — the phase is not DRAM-bound. Well below 100% with high wall "
-        "time points at latency, serial phases, or load imbalance instead.</p>"
+        "triad at a comparable core count (see the how-to-read note above for what the "
+        "percentage means).</p>"
     )
     return "\n".join(out)
 
@@ -881,7 +980,12 @@ def render_throughput_chart(probe_rows: list) -> str:
         )
 
     parts.append("</svg>")
-    return "\n".join(parts)
+    note = (
+        '<p class="note">How to read: one line per layer, log-scale y axis '
+        "(strings/sec, from probe wall time). A line that flattens or turns "
+        "down past some thread count has stopped scaling there.</p>"
+    )
+    return "\n".join(parts) + "\n" + note
 
 
 # --------------------------------------------------------------------------
@@ -911,7 +1015,11 @@ def render_thread_scaling(scaling: dict) -> str:
     if not groups:
         return '<p class="note">Scaling snapshots present but no parseable thread-scaling groups.</p>'
 
-    out = []
+    out = [
+        '<p class="note">How to read: solid lines are speedup relative to each '
+        "placement's own 1-thread median; the dashed diagonal is ideal (linear) "
+        "speedup — the gap below it at a given thread count is scaling loss.</p>"
+    ]
     width, height = 640, 380
     margin_l, margin_r, margin_t, margin_b = 60, 90, 20, 40
     plot_w = width - margin_l - margin_r
@@ -1023,7 +1131,13 @@ def render_criterion_table(snapshot: Optional[dict], compare_snapshot: Optional[
     if not snapshot:
         return '<p class="note">No criterion snapshot (.json) found.</p>'
 
-    out = ['<div class="table-wrap"><table>']
+    out = [
+        '<p class="note">How to read: median is per-call wall time, Melem/s is '
+        "throughput (higher is better). With a --compare snapshot, &Delta;% is "
+        "new vs. old median: red (&gt;+5%) is a regression, green (&lt;-5%) an "
+        "improvement — treat it as a prompt to look, not a pass/fail gate.</p>"
+    ]
+    out.append('<div class="table-wrap"><table>')
     header = "<tr><th>bench id</th><th>median</th><th>Melem/s</th>"
     if compare_snapshot is not None:
         header += "<th>old median</th><th>&Delta;%</th>"
@@ -1089,7 +1203,12 @@ def render_bandwidth(sections: list) -> str:
             if k not in kernels:
                 kernels.append(k)
 
-    out = ['<div class="table-wrap"><table>']
+    out = [
+        '<p class="note">How to read: each row is a placement (thread/NUMA affinity), '
+        "each column a STREAM-style kernel's best measured GB/s; these are the "
+        "ceilings the phase-breakdown section's DRAM% figures divide into.</p>"
+    ]
+    out.append('<div class="table-wrap"><table>')
     out.append("<thead><tr><th>placement</th>")
     for k in kernels:
         out.append(f"<th>{esc(k)} (GB/s)</th>")
@@ -1277,7 +1396,7 @@ def build_report(prefix: Path, compare_path: Optional[Path]) -> str:
     if scaling:
         consumed.extend(f"{prefix.name}-scaling-{p}.json" for p in sorted(scaling))
 
-    bandwidth_sections = load_bandwidth(dir_path, missing)
+    bandwidth_sections, ceiling_map = load_bandwidth(dir_path, missing)
     if bandwidth_sections:
         consumed.append("bandwidth.txt")
 
@@ -1308,7 +1427,7 @@ def build_report(prefix: Path, compare_path: Optional[Path]) -> str:
     parts.append(render_header(campaign_name, prov))
 
     parts.append("<h2>Phase breakdown</h2>")
-    parts.append(render_phase_breakdown(probe_rows, bandwidth_sections))
+    parts.append(render_phase_breakdown(probe_rows, bandwidth_sections, ceiling_map))
 
     parts.append("<h2>Throughput vs threads</h2>")
     parts.append(render_throughput_chart(probe_rows))

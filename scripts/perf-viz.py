@@ -46,7 +46,7 @@ WALL_PHASES = [
 ]
 BUSY_PHASES = ["gather", "sort", "merge", "swap", "size", "clear"]
 
-# The one-bar-per-cell layout (v0.4 redesign) splits each row into a serial
+# The one-bar-per-cell layout splits each row into a serial
 # family (the calling thread, drawn muted grey-blue) and a parallel family
 # (the coset-loop workers, drawn saturated) plus a hatched "idle" segment.
 # Every name below maps to exactly one color everywhere it appears in the
@@ -677,7 +677,7 @@ def _phase_cell_svg(row: dict, group_max_cpu_ms: float, uid: str) -> str:
     the coset-loop's busy/idle breakdown. CPU-time scaling keeps rows at high
     thread counts readable (a wall-time scale collapses the 32t row to a
     sliver) and makes growth vs the 1t bar read directly as scaling loss.
-    See CLAUDE.md / the v0.4 perf-viz redesign for the segment layout."""
+    See benchmarks/PROFILING.md for the segment layout."""
     track_w = 460.0
     label_room = 84.0
     height = 24.0

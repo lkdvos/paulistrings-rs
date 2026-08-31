@@ -7,7 +7,7 @@
 #
 # Why this exists: this box's single-shot campaign noise is ~±5-8% at 1
 # thread and ~±10-26% at 8/32 threads -- untouched code has moved that much
-# between campaigns (CLAUDE.md, v0.6 "measurement discipline addendum").
+# between campaigns (see benchmarks/PROFILING.md, Interleaved A/B protocol).
 # Comparing "one campaign per build" therefore cannot resolve the ~5-10%
 # effects the engine work actually produces. This script implements the
 # protocol that can: build *both* sides up front into two separate

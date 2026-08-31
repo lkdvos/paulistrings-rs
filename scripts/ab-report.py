@@ -39,7 +39,7 @@ from typing import Optional
 # Worker busy-time phases of the coset loop, reported by --all-phases. These
 # are summed across every Rayon worker (see benchmarks/PROFILING.md), so they
 # do not sum to wall time -- they are where a traffic/working-set change
-# shows up first, which is why the v0.6 notes quote them alongside wall.
+# shows up first, which is why the results notes quote them alongside wall.
 PHASE_FIELDS = ["gather_ns", "sort_ns", "merge_ns"]
 
 

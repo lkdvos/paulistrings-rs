@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fit thread-scaling models (Amdahl's law and the Universal Scalability Law)
-to criterion benchmark results.
+to criterion benchmark results or campaign snapshots.
 
 Criterion 0.5 writes, for each benchmark id ``<t>`` inside a group
 ``<group>``::
@@ -11,6 +11,12 @@ with the shape ``{"median": {"point_estimate": <ns>}, ...}``.  In this repo
 the thread-scaling groups (``thread_scaling_rotation_1e6``,
 ``thread_scaling_bucketed_rotation_1e6``, ``thread_scaling_bucketed_gu2q``,
 ...) use the thread count as the benchmark id.
+
+Alternatively, pass ``--snapshot FILE [FILE ...]`` to read criterion-report
+JSON snapshots instead. Snapshot format: a JSON object mapping bench id
+(e.g., ``"thread_scaling_bucketed_rotation_1e6/8"``) to
+``{median_ns, mean_ns, stddev_ns, throughput_elems, melem_per_s}``.
+Multiple snapshot files merge (later files override).
 
 For each group this script:
 
@@ -23,10 +29,11 @@ For each group this script:
      a short interpretation (contention- vs coherence-dominated).
 
 Usage:
-    scripts/fit_scaling.py
+    scripts/fit_scaling.py                          # fits all thread_scaling* groups
     scripts/fit_scaling.py --group thread_scaling_bucketed_gu2q
     scripts/fit_scaling.py --group all
-    scripts/fit_scaling.py --group all --criterion-dir target/criterion
+    scripts/fit_scaling.py --snapshot snapshot1.json snapshot2.json
+    scripts/fit_scaling.py --snapshot snapshot.json --group all
 """
 
 import argparse
@@ -38,7 +45,7 @@ import sys
 import numpy as np
 from scipy.optimize import curve_fit
 
-DEFAULT_GROUP = "thread_scaling_bucketed_rotation_1e6"
+DEFAULT_GROUP = "all"
 DEFAULT_CRITERION_DIR = "target/criterion"
 GROUP_PREFIX = "thread_scaling"
 MIN_FIT_POINTS = 3
@@ -106,6 +113,78 @@ def load_group_medians(criterion_dir, group):
         medians[threads] = median_ns
 
     return medians
+
+
+def load_snapshots(snapshot_files):
+    """Load and merge multiple criterion-report snapshots.
+
+    Each snapshot is a JSON object mapping bench id (e.g.,
+    "thread_scaling_bucketed_rotation_1e6/8") to
+    {median_ns, mean_ns, stddev_ns, throughput_elems, melem_per_s}.
+
+    Returns a merged dict with the same structure; later files override.
+    """
+    merged = {}
+    for snapshot_file in snapshot_files:
+        try:
+            with open(snapshot_file) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                print(
+                    f"warning: {snapshot_file}: expected JSON object at root, skipping",
+                    file=sys.stderr,
+                )
+                continue
+            merged.update(data)
+        except (json.JSONDecodeError, IOError) as exc:
+            print(
+                f"warning: {snapshot_file}: could not load ({exc}), skipping",
+                file=sys.stderr,
+            )
+            continue
+    return merged
+
+
+def extract_groups_and_medians_from_snapshots(snapshot_data):
+    """Parse snapshot dict into a dict {group: {thread_count: median_ns}}.
+
+    Bench id format: "thread_scaling_...<group>/<threads>".
+    """
+    groups_dict = {}
+    for bench_id, entry in snapshot_data.items():
+        if "/" not in bench_id:
+            continue
+        # Split on the last "/" to get group and thread count
+        parts = bench_id.rsplit("/", 1)
+        if len(parts) != 2:
+            continue
+        group, thread_str = parts
+        if not group.startswith(GROUP_PREFIX):
+            continue
+        try:
+            threads = int(thread_str)
+        except ValueError:
+            continue
+        try:
+            median_ns = float(entry["median_ns"])
+        except (KeyError, TypeError, ValueError):
+            print(
+                f"warning: {bench_id}: no median_ns or invalid format, skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        if group not in groups_dict:
+            groups_dict[group] = {}
+        groups_dict[group][threads] = median_ns
+
+    return groups_dict
+
+
+def discover_all_groups_from_snapshots(snapshot_data):
+    """Return sorted names of every group in the snapshot data."""
+    groups_dict = extract_groups_and_medians_from_snapshots(snapshot_data)
+    return sorted(groups_dict.keys())
 
 
 # --------------------------------------------------------------------------
@@ -298,7 +377,7 @@ def build_report(group, medians):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Fit Amdahl/USL thread-scaling models to criterion results."
+        description="Fit Amdahl/USL thread-scaling models to criterion results or snapshots."
     )
     parser.add_argument(
         "--group",
@@ -313,27 +392,64 @@ def main(argv=None):
         default=DEFAULT_CRITERION_DIR,
         help=f"Path to criterion's output directory (default: {DEFAULT_CRITERION_DIR})",
     )
+    parser.add_argument(
+        "--snapshot",
+        nargs="+",
+        metavar="FILE",
+        help=(
+            "Read criterion-report snapshot JSON files instead of target/criterion. "
+            "Multiple files merge (later wins)."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    if args.group == "all":
-        groups = discover_all_groups(args.criterion_dir)
-        if not groups:
-            print(
-                f"No groups matching '{GROUP_PREFIX}*' found under "
-                f"'{args.criterion_dir}'."
-            )
+    # Load data from snapshot or criterion directory
+    if args.snapshot:
+        snapshot_data = load_snapshots(args.snapshot)
+        if not snapshot_data:
+            print("No valid snapshot data loaded.")
             return 1
-    else:
-        groups = [args.group]
 
-    any_no_data = False
-    reports = []
-    for group in groups:
-        medians = load_group_medians(args.criterion_dir, group)
-        report, status = build_report(group, medians)
-        reports.append(report)
-        if status == "no_data":
-            any_no_data = True
+        if args.group == "all":
+            groups = discover_all_groups_from_snapshots(snapshot_data)
+            if not groups:
+                print(
+                    f"No groups matching '{GROUP_PREFIX}*' found in snapshot(s)."
+                )
+                return 1
+        else:
+            groups = [args.group]
+
+        groups_dict = extract_groups_and_medians_from_snapshots(snapshot_data)
+        any_no_data = False
+        reports = []
+        for group in groups:
+            medians = groups_dict.get(group, {})
+            report, status = build_report(group, medians)
+            reports.append(report)
+            if status == "no_data":
+                any_no_data = True
+    else:
+        # Use criterion directory (legacy mode)
+        if args.group == "all":
+            groups = discover_all_groups(args.criterion_dir)
+            if not groups:
+                print(
+                    f"No groups matching '{GROUP_PREFIX}*' found under "
+                    f"'{args.criterion_dir}'."
+                )
+                return 1
+        else:
+            groups = [args.group]
+
+        any_no_data = False
+        reports = []
+        for group in groups:
+            medians = load_group_medians(args.criterion_dir, group)
+            report, status = build_report(group, medians)
+            reports.append(report)
+            if status == "no_data":
+                any_no_data = True
 
     print("\n\n".join(reports))
 

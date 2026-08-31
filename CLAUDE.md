@@ -106,11 +106,10 @@ reject an optimization to keep output bits stable.
 
 ## Known gaps
 
-- CI runs Rust only (fmt, clippy, tests, doctests, examples, rustdoc). The PyO3 bindings and
-  `python/paulistrings/tests/` are validated only locally, through the venv above.
-- Two tests in `python/paulistrings/tests/test_expectation.py` fail on a documented `Y`-phase semantic conflict between
-  the Python string parser (which folds an `i` into the coefficient) and the core's `expectation_product_state`. Triage in
-  `research/notes/2026-08-31-python-test-triage.md`; fixing it needs a semantics decision first, not a patch.
+- Everywhere a Pauli string is parsed or read, the convention is Hermitian: a coefficient multiplies the literal Pauli
+  string, and `Y` maps to the symplectic key `(x=1, z=1)` with no phase factor. Phases arise only from products
+  (`mul_assign` returns `i^k` for the caller to fold). History of the one convention conflict this repo had:
+  `research/notes/2026-08-31-python-test-triage.md` (resolved).
 - `PauliSum::from_strings` is `pub(crate)` + `#[cfg(test)]`, so Rust tests build sums through it or `BuildAccumulator`.
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits (other than `PauliRotation`, which overrides
   `prepare` at any generator weight) makes `propagate` **panic** — there is no fallback path. Generalization design in

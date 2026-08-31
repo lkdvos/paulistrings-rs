@@ -97,8 +97,10 @@ impl PauliSumImpl {
 /// Build a `PauliSum<W>` from a `{pauli_string: coefficient}` Python dict.
 ///
 /// Pauli-string format matches the test helper in `pauli_sum.rs`: the
-/// character at index `i` describes qubit `i`. `Y` is `Y_canonical`, i.e.
-/// `i · (x=1, z=1)`, with the `i` factor folded into the coefficient.
+/// character at index `i` describes qubit `i`. Coefficients multiply the
+/// literal Hermitian Pauli string — `Y` maps to the symplectic key
+/// `(x=1, z=1)` with no phase factor, so a Hermitian observable keeps
+/// real coefficients (ARCHITECTURE.md §Data-Model).
 fn parse_terms<const W: usize>(
     num_qubits: usize,
     terms: &Bound<'_, PyDict>,
@@ -119,7 +121,6 @@ fn parse_terms<const W: usize>(
         let c = extract_complex(&val)?;
         let mut x = [0u64; W];
         let mut z = [0u64; W];
-        let mut phase = Phase::ONE;
         for (i, ch) in s.chars().enumerate() {
             let word = i / 64;
             let bit = 1u64 << (i % 64);
@@ -130,7 +131,6 @@ fn parse_terms<const W: usize>(
                 'Y' => {
                     x[word] |= bit;
                     z[word] |= bit;
-                    phase += Phase::I;
                 }
                 other => {
                     return Err(PyValueError::new_err(format!(
@@ -140,7 +140,7 @@ fn parse_terms<const W: usize>(
                 }
             }
         }
-        acc.add_term(PauliString::<W> { x, z }, phase, c);
+        acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
     }
     Ok(acc.finalize())
 }
@@ -176,6 +176,10 @@ impl PauliSum {
     }
 
     /// Build from a `{pauli_string: coefficient}` dict.
+    ///
+    /// Each key is a string of `I/X/Y/Z` characters, one per qubit (index
+    /// `i` addresses qubit `i`). Coefficients multiply the literal Hermitian
+    /// Pauli string, so a Hermitian observable has real coefficients.
     #[classmethod]
     fn from_strings(
         _cls: &Bound<'_, pyo3::types::PyType>,

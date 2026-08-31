@@ -59,7 +59,10 @@ impl<const W: usize> BuildAccumulator<W> {
     /// use num_complex::Complex64;
     ///
     /// let mut acc = BuildAccumulator::<1>::new(2);
-    /// // Add a Y-like term written as i · (X · Z) on qubit 0.
+    /// // Fold a product phase into the stored coefficient: Z·X = +i·Y, so a
+    /// // caller that multiplied Z by X passes the `Phase::I` that
+    /// // `mul_assign` returned, and the stored coefficient at the Y key
+    /// // (x=1, z=1) comes out as i — i.e. the term i·Y, which is Z·X.
     /// acc.add_term(
     ///     PauliString::<1> { x: [1], z: [1] },
     ///     Phase::I,

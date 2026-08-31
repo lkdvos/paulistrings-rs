@@ -167,3 +167,29 @@ Notes for whoever wires this up:
   `pull_request`), not on a separate schedule — the whole point of Stage-1
   Track C was catching drift between the Rust core and the Python surface,
   which only happens if it runs on every PR.
+
+## Resolution (2026-08-31, same day)
+
+**Decision: the core's Hermitian convention wins.** A coefficient multiplies
+the literal Hermitian Pauli string; `Y` maps to the symplectic key
+`(x=1, z=1)` with no phase factor. This is what `PauliString::y`,
+`expectation_product_state`, and the algebra tests (`X·Z = −iY` at bits
+`(1,1)` with phase `i³`) already pinned, and it keeps Hermitian observables
+on real coefficients — the parser's `i`-folding was the outlier.
+
+Changes:
+- `parse_terms` (`crates/paulistrings-py/src/sum.rs`) and the test helper
+  `PauliSum::from_strings` (`crates/paulistrings/src/pauli_sum.rs`) no longer
+  fold a phase for `'Y'`; their doc comments state the Hermitian convention.
+- `BuildAccumulator::add_term`'s doctest reframed: it demonstrates folding a
+  *product* phase (`Z·X = +iY`), which is the mechanism's actual purpose —
+  the mechanics are unchanged.
+- Tests that pinned the folding updated: Python
+  `test_from_strings_with_complex_and_y_phase` → `test_from_strings_y_is_hermitian`;
+  Rust `from_strings_y*_phase_*` → `from_strings_y_is_hermitian` +
+  `from_strings_real_coeffs_stay_real_for_any_y_count`; the `YI` coefficient
+  in `from_strings_sorts_lex_keys`.
+- Both `test_expectation.py` failures now pass: the suite is 71/71.
+
+The CI `python` job (added the same day per the sketch above) keeps the two
+surfaces from drifting again.

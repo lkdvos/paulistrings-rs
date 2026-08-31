@@ -81,10 +81,10 @@ pub enum ProductState {
 impl<const W: usize> PauliSum<W> {
     /// Test-only helper: build a `PauliSum<W>` from `(pauli_str, coeff)`
     /// pairs. Each `pauli_str` is a sequence of `I/X/Y/Z` characters where
-    /// index `i` of the string corresponds to qubit `i`. `Y` characters
-    /// fold one factor of `i` into the coefficient — the bitstring image
-    /// of `Y_canonical` is `(x=1, z=1)` with an implicit `i` factor, so
-    /// `Y_canonical = i · (x=1, z=1)`.
+    /// index `i` of the string corresponds to qubit `i`. Coefficients
+    /// multiply the literal Hermitian Pauli string: `Y` maps to the
+    /// symplectic key `(x=1, z=1)` with no phase factor, matching
+    /// [`PauliString::y`] and `expectation_product_state`.
     ///
     /// `num_qubits` is taken from the length of the first string; all
     /// other strings must match. Routes through `BuildAccumulator`, so
@@ -103,7 +103,6 @@ impl<const W: usize> PauliSum<W> {
             );
             let mut x = [0u64; W];
             let mut z = [0u64; W];
-            let mut phase = Phase::ONE;
             for (i, ch) in s.chars().enumerate() {
                 let word = i / 64;
                 let bit = 1u64 << (i % 64);
@@ -114,13 +113,12 @@ impl<const W: usize> PauliSum<W> {
                     'Y' => {
                         x[word] |= bit;
                         z[word] |= bit;
-                        phase += Phase::I;
                     }
                     other => panic!("unexpected Pauli char {:?} (expected I/X/Y/Z)", other),
                 }
             }
             let p = PauliString::<W> { x, z };
-            acc.add_term(p, phase, *c);
+            acc.add_term(p, Phase::ONE, *c);
         }
         acc.finalize()
     }

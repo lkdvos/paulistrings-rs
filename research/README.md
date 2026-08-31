@@ -25,6 +25,6 @@ Fact sheets and open items:
   only after hardware changes.
 - `notes/2026-08-31-local-ptm-generalization.md` — design sketch for
   supporting custom channels on more than two qubits.
-- `notes/2026-08-31-python-test-triage.md` — the Y-phase semantics conflict
-  between the Python parser and `expectation_product_state`, awaiting a
-  decision.
+- `notes/2026-08-31-python-test-triage.md` — the first execution of the
+  Python test suite, and the Y-phase convention conflict it exposed
+  (resolved: parsers now use the core's Hermitian convention).

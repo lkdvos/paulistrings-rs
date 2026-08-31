@@ -20,20 +20,19 @@ def test_from_strings_round_trip_w1():
     assert coeffs == [0.5 + 0j, 1.0 + 0j]
 
 
-def test_from_strings_with_complex_and_y_phase():
-    # `Y_canonical = i · (x=1, z=1)` — the i factor is folded into the coefficient.
+def test_from_strings_y_is_hermitian():
+    # Coefficients multiply the literal Hermitian Pauli string: "Y" maps to
+    # the symplectic key (x=1, z=1) with no phase factor, so a real input
+    # coefficient stays real.
     s = PauliSum.from_strings({"Y": 1.0}, num_qubits=1)
-    assert s.coefficients() == [0 + 1j]
+    assert s.coefficients() == [1.0 + 0j]
 
 
 def test_from_strings_dedup_and_cancel():
     s = PauliSum.from_strings({"XI": 1.0}, num_qubits=2)
-    # The dict literal already deduplicates by key, so test cancellation by
-    # building with two non-clashing keys that simplify to the same Pauli.
-    # Y on qubit 0 contributes i, so a coefficient of -1j against "Y" with a
-    # plain "Y" coefficient of +1 leaves the imaginary part canceling and the
-    # real part doubling. We only need to confirm the parser handles complex
-    # literals; coefficient cancellation is exercised in Rust unit tests.
+    # The dict literal already deduplicates by key, so there is nothing to
+    # cancel here; coefficient summation and exact-zero dropping are
+    # exercised by the Rust unit tests on BuildAccumulator.
     assert len(s) == 1
 
 

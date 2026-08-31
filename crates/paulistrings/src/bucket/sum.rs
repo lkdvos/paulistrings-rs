@@ -2446,33 +2446,25 @@ mod tests {
     }
 
     #[test]
-    fn from_strings_y_includes_i_phase() {
-        // Y_canonical = i · (x=1, z=1). Caller writes coeff=1, stored is i.
+    fn from_strings_y_is_hermitian() {
+        // Coefficients multiply the literal Hermitian Pauli string: "Y" maps
+        // to the symplectic key (x=1, z=1) with no phase factor, matching
+        // PauliString::y and expectation_product_state.
         let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
         assert_eq!(s.bucket(0).0[0], [1u64]);
         assert_eq!(s.bucket(0).1[0], [1u64]);
-        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 1.0));
-    }
-
-    #[test]
-    fn from_strings_yy_phase_minus_one() {
-        // i^2 = -1.
-        let s = PauliSum::<1>::from_strings(&[("YY", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.bucket(0).2[0], Complex64::new(-1.0, 0.0));
-    }
-
-    #[test]
-    fn from_strings_yyy_phase_minus_i() {
-        // i^3 = -i.
-        let s = PauliSum::<1>::from_strings(&[("YYY", Complex64::new(1.0, 0.0))]);
-        assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, -1.0));
-    }
-
-    #[test]
-    fn from_strings_yyyy_phase_one() {
-        // i^4 = 1.
-        let s = PauliSum::<1>::from_strings(&[("YYYY", Complex64::new(1.0, 0.0))]);
         assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
+    }
+
+    #[test]
+    fn from_strings_real_coeffs_stay_real_for_any_y_count() {
+        // A Hermitian observable keeps real coefficients regardless of how
+        // many Y characters a term contains — no per-Y phase is folded.
+        for s in ["Y", "YY", "YYY", "YYYY"] {
+            let padded: String = format!("{s:I<4}");
+            let sum = PauliSum::<1>::from_strings(&[(&padded, Complex64::new(2.5, 0.0))]);
+            assert_eq!(sum.bucket(0).2[0], Complex64::new(2.5, 0.0), "{s}");
+        }
     }
 
     #[test]
@@ -2512,10 +2504,10 @@ mod tests {
         assert_eq!(s.len(), 3);
         assert_eq!((s.bucket(0).0[0], s.bucket(0).1[0]), ([0u64], [1u64])); // ZI
         assert_eq!((s.bucket(0).0[1], s.bucket(0).1[1]), ([1u64], [0u64])); // XI
-        assert_eq!((s.bucket(0).0[2], s.bucket(0).1[2]), ([1u64], [1u64])); // YI (with i factor)
+        assert_eq!((s.bucket(0).0[2], s.bucket(0).1[2]), ([1u64], [1u64])); // YI
         assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 0.0));
         assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
-        assert_eq!(s.bucket(0).2[2], Complex64::new(0.0, 1.0));
+        assert_eq!(s.bucket(0).2[2], Complex64::new(1.0, 0.0));
         s.assert_invariants();
     }
 

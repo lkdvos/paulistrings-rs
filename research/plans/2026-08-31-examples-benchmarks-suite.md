@@ -248,3 +248,48 @@ Judgment calls made in this adaptation, for post-hoc review:
 - **D14 — `oracles_ext/` dropped**; capability-gated wrappers live in `examples/common/oracles.py`.
 - **D15 — Time-box policy for manual-long runs** (pilot → project → shrink grid/lattice with the
   cut recorded) instead of scheduled user check-ins; Slurm is never invoked.
+
+## 9. Corrections discovered during implementation
+
+Judgment calls above were checked against measurement as the suite was built; five turned out to
+need a correction. Recorded here rather than silently edited into §2/§6/§8, per the same "no
+fabricated numbers, every finding reported" discipline the plan applies to physics claims.
+
+- **(a) Trotter layer order is X-then-ZZ, not ZZ-then-X.** Kim et al. (2023) SI Eq. (4) writes
+  `U(θ_h) = ∏⟨i,j⟩ R_{Z_iZ_j}(−π/2) · ∏_i R_{X_i}(θ_h)`, whose *rightmost* factor acts first — i.e.
+  the `X` layer, then the `ZZ` layer. The handoff's ZZ-then-X reading is backwards: under it, the
+  stabilizer relation used to independently verify `kim2023_observables.json`'s transcribed
+  supports (`examples/data/README.md`) produces weight 6 and 15 for the published weight-10/17
+  operators, not 10 and 17. `circuits.heavy_hex_kicked_ising` therefore defaults to
+  `order="x-then-zz"`, and the stabilizer-relation test
+  (`test_examples_circuits.py::test_published_supports_are_reproduced_by_the_stabilizer_relation`)
+  is what caught the direction and now pins it.
+- **(b) Untruncated propagation at θ_h = ±π/2 is not cheap.** The Clifford point looks like it
+  should collapse to a single term immediately, but `cos(π/2) = 6.123...e-17` (floating-point
+  residue, not an exact zero), so every `X` layer spawns a dust term at that scale and an
+  untruncated run accumulates them without bound. A `min_abs_coeff ≥ 1e-12` policy is required even
+  at the Clifford point to keep Benchmark A's runs finite — this is a correction to any reading of
+  §6 Part A row A that assumed "Clifford point ⇒ no truncation needed."
+- **(c) A weight-17 exact reference at interior θ_h is infeasible.** The weight-17 operator's
+  five-step causal cone covers 68 qubits (`examples/data/README.md`), so a dense statevector or
+  even a causal-cone-restricted exact diagonalization is a ≥2⁵⁹-amplitude problem — not reachable
+  on a workstation. Benchmark B/C's references at non-Clifford θ_h use the plan's D5 fallback
+  (self-converged reference with documented convergence evidence), never a fabricated exact number,
+  for every point on this operator away from the Clifford endpoints.
+- **(d) Benchmark C's `<0.01`-at-20-steps bar is not reachable inside the plan's term envelope at
+  θ_h = 7π/32.** At that kick angle the 20-step observable retains an O(0.5) signal and the
+  self-converged reference sweep reached 3.9e7 terms without resolving below the bar; the projected
+  cost to reach 0.01 there is ~1e10 terms and ~560 GiB — outside any workstation run this suite can
+  time-box. The reachability boundary (which `(θ_h, steps)` combinations pass, which pass only
+  because the observable has already decayed near zero, and which cannot be reached at all inside
+  the envelope) is measured and documented in `benchmarks/python/deep_trotter/README.md` rather
+  than asserted as a single pass/fail headline.
+- **(e) The `amplitude_damping` adjoint was swapped, and the Julia parity sweep is what caught it.**
+  `AmplitudeDamping::apply`/`::apply_adjoint` in `channel/noise.rs` had the Schrödinger map and its
+  Heisenberg dual the wrong way round relative to every other channel (unitaries and the other
+  three noise channels), so `direction="heisenberg"` applied a non-unital map — impossible for a
+  genuine dual of a trace-preserving channel, and physically wrong (`⟨Z⟩` for a qubit already in
+  `|0⟩`, amplitude damping's fixed point, decayed instead of staying at 1). Fixed in `e42095c`;
+  full derivation and before/after measurements in `benchmarks/julia/README.md`'s "RESOLVED"
+  section. Self-adjoint channels (`Depolarizing`, `Dephasing`, `PauliChannel`, `Depolarizing2Q`)
+  never exposed this, which is why only the cross-engine vocabulary sweep found it.

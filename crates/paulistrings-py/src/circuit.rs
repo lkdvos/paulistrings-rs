@@ -153,6 +153,26 @@ impl Circuit {
         Ok(())
     }
 
+    /// A general single-qubit Pauli channel on each of `qubits`; see
+    /// `noise.pauli_channel` for the semantics.
+    fn pauli_channel(&mut self, px: f64, py: f64, pz: f64, qubits: Vec<u32>) -> PyResult<()> {
+        for qubit in qubits {
+            let spec = crate::noise::pauli_channel_spec(px, py, pz, qubit)?;
+            self.inner.push_spec(&spec)?;
+        }
+        Ok(())
+    }
+
+    /// Uniform two-qubit depolarizing noise on each `(q0, q1)` pair; see
+    /// `noise.depolarize2` for the semantics.
+    fn depolarize2(&mut self, p: f64, pairs: Vec<(u32, u32)>) -> PyResult<()> {
+        for (q0, q1) in pairs {
+            let spec = crate::noise::depolarize2_spec(p, q0, q1)?;
+            self.inner.push_spec(&spec)?;
+        }
+        Ok(())
+    }
+
     fn unitary_1q(
         &mut self,
         qubit: u32,

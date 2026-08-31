@@ -21,7 +21,13 @@ def test_top_level_names():
 def test_factory_module_names():
     for name in ("h", "cnot", "rz", "pauli_rotation", "unitary_1q", "unitary_2q"):
         assert hasattr(gates, name)
-    for name in ("depolarize", "dephase", "amplitude_damping"):
+    for name in (
+        "depolarize",
+        "dephase",
+        "amplitude_damping",
+        "pauli_channel",
+        "depolarize2",
+    ):
         assert hasattr(noise, name)
     for name in ("coeff", "weight", "topn"):
         assert hasattr(truncation, name)

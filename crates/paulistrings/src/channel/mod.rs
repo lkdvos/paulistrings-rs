@@ -13,8 +13,8 @@
 //!   inputs collapse to fanout-1 at runtime).
 //! - [`GeneralUnitary1Q`], [`GeneralUnitary2Q`] — generic unitaries stored
 //!   as Pauli-expansion tables.
-//! - [`Depolarizing`], [`Dephasing`] — coefficient-rescaling noise
-//!   (`MAX_FANOUT = 1`).
+//! - [`Depolarizing`], [`Dephasing`], [`PauliChannel`], [`Depolarizing2Q`] —
+//!   coefficient-rescaling noise (`MAX_FANOUT = 1`).
 //! - [`AmplitudeDamping`] — the one built-in with `MAX_FANOUT = 2`.
 //! - [`IdentityChannel`] — pass-through, used in tests and as a neutral
 //!   composition element.
@@ -70,7 +70,7 @@ pub mod unitary;
 
 pub use clifford::{Clifford1Q, Clifford2Q};
 pub use identity::IdentityChannel;
-pub use noise::{AmplitudeDamping, Dephasing, Depolarizing};
+pub use noise::{AmplitudeDamping, Dephasing, Depolarizing, Depolarizing2Q, PauliChannel};
 pub use rotation::PauliRotation;
 pub use unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
 
@@ -356,6 +356,22 @@ mod tests {
                     p: 0.1,
                 }),
                 "Dephasing",
+            ),
+            (
+                Box::new(PauliChannel {
+                    support: [0],
+                    px: 0.1,
+                    py: 0.1,
+                    pz: 0.1,
+                }),
+                "PauliChannel",
+            ),
+            (
+                Box::new(Depolarizing2Q {
+                    support: [0, 1],
+                    p: 0.1,
+                }),
+                "Depolarizing2Q",
             ),
             (
                 Box::new(AmplitudeDamping {

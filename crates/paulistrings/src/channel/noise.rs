@@ -1,5 +1,5 @@
-//! Noise channels: Depolarizing, Dephasing, AmplitudeDamping. See
-//! ARCHITECTURE.md §Channels.
+//! Noise channels: Depolarizing, Dephasing, PauliChannel, Depolarizing2Q,
+//! AmplitudeDamping. See ARCHITECTURE.md §Channels.
 
 use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
@@ -122,6 +122,159 @@ impl<const W: usize> Channel<W> for Dephasing {
     }
 }
 
+/// A general single-qubit Pauli channel with independent error probabilities.
+///
+/// `E(ρ) = (1-px-py-pz)ρ + px·XρX + py·YρY + pz·ZρZ`. Like [`Depolarizing`] and
+/// [`Dephasing`] this is a pure coefficient rescaling in the Heisenberg picture
+/// — fanout 1, key-preserving, self-adjoint — so the engine takes the in-place
+/// rescale path (`engine/bucketed.rs::rescale_in_place`) rather than a
+/// gather/sort/merge.
+///
+/// # Dual scales
+///
+/// Each Pauli anticommutes with exactly the other two, so `P_k Q P_k = ±Q` with
+/// the sign negative for the two terms that anticommute with `Q`:
+///
+/// - `I → 1` (the four probabilities sum to one, so `E†` is unital)
+/// - `X → 1 - 2(py + pz)`
+/// - `Y → 1 - 2(px + pz)`
+/// - `Z → 1 - 2(px + py)`
+///
+/// The two consistency checks worth remembering: `(p/3, p/3, p/3)` reproduces
+/// `Depolarizing { p }` (`1 - 4p/3` on every non-identity Pauli) and `(0, 0, p)`
+/// reproduces `Dephasing { p }` (`1 - 2p` on X and Y, `1` on Z).
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::channel::PauliChannel;
+/// let ch = PauliChannel { support: [3], px: 0.01, py: 0.02, pz: 0.03 };
+/// # let _ = ch;
+/// ```
+pub struct PauliChannel {
+    /// The single qubit this channel acts on.
+    pub support: [u32; 1],
+    /// Probability of an `X` error.
+    pub px: f64,
+    /// Probability of a `Y` error.
+    pub py: f64,
+    /// Probability of a `Z` error.
+    pub pz: f64,
+}
+
+impl<const W: usize> Channel<W> for PauliChannel {
+    #[inline]
+    fn max_fanout(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        let q = self.support[0] as usize;
+        debug_assert!(q < 64 * W);
+        let (word, bit, _mask) = qubit_loc(q);
+        // Packed local Pauli index: `I=0, X=1, Z=2, Y=3` — note Z and Y are not
+        // in alphabet order, so the table is written out rather than computed.
+        let idx = read_pauli(input_x, input_z, word, bit);
+        let s = match idx {
+            0 => 1.0,
+            1 => 1.0 - 2.0 * (self.py + self.pz),
+            2 => 1.0 - 2.0 * (self.px + self.py),
+            3 => 1.0 - 2.0 * (self.px + self.pz),
+            _ => unreachable!(),
+        };
+        out.push(*input_x, *input_z, coeff * s);
+    }
+}
+
+/// Uniform two-qubit depolarizing noise: probability `p` spread evenly over the
+/// 15 non-identity two-qubit Paulis.
+///
+/// `E(ρ) = (1-p)ρ + (p/15)·Σ_k P_k ρ P_k`. Fanout 1, key-preserving,
+/// self-adjoint, like its single-qubit siblings; the support weight of 2 is
+/// exactly [`MAX_LOCAL_SUPPORT`](super::prepared::MAX_LOCAL_SUPPORT), so the
+/// default `prepare` derivation applies.
+///
+/// # Dual scales
+///
+/// For a `Q` that is the identity on both support qubits, every `P_k Q P_k = Q`
+/// and the scale is 1. Otherwise exactly 8 of the 16 two-qubit Paulis
+/// anticommute with `Q`, so among the 15 error terms 7 commute and 8
+/// anticommute:
+///
+/// `(1-p)Q + (p/15)(7 - 8)Q = (1 - 16p/15)·Q`.
+///
+/// Note this is the same factor whether `Q` is non-identity on one support
+/// qubit or on both — the count of anticommuting two-qubit Paulis does not
+/// depend on `Q`'s weight.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::channel::Depolarizing2Q;
+/// let ch = Depolarizing2Q { support: [3, 4], p: 0.01 };
+/// # let _ = ch;
+/// ```
+pub struct Depolarizing2Q {
+    /// The two qubits this channel acts on. They must differ — an overlapping
+    /// pair would declare a two-qubit support over one qubit, which the engine's
+    /// local-PTM derivation would then mis-tabulate.
+    pub support: [u32; 2],
+    /// Error probability `p ∈ [0, 1]`.
+    pub p: f64,
+}
+
+impl<const W: usize> Channel<W> for Depolarizing2Q {
+    #[inline]
+    fn max_fanout(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn support(&self) -> [u64; W] {
+        support_mask(&self.support)
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<'_, W>,
+    ) {
+        debug_assert!(
+            self.support[0] != self.support[1],
+            "Depolarizing2Q support qubits must differ (both are {})",
+            self.support[0]
+        );
+        let mut touches_pair = false;
+        for &q in &self.support {
+            let q = q as usize;
+            debug_assert!(q < 64 * W);
+            let (word, bit, _mask) = qubit_loc(q);
+            touches_pair |= read_pauli(input_x, input_z, word, bit) != 0;
+        }
+        let s = if touches_pair {
+            1.0 - 16.0 * self.p / 15.0
+        } else {
+            1.0
+        };
+        out.push(*input_x, *input_z, coeff * s);
+    }
+}
+
 /// Single-qubit amplitude damping with parameter `gamma`.
 ///
 /// The only noise in the built-in set with genuine fan-out > 1. Heisenberg
@@ -238,7 +391,10 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bucket::hash::Gf2Hash;
+    use crate::channel::prepared::Prepared;
     use crate::pauli_string::PauliString;
+    use crate::phase::Phase;
     use crate::test_support::{alloc_bufs, approx_eq};
 
     // ---- AmplitudeDamping adjoint ----
@@ -590,6 +746,402 @@ mod tests {
             assert_eq!(bx[0], pauli.x);
             assert_eq!(bz[0], pauli.z);
             assert!(approx_eq(bc[0], Complex64::new(scale, 0.0), TOL));
+        }
+    }
+
+    // ---- PauliChannel ----
+    //
+    // Dual scales, hand-derived: each Pauli anticommutes with exactly the other
+    // two, so `X → 1 - 2(py + pz)`, `Y → 1 - 2(px + pz)`, `Z → 1 - 2(px + py)`,
+    // and `I → 1` because the four Kraus probabilities sum to one.
+
+    /// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`, each computed
+    /// by hand: `I → 1`, `X → 1 - 2(0.5) = 0`, `Y → 1 - 2(0.4) = 0.2`,
+    /// `Z → 1 - 2(0.3) = 0.4`.
+    #[test]
+    fn pauli_channel_scales_are_hand_computed_w1() {
+        let ch = PauliChannel {
+            support: [0],
+            px: 0.1,
+            py: 0.2,
+            pz: 0.3,
+        };
+        let cases = [
+            (PauliString::<1>::identity(), 1.0),
+            (PauliString::<1>::x(0), 0.0),
+            (PauliString::<1>::y(0), 0.2),
+            (PauliString::<1>::z(0), 0.4),
+        ];
+        for (pauli, want) in cases {
+            let got = crate::test_support::raw_outputs::<1, PauliChannel>(
+                &ch,
+                false,
+                pauli,
+                Complex64::new(1.0, 0.0),
+            );
+            assert_eq!(got.len(), 1, "fanout must stay 1");
+            assert_eq!(got[0].0, pauli, "the key must be preserved");
+            assert!(
+                approx_eq(got[0].1, Complex64::new(want, 0.0), TOL),
+                "scale for {pauli:?}: got {}, want {want}",
+                got[0].1,
+            );
+        }
+    }
+
+    /// Same four factors with the support in word 1 (qubit 70 at W=2).
+    #[test]
+    fn pauli_channel_scales_are_hand_computed_w2() {
+        let ch = PauliChannel {
+            support: [70],
+            px: 0.1,
+            py: 0.2,
+            pz: 0.3,
+        };
+        let cases = [
+            (PauliString::<2>::identity(), 1.0),
+            (PauliString::<2>::x(70), 0.0),
+            (PauliString::<2>::y(70), 0.2),
+            (PauliString::<2>::z(70), 0.4),
+        ];
+        for (pauli, want) in cases {
+            let got = crate::test_support::raw_outputs::<2, PauliChannel>(
+                &ch,
+                false,
+                pauli,
+                Complex64::new(1.0, 0.0),
+            );
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].0, pauli);
+            assert!(approx_eq(got[0].1, Complex64::new(want, 0.0), TOL));
+        }
+    }
+
+    /// `pauli_channel(p/3, p/3, p/3) ≡ depolarize(p)`: uniform Pauli error is
+    /// exactly depolarizing noise, so the two channels must agree Pauli for
+    /// Pauli. Checked at both widths.
+    #[test]
+    fn pauli_channel_at_uniform_probabilities_is_depolarizing() {
+        let p = 0.42;
+        let pc = PauliChannel {
+            support: [0],
+            px: p / 3.0,
+            py: p / 3.0,
+            pz: p / 3.0,
+        };
+        let dep = Depolarizing { support: [0], p };
+        for pauli in [
+            PauliString::<1>::identity(),
+            PauliString::<1>::x(0),
+            PauliString::<1>::y(0),
+            PauliString::<1>::z(0),
+        ] {
+            let c = Complex64::new(1.5, -0.25);
+            let a = crate::test_support::outputs::<1, PauliChannel>(&pc, false, pauli, c);
+            let b = crate::test_support::outputs::<1, Depolarizing>(&dep, false, pauli, c);
+            assert_eq!(a.len(), b.len(), "{pauli:?}");
+            for (ta, tb) in a.iter().zip(b.iter()) {
+                assert_eq!((ta.0, ta.1), (tb.0, tb.1), "{pauli:?}: keys differ");
+                assert!(
+                    approx_eq(ta.2, tb.2, TOL),
+                    "{pauli:?}: {} vs {}",
+                    ta.2,
+                    tb.2
+                );
+            }
+        }
+
+        let pc2 = PauliChannel {
+            support: [64],
+            px: p / 3.0,
+            py: p / 3.0,
+            pz: p / 3.0,
+        };
+        let dep2 = Depolarizing { support: [64], p };
+        for pauli in [
+            PauliString::<2>::identity(),
+            PauliString::<2>::x(64),
+            PauliString::<2>::y(64),
+            PauliString::<2>::z(64),
+        ] {
+            let c = Complex64::new(1.0, 0.0);
+            let a = crate::test_support::outputs::<2, PauliChannel>(&pc2, false, pauli, c);
+            let b = crate::test_support::outputs::<2, Depolarizing>(&dep2, false, pauli, c);
+            assert_eq!(a.len(), b.len(), "{pauli:?}");
+            for (ta, tb) in a.iter().zip(b.iter()) {
+                assert_eq!((ta.0, ta.1), (tb.0, tb.1));
+                assert!(approx_eq(ta.2, tb.2, TOL));
+            }
+        }
+    }
+
+    /// `pauli_channel(0, 0, p) ≡ dephase(p)`: a pure Z error is dephasing.
+    #[test]
+    fn pauli_channel_with_only_pz_is_dephasing() {
+        let p = 0.37;
+        let pc = PauliChannel {
+            support: [1],
+            px: 0.0,
+            py: 0.0,
+            pz: p,
+        };
+        let deph = Dephasing { support: [1], p };
+        for pauli in [
+            PauliString::<1>::identity(),
+            PauliString::<1>::x(1),
+            PauliString::<1>::y(1),
+            PauliString::<1>::z(1),
+        ] {
+            let c = Complex64::new(0.5, 2.0);
+            let a = crate::test_support::outputs::<1, PauliChannel>(&pc, false, pauli, c);
+            let b = crate::test_support::outputs::<1, Dephasing>(&deph, false, pauli, c);
+            assert_eq!(a.len(), b.len(), "{pauli:?}");
+            for (ta, tb) in a.iter().zip(b.iter()) {
+                assert_eq!((ta.0, ta.1), (tb.0, tb.1));
+                assert!(
+                    approx_eq(ta.2, tb.2, TOL),
+                    "{pauli:?}: {} vs {}",
+                    ta.2,
+                    tb.2
+                );
+            }
+        }
+    }
+
+    /// Off-support qubits are invisible: the support qubit sits in the identity
+    /// sector, so the coefficient passes through untouched.
+    #[test]
+    fn pauli_channel_off_support_is_a_no_op() {
+        let ch = PauliChannel {
+            support: [0],
+            px: 0.1,
+            py: 0.2,
+            pz: 0.3,
+        };
+        let pauli = PauliString::<1>::y(5);
+        let got = crate::test_support::raw_outputs::<1, PauliChannel>(
+            &ch,
+            false,
+            pauli,
+            Complex64::new(3.0, 0.0),
+        );
+        assert_eq!(got.len(), 1);
+        assert!(approx_eq(got[0].1, Complex64::new(3.0, 0.0), TOL));
+    }
+
+    /// A diagonal rescaling is its own Hilbert-Schmidt adjoint, so the default
+    /// `apply_adjoint` is correct — pinned rather than assumed.
+    #[test]
+    fn pauli_channel_is_self_adjoint() {
+        let ch = PauliChannel {
+            support: [0],
+            px: 0.05,
+            py: 0.15,
+            pz: 0.25,
+        };
+        for pauli in [
+            PauliString::<1>::identity(),
+            PauliString::<1>::x(0),
+            PauliString::<1>::y(0),
+            PauliString::<1>::z(0),
+        ] {
+            let c = Complex64::new(1.0, -1.0);
+            let fwd = crate::test_support::raw_outputs::<1, PauliChannel>(&ch, false, pauli, c);
+            let adj = crate::test_support::raw_outputs::<1, PauliChannel>(&ch, true, pauli, c);
+            assert_eq!(fwd.len(), adj.len());
+            assert_eq!(fwd[0].0, adj[0].0);
+            assert!(approx_eq(fwd[0].1, adj[0].1, TOL));
+        }
+    }
+
+    /// Key-preserving fanout-1, so the engine takes `rescale_in_place`: no
+    /// gather, no sort, no merge. Losing this would be a silent slowdown.
+    #[test]
+    fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
+        let ch = PauliChannel {
+            support: [3],
+            px: 0.1,
+            py: 0.2,
+            pz: 0.3,
+        };
+        let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
+        let prepared = <PauliChannel as Channel<1>>::prepare(&ch, &hash, false)
+            .expect("a weight-1 support must prepare");
+        match prepared {
+            Prepared::Local(ptm) => assert!(ptm.is_key_preserving()),
+            Prepared::Rotation(_) => panic!("expected a local PTM"),
+        }
+    }
+
+    // ---- Depolarizing2Q ----
+    //
+    // Uniform two-qubit depolarizing, probability `p` spread over the 15
+    // non-identity two-qubit Paulis. Dual scale, hand-derived: for a Pauli `Q`
+    // that is non-identity on the pair, exactly 8 of the 16 two-qubit Paulis
+    // anticommute with it, so 7 of the 15 error terms commute and 8 anticommute:
+    // `(1-p)Q + (p/15)(7 - 8)Q = (1 - 16p/15) Q`. `I⊗I` is fixed.
+
+    /// `p = 0.3`: the scale is `1 - 16(0.3)/15 = 1 - 0.32 = 0.68` for all 15
+    /// non-identity restrictions, and exactly 1 for `I⊗I`. Enumerated over the
+    /// full 4x4 local basis so the weight-1 restrictions are covered too — they
+    /// take the *same* factor, which is the easy thing to get wrong.
+    #[test]
+    fn depolarize2_scale_is_hand_computed_w1() {
+        let ch = Depolarizing2Q {
+            support: [0, 1],
+            p: 0.3,
+        };
+        let local = |q: u32, idx: usize| -> PauliString<1> {
+            match idx {
+                0 => PauliString::<1>::identity(),
+                1 => PauliString::<1>::x(q),
+                2 => PauliString::<1>::z(q),
+                _ => PauliString::<1>::y(q),
+            }
+        };
+        for a in 0..4 {
+            for b in 0..4 {
+                let mut pauli = local(0, a);
+                let phase = pauli.mul_assign(&local(1, b));
+                // Distinct qubits, so the product carries no phase.
+                assert_eq!(phase, Phase::ONE);
+                let want = if a == 0 && b == 0 { 1.0 } else { 0.68 };
+                let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
+                    &ch,
+                    false,
+                    pauli,
+                    Complex64::new(1.0, 0.0),
+                );
+                assert_eq!(got.len(), 1, "fanout must stay 1");
+                assert_eq!(got[0].0, pauli, "the key must be preserved");
+                assert!(
+                    approx_eq(got[0].1, Complex64::new(want, 0.0), TOL),
+                    "a={a} b={b}: got {}, want {want}",
+                    got[0].1,
+                );
+            }
+        }
+    }
+
+    /// At `p = 15/16` the scale is exactly zero (`1 - 16·(15/16)/15 = 0`, and
+    /// every step is exact in binary floating point), so any Pauli touching the
+    /// pair is annihilated while `I⊗I` is untouched.
+    #[test]
+    fn depolarize2_at_fifteen_sixteenths_annihilates_the_pair() {
+        let ch = Depolarizing2Q {
+            support: [0, 1],
+            p: 15.0 / 16.0,
+        };
+        let mut xz = PauliString::<1>::x(0);
+        xz.mul_assign(&PauliString::<1>::z(1));
+        let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
+            &ch,
+            false,
+            xz,
+            Complex64::new(1.0, 0.0),
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, Complex64::new(0.0, 0.0), "must be exactly zero");
+
+        let id = PauliString::<1>::identity();
+        let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
+            &ch,
+            false,
+            id,
+            Complex64::new(2.0, 0.0),
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, Complex64::new(2.0, 0.0));
+    }
+
+    /// Qubits outside the pair do not trigger the scale.
+    #[test]
+    fn depolarize2_ignores_off_support_qubits_w1() {
+        let ch = Depolarizing2Q {
+            support: [0, 1],
+            p: 0.3,
+        };
+        let pauli = PauliString::<1>::y(9);
+        let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
+            &ch,
+            false,
+            pauli,
+            Complex64::new(3.0, 0.0),
+        );
+        assert_eq!(got.len(), 1);
+        assert!(approx_eq(got[0].1, Complex64::new(3.0, 0.0), TOL));
+    }
+
+    /// W=2 with the pair straddling the 64-bit word boundary (qubits 63 and 64):
+    /// a Pauli on either half of the pair takes the scale.
+    #[test]
+    fn depolarize2_w2_across_a_word_boundary() {
+        let ch = Depolarizing2Q {
+            support: [63, 64],
+            p: 0.3,
+        };
+        for pauli in [
+            PauliString::<2>::x(63),
+            PauliString::<2>::z(64),
+            PauliString::<2>::y(63),
+        ] {
+            let got = crate::test_support::raw_outputs::<2, Depolarizing2Q>(
+                &ch,
+                false,
+                pauli,
+                Complex64::new(1.0, 0.0),
+            );
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].0, pauli);
+            assert!(approx_eq(got[0].1, Complex64::new(0.68, 0.0), TOL));
+        }
+        // A qubit just outside the pair (62) is not in the support.
+        let outside = PauliString::<2>::x(62);
+        let got = crate::test_support::raw_outputs::<2, Depolarizing2Q>(
+            &ch,
+            false,
+            outside,
+            Complex64::new(1.0, 0.0),
+        );
+        assert_eq!(got.len(), 1);
+        assert!(approx_eq(got[0].1, Complex64::new(1.0, 0.0), TOL));
+    }
+
+    #[test]
+    fn depolarize2_is_self_adjoint() {
+        let ch = Depolarizing2Q {
+            support: [2, 5],
+            p: 0.2,
+        };
+        let mut yx = PauliString::<1>::y(2);
+        yx.mul_assign(&PauliString::<1>::x(5));
+        for pauli in [PauliString::<1>::identity(), yx] {
+            let c = Complex64::new(1.0, -1.0);
+            let fwd = crate::test_support::raw_outputs::<1, Depolarizing2Q>(&ch, false, pauli, c);
+            let adj = crate::test_support::raw_outputs::<1, Depolarizing2Q>(&ch, true, pauli, c);
+            assert_eq!(fwd.len(), adj.len());
+            assert_eq!(fwd[0].0, adj[0].0);
+            assert!(approx_eq(fwd[0].1, adj[0].1, TOL));
+        }
+    }
+
+    /// Support weight 2 fits `MAX_LOCAL_SUPPORT`, and the channel is
+    /// key-preserving, so the engine takes `rescale_in_place` here too.
+    #[test]
+    fn depolarize2_prepares_as_a_key_preserving_local_ptm() {
+        let ch = Depolarizing2Q {
+            support: [1, 4],
+            p: 0.3,
+        };
+        let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
+        let prepared = <Depolarizing2Q as Channel<1>>::prepare(&ch, &hash, false)
+            .expect("a weight-2 support must prepare");
+        match prepared {
+            Prepared::Local(ptm) => {
+                assert_eq!(ptm.k(), 2);
+                assert!(ptm.is_key_preserving());
+            }
+            Prepared::Rotation(_) => panic!("expected a local PTM"),
         }
     }
 

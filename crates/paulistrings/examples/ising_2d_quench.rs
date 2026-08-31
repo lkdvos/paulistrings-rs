@@ -10,6 +10,8 @@
 //! Run with:
 //! ```bash
 //! cargo run --example ising_2d_quench --release
+//! # with the engine's per-layer progress log (see `paulistrings::propagate`):
+//! RUST_LOG=paulistrings=debug cargo run --release --example ising_2d_quench
 //! ```
 //!
 //! See `crates/paulistrings/docs/examples/ising_2d_quench.md` for the
@@ -149,6 +151,10 @@ fn write_csv(path: &Path, t: &[f64], m: &[f64]) -> std::io::Result<()> {
 }
 
 fn main() -> std::io::Result<()> {
+    // Default `env_logger` filtering: silent unless `RUST_LOG` is set, so the
+    // committed CSVs and the `eprintln!` progress below are unaffected.
+    env_logger::init();
+
     let out = output_dir();
     std::fs::create_dir_all(&out)?;
 

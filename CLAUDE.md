@@ -170,3 +170,4 @@ Conventions:
 - The probe: `cargo run --release --features phase-timing --example phase_breakdown`.
 - `scripts/bench-campaign.sh` plus `benchmarks/PROFILING.md` is the canonical change → measure → compare workflow.
 - `crates/membench` + `scripts/bandwidth.sh` give the memory-bandwidth ceiling used for roofline comparisons.
+- Run campaigns with `RUST_LOG` unset: with no logger installed the engine's per-layer progress logging is a single static level check and allocates nothing.

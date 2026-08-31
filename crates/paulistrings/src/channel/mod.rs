@@ -220,6 +220,38 @@ pub trait Channel<const W: usize>: Send + Sync {
     /// Build one with [`support_mask`] from a list of qubit indices.
     fn support(&self) -> [u64; W];
 
+    /// Short human-readable name, used only in the engine's per-layer progress
+    /// log (see [`propagate`](crate::propagate)). Never parsed, never part of
+    /// any output.
+    ///
+    /// The default returns [`core::any::type_name`] of the concrete type,
+    /// trimmed to its last path segment — `Clifford1Q`, `PauliRotation`,
+    /// `Depolarizing`. `type_name` takes `T: ?Sized`, so this default body
+    /// needs no `Self: Sized` bound and the method stays callable through
+    /// `dyn Channel<W>`: the vtable slot is instantiated for the concrete
+    /// type, so a `Box<dyn Channel<W>>` inside a
+    /// [`Circuit`](crate::Circuit) still logs that type's name.
+    ///
+    /// **Limitation.** The trimming is deliberately textual and simple: cut at
+    /// the first `<`, then keep everything after the last `::`. That is right
+    /// for a plain (possibly generic) named type, but a type whose name is not
+    /// of that shape — a tuple, a reference, a `Box<...>`, a closure, or one
+    /// whose generic arguments carry the interesting part of the name — trims
+    /// to something unhelpful or empty. `type_name` output is also explicitly
+    /// not guaranteed stable across compiler versions. Override this method if
+    /// you want a name you can rely on.
+    fn debug_name(&self) -> &'static str {
+        let full = core::any::type_name::<Self>();
+        let head = match full.find('<') {
+            Some(i) => &full[..i],
+            None => full,
+        };
+        match head.rfind("::") {
+            Some(i) => &head[i + 2..],
+            None => head,
+        }
+    }
+
     /// Apply the channel to a single input term, writing outputs to `out`.
     fn apply(
         &self,
@@ -292,6 +324,51 @@ mod tests {
         let a: [u64; 1] = support_mask(&[3, 1, 3]);
         let b: [u64; 1] = support_mask(&[1, 3]);
         assert_eq!(a, b);
+    }
+
+    // ---- debug_name (progress logging) ----
+
+    /// The default `debug_name` must survive erasure to `dyn Channel<W>` —
+    /// that is how the engine sees every channel — and must trim both the
+    /// module path and any generic arguments.
+    #[test]
+    fn debug_name_through_dyn_trims_path_and_generics() {
+        use crate::pauli_string::PauliString;
+
+        let channels: Vec<(Box<dyn Channel<1>>, &str)> = vec![
+            (Box::new(Clifford1Q::h(0)), "Clifford1Q"),
+            (Box::new(Clifford2Q::cnot(0, 1)), "Clifford2Q"),
+            (
+                // Generic in `W`, so `type_name` carries a `<1>` to trim.
+                Box::new(PauliRotation::new(PauliString::<1>::z(0), 0.3)),
+                "PauliRotation",
+            ),
+            (
+                Box::new(Depolarizing {
+                    support: [0],
+                    p: 0.1,
+                }),
+                "Depolarizing",
+            ),
+            (
+                Box::new(Dephasing {
+                    support: [0],
+                    p: 0.1,
+                }),
+                "Dephasing",
+            ),
+            (
+                Box::new(AmplitudeDamping {
+                    support: [0],
+                    gamma: 0.1,
+                }),
+                "AmplitudeDamping",
+            ),
+            (Box::new(IdentityChannel), "IdentityChannel"),
+        ];
+        for (ch, expected) in &channels {
+            assert_eq!(ch.debug_name(), *expected);
+        }
     }
 
     #[test]

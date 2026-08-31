@@ -19,7 +19,7 @@
 //! - [`IdentityChannel`] — pass-through, used in tests and as a neutral
 //!   composition element.
 //!
-//! See design doc §6.
+//! See ARCHITECTURE.md §Channels.
 //!
 //! # Implementing a custom channel
 //!
@@ -215,7 +215,7 @@ pub trait Channel<const W: usize>: Send + Sync {
     /// Qubits this channel acts on, packed as one combined per-qubit bitmask
     /// (bit `q` set iff qubit `q` is in the support), one word per `W`.
     /// Outputs differ from inputs only at these bit positions; the engine
-    /// uses this for bucket layout (v0.2 §2, v0.3 §2).
+    /// uses this for bucket layout (see ARCHITECTURE.md §Bucketing).
     ///
     /// Build one with [`support_mask`] from a list of qubit indices.
     fn support(&self) -> [u64; W];
@@ -267,8 +267,7 @@ pub trait Channel<const W: usize>: Send + Sync {
     ///
     /// The default implementation is `self.apply(...)`, i.e. assumes the
     /// channel is self-adjoint. Channels that are not self-adjoint
-    /// (`PauliRotation`, `Clifford1Q::s`) override this. The design doc
-    /// (§8) does not pin down a mechanism; this is the v0.1 convention.
+    /// (`PauliRotation`, `Clifford1Q::s`) override this.
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],
@@ -284,14 +283,15 @@ pub trait Channel<const W: usize>: Send + Sync {
     /// The default derives a dense local Pauli-transfer matrix by probing
     /// `apply` on the `4^|support|` local basis Paulis, so **a channel that
     /// implements `apply` gets the bucketed engine for free** — the research
-    /// extensibility surface of §6 does not grow. Override only when the support
-    /// is wider than [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description
-    /// exists; among the built-ins, only `PauliRotation` above generator weight
-    /// 2 needs to.
+    /// extensibility surface (ARCHITECTURE.md §Channels) does not grow.
+    /// Override only when the support is wider than
+    /// [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description exists;
+    /// among the built-ins, only `PauliRotation` above generator weight 2
+    /// needs to.
     ///
-    /// `None` means "this channel cannot be bucketed": the engine falls back to
-    /// the v0.1 whole-sum path, which is correct but slower. It is a performance
-    /// fallback, never a correctness compromise.
+    /// `None` means "this channel cannot be bucketed": `propagate` panics
+    /// rather than proceeding with an unsound preparation (see
+    /// ARCHITECTURE.md §Prepared-Channels).
     ///
     /// # Contract
     ///
@@ -309,7 +309,7 @@ mod tests {
     use super::*;
     use crate::test_support::alloc_bufs;
 
-    // ---- support_mask (v0.3 C.1) ----
+    // ---- support_mask ----
 
     #[test]
     fn support_mask_packs_cross_word_qubits() {

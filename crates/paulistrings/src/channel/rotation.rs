@@ -1,4 +1,4 @@
-//! Pauli rotation `exp(-i * theta * P / 2)`. See §6.
+//! Pauli rotation `exp(-i * theta * P / 2)`. See ARCHITECTURE.md §Channels.
 
 use super::prepared::{Prepared, RotationPrep, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
@@ -16,17 +16,15 @@ use num_complex::Complex64;
 /// # Support is derived, not declared
 ///
 /// The support is computed from the generator by [`PauliRotation::new`] and the
-/// fields are private. Until v0.2 B.3 the support was a caller-supplied `Vec<u32>`
-/// that was never checked against `gen_x`/`gen_z`. That was benign while the
-/// engine ignored `support()` entirely, but the bucketed engine reads it to
-/// decide which bits to extract for the amplitude table, so a mismatched support
-/// would have become a silent miscompilation of the sort order rather than a slow
-/// path. Deriving it makes the class of bug unrepresentable.
+/// fields are private: the engine reads `support()` to decide which bits to
+/// extract for the amplitude table, so a support that could mismatch the
+/// generator (`gen_x`/`gen_z`) would be a silent miscompilation risk. Deriving
+/// it makes that class of bug unrepresentable.
 ///
-/// Note that the delta set `{0, P}` is one-dimensional for *any* generator weight
-/// (v0.2 §2.3), so a rotation always reads exactly 2 input buckets per output
-/// bucket — the support only determines how the amplitude is computed, never how
-/// many buckets are touched.
+/// Note that the delta set `{0, P}` is one-dimensional for *any* generator
+/// weight, so a rotation always reads exactly 2 input buckets per output
+/// bucket — the support only determines how the amplitude is computed, never
+/// how many buckets are touched.
 ///
 /// # Examples
 ///
@@ -194,12 +192,11 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
 
 #[cfg(test)]
 mod tests {
-    // ---- support derivation (v0.2 B.3) ----
+    // ---- support derivation ----
     //
-    // The support used to be a caller-supplied `Vec<u32>` never checked against
-    // the generator. These pin that it is now derived, because the bucketed
-    // engine reads `support()` to decide which bits to extract for the amplitude
-    // table -- a mismatch would silently miscompile the sort order.
+    // These pin that the support is derived from the generator: the bucketed
+    // engine reads `support()` to decide which bits to extract for the
+    // amplitude table, so a mismatch would silently miscompile the sort order.
 
     #[test]
     fn support_is_derived_from_a_weight_one_generator() {

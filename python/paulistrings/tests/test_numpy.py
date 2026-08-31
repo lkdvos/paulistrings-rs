@@ -1,4 +1,4 @@
-"""Slice 10.5 — NumPy interop on bulk SoA storage.
+"""NumPy interop on bulk SoA storage.
 
 Pin the array shapes, dtypes, and bit layout so downstream NumPy code can
 rely on the contract.

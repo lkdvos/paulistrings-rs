@@ -1,12 +1,12 @@
-//! Per-layer prepared form of a channel. See v0.2 design doc §5.
+//! Per-layer prepared form of a channel. See ARCHITECTURE.md §Prepared-Channels.
 //!
-//! v0.1 calls [`Channel::apply`] once per input term, through a vtable, and lets
-//! each channel redo its own setup every time — `PauliRotation` recomputes
-//! `theta.cos()/sin()` per term, `Clifford1Q::apply_adjoint` rebuilds its inverse
-//! table per term. The bucketed engine instead *prepares* a channel once per
-//! layer into the form below, reducing the inner loop to one table lookup on ≤ 4
-//! extracted bits, one XOR with a precomputed mask, and one complex multiply
-//! (v0.2 §2.6).
+//! Calling [`Channel::apply`] once per input term through a vtable would redo
+//! each channel's setup every time — `PauliRotation` would recompute
+//! `theta.cos()/sin()` per term, `Clifford1Q::apply_adjoint` would rebuild its
+//! inverse table per term. The bucketed engine instead *prepares* a channel
+//! once per layer into the form below, reducing the inner loop to one table
+//! lookup on ≤ 4 extracted bits, one XOR with a precomputed mask, and one
+//! complex multiply.
 //!
 //! The prepared form also carries what the engine needs to know *which buckets to
 //! read*: for each possible key delta `d`, the bucket delta `δ = H·d`.
@@ -36,16 +36,16 @@ pub struct DeltaEntry<const W: usize> {
     /// this delta.
     ///
     /// Several entries may share a `bucket_delta`: with a dense random `H`,
-    /// `rank(H|_D) = dim D` and each is unique (v0.2 §2.6), but a collision is a
+    /// `rank(H|_D) = dim D` and each is unique, but a collision is a
     /// performance wart, not a correctness problem, and is handled by simply
     /// having two entries name the same input bucket.
     pub bucket_delta: u32,
     /// The delta in local support coordinates: bit `2j` is the x-bit of support
     /// qubit `j`, bit `2j+1` its z-bit.
     ///
-    /// This is the **canonical ordering key**. Determinism requires iterating
-    /// deltas in an order that does not depend on the bucket count, and `δ =
-    /// H·d` does depend on it while `d` does not (v0.2 §9.1).
+    /// This is the **canonical ordering key**: it does not depend on the
+    /// bucket count (`δ = H·d` does), which is why deltas are constructed in
+    /// ascending `local_delta` order rather than by `bucket_delta`.
     pub local_delta: u8,
     /// `d` lifted to a full-width XOR mask.
     pub mask_x: [u64; W],
@@ -66,17 +66,10 @@ pub struct LocalPtm<const W: usize> {
     k: u8,
     /// The delta set, **ascending by `local_delta`**.
     ///
-    /// Ascending `local_delta` is still the canonical construction order —
-    /// index 0 is the identity entry when present, and upcoming work relies
-    /// on that — but as of v0.5 S1 it no longer defines a bucket-count- or
-    /// hash-seed-independent summation order: the engine's per-run sort
-    /// (`engine::merge::sort_rows_with_scratch`) is key-only, so it no longer
-    /// carries each entry's index here as a tag to restore this order after
-    /// gathering input-bucket-major (that was v0.3 §2's `sort_phase_tagged`,
-    /// deleted in v0.5 S1 per the relaxed determinism policy — see the v0.5 S1
-    /// slice notes and `engine::bucketed`'s module doc). `local_delta` remains
-    /// `H`-independent while `bucket_delta = H·d` is not, which is why this
-    /// order was ever meaningful as a *canonical* one in the first place.
+    /// Ascending `local_delta` is the canonical construction order: index 0
+    /// is the identity entry when present. The engine's per-run sort is
+    /// key-only, so this order does not define summation order — see
+    /// ARCHITECTURE.md §Determinism.
     deltas: Vec<DeltaEntry<W>>,
 }
 
@@ -94,8 +87,7 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// The delta set, ascending by `local_delta` — the canonical construction
-    /// order (see the field doc); as of v0.5 S1 the engine's per-run sort is
-    /// key-only, so an entry's index here is no longer used as a sort tag.
+    /// order (see the field doc).
     #[inline]
     pub fn deltas(&self) -> &[DeltaEntry<W>] {
         &self.deltas
@@ -137,8 +129,7 @@ impl<const W: usize> LocalPtm<W> {
     /// an in-place coefficient rescale: no gather, no sort, no merge.
     ///
     /// Covers `IdentityChannel`, `Depolarizing`, `Dephasing` and
-    /// `Clifford1Q::{x, y, z}` — which the baselines showed cost a full
-    /// `O(n log n)` sort in v0.1 to multiply each coefficient by a scalar.
+    /// `Clifford1Q::{x, y, z}`.
     pub fn is_key_preserving(&self) -> bool {
         self.deltas.len() == 1 && self.deltas[0].local_delta == 0
     }
@@ -164,10 +155,10 @@ impl<const W: usize> LocalPtm<W> {
 
 /// A rotation with support wider than [`MAX_LOCAL_SUPPORT`].
 ///
-/// The delta set is `{0, P}` for *any* generator weight (v0.2 §2.3), so only two
-/// buckets are ever read — but the amplitude's `i^k` phase depends on `2w`
-/// support bits, which stops being tabulable. Amplitudes are computed per term
-/// instead, with `cos`/`sin` hoisted out of the loop (which v0.1 did not do).
+/// The delta set is `{0, P}` for *any* generator weight, so only two buckets
+/// are ever read — but the amplitude's `i^k` phase depends on `2w` support
+/// bits, which stops being tabulable. Amplitudes are computed per term
+/// instead, with `cos`/`sin` hoisted out of the loop.
 #[derive(Clone, Debug)]
 pub struct RotationPrep<const W: usize> {
     /// The generator `P`.
@@ -197,7 +188,7 @@ impl<const W: usize> Prepared<W> {
     /// Bucket deltas this channel can produce, i.e. `h(D)`.
     ///
     /// Output bucket `β'` reads input buckets `β' ^ δ` for each `δ` here. The
-    /// length is `2^rank(H|_D)` — 1, 2, 4 or 16 for the built-ins (v0.2 §2.4).
+    /// length is `2^rank(H|_D)` — 1, 2, 4 or 16 for the built-ins.
     pub fn bucket_deltas(&self) -> Vec<u32> {
         match self {
             Prepared::Local(p) => p.bucket_deltas(),
@@ -215,10 +206,9 @@ impl<const W: usize> Prepared<W> {
     /// [`Channel::apply`].
     ///
     /// Returns `None` when the channel's support is wider than
-    /// [`MAX_LOCAL_SUPPORT`], or when it writes outside its declared support. In
-    /// both cases the caller must fall back to the whole-sum v0.1 path, which is
-    /// correct but not bucketed — a performance fallback, never a correctness
-    /// compromise.
+    /// [`MAX_LOCAL_SUPPORT`], or when it writes outside its declared support.
+    /// In both cases `propagate` panics rather than proceeding with an
+    /// unsound preparation (see ARCHITECTURE.md §Prepared-Channels).
     ///
     /// # The soundness precondition
     ///
@@ -231,7 +221,7 @@ impl<const W: usize> Prepared<W> {
     /// * Debug builds re-derive with an all-ones background outside the support
     ///   and assert the two tables agree, which catches the common case.
     /// * A property test checks every built-in's derived table against `apply`
-    ///   on randomized full-width inputs (v0.2 §5.3).
+    ///   on randomized full-width inputs.
     pub fn derive_local<C>(channel: &C, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
     where
         C: Channel<W> + ?Sized,
@@ -246,8 +236,7 @@ impl<const W: usize> Prepared<W> {
 
         // Extract qubit indices ascending via per-word `trailing_zeros`. A
         // bitmask is already a set, so this is automatically sorted and
-        // duplicate-free -- unlike the old `Vec<u32>` support list, there is
-        // no need to sort or check for a caller-supplied duplicate.
+        // duplicate-free.
         let mut qubits = [0u32; MAX_LOCAL_SUPPORT];
         let mut n = 0usize;
         for (w, &word) in mask.iter().enumerate() {
@@ -504,10 +493,9 @@ mod tests {
         }
     }
 
-    /// The core B.4 check: the derived table must reproduce `apply` on
-    /// **randomized full-width** inputs, not just on the basis probes used to
-    /// build it. This is what catches a channel reading outside its declared
-    /// support (v0.2 §5.3).
+    /// The derived table must reproduce `apply` on **randomized full-width**
+    /// inputs, not just on the basis probes prepare-time derivation reads.
+    /// This is what catches a channel reading outside its declared support.
     fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
         ch: &C,
         num_qubits: usize,
@@ -629,7 +617,7 @@ mod tests {
         check_agrees_on_random_inputs::<2, _>(&rot, 128, "rot_weight4");
     }
 
-    // ---- delta-set dimensions must match the v0.2 §2.3 table ----
+    // ---- delta-set dimensions must match ARCHITECTURE.md §Bucketing ----
 
     fn n_bucket_deltas<const W: usize, C: Channel<W>>(ch: &C, adjoint: bool) -> usize {
         // Plenty of bucket bits, so distinct key deltas do not collide.
@@ -712,9 +700,9 @@ mod tests {
 
     #[test]
     fn a_rotation_reads_two_buckets_at_any_generator_weight() {
-        // The headline structural claim: unlike the support-derived bucketing
-        // v0.1 §5 envisaged (which would need 4^w buckets), the delta set {0, P}
-        // is 1-dimensional at every weight.
+        // The headline structural claim: unlike naive support-derived
+        // bucketing (which would need 4^w buckets), the delta set {0, P} is
+        // 1-dimensional at every weight.
         for weight in 1..=6usize {
             let mut gen = PauliString::<2>::z(0);
             for q in 1..weight as u32 {
@@ -751,8 +739,6 @@ mod tests {
                 n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), true),
             ),
             (
-                // Included as of B.8: before the adjoint was implemented this
-                // was trivially equal, because apply_adjoint *was* apply.
                 "amp_damping",
                 n_bucket_deltas::<2, _>(
                     &AmplitudeDamping {
@@ -844,8 +830,7 @@ mod tests {
     fn colliding_deltas_share_a_group_rather_than_being_lost() {
         // With 1 bucket bit, CNOT's four key deltas cannot map to four distinct
         // bucket deltas, so rank(H|_D) < dim D and groups must carry multiple
-        // members. Correctness must not depend on H being well-chosen
-        // (v0.2 §2.6).
+        // members. Correctness must not depend on H being well-chosen.
         let hash = Gf2Hash::<2>::new(128, 1, 0xC011);
         let prep = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
         let Prepared::Local(p) = prep else {
@@ -863,9 +848,9 @@ mod tests {
 
     #[test]
     fn deltas_are_ascending_by_local_delta() {
-        // Determinism depends on gathering deltas in an order that does not
-        // depend on the bucket count (v0.2 §9.1). `local_delta` is that order,
-        // and it must hold even when bucket deltas collide (bits = 1 here).
+        // Construction depends on gathering deltas in an order that does not
+        // depend on the bucket count. `local_delta` is that order, and it
+        // must hold even when bucket deltas collide (bits = 1 here).
         for bits in [1u8, 4, 16] {
             let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
             let prep = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();

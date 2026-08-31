@@ -1,4 +1,5 @@
-//! Python `PauliSum` class with width-monomorphized backing storage. See §4, §11.
+//! Python `PauliSum` class with width-monomorphized backing storage. See
+//! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
 
 use crate::truncation_spec::{PolicySpec, PyTruncation, SpecPolicy};
 use num_complex::Complex64;
@@ -174,7 +175,7 @@ impl PauliSum {
             })
     }
 
-    /// Build from a `{pauli_string: coefficient}` dict. See §11.
+    /// Build from a `{pauli_string: coefficient}` dict.
     #[classmethod]
     fn from_strings(
         _cls: &Bound<'_, pyo3::types::PyType>,
@@ -276,7 +277,7 @@ impl PauliSum {
         self.inner.xz_flat().0
     }
 
-    /// Propagate `self` through `circuit`. See §8.1, §11.
+    /// Propagate `self` through `circuit`.
     ///
     /// `direction`: `"forward"` (default) or `"heisenberg"`. `policy` is an
     /// optional `Truncation` from the `truncation` submodule; if `None`, no

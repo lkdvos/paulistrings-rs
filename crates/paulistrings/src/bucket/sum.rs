@@ -1,6 +1,6 @@
 //! Storage and partition maintenance for [`PauliSum`] — per-bucket
-//! structure-of-arrays columns under a [`Gf2Hash`] partition. See v0.2 design
-//! doc §4 and v0.3 §4 (one bucketed representation).
+//! structure-of-arrays columns under a [`Gf2Hash`] partition. There is one
+//! bucketed representation; see ARCHITECTURE.md §Data-Model.
 //!
 //! The type itself is re-exported as [`crate::pauli_sum::PauliSum`], which is
 //! its public home; this module owns the per-bucket column storage, the
@@ -29,9 +29,9 @@ pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Used to size the partition once at ingestion and at the start of
 /// `propagate`, so the initial scatter hashes in a single pass rather than
 /// being refined bit by bit.
-/// [`PauliSum::rebucket`] tracks it afterwards, but only upward (v0.5 §R1):
-/// it grows the partition to `desired_bits` when that exceeds the current
-/// count, and otherwise leaves the (larger) current count alone.
+/// [`PauliSum::rebucket`] tracks it afterwards, but only upward: it grows the
+/// partition to `desired_bits` when that exceeds the current count, and
+/// otherwise leaves the (larger) current count alone.
 pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     debug_assert!(target > 0);
     let worth_splitting = len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
@@ -53,15 +53,16 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 /// The floor in [`PauliSum::rebucket`] exists to give Rayon enough
 /// independent tasks, but a task carrying almost nothing is pure overhead. Below
 /// `min_buckets × MIN_TERMS_PER_TASK` total terms we would rather have few
-/// buckets and let the small-`n` fallback to the whole-sum path handle it
-/// (v0.2 §6). Provisional; v0.2 §7.4 measures it.
+/// buckets and let the small-`n` fallback to the whole-sum path handle it.
+/// See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value.
 pub const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Default target terms per bucket.
 ///
 /// Chosen so a bucket plus its gather scratch stays L2-resident: a term at
 /// `W = 2` is `2·8·2 + 16 = 48` bytes, so 1024 terms is ~48 KB against 1 MiB of
-/// L2 per core on the reference host. Provisional — v0.2 §7.4 measures it.
+/// L2 per core on the reference host. See ARCHITECTURE.md §Bucket-Policy for
+/// the sweep that set this value.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
 /// Default floor on the bucket count.
@@ -70,17 +71,15 @@ pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 /// reference host (ccqlin038) has always used, so this constant reproduces
 /// every committed baseline and the committed `examples/output/*.csv`
 /// trajectories exactly. Deriving the floor from `rayon::current_num_threads`
-/// instead would make the bucket count `B` — and therefore the output
-/// trajectory — depend on how many threads happen to be available, which is
-/// not a property we want: `B`-independence of the engine's output is a
-/// tested property (v0.2 §9.1), not a load-bearing invariant, and a fixed
-/// floor keeps `B` deterministic. As of v0.5 §R1, [`PauliSum::rebucket`] is
-/// grow-only, so `B` is a deterministic function of the *history* of term
-/// counts — the running max of [`desired_bits`] over every layer seen so far
-/// — rather than of the instantaneous term count `n` alone. That history is
-/// still fully determined by the circuit and the starting sum, so output
-/// stays byte-identical across machines and thread counts; it just can no
-/// longer be recovered from `len()` at a single point in time.
+/// instead would make the bucket count `B` depend on how many threads happen
+/// to be available; a fixed floor instead keeps `B` a deterministic function
+/// of the sum's history alone (see ARCHITECTURE.md §Determinism), and 128
+/// gives Rayon slack to load-balance at any realistic core count.
+/// [`PauliSum::rebucket`] is grow-only, so `B` is the running max of
+/// [`desired_bits`] over every layer seen so far, not the instantaneous term
+/// count `n` alone; that history is fully determined by the circuit and the
+/// starting sum, so `B` can no longer be recovered from `len()` at a single
+/// point in time.
 ///
 /// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone
 /// below that (e.g. `min_buckets = 2` would split at 128 terms), and we want
@@ -90,8 +89,8 @@ pub const DEFAULT_MIN_BUCKETS: usize = 128;
 /// One bucket's structure-of-arrays columns.
 ///
 /// Capacity is retained across layers, which is the point of owning per-bucket
-/// columns rather than slicing one flat array: v0.1 allocated ~11 + 3k buffers
-/// per layer and reused none of them (v0.2 §4.2).
+/// columns rather than slicing one flat array: the steady state of a
+/// propagation loop allocates nothing (ARCHITECTURE.md §Data-Model).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BucketCols<const W: usize> {
     pub(crate) x: Vec<[u64; W]>,
@@ -133,8 +132,8 @@ impl<const W: usize> BucketCols<W> {
 /// `new_bit` as its top bit.
 ///
 /// Shared by [`PauliSum::refine`]'s serial and parallel branches, so there is
-/// exactly one implementation of the split (v0.5 §R2). `b` is the *old*
-/// bucket index, used only by the debug-only low-bits invariant check.
+/// exactly one implementation of the split. `b` is the *old* bucket index,
+/// used only by the debug-only low-bits invariant check.
 fn refine_bucket<const W: usize>(
     cols: &mut BucketCols<W>,
     up: &mut BucketCols<W>,
@@ -290,7 +289,7 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
 /// Every term lies in `buckets[hash.bucket_of(term)]`, and each bucket is sorted
 /// by the lexicographic `(x, z)` key with no duplicate keys. Because `h` is a
 /// function, equal keys always share a bucket — so per-bucket dedup *implies*
-/// global dedup, and no global sort is ever needed (v0.2 §2.5). The engine
+/// global dedup, and no global sort is ever needed. The engine
 /// ([`propagate`]) operates on the buckets directly; there is no separate
 /// "flat" representation and nothing to convert in or out of.
 ///
@@ -326,8 +325,8 @@ impl<const W: usize> PauliSum<W> {
 
         // Hashing is the expensive part -- `b × 2W` AND+popcount-parity ops per
         // term, and the only place in the whole design where it happens at all
-        // (v0.2 §2.6) -- so it runs in parallel, and the counts come from the
-        // resulting indices rather than from a second hashing pass.
+        // -- so it runs in parallel, and the counts come from the resulting
+        // indices rather than from a second hashing pass.
         //
         // The scatter below stays sequential: buckets are separate allocations,
         // so a parallel scatter would need every thread to write into every
@@ -553,14 +552,14 @@ impl<const W: usize> PauliSum<W> {
     /// in; only whether the new bit is set decides which half it lands in.
     /// The new index is `i` or `i + B` (the new hash bit is the *high* bit),
     /// and both halves inherit the source bucket's order, so nothing is
-    /// re-sorted (v0.2 §2.7).
+    /// re-sorted.
     ///
     /// Bucket pairs are independent — output bucket `b` and `b + old_nb`
     /// depend only on input bucket `b` — so above [`MIN_TERMS_PER_TASK`] ×
     /// [`DEFAULT_MIN_BUCKETS`] total terms (the same "worth splitting"
-    /// threshold [`desired_bits`] uses) the per-bucket work runs across Rayon
-    /// (v0.5 §R2); below it the sequential loop avoids per-task overhead on
-    /// a sum too small to benefit.
+    /// threshold [`desired_bits`] uses) the per-bucket work runs across Rayon;
+    /// below it the sequential loop avoids per-task overhead on a sum too
+    /// small to benefit.
     pub fn refine(&mut self) {
         let old_nb = self.buckets.len();
         self.hash.refine();
@@ -593,8 +592,8 @@ impl<const W: usize> PauliSum<W> {
     /// A 2-way merge per pair via `merge_two` — no coefficient combining,
     /// since equal keys agree at every prefix length and were already in the
     /// same source bucket. Pairs are independent, so — same threshold and
-    /// rationale as [`Self::refine`] (v0.5 §R2) — this is a parallel map above
-    /// the worth-splitting threshold and a serial one below it.
+    /// rationale as [`Self::refine`] — this is a parallel map above the
+    /// worth-splitting threshold and a serial one below it.
     pub fn coarsen(&mut self) {
         self.hash.coarsen();
         let new_nb = self.buckets.len() / 2;
@@ -626,15 +625,13 @@ impl<const W: usize> PauliSum<W> {
     ///
     /// A sum's bucket count is monotone non-decreasing over its lifetime: this
     /// clamps the target to `self.hash.bits()`, so `rebucket` only ever refines,
-    /// never coarsens. The v0.4 baseline (`research/notes/2026-08-30-v0.4-perf-framework-baseline.md`)
-    /// measured that the previous "track `desired_bits` exactly, up or down"
-    /// policy made `rebucket` 74% of wall time on a sqrt-SWAP `GeneralUnitary2Q`
-    /// workload and 45–46% at ≥8 threads on the TFIM Trotter workload: term
-    /// counts oscillate every layer (fanout grows them, cancellation/truncation
-    /// cuts them back), so a sum sitting near a power-of-two boundary in
-    /// `desired_bits` would refine and coarsen on alternate layers, each an
-    /// `O(n · bits)` serial pass — exactly the "residual risk … accepted,
-    /// unmeasured" this doc comment used to record.
+    /// never coarsens. Measured: the alternative "track `desired_bits` exactly,
+    /// up or down" policy made `rebucket` 74% of wall time on a sqrt-SWAP
+    /// `GeneralUnitary2Q` workload and 45–46% at ≥8 threads on the TFIM Trotter
+    /// workload: term counts oscillate every layer (fanout grows them,
+    /// cancellation/truncation cuts them back), so a sum sitting near a
+    /// power-of-two boundary in `desired_bits` would refine and coarsen on
+    /// alternate layers, each an `O(n · bits)` serial pass.
     ///
     /// Keeping the larger partition instead is physically the right default:
     /// operator support only grows under propagation until truncation cuts it,
@@ -645,8 +642,7 @@ impl<const W: usize> PauliSum<W> {
     /// [`Self::coarsen`]; `rebucket` itself no longer does it implicitly.
     ///
     /// Also keeps at least `min_buckets` buckets once there is enough work to
-    /// spread, so the bucket-parallel decomposition has slack to load-balance
-    /// (v0.2 §4.3).
+    /// spread, so the bucket-parallel decomposition has slack to load-balance.
     pub fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
         let want = desired_bits(self.len, target, min_buckets).max(self.hash.bits());
@@ -795,8 +791,8 @@ impl<const W: usize> PauliSum<W> {
     /// and qubit count) *and* the same bucket count. Combining sums under
     /// different partitions is [`Self::add`]'s job; overlap does not realign.
     ///
-    /// Note that under the grow-only [`Self::rebucket`] policy (v0.5 §R1), two
-    /// sums can have equal `len()` but different bucket counts if they were
+    /// Note that under the grow-only [`Self::rebucket`] policy, two sums can
+    /// have equal `len()` but different bucket counts if they were
     /// grown to different high-water marks along the way (e.g. one was built
     /// directly at its final size, the other passed through a larger
     /// intermediate sum and never coarsened back down). Align them with
@@ -1223,10 +1219,10 @@ mod tests {
 
     #[test]
     fn refine_and_coarsen_take_the_parallel_path_above_the_threshold() {
-        // v0.5 §R2: above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192)
-        // terms, refine/coarsen run their per-bucket work across Rayon
-        // instead of serially. Exercise that branch directly and check it
-        // produces the same invariants and content as the serial path.
+        // Above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192) terms,
+        // refine/coarsen run their per-bucket work across Rayon instead of
+        // serially. Exercise that branch directly and check it produces the
+        // same invariants and content as the serial path.
         let n = 10_000;
         assert!(n >= DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK);
         let sum = rand_sum::<2>(n, 128, 0xB7);
@@ -1281,10 +1277,8 @@ mod tests {
 
     #[test]
     fn rebucket_never_shrinks() {
-        // v0.5 §R1: rebucket only ever grows. 200 terms at target 256 wants far
-        // fewer than 1024 buckets, but starting at 1024 must stay at 1024 — the
-        // opposite of the old hysteretic-coarsening behavior this test used to
-        // pin down.
+        // rebucket only ever grows. 200 terms at target 256 wants far fewer
+        // than 1024 buckets, but starting at 1024 must stay at 1024.
         let sum = rand_sum::<1>(200, 64, 0xD2);
         let h = Gf2Hash::<1>::new(64, 10, 0xC0DE);
         let mut b = sum.clone().with_hash(h);
@@ -1303,9 +1297,10 @@ mod tests {
     #[test]
     fn rebucket_is_a_no_op_when_already_at_the_target() {
         // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves.
-        // (This test used to assert a 4x hysteresis band; that band was removed
-        // in C.4 after it measured ~10% slower on the Ising quench by parking the
-        // steady state up to 4x above target.)
+        // A hysteresis band that parks the steady state up to 4x above target
+        // was tried and measured ~10% slower on the Ising quench (see
+        // ARCHITECTURE.md §Bucket-Policy) — this test pins the no-hysteresis
+        // behavior.
         let sum = rand_sum::<2>(6400, 128, 0xD3);
         let h = Gf2Hash::<2>::new(128, 6, 0xC0DE); // 64 buckets, mean 100
         let mut b = sum.clone().with_hash(h);
@@ -1320,7 +1315,7 @@ mod tests {
 
     #[test]
     fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
-        // v0.5 §R1: `rebucket` only grows, so it converges on exactly what
+        // `rebucket` only grows, so it converges on exactly what
         // `desired_bits` would have chosen only when the starting partition is
         // at or below that — otherwise (e.g. `start = 12`, above every `want`
         // in this table) the starting bit count is the high-water mark and
@@ -1346,8 +1341,8 @@ mod tests {
     fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
         // Grow to a high bucket count from a large sum, then shrink the term
         // count sharply (as truncation/cancellation would between layers) and
-        // rebucket again: the grow-only policy (v0.5 §R1) says the bucket count
-        // is a high-water mark, so it must not follow the length back down.
+        // rebucket again: the grow-only policy says the bucket count is a
+        // high-water mark, so it must not follow the length back down.
         let sum = rand_sum::<2>(60_000, 128, 0xDA1);
         let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
         let mut b = sum.with_hash(h);
@@ -1404,7 +1399,7 @@ mod tests {
         assert_eq!(b.num_buckets(), 1, "tiny sum was split anyway");
     }
 
-    // ---- v0.3 §4: the canonical-order contract ----
+    // ---- the canonical-order contract ----
 
     #[test]
     fn canonical_order_is_bucket_then_key() {
@@ -1947,7 +1942,7 @@ mod tests {
     // rather than collapsing into the tests above.
     // =====================================================================
 
-    // ---- overlap / expectation (v0.2 B.10) ----
+    // ---- overlap / expectation ----
     //
     // Before this there was no way to get a *number* out of a propagated sum:
     // examples/ising_2d_quench.rs hand-rolled its own observable against the raw
@@ -2196,7 +2191,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    // --- Slice 2.1: keyed lookup (get) -----------------------------------
+    // --- keyed lookup (get) -----------------------------------------------
 
     /// Three-term `PauliSum<1>` with sorted, distinct keys `K0 < K1 < K2`.
     fn three_term_sum_w1() -> PauliSum<1> {
@@ -2253,7 +2248,7 @@ mod tests {
         assert_eq!((x[1], z[1]), ([1u64], [0u64]));
     }
 
-    // --- Slice 2.2: scale() ----------------------------------------------
+    // --- scale() ----------------------------------------------------------
 
     #[test]
     fn scale_by_zero_zeros_all_coeffs() {
@@ -2288,7 +2283,7 @@ mod tests {
         assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
     }
 
-    // --- Slice 2.4: add() ------------------------------------------------
+    // --- add() ------------------------------------------------------------
 
     #[test]
     fn add_empty_left_is_other() {
@@ -2425,7 +2420,7 @@ mod tests {
         r.assert_invariants();
     }
 
-    // --- Slice 3.2: PauliSum::from_strings test helper -------------------
+    // --- PauliSum::from_strings test helper ----------------------------
     //
     // `from_strings` itself is a `#[cfg(test)]` inherent impl over in
     // `pauli_sum.rs`; only its tests moved here.

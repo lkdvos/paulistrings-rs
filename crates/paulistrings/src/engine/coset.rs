@@ -1,9 +1,8 @@
 //! GF(2) spans and coset enumeration over the bucket index space.
 //!
-//! `Gf2Span` is the engine's coset index algebra (v0.3 §2,
-//! `research/plans/2026-08-29-v0.3-followups.md`): `engine::bucketed` uses it
-//! to enumerate `span(h(D))`'s cosets, the parallel unit each layer gathers,
-//! sorts and merges in place.
+//! `Gf2Span` is the engine's coset index algebra (ARCHITECTURE.md §Engine):
+//! `engine::bucketed` uses it to enumerate `span(h(D))`'s cosets, the
+//! parallel unit each layer gathers, sorts and merges in place.
 
 use crate::bucket::hash::B_MAX_BITS;
 

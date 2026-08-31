@@ -4,8 +4,8 @@
 //! feature configurations (`--features phase-timing` must not change a bit).
 
 use paulistrings::channel::{Clifford2Q, Depolarizing, PauliRotation};
-// `rand_sum_real` is byte-for-byte the generator this file used to define
-// inline: same xorshift stream, same masking, real coefficients only.
+// `rand_sum_real`: same xorshift stream, same masking, real coefficients only,
+// shared with the other propagation test files so fixtures are comparable.
 use paulistrings::test_support::rand_sum_real;
 use paulistrings::{
     propagate, propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PauliSum,

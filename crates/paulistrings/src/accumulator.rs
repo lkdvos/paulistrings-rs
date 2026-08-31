@@ -9,8 +9,6 @@
 //! [`BuildAccumulator::new`] → [`BuildAccumulator::add_term`] →
 //! [`BuildAccumulator::finalize`].
 //!
-//! See design doc §8.2.
-//!
 //! [`PauliSum`]: crate::PauliSum
 //! [`engine`]: crate::engine
 

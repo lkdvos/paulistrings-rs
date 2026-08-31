@@ -1,4 +1,4 @@
-//! `paulistrings._paulistrings.noise` submodule: noise channel factories. See §11.
+//! `paulistrings._paulistrings.noise` submodule: noise channel factories. See ARCHITECTURE.md §Python-Bindings.
 
 use crate::channel_spec::{ChannelSpec, PyChannel};
 use pyo3::prelude::*;

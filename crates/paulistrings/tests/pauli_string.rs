@@ -1,6 +1,4 @@
 //! Integration tests for `PauliString` and `PauliSum`.
-//!
-//! Placeholder while the core algebra is being implemented (§13 step 1).
 
 use paulistrings::{PauliString, Phase};
 

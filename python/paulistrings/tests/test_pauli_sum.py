@@ -1,7 +1,7 @@
 """End-to-end round-trip on the W=1 width path.
 
-Slice 10.1: ``PauliSum.from_strings`` → ``coefficients()`` round-trip plus
-``propagate`` through an empty circuit (a no-op).
+``PauliSum.from_strings`` → ``coefficients()`` round-trip plus ``propagate``
+through an empty circuit (a no-op).
 """
 
 import math

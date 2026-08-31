@@ -1,7 +1,7 @@
 //! `IdentityChannel` — no-op channel that emits its input unchanged.
 //!
-//! Useful as a sanity scaffold for the sort-merge engine (§5) and as a
-//! neutral element when composing circuits.
+//! Useful as a sanity scaffold for the engine (ARCHITECTURE.md §Engine) and
+//! as a neutral element when composing circuits.
 
 use super::{Channel, OutputBuffer};
 use num_complex::Complex64;

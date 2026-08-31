@@ -1,9 +1,10 @@
 //! Python bindings for `paulistrings`.
 //!
-//! See design doc §11. The user-visible Python surface is a small set of
-//! classes (`PauliSum`, `Circuit`) plus three factory submodules (`gates`,
-//! `noise`, `truncation`). The width parameter `W` is monomorphized at a
-//! fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop (§4).
+//! See ARCHITECTURE.md §Python-Bindings. The user-visible Python surface is a
+//! small set of classes (`PauliSum`, `Circuit`) plus three factory submodules
+//! (`gates`, `noise`, `truncation`). The width parameter `W` is monomorphized
+//! at a fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop
+//! (ARCHITECTURE.md §Width).
 
 // PyO3 0.22's `#[pymethods]` expansion converts return values via
 // `.into()` even when the method already returns a `PyResult<T>`, which

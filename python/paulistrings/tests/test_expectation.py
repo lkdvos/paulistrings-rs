@@ -1,9 +1,5 @@
 """``PauliSum.expectation`` / ``overlap`` / ``identity_coefficient``.
 
-Added in v0.2 B.10. Before this the Python API could only hand back arrays, so
-getting a number out of a propagated operator meant reimplementing the observable
-in NumPy.
-
 Note CI does not run these (see CLAUDE.md); run locally with
 ``maturin develop --release`` then ``pytest python/paulistrings/tests``.
 """

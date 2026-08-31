@@ -40,12 +40,11 @@ impl<const W: usize> SortScratch<W> {
 /// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as
 /// reusable scratch.
 ///
-/// v0.5 S1 policy: equal-key summation order is no longer required to be
-/// bucket-count- or hash-seed-independent (floating-point associativity
-/// variation across those axes is accepted), so the `u8` delta tag that used
-/// to break ties in `local_delta` order (the deleted `sort_phase_tagged`) is
-/// gone, and this sort compares the key alone — cheaper, and with one fewer
-/// column to carry through the gather.
+/// Equal-key summation order is not required to be bucket-count- or
+/// hash-seed-independent (floating-point associativity variation across
+/// those axes is accepted, ARCHITECTURE.md §Determinism), so this sort
+/// compares the key alone — cheaper, and with one fewer column to carry
+/// through the gather.
 ///
 /// The sort is the **stable** `sort_by`, but not for stability (nothing
 /// depends on equal-key order any more — an unstable sort would be
@@ -54,9 +53,9 @@ impl<const W: usize> SortScratch<W> {
 /// bucket — the identity stream arrives fully sorted, and an XOR-by-constant
 /// stream is piecewise sorted (order survives wherever the mask's high bits
 /// don't flip) — and Rust's stable driftsort detects and merges those natural
-/// ascending runs while the unstable pdqsort does not. Measured (v0.5 S1
-/// fix): switching this line to `sort_unstable_by` cost +77% on a 10⁶
-/// `rotation_zz` layer and +43% on CNOT.
+/// ascending runs while the unstable pdqsort does not. Measured: switching
+/// this line to `sort_unstable_by` cost +77% on a 10⁶ `rotation_zz` layer
+/// and +43% on CNOT.
 ///
 /// What must still hold — and does, structurally: cosets are write-disjoint,
 /// work within one is sequential, and the sort is a deterministic function of
@@ -69,8 +68,7 @@ impl<const W: usize> SortScratch<W> {
 /// Scratch-swap capacity circulation: `s.perm` is filled with the identity
 /// permutation `0..len` and reordered by the sort; the caller's columns are
 /// then read out through the permutation directly into `s.tmp_*` (one pass,
-/// not two — the v0.3 `sort_phase_tagged` built a `Vec<usize>` perm and then a
-/// separate `collect` + `copy_from_slice` round trip per column), and finally
+/// not two), and finally
 /// each `tmp_*` is `mem::swap`ped with the caller's `Vec`. The caller ends up
 /// holding the sorted columns; `s` ends up holding the caller's pre-sort
 /// columns' storage (cleared next call) as its own scratch capacity — so
@@ -113,32 +111,33 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     std::mem::swap(c, &mut s.tmp_c);
 }
 
-/// Fused two-stream merge + segmented reduction (v0.5 S2).
+/// Fused two-stream merge + segmented reduction.
 ///
 /// `a` is a gather run's identity-delta stream: its keys are untouched source
 /// keys, so it inherits the bucket invariant — strictly ascending, no
 /// duplicates — and is **never sorted**. (Under a dense identity plan the
 /// key slices are the *source bucket's own columns*, borrowed in place, with
-/// only the coefficients gathered — v0.6 G1d; this function cannot tell and
+/// only the coefficients gathered; this function cannot tell and
 /// need not care.) `b` is the run's remaining rows, canonicalized by
 /// [`sort_rows_with_scratch`] (ascending, duplicates allowed).
 /// The two-pointer walk consumes rows in global key order, seeding a key tie
 /// from the `a` row first and then adding the equal-key `b` rows in their
-/// sorted order; that order is deterministic for a fixed input but, per the
-/// v0.5 S1 policy, not specified across partitions. Zero-drop and `keep_term`
-/// see the fully summed coefficient. When `a` is empty this degenerates to the
-/// plain single-stream segmented reduction, which is the whole story for a
-/// channel with no identity delta: everything is gathered into `b`.
+/// sorted order; that order is deterministic for a fixed input but not
+/// specified across partitions (ARCHITECTURE.md §Determinism). Zero-drop and
+/// `keep_term` see the fully summed coefficient. When `a` is empty this
+/// degenerates to the plain single-stream segmented reduction, which is the
+/// whole story for a channel with no identity delta: everything is gathered
+/// into `b`.
 ///
 /// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
 /// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
 /// the sign of a zero sum, so the only zero test is on the final accumulator.
 ///
-/// Do not restructure this walk into gallop + bulk segment copies (v0.6 M1):
-/// measured +20–35% merge busy on every real cell except 1t trotter, because
+/// Do not restructure this walk into gallop + bulk segment copies: measured
+/// +20–35% merge busy on every real cell except 1t trotter, because
 /// the workloads' id/rest densities make the average id segment one or two
 /// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
-/// compare it saves. Full data in the 2026-08-31 v0.6 results note.
+/// compare it saves. Full data in `research/notes/2026-08-31-v0.6-results.md`.
 #[allow(clippy::too_many_arguments)]
 // Deliberately NOT `#[inline]`: hinting this function measured +20-34% on
 // criterion's apply_layer_bucketed/rotation_zz (layout/icache), while the
@@ -210,7 +209,7 @@ mod tests {
     struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-    // ---- `sort_rows_with_scratch` (v0.5 S1) ----
+    // ---- `sort_rows_with_scratch` ----
 
     /// Sortedness on distinct keys. Lex on `(x, z)`: `I < Z < X` per word,
     /// since `x[0]` dominates.
@@ -272,7 +271,7 @@ mod tests {
         assert!(empty_x.is_empty());
     }
 
-    // ---- merge2_into (v0.5 S2): fused id/rest merge + reduction ----
+    // ---- merge2_into: fused id/rest merge + reduction ----
 
     /// Plain single-stream segmented reduction over sorted columns: adjacent
     /// equal keys are summed, exact-zero sums are dropped, and `keep_term`

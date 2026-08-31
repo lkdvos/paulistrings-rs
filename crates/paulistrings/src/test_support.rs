@@ -8,9 +8,8 @@
 //! It exists so the differential oracle and the random-sum fixtures have one
 //! canonical implementation instead of a copy per test file. In particular
 //! [`naive_apply_layer`] is the **oracle** the bucketed engine is tested
-//! against: it replaced the retained v0.1 sort-merge pipeline in that role, and
-//! deliberately shares no code with the thing it checks — one `Channel::apply`
-//! call per input term, a hashmap accumulation, and a sort.
+//! against, and deliberately shares no code with the thing it checks — one
+//! `Channel::apply` call per input term, a hashmap accumulation, and a sort.
 
 use hashbrown::HashMap;
 use num_complex::Complex64;
@@ -273,7 +272,7 @@ pub fn low_weight_sum<const W: usize>(
 /// Not a contrived case: a symmetric Hamiltonian on a periodic lattice
 /// produces many terms related by lattice symmetry with *exactly* equal
 /// coefficients, which is why the 2D Ising example hits it — and why `TopN`
-/// has a tie rule at all (v0.3 §3).
+/// has a tie rule at all (ARCHITECTURE.md §Truncation).
 pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let base = rand_sum::<W>(n, num_qubits, seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);

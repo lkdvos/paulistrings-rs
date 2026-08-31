@@ -26,8 +26,7 @@
 //! built, combine sums with [`PauliSum::add`] or scale coefficients with
 //! [`PauliSum::scale`].
 //!
-//! See v0.1 design doc §3.2 and the v0.2 design doc §4 (storage), plus v0.3
-//! §4 (the single bucketed representation).
+//! See ARCHITECTURE.md §Data-Model for the storage design rationale.
 //!
 //! # Examples
 //!

@@ -1,4 +1,4 @@
-//! The bucketed layer engine. See v0.2 design doc §6 and v0.3 §2.
+//! The bucketed layer engine. See ARCHITECTURE.md §Engine.
 //!
 //! The unit of work is one **coset** of `span(h(D))` in the bucket-index space
 //! (`Gf2Span`): every output bucket in a coset reads only input buckets in
@@ -14,27 +14,24 @@
 //!    scattered to runs by the O(1) index identity
 //!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by key
 //!    alone and **merge** straight into the member's live slot. When the
-//!    identity delta's amplitude never vanishes (v0.6 G1d "dense": every
-//!    rotation and general unitary) the id stream's keys are the source
-//!    bucket's keys row for row, so the gather materializes only the
-//!    16-byte coefficients and the merge borrows the key columns in place.
+//!    identity delta's amplitude never vanishes (dense: every rotation and
+//!    general unitary) the id stream's keys are the source bucket's keys row
+//!    for row, so the gather materializes only the 16-byte coefficients and
+//!    the merge borrows the key columns in place.
 //! 3. Un-permute the handles, recount, assert invariants.
 //!
-//! The gather visits each input term exactly once (v0.2 §6.1's `|D| · n` read
-//! amplification is gone), and there is no second full-size buffer: peak memory
-//! is `n` plus per-worker scratch of one coset's working set.
+//! The gather visits each input term exactly once, and there is no second
+//! full-size buffer: peak memory is `n` plus per-worker scratch of one
+//! coset's working set.
 //!
-//! Determinism (v0.5 S1 policy): cosets are write-disjoint and work within one
-//! is sequential, so output is bitwise identical across thread counts *and*
-//! across repeat runs at a fixed bucket count and hash seed —
-//! `sort_rows_with_scratch`'s key-only sort is a deterministic function
-//! of its input, even though equal-key order is no longer specified.
+//! Determinism (ARCHITECTURE.md §Determinism): cosets are write-disjoint and
+//! work within one is sequential, so output is bitwise identical across
+//! thread counts *and* across repeat runs at a fixed bucket count and hash
+//! seed — `sort_rows_with_scratch`'s key-only sort is a deterministic
+//! function of its input, even though equal-key order is unspecified.
 //! Across bucket counts or hash seeds, output agrees only to
 //! floating-point tolerance: a different partition can gather equal-key
 //! contributions in a different order, and `f64` addition is not associative.
-//! (Through v0.3 a `u8` delta-tag column pinned that order to be
-//! bucket-count-independent too, at a measured 5–14% cost; v0.5 drops the
-//! requirement and the tag with it — see `merge::sort_rows_with_scratch`.)
 
 use std::sync::Mutex;
 
@@ -57,7 +54,7 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 /// Reusable per-layer scratch.
 ///
 /// Held by the caller across layers because a layer must allocate nothing
-/// after the first (v0.2 §4.2): every field retains its high-water capacity
+/// after the first: every field retains its high-water capacity
 /// across cosets and layers. The serial path uses the caller's instance
 /// directly; the parallel path takes one slot of `workers` per Rayon worker
 /// thread, so scratch capacity is bounded by `threads × coset working set`
@@ -139,20 +136,18 @@ struct CosetScratch<const W: usize> {
 
 /// One output member's gather run: key columns and coefficients.
 ///
-/// Through v0.3 this also carried a `u8` delta tag that the then-current
-/// `sort_phase_tagged` broke equal-key ties on, pinning bucket-count-independent
-/// summation order. v0.5 S1 drops that requirement (and the tag) — see the
+/// Equal-key summation order is not pinned by a sort tiebreak — see the
 /// module doc and `merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
 struct GatherRun<const W: usize> {
-    /// The identity-delta stream (v0.5 S2): keys untouched, so it inherits the
+    /// The identity-delta stream: keys untouched, so it inherits the
     /// source bucket's strictly-ascending, duplicate-free order and is never
     /// sorted. `H·0 = 0` puts this stream in the member's own run, in source
-    /// position order. Under a **dense** identity plan (v0.6 G1d) only
+    /// position order. Under a **dense** identity plan only
     /// `id_coeff` is populated — one coefficient per source row, aligned 1:1
     /// with `old[j]`, whose key columns the merge borrows in place — and
     /// `id_x`/`id_z` stay empty. Under a sparse plan all three columns are
-    /// filled with the zero-amplitude rows filtered out, exactly v0.5.
+    /// filled with the zero-amplitude rows filtered out.
     id_x: Vec<[u64; W]>,
     id_z: Vec<[u64; W]>,
     id_coeff: Vec<Complex64>,
@@ -219,12 +214,12 @@ enum DeltaPlan<'p, const W: usize> {
         coords: Vec<u32>,
         /// Whether `deltas()[0]` is the identity delta (`local_delta == 0` —
         /// entry 0 by the ascending construction order), whose stream the
-        /// gather routes into the run's pre-sorted `id` columns (v0.5 S2).
+        /// gather routes into the run's pre-sorted `id` columns.
         /// True for every built-in channel; a custom channel without it
         /// gathers everything into the sorted rest stream.
         has_identity: bool,
         /// Whether the identity entry's amplitude is nonzero for **every**
-        /// active support pattern (v0.6 G1d). Dense means each source row
+        /// active support pattern. Dense means each source row
         /// emits exactly one id row with its key untouched — the id stream's
         /// keys *are* the source bucket's key columns, row for row — so the
         /// gather materializes only the 16-byte coefficient into `id_coeff`
@@ -232,9 +227,9 @@ enum DeltaPlan<'p, const W: usize> {
         /// 32-byte-per-row key write + re-read. True for
         /// `GeneralUnitary1Q/2Q` and weight-≤2 rotations; false for
         /// Cliffords (e.g. CNOT's id amp is nonzero on 4 of 16 patterns),
-        /// which keep the full v0.5 pre-filtered key+coeff materialization —
+        /// which keep the pre-filtered key+coeff materialization —
         /// borrowing there would make the merge scan mostly-skipped rows,
-        /// measured +15–30% on cnot/h (v0.6 results note).
+        /// measured +15–30% on cnot/h (`research/notes/2026-08-31-v0.6-results.md`).
         dense_identity: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
@@ -283,7 +278,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
 /// Apply one prepared channel to a bucketed sum.
 ///
 /// `policy`'s `keep_term` is folded into the per-bucket merge, so it sees fully
-/// **summed** coefficients — the same contract as the v0.1 engine.
+/// **summed** coefficients (ARCHITECTURE.md §Truncation).
 /// `finalize_layer` is *not* called here; `propagate` owns that.
 pub fn apply_layer_bucketed<const W: usize, T>(
     sum: &mut PauliSum<W>,
@@ -298,8 +293,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 
     // Key-preserving channels (identity, depolarizing, dephasing, Pauli gates)
     // leave every key bitwise unchanged, so the output is already sorted and
-    // duplicate-free. v0.1 paid a full O(n log n) sort to multiply each
-    // coefficient by a scalar; here it is an in-place filter.
+    // duplicate-free: multiplying each coefficient by a scalar is an
+    // in-place filter, with no sort needed.
     if let Prepared::Local(ptm) = prep {
         if ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
@@ -345,8 +340,9 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     // Each coset is a closed task: it reads and writes only its own chunk, so
     // the chunk loop needs no atomics, no cross-task locks, and no
     // reconciliation pass. Work within a task is sequential and deterministic
-    // (the per-run key-only sort is a deterministic function of its input,
-    // v0.5 S1), so output is byte-identical across thread counts.
+    // (the per-run key-only sort is a deterministic function of its input),
+    // so output is byte-identical across thread counts
+    // (ARCHITECTURE.md §Determinism).
     {
         // Size the worker pool before `staging` is borrowed below; keeping
         // existing slots preserves their high-water capacity.
@@ -453,8 +449,8 @@ fn fill_coset<const W: usize, T>(
     // Exact per-run capacity, counted once per delta entry — two entries
     // colliding on one bucket delta count twice, matching the rows they can
     // emit. Split by destination stream: the identity entry feeds the
-    // pre-sorted `id` columns, everything else the sorted rest (v0.5 S2).
-    // Under a dense identity (v0.6 G1d) the id *key* columns stay empty —
+    // pre-sorted `id` columns, everything else the sorted rest.
+    // Under a dense identity the id *key* columns stay empty —
     // the merge borrows the source bucket's keys — so only `id_coeff` needs
     // capacity; a rotation's id stream is dense by construction (every row
     // emits exactly one id row).
@@ -495,17 +491,14 @@ fn fill_coset<const W: usize, T>(
 
     // Gather. Two visit orders produce the same multiset of rows per run —
     // only their arrival order differs, which the key-only sort below erases
-    // up to floating-point tolerance on any equal-key summation (v0.5 S1;
-    // through v0.3 a `(key, tag)` sort canonicalized either order to a
-    // bitwise-identical sequence — see `local_gather_orders_agree_to_fp_tolerance`
-    // for the v0.5 replacement). Which order is *faster* depends on `r`:
-    // input-major loads each term once but keeps `2^r` write streams open per
-    // task, and at `r = 4` those streams
-    // plus the swapped coset no longer fit L2 — measured +48% on a 32-thread
+    // up to floating-point tolerance on any equal-key summation (see
+    // `local_gather_orders_agree_to_fp_tolerance`). Which order is *faster*
+    // depends on `r`: input-major loads each term once but keeps `2^r` write
+    // streams open per task, and at `r = 4` those streams plus the swapped
+    // coset no longer fit L2 — measured +48% on a 32-thread
     // `GeneralUnitary2Q` layer at 10⁶ terms. Output-major re-reads each input
-    // bucket `2^r` times but the reads stay coset-local and there is a single
-    // write stream, which is the cache behavior the per-output-bucket v0.2
-    // engine had. Only `Local` plans can reach `r ≥ 3` (a wide rotation has at
+    // bucket `2^r` times but the reads stay coset-local, with a single write
+    // stream. Only `Local` plans can reach `r ≥ 3` (a wide rotation has at
     // most two bucket deltas).
     match plan {
         DeltaPlan::Local {
@@ -534,7 +527,7 @@ fn fill_coset<const W: usize, T>(
             // stream is the whole source bucket in order: sorted, unique —
             // and its keys are the source keys row for row, so only the
             // coefficient is materialized; the merge borrows the keys from
-            // the source bucket in place (v0.6 G1d).
+            // the source bucket in place.
             for (i, src) in old.iter().enumerate() {
                 for t in 0..src.len() {
                     let v = PauliString::<W> {
@@ -567,10 +560,10 @@ fn fill_coset<const W: usize, T>(
 
     // Sort each run's rest stream by key alone, then fuse the two-stream
     // merge with the segmented reduction into the member's live slot: the id
-    // stream never moves through the sort at all (v0.5 S2). Under a dense
+    // stream never moves through the sort at all. Under a dense
     // identity plan the id stream's *keys* were never materialized either —
     // they are the source bucket's own key columns, borrowed here, with the
-    // gathered `id_coeff` aligned to them row for row (v0.6 G1d); `H·0 = 0`
+    // gathered `id_coeff` aligned to them row for row; `H·0 = 0`
     // means member `j`'s id source is `old[j]`.
     for (j, (run, dst)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
         #[cfg(feature = "phase-timing")]
@@ -644,9 +637,9 @@ fn fill_coset<const W: usize, T>(
 /// the input-major path. The output-major branch survives, unmeasured, as a
 /// guard for a custom full-rank channel (`r = 4`: sixteen live gather runs
 /// per task), where the scatter working set doubles twice more. Both paths
-/// gather the identical multiset of rows in different orders; since v0.5 S1
-/// the key-only sort no longer canonicalizes that to a bitwise-identical
-/// sequence (equal-key order can differ between the two), so the two orders
+/// gather the identical multiset of rows in different orders; the key-only
+/// sort does not canonicalize that to a bitwise-identical sequence
+/// (equal-key order can differ between the two), so the two orders
 /// agree only to floating-point tolerance — pinned by
 /// `local_gather_orders_agree_to_fp_tolerance` — and the threshold remains a
 /// pure performance knob, not a correctness one.
@@ -671,12 +664,12 @@ fn gather_local_input_major<const W: usize>(
             if has_identity {
                 // Entry 0 is the identity delta: masks are zero and
                 // `coords[0] == 0`, so the row lands in this member's own run
-                // with its key untouched — the pre-sorted id stream (v0.5 S2).
+                // with its key untouched — the pre-sorted id stream.
                 let a = ptm.deltas()[0].amp[s];
                 if dense_identity {
                     // Dense: `a` never vanishes and the stream is 1:1 with
                     // the source rows, so only the coefficient is stored —
-                    // the merge borrows the keys from `old[i]` (v0.6 G1d).
+                    // the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
                     runs[i].id_coeff.push(src.coeff[t] * a);
                 } else if a != ZERO {
@@ -703,9 +696,9 @@ fn gather_local_input_major<const W: usize>(
 /// Output-major gather for a tabulated (`Local`) plan: for each output member,
 /// stream the one input bucket per delta entry and append to that member's run
 /// only. Rows land in (delta, input position) order — the same *multiset* as
-/// [`gather_local_input_major`] in a different order. Since v0.5 S1 the
-/// per-run sort is key-only, so it no longer canonicalizes the two orders to
-/// an identical sequence; they agree only up to floating-point tolerance on
+/// [`gather_local_input_major`] in a different order. The per-run sort is
+/// key-only, so it does not canonicalize the two orders to an identical
+/// sequence; they agree only up to floating-point tolerance on
 /// any equal-key summation (see `local_gather_orders_agree_to_fp_tolerance`).
 fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
@@ -719,8 +712,8 @@ fn gather_local_output_major<const W: usize>(
     for (j, run) in runs.iter_mut().enumerate() {
         if has_identity {
             // Entry 0: masks zero, `coords[0] == 0` — the member's own bucket
-            // streams into the pre-sorted id columns (v0.5 S2); coefficient
-            // only when the identity is dense (v0.6 G1d, keys borrowed).
+            // streams into the pre-sorted id columns; coefficient
+            // only when the identity is dense (keys borrowed).
             let d = &ptm.deltas()[0];
             let src = &old[j];
             for t in 0..src.len() {
@@ -888,15 +881,14 @@ mod tests {
         assert_sums_close(&out, &want, "rotation fanout");
     }
 
-    // ---- the differential test against the v0.1 engine ----
+    // ---- the differential test against the naive oracle ----
 
     /// Every built-in channel, over both occupancy regimes, several bucket
     /// counts, forward and adjoint, against three policies.
     ///
     /// This is the primary correctness net for the engine: `naive_apply_layer`
-    /// is the oracle (v0.2 §9.2 — the role the retained v0.1 pipeline used to
-    /// play). A disagreement is a bug in the bucketed engine until proven
-    /// otherwise.
+    /// (`crate::test_support`) is the oracle. A disagreement is a bug in the
+    /// bucketed engine until proven otherwise.
     #[test]
     fn differential_against_the_naive_oracle_w1_dense_collisions() {
         // Only 8 qubits, so 2000 random terms collide heavily under a rotation
@@ -1092,10 +1084,9 @@ mod tests {
 
     #[test]
     fn keep_term_sees_the_summed_coefficient() {
-        // Port of the v0.1 `threshold_applied_after_summation`: two terms
-        // that nearly cancel must be dropped by a threshold their individual
-        // magnitudes would pass. A rotation at theta = pi/2 sends X and Y to the
-        // same key with opposite-ish weights.
+        // Two terms that nearly cancel must be dropped by a threshold their
+        // individual magnitudes would pass. A rotation at theta = pi/2 sends
+        // X and Y to the same key with opposite-ish weights.
         let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
         acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.5, 0.0));
         acc.add_term(
@@ -1193,14 +1184,11 @@ mod tests {
 
     #[test]
     fn output_agrees_across_bucket_counts_to_fp_tolerance() {
-        // Through v0.3 this was the strong, *bitwise* form (v0.2 §9.1),
-        // guaranteed by the `u8` delta tag pinning equal-key summation order
-        // independent of the partition. v0.5 S1 drops that tag and the
-        // requirement with it: a different bucket count can gather a
-        // duplicate key's contributions in a different order, and `f64`
-        // addition is not associative, so only floating-point-tolerance
-        // agreement is expected now. The GeneralUnitary2Q case is
-        // load-bearing: rotations and Cliffords merge at most two
+        // A different bucket count can gather a duplicate key's
+        // contributions in a different order, and `f64` addition is not
+        // associative, so only floating-point-tolerance agreement is
+        // expected (ARCHITECTURE.md §Determinism). The GeneralUnitary2Q
+        // case is load-bearing: rotations and Cliffords merge at most two
         // contributions per key, where any order is bitwise-equal by
         // commutativity, so only a wide-delta channel can exercise the
         // relaxed axis at all (see `sqrt_swap_w1`).
@@ -1224,9 +1212,9 @@ mod tests {
     #[test]
     fn output_agrees_across_hash_seeds_to_fp_tolerance() {
         // A different `H` permutes which terms share a bucket but must not
-        // change the arithmetic (up to v0.5 S1's relaxed, fp-tolerance policy
-        // — see `output_agrees_across_bucket_counts_to_fp_tolerance` above).
-        // The GeneralUnitary2Q case is load-bearing for the same reason as in
+        // change the arithmetic beyond floating-point tolerance (see
+        // `output_agrees_across_bucket_counts_to_fp_tolerance` above). The
+        // GeneralUnitary2Q case is load-bearing for the same reason as in
         // the bucket-count test above.
         let input = rand_sum::<1>(2000, 8, 0x9002);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
@@ -1245,15 +1233,14 @@ mod tests {
         // The r-threshold hybrid ships output-major gathering for wide spans
         // (GeneralUnitary2Q) and input-major below the threshold. The two
         // visit orders emit the same *multiset* of rows per run in different
-        // sequences. Through v0.3 the `(key, tag)` sort canonicalized both to
-        // an identical, bitwise-equal sequence; v0.5 S1's key-only sort makes
-        // no promise about a duplicate key's relative row order, so the two
-        // orders can gather a duplicate key's contributions in different
-        // orders and their *unmerged* rows need not line up element-wise
-        // anymore. What must still hold: merging each run's rows (summing
-        // duplicate keys) gives the same keys with the same totals, to
-        // floating-point tolerance. Note sqrt-SWAP's nonzero delta masks are
-        // {XX, ZZ, YY}-shaped, so its span has rank exactly 2 under any hash —
+        // sequences. The key-only sort makes no promise about a duplicate
+        // key's relative row order, so the two orders can gather a duplicate
+        // key's contributions in different orders and their *unmerged* rows
+        // need not line up element-wise. What must still hold: merging each
+        // run's rows (summing duplicate keys) gives the same keys with the
+        // same totals, to floating-point tolerance. Note sqrt-SWAP's nonzero
+        // delta masks are {XX, ZZ, YY}-shaped, so its span has rank exactly
+        // 2 under any hash —
         // the property pinned here is rank-independent (the argument never
         // mentions r), so a rank-2 coset of four members exercises it fully.
         let input = rand_sum::<1>(2000, 8, 0xAB12);
@@ -1294,7 +1281,7 @@ mod tests {
         let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
         // gu2q's identity amplitude is dense, so the gather materializes only
         // the id coefficients and the merge borrows the keys from the source
-        // bucket (v0.6 G1d) — mirrored below in `merge_run`.
+        // bucket — mirrored below in `merge_run`.
         let dim = 1usize << (2 * ptm.k());
         let dense_identity = has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
         assert!(dense_identity, "gu2q's identity amplitude must be dense");
@@ -1373,7 +1360,7 @@ mod tests {
         }
     }
 
-    /// v0.6 G1d: the dense/sparse identity classification that decides
+    /// The dense/sparse identity classification that decides
     /// whether the merge borrows the id stream's keys from the source
     /// bucket. Dense = the identity amplitude never vanishes over the
     /// active support patterns; pinned per built-in so a PTM change that
@@ -1407,7 +1394,7 @@ mod tests {
             "amplitude_damping",
         );
         // Sparse: the id amplitude vanishes on some patterns (CNOT: 12 of
-        // 16; H: 2 of 4) — these keep the v0.5 materialized id stream.
+        // 16; H: 2 of 4) — these keep the materialized id stream.
         check(&Clifford2Q::cnot(1, 4), false, "cnot");
         check(&Clifford1Q::h(3), false, "h");
     }
@@ -1481,7 +1468,7 @@ mod tests {
         assert_terms_close(&b, &want, TOL, "layer, rebucket, layer");
     }
 
-    // ---- the fingerprint net (v0.3 §2, slice C0) ----
+    // ---- the fingerprint net ----
 
     /// FNV-1a over the eight little-endian bytes of one `u64`.
     ///
@@ -1521,8 +1508,8 @@ mod tests {
     /// The channels in the fingerprint net: one per prepared-path shape.
     ///
     /// `Clifford1Q::h` (2 deltas), `Clifford2Q::cnot` and `::swap` (4 deltas,
-    /// different tables), `GeneralUnitary2Q` (up to 16 deltas — the case §2's
-    /// coset walk changes most), a weight-2 `PauliRotation` (local PTM path), a
+    /// different tables), `GeneralUnitary2Q` (up to 16 deltas — the case the
+    /// coset walk affects most), a weight-2 `PauliRotation` (local PTM path), a
     /// weight-4 `PauliRotation` (the `RotationPrep` path), `Depolarizing` (the
     /// key-preserving `rescale_in_place` path) and `AmplitudeDamping`.
     fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
@@ -1633,11 +1620,13 @@ mod tests {
     /// Exact-bit characterization of one bucketed layer, across every
     /// prepared-path shape, both directions and two bucket counts.
     ///
-    /// The §2 coset rewrite must reproduce these EXACT u64s — a later red
-    /// fingerprint means the rewrite changed observable bits and must be
-    /// analyzed, never regenerated.
+    /// A convenience tripwire, not a correctness requirement
+    /// (ARCHITECTURE.md §Determinism): a red fingerprint means the engine's
+    /// output bits moved and should be looked at, but when the change is
+    /// correct to floating-point tolerance the fix is to regenerate the
+    /// literals below in the same commit, not to preserve the old bits.
     ///
-    /// The differential tests above compare against the v0.1 oracle to a
+    /// The differential tests above compare against the naive oracle to a
     /// tolerance, which is the right net for "is the answer correct". This one
     /// is the complementary net: it says nothing about correctness and
     /// everything about *stability*, catching a reordered gather that stays
@@ -1711,7 +1700,7 @@ mod tests {
             assert_eq!(got.num_buckets(), 1);
             let want = naive_apply_layer(&input, ch.as_ref(), &AlwaysKeep, false);
             // Tolerance, not bitwise: the oracle sums equal keys in hashmap
-            // iteration order (v0.7 Stage 1 replaced the v0.1 pipeline here).
+            // iteration order.
             assert_terms_close(&got, &want, TOL, "bits=0 single coset");
         }
     }
@@ -1722,7 +1711,8 @@ mod tests {
     /// contributions per output key (see the doc on
     /// `output_agrees_across_bucket_counts_to_fp_tolerance`), so float
     /// addition is commutative here regardless of gather or sort order — this
-    /// stays a bitwise check even under v0.5 S1's relaxed policy.
+    /// stays a bitwise check even under the relaxed determinism policy
+    /// (ARCHITECTURE.md §Determinism).
     #[test]
     fn wide_rotation_with_colliding_bucket_delta() {
         // Weight-4 generator, wider than MAX_LOCAL_SUPPORT, so it prepares as
@@ -2167,8 +2157,9 @@ mod tie_tests {
     use crate::test_support::{rand_sum, tie_heavy_sum};
     use crate::truncation::builtin::TopN;
 
-    /// A direct, deliberately naive transcription of the v0.3 §3 rule, used as
-    /// an oracle for the production `finalize_layer`.
+    /// A direct, deliberately naive transcription of the `TopN` tie-group
+    /// rule (ARCHITECTURE.md §Truncation), used as an oracle for the
+    /// production `finalize_layer`.
     ///
     /// Full sort instead of a selection, `retain` instead of a per-bucket
     /// compaction, no parallelism: nothing here shares code with the thing it
@@ -2226,8 +2217,9 @@ mod tie_tests {
         }
     }
 
-    /// `finalize_layer` must agree with the §3 rule computed the obvious way,
-    /// on tie-dense data and across partitions. This is the semantics test: it
+    /// `finalize_layer` must agree with the `TopN` tie-group rule computed
+    /// the obvious way, on tie-dense data and across partitions. This is the
+    /// semantics test: it
     /// pins *which* terms survive, not merely that all partitions agree.
     ///
     /// The `n` sweep mixes arbitrary cut points (which straddle a group, since

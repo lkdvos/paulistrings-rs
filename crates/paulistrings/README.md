@@ -3,6 +3,7 @@
 [![docs.rs](https://img.shields.io/docsrs/paulistrings)](https://docs.rs/paulistrings)
 [![crates.io](https://img.shields.io/crates/v/paulistrings)](https://crates.io/crates/paulistrings)
 
+<!-- Pitch paragraph is single-sourced with the repo-root README.md — keep the two word-identical. -->
 Classical simulation of quantum circuits by Pauli propagation — evolving
 operators in the Pauli basis under gates and noise channels, in either
 the forward or Heisenberg picture. Aimed at workloads where state-vector
@@ -43,9 +44,9 @@ assert_eq!(evolved.len(), 2); // H · Z_0 · H = X_0, plus the unchanged 0.5*X_1
 Four pillars in priority order:
 
 1. **Correctness** of the Pauli algebra — symplectic encoding, phase
-   tracking, sort-merge invariant after every layer.
-2. **Performance** at 10⁶–10⁸ terms — SoA layout, sort-merge engine,
-   Rayon-parallel scan and merge.
+   tracking, the dedup invariant restored after every layer.
+2. **Performance** at 10⁶–10⁸ terms — SoA layout, GF(2)-bucketed
+   write-disjoint layers, Rayon-parallel with no global sort.
 3. **Extensibility** for research — open [`Channel`] and
    [`TruncationPolicy`] traits.
 4. **GPU-readiness** — `#[repr(C)]` `Pod` types, fixed-fanout buffers,
@@ -53,8 +54,9 @@ Four pillars in priority order:
    restructuring.
 
 See the [API documentation](https://docs.rs/paulistrings) for module-level
-guides on the sort-merge engine, width monomorphization, and the
-extension traits.
+guides on the bucketed engine, width monomorphization, and the extension
+traits. For the system-level design, see
+[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md).
 
 ## License
 

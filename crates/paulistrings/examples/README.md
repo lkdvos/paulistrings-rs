@@ -32,7 +32,8 @@ python crates/paulistrings/examples/plot_ising_quench.py
 ```
 
 If you change the Rust example, regenerate **both** the CSV and the SVG
-in the same commit so the embedded plot matches the data.
+in the same commit so the embedded plot matches the data — see
+"Regenerating the committed output" below.
 
 ## Why CSVs and SVGs are committed
 
@@ -47,11 +48,10 @@ a one-line Python invocation instead of a multi-minute Rust run.
 ising_2d_quench`; `docs/examples/img/ising_quench.svg` comes from
 `python plot_ising_quench.py` (needs matplotlib, e.g. via `./scripts/setup.sh`).
 
-**Known staleness:** the CSVs were regenerated in v0.3 §3, when `TopN(n)`
-changed from "keep exactly `n`, key-ascending tiebreak" to "keep at most
-`n`, discarding the whole boundary tie group rather than splitting it" (see
-the "How sensitive is the answer" section of
-`../docs/examples/ising_2d_quench.md` for the full three-way comparison and
-numbers). The SVG was regenerated in the same pass via
-`module load modules/2.5-beta1 python/3.12.13` (Lmod-provided matplotlib
-3.11.0), so it matches the current CSVs.
+On Flatiron hosts, if no venv is set up, matplotlib is also available via
+the module system:
+
+```bash
+module load modules/2.5-beta1 python/3.12.13
+python crates/paulistrings/examples/plot_ising_quench.py
+```

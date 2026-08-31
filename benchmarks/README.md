@@ -1,6 +1,6 @@
 # Benchmarks
 
-Performance is a primary goal of this library. We track three benchmark surfaces.
+Performance is a primary goal of this library. We track two benchmark surfaces.
 
 ## 1. Rust microbenchmarks (criterion)
 
@@ -13,21 +13,32 @@ Output: `target/criterion/` (HTML reports). Use these for tight inner-loop work
 
 ## 2. Python end-to-end benchmarks (pytest-benchmark)
 
+The suite is `benchmarks/python/bench_baseline.py`. It is **manual, not run
+in CI** — it needs the `./scripts/setup.sh` venv (with the `bench` extras:
+`qiskit`, `openfermion`) and a `maturin develop --release` build first.
+
 ```
+./scripts/setup.sh
+source .venv/bin/activate
 maturin develop --release -m crates/paulistrings-py/Cargo.toml
 pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py.json
 ```
 
-These should mirror realistic user workloads: building Hamiltonians, evolving
-operators, computing expectation values, BCH / Trotter expansions, etc.
+It currently covers two groups, each parameterized over `n_terms ∈ {100,
+1_000, 10_000}` at a fixed `num_qubits = 16`:
 
-## 3. Cross-library comparisons
+- `construct` — building an N-term Pauli sum from `(label, coefficient)`
+  pairs, against `qiskit.quantum_info.SparsePauliOp.from_list` and
+  `openfermion.QubitOperator`.
+- `conjugate_clifford` — Heisenberg-conjugating an N-term sum through a
+  fixed `H`+`CNOT` Clifford circuit, against
+  `qiskit.quantum_info.PauliList.evolve` on a `SparsePauliOp`.
 
-Compare against:
-- `PauliStrings.jl` (Julia) — the inspiration; same operations, same sizes.
-- `qiskit.quantum_info.SparsePauliOp` / `Pauli`
-- `openfermion.QubitOperator`
-- `stim.PauliString` (where applicable; Clifford-focused)
+`PauliStrings.jl` is excluded (no PyJulia wiring). `stim` is not currently
+compared.
+
+Possible future comparisons (not implemented): BCH/Trotter expansion
+benchmarks, and a `stim.PauliString` comparison for the Clifford-only path.
 
 Save raw timings under `benchmarks/results/<date>-<machine>/` so we can plot
 regressions over time. Always record: commit hash, CPU, RAM, compiler version,

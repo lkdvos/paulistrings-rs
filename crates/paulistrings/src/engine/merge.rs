@@ -75,6 +75,10 @@ impl<const W: usize> SortScratch<W> {
 /// columns' storage (cleared next call) as its own scratch capacity — so
 /// capacity circulates between the live columns and the scratch instead of
 /// either side ever growing past its high-water mark.
+// `#[inline]` is load-bearing: without it, moving this function between
+// modules measured ~6% slower single-threaded on the rotation family
+// (interleaved A/B, 3/3 pairs) — an LTO code-layout effect, not logic.
+#[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -133,6 +137,9 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
 /// compare it saves. Full data in the 2026-08-31 v0.6 results note.
 #[allow(clippy::too_many_arguments)]
+// `#[inline]` is load-bearing — same A/B-verified layout effect as on
+// `sort_rows_with_scratch` above.
+#[inline]
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
     a_z: &[[u64; W]],

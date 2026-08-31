@@ -33,8 +33,6 @@
 //! ));
 //! ```
 
-#![allow(unused)]
-
 pub mod builtin;
 
 pub use builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};

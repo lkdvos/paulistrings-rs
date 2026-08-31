@@ -1,8 +1,9 @@
 //! GF(2) spans and coset enumeration over the bucket index space.
 //!
-//! Preparation for v0.3 §2 (`research/plans/2026-08-29-v0.3-followups.md`):
-//! nothing here is wired into the engine yet. It is the index algebra the coset
-//! rewrite will stand on, pinned by its own tests first.
+//! `Gf2Span` is the engine's coset index algebra (v0.3 §2,
+//! `research/plans/2026-08-29-v0.3-followups.md`): `engine::bucketed` uses it
+//! to enumerate `span(h(D))`'s cosets, the parallel unit each layer gathers,
+//! sorts and merges in place.
 
 use crate::bucket::hash::B_MAX_BITS;
 
@@ -166,13 +167,8 @@ impl Gf2Span {
         (1usize << self.bits) >> self.basis.len()
     }
 
-    /// Bucket-index width this span was built against.
-    #[inline]
-    pub(crate) fn bits(&self) -> u8 {
-        self.bits
-    }
-
     /// The reduced echelon basis, ascending by pivot bit.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn basis(&self) -> &[u32] {
         &self.basis
@@ -228,6 +224,7 @@ impl Gf2Span {
     ///
     /// Bit `j` of `i` selects `basis[j]` (ascending pivot significance), so
     /// `i = 0` is `rep` itself and `i` ranges over `0..coset_size()`.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn member(&self, rep: u32, i: u32) -> u32 {
         debug_assert!(

@@ -54,10 +54,10 @@
 //!
 //! [`BuildAccumulator`]: crate::BuildAccumulator
 
-#![allow(unused)]
-
+#[cfg(test)]
 use num_complex::Complex64;
 
+#[cfg(test)]
 use crate::pauli_string::PauliString;
 
 pub use crate::bucket::sum::PauliSum;

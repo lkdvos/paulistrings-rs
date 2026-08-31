@@ -1,7 +1,5 @@
 //! Built-in truncation policies and combinators. See design doc §7.
 
-#![allow(unused)]
-
 use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
@@ -248,7 +246,7 @@ where
     }
 }
 
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

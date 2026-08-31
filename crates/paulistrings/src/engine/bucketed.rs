@@ -203,6 +203,7 @@ impl<const W: usize> GatherRun<W> {
         self.coeff.push(c);
     }
 
+    #[cfg(any(test, feature = "phase-timing"))]
     #[inline]
     fn len(&self) -> usize {
         self.id_coeff.len() + self.coeff.len()
@@ -788,11 +789,7 @@ where
     sum.assert_invariants();
 }
 
-// Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
-// without it `cargo bench` and `cargo test --release`, which compile the lib
-// tests in release mode, fail to build.
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::accumulator::BuildAccumulator;
@@ -1903,11 +1900,7 @@ mod tests {
     }
 }
 
-// Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
-// without it `cargo bench` and `cargo test --release`, which compile the lib
-// tests in release mode, fail to build.
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod finalize_tests {
     use super::tests::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
     use super::*;
@@ -2078,11 +2071,7 @@ mod finalize_tests {
     }
 }
 
-// Gated on `debug_assertions` because these tests call `assert_invariants`,
-// which is itself debug-only. Matches the convention in `pauli_sum.rs`;
-// without it `cargo bench` and `cargo test --release`, which compile the lib
-// tests in release mode, fail to build.
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tie_tests {
     /// The C.1 determinism contract: byte-identical output across thread counts,
     /// with the *engine* parallel. `apply_layer_bucketed` fixes the bucket count

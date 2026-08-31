@@ -1,7 +1,5 @@
 //! Noise channels: Depolarizing, Dephasing, AmplitudeDamping. See §6.
 
-#![allow(unused)]
-
 use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
 

@@ -89,9 +89,9 @@ Counters are read via `LayerScratch::take_stats()` after driving layers
 through `propagate_with_scratch`. There are two clock domains, deliberately
 mixed in one `PhaseStats`:
 
-- **Wall-clock phases** (`rebucket_ns` … `finalize_ns`, plus
-  `fallback_ns`) — measured once per layer on the calling thread; they
-  sum to approximately the layer's wall time.
+- **Wall-clock phases** (`rebucket_ns` … `finalize_ns`) — measured once
+  per layer on the calling thread; they sum to approximately the
+  layer's wall time.
 - **Worker busy-time phases** (`swap_ns` … `clear_ns`) — summed across
   every coset task on every Rayon worker. Under a `t`-thread pool they
   sum to `coset_loop_ns × t × efficiency`, not to `coset_loop_ns` itself.

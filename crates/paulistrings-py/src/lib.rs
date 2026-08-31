@@ -5,7 +5,6 @@
 //! `noise`, `truncation`). The width parameter `W` is monomorphized at a
 //! fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop (§4).
 
-#![allow(unused)]
 // PyO3 0.22's `#[pymethods]` expansion converts return values via
 // `.into()` even when the method already returns a `PyResult<T>`, which
 // clippy flags as a useless conversion. The lint is on the macro output, not

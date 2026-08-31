@@ -31,8 +31,6 @@
 //! [`Channel::apply`]: crate::Channel::apply
 //! [`Phase`]: crate::Phase
 
-#![allow(unused)]
-
 use bytemuck::{Pod, Zeroable};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};

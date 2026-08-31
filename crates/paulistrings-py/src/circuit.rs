@@ -1,7 +1,5 @@
 //! Python `Circuit` class. See §11.
 
-#![allow(unused)]
-
 use crate::channel_spec::{ChannelSpec, PyChannel};
 use paulistrings::Circuit as CoreCircuit;
 use pyo3::exceptions::PyValueError;
@@ -17,7 +15,7 @@ pub enum CircuitImpl {
 
 impl CircuitImpl {
     pub fn new_for(num_qubits: usize) -> Option<Self> {
-        for_num_qubits!(num_qubits, |W| CoreCircuit::new(num_qubits))
+        for_num_qubits!(num_qubits, |W| CoreCircuit::<W>::new(num_qubits))
     }
 
     pub fn num_qubits(&self) -> usize {

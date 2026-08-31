@@ -1,0 +1,1556 @@
+[
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.2450205449713394,
+    "final_terms": 11,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0003004239406436682,
+    "peak_terms": 6311,
+    "expectation_value": 0.01194127658346102,
+    "absolute_error": null,
+    "peak_memory_kb": 41864.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-8",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.0,
+      "baseline_peak_memory_kb": 40400.0,
+      "peak_memory_kb_delta": 1464.0,
+      "rss_kb_after": 41864.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 11,
+        "max_weight": 5,
+        "mean_weight": 3.3636363636363638
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 2.5457304569426924,
+    "final_terms": 119,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0005429260199889541,
+    "peak_terms": 79029,
+    "expectation_value": 0.01472967176453593,
+    "absolute_error": null,
+    "peak_memory_kb": 50872.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.0,
+      "baseline_peak_memory_kb": 45060.0,
+      "peak_memory_kb_delta": 5812.0,
+      "rss_kb_after": 50872.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 119,
+        "max_weight": 11,
+        "mean_weight": 6.100840336134453
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 37.915560242021456,
+    "final_terms": 2543,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.001321515068411827,
+    "peak_terms": 1071093,
+    "expectation_value": 0.015481385130588122,
+    "absolute_error": null,
+    "peak_memory_kb": 169984.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.0,
+      "baseline_peak_memory_kb": 49664.0,
+      "peak_memory_kb_delta": 120320.0,
+      "rss_kb_after": 169984.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 2543,
+        "max_weight": 13,
+        "mean_weight": 8.712151002752654
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 531.028269110946,
+    "final_terms": 34698,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.007045791018754244,
+    "peak_terms": 14396463,
+    "expectation_value": 0.01613137438596803,
+    "absolute_error": null,
+    "peak_memory_kb": 1076804.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.0,
+      "baseline_peak_memory_kb": 168780.0,
+      "peak_memory_kb_delta": 908024.0,
+      "rss_kb_after": 1076460.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 34698,
+        "max_weight": 19,
+        "mean_weight": 10.302639921609314
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.21101545309647918,
+    "final_terms": 8,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00012933206744492054,
+    "peak_terms": 5095,
+    "expectation_value": 0.007100750122088612,
+    "absolute_error": null,
+    "peak_memory_kb": 1076804.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-8",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.001,
+      "baseline_peak_memory_kb": 1076804.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 493288.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 8,
+        "max_weight": 5,
+        "mean_weight": 3.5
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.8844121570000425,
+    "final_terms": 84,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0002223839983344078,
+    "peak_terms": 60813,
+    "expectation_value": 0.01170722817875583,
+    "absolute_error": null,
+    "peak_memory_kb": 1076804.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.001,
+      "baseline_peak_memory_kb": 1076804.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 493292.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 84,
+        "max_weight": 11,
+        "mean_weight": 5.678571428571429
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 25.32201167405583,
+    "final_terms": 1653,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0004781680181622505,
+    "peak_terms": 792613,
+    "expectation_value": 0.012737150767685862,
+    "absolute_error": null,
+    "peak_memory_kb": 1076804.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.001,
+      "baseline_peak_memory_kb": 1076804.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 494844.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 1653,
+        "max_weight": 13,
+        "mean_weight": 8.638233514821536
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 361.1067358930595,
+    "final_terms": 20098,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0048008899902924895,
+    "peak_terms": 9710246,
+    "expectation_value": 0.012998050637618599,
+    "absolute_error": null,
+    "peak_memory_kb": 1113416.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.001,
+      "baseline_peak_memory_kb": 1076804.0,
+      "peak_memory_kb_delta": 36612.0,
+      "rss_kb_after": 1113416.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 20098,
+        "max_weight": 19,
+        "mean_weight": 9.796099114339736
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.14885851996950805,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.147598959505558e-05,
+    "peak_terms": 2345,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-8",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.005,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1052672.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.7274766280315816,
+    "final_terms": 24,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00015790306497365236,
+    "peak_terms": 26282,
+    "expectation_value": 0.005486224679951733,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.005,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1052676.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 24,
+        "max_weight": 7,
+        "mean_weight": 4.125
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 7.738538906909525,
+    "final_terms": 270,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0002972659422084689,
+    "peak_terms": 274396,
+    "expectation_value": 0.005918402478854132,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.005,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1052680.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 270,
+        "max_weight": 11,
+        "mean_weight": 7.111111111111111
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 82.53068264503963,
+    "final_terms": 3521,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0011777739273384213,
+    "peak_terms": 2818675,
+    "expectation_value": 0.006280876086498977,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.005,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1097324.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 3521,
+        "max_weight": 14,
+        "mean_weight": 8.612042033513207
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.13250542792957276,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.3789976947009563e-05,
+    "peak_terms": 1187,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-8",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1097324.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.33974278694950044,
+    "final_terms": 2,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0001132709439843893,
+    "peak_terms": 10966,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1097324.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 2,
+        "max_weight": 4,
+        "mean_weight": 2.5
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 2.131875433959067,
+    "final_terms": 54,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0002041640691459179,
+    "peak_terms": 104368,
+    "expectation_value": 0.002272040169849804,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1097332.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 54,
+        "max_weight": 7,
+        "mean_weight": 4.962962962962963
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 20.20537848805543,
+    "final_terms": 408,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0003903789911419153,
+    "peak_terms": 869299,
+    "expectation_value": 0.002432260558806105,
+    "absolute_error": null,
+    "peak_memory_kb": 1111876.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1097336.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 408,
+        "max_weight": 13,
+        "mean_weight": 7.411764705882353
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 1.52587890625e-05
+    },
+    "propagation_time_s": 164.8354904250009,
+    "final_terms": 5063,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0017664299812167883,
+    "peak_terms": 6445313,
+    "expectation_value": 0.0024836896863658403,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-16",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1111876.0,
+      "peak_memory_kb_delta": 14532.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 5063,
+        "max_weight": 15,
+        "mean_weight": 8.557969583251037
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.020212867995724082,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 4.902016371488571e-06,
+    "peak_terms": 177,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-8",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.07542085403110832,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 8.922070264816284e-06,
+    "peak_terms": 1047,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 0.14460100105497986,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 9.361072443425655e-06,
+    "peak_terms": 4861,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 0.4927635140484199,
+    "final_terms": 0,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.1202995665371418e-05,
+    "peak_terms": 22105,
+    "expectation_value": 0.0,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 0,
+        "max_weight": 0,
+        "mean_weight": 0.0
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 1.52587890625e-05
+    },
+    "propagation_time_s": 2.2516619480447844,
+    "final_terms": 16,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00015771097969263792,
+    "peak_terms": 170464,
+    "expectation_value": 7.155765810674567e-05,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-16",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 16,
+        "max_weight": 5,
+        "mean_weight": 3.625
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 3.814697265625e-06
+    },
+    "propagation_time_s": 12.81958560901694,
+    "final_terms": 70,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00029650889337062836,
+    "peak_terms": 738435,
+    "expectation_value": 7.752995073124117e-05,
+    "absolute_error": null,
+    "peak_memory_kb": 1126408.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-18",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126408.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126408.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 70,
+        "max_weight": 7,
+        "mean_weight": 5.171428571428572
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 9.5367431640625e-07
+    },
+    "propagation_time_s": 60.287986591109075,
+    "final_terms": 424,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.000669955974444747,
+    "peak_terms": 3224050,
+    "expectation_value": 7.795265321505998e-05,
+    "absolute_error": null,
+    "peak_memory_kb": 1126588.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-20",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.03,
+      "baseline_peak_memory_kb": 1126424.0,
+      "peak_memory_kb_delta": 164.0,
+      "rss_kb_after": 1126588.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 424,
+        "max_weight": 13,
+        "mean_weight": 6.808962264150943
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 103.13501208007801,
+    "final_terms": 3096,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0011131949722766876,
+    "peak_terms": 2660503,
+    "expectation_value": 0.12523022188192842,
+    "absolute_error": null,
+    "peak_memory_kb": 1126656.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "amplitude_damping",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1126592.0,
+      "peak_memory_kb_delta": 64.0,
+      "rss_kb_after": 1126656.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 3096,
+        "max_weight": 13,
+        "mean_weight": 8.464470284237725
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 16.06153897207696,
+    "final_terms": 516,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0003984419163316488,
+    "peak_terms": 673565,
+    "expectation_value": 0.002862382862797448,
+    "absolute_error": null,
+    "peak_memory_kb": 1126656.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "pauli_channel",
+      "noise_strength": [
+        0.002,
+        0.002,
+        0.008
+      ],
+      "baseline_peak_memory_kb": 1126656.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126656.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 516,
+        "max_weight": 13,
+        "mean_weight": 7.546511627906977
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 32.45795971096959,
+    "final_terms": 1976,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0006546700606122613,
+    "peak_terms": 1198531,
+    "expectation_value": 0.0059345569231769755,
+    "absolute_error": null,
+    "peak_memory_kb": 1126656.0,
+    "extra": {
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "dephase",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1126656.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1126656.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 1976,
+        "max_weight": 13,
+        "mean_weight": 8.461538461538462
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.24744938500225544,
+    "final_terms": 156,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00014140899293124676,
+    "peak_terms": 3550,
+    "expectation_value": 0.11164825133610218,
+    "absolute_error": null,
+    "peak_memory_kb": 1306280.0,
+    "extra": {
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-10",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1306280.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1173768.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 156,
+        "max_weight": 7,
+        "mean_weight": 6.115384615384615
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 1.1619184830924496,
+    "final_terms": 1313,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0003339590039104223,
+    "peak_terms": 19569,
+    "expectation_value": 0.11151791889507148,
+    "absolute_error": null,
+    "peak_memory_kb": 1306280.0,
+    "extra": {
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-12",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1306280.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1173780.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 1313,
+        "max_weight": 11,
+        "mean_weight": 7.605483625285605
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 6.77332303498406,
+    "final_terms": 10918,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0011670539388433099,
+    "peak_terms": 130826,
+    "expectation_value": 0.11043948821064413,
+    "absolute_error": null,
+    "peak_memory_kb": 1306280.0,
+    "extra": {
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-14",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1306280.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1173780.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 10918,
+        "max_weight": 15,
+        "mean_weight": 8.959791170544056
+      }
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 1.52587890625e-05
+    },
+    "propagation_time_s": 50.20225759304594,
+    "final_terms": 74717,
+    "provenance": {
+      "commit": "a3d260f911a929793207b472816da5e6d896f387",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.007053256966173649,
+    "peak_terms": 937075,
+    "expectation_value": 0.10950756480791313,
+    "absolute_error": null,
+    "peak_memory_kb": 1306280.0,
+    "extra": {
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "channels": 13720,
+      "coeff_label": "2^-16",
+      "state": "z+",
+      "showcase": "b2",
+      "noise_kind": "depolarize",
+      "noise_strength": 0.01,
+      "baseline_peak_memory_kb": 1306280.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 1173780.0,
+      "observed_threads": 33,
+      "weight_stats": {
+        "terms": 74717,
+        "max_weight": 17,
+        "mean_weight": 10.144746175569148
+      }
+    }
+  }
+]

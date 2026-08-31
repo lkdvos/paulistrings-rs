@@ -35,7 +35,7 @@ example code — they live under `python/paulistrings/`, consumed by both this t
 | | directory | what it validates | CI vs manual |
 |---|---|---|---|
 | **B1** | [`b1_operator_scrambling/`](b1_operator_scrambling/) | operator scrambling: support growth, butterfly velocity, OTOCs, 1D chain then a 2D quench — every curve carries a truncation-convergence panel | 1D: CI-safe gate (`test_showcase_b1.py`) + `manual-short` scripts; 2D: `manual-long` |
-| **B2** | `b2_noisy_verification/` | per-gate noise on the 127q kicked Ising: noise-accelerated truncation, and a "utility verification" demo reproducing Benchmark C's converged answer in the noiseless limit — written by a concurrent branch of this suite; CI gate `python/paulistrings/tests/test_showcase_b2.py` | `manual-short` |
+| **B2** | [`b2_noisy_verification/`](b2_noisy_verification/) | per-gate noise on the 127q kicked Ising: the tracked set **collapses** as the noise grows (651× fewer peak terms and 1080× less wall time at `p = 3e-2` than at `p = 0`, same cutoff), so noise makes this simulation *cheaper* — plus a utility-verification demo whose `p = 0` limit reproduces Benchmark C's claimable references, and an independent dense density-matrix cross-check of all five noise channels in both directions | CI-safe gate (`test_showcase_b2.py`, numpy-only, ~1 s) + `manual-long` script (~26 min, time-boxed) |
 | **B5** | [`b5_operator_backpropagation/`](b5_operator_backpropagation/) | hybrid depth reduction: back-propagate an observable through a circuit's tail layers classically (`direction="heisenberg"`), serialize the evolved observable + residual front circuit as a schema-v1 task file (`PauliSum.from_arrays`/`.npz` + `interop`), and check the composed expectation matches the full-circuit one | CI-safe gate (`test_showcase_b5.py`) + `manual-short` script |
 | **B6** | [`b6_resource_probes/`](b6_resource_probes/) | resource-theoretic diagnostics computed read-only over the numpy export: Pauli-spectrum entropy/purity (magic-adjacent, but explicitly *not* the pure-state stabilizer Rényi entropy) and operator entanglement across a bipartition (matrix-product-operator cost model) | CI-safe gate (`test_showcase_b6.py`, numpy-only, <1s) + `manual-short` script |
 
@@ -53,6 +53,7 @@ pip install -e ".[examples]"                                  # matplotlib, stim
 maturin develop --release -m crates/paulistrings-py/Cargo.toml # rebuild after any Rust change
 
 RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
+RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py --quick   # full run: drop --quick
 RAYON_NUM_THREADS=1 python examples/b5_operator_backpropagation/run_b5.py
 RAYON_NUM_THREADS=1 python examples/b6_resource_probes/run_b6.py
 RAYON_NUM_THREADS=1 python examples/xxz_chain/run_benchmark_d.py all

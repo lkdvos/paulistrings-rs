@@ -1,0 +1,850 @@
+{
+  "showcase": "b2",
+  "n_qubits": 127,
+  "observable": "Z_62",
+  "theta_zz": -1.5707963267948966,
+  "state": "z+",
+  "direction": "heisenberg",
+  "theta_h": {
+    "7pi/32": 0.6872233929727672,
+    "5pi/16": 0.9817477042468103
+  },
+  "marquee": {
+    "theta_h_label": "5pi/16",
+    "trotter_steps": 20,
+    "min_abs_coeff": 6.103515625e-05,
+    "min_abs_coeff_label": "2^-14"
+  },
+  "noise_model": "one single-qubit channel on every qubit of the gate that just ran; channels/step = 2n + 3|E| = 686",
+  "p_grid": [
+    0.0,
+    0.001,
+    0.005,
+    0.01,
+    0.03
+  ],
+  "coeff_grid": [
+    0.00390625,
+    0.0009765625,
+    0.000244140625,
+    6.103515625e-05,
+    1.52587890625e-05,
+    3.814697265625e-06,
+    9.5367431640625e-07
+  ],
+  "coeff_grid_labels": [
+    "2^-8",
+    "2^-10",
+    "2^-12",
+    "2^-14",
+    "2^-16",
+    "2^-18",
+    "2^-20"
+  ],
+  "coeff_grid_cuts": {
+    "0.0": {
+      "tightest": "2^-14",
+      "reason": "Benchmark C measured this exact point (5pi/16, 20 steps, 2^-14) at 1.44e7 peak terms and stopped there, its plateau test satisfied; measured here at ~9 min single-threaded. The next pair projects from this leg's own measured growth (13.4x in peak terms and 14.1x in wall time from 2^-12 to 2^-14) to ~1.9e8 terms \u2014 ~9 GiB of columns \u2014 and ~2 h single-threaded, past this showcase's whole time box for one grid point"
+    },
+    "0.001": {
+      "tightest": "2^-14",
+      "reason": "measured 380 s / 9.7e6 peak terms at 2^-14 -- the most expensive point in the sweep after p=0; 2^-16 projects past the p=0 cut for no extra story"
+    },
+    "0.005": {
+      "tightest": "2^-14",
+      "reason": "measured 84 s / 2.8e6 peak terms at 2^-14; 2^-16 projects to ~10 min on the measured 7x-per-dyadic-pair growth, which the p=1e-2 leg buys more cheaply"
+    },
+    "0.01": {
+      "tightest": "2^-16",
+      "reason": "measured 167 s / 6.4e6 peak terms at 2^-16, and it moved the value by only 5.1e-5 -- one dyadic pair tighter than the p<=5e-3 legs could reach"
+    },
+    "0.03": {
+      "tightest": "2^-20",
+      "reason": "measured 12 s / 7.4e5 peak terms at 2^-18: three dyadic pairs past the p=0 cut, for 3 % of its cost. This is the headline of the sweep"
+    }
+  },
+  "convergence_tol": 0.001,
+  "min_safe_coeff": 1e-12,
+  "measured_pilot": [
+    {
+      "p": 0.0,
+      "cutoff": "2^-10",
+      "value": 0.014729671765,
+      "final_terms": 119,
+      "peak_terms": 79029,
+      "wall_s": 2.45
+    },
+    {
+      "p": 0.0,
+      "cutoff": "2^-12",
+      "value": 0.015481385131,
+      "final_terms": 2543,
+      "peak_terms": 1071093,
+      "wall_s": 37.92
+    },
+    {
+      "p": 0.001,
+      "cutoff": "2^-14",
+      "value": 0.012998050638,
+      "final_terms": 20098,
+      "peak_terms": 9710246,
+      "wall_s": 380.14
+    },
+    {
+      "p": 0.005,
+      "cutoff": "2^-14",
+      "value": 0.006280876086,
+      "final_terms": 3521,
+      "peak_terms": 2818675,
+      "wall_s": 83.52
+    },
+    {
+      "p": 0.01,
+      "cutoff": "2^-14",
+      "value": 0.002432260559,
+      "final_terms": 408,
+      "peak_terms": 869299,
+      "wall_s": 20.23
+    },
+    {
+      "p": 0.01,
+      "cutoff": "2^-16",
+      "value": 0.002483689686,
+      "final_terms": 5063,
+      "peak_terms": 6445313,
+      "wall_s": 167.25
+    },
+    {
+      "p": 0.03,
+      "cutoff": "2^-14",
+      "value": 0.0,
+      "final_terms": 0,
+      "peak_terms": 22105,
+      "wall_s": 0.52
+    },
+    {
+      "p": 0.03,
+      "cutoff": "2^-18",
+      "value": 7.7529951e-05,
+      "final_terms": 70,
+      "peak_terms": 738435,
+      "wall_s": 12.4
+    }
+  ],
+  "cited_benchmark_c_rows": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "value": 0.6555630507494944,
+      "uncertainty": null,
+      "method": "light_cone_exact:both",
+      "exact": true,
+      "converged": null,
+      "summary_path": "benchmarks/python/deep_trotter/summary.json"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "value": 0.2384771180185389,
+      "uncertainty": null,
+      "method": "light_cone_exact:both",
+      "exact": true,
+      "converged": null,
+      "summary_path": "benchmarks/python/deep_trotter/summary.json"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 20,
+      "value": 0.01613137438596803,
+      "uncertainty": 0.0007517133660521914,
+      "method": "self_converged(min_abs_coeff)",
+      "exact": false,
+      "converged": true,
+      "summary_path": "benchmarks/python/deep_trotter/summary.json"
+    }
+  ],
+  "legs": [
+    {
+      "p": 0.0,
+      "noise": "depolarize(0)",
+      "cutoffs": [
+        "2^-8",
+        "2^-10",
+        "2^-12",
+        "2^-14"
+      ],
+      "cutoff_values": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "tightest_cutoff": "2^-14",
+      "cut_reason": "Benchmark C measured this exact point (5pi/16, 20 steps, 2^-14) at 1.44e7 peak terms and stopped there, its plateau test satisfied; measured here at ~9 min single-threaded. The next pair projects from this leg's own measured growth (13.4x in peak terms and 14.1x in wall time from 2^-12 to 2^-14) to ~1.9e8 terms \u2014 ~9 GiB of columns \u2014 and ~2 h single-threaded, past this showcase's whole time box for one grid point",
+      "marquee_cutoff": "2^-14",
+      "marquee_value": 0.01613137438596803,
+      "marquee_final_terms": 34698,
+      "marquee_peak_terms": 14396463,
+      "marquee_wall_s": 531.028269110946,
+      "tightest_value": 0.01613137438596803,
+      "tightest_peak_terms": 14396463,
+      "values": [
+        0.01194127658346102,
+        0.01472967176453593,
+        0.015481385130588122,
+        0.01613137438596803
+      ],
+      "final_terms": [
+        11,
+        119,
+        2543,
+        34698
+      ],
+      "peak_terms": [
+        6311,
+        79029,
+        1071093,
+        14396463
+      ],
+      "wall_s": [
+        0.2450205449713394,
+        2.5457304569426924,
+        37.915560242021456,
+        531.028269110946
+      ],
+      "weight_stats": [
+        {
+          "terms": 11,
+          "max_weight": 5,
+          "mean_weight": 3.3636363636363638
+        },
+        {
+          "terms": 119,
+          "max_weight": 11,
+          "mean_weight": 6.100840336134453
+        },
+        {
+          "terms": 2543,
+          "max_weight": 13,
+          "mean_weight": 8.712151002752654
+        },
+        {
+          "terms": 34698,
+          "max_weight": 19,
+          "mean_weight": 10.302639921609314
+        }
+      ],
+      "converged": true,
+      "uncertainty": 0.0006499892553799066,
+      "deltas": [
+        0.002788395181074911,
+        0.0007517133660521914,
+        0.0006499892553799066
+      ],
+      "tol": 0.001
+    },
+    {
+      "p": 0.001,
+      "noise": "depolarize(0.001)",
+      "cutoffs": [
+        "2^-8",
+        "2^-10",
+        "2^-12",
+        "2^-14"
+      ],
+      "cutoff_values": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "tightest_cutoff": "2^-14",
+      "cut_reason": "measured 380 s / 9.7e6 peak terms at 2^-14 -- the most expensive point in the sweep after p=0; 2^-16 projects past the p=0 cut for no extra story",
+      "marquee_cutoff": "2^-14",
+      "marquee_value": 0.012998050637618599,
+      "marquee_final_terms": 20098,
+      "marquee_peak_terms": 9710246,
+      "marquee_wall_s": 361.1067358930595,
+      "tightest_value": 0.012998050637618599,
+      "tightest_peak_terms": 9710246,
+      "values": [
+        0.007100750122088612,
+        0.01170722817875583,
+        0.012737150767685862,
+        0.012998050637618599
+      ],
+      "final_terms": [
+        8,
+        84,
+        1653,
+        20098
+      ],
+      "peak_terms": [
+        5095,
+        60813,
+        792613,
+        9710246
+      ],
+      "wall_s": [
+        0.21101545309647918,
+        1.8844121570000425,
+        25.32201167405583,
+        361.1067358930595
+      ],
+      "weight_stats": [
+        {
+          "terms": 8,
+          "max_weight": 5,
+          "mean_weight": 3.5
+        },
+        {
+          "terms": 84,
+          "max_weight": 11,
+          "mean_weight": 5.678571428571429
+        },
+        {
+          "terms": 1653,
+          "max_weight": 13,
+          "mean_weight": 8.638233514821536
+        },
+        {
+          "terms": 20098,
+          "max_weight": 19,
+          "mean_weight": 9.796099114339736
+        }
+      ],
+      "converged": false,
+      "uncertainty": 0.00026089986993273716,
+      "deltas": [
+        0.004606478056667218,
+        0.0010299225889300323,
+        0.00026089986993273716
+      ],
+      "tol": 0.001
+    },
+    {
+      "p": 0.005,
+      "noise": "depolarize(0.005)",
+      "cutoffs": [
+        "2^-8",
+        "2^-10",
+        "2^-12",
+        "2^-14"
+      ],
+      "cutoff_values": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "tightest_cutoff": "2^-14",
+      "cut_reason": "measured 84 s / 2.8e6 peak terms at 2^-14; 2^-16 projects to ~10 min on the measured 7x-per-dyadic-pair growth, which the p=1e-2 leg buys more cheaply",
+      "marquee_cutoff": "2^-14",
+      "marquee_value": 0.006280876086498977,
+      "marquee_final_terms": 3521,
+      "marquee_peak_terms": 2818675,
+      "marquee_wall_s": 82.53068264503963,
+      "tightest_value": 0.006280876086498977,
+      "tightest_peak_terms": 2818675,
+      "values": [
+        0.0,
+        0.005486224679951733,
+        0.005918402478854132,
+        0.006280876086498977
+      ],
+      "final_terms": [
+        0,
+        24,
+        270,
+        3521
+      ],
+      "peak_terms": [
+        2345,
+        26282,
+        274396,
+        2818675
+      ],
+      "wall_s": [
+        0.14885851996950805,
+        0.7274766280315816,
+        7.738538906909525,
+        82.53068264503963
+      ],
+      "weight_stats": [
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 24,
+          "max_weight": 7,
+          "mean_weight": 4.125
+        },
+        {
+          "terms": 270,
+          "max_weight": 11,
+          "mean_weight": 7.111111111111111
+        },
+        {
+          "terms": 3521,
+          "max_weight": 14,
+          "mean_weight": 8.612042033513207
+        }
+      ],
+      "converged": true,
+      "uncertainty": 0.00036247360764484447,
+      "deltas": [
+        0.005486224679951733,
+        0.00043217779890239883,
+        0.00036247360764484447
+      ],
+      "tol": 0.001
+    },
+    {
+      "p": 0.01,
+      "noise": "depolarize(0.01)",
+      "cutoffs": [
+        "2^-8",
+        "2^-10",
+        "2^-12",
+        "2^-14",
+        "2^-16"
+      ],
+      "cutoff_values": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05,
+        1.52587890625e-05
+      ],
+      "tightest_cutoff": "2^-16",
+      "cut_reason": "measured 167 s / 6.4e6 peak terms at 2^-16, and it moved the value by only 5.1e-5 -- one dyadic pair tighter than the p<=5e-3 legs could reach",
+      "marquee_cutoff": "2^-14",
+      "marquee_value": 0.002432260558806105,
+      "marquee_final_terms": 408,
+      "marquee_peak_terms": 869299,
+      "marquee_wall_s": 20.20537848805543,
+      "tightest_value": 0.0024836896863658403,
+      "tightest_peak_terms": 6445313,
+      "values": [
+        0.0,
+        0.0,
+        0.002272040169849804,
+        0.002432260558806105,
+        0.0024836896863658403
+      ],
+      "final_terms": [
+        0,
+        2,
+        54,
+        408,
+        5063
+      ],
+      "peak_terms": [
+        1187,
+        10966,
+        104368,
+        869299,
+        6445313
+      ],
+      "wall_s": [
+        0.13250542792957276,
+        0.33974278694950044,
+        2.131875433959067,
+        20.20537848805543,
+        164.8354904250009
+      ],
+      "weight_stats": [
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 2,
+          "max_weight": 4,
+          "mean_weight": 2.5
+        },
+        {
+          "terms": 54,
+          "max_weight": 7,
+          "mean_weight": 4.962962962962963
+        },
+        {
+          "terms": 408,
+          "max_weight": 13,
+          "mean_weight": 7.411764705882353
+        },
+        {
+          "terms": 5063,
+          "max_weight": 15,
+          "mean_weight": 8.557969583251037
+        }
+      ],
+      "converged": true,
+      "uncertainty": 5.1429127559735315e-05,
+      "deltas": [
+        0.0,
+        0.002272040169849804,
+        0.00016022038895630118,
+        5.1429127559735315e-05
+      ],
+      "tol": 0.001
+    },
+    {
+      "p": 0.03,
+      "noise": "depolarize(0.03)",
+      "cutoffs": [
+        "2^-8",
+        "2^-10",
+        "2^-12",
+        "2^-14",
+        "2^-16",
+        "2^-18",
+        "2^-20"
+      ],
+      "cutoff_values": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05,
+        1.52587890625e-05,
+        3.814697265625e-06,
+        9.5367431640625e-07
+      ],
+      "tightest_cutoff": "2^-20",
+      "cut_reason": "measured 12 s / 7.4e5 peak terms at 2^-18: three dyadic pairs past the p=0 cut, for 3 % of its cost. This is the headline of the sweep",
+      "marquee_cutoff": "2^-14",
+      "marquee_value": 0.0,
+      "marquee_final_terms": 0,
+      "marquee_peak_terms": 22105,
+      "marquee_wall_s": 0.4927635140484199,
+      "tightest_value": 7.795265321505998e-05,
+      "tightest_peak_terms": 3224050,
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        7.155765810674567e-05,
+        7.752995073124117e-05,
+        7.795265321505998e-05
+      ],
+      "final_terms": [
+        0,
+        0,
+        0,
+        0,
+        16,
+        70,
+        424
+      ],
+      "peak_terms": [
+        177,
+        1047,
+        4861,
+        22105,
+        170464,
+        738435,
+        3224050
+      ],
+      "wall_s": [
+        0.020212867995724082,
+        0.07542085403110832,
+        0.14460100105497986,
+        0.4927635140484199,
+        2.2516619480447844,
+        12.81958560901694,
+        60.287986591109075
+      ],
+      "weight_stats": [
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 0,
+          "max_weight": 0,
+          "mean_weight": 0.0
+        },
+        {
+          "terms": 16,
+          "max_weight": 5,
+          "mean_weight": 3.625
+        },
+        {
+          "terms": 70,
+          "max_weight": 7,
+          "mean_weight": 5.171428571428572
+        },
+        {
+          "terms": 424,
+          "max_weight": 13,
+          "mean_weight": 6.808962264150943
+        }
+      ],
+      "converged": true,
+      "uncertainty": 4.227024838188132e-07,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        7.155765810674567e-05,
+        5.972292624495493e-06,
+        4.227024838188132e-07
+      ],
+      "tol": 0.001
+    }
+  ],
+  "channel_variants": [
+    {
+      "noise": "amplitude_damping",
+      "strength": 0.01,
+      "cutoff": "2^-14",
+      "value": 0.12523022188192842,
+      "final_terms": 3096,
+      "peak_terms": 2660503,
+      "wall_s": 103.13501208007801,
+      "weight_stats": {
+        "terms": 3096,
+        "max_weight": 13,
+        "mean_weight": 8.464470284237725
+      }
+    },
+    {
+      "noise": "pauli_channel",
+      "strength": [
+        0.002,
+        0.002,
+        0.008
+      ],
+      "cutoff": "2^-14",
+      "value": 0.002862382862797448,
+      "final_terms": 516,
+      "peak_terms": 673565,
+      "wall_s": 16.06153897207696,
+      "weight_stats": {
+        "terms": 516,
+        "max_weight": 13,
+        "mean_weight": 7.546511627906977
+      }
+    },
+    {
+      "noise": "dephase",
+      "strength": 0.01,
+      "cutoff": "2^-14",
+      "value": 0.0059345569231769755,
+      "final_terms": 1976,
+      "peak_terms": 1198531,
+      "wall_s": 32.45795971096959,
+      "weight_stats": {
+        "terms": 1976,
+        "max_weight": 13,
+        "mean_weight": 8.461538461538462
+      }
+    }
+  ],
+  "noiseless_limit": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "p": 0.0,
+      "source": "p=0 run at 2^-18",
+      "cutoff": "2^-18",
+      "value": 0.6555630507494905,
+      "reference": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "bar": 0.01,
+      "gap": 3.885780586188048e-15,
+      "agrees": true,
+      "wall_s": 3.2098240059567615
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "p": 0.0,
+      "source": "p=0 run at 2^-18",
+      "cutoff": "2^-18",
+      "value": 0.2384771180185387,
+      "reference": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "bar": 0.01,
+      "gap": 2.220446049250313e-16,
+      "agrees": true,
+      "wall_s": 3.7064681050833315
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 20,
+      "p": 0.0,
+      "source": "p=0 leg of the sweep at 2^-14",
+      "cutoff": null,
+      "value": 0.01613137438596803,
+      "reference": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "bar": 0.0007517133660521914,
+      "gap": 0.0,
+      "agrees": true,
+      "wall_s": 571.7345803548815
+    }
+  ],
+  "p_to_zero": [
+    {
+      "p": 0.0,
+      "value": 0.2384771180185387,
+      "gap_vs_exact": 2.220446049250313e-16,
+      "final_terms": 2146424,
+      "peak_terms": 2146424,
+      "wall_s": 3.6886840340448543
+    },
+    {
+      "p": 1e-06,
+      "value": 0.23846608136783953,
+      "gap_vs_exact": 1.1036650699375317e-05,
+      "final_terms": 2146424,
+      "peak_terms": 2146424,
+      "wall_s": 3.702825002023019
+    },
+    {
+      "p": 0.0001,
+      "value": 0.2373761853540061,
+      "gap_vs_exact": 0.0011009326645328166,
+      "final_terms": 2146424,
+      "peak_terms": 2146424,
+      "wall_s": 3.6903012060793117
+    }
+  ],
+  "reachability_boundary": {
+    "theta_h_label": "7pi/32",
+    "trotter_steps": 20,
+    "p": 0.01,
+    "cutoffs": [
+      "2^-10",
+      "2^-12",
+      "2^-14",
+      "2^-16"
+    ],
+    "cutoff_values": [
+      0.0009765625,
+      0.000244140625,
+      6.103515625e-05,
+      1.52587890625e-05
+    ],
+    "values": [
+      0.11164825133610218,
+      0.11151791889507148,
+      0.11043948821064413,
+      0.10950756480791313
+    ],
+    "final_terms": [
+      156,
+      1313,
+      10918,
+      74717
+    ],
+    "peak_terms": [
+      3550,
+      19569,
+      130826,
+      937075
+    ],
+    "wall_s": [
+      0.24744938500225544,
+      1.1619184830924496,
+      6.77332303498406,
+      50.20225759304594
+    ],
+    "noiseless_status": "not claimable -- Benchmark C's reference sweep never plateaued here (uncertainty 1.44e-1 at 2^-16, 3.9e7 terms) and projects ~1e10 terms / ~560 GiB / ~17 h at 32 threads for the plan's 0.01 bar",
+    "converged": false,
+    "uncertainty": 0.0009319234027310025,
+    "deltas": [
+      0.00013033244103069497,
+      0.0010784306844273533,
+      0.0009319234027310025
+    ],
+    "tol": 0.001
+  },
+  "verification": {
+    "circuit_source": "examples/data/heavy_hex_127.edges",
+    "claimable_configuration": {
+      "theta_h": "5pi/16",
+      "trotter_steps": 20,
+      "noise": "p = 0 (noiseless)",
+      "value": 0.01613137438596803,
+      "reference": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_uncertainty": 0.0007517133660521914
+    },
+    "resolved_noisy_legs": [
+      {
+        "p": 0.005,
+        "value": 0.006280876086498977,
+        "uncertainty": 0.00036247360764484447,
+        "cutoff": "2^-14"
+      },
+      {
+        "p": 0.01,
+        "value": 0.0024836896863658403,
+        "uncertainty": 5.1429127559735315e-05,
+        "cutoff": "2^-16"
+      },
+      {
+        "p": 0.03,
+        "value": 7.795265321505998e-05,
+        "uncertainty": 4.227024838188132e-07,
+        "cutoff": "2^-20"
+      }
+    ],
+    "unresolved_noisy_legs": [
+      {
+        "p": 0.001,
+        "uncertainty": 0.00026089986993273716,
+        "cutoff": "2^-14"
+      }
+    ],
+    "not_claimable": {
+      "configuration": "theta_h = 7pi/32, 20 Trotter steps, noiseless",
+      "finding": "Benchmark C's reference sweep reached 3.9e7 terms at 2^-16 and the value still moved by 1.44e-1 on the last tightening; C projects ~1e10 terms / ~560 GiB / ~17 h at 32 threads to reach the plan's 0.01 bar there. C reports it as not claimable and so does this showcase -- see benchmarks/python/deep_trotter/README.md \u00a73.1-3.3.",
+      "with_noise": {
+        "p": 0.01,
+        "converged": false,
+        "value": 0.10950756480791313,
+        "uncertainty": 0.0009319234027310025,
+        "caveat": "this is the noisy channel's expectation, a different quantity from the unitary circuit's -- not a cheaper route to C's number"
+      }
+    }
+  },
+  "wall_clock_s": 1544.504171609995,
+  "provenance": {
+    "commit": "a3d260f911a929793207b472816da5e6d896f387",
+    "dirty": true,
+    "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+    "python_version": "3.11.11",
+    "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "library_versions": {
+      "paulistrings": "0.1.0"
+    },
+    "seeds": {},
+    "thread_count": 1,
+    "hostname": "ccqlin038",
+    "date": "2026-08-31"
+  }
+}

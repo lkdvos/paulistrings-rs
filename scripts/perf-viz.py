@@ -533,8 +533,11 @@ def render_legend() -> str:
     parts.append("</div>")
     parts.append("</div>")
     parts.append(
-        '<p class="note phase-legend-note">Each bar is one layer’s wall time to '
-        "scale — shorter is faster. The parallel region is subdivided by what its "
+        '<p class="note phase-legend-note">Each bar is one layer’s wall time '
+        "<em>× thread count</em> (CPU time), so under perfect scaling every row in "
+        "a group is the same length and growth relative to the 1t bar is scaling "
+        "loss — and the high-thread breakdowns stay readable. The right-hand label "
+        "is the actual wall ms/layer. The parallel region is subdivided by what its "
         "worker threads spent time on (averaged over threads); ‘idle’ is load "
         "imbalance.</p>"
     )
@@ -577,9 +580,12 @@ def _segment_rect(
     return parts
 
 
-def _phase_cell_svg(row: dict, group_max_ms: float, uid: str) -> str:
-    """One cell's bar: absolute length (scaled to the group's max ms/layer),
-    segmented into serial phases then the coset-loop's busy/idle breakdown.
+def _phase_cell_svg(row: dict, group_max_cpu_ms: float, uid: str) -> str:
+    """One cell's bar: length ∝ wall ms/layer × thread count (CPU time),
+    scaled to the group's max CPU ms/layer, segmented into serial phases then
+    the coset-loop's busy/idle breakdown. CPU-time scaling keeps rows at high
+    thread counts readable (a wall-time scale collapses the 32t row to a
+    sliver) and makes growth vs the 1t bar read directly as scaling loss.
     See CLAUDE.md / the v0.4 perf-viz redesign for the segment layout."""
     track_w = 460.0
     label_room = 84.0
@@ -590,10 +596,11 @@ def _phase_cell_svg(row: dict, group_max_ms: float, uid: str) -> str:
     layers = row.get("layers", 1) or 1
     threads_n = row.get("threads", 1) or 1
     wall_ms = (wall_ns / 1e6 / layers) if layers else 0.0
+    cpu_ms = wall_ms * threads_n
 
     bar_frac = 0.0
-    if group_max_ms > 0 and wall_ns > 0:
-        bar_frac = max(0.0, min(1.0, wall_ms / group_max_ms))
+    if group_max_cpu_ms > 0 and wall_ns > 0:
+        bar_frac = max(0.0, min(1.0, cpu_ms / group_max_cpu_ms))
     bar_w = bar_frac * track_w
 
     parts = [svg_open(width, height)]
@@ -709,12 +716,16 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
         rows = sorted(groups[layer], key=lambda r: r.get("threads", 0))
         out.append(f'<h3 class="layer-name">{esc(layer)}</h3>')
 
-        group_max_ms = 0.0
+        # Group scale is CPU time (wall × threads), not wall time: see
+        # _phase_cell_svg. The 1t row usually sets the scale; rows only
+        # exceed it by their scaling loss.
+        group_max_cpu_ms = 0.0
         for row in rows:
             wall_ns = row.get("wall_ns", 0) or 0
             layers = row.get("layers", 1) or 1
+            threads_n = row.get("threads", 1) or 1
             if wall_ns > 0 and layers:
-                group_max_ms = max(group_max_ms, wall_ns / 1e6 / layers)
+                group_max_cpu_ms = max(group_max_cpu_ms, wall_ns / 1e6 / layers * threads_n)
 
         for row in rows:
             threads = row.get("threads", "?")
@@ -727,7 +738,7 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list) -> str:
             vmhwm_mb = vmhwm_kb / 1024.0
 
             uid = _slug(layer, threads)
-            bar_svg = _phase_cell_svg(row, group_max_ms, uid)
+            bar_svg = _phase_cell_svg(row, group_max_cpu_ms, uid)
 
             metric = dram_metric(row, bandwidth_sections)
             if metric is None or metric.get("gbps") is None:

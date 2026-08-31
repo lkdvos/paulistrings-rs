@@ -1,0 +1,140 @@
+{
+  "provenance": {
+    "source": "Y. Kim, A. Eddins, S. Anand, K. X. Wei, E. van den Berg, S. Rosenblatt, H. Nayfeh, Y. Wu, M. Zaletel, K. Temme, A. Kandala, \"Evidence for the utility of quantum computing before fault tolerance\", Nature 618, 500-505 (2023)",
+    "doi": "10.1038/s41586-023-06096-3",
+    "url": "https://escholarship.org/content/qt6bf3w13h/qt6bf3w13h.pdf",
+    "supplementary_url": "https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-023-06096-3/MediaObjects/41586_2023_6096_MOESM1_ESM.pdf",
+    "checked": "The published-version PDF (UC eScholarship mirror of the Nature article; nature.com itself requires cookie auth and refuses automated fetch) and the Supplementary Information PDF were both fetched and text-extracted. The operator supports are printed as the Fig. 3 / Fig. 4 panel titles, e.g. Fig. 3b's title is the literal string \"<X13,29,31 Y9,30 Z8,12,17,28,32>\"; the per-observable `source_detail` below quotes the panel title it was read from. The main text and PubMed Central copy (https://pmc.ncbi.nlm.nih.gov/articles/PMC10266970/) were cross-read for the accompanying definitions and Clifford eigenvalues.",
+    "corroborating_sources": [
+      "T. Begusic, J. Gray, G. K.-L. Chan, Sci. Adv. (arXiv:2308.05077), Fig. 3 caption, which expands all four panel labels verbatim and so disambiguates the two distinct weight-17 operators",
+      "T. Begusic, G. K.-L. Chan, arXiv:2306.16372, Fig. 1 panel titles",
+      "J. Tindall, M. Fishman, E. M. Stoudenmire, D. Sels, PRX Quantum 5, 010308 (2024) (arXiv:2306.14887), Eq. (4), which also states the Z_13 stabilizer origin",
+      "Y. Liao, D. Wang, Z. Zhou, X. Zhang, Z.-Y. Xiang, arXiv:2308.03082"
+    ],
+    "retrieved": "2026-08-31",
+    "qubit_indexing": "IBM Eagle device numbering 0..126. The experiment ran on ibm_kyiv; this repo's lattice comes from the ibm_sherbrooke (FakeSherbrooke) coupling map. No fetched source asserts the two index maps are identical, but the `verification` note below closes that gap computationally: the published supports are reproduced exactly on the Sherbrooke map, including the weight-17 operator whose 5-step causal cone covers 68 qubits.",
+    "verification": "Every entry with a `stabilizer_origin` is reproduced by this repo's own engine, not merely transcribed: propagating the seed observable forward through `circuits.heavy_hex_kicked_ising(127, trotter_steps, theta_h=pi/2, order='x-then-zz')` yields a single Pauli string whose support and sign equal the `support` and `clifford_eigenvalue` recorded here. This is checked by `test_published_supports_are_reproduced_by_the_stabilizer_relation` in `python/paulistrings/tests/test_examples_circuits.py`. It simultaneously validates the support transcription, the heavy-hex edge list, the Trotter layer order, and the ibm_kyiv/ibm_sherbrooke index correspondence."
+  },
+  "circuit": {
+    "theta_zz": -1.5707963267948966,
+    "theta_zz_note": "theta_J = -pi/2, verbatim from the paper: \"For experimental simplicity, we focus on the case theta_J = -2*J*dt = -pi/2 such that the ZZ rotation requires only one CNOT\". In this repo's exp(-i*theta*P/2) convention that same angle is theta_zz = -pi/2, realizing exp(+i*(pi/4)*Z_i Z_j).",
+    "layer_order": "x-then-zz",
+    "layer_order_note": "Supplementary Information Eq. (4) writes one Trotter layer as U(theta_h) = prod_{<i,j>} R_{Z_i Z_j}(-pi/2) * prod_i R_{X_i}(theta_h); the rightmost factor acts first, so the X layer precedes the ZZ layer.",
+    "theta_h_sweep_note": "The paper states only \"theta_h is swept between 0 and pi/2\" and gives no explicit grid. Begusic, Gray & Chan (arXiv:2308.05077) report increments of pi/32 for their comparison data.",
+    "light_cone_sizes": {
+      "weight_1": "<= 31 qubits",
+      "weight_10": "37 qubits",
+      "weight_17": "68 qubits",
+      "note": "Supplementary Information section VII B; after the paper's depth reduction these become <= 19, 26 and 48."
+    }
+  },
+  "observables": {
+    "weight_1_z62": {
+      "weight": 1,
+      "support": {
+        "62": "Z"
+      },
+      "figure": "Fig. 4b",
+      "trotter_steps": 20,
+      "clifford_eigenvalue": null,
+      "source_detail": "Fig. 4b panel title is the literal string \"<Z62>\". Main text: \"we extend the circuit depth to 20 Trotter steps (60 CNOT layers) and estimate the theta_h dependence of a weight-1 observable, <Z62>, in Fig. 4b, in which the causal cone extends over the entire device\", and \"we choose an observable that obtains the expected result <Z62> = 1 at the verifiable theta_h = 0 point\". Note Fig. 3a's weight-1 case is instead the 127-qubit average magnetization Mz, not Z62."
+    },
+    "weight_10": {
+      "weight": 10,
+      "support": {
+        "8": "Z",
+        "9": "Y",
+        "12": "Z",
+        "13": "X",
+        "17": "Z",
+        "28": "Z",
+        "29": "X",
+        "30": "Y",
+        "31": "X",
+        "32": "Z"
+      },
+      "figure": "Fig. 3b",
+      "trotter_steps": 5,
+      "clifford_eigenvalue": 1,
+      "stabilizer_origin": {
+        "seed_qubit": 13,
+        "seed_operator": "Z",
+        "trotter_steps": 5,
+        "theta_h": "pi/2",
+        "final_x_layer": false
+      },
+      "source_detail": "Fig. 3b panel title is the literal string \"<X13,29,31 Y9,30 Z8,12,17,28,32>\". Main text: \"Fig. 3b,c show weight-10 and weight-17 observables. The latter operators are stabilizers of the Clifford circuit at theta_h = pi/2, obtained by evolution of the initial stabilizers Z13 and Z58, respectively, of |0>^127 for five Trotter steps\". Supplementary Information section VII: \"the three observables considered in the Figure 3 can all be expressed in this way: weight-1 Zk = Z(0, k), weight-10 stabilizer Z(5, 13), and weight-17 stabilizer Z(5, 58)\". Eigenvalue from the Fig. 3 caption: \"The weight-10 and weight-17 observables in b and c are stabilizers of the circuit at theta_h = pi/2 with respective eigenvalues +1 and -1; all values in c have been negated for visual simplicity.\""
+    },
+    "weight_17": {
+      "weight": 17,
+      "support": {
+        "37": "X",
+        "38": "Z",
+        "40": "Z",
+        "41": "X",
+        "42": "Z",
+        "52": "X",
+        "56": "X",
+        "57": "X",
+        "58": "X",
+        "62": "X",
+        "63": "Z",
+        "72": "Z",
+        "75": "Y",
+        "79": "X",
+        "80": "Z",
+        "90": "Z",
+        "91": "Z"
+      },
+      "figure": "Fig. 3c",
+      "trotter_steps": 5,
+      "clifford_eigenvalue": -1,
+      "stabilizer_origin": {
+        "seed_qubit": 58,
+        "seed_operator": "Z",
+        "trotter_steps": 5,
+        "theta_h": "pi/2",
+        "final_x_layer": false
+      },
+      "source_detail": "Fig. 3c panel title is the literal string \"<X37,41,52,56,57,58,62,79 Y75 Z38,40,42,63,72,80,90,91>\". This is Z(5, 58) of Supplementary Information section VII. Clifford eigenvalue -1 per the Fig. 3 caption (quoted under weight_10); the caption also warns that Fig. 3c's plotted values are negated for display, so the literal Pauli string with coefficient +1 -- what this entry encodes -- is the operator, not the plotted quantity."
+    },
+    "weight_17_modified": {
+      "weight": 17,
+      "support": {
+        "37": "X",
+        "38": "Y",
+        "40": "Y",
+        "41": "X",
+        "42": "Y",
+        "52": "X",
+        "56": "X",
+        "57": "X",
+        "58": "X",
+        "62": "X",
+        "63": "Y",
+        "72": "Y",
+        "75": "Z",
+        "79": "X",
+        "80": "Y",
+        "90": "Y",
+        "91": "Y"
+      },
+      "figure": "Fig. 4a",
+      "trotter_steps": 5,
+      "clifford_eigenvalue": -1,
+      "stabilizer_origin": {
+        "seed_qubit": 58,
+        "seed_operator": "Z",
+        "trotter_steps": 5,
+        "theta_h": "pi/2",
+        "final_x_layer": true
+      },
+      "source_detail": "Fig. 4a panel title is the literal string \"<X37,41,52,56,57,58,62,79 Y38,40,42,63,72,80,90,91 Z75>\". DISTINCT FROM weight_17: identical X support, but the Y and Z sets are swapped -- the RX(pi/2) conjugate. Main text: \"The first example (Fig. 4a) is similar to Fig. 3c but with a further final layer of single-qubit Pauli rotations\". Supplementary Information: \"the modified weight-17 operator measured in Figure 4(a) is Z~(5, 58) with the modified state |Psi~(5, theta)>. This is equivalent to measuring Z(6, 58) with state |Psi(6, theta)>\". Confusing this operator with weight_17 gives a silently wrong observable of the same weight and the same X support."
+    }
+  },
+  "unverified": {},
+  "reference_values": {
+    "status": "not shipped in this file",
+    "note": "Kim et al.'s own experimental values with error bars live in the paper's dataset at https://doi.org/10.6084/m9.figshare.22500355 (\"The datasets generated and analysed during this study are available at...\"), which refuses automated fetch. Converged exact benchmarks for all four observables, on a theta_h grid of pi/32, are published by Begusic, Gray & Chan at https://github.com/tbegusic/arxiv-2308.05077-data (exact.csv; Zenodo 10.5281/zenodo.10223349). Neither has been fetched into this repo yet; benchmark C's reference is to be loaded through `examples/common/oracles.py::load_published_reference` with its own provenance header, or self-converged per plan decision D5. No expectation value is recorded here so that nothing in this file can be mistaken for a verified reference number."
+  }
+}

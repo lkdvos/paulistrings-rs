@@ -139,20 +139,28 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// The two kernels win in opposite regimes, and the crossover is steep, so
 /// this is deliberately conservative — only a genuinely dense two-qubit PTM
 /// (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears
-/// it. Measured on synthetic runs faithful to `fill_coset`'s output-major
-/// gather (non-authoritative microbench, `research/notes/2026-09-01-sort-kernel.md`):
+/// it. Non-authoritative smoke measurements, full data and protocol in
+/// `research/notes/2026-09-01-sort-kernel.md`:
 ///
-/// | run shape | rest streams | duplicate density | radix vs comparison |
-/// |---|---|---|---|
-/// | dense PTM (`su4`) | 15 | ~15× | **−36…−51 % at `W = 1`, −7…−16 % at `W = 2`** |
-/// | dense PTM, one bucket | 15 | ~15× | **−31…−38 % at `W = 2`** |
-/// | sparse PTM (`rotation_zz`) | 1 | ~1× | **+130…+165 %** |
+/// | run shape | rest streams | radix vs comparison, sort phase |
+/// |---|---|---|
+/// | `su4` layer in situ, `W = 2` | 15 | **−25…−26 %** (layer −15 %) |
+/// | `su4` layer in situ, `W = 1` | 15 | **−46…−50 %** (layer −34 %) |
+/// | `su4` layer in situ, short runs (`m` = 9884) | 15 | **−38 %** (layer −23 %) |
+/// | microbench, one bucket, `W = 2` | 15 | −31…−38 % |
+/// | **microbench, sparse PTM (`rotation_zz`)** | **1** | **+133…+165 %** |
 ///
 /// The sparse-PTM row is why this is a gate and not a replacement: with one
 /// nearly-sorted stream the comparison sort costs about one comparison per row
 /// and the radix's fixed passes are pure overhead. `2..8` rest streams —
 /// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — is **unmeasured**
 /// and deliberately left on the comparison kernel.
+///
+/// Both `W = 1` rows above are favourable, and by a similar margin, in *both*
+/// delta-span rank regimes (`r = 3` and `r = 4`, see
+/// `research/notes/2026-09-01-bucket-cliff.md`): this kernel is
+/// order-oblivious, so it does not repair a deficient rank draw — it removes
+/// the sort's sensitivity to one.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
 
 /// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
@@ -163,8 +171,9 @@ pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
 /// the duplicate groups themselves, which the fixup pass then orders with
 /// roughly one full-key comparison per row. Wider surrogates buy fewer ties at
 /// the cost of another whole pass and measured worse everywhere (24 bits
-/// −2…−38 %, 32 bits +11…−32 % against 16 bits' −7…−51 %); a single 11-bit
-/// pass beat it below ~8 k rows and lost above.
+/// −2…−39 %, 32 bits +11…−32 % against 16 bits' −10…−51 %); a single 11-bit
+/// pass beat it below ~8 k rows and lost above — and the engine's runs are
+/// ~15 k rows (bucket target 1024 × fanout ~15).
 const RADIX_SURROGATE_BITS: u32 = 16;
 /// Digit width per radix pass. 256 counters is 1 KiB of stack histogram.
 const RADIX_DIGIT_BITS: u32 = 8;

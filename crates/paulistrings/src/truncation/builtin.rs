@@ -4,6 +4,31 @@ use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use rayon::prelude::*;
+use std::cell::RefCell;
+
+thread_local! {
+    /// Reusable squared-magnitude buffer for [`TopN::finalize_layer`], the
+    /// one place in the crate that needs an array of the whole layer's
+    /// coefficients. At `m = 1.5e6` terms a fresh one is 12 MB of allocation,
+    /// first-touch page faults and (via rayon's unindexed `collect`) a double
+    /// write — **per layer**, against a `finalize_layer` already measured at
+    /// 61-71% of layer wall time
+    /// (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6).
+    ///
+    /// `finalize_layer` runs on whichever thread drives `propagate`, so this
+    /// is one buffer per such thread. It is **borrowed out with `take()` and
+    /// returned at the end**, never held across the parallel sections: rayon
+    /// work-steals on a blocked thread, so a nested `propagate` (several
+    /// observables under one `par_iter`) can re-enter `finalize_layer` on this
+    /// very thread. Re-entering then finds an empty slot and allocates, which
+    /// is correct and merely unoptimized; a held `RefCell` borrow would
+    /// instead panic.
+    ///
+    /// The buffer is never shrunk, so a thread retains 8 B per term of the
+    /// largest layer it has ever finalized until it exits — small against the
+    /// ~100 B/term the sum itself costs, and it is the point of the cache.
+    static MAGS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Drop terms whose coefficient magnitude is at most `epsilon`.
 ///
@@ -198,13 +223,40 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
 
         // Squared magnitudes only; `select_nth_unstable` permutes them, which
-        // is fine because every later step reads this as a multiset.
-        let nb = sum.num_buckets();
-        let view = &*sum;
-        let mut mags: Vec<f64> = (0..nb)
-            .into_par_iter()
-            .flat_map_iter(|b| view.bucket(b).2.iter().map(|c| c.norm_sqr()))
-            .collect();
+        // is fine because every later step reads this as a multiset. The
+        // buffer is borrowed out of the thread-local pool rather than
+        // allocated per layer (see `MAGS`), and only `[..total]` of it is
+        // ever live — the tail is the previous, larger layer's stale data.
+        let total = sum.len();
+        let mut buf = MAGS.take();
+        if buf.len() < total {
+            buf.resize(total, 0.0);
+        }
+        let mags = &mut buf[..total];
+        {
+            // One `&mut [f64]` per bucket, carved off in bucket order, so the
+            // fill writes each square exactly once. (`collect()` on an
+            // unindexed parallel iterator cannot: rayon has to build a
+            // per-thread `Vec` per split and concatenate, which writes every
+            // magnitude twice and reallocates as it grows.) The handle vector
+            // is 16 B per bucket against the buffer's 8 B per *term*, i.e.
+            // ~1/500 of it at the default 1024-term bucket target.
+            let view = &*sum;
+            let nb = view.num_buckets();
+            let mut handles: Vec<&mut [f64]> = Vec::with_capacity(nb);
+            let mut rest: &mut [f64] = mags;
+            for b in 0..nb {
+                let (head, tail) = rest.split_at_mut(view.bucket_len(b));
+                handles.push(head);
+                rest = tail;
+            }
+            debug_assert!(rest.is_empty(), "bucket lengths must sum to len()");
+            handles.into_par_iter().enumerate().for_each(|(b, dst)| {
+                for (d, c) in dst.iter_mut().zip(view.bucket(b).2.iter()) {
+                    *d = c.norm_sqr();
+                }
+            });
+        }
 
         // `t2` = the n-th largest squared magnitude.
         mags.select_nth_unstable_by(n - 1, |a, b| {
@@ -212,14 +264,20 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         });
         let t2 = mags[n - 1];
 
-        // One pass for both counts. `count_gt < n <= count_gt + count_eq` by
-        // construction, so the group fits exactly when the sum equals `n`; the
-        // inequality is written out anyway because it is the stated rule.
-        let (count_gt, count_eq) = mags
-            .par_iter()
-            .map(|&m| (usize::from(m > t2), usize::from(m == t2)))
-            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-        let keep_tied = count_gt + count_eq <= n;
+        // The tie group fits **iff no element after the pivot equals `t2`**,
+        // which is the stated `count(> t2) + count(== t2) <= n` rule with the
+        // selection's own partition substituted in. Writing `e_pre`/`e_suf`
+        // for the count of elements equal to `t2` before/after index `n - 1`:
+        // everything before is `>= t2` and everything after is `<= t2`, so
+        // `count_gt = (n - 1) - e_pre` and `count_eq = e_pre + 1 + e_suf`,
+        // whose sum is `n + e_suf`. So the two forms agree exactly, and this
+        // one reads the `len - n` suffix instead of all `len` elements and
+        // stops at the first tie it finds. `top_n_matches_the_reference_rule_
+        // on_tied_magnitudes` checks the equivalence against the literal rule
+        // across straddling and fitting cuts.
+        let keep_tied = !mags[n..].par_iter().any(|&m| m == t2);
+
+        MAGS.set(buf);
 
         // Compaction is per-bucket and in place, so it parallelizes directly.
         sum.buckets_mut().par_iter_mut().for_each(|cols| {
@@ -691,6 +749,78 @@ mod tests {
             ]
         );
         sum.assert_invariants();
+    }
+
+    /// The squared-magnitude buffer is pooled per thread and never shrunk, so
+    /// a *smaller* sum finalized after a larger one must read only its own
+    /// `[..len]` prefix. This is the guard for that: the second sum's
+    /// magnitudes all sit below the first sum's threshold, so a stale tail
+    /// leaking into the selection would pick `t2` from the previous layer and
+    /// wipe the second sum instead of truncating it.
+    ///
+    /// Both calls run on the test's own thread, in order, which is exactly
+    /// the reuse pattern a Trotter driver produces.
+    #[test]
+    fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
+        let mut big = PauliSum::<1>::from_sorted_columns(
+            (0u64..20).map(|i| [i]).collect(),
+            vec![[0u64]; 20],
+            (1..=20).map(|m| Complex64::new(m as f64, 0.0)).collect(),
+            5,
+        );
+        TopN(5).finalize_layer(&mut big);
+        assert_eq!(big.len(), 5, "first layer: magnitudes 16..=20 survive");
+
+        // Six terms, every magnitude below the previous layer's threshold.
+        // Sixteenths, so the literals below are exact in binary.
+        let mut small = PauliSum::<1>::from_sorted_columns(
+            (0u64..6).map(|i| [i]).collect(),
+            vec![[0u64]; 6],
+            (1..=6)
+                .map(|m| Complex64::new(m as f64 / 16.0, 0.0))
+                .collect(),
+            3,
+        );
+        TopN(3).finalize_layer(&mut small);
+        small.assert_invariants();
+        let (x, _, c) = small.to_arrays();
+        assert_eq!(x, vec![[3u64], [4u64], [5u64]]);
+        assert_eq!(
+            c,
+            vec![
+                Complex64::new(0.25, 0.0),
+                Complex64::new(0.3125, 0.0),
+                Complex64::new(0.375, 0.0),
+            ]
+        );
+    }
+
+    /// `finalize_layer` must work when it is itself called from inside a
+    /// rayon job — the shape a caller propagating several observables in
+    /// parallel produces. Its own `par_iter` sections then run nested, and a
+    /// blocked worker may steal a sibling task, re-entering `finalize_layer`
+    /// on a thread that is already inside one.
+    ///
+    /// This cannot *force* that interleaving, so it is a smoke test, not a
+    /// proof: what it does pin is that the magnitude buffer is pooled in a
+    /// form that tolerates it (borrowed out with `take`, never held as a live
+    /// `RefCell` borrow across a parallel section, which would panic).
+    #[test]
+    fn finalize_layer_runs_inside_a_rayon_job() {
+        use crate::test_support::rand_sum;
+        let sums: Vec<PauliSum<1>> = (0..16)
+            .map(|k| rand_sum::<1>(2000, 10, 0xF1A5 + k))
+            .collect();
+        let want: Vec<usize> = sums.iter().map(|s| s.len().min(500)).collect();
+        let got: Vec<usize> = sums
+            .into_par_iter()
+            .map(|mut s| {
+                TopN(500).finalize_layer(&mut s);
+                s.assert_invariants();
+                s.len()
+            })
+            .collect();
+        assert_eq!(got, want, "every sum must truncate to n on a worker thread");
     }
 
     /// `TopN(0)` empties the sum.

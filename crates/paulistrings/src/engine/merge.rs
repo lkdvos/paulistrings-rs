@@ -57,6 +57,22 @@ impl<const W: usize> SortScratch<W> {
 /// this line to `sort_unstable_by` cost +77% on a 10⁶ `rotation_zz` layer
 /// and +43% on CNOT.
 ///
+/// **When those streams are ascending is a partition property, not a given.**
+/// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of
+/// the bucket's keys differ only inside the channel's support — which holds iff
+/// the hash separates the support's key-delta space, i.e. the coset dimension
+/// `r` is full (4 for a two-qubit channel). One rank short and each bucket holds
+/// two local variants of every off-support pattern, adjacent in key order, and
+/// half the deltas invert every such pair: the stream shatters into runs of ~2,
+/// this sort's comparison count goes 4.9 → 9–14 per row, and the dense-PTM layer
+/// costs 1.7–2.2× more. `r` is capped by the bucket bits *and* is a draw from
+/// `H`'s rows, so it moves with the term count, the hash seed and `W`. Full
+/// mechanism and the tuning gate:
+/// `research/notes/2026-09-01-bucket-cliff.md`. Note before optimizing this
+/// sort: at full rank it already sits at the information-theoretic floor for a
+/// 15-way merge of sorted runs (`log2(15) + 1 ≈ 4.9` comparisons per row), so
+/// the headroom the Phase-1 fact sheet measured is *configuration*, not kernel.
+///
 /// What must still hold — and does, structurally: cosets are write-disjoint,
 /// work within one is sequential, and the sort is a deterministic function of
 /// its input, so **thread-count determinism and repeat-run determinism at

@@ -189,6 +189,21 @@ any realistic core count. A sum only leaves the single-bucket regime above
 parallelism has nothing to win, and one bucket keeps the plain lex order
 (§Data-Model).
 
+That floor has a **cost the sweep above does not see, because the sweep is a
+rotation layer**: the bucket count also fixes the engine's coset dimension
+`r = min(rank(h(D)), bits)` (§Engine), and the per-run sort's comparison count
+collapses to its `log2(fanout)` floor only at *full* delta rank — for a
+two-qubit channel, `r = 4`. Below 8192 terms `bits ≤ 3`, so a dense-PTM layer
+cannot reach it and its sort costs up to 2.2× its asymptote. A rotation or
+Clifford layer does not care (its sort is 7% of the layer); a dense 16×16 PTM's
+sort is 58–60% of it. Two further consequences: `rank(h(D)) < 4` also happens
+by *draw* — ~10% of two-qubit placements at `B = 128` — costing the same
+1.7–1.9× at any term count; and the sum's own steady state is what makes this
+bite, since a repeated dense-PTM layer closes to "every off-support pattern ×
+all 16 local patterns", exactly the key set a short rank collides into one
+bucket. Full mechanism, evidence and the tuning gate:
+`research/notes/2026-09-01-bucket-cliff.md`.
+
 `rebucket` is **grow-only**: `B` is the running maximum of the desired bucket
 count over the sum's history, and only an explicit `with_hash` shrinks it.
 Growing on every upward crossing but never coarsening avoids the oscillation

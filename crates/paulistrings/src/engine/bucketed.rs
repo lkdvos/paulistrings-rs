@@ -707,10 +707,23 @@ fn fill_coset<const W: usize, T>(
 /// channel whose delta masks have Pauli structure, like sqrt-SWAP's
 /// `{XX, ZZ, YY}`, spans only rank 2): output-major *loses* 14–22% at 10⁶
 /// terms, because re-reading each input bucket `2^r` times costs more than
-/// input-major's `2^r` open write streams. So every built-in channel takes
-/// the input-major path. The output-major branch survives, unmeasured, as a
-/// guard for a custom full-rank channel (`r = 4`: sixteen live gather runs
-/// per task), where the scatter working set doubles twice more. Both paths
+/// input-major's `2^r` open write streams. Input-major at `r = 4` was measured
+/// the other way — +48% on a 32-thread `GeneralUnitary2Q` layer at 10⁶ terms,
+/// where sixteen open write streams plus the swapped coset no longer fit L2 —
+/// so the threshold sits between them.
+///
+/// **This branch is not a guard for an exotic channel.** A generic SU(4)'s PTM
+/// is dense, so its delta set spans the full rank 4 and its bucket-delta span
+/// does too at the default bucket-count floor: `r = 4` is the *hot path* for
+/// every matrix-gate layer at `B ≥ 128`, and the choice between the two orders
+/// is worth much less there than the choice of `r` itself. At `r = 4` each
+/// delta owns a coset coordinate, so *both* orders emit one contiguous
+/// (already ascending) block per delta and the per-run sort makes the same
+/// 4.9 comparisons per row either way; at `r < 4` deltas share coordinates and
+/// input-major interleaves their streams row by row, costing 12–16 comparisons
+/// per row against output-major's 7.7–14.5. See
+/// `research/notes/2026-09-01-bucket-cliff.md` and
+/// `examples/delta_span_diagnostics.rs`, which counts both orders. Both paths
 /// gather the identical multiset of rows in different orders; the key-only
 /// sort does not canonicalize that to a bitwise-identical sequence
 /// (equal-key order can differ between the two), so the two orders

@@ -80,6 +80,10 @@
 //! - [`propagate`] / [`Direction`] — the propagation entry point. `sum`
 //!   is a single [`PauliSum`], bucketed for the run and returned bucketed;
 //!   there is no separate flat/working-form conversion to pay.
+//!   [`propagate_with_options`] adds [`PropagateOptions`], whose
+//!   [`EngineSelection`] can put small sums on an additive direct-apply path
+//!   instead of the bucketed engine; the default is the bucketed engine for
+//!   every layer.
 //! - [`ProductBasis`] / [`StabilizerState`] — read-out states for
 //!   [`PauliSum::expectation_product_basis`] and
 //!   [`PauliSum::expectation_stabilizer`]: a single-qubit product state, or any

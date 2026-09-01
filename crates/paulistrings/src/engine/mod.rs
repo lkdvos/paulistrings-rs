@@ -5,6 +5,12 @@
 //! crate-private `coset` module), with the per-run sort and fused merge kernels
 //! in the crate-private `merge` module. See ARCHITECTURE.md §Engine for the
 //! layer and this module's propagation loop.
+//!
+//! The crate-private `direct` module is an **additive** second layer path for
+//! sums small enough that the bucketed layer's per-layer fixed cost dominates:
+//! off unless a caller asks for it through [`propagate_with_options`], never
+//! reached by [`propagate`], and canonical for nothing. See
+//! `research/notes/2026-09-01-small-m-path.md`.
 
 pub mod bucketed;
 pub(crate) mod coset;

@@ -1,0 +1,1004 @@
+{
+  "protocol": {
+    "ratio_convention": "ratio = t_julia / t_paulistrings; > 1 means paulistrings faster",
+    "pairs_per_configuration": 3,
+    "within_pair_order": "abba \u2014 rust-first on even pairs, julia-first on odd",
+    "acceptance": "direction consistency across every pair; median ratio is the effect size. Mixed signs are reported as 'indistinguishable', never as a small win (benchmarks/PROFILING.md).",
+    "direction": "heisenberg",
+    "threads": {
+      "rayon": 1,
+      "julia": 1
+    },
+    "timing": "warm in-process on both sides: one untimed propagation, then one timed propagation, in the same process. Construction, contraction, oracles and logging are all outside the timed region.",
+    "parity_gate": "every timed configuration first passes a per-layer term-count comparison; a failure disqualifies the configuration and no timing for it is reported.",
+    "cutoff_mitigation": "the julia task carries nextafter(eps, +inf) so its strict |c| < eps equals this engine's inclusive |c| <= eps bit for bit; the threshold moves by one ulp and no coefficient is touched.",
+    "memory": "each engine samples its own /proc/self/status (VmRSS floor, VmHWM peak). getrusage(RUSAGE_CHILDREN) is never used \u2014 it conflates siblings."
+  },
+  "curves": [
+    {
+      "workload": "kicked_ising_deep",
+      "title": "kicked-Ising, heavy-hex 127q, 20 Trotter steps, theta_h = 7pi/32 (saturation falsification test)",
+      "notes": "The saturation falsification test for the 5-step curve's ratio decay (jl_performance/README.md, 'Hypothesis'). Same circuit family, same observable Z_62 and theta_zz = -pi/2, but 20 Trotter steps instead of 5 \u2014 5420 channels (20 x (127 rx + 144 ZZ)) \u2014 so that ~2-3e6 terms is far from the reachable Pauli set's closure instead of at it. If the ratio keeps rising with the term count and jl's per-term cost stays flat, the decay was a saturation regime; if it decays here too, it is a large-m property of this engine. Benchmark C's angle and depth, whose 5420 per-layer counts it already proved identical at 2^-14.",
+      "n_qubits": 127,
+      "observable": {
+        "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII": 1.0
+      },
+      "state": "z+",
+      "points": [
+        {
+          "label": "kicked_ising_deep eps=3.906e-03",
+          "max_weight": null,
+          "final_terms": 363,
+          "peak_terms": 1838,
+          "median_ratio_jl_over_rust": 0.381011922845986,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.3285112000303343,
+          "jl_s_median": 0.125166684
+        },
+        {
+          "label": "kicked_ising_deep eps=9.766e-04",
+          "max_weight": null,
+          "final_terms": 8046,
+          "peak_terms": 17659,
+          "median_ratio_jl_over_rust": 1.4621004193644909,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 1.2056311910273507,
+          "jl_s_median": 1.76275387
+        },
+        {
+          "label": "kicked_ising_deep eps=2.441e-04",
+          "max_weight": null,
+          "final_terms": 138220,
+          "peak_terms": 204728,
+          "median_ratio_jl_over_rust": 2.2436500330664932,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 14.888385999016464,
+          "jl_s_median": 33.404327739
+        },
+        {
+          "label": "kicked_ising_deep eps=1.221e-04",
+          "max_weight": null,
+          "final_terms": 579312,
+          "peak_terms": 813262,
+          "median_ratio_jl_over_rust": 2.2118001943861043,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 55.18160599202383,
+          "jl_s_median": 121.623651524
+        },
+        {
+          "label": "kicked_ising_deep eps=6.104e-05",
+          "max_weight": null,
+          "final_terms": 2441936,
+          "peak_terms": 3108582,
+          "median_ratio_jl_over_rust": 2.1966305837317748,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 201.97251147404313,
+          "jl_s_median": 443.658995777
+        }
+      ],
+      "crossover": {
+        "crossover_terms": 9319.634030807685,
+        "lower": {
+          "peak_terms": 1838,
+          "median_ratio": 0.381011922845986
+        },
+        "upper": {
+          "peak_terms": 17659,
+          "median_ratio": 1.4621004193644909
+        },
+        "indistinguishable_zone": null,
+        "inside_indistinguishable_zone": false,
+        "method": "linear in log10(ratio) vs log10(terms), solved for ratio = 1",
+        "terms_key": "peak_terms"
+      },
+      "cuts": [],
+      "projections": [
+        {
+          "label": "kicked_ising_deep eps=9.766e-04",
+          "cut": false,
+          "reason": null,
+          "projected_terms": 1452,
+          "from_terms": 363,
+          "projected_rust_s": 1.3140448001213372,
+          "projected_jl_warm_s": 0.500666736,
+          "projected_jl_leg_s": 1.001333472,
+          "projected_jl_peak_gib": 0.7010247039794921,
+          "model": "time linear in term count from the pilot point; jl memory = 0.7 GiB + 0.74 KiB/term (benchmark C's per-process refit)"
+        },
+        {
+          "label": "kicked_ising_deep eps=2.441e-04",
+          "cut": false,
+          "reason": null,
+          "projected_terms": 178341,
+          "from_terms": 8046,
+          "projected_rust_s": 26.723026626772157,
+          "projected_jl_warm_s": 39.07174843769203,
+          "projected_jl_leg_s": 78.14349687538406,
+          "projected_jl_peak_gib": 0.8258586311340331,
+          "model": "time linear in term count from the pilot point; jl memory = 0.7 GiB + 0.74 KiB/term (benchmark C's per-process refit)"
+        },
+        {
+          "label": "kicked_ising_deep eps=1.221e-04",
+          "cut": false,
+          "reason": null,
+          "projected_terms": 2374443,
+          "from_terms": 138220,
+          "projected_rust_s": 255.7634489702116,
+          "projected_jl_warm_s": 573.8436707392157,
+          "projected_jl_leg_s": 1147.6873414784313,
+          "projected_jl_peak_gib": 2.375689525604248,
+          "model": "time linear in term count from the pilot point; jl memory = 0.7 GiB + 0.74 KiB/term (benchmark C's per-process refit)"
+        },
+        {
+          "label": "kicked_ising_deep eps=6.104e-05",
+          "cut": false,
+          "reason": null,
+          "projected_terms": 2428030,
+          "from_terms": 579312,
+          "projected_rust_s": 231.27881831692358,
+          "projected_jl_warm_s": 511.54253531076006,
+          "projected_jl_leg_s": 1023.0850706215201,
+          "projected_jl_peak_gib": 2.4135068893432616,
+          "model": "time linear in term count from the pilot point; jl memory = 0.7 GiB + 0.74 KiB/term (benchmark C's per-process refit)"
+        }
+      ],
+      "free_ram_gib_at_start": 240.08592987060547,
+      "disqualified": [],
+      "configs": [
+        {
+          "label": "kicked_ising_deep eps=3.906e-03",
+          "truncation": {
+            "min_abs_coeff": 0.00390625
+          },
+          "parity": {
+            "label": "kicked_ising_deep eps=3.906e-03",
+            "ok": true,
+            "problems": [],
+            "rust_final_terms": 363,
+            "jl_final_terms": 363,
+            "n_layers": 5420,
+            "rust_peak_terms": 1838,
+            "jl_peak_terms": 1838,
+            "expectation_rust": 0.5209684039281507,
+            "expectation_jl": 0.5209684039281507,
+            "expectation_delta": 0.0
+          },
+          "timing": {
+            "n_pairs": 3,
+            "ratio_jl_over_rust_per_pair": [
+              0.3401957447093919,
+              0.381011922845986,
+              0.39504951618263306
+            ],
+            "median_ratio_jl_over_rust": 0.381011922845986,
+            "min_ratio": 0.3401957447093919,
+            "max_ratio": 0.39504951618263306,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.3391145180212334,
+              0.3285112000303343,
+              0.32819164101965725
+            ],
+            "jl_s_per_pair": [
+              0.115365316,
+              0.125166684,
+              0.129651949
+            ],
+            "rust_s_median": 0.3285112000303343,
+            "jl_s_median": 0.125166684,
+            "label": "kicked_ising_deep eps=3.906e-03",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.3391145180212334,
+                "jl_s": 0.115365316,
+                "ratio_jl_over_rust": 0.3401957447093919,
+                "rust_final_terms": 363,
+                "jl_final_terms": 363,
+                "rust_peak_terms": 1838,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38576.0,
+                  "vmrss_post_propagate_kb": 44092.0,
+                  "vmhwm_kb": 44092.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629704.0,
+                  "vmrss_pre_propagate_kb": 650536.0,
+                  "vmrss_post_propagate_kb": 650904.0,
+                  "vmhwm_kb": 690208.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 1.349139514
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.3285112000303343,
+                "jl_s": 0.125166684,
+                "ratio_jl_over_rust": 0.381011922845986,
+                "rust_final_terms": 363,
+                "jl_final_terms": 363,
+                "rust_peak_terms": 1838,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38740.0,
+                  "vmrss_post_propagate_kb": 44444.0,
+                  "vmhwm_kb": 44444.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 628924.0,
+                  "vmrss_pre_propagate_kb": 648816.0,
+                  "vmrss_post_propagate_kb": 649176.0,
+                  "vmhwm_kb": 686580.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 1.377544256
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.32819164101965725,
+                "jl_s": 0.129651949,
+                "ratio_jl_over_rust": 0.39504951618263306,
+                "rust_final_terms": 363,
+                "jl_final_terms": 363,
+                "rust_peak_terms": 1838,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38676.0,
+                  "vmrss_post_propagate_kb": 44200.0,
+                  "vmhwm_kb": 44200.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629104.0,
+                  "vmrss_pre_propagate_kb": 647172.0,
+                  "vmrss_post_propagate_kb": 647556.0,
+                  "vmhwm_kb": 685752.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 1.369810507
+              }
+            ],
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "jl_peak_terms": null,
+            "peak_memory": {
+              "final_terms": 363,
+              "rust_vmhwm_kb": 44200.0,
+              "rust_floor_kb": 38676.0,
+              "rust_bytes_per_term": 15582.853994490359,
+              "jl_vmhwm_kb": 686580.0,
+              "jl_floor_kb": 629104.0,
+              "jl_bytes_per_term": 162136.15426997244,
+              "peak_terms": 1838,
+              "rust_bytes_per_peak_term": 3077.5712731229596,
+              "jl_bytes_per_peak_term": 32021.449401523394
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.00390625,
+              "min_abs_coeff_julia": 0.003906250000000001,
+              "one_ulp_delta": 8.673617379884035e-19,
+              "cutoff_is_dyadic": true,
+              "n_gates": 5420
+            },
+            "truncation": {
+              "min_abs_coeff": 0.00390625
+            },
+            "parity": {
+              "label": "kicked_ising_deep eps=3.906e-03",
+              "ok": true,
+              "problems": [],
+              "rust_final_terms": 363,
+              "jl_final_terms": 363,
+              "n_layers": 5420,
+              "rust_peak_terms": 1838,
+              "jl_peak_terms": 1838,
+              "expectation_rust": 0.5209684039281507,
+              "expectation_jl": 0.5209684039281507,
+              "expectation_delta": 0.0
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising_deep eps=9.766e-04",
+          "truncation": {
+            "min_abs_coeff": 0.0009765625
+          },
+          "parity": {
+            "label": "kicked_ising_deep eps=9.766e-04",
+            "ok": true,
+            "problems": [],
+            "rust_final_terms": 8046,
+            "jl_final_terms": 8046,
+            "n_layers": 5420,
+            "rust_peak_terms": 17659,
+            "jl_peak_terms": 17659,
+            "expectation_rust": 0.3958875797712089,
+            "expectation_jl": 0.395887579771209,
+            "expectation_delta": 5.551115123125783e-17
+          },
+          "timing": {
+            "n_pairs": 3,
+            "ratio_jl_over_rust_per_pair": [
+              1.4296466422167393,
+              1.4944296906934982,
+              1.4621004193644909
+            ],
+            "median_ratio_jl_over_rust": 1.4621004193644909,
+            "min_ratio": 1.4296466422167393,
+            "max_ratio": 1.4944296906934982,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              1.2232840020442382,
+              1.2034322860417888,
+              1.2056311910273507
+            ],
+            "jl_s_per_pair": [
+              1.748863866,
+              1.798444939,
+              1.76275387
+            ],
+            "rust_s_median": 1.2056311910273507,
+            "jl_s_median": 1.76275387,
+            "label": "kicked_ising_deep eps=9.766e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 1.2232840020442382,
+                "jl_s": 1.748863866,
+                "ratio_jl_over_rust": 1.4296466422167393,
+                "rust_final_terms": 8046,
+                "jl_final_terms": 8046,
+                "rust_peak_terms": 17659,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38652.0,
+                  "vmrss_post_propagate_kb": 46768.0,
+                  "vmhwm_kb": 46768.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 630168.0,
+                  "vmrss_pre_propagate_kb": 648588.0,
+                  "vmrss_post_propagate_kb": 653048.0,
+                  "vmhwm_kb": 688140.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 2.992993369
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 1.2034322860417888,
+                "jl_s": 1.798444939,
+                "ratio_jl_over_rust": 1.4944296906934982,
+                "rust_final_terms": 8046,
+                "jl_final_terms": 8046,
+                "rust_peak_terms": 17659,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38748.0,
+                  "vmrss_post_propagate_kb": 46832.0,
+                  "vmhwm_kb": 46832.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629032.0,
+                  "vmrss_pre_propagate_kb": 645040.0,
+                  "vmrss_post_propagate_kb": 649472.0,
+                  "vmhwm_kb": 683476.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 3.038655497
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 1.2056311910273507,
+                "jl_s": 1.76275387,
+                "ratio_jl_over_rust": 1.4621004193644909,
+                "rust_final_terms": 8046,
+                "jl_final_terms": 8046,
+                "rust_peak_terms": 17659,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38548.0,
+                  "vmrss_post_propagate_kb": 46596.0,
+                  "vmhwm_kb": 46596.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 631796.0,
+                  "vmrss_pre_propagate_kb": 648236.0,
+                  "vmrss_post_propagate_kb": 652660.0,
+                  "vmhwm_kb": 686240.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 2.996350939
+              }
+            ],
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "jl_peak_terms": null,
+            "peak_memory": {
+              "final_terms": 8046,
+              "rust_vmhwm_kb": 46768.0,
+              "rust_floor_kb": 38652.0,
+              "rust_bytes_per_term": 1032.9087745463585,
+              "jl_vmhwm_kb": 686240.0,
+              "jl_floor_kb": 630168.0,
+              "jl_bytes_per_term": 7136.1829480487195,
+              "peak_terms": 17659,
+              "rust_bytes_per_peak_term": 470.6259697604621,
+              "jl_bytes_per_peak_term": 3251.471091228269
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.0009765625,
+              "min_abs_coeff_julia": 0.0009765625000000002,
+              "one_ulp_delta": 2.168404344971009e-19,
+              "cutoff_is_dyadic": true,
+              "n_gates": 5420
+            },
+            "truncation": {
+              "min_abs_coeff": 0.0009765625
+            },
+            "parity": {
+              "label": "kicked_ising_deep eps=9.766e-04",
+              "ok": true,
+              "problems": [],
+              "rust_final_terms": 8046,
+              "jl_final_terms": 8046,
+              "n_layers": 5420,
+              "rust_peak_terms": 17659,
+              "jl_peak_terms": 17659,
+              "expectation_rust": 0.3958875797712089,
+              "expectation_jl": 0.395887579771209,
+              "expectation_delta": 5.551115123125783e-17
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising_deep eps=2.441e-04",
+          "truncation": {
+            "min_abs_coeff": 0.000244140625
+          },
+          "parity": {
+            "label": "kicked_ising_deep eps=2.441e-04",
+            "ok": true,
+            "problems": [],
+            "rust_final_terms": 138220,
+            "jl_final_terms": 138220,
+            "n_layers": 5420,
+            "rust_peak_terms": 204728,
+            "jl_peak_terms": 204728,
+            "expectation_rust": 0.2464150205236891,
+            "expectation_jl": 0.24641502052368908,
+            "expectation_delta": 2.7755575615628914e-17
+          },
+          "timing": {
+            "n_pairs": 3,
+            "ratio_jl_over_rust_per_pair": [
+              2.2436500330664932,
+              2.2742414973439513,
+              2.2269667876808525
+            ],
+            "median_ratio_jl_over_rust": 2.2436500330664932,
+            "min_ratio": 2.2269667876808525,
+            "max_ratio": 2.2742414973439513,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              14.888385999016464,
+              15.088424363057129,
+              14.886901870020665
+            ],
+            "jl_s_per_pair": [
+              33.404327739,
+              34.314720816,
+              33.152636036
+            ],
+            "rust_s_median": 14.888385999016464,
+            "jl_s_median": 33.404327739,
+            "label": "kicked_ising_deep eps=2.441e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 14.888385999016464,
+                "jl_s": 33.404327739,
+                "ratio_jl_over_rust": 2.2436500330664932,
+                "rust_final_terms": 138220,
+                "jl_final_terms": 138220,
+                "rust_peak_terms": 204728,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38612.0,
+                  "vmrss_post_propagate_kb": 61032.0,
+                  "vmhwm_kb": 61032.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629960.0,
+                  "vmrss_pre_propagate_kb": 647272.0,
+                  "vmrss_post_propagate_kb": 701900.0,
+                  "vmhwm_kb": 797916.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 34.270404399
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 15.088424363057129,
+                "jl_s": 34.314720816,
+                "ratio_jl_over_rust": 2.2742414973439513,
+                "rust_final_terms": 138220,
+                "jl_final_terms": 138220,
+                "rust_peak_terms": 204728,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38632.0,
+                  "vmrss_post_propagate_kb": 61184.0,
+                  "vmhwm_kb": 61184.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 630808.0,
+                  "vmrss_pre_propagate_kb": 648296.0,
+                  "vmrss_post_propagate_kb": 703344.0,
+                  "vmhwm_kb": 801988.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 35.033076412
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 14.886901870020665,
+                "jl_s": 33.152636036,
+                "ratio_jl_over_rust": 2.2269667876808525,
+                "rust_final_terms": 138220,
+                "jl_final_terms": 138220,
+                "rust_peak_terms": 204728,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38704.0,
+                  "vmrss_post_propagate_kb": 61120.0,
+                  "vmhwm_kb": 61120.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 632272.0,
+                  "vmrss_pre_propagate_kb": 649120.0,
+                  "vmrss_post_propagate_kb": 801708.0,
+                  "vmhwm_kb": 801708.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 34.286317274
+              }
+            ],
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "jl_peak_terms": null,
+            "peak_memory": {
+              "final_terms": 138220,
+              "rust_vmhwm_kb": 61120.0,
+              "rust_floor_kb": 38632.0,
+              "rust_bytes_per_term": 166.601881059181,
+              "jl_vmhwm_kb": 801708.0,
+              "jl_floor_kb": 630808.0,
+              "jl_bytes_per_term": 1266.1091014324988,
+              "peak_terms": 204728,
+              "rust_bytes_per_peak_term": 112.4795435895432,
+              "jl_bytes_per_peak_term": 854.8005158063381
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.000244140625,
+              "min_abs_coeff_julia": 0.00024414062500000005,
+              "one_ulp_delta": 5.421010862427522e-20,
+              "cutoff_is_dyadic": true,
+              "n_gates": 5420
+            },
+            "truncation": {
+              "min_abs_coeff": 0.000244140625
+            },
+            "parity": {
+              "label": "kicked_ising_deep eps=2.441e-04",
+              "ok": true,
+              "problems": [],
+              "rust_final_terms": 138220,
+              "jl_final_terms": 138220,
+              "n_layers": 5420,
+              "rust_peak_terms": 204728,
+              "jl_peak_terms": 204728,
+              "expectation_rust": 0.2464150205236891,
+              "expectation_jl": 0.24641502052368908,
+              "expectation_delta": 2.7755575615628914e-17
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising_deep eps=1.221e-04",
+          "truncation": {
+            "min_abs_coeff": 0.0001220703125
+          },
+          "parity": {
+            "label": "kicked_ising_deep eps=1.221e-04",
+            "ok": true,
+            "problems": [],
+            "rust_final_terms": 579312,
+            "jl_final_terms": 579312,
+            "n_layers": 5420,
+            "rust_peak_terms": 813262,
+            "jl_peak_terms": 813262,
+            "expectation_rust": 0.2279980252849373,
+            "expectation_jl": 0.2279980252849375,
+            "expectation_delta": 2.220446049250313e-16
+          },
+          "timing": {
+            "n_pairs": 3,
+            "ratio_jl_over_rust_per_pair": [
+              2.2118001943861043,
+              2.27110516404624,
+              2.20248514014919
+            ],
+            "median_ratio_jl_over_rust": 2.2118001943861043,
+            "min_ratio": 2.20248514014919,
+            "max_ratio": 2.27110516404624,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              54.98853460303508,
+              55.36052626906894,
+              55.18160599202383
+            ],
+            "jl_s_per_pair": [
+              121.623651524,
+              125.729577094,
+              121.536667207
+            ],
+            "rust_s_median": 55.18160599202383,
+            "jl_s_median": 121.623651524,
+            "label": "kicked_ising_deep eps=1.221e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 54.98853460303508,
+                "jl_s": 121.623651524,
+                "ratio_jl_over_rust": 2.2118001943861043,
+                "rust_final_terms": 579312,
+                "jl_final_terms": 579312,
+                "rust_peak_terms": 813262,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38676.0,
+                  "vmrss_post_propagate_kb": 111596.0,
+                  "vmhwm_kb": 111596.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 631184.0,
+                  "vmrss_pre_propagate_kb": 649476.0,
+                  "vmrss_post_propagate_kb": 1143528.0,
+                  "vmhwm_kb": 1143528.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 122.703119705
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 55.36052626906894,
+                "jl_s": 125.729577094,
+                "ratio_jl_over_rust": 2.27110516404624,
+                "rust_final_terms": 579312,
+                "jl_final_terms": 579312,
+                "rust_peak_terms": 813262,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38656.0,
+                  "vmrss_post_propagate_kb": 111568.0,
+                  "vmhwm_kb": 111568.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 630844.0,
+                  "vmrss_pre_propagate_kb": 648260.0,
+                  "vmrss_post_propagate_kb": 1174192.0,
+                  "vmhwm_kb": 1174192.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 127.022825196
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 55.18160599202383,
+                "jl_s": 121.536667207,
+                "ratio_jl_over_rust": 2.20248514014919,
+                "rust_final_terms": 579312,
+                "jl_final_terms": 579312,
+                "rust_peak_terms": 813262,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38552.0,
+                  "vmrss_post_propagate_kb": 111580.0,
+                  "vmhwm_kb": 111576.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629564.0,
+                  "vmrss_pre_propagate_kb": 648944.0,
+                  "vmrss_post_propagate_kb": 1139424.0,
+                  "vmhwm_kb": 1139424.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 122.754967119
+              }
+            ],
+            "final_terms": 579312,
+            "peak_terms": 813262,
+            "jl_peak_terms": null,
+            "peak_memory": {
+              "final_terms": 579312,
+              "rust_vmhwm_kb": 111576.0,
+              "rust_floor_kb": 38656.0,
+              "rust_bytes_per_term": 128.89441268263042,
+              "jl_vmhwm_kb": 1143528.0,
+              "jl_floor_kb": 630844.0,
+              "jl_bytes_per_term": 906.2274145883392,
+              "peak_terms": 813262,
+              "rust_bytes_per_peak_term": 91.81552808320075,
+              "jl_bytes_per_peak_term": 645.5341771778344
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.0001220703125,
+              "min_abs_coeff_julia": 0.00012207031250000003,
+              "one_ulp_delta": 2.710505431213761e-20,
+              "cutoff_is_dyadic": true,
+              "n_gates": 5420
+            },
+            "truncation": {
+              "min_abs_coeff": 0.0001220703125
+            },
+            "parity": {
+              "label": "kicked_ising_deep eps=1.221e-04",
+              "ok": true,
+              "problems": [],
+              "rust_final_terms": 579312,
+              "jl_final_terms": 579312,
+              "n_layers": 5420,
+              "rust_peak_terms": 813262,
+              "jl_peak_terms": 813262,
+              "expectation_rust": 0.2279980252849373,
+              "expectation_jl": 0.2279980252849375,
+              "expectation_delta": 2.220446049250313e-16
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising_deep eps=6.104e-05",
+          "truncation": {
+            "min_abs_coeff": 6.103515625e-05
+          },
+          "parity": {
+            "label": "kicked_ising_deep eps=6.104e-05",
+            "ok": true,
+            "problems": [],
+            "rust_final_terms": 2441936,
+            "jl_final_terms": 2441936,
+            "n_layers": 5420,
+            "rust_peak_terms": 3108582,
+            "jl_peak_terms": 3108582,
+            "expectation_rust": 0.253480590101201,
+            "expectation_jl": 0.25348059010120105,
+            "expectation_delta": 5.551115123125783e-17
+          },
+          "timing": {
+            "n_pairs": 3,
+            "ratio_jl_over_rust_per_pair": [
+              2.1966305837317748,
+              2.171508170269988,
+              2.2727739931480793
+            ],
+            "median_ratio_jl_over_rust": 2.1966305837317748,
+            "min_ratio": 2.171508170269988,
+            "max_ratio": 2.2727739931480793,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              201.97251147404313,
+              203.40226224204525,
+              201.49524801701773
+            ],
+            "jl_s_per_pair": [
+              443.658995777,
+              441.68967431,
+              457.953159436
+            ],
+            "rust_s_median": 201.97251147404313,
+            "jl_s_median": 443.658995777,
+            "label": "kicked_ising_deep eps=6.104e-05",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 201.97251147404313,
+                "jl_s": 443.658995777,
+                "ratio_jl_over_rust": 2.1966305837317748,
+                "rust_final_terms": 2441936,
+                "jl_final_terms": 2441936,
+                "rust_peak_terms": 3108582,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38676.0,
+                  "vmrss_post_propagate_kb": 305452.0,
+                  "vmhwm_kb": 305452.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629072.0,
+                  "vmrss_pre_propagate_kb": 648036.0,
+                  "vmrss_post_propagate_kb": 1717776.0,
+                  "vmhwm_kb": 2045244.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 442.020169882
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 203.40226224204525,
+                "jl_s": 441.68967431,
+                "ratio_jl_over_rust": 2.171508170269988,
+                "rust_final_terms": 2441936,
+                "jl_final_terms": 2441936,
+                "rust_peak_terms": 3108582,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38636.0,
+                  "vmrss_post_propagate_kb": 338204.0,
+                  "vmhwm_kb": 338204.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 630752.0,
+                  "vmrss_pre_propagate_kb": 648736.0,
+                  "vmrss_post_propagate_kb": 1737948.0,
+                  "vmhwm_kb": 2065480.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 440.981588977
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 201.49524801701773,
+                "jl_s": 457.953159436,
+                "ratio_jl_over_rust": 2.2727739931480793,
+                "rust_final_terms": 2441936,
+                "jl_final_terms": 2441936,
+                "rust_peak_terms": 3108582,
+                "jl_peak_terms": null,
+                "rust_memory": {
+                  "vmrss_start_kb": 38508.0,
+                  "vmrss_post_propagate_kb": 312724.0,
+                  "vmhwm_kb": 338432.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_memory": {
+                  "vmrss_start_kb": 629520.0,
+                  "vmrss_pre_propagate_kb": 646112.0,
+                  "vmrss_post_propagate_kb": 1711448.0,
+                  "vmhwm_kb": 2072464.0,
+                  "source": "/proc/self/status"
+                },
+                "jl_cold_s": 460.882017843
+              }
+            ],
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "jl_peak_terms": null,
+            "peak_memory": {
+              "final_terms": 2441936,
+              "rust_vmhwm_kb": 338204.0,
+              "rust_floor_kb": 38636.0,
+              "rust_bytes_per_term": 125.62066819114014,
+              "jl_vmhwm_kb": 2065480.0,
+              "jl_floor_kb": 629520.0,
+              "jl_bytes_per_term": 602.1546183028548,
+              "peak_terms": 3108582,
+              "rust_bytes_per_peak_term": 98.68088794183329,
+              "jl_bytes_per_peak_term": 473.0205090295189
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 6.103515625e-05,
+              "min_abs_coeff_julia": 6.103515625000001e-05,
+              "one_ulp_delta": 1.3552527156068805e-20,
+              "cutoff_is_dyadic": true,
+              "n_gates": 5420
+            },
+            "truncation": {
+              "min_abs_coeff": 6.103515625e-05
+            },
+            "parity": {
+              "label": "kicked_ising_deep eps=6.104e-05",
+              "ok": true,
+              "problems": [],
+              "rust_final_terms": 2441936,
+              "jl_final_terms": 2441936,
+              "n_layers": 5420,
+              "rust_peak_terms": 3108582,
+              "jl_peak_terms": 3108582,
+              "expectation_rust": 0.253480590101201,
+              "expectation_jl": 0.25348059010120105,
+              "expectation_delta": 5.551115123125783e-17
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        }
+      ]
+    }
+  ],
+  "accuracy": [],
+  "thread_scaling": null,
+  "cuts": [],
+  "wall_clock_s": 7012.347661018372,
+  "free_ram_gib_at_end": 240.09722518920898,
+  "extension_provenance": {
+    "package_path": "/mnt/home/ldevos/Projects/paulistrings-rs/python/paulistrings/__init__.py",
+    "extension_path": "/mnt/home/ldevos/Projects/paulistrings-rs/python/paulistrings/_paulistrings.abi3.so",
+    "extension_mtime": "2026-09-01 03:19:44",
+    "checkout": "/mnt/home/ldevos/Projects/paulistrings-rs",
+    "commit": "e4aeccd87836f0e650d129b054a09065edf23fab",
+    "branch": "large-m-optimization"
+  }
+}

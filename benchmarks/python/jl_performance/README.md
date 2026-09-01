@@ -328,6 +328,14 @@ should keep *rising* (XXZ-like) instead of decaying, and Julia's per-term cost s
 dropping 35%. If the ratio decays anyway, the effect is a genuine large-`m` property of our engine and the
 hypothesis is wrong.
 
+> **This prediction has since been tested: the hypothesis HOLDS.**
+> [`deep-kicked-ising/README.md`](deep-kicked-ising/README.md) — the same circuit at 20 Trotter
+> steps, where a halved cutoff still multiplies the term count by 4.2 instead of 1.0116. Over
+> 8.1 × 10⁵ → 3.1 × 10⁶ peak terms the ratio moves 2.212 → 2.197 (**−0.7%**, against this curve's
+> −27.8% over a span of the same width), and Julia's per-term cost falls only 4.5% against our 4.2%
+> — the 35% discount is absent exactly where saturation is. At 3.1 × 10⁶ terms, 47% *more* than this
+> curve's endpoint, the ratio is **2.197** against 1.389 here.
+
 **One thing we did see on our own side.** Our floor-subtracted memory per term jumps from 91 B/term at
 1 544 083 terms to 125 B/term at 2 121 774 — peak RSS 0.168 → 0.284 GiB, a 1.69× jump for 1.37× the terms. That
 is the signature of a capacity-doubling reallocation landing just past a power-of-two boundary, and it is a
@@ -396,9 +404,10 @@ milliseconds.
   would have said "indistinguishable"; they did not, at any configuration, so every quoted ratio is directional.
   The magnitude still carries the within-configuration spread shown in the ratio figure.
 * **Contraction is excluded.** Only propagation is timed.
-* **The saturation hypothesis is a hypothesis.** It is consistent with every number here and it makes a
-  falsifiable prediction, but it has not been tested. Nothing above depends on it being true; it is offered as
-  the reason to run the follow-up, not as a finding.
+* **The saturation hypothesis was a hypothesis when this document was written.** It is consistent with every
+  number here and it made a falsifiable prediction; nothing above depends on it being true. It has since been
+  tested and held — [`deep-kicked-ising/README.md`](deep-kicked-ising/README.md), 2026-09-01, same host, same
+  extension binary, same protocol at 3 pairs.
 
 ### Provenance of the numbers
 

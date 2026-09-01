@@ -82,9 +82,25 @@ Usage
     RAYON_NUM_THREADS=1 python benchmarks/python/bench_jl_performance.py \
         --curves --workload kicked_ising --pilot
 
+    # the small-m end with the small-sum direct path enabled on our side
+    RAYON_NUM_THREADS=1 python benchmarks/python/bench_jl_performance.py \
+        --curves --workload kicked_ising --engine auto --max-configs 3
+
     # subprocess entry points (the driver invokes these; not for hand use)
     python benchmarks/python/bench_jl_performance.py --rust-timed-leg task.json
     python benchmarks/python/bench_jl_performance.py --rust-parity-leg task.json
+
+``--engine`` selects ``PauliSum.propagate``'s layer engine for **every** rust
+leg, the parity gate included, and defaults to ``sorted`` — the bucketed
+sorting engine at every term count, which is what every run committed before
+the flag existed measured. ``auto`` additionally lets the small-sum direct path
+take the leading layers while the sum is within the default
+``small_sum_threshold``; above the crossover it is inert. The setting is
+recorded in ``summary.json``'s protocol block and on every record in
+``results.json``, since two timings taken on different layer engines are not
+comparable. Gating the parity gate on it too is deliberate: a layer engine that
+changed per-layer term counts must disqualify its own configuration rather than
+be timed against Julia.
 
 ``RAYON_NUM_THREADS=1`` must be in the environment **before the interpreter
 starts**: Rayon builds its global pool once, at the first propagate, and never
@@ -123,6 +139,22 @@ JULIA_IS_SINGLE_THREADED = True
 #: the task-level bar here is >= 5, since a cross-engine ratio has two
 #: independent runtimes in it rather than one.
 DEFAULT_PAIRS = 5
+
+#: Layer engines this driver will ask `PauliSum.propagate` for, mirroring the
+#: binding's accepted set (`crates/paulistrings-py/src/sum.rs::parse_engine`) so
+#: the two cannot drift apart.
+#:
+#: `"sorted"` is the default *here* as well as in the binding, which is what
+#: makes an `--engine`-less invocation of this driver comparable with every run
+#: committed before the flag existed: the bucketed sorting engine runs every
+#: layer at every term count, as it always has. `"auto"` lets the small-sum
+#: direct path take the leading layers while the sum is within
+#: `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD`, which only changes anything below
+#: the crossover — above it the flag is inert and the two settings measure the
+#: same code. Recorded per run, never inferred: a timing taken on one engine is
+#: not comparable with one taken on the other, and the results files say which.
+RUST_ENGINES = ("sorted", "auto", "direct")
+DEFAULT_RUST_ENGINE = "sorted"
 
 
 # ==========================================================================
@@ -609,7 +641,9 @@ def _status_kb(field: str) -> float | None:
     return None
 
 
-def rust_timed_leg(task_path: str | Path) -> dict[str, Any]:
+def rust_timed_leg(
+    task_path: str | Path, *, rust_engine: str = DEFAULT_RUST_ENGINE
+) -> dict[str, Any]:
     """One warm-then-timed propagation of ``task_path`` on this engine.
 
     Runs in its own process. Mirrors what ``runner.jl`` does on the Julia side:
@@ -619,6 +653,10 @@ def rust_timed_leg(task_path: str | Path) -> dict[str, Any]:
     Timing comes from ``harness.run_propagation`` — the suite's canonical
     runner, which also enforces the thread pin and refuses to time anything
     while the engine's DEBUG logging is enabled (a clock read per layer).
+
+    ``rust_engine`` is ``PauliSum.propagate``'s ``engine`` kwarg, forwarded to
+    the warmup and the timed pass alike so both run the same path. It is echoed
+    in the returned record, because a leg's runtime means nothing without it.
     """
     sys.path.insert(0, str(REPO_ROOT / "examples"))
     from common import harness
@@ -645,10 +683,12 @@ def rust_timed_leg(task_path: str | Path) -> dict[str, Any]:
         warmup=True,
         threads=threads,
         engine="paulistrings",
+        propagate_engine=rust_engine,
     )
 
     return {
         "engine": "paulistrings",
+        "rust_engine": rust_engine,
         "propagation_s": record.propagation_time_s,
         "contraction_s": record.contraction_time_s,
         "final_terms": record.final_terms,
@@ -667,7 +707,9 @@ def rust_timed_leg(task_path: str | Path) -> dict[str, Any]:
     }
 
 
-def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
+def rust_parity_leg(
+    task_path: str | Path, *, rust_engine: str = DEFAULT_RUST_ENGINE
+) -> dict[str, Any]:
     """Per-layer term counts for ``task_path`` on this engine. Untimed.
 
     Per-layer counts come from the engine's DEBUG records on logger
@@ -676,6 +718,13 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     ``PropagationStats`` carries only the final and peak counts. The DEBUG
     filter costs a clock read per layer, which is exactly why this is a
     separate, untimed process and never folded into a timed leg.
+
+    ``rust_engine`` is the same kwarg the timed leg gets, and passing it here is
+    the point rather than a detail: the parity gate must run the *engine that
+    will be timed*, so a layer engine that produced different per-layer counts
+    would disqualify its own configuration instead of being timed against
+    Julia. The small-sum direct path claims identical counts and identical
+    progress records; this is what checks that claim on a real circuit.
     """
     import logging
     import re
@@ -711,7 +760,10 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     ps.reset_log_cache()
     try:
         evolved = task.observable.propagate(
-            circuit=task.circuit, policy=task.truncation, direction=task.direction
+            circuit=task.circuit,
+            policy=task.truncation,
+            direction=task.direction,
+            engine=rust_engine,
         )
     finally:
         logger.removeHandler(collector)
@@ -724,6 +776,7 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
 
     return {
         "engine": "paulistrings",
+        "rust_engine": rust_engine,
         "input_terms": len(task.observable),
         "final_terms": len(evolved),
         "per_layer_terms": [after for _, after in collector.layers],
@@ -737,13 +790,31 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
 
 
 def _spawn_rust_leg(
-    task_path: Path, mode: str, *, threads: int = 1, timeout: float = 7200.0
+    task_path: Path,
+    mode: str,
+    *,
+    threads: int = 1,
+    timeout: float = 7200.0,
+    rust_engine: str = DEFAULT_RUST_ENGINE,
 ) -> dict[str, Any]:
-    """Run ``--rust-timed-leg`` / ``--rust-parity-leg`` in a fresh process."""
+    """Run ``--rust-timed-leg`` / ``--rust-parity-leg`` in a fresh process.
+
+    ``--engine`` is forwarded on the child's command line rather than through
+    the environment, so the leg's own argv records which layer engine it ran —
+    the same reason ``RAYON_NUM_THREADS`` is re-exported explicitly instead of
+    inherited.
+    """
     env = dict(os.environ)
     env["RAYON_NUM_THREADS"] = str(threads)
     env.pop("RUST_LOG", None)  # a debug filter costs a clock read per layer
-    cmd = [sys.executable, str(Path(__file__).resolve()), f"--rust-{mode}-leg", str(task_path)]
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        f"--rust-{mode}-leg",
+        str(task_path),
+        "--engine",
+        rust_engine,
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode != 0:
         raise RuntimeError(
@@ -986,6 +1057,36 @@ class Config:
         return out
 
 
+def sweep_points(
+    workload: Workload,
+    *,
+    max_configs: int | None = None,
+    include_weight_variant: bool = True,
+) -> list[tuple[float, int | None]]:
+    """The ``(min_abs_coeff, max_weight)`` points one curve will run, in order.
+
+    Loosest cutoff first — the order the sweep is declared in, which is what
+    lets each configuration project the next-heavier one before paying for it.
+
+    ``max_configs`` keeps the first ``n``, i.e. the ``n`` **loosest**. It
+    subsets a declared grid and can never invent a point, so a truncated
+    curve's configurations are the same configurations the full run measures
+    and the two are comparable one-to-one. The ``max_weight`` variant is
+    dropped with them: it sits at the *tightest* cutoff, so keeping it would
+    put the single heaviest configuration into a run whose whole purpose is to
+    measure only the cheap loose end.
+    """
+    if max_configs is not None and max_configs < 1:
+        raise ValueError(f"max_configs must be >= 1, got {max_configs}")
+    cutoffs = workload.cutoffs if max_configs is None else workload.cutoffs[:max_configs]
+    truncated = len(cutoffs) < len(workload.cutoffs)
+    points: list[tuple[float, int | None]] = [(eps, None) for eps in cutoffs]
+    if workload.weight_variant is not None and include_weight_variant and not truncated:
+        w, eps = workload.weight_variant
+        points.append((eps, w))
+    return points
+
+
 def write_task_pair(
     workload: Workload,
     *,
@@ -1039,7 +1140,12 @@ def write_task_pair(
 
 
 def parity_gate(
-    rust_task: Path, jl_task: Path, *, label: str, timeout: float = 7200.0
+    rust_task: Path,
+    jl_task: Path,
+    *,
+    label: str,
+    timeout: float = 7200.0,
+    rust_engine: str = DEFAULT_RUST_ENGINE,
 ) -> dict[str, Any]:
     """Run both engines untimed and require identical per-layer term counts.
 
@@ -1051,7 +1157,9 @@ def parity_gate(
     and expectations, so a passing gate is recorded evidence the README quotes
     rather than a silent precondition.
     """
-    rust = _spawn_rust_leg(rust_task, "parity", threads=1, timeout=timeout)
+    rust = _spawn_rust_leg(
+        rust_task, "parity", threads=1, timeout=timeout, rust_engine=rust_engine
+    )
     jl = _spawn_jl_leg(jl_task, timed=False, threads=1, timeout=timeout)
 
     jl_layers = jl["result"]["per_layer_terms"]
@@ -1074,6 +1182,7 @@ def parity_gate(
         "label": label,
         "ok": not problems,
         "problems": problems,
+        "rust_engine": rust_engine,
         "rust_final_terms": rust["final_terms"],
         "jl_final_terms": jl["result"]["final_terms"],
         "n_layers": len(rust["per_layer_terms"]),
@@ -1099,6 +1208,7 @@ def run_pairs(
     pairs: int = DEFAULT_PAIRS,
     threads: int = 1,
     timeout: float = 7200.0,
+    rust_engine: str = DEFAULT_RUST_ENGINE,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Run ``pairs`` interleaved (rust, julia) pairs and analyze them.
@@ -1116,11 +1226,15 @@ def run_pairs(
     for i in range(pairs):
         rust_first = rust_runs_first(i)
         if rust_first:
-            r = _spawn_rust_leg(rust_task, "timed", threads=threads, timeout=timeout)
+            r = _spawn_rust_leg(
+                rust_task, "timed", threads=threads, timeout=timeout, rust_engine=rust_engine
+            )
             j = _spawn_jl_leg(jl_task, timed=True, threads=1, timeout=timeout)
         else:
             j = _spawn_jl_leg(jl_task, timed=True, threads=1, timeout=timeout)
-            r = _spawn_rust_leg(rust_task, "timed", threads=threads, timeout=timeout)
+            r = _spawn_rust_leg(
+                rust_task, "timed", threads=threads, timeout=timeout, rust_engine=rust_engine
+            )
         rust_s = float(r["propagation_s"])
         jl_s = float(j["timing"]["wall_warm_s"])
         samples.append(
@@ -1146,6 +1260,7 @@ def run_pairs(
 
     analysis = analyze_pairs(samples)
     analysis["label"] = label
+    analysis["rust_engine"] = rust_engine
     analysis["pairs"] = samples
     rust_terms = {s["rust_final_terms"] for s in samples}
     jl_terms = {s["jl_final_terms"] for s in samples}
@@ -1270,6 +1385,8 @@ def run_curve(
     pairs: int,
     pilot_only: bool,
     log: Callable[[str], None],
+    rust_engine: str = DEFAULT_RUST_ENGINE,
+    max_configs: int | None = None,
 ) -> dict[str, Any]:
     """Sweep one workload's cutoffs, gating parity and pairing every timing.
 
@@ -1278,10 +1395,20 @@ def run_curve(
     measured, and only then run the timed pairs. Sweeping loosest-first is what
     makes the projection possible — every decision to cut a heavy leg is made
     from a measurement, not a guess.
+
+    ``max_configs`` keeps only the first ``n`` cutoffs — the *loosest* ``n``,
+    since the sweep is declared loosest-first — and drops the ``max_weight``
+    variant with them. It exists for the small-``m`` end: a question about the
+    regime below the crossover is answered by the loose cutoffs alone, and the
+    tight ones are hours of measurement that cannot move the answer. It
+    subsets a declared grid and never invents a point, so a truncated curve's
+    configurations are the same configurations, comparable one-to-one with the
+    full run's. The truncation is recorded in the returned curve.
     """
     log("")
     log(f"=== curve: {workload.title} ===")
     log(f"    {workload.notes}")
+    log(f"    rust layer engine: {rust_engine}")
     free_gib = free_ram_gib()
     log(f"    free RAM: {free_gib:.0f} GiB" if free_gib else "    free RAM: unknown")
 
@@ -1291,10 +1418,16 @@ def run_curve(
     projections: list[dict[str, Any]] = []
     last: dict[str, Any] | None = None
 
-    sweep: list[tuple[float, int | None]] = [(eps, None) for eps in workload.cutoffs]
-    if workload.weight_variant is not None and not pilot_only:
-        w, eps = workload.weight_variant
-        sweep.append((eps, w))
+    sweep = sweep_points(
+        workload, max_configs=max_configs, include_weight_variant=not pilot_only
+    )
+    cutoffs = [eps for eps, w in sweep if w is None]
+    if len(cutoffs) < len(workload.cutoffs):
+        log(
+            f"    --max-configs {max_configs}: the {len(cutoffs)} loosest cutoffs of "
+            f"{len(workload.cutoffs)}"
+            + (", weight variant dropped" if workload.weight_variant is not None else "")
+        )
 
     for eps, max_weight in sweep:
         knob = f"eps={eps:.3e}" + (f" max_weight={max_weight}" if max_weight else "")
@@ -1342,7 +1475,7 @@ def run_curve(
         # --- parity gate -----------------------------------------------------
         log(f"  {label}: parity gate ...")
         try:
-            parity = parity_gate(rust_task, jl_task, label=label)
+            parity = parity_gate(rust_task, jl_task, label=label, rust_engine=rust_engine)
         except ParityFailure as exc:
             log(f"  !! {exc}")
             cfg.disqualified = str(exc)
@@ -1360,7 +1493,7 @@ def run_curve(
         # --- timed pairs -----------------------------------------------------
         n_pairs = 1 if pilot_only else pairs
         timing = run_pairs(
-            rust_task, jl_task, label=label, pairs=n_pairs, log=log
+            rust_task, jl_task, label=label, pairs=n_pairs, rust_engine=rust_engine, log=log
         )
         timing.update(cfg_extra)
         timing["truncation"] = cfg.knobs
@@ -1416,6 +1549,10 @@ def run_curve(
         "workload": workload.key,
         "title": workload.title,
         "notes": workload.notes,
+        "rust_engine": rust_engine,
+        "cutoffs_declared": list(workload.cutoffs),
+        "cutoffs_run": list(cutoffs),
+        "max_configs": max_configs,
         "n_qubits": workload.n_qubits,
         "observable": workload.observable,
         "state": workload.state,
@@ -1522,6 +1659,7 @@ def run_time_to_accuracy(
     task_dir: Path,
     pairs: int,
     log: Callable[[str], None],
+    rust_engine: str = DEFAULT_RUST_ENGINE,
 ) -> dict[str, Any]:
     """Sweep ``reference``'s grid and report each engine's cheapest passing config.
 
@@ -1558,12 +1696,14 @@ def run_time_to_accuracy(
             workload, out_dir=task_dir, min_abs_coeff=eps
         )
         try:
-            parity = parity_gate(rust_task, jl_task, label=label)
+            parity = parity_gate(rust_task, jl_task, label=label, rust_engine=rust_engine)
         except ParityFailure as exc:
             log(f"  !! {exc}")
             rows.append({"min_abs_coeff": eps, "disqualified": str(exc)})
             continue
-        timing = run_pairs(rust_task, jl_task, label=label, pairs=pairs, log=log)
+        timing = run_pairs(
+            rust_task, jl_task, label=label, pairs=pairs, rust_engine=rust_engine, log=log
+        )
         expectation = parity["expectation_rust"]
         error = abs(expectation - reference.oracle) if expectation is not None else None
         rows.append(
@@ -1638,6 +1778,7 @@ def run_time_to_accuracy(
 
     return {
         "key": reference.key,
+        "rust_engine": rust_engine,
         "title": reference.title,
         "theta_h": reference.theta_h,
         "theta_label": reference.theta_label,
@@ -1671,6 +1812,7 @@ def run_thread_scaling(
     steps: int,
     min_abs_coeff: float,
     thread_counts: Sequence[int] = THREAD_COUNTS,
+    rust_engine: str = DEFAULT_RUST_ENGINE,
     log: Callable[[str], None],
 ) -> dict[str, Any]:
     """Scale one heavy, parity-proven configuration across Rayon thread counts.
@@ -1702,7 +1844,7 @@ def run_thread_scaling(
     rows: list[dict[str, Any]] = []
     baseline: float | None = None
     for t in thread_counts:
-        res = _spawn_rust_leg(rust_task, "timed", threads=t)
+        res = _spawn_rust_leg(rust_task, "timed", threads=t, rust_engine=rust_engine)
         wall = float(res["propagation_s"])
         if baseline is None:
             baseline = wall
@@ -1724,6 +1866,7 @@ def run_thread_scaling(
             f"efficiency {speedup / t:5.1%}"
         )
     return {
+        "rust_engine": rust_engine,
         "configuration": {
             "workload": "kicked_ising",
             "theta_label": theta_label,
@@ -1829,6 +1972,11 @@ def build_run_records(curves: Sequence[Mapping[str, Any]]) -> list[Any]:
             common_extra = {
                 "workload": curve["workload"],
                 "label": cfg["label"],
+                # On both records, not just the rust one: the ratio in this row
+                # was measured against a rust leg on that layer engine, so the
+                # julia row is only comparable with a julia row from a run that
+                # says the same thing.
+                "rust_engine": timing.get("rust_engine", DEFAULT_RUST_ENGINE),
                 "n_pairs": timing["n_pairs"],
                 "median_ratio_jl_over_rust": timing["median_ratio_jl_over_rust"],
                 "ratio_jl_over_rust_per_pair": timing["ratio_jl_over_rust_per_pair"],
@@ -1891,18 +2039,37 @@ def main(argv: Sequence[str]) -> int:
     )
     parser.add_argument("--pairs", type=int, default=DEFAULT_PAIRS, help=f"default {DEFAULT_PAIRS}")
     parser.add_argument("--pilot", action="store_true", help="1 pair per config, no weight variant")
+    parser.add_argument(
+        "--engine",
+        choices=RUST_ENGINES,
+        default=DEFAULT_RUST_ENGINE,
+        help=(
+            f"rust layer engine for every rust leg, parity gate included "
+            f"(default {DEFAULT_RUST_ENGINE}, which is what every run committed before "
+            "this flag existed measured)"
+        ),
+    )
+    parser.add_argument(
+        "--max-configs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="keep only the N loosest cutoffs of each --curves workload (no weight variant)",
+    )
     parser.add_argument("--out", type=Path, default=RESULTS_DIR)
     args = parser.parse_args(argv)
 
     if args.rust_timed_leg:
-        print(json.dumps(rust_timed_leg(args.rust_timed_leg)))
+        print(json.dumps(rust_timed_leg(args.rust_timed_leg, rust_engine=args.engine)))
         return 0
     if args.rust_parity_leg:
-        print(json.dumps(rust_parity_leg(args.rust_parity_leg)))
+        print(json.dumps(rust_parity_leg(args.rust_parity_leg, rust_engine=args.engine)))
         return 0
 
     if args.pairs < 1:
         parser.error("--pairs must be >= 1")
+    if args.max_configs is not None and args.max_configs < 1:
+        parser.error("--max-configs must be >= 1")
     if not (args.all or args.curves or args.accuracy or args.threads or args.figures):
         parser.error("pick a section: --all, --curves, --accuracy, --threads or --figures")
     if os.environ.get("RAYON_NUM_THREADS") != "1":
@@ -1927,6 +2094,11 @@ def main(argv: Sequence[str]) -> int:
     started = time.time()
     log("")
     log(f"### bench_jl_performance start {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    log(
+        f"    engine={args.engine} max_configs={args.max_configs}"
+        if args.engine != DEFAULT_RUST_ENGINE or args.max_configs is not None
+        else f"    engine={args.engine}"
+    )
     log(f"    pairs={args.pairs} pilot={args.pilot} sections=" + " ".join(
         s for s, on in (
             ("curves", args.all or args.curves),
@@ -1947,6 +2119,17 @@ def main(argv: Sequence[str]) -> int:
             ),
             "direction": "heisenberg",
             "threads": {"rayon": 1, "julia": 1},
+            "rust_engine": args.engine,
+            "rust_engine_note": (
+                "PauliSum.propagate's `engine` kwarg, applied to the parity gate and "
+                "every timed rust leg alike. 'sorted' is the bucketed sorting engine "
+                "at every term count — the binding's default and what every run "
+                "committed before this field existed measured. 'auto' additionally "
+                "lets the small-sum direct path take the leading layers while the sum "
+                "is within the default small_sum_threshold, which is inert above the "
+                "crossover. Timings taken on different settings are not comparable."
+            ),
+            "max_configs": args.max_configs,
             "timing": (
                 "warm in-process on both sides: one untimed propagation, then one timed "
                 "propagation, in the same process. Construction, contraction, oracles "
@@ -1984,6 +2167,8 @@ def main(argv: Sequence[str]) -> int:
                 task_dir=task_dir,
                 pairs=args.pairs,
                 pilot_only=args.pilot,
+                rust_engine=args.engine,
+                max_configs=args.max_configs,
                 log=log,
             )
             summary["curves"].append(curve)
@@ -2001,7 +2186,11 @@ def main(argv: Sequence[str]) -> int:
         for reference in references:
             summary["accuracy"].append(
                 run_time_to_accuracy(
-                    reference, task_dir=task_dir, pairs=1 if args.pilot else args.pairs, log=log
+                    reference,
+                    task_dir=task_dir,
+                    pairs=1 if args.pilot else args.pairs,
+                    rust_engine=args.engine,
+                    log=log,
                 )
             )
 
@@ -2019,6 +2208,7 @@ def main(argv: Sequence[str]) -> int:
             steps=5 if args.pilot else 20,
             min_abs_coeff=2.0**-10 if args.pilot else 2.0**-14,
             thread_counts=(1, 2) if args.pilot else THREAD_COUNTS,
+            rust_engine=args.engine,
             log=log,
         )
 

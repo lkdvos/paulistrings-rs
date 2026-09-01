@@ -441,14 +441,21 @@ def test_parity_gate_raises_on_a_diverging_expectation(driver, monkeypatch, tmp_
         driver.parity_gate(tmp_path / "r.json", tmp_path / "j.json", label="unit")
 
 
-def _stub_legs(driver, monkeypatch, rust_times, jl_times, *, terms=1000):
-    """Stub both spawners, recording the order legs were requested in."""
+def _stub_legs(driver, monkeypatch, rust_times, jl_times, *, terms=1000, engines=None):
+    """Stub both spawners, recording the order legs were requested in.
+
+    ``engines`` is an optional list the stub appends each rust leg's requested
+    layer engine to, so a test can assert the setting reached the subprocess
+    boundary instead of stopping at the function that accepted it.
+    """
     order: list[str] = []
     rust_iter = iter(rust_times)
     jl_iter = iter(jl_times)
 
-    def rust(task, mode, *, threads=1, timeout=0.0):
+    def rust(task, mode, *, threads=1, timeout=0.0, rust_engine="sorted"):
         order.append("rust")
+        if engines is not None:
+            engines.append(rust_engine)
         return {
             "propagation_s": next(rust_iter),
             "final_terms": terms,
@@ -510,7 +517,7 @@ def test_run_pairs_rejects_engines_disagreeing_on_term_count(driver, monkeypatch
     """A disagreement during timing means the parity gate missed something;
     the timing must not be reported."""
 
-    def rust(task, mode, *, threads=1, timeout=0.0):
+    def rust(task, mode, *, threads=1, timeout=0.0, rust_engine="sorted"):
         return {
             "propagation_s": 1.0,
             "final_terms": 1000,
@@ -537,7 +544,7 @@ def test_run_pairs_rejects_engines_disagreeing_on_term_count(driver, monkeypatch
 def test_run_pairs_rejects_a_term_count_that_moved_between_legs(driver, monkeypatch, tmp_path):
     counts = iter([1000, 1000, 1234, 1234])
 
-    def rust(task, mode, *, threads=1, timeout=0.0):
+    def rust(task, mode, *, threads=1, timeout=0.0, rust_engine="sorted"):
         return {
             "propagation_s": 1.0,
             "final_terms": next(counts),
@@ -559,6 +566,120 @@ def test_run_pairs_rejects_a_term_count_that_moved_between_legs(driver, monkeypa
             tmp_path / "r.json", tmp_path / "j.json", label="unit", pairs=2,
             log=lambda m: None,
         )
+
+
+# --------------------------------------------------------------------------
+# The rust layer-engine selector (--engine)
+# --------------------------------------------------------------------------
+
+
+def test_the_default_layer_engine_is_the_one_every_committed_run_measured(driver):
+    """`sorted` — the bucketed engine at every term count. Every result file
+    committed before `--engine` existed was measured on it, so any other
+    default would silently reinterpret the whole committed corpus."""
+    assert driver.DEFAULT_RUST_ENGINE == "sorted"
+    assert driver.DEFAULT_RUST_ENGINE in driver.RUST_ENGINES
+
+
+def test_the_offered_engines_are_the_ones_the_binding_accepts(driver):
+    """The driver must not offer a spelling `PauliSum.propagate` would reject,
+    nor hide one it takes."""
+    assert set(driver.RUST_ENGINES) == {"sorted", "auto", "direct"}
+
+
+def test_run_pairs_forwards_the_layer_engine_to_every_rust_leg(driver, monkeypatch, tmp_path):
+    engines: list[str] = []
+    _stub_legs(driver, monkeypatch, [1.0] * 3, [2.0] * 3, engines=engines)
+    out = driver.run_pairs(
+        tmp_path / "r.json",
+        tmp_path / "j.json",
+        label="unit",
+        pairs=3,
+        rust_engine="auto",
+        log=lambda m: None,
+    )
+    assert engines == ["auto", "auto", "auto"]
+    assert out["rust_engine"] == "auto"
+
+
+def test_run_pairs_defaults_to_the_sorting_engine(driver, monkeypatch, tmp_path):
+    engines: list[str] = []
+    _stub_legs(driver, monkeypatch, [1.0], [2.0], engines=engines)
+    out = driver.run_pairs(
+        tmp_path / "r.json", tmp_path / "j.json", label="unit", pairs=1, log=lambda m: None
+    )
+    assert engines == ["sorted"]
+    assert out["rust_engine"] == "sorted"
+
+
+def test_the_parity_gate_runs_the_engine_that_will_be_timed(driver, monkeypatch, tmp_path):
+    """Gating parity on the *timed* engine is the point: a layer engine that
+    changed per-layer term counts has to disqualify its own configuration, not
+    be waved through by a gate that ran a different code path."""
+    seen: list[str] = []
+
+    def rust(task, mode, *, threads=1, timeout=0.0, rust_engine="sorted"):
+        seen.append(rust_engine)
+        return _rust_parity_result([2, 8, 30])
+
+    monkeypatch.setattr(driver, "_spawn_rust_leg", rust)
+    monkeypatch.setattr(driver, "_spawn_jl_leg", lambda *a, **k: _jl_parity_result([2, 8, 30]))
+    out = driver.parity_gate(
+        tmp_path / "r.json", tmp_path / "j.json", label="unit", rust_engine="auto"
+    )
+    assert seen == ["auto"]
+    assert out["rust_engine"] == "auto"
+    assert out["ok"] is True
+
+
+# --------------------------------------------------------------------------
+# Cutoff subsetting (--max-configs)
+# --------------------------------------------------------------------------
+
+
+def test_the_declared_grid_runs_when_no_subset_is_asked_for(driver):
+    workload = driver.workloads()["kicked_ising"]
+    points = driver.sweep_points(workload)
+    assert [eps for eps, _w in points[:-1]] == list(workload.cutoffs)
+    # the weight variant is the tail
+    assert points[-1] == (workload.weight_variant[1], workload.weight_variant[0])
+
+
+def test_max_configs_keeps_the_loosest_cutoffs_in_order(driver):
+    """Loosest, not an arbitrary three: the sweep is declared loosest-first and
+    the subset must be a prefix of it, so every kept configuration is the same
+    configuration the full run measures."""
+    workload = driver.workloads()["xxz"]
+    points = driver.sweep_points(workload, max_configs=3)
+    assert [eps for eps, _w in points] == list(workload.cutoffs[:3])
+    assert all(w is None for _eps, w in points)
+
+
+def test_max_configs_drops_the_weight_variant_with_the_tight_cutoffs(driver):
+    workload = driver.workloads()["kicked_ising"]
+    assert workload.weight_variant is not None
+    points = driver.sweep_points(workload, max_configs=3)
+    assert len(points) == 3
+    assert all(w is None for _eps, w in points)
+
+
+def test_max_configs_at_or_above_the_grid_size_changes_nothing(driver):
+    workload = driver.workloads()["su4"]
+    full = driver.sweep_points(workload)
+    assert driver.sweep_points(workload, max_configs=len(workload.cutoffs)) == full
+    assert driver.sweep_points(workload, max_configs=99) == full
+
+
+def test_max_configs_below_one_is_rejected(driver):
+    workload = driver.workloads()["xxz"]
+    with pytest.raises(ValueError, match="max_configs"):
+        driver.sweep_points(workload, max_configs=0)
+
+
+def test_a_pilot_still_drops_the_weight_variant(driver):
+    workload = driver.workloads()["kicked_ising"]
+    points = driver.sweep_points(workload, include_weight_variant=False)
+    assert [eps for eps, _w in points] == list(workload.cutoffs)
 
 
 # --------------------------------------------------------------------------

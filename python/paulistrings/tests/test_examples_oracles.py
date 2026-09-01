@@ -301,6 +301,26 @@ def test_statevector_hand_computed_one_qubit():
     )
 
 
+def test_sdg_translates_to_both_oracles():
+    """`sdg` reaches qiskit (`sdg`) and stim (`s_dag`) with the right sign.
+
+    `S^dagger H |0> = |-i>`, the `-1` eigenstate of `Y`, against `S H |0> =
+    |+i>` above -- so a translation that dropped the dagger flips this sign.
+    """
+    recorder = oracles.RecordingCircuit(1)
+    recorder.h(0)
+    recorder.sdg(0)
+    spec = recorder.spec
+    engine = _heisenberg_expectation(
+        spec, observables.pauli_sum_from_support({0: "Y"}, 1)
+    )
+    assert engine == pytest.approx(-1.0, abs=1e-12)
+    pytest.importorskip("stim")
+    assert oracles.stim_clifford_exact(spec, "Y") == pytest.approx(-1.0, abs=1e-12)
+    pytest.importorskip("qiskit_aer")
+    assert oracles.statevector_expectation(spec, "Y") == pytest.approx(-1.0, abs=1e-12)
+
+
 def test_statevector_hand_computed_two_qubit_bell():
     """`CNOT (H (x) I) |00>` is the Bell state: <ZZ> = 1, <Z_0> = <Z_1> = 0."""
     pytest.importorskip("qiskit_aer")

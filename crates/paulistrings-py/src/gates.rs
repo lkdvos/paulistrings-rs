@@ -64,6 +64,16 @@ fn s(qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::S { qubit })
 }
 
+/// `S^dagger = diag(1, -i)`, the phase gate's inverse.
+///
+/// The one named single-qubit Clifford here that is not self-adjoint, so this is
+/// what `Circuit.adjoint()` emits in place of an `s`. Hand-derivable action:
+/// `S^dagger X S = -Y` and `S^dagger Y S = X` (against `S X S^dagger = +Y`).
+#[pyfunction]
+fn sdg(qubit: u32) -> PyChannel {
+    PyChannel::new(ChannelSpec::Sdg { qubit })
+}
+
 #[pyfunction]
 fn x(qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::X { qubit })
@@ -258,6 +268,7 @@ fn unitary_2q(q0: u32, q1: u32, matrix: PyReadonlyArray2<'_, Complex64>) -> PyRe
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(h, m)?)?;
     m.add_function(wrap_pyfunction!(s, m)?)?;
+    m.add_function(wrap_pyfunction!(sdg, m)?)?;
     m.add_function(wrap_pyfunction!(x, m)?)?;
     m.add_function(wrap_pyfunction!(y, m)?)?;
     m.add_function(wrap_pyfunction!(z, m)?)?;

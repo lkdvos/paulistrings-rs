@@ -232,7 +232,7 @@ def circuit_from_stim(src):
 # qiskit importer
 # =============================================================================
 
-_QISKIT_1Q_NAMED = ("h", "s", "x", "y", "z")
+_QISKIT_1Q_NAMED = ("h", "s", "sdg", "x", "y", "z")
 _QISKIT_1Q_ROT = ("rz", "rx", "ry")
 _QISKIT_2Q_NAMED = {"cx": "cnot", "cz": "cz", "swap": "swap"}
 _QISKIT_2Q_ROT = {"rzz": "ZZ", "rxx": "XX", "ryy": "YY"}
@@ -272,9 +272,9 @@ def _qiskit_operator_matrix(op):
 def circuit_from_qiskit(qc):
     """Import a ``qiskit.QuantumCircuit`` as a paulistrings ``Circuit``.
 
-    Named mapping where exact: ``h s x y z cx cz swap rz rx ry``, plus
+    Named mapping where exact: ``h s sdg x y z cx cz swap rz rx ry``, plus
     ``rzz/rxx/ryy`` (mapped to ``pauli_rotation("ZZ"/"XX"/"YY", ...)``) and
-    ``sdg/t/tdg`` (mapped through the checked ``unitary_1q`` fallback, since
+    ``t/tdg`` (mapped through the checked ``unitary_1q`` fallback, since
     they have no direct spelling here). Any other 1- or 2-qubit gate that
     exposes a unitary via ``qiskit.quantum_info.Operator`` falls back to
     ``unitary_1q``/``unitary_2q`` — the binding's own unitarity check is the
@@ -363,7 +363,12 @@ _TASK_REQUIRED_KEYS = {"version", "n_qubits", "circuit", "run"}
 _RUN_KEYS = {"direction", "threads", "state"}
 _TRUNCATION_KEYS = {"max_weight", "min_abs_coeff"}
 
-_TASK_1Q = ("h", "s", "x", "y", "z")
+# `sdg` joined this table with `Circuit.adjoint()`, which needs a named
+# spelling for `S^dagger`; it is an *addition* to schema v1's gate vocabulary
+# (a reader that predates it hard-errors on the name, which is the schema's
+# documented behavior for an unknown gate — `benchmarks/julia/runner.jl` does
+# not implement it).
+_TASK_1Q = ("h", "s", "sdg", "x", "y", "z")
 _TASK_1Q_ROT = ("rz", "rx", "ry")
 _TASK_2Q_NAMED = ("cz", "swap")
 _TASK_1Q_NOISE_P = ("depolarize", "dephase")

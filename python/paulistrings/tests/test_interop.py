@@ -342,13 +342,15 @@ def test_qiskit_t_gate_fallback_matches_general_unitary_conjugation():
         assert abs(abs(coeff) - r) < TOL
 
 
-def test_qiskit_sdg_fallback_matches_s_adjoint():
+def test_qiskit_sdg_maps_to_the_named_sdg_gate():
     pytest.importorskip("qiskit")
     from qiskit import QuantumCircuit
 
     qc = QuantumCircuit(1)
     qc.sdg(0)
     imported = interop.circuit_from_qiskit(qc)
+    # Named, not the unitary_1q fallback it used before `sdg` existed.
+    assert imported.gates == [{"name": "sdg", "qubits": [0]}]
 
     forward_s = Circuit(1)
     forward_s.s(0)

@@ -16,7 +16,9 @@ use paulistrings::channel::{
 };
 use paulistrings::pauli_string::PauliString;
 use paulistrings::Circuit as CoreCircuit;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 /// Which single-qubit Pauli a [`ChannelSpec::PauliRotationN`] generator carries
 /// at one qubit.
@@ -31,6 +33,37 @@ pub enum Axis {
     Z,
 }
 
+impl Axis {
+    /// The axis as its Pauli character, for the `"pauli"` field of a serialized
+    /// `pauli_rotation` gate.
+    fn as_char(self) -> char {
+        match self {
+            Self::X => 'X',
+            Self::Y => 'Y',
+            Self::Z => 'Z',
+        }
+    }
+}
+
+/// An `N x N` complex matrix as the schema's JSON-native form: rows of
+/// `[re, im]` pairs.
+fn matrix_to_json<const N: usize>(m: &[[Complex64; N]; N]) -> Vec<Vec<Vec<f64>>> {
+    m.iter()
+        .map(|row| row.iter().map(|c| vec![c.re, c.im]).collect())
+        .collect()
+}
+
+/// The conjugate transpose, i.e. the matrix of the adjoint unitary.
+fn dagger<const N: usize>(m: &[[Complex64; N]; N]) -> [[Complex64; N]; N] {
+    let mut out = [[Complex64::new(0.0, 0.0); N]; N];
+    for i in 0..N {
+        for j in 0..N {
+            out[i][j] = m[j][i].conj();
+        }
+    }
+    out
+}
+
 /// What kind of channel `PyChannel` represents. Stored as plain construction
 /// parameters so the spec is `Send + Sync` and width-agnostic.
 ///
@@ -43,6 +76,14 @@ pub enum ChannelSpec {
         qubit: u32,
     },
     S {
+        qubit: u32,
+    },
+    /// `S^dagger`. Its own variant rather than a `Unitary1Q` holding
+    /// `diag(1, -i)`: `adjoint()` needs a named spelling for `S`'s dagger (the
+    /// one non-self-adjoint named Clifford), and a named gate keeps the
+    /// key-preserving Clifford fast path instead of routing through a
+    /// Pauli-transfer matrix.
+    Sdg {
         qubit: u32,
     },
     X {
@@ -135,16 +176,51 @@ pub enum ChannelSpec {
 }
 
 impl ChannelSpec {
-    /// The largest qubit index this spec touches.
+    /// The gate name this spec serializes to: task-JSON schema v1's gate
+    /// vocabulary (`research/notes/2026-09-01-python-api-extensions.md` §A5),
+    /// which is also `paulistrings.interop`'s parser vocabulary and the
+    /// `Circuit` method name that builds it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::H { .. } => "h",
+            Self::S { .. } => "s",
+            Self::Sdg { .. } => "sdg",
+            Self::X { .. } => "x",
+            Self::Y { .. } => "y",
+            Self::Z { .. } => "z",
+            Self::Cnot { .. } => "cnot",
+            Self::Cz { .. } => "cz",
+            Self::Swap { .. } => "swap",
+            Self::Rz { .. } => "rz",
+            Self::Rx { .. } => "rx",
+            Self::Ry { .. } => "ry",
+            Self::PauliRotationN { .. } => "pauli_rotation",
+            Self::Depolarize { .. } => "depolarize",
+            Self::Dephase { .. } => "dephase",
+            Self::AmplitudeDamping { .. } => "amplitude_damping",
+            Self::PauliChannel { .. } => "pauli_channel",
+            Self::Depolarize2 { .. } => "depolarize2",
+            Self::Unitary1Q { .. } => "unitary_1q",
+            Self::Unitary2Q { .. } => "unitary_2q",
+        }
+    }
+
+    /// The qubits this spec addresses, in the gate's own argument order.
     ///
-    /// The one place the whole spec vocabulary is enumerated for bounds
-    /// checking; `CircuitImpl::push_spec` compares it against the circuit's
-    /// `num_qubits`. Every variant addresses at least one qubit, so there is no
-    /// empty case (`PauliRotationN` is non-empty by construction).
-    pub fn max_qubit(&self) -> u32 {
+    /// Order is part of the serialized shape, so this is *not* sorted: `cnot`
+    /// yields `[control, target]`, `unitary_2q` yields `[q0, q1]` with `q0` the
+    /// more significant tensor factor, and `pauli_rotation` yields the qubits in
+    /// the order the generator's characters were given.
+    ///
+    /// The single place the whole vocabulary's qubit fields are enumerated —
+    /// [`Self::max_qubit`] and [`Self::to_gate_dict`] both read it, so a new
+    /// variant cannot be bounds-checked correctly and serialized wrongly (or
+    /// vice versa).
+    pub fn qubits(&self) -> Vec<u32> {
         match self {
             Self::H { qubit }
             | Self::S { qubit }
+            | Self::Sdg { qubit }
             | Self::X { qubit }
             | Self::Y { qubit }
             | Self::Z { qubit }
@@ -155,16 +231,142 @@ impl ChannelSpec {
             | Self::Dephase { qubit, .. }
             | Self::AmplitudeDamping { qubit, .. }
             | Self::PauliChannel { qubit, .. }
-            | Self::Unitary1Q { qubit, .. } => *qubit,
-            Self::Cnot { control, target } => (*control).max(*target),
+            | Self::Unitary1Q { qubit, .. } => vec![*qubit],
+            Self::Cnot { control, target } => vec![*control, *target],
             Self::Cz { q0, q1 }
             | Self::Swap { q0, q1 }
             | Self::Depolarize2 { q0, q1, .. }
-            | Self::Unitary2Q { q0, q1, .. } => (*q0).max(*q1),
-            Self::PauliRotationN { paulis, .. } => {
-                paulis.iter().map(|(q, _)| *q).max().unwrap_or(0)
-            }
+            | Self::Unitary2Q { q0, q1, .. } => vec![*q0, *q1],
+            Self::PauliRotationN { paulis, .. } => paulis.iter().map(|(q, _)| *q).collect(),
         }
+    }
+
+    /// The largest qubit index this spec touches.
+    ///
+    /// Used for bounds checking; `CircuitImpl::push_spec` compares it against
+    /// the circuit's `num_qubits`. Every variant addresses at least one qubit,
+    /// so the `unwrap_or` is unreachable (`PauliRotationN` is non-empty by
+    /// construction).
+    pub fn max_qubit(&self) -> u32 {
+        self.qubits().into_iter().max().unwrap_or(0)
+    }
+
+    /// This spec as one task-JSON schema v1 gate object.
+    ///
+    /// JSON-native throughout: floats, ints, strings and nested lists only, so
+    /// `json.dumps({"gates": circuit.gates})` needs no custom encoder. A
+    /// `matrix` is rows of `[re, im]` pairs — the schema's own spelling, and
+    /// what `paulistrings.interop.circuit_from_json` parses back.
+    pub fn to_gate_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        d.set_item("name", self.name())?;
+        d.set_item("qubits", self.qubits())?;
+        match self {
+            Self::Rz { theta, .. } | Self::Rx { theta, .. } | Self::Ry { theta, .. } => {
+                d.set_item("theta", *theta)?;
+            }
+            Self::PauliRotationN { theta, paulis } => {
+                let pauli: String = paulis.iter().map(|(_, axis)| axis.as_char()).collect();
+                d.set_item("pauli", pauli)?;
+                d.set_item("theta", *theta)?;
+            }
+            Self::Depolarize { p, .. } | Self::Dephase { p, .. } | Self::Depolarize2 { p, .. } => {
+                d.set_item("p", *p)?;
+            }
+            Self::AmplitudeDamping { gamma, .. } => {
+                d.set_item("gamma", *gamma)?;
+            }
+            Self::PauliChannel {
+                px, py: p_y, pz, ..
+            } => {
+                d.set_item("px", *px)?;
+                d.set_item("py", *p_y)?;
+                d.set_item("pz", *pz)?;
+            }
+            Self::Unitary1Q { matrix, .. } => {
+                d.set_item("matrix", matrix_to_json(matrix))?;
+            }
+            Self::Unitary2Q { matrix, .. } => {
+                d.set_item("matrix", matrix_to_json(matrix))?;
+            }
+            // The named Cliffords carry nothing but their qubits.
+            Self::H { .. }
+            | Self::S { .. }
+            | Self::Sdg { .. }
+            | Self::X { .. }
+            | Self::Y { .. }
+            | Self::Z { .. }
+            | Self::Cnot { .. }
+            | Self::Cz { .. }
+            | Self::Swap { .. } => {}
+        }
+        Ok(d)
+    }
+
+    /// The adjoint channel, or a `ValueError` for a channel that has no
+    /// meaningful one at this API's level.
+    ///
+    /// Unitary gates only. For a rotation the adjoint is `theta -> -theta`; for
+    /// a raw matrix it is the conjugate transpose; `S` and `S^dagger` swap; the
+    /// remaining named Cliffords are self-adjoint.
+    ///
+    /// Noise channels are **refused by name**. Their duals happen to be
+    /// self-adjoint diagonal rescalings, so a reversed circuit containing them
+    /// unchanged would still satisfy `Circuit::adjoint`'s propagation identity —
+    /// but it would not be the circuit's *inverse*, which is what "adjoint
+    /// circuit" reads as, and there is no inverse of a non-unitary map to hand
+    /// back. Refusing keeps the two readings from silently diverging.
+    pub fn adjoint(&self) -> PyResult<Self> {
+        Ok(match self {
+            Self::H { .. }
+            | Self::X { .. }
+            | Self::Y { .. }
+            | Self::Z { .. }
+            | Self::Cnot { .. }
+            | Self::Cz { .. }
+            | Self::Swap { .. } => self.clone(),
+            Self::S { qubit } => Self::Sdg { qubit: *qubit },
+            Self::Sdg { qubit } => Self::S { qubit: *qubit },
+            Self::Rz { theta, qubit } => Self::Rz {
+                theta: -*theta,
+                qubit: *qubit,
+            },
+            Self::Rx { theta, qubit } => Self::Rx {
+                theta: -*theta,
+                qubit: *qubit,
+            },
+            Self::Ry { theta, qubit } => Self::Ry {
+                theta: -*theta,
+                qubit: *qubit,
+            },
+            Self::PauliRotationN { theta, paulis } => Self::PauliRotationN {
+                theta: -*theta,
+                paulis: paulis.clone(),
+            },
+            Self::Unitary1Q { qubit, matrix } => Self::Unitary1Q {
+                qubit: *qubit,
+                matrix: dagger(matrix),
+            },
+            Self::Unitary2Q { q0, q1, matrix } => Self::Unitary2Q {
+                q0: *q0,
+                q1: *q1,
+                matrix: dagger(matrix),
+            },
+            Self::Depolarize { .. }
+            | Self::Dephase { .. }
+            | Self::AmplitudeDamping { .. }
+            | Self::PauliChannel { .. }
+            | Self::Depolarize2 { .. } => {
+                let qubits = self.qubits();
+                return Err(PyValueError::new_err(format!(
+                    "Circuit.adjoint(): the channel {} on qubit(s) {qubits:?} is not \
+                     unitary, so the circuit has no adjoint (the time-reversal of a \
+                     noise channel is not its adjoint). Take the adjoint of the \
+                     unitary part, or build the reversed circuit explicitly.",
+                    self.name(),
+                )));
+            }
+        })
     }
 
     /// Materialize the spec at width `W` and push it onto `circuit`.
@@ -175,6 +377,7 @@ impl ChannelSpec {
         match self {
             Self::H { qubit } => circuit.push(Clifford1Q::h(*qubit)),
             Self::S { qubit } => circuit.push(Clifford1Q::s(*qubit)),
+            Self::Sdg { qubit } => circuit.push(Clifford1Q::s(*qubit).adjoint()),
             Self::X { qubit } => circuit.push(Clifford1Q::x(*qubit)),
             Self::Y { qubit } => circuit.push(Clifford1Q::y(*qubit)),
             Self::Z { qubit } => circuit.push(Clifford1Q::z(*qubit)),

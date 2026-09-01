@@ -212,6 +212,7 @@ REFERENCES_DIR = Path(__file__).resolve().parents[1] / "data" / "references"
 _GATE_SPECS: dict[str, tuple[int | None, tuple[str, ...]]] = {
     "h": (1, ()),
     "s": (1, ()),
+    "sdg": (1, ()),
     "x": (1, ()),
     "y": (1, ()),
     "z": (1, ()),
@@ -239,7 +240,10 @@ _NOISE_GATE_NAMES = frozenset(
 )
 
 #: Gate names that are Clifford for every parameter value.
-_ALWAYS_CLIFFORD = frozenset({"h", "s", "x", "y", "z", "cnot", "cz", "swap"})
+_ALWAYS_CLIFFORD = frozenset({"h", "s", "sdg", "x", "y", "z", "cnot", "cz", "swap"})
+
+#: Gate names whose stim `TableauSimulator` method is not just the name.
+_STIM_SIM_METHOD = {"sdg": "s_dag"}
 
 #: `rz`/`rx`/`ry` as the weight-1 spelling of `pauli_rotation`.
 _ROTATION_AXIS = {"rz": "Z", "rx": "X", "ry": "Y"}
@@ -443,6 +447,9 @@ class RecordingCircuit:
     def s(self, qubit: int) -> None:
         self._push(name="s", qubits=[qubit])
 
+    def sdg(self, qubit: int) -> None:
+        self._push(name="sdg", qubits=[qubit])
+
     def x(self, qubit: int) -> None:
         self._push(name="x", qubits=[qubit])
 
@@ -543,6 +550,10 @@ class _RecordingFactories:
     @staticmethod
     def s(qubit):
         return _RecordedChannel(name="s", qubits=[qubit])
+
+    @staticmethod
+    def sdg(qubit):
+        return _RecordedChannel(name="sdg", qubits=[qubit])
 
     @staticmethod
     def x(qubit):
@@ -965,7 +976,8 @@ def _emit_qiskit_gate(qc, gate: Mapping[str, Any]) -> None:
             "Pauli path (or a density-matrix reference, which this module does not "
             "provide) for noisy circuits."
         )
-    if name in ("h", "s", "x", "y", "z"):
+    # qiskit spells `S^dagger` `sdg` too, so the name goes through unchanged.
+    if name in ("h", "s", "sdg", "x", "y", "z"):
         getattr(qc, name)(qubits[0])
     elif name == "cnot":
         qc.cx(qubits[0], qubits[1])
@@ -1154,8 +1166,9 @@ def _apply_spec_gate_to_tableau_sim(stim, sim, gate: Mapping[str, Any]) -> None:
             "averaging over them, so its expectation value would be a sample, not the "
             "channel's. Use light_cone_exact's Pauli path for noisy circuits."
         )
-    if name in ("h", "s", "x", "y", "z", "cnot", "cz", "swap"):
-        getattr(sim, name)(*qubits)
+    if name in _ALWAYS_CLIFFORD:
+        # stim's simulator spells `S^dagger` `s_dag`; every other name matches.
+        getattr(sim, _STIM_SIM_METHOD.get(name, name))(*qubits)
         return
     if name in _ROTATION_AXIS:
         axis = _ROTATION_AXIS[name]

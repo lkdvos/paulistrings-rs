@@ -94,19 +94,29 @@ pub enum EngineSelection {
 /// crossover, and it is workload-dependent: measured on the head-to-head study's
 /// own circuits (`examples/small_m_ab.rs`) it is **≈ 1.5 × 10²** resident terms
 /// for kicked-Ising and **≈ 2 × 10³** for XXZ — a 14× spread, in keeping with the
-/// 4.4–21× spread of the study's own cross-engine crossovers.
+/// 4.4–21× spread of the study's own cross-engine crossovers. A threshold also
+/// acts through a second channel: setting it above a workload's *peak* keeps the
+/// whole run on one path, and being undivided is itself worth something.
 ///
-/// 512 is the geometric mean of those two, rounded to a power of two. At that
-/// value no configuration in the harness regresses, and the three the study lost
-/// gain 2.36× / 1.10× / 1.62×; at 4096 the kicked-Ising configuration just above
-/// its crossover instead **loses 1.4×**. Raising it is worth up to ~1.4× more on
-/// an XXZ-shaped workload and costs that much on a kicked-Ising-shaped one, so
-/// the knob is the answer rather than the constant.
+/// 2048 is the largest value in a measured `{128, 512, 1024, 2048, 4096}` sweep
+/// at which **no** configuration regresses — every cell is either a
+/// sign-consistent win or a sign-inconsistent null — and the only one that also
+/// keeps XXZ's 1 625-peak configuration on the direct path end to end, which is
+/// worth **1.68×** there. 4096 is the cliff: two configurations turn into
+/// sign-consistent regressions (kicked-Ising 2⁻⁸ **0.68×**, XXZ 1e-4 0.93×).
+///
+/// The two configurations where the study loses worst — kicked-Ising 2⁻⁴ (ratio
+/// 0.323) and XXZ 1e-2 (0.460) — peak at 68 and 164 terms, so they are *entirely
+/// insensitive* to this constant across that whole sweep (2.28–2.36× and
+/// 1.48–1.58×). What the constant trades is the middle of the range, and the
+/// trade is asymmetric: 2048 gives up ~6 points on kicked-Ising 2⁻⁶ (1.08× at
+/// 512 becomes a 1.02× null) to gain 0.64 on XXZ 1e-3. Full table:
+/// `research/notes/2026-09-01-small-m-path.md` §5.
 ///
 /// It also sits below `desired_bits`'s `worth_splitting` floor
 /// (`DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`), so a sum on this path is
 /// one the sorting engine would have run in few buckets anyway.
-pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 512;
+pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 2048;
 
 /// Tuning knobs for [`propagate_with_options`].
 ///

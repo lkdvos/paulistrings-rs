@@ -224,3 +224,41 @@ worktrees (branches `expt/<slug>`), with ALL authoritative timing deferred to a 
 
 Bench-gate order once implementations land: E1 -> E3 -> E2 -> E4 -> E5, one at a time on a quiet box; dense-PTM
 probes at <=8 threads per the fact sheet's write-ceiling finding.
+
+### Phase 2 gate: E3 `expt/small-m-path` (`research/notes/2026-09-01-small-m-path.md`)
+
+- 11:44 gate slot opened (E1 finished, E2/E4 queued behind). Preflight: load 0.34, RUST_LOG unset, worktree clean at
+  448d75b, branch point f592c43.
+- 11:45-11:52 **gate (a), non-perturbation of the default path: PASS, and the residual is LTO layout, not
+  perturbation.** Four ab-compare legs (rotation_zz and su4 at m ~ 1e4 and ~1e6, 1 thread, 3 abba pairs). Wall medians
+  -2.47% (3/3), -2.27% (MIXED), +3.94% (3/3), +3.54% (3/3) -- all inside E1's freshly calibrated +/-4-7% layout band.
+  Applying E1's discriminator: **every work counter is bit-identical between the two sides and constant across all
+  three runs on each side** (layers, terms_in, terms_out, rows_gathered, rows_sorted, rows_id, cosets, n, reps, seed),
+  so no phase does more work; what moved is the distribution -- rotation_zz merge -17% against gather +9 / sort +14,
+  su4 sort +3.2 (58-60% of that layer) plus merge +22 (7% of it), which reconstructs its +3.4% wall arithmetically.
+  Two legs favour the branch, two the baseline. Noted for the record: the remedy E3's note had reserved (give
+  `propagate_with_scratch` a verbatim `for k in 0..n` loop) would NOT reliably remove this, since the mechanism is new
+  code in a fat-LTO single-codegen-unit build rather than the loop bound.
+- 11:53-12:05 **gate (b), ours-only ON vs OFF at the study's small configurations: effect confirmed.** 5 pairs at the
+  shipped threshold plus a 5-point threshold sweep {128, 512, 1024, 2048, 4096}, 3 pairs each, reps 30, load ~1.
+  `--check` passed at every point: the Rust-ported kicked-Ising and XXZ circuits reproduce the study's committed
+  final/peak term counts exactly (7/68, 408/517, 5038/6311, 156/164, 1625/1625, 9918/9918), and the two selections'
+  full per-layer count vectors were equal in all 30 leg pairs. The configurations the study loses worst gain
+  **2.28-2.36x** (kicked-Ising 2^-4, study ratio 0.323) and **1.48-1.58x** (XXZ 1e-2, 0.460), at every threshold --
+  both peak below 512, so they run fully direct regardless.
+- 12:05 **threshold decision: 512 -> 2048.** The sweep exposed a second channel the crossover argument missed: a
+  threshold above a workload's *peak* keeps the whole run on one path, and being undivided is worth a lot. XXZ 1e-3
+  (peak 1625) is a 1.02-1.04 null at 128/512/1024 and **1.682 (3/3)** at 2048. 2048 is the largest value at which
+  nothing regresses; **4096 is the cliff** -- kicked-Ising 2^-8 falls to **0.676 (3/3)** and XXZ 1e-4 to 0.926 (3/3).
+  Cost of 2048 over 512: kicked-Ising 2^-6 goes 1.079 (5/5) -> 1.043 (MIXED), i.e. a small win becomes a null. Clock
+  check on the one sub-ramp cell (kicked-Ising 2^-4's leg is 22 ms at reps 30, under the governor's ~50 ms): re-run at
+  reps 300 (region 0.227 s) gives 2.278 (3/3) against 2.350, a 3% difference, so the short region was not
+  manufacturing the result.
+- 12:06 **gate (c), parity: PASS.** `cargo test -p paulistrings --release --test small_sum_path` 14/14 green (green in
+  debug too), every cross-path case asserting per-layer terms_in/terms_out equality; harness parity assert held on all
+  six configurations; `cargo test --workspace` green in both profiles, clippy clean, no tripwire moved. The literal
+  cross-engine gate with the path enabled still needs the PyO3 kwarg E3's note specifies (plus a `finalizes_layer`
+  override on `SpecPolicy`), and is a follow-up.
+- 12:06 **VERDICT: E3 passes all three gates.** `EngineSelection::Auto` stays **off by default** as planned -- flipping
+  it is a separate decision, and the one piece of evidence still missing for it is a multi-thread cell (the direct
+  path has no parallelism, so its crossover moves down with thread count). Not merged; the orchestrator merges.

@@ -1,0 +1,3734 @@
+[
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.01610611192882061,
+    "final_terms": 1827,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 2.04920070245862e-05,
+    "peak_terms": 1827,
+    "expectation_value": 0.6351394791852647,
+    "absolute_error": 0.020423571564229692,
+    "peak_memory_kb": 103484.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 103092.0,
+      "peak_memory_kb_delta": 392.0,
+      "rss_kb_after": 103484.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.044527399935759604,
+    "final_terms": 11483,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 3.4352997317910194e-05,
+    "peak_terms": 11483,
+    "expectation_value": 0.6371595603151317,
+    "absolute_error": 0.018403490434362735,
+    "peak_memory_kb": 106244.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 104196.0,
+      "peak_memory_kb_delta": 2048.0,
+      "rss_kb_after": 106244.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 0.10860280296765268,
+    "final_terms": 59336,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00010304304305464029,
+    "peak_terms": 59336,
+    "expectation_value": 0.6546216818865199,
+    "absolute_error": 0.0009413688629744676,
+    "peak_memory_kb": 108000.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 106244.0,
+      "peak_memory_kb_delta": 1756.0,
+      "rss_kb_after": 108000.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 0.4329595610033721,
+    "final_terms": 329534,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0005917890230193734,
+    "peak_terms": 329534,
+    "expectation_value": 0.6566686987619114,
+    "absolute_error": 0.001105648012416971,
+    "peak_memory_kb": 137296.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 108000.0,
+      "peak_memory_kb_delta": 29296.0,
+      "rss_kb_after": 137296.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 1.52587890625e-05
+    },
+    "propagation_time_s": 1.0374732800992206,
+    "final_terms": 882375,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.002312038093805313,
+    "peak_terms": 882375,
+    "expectation_value": 0.6556001988642538,
+    "absolute_error": 3.7148114759411044e-05,
+    "peak_memory_kb": 171968.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-16",
+      "baseline_peak_memory_kb": 136748.0,
+      "peak_memory_kb_delta": 35220.0,
+      "rss_kb_after": 171968.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 3.814697265625e-06
+    },
+    "propagation_time_s": 2.032938697026111,
+    "final_terms": 1865949,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.005627256003208458,
+    "peak_terms": 1865949,
+    "expectation_value": 0.6555630507494905,
+    "absolute_error": 3.885780586188048e-15,
+    "peak_memory_kb": 242444.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-18",
+      "baseline_peak_memory_kb": 171584.0,
+      "peak_memory_kb_delta": 70860.0,
+      "rss_kb_after": 242444.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.15839978109579533,
+    "final_terms": 882,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 2.6107067242264748e-05,
+    "peak_terms": 1838,
+    "expectation_value": 0.6902829768543903,
+    "absolute_error": 0.06264702422876034,
+    "peak_memory_kb": 241820.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.62763595262563,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_seconds": 336.43256789504085,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=3.8147e-06 projects to ~2.76e+09 terms (growth 10.6x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.6902829768543903,
+            "final_terms": 882,
+            "peak_terms": 1838,
+            "seconds": 0.1604938559466973,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.7337853310851348,
+            "final_terms": 12765,
+            "peak_terms": 17659,
+            "seconds": 0.1611197650199756,
+            "delta_vs_previous": 0.043502354230744444
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.6740544982910783,
+            "final_terms": 176208,
+            "peak_terms": 196256,
+            "seconds": 0.48121770995203406,
+            "delta_vs_previous": 0.05973083279405644
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.6316235522110016,
+            "final_terms": 2195788,
+            "peak_terms": 2245594,
+            "seconds": 3.601724826032296,
+            "delta_vs_previous": 0.04243094608007669
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.6211709837737257,
+            "final_terms": 24677168,
+            "peak_terms": 24677168,
+            "seconds": 32.943245253991336,
+            "delta_vs_previous": 0.010452568437275933
+          },
+          {
+            "min_abs_coeff": 3.814697265625e-06,
+            "value": 0.62763595262563,
+            "final_terms": 260944832,
+            "peak_terms": 260944832,
+            "seconds": 299.0847664840985,
+            "delta_vs_previous": 0.006464968851904285
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 241820.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 165824.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.4401406239485368,
+    "final_terms": 12765,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 4.150904715061188e-05,
+    "peak_terms": 17659,
+    "expectation_value": 0.7337853310851348,
+    "absolute_error": 0.10614937845950478,
+    "peak_memory_kb": 241820.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.62763595262563,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_seconds": 336.43256789504085,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=3.8147e-06 projects to ~2.76e+09 terms (growth 10.6x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.6902829768543903,
+            "final_terms": 882,
+            "peak_terms": 1838,
+            "seconds": 0.1604938559466973,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.7337853310851348,
+            "final_terms": 12765,
+            "peak_terms": 17659,
+            "seconds": 0.1611197650199756,
+            "delta_vs_previous": 0.043502354230744444
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.6740544982910783,
+            "final_terms": 176208,
+            "peak_terms": 196256,
+            "seconds": 0.48121770995203406,
+            "delta_vs_previous": 0.05973083279405644
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.6316235522110016,
+            "final_terms": 2195788,
+            "peak_terms": 2245594,
+            "seconds": 3.601724826032296,
+            "delta_vs_previous": 0.04243094608007669
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.6211709837737257,
+            "final_terms": 24677168,
+            "peak_terms": 24677168,
+            "seconds": 32.943245253991336,
+            "delta_vs_previous": 0.010452568437275933
+          },
+          {
+            "min_abs_coeff": 3.814697265625e-06,
+            "value": 0.62763595262563,
+            "final_terms": 260944832,
+            "peak_terms": 260944832,
+            "seconds": 299.0847664840985,
+            "delta_vs_previous": 0.006464968851904285
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 241820.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 165824.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 3.9132517189718783,
+    "final_terms": 176208,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0002784469397738576,
+    "peak_terms": 196256,
+    "expectation_value": 0.6740544982910783,
+    "absolute_error": 0.04641854566544834,
+    "peak_memory_kb": 241820.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.62763595262563,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_seconds": 336.43256789504085,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=3.8147e-06 projects to ~2.76e+09 terms (growth 10.6x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.6902829768543903,
+            "final_terms": 882,
+            "peak_terms": 1838,
+            "seconds": 0.1604938559466973,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.7337853310851348,
+            "final_terms": 12765,
+            "peak_terms": 17659,
+            "seconds": 0.1611197650199756,
+            "delta_vs_previous": 0.043502354230744444
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.6740544982910783,
+            "final_terms": 176208,
+            "peak_terms": 196256,
+            "seconds": 0.48121770995203406,
+            "delta_vs_previous": 0.05973083279405644
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.6316235522110016,
+            "final_terms": 2195788,
+            "peak_terms": 2245594,
+            "seconds": 3.601724826032296,
+            "delta_vs_previous": 0.04243094608007669
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.6211709837737257,
+            "final_terms": 24677168,
+            "peak_terms": 24677168,
+            "seconds": 32.943245253991336,
+            "delta_vs_previous": 0.010452568437275933
+          },
+          {
+            "min_abs_coeff": 3.814697265625e-06,
+            "value": 0.62763595262563,
+            "final_terms": 260944832,
+            "peak_terms": 260944832,
+            "seconds": 299.0847664840985,
+            "delta_vs_previous": 0.006464968851904285
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 241820.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 165936.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 37.28449869097676,
+    "final_terms": 2195788,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.007318401010707021,
+    "peak_terms": 2245594,
+    "expectation_value": 0.6316235522110016,
+    "absolute_error": 0.003987599585371648,
+    "peak_memory_kb": 359680.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.62763595262563,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_seconds": 336.43256789504085,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=3.8147e-06 projects to ~2.76e+09 terms (growth 10.6x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.6902829768543903,
+            "final_terms": 882,
+            "peak_terms": 1838,
+            "seconds": 0.1604938559466973,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.7337853310851348,
+            "final_terms": 12765,
+            "peak_terms": 17659,
+            "seconds": 0.1611197650199756,
+            "delta_vs_previous": 0.043502354230744444
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.6740544982910783,
+            "final_terms": 176208,
+            "peak_terms": 196256,
+            "seconds": 0.48121770995203406,
+            "delta_vs_previous": 0.05973083279405644
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.6316235522110016,
+            "final_terms": 2195788,
+            "peak_terms": 2245594,
+            "seconds": 3.601724826032296,
+            "delta_vs_previous": 0.04243094608007669
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.6211709837737257,
+            "final_terms": 24677168,
+            "peak_terms": 24677168,
+            "seconds": 32.943245253991336,
+            "delta_vs_previous": 0.010452568437275933
+          },
+          {
+            "min_abs_coeff": 3.814697265625e-06,
+            "value": 0.62763595262563,
+            "final_terms": 260944832,
+            "peak_terms": 260944832,
+            "seconds": 299.0847664840985,
+            "delta_vs_previous": 0.006464968851904285
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 241820.0,
+      "peak_memory_kb_delta": 117860.0,
+      "rss_kb_after": 359680.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.25221059506293386,
+    "final_terms": 961,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 3.43880383297801e-05,
+    "peak_terms": 1838,
+    "expectation_value": 0.5212311648149739,
+    "absolute_error": 0.0342503131908336,
+    "peak_memory_kb": 358780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.4869808516241403,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_seconds": 148.4958116238704,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1836 s (growth 13.5x), over the remaining 752 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5212311648149739,
+            "final_terms": 961,
+            "peak_terms": 1838,
+            "seconds": 0.2801618849625811,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.48369702634801065,
+            "final_terms": 11571,
+            "peak_terms": 17659,
+            "seconds": 0.3221629789331928,
+            "delta_vs_previous": 0.03753413846696324
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.48123902308239064,
+            "final_terms": 143838,
+            "peak_terms": 196256,
+            "seconds": 1.2343926320318133,
+            "delta_vs_previous": 0.0024580032656200124
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.46578543731799843,
+            "final_terms": 1817494,
+            "peak_terms": 2254084,
+            "seconds": 10.835261443979107,
+            "delta_vs_previous": 0.015453585764392208
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.4869808516241403,
+            "final_terms": 24561988,
+            "peak_terms": 26483579,
+            "seconds": 135.8238326839637,
+            "delta_vs_previous": 0.021195414306141858
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 358780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 168948.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.8311537490226328,
+    "final_terms": 11571,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 3.990193363279104e-05,
+    "peak_terms": 17659,
+    "expectation_value": 0.48369702634801065,
+    "absolute_error": 0.003283825276129637,
+    "peak_memory_kb": 358780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.4869808516241403,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_seconds": 148.4958116238704,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1836 s (growth 13.5x), over the remaining 752 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5212311648149739,
+            "final_terms": 961,
+            "peak_terms": 1838,
+            "seconds": 0.2801618849625811,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.48369702634801065,
+            "final_terms": 11571,
+            "peak_terms": 17659,
+            "seconds": 0.3221629789331928,
+            "delta_vs_previous": 0.03753413846696324
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.48123902308239064,
+            "final_terms": 143838,
+            "peak_terms": 196256,
+            "seconds": 1.2343926320318133,
+            "delta_vs_previous": 0.0024580032656200124
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.46578543731799843,
+            "final_terms": 1817494,
+            "peak_terms": 2254084,
+            "seconds": 10.835261443979107,
+            "delta_vs_previous": 0.015453585764392208
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.4869808516241403,
+            "final_terms": 24561988,
+            "peak_terms": 26483579,
+            "seconds": 135.8238326839637,
+            "delta_vs_previous": 0.021195414306141858
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 358780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 168948.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 9.313699372927658,
+    "final_terms": 143838,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00024032092187553644,
+    "peak_terms": 196256,
+    "expectation_value": 0.48123902308239064,
+    "absolute_error": 0.0057418285417496495,
+    "peak_memory_kb": 358780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.4869808516241403,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_seconds": 148.4958116238704,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1836 s (growth 13.5x), over the remaining 752 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5212311648149739,
+            "final_terms": 961,
+            "peak_terms": 1838,
+            "seconds": 0.2801618849625811,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.48369702634801065,
+            "final_terms": 11571,
+            "peak_terms": 17659,
+            "seconds": 0.3221629789331928,
+            "delta_vs_previous": 0.03753413846696324
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.48123902308239064,
+            "final_terms": 143838,
+            "peak_terms": 196256,
+            "seconds": 1.2343926320318133,
+            "delta_vs_previous": 0.0024580032656200124
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.46578543731799843,
+            "final_terms": 1817494,
+            "peak_terms": 2254084,
+            "seconds": 10.835261443979107,
+            "delta_vs_previous": 0.015453585764392208
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.4869808516241403,
+            "final_terms": 24561988,
+            "peak_terms": 26483579,
+            "seconds": 135.8238326839637,
+            "delta_vs_previous": 0.021195414306141858
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 358780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 168948.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 114.68953726801556,
+    "final_terms": 1817494,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.006070257048122585,
+    "peak_terms": 2254084,
+    "expectation_value": 0.46578543731799843,
+    "absolute_error": 0.021195414306141858,
+    "peak_memory_kb": 360444.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.4869808516241403,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_seconds": 148.4958116238704,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1836 s (growth 13.5x), over the remaining 752 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5212311648149739,
+            "final_terms": 961,
+            "peak_terms": 1838,
+            "seconds": 0.2801618849625811,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.48369702634801065,
+            "final_terms": 11571,
+            "peak_terms": 17659,
+            "seconds": 0.3221629789331928,
+            "delta_vs_previous": 0.03753413846696324
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.48123902308239064,
+            "final_terms": 143838,
+            "peak_terms": 196256,
+            "seconds": 1.2343926320318133,
+            "delta_vs_previous": 0.0024580032656200124
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.46578543731799843,
+            "final_terms": 1817494,
+            "peak_terms": 2254084,
+            "seconds": 10.835261443979107,
+            "delta_vs_previous": 0.015453585764392208
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.4869808516241403,
+            "final_terms": 24561988,
+            "peak_terms": 26483579,
+            "seconds": 135.8238326839637,
+            "delta_vs_previous": 0.021195414306141858
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 358780.0,
+      "peak_memory_kb_delta": 1664.0,
+      "rss_kb_after": 360444.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.32821402908302844,
+    "final_terms": 363,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 2.1131010726094246e-05,
+    "peak_terms": 1838,
+    "expectation_value": 0.5209684039281507,
+    "absolute_error": 0.12380299757177726,
+    "peak_memory_kb": 359780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 359780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 169304.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.2337498270208016,
+    "final_terms": 8046,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 4.259694833308458e-05,
+    "peak_terms": 17659,
+    "expectation_value": 0.3958875797712089,
+    "absolute_error": 0.0012778265851645099,
+    "peak_memory_kb": 359780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 359780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 169304.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 14.842250099987723,
+    "final_terms": 138220,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00022347597405314445,
+    "peak_terms": 204728,
+    "expectation_value": 0.2464150205236891,
+    "absolute_error": 0.15075038583268432,
+    "peak_memory_kb": 359780.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 359780.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 169304.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 201.80776113201864,
+    "final_terms": 2441936,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00783103599678725,
+    "peak_terms": 3108582,
+    "expectation_value": 0.253480590101201,
+    "absolute_error": 0.14368481625517243,
+    "peak_memory_kb": 373804.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 359780.0,
+      "peak_memory_kb_delta": 14024.0,
+      "rss_kb_after": 373804.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.033916649990715086,
+    "final_terms": 5038,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 2.0178034901618958e-05,
+    "peak_terms": 6311,
+    "expectation_value": 0.2140091471178993,
+    "absolute_error": 0.024467970900639596,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 170604.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 0.1408180659636855,
+    "final_terms": 72352,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00012149510439485312,
+    "peak_terms": 79029,
+    "expectation_value": 0.23928770151774437,
+    "absolute_error": 0.0008105834992054584,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 170604.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 0.7585102249868214,
+    "final_terms": 637219,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0015432799700647593,
+    "peak_terms": 637219,
+    "expectation_value": 0.23557009182075322,
+    "absolute_error": 0.0029070261977856837,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 178316.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 1.7088856929913163,
+    "final_terms": 1544083,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.004540695925243199,
+    "peak_terms": 1544083,
+    "expectation_value": 0.23886314745214962,
+    "absolute_error": 0.00038602943361071285,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 244288.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 1.52587890625e-05
+    },
+    "propagation_time_s": 2.3347946939757094,
+    "final_terms": 2121774,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.006884293048642576,
+    "peak_terms": 2121774,
+    "expectation_value": 0.2384771180185387,
+    "absolute_error": 2.220446049250313e-16,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-16",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 349192.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 3.814697265625e-06
+    },
+    "propagation_time_s": 2.3612684500403702,
+    "final_terms": 2146424,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.006927723065018654,
+    "peak_terms": 2146424,
+    "expectation_value": 0.2384771180185387,
+    "absolute_error": 2.220446049250313e-16,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 5,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-18",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 353156.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.0980423289583996,
+    "final_terms": 367,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.6737962141633034e-05,
+    "peak_terms": 6311,
+    "expectation_value": 0.10186234826665663,
+    "absolute_error": 0.023827133314143628,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.12568948158080026,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_seconds": 411.3532085310435,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1.32e+09 terms (growth 20.3x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.10186234826665663,
+            "final_terms": 367,
+            "peak_terms": 6311,
+            "seconds": 0.18531599000561982,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.10841628278416796,
+            "final_terms": 6356,
+            "peak_terms": 79029,
+            "seconds": 0.28488482104148716,
+            "delta_vs_previous": 0.006553934517511323
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.11939302303059941,
+            "final_terms": 155416,
+            "peak_terms": 1071093,
+            "seconds": 1.7696904480690137,
+            "delta_vs_previous": 0.010976740246431457
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.12277561495271366,
+            "final_terms": 3196258,
+            "peak_terms": 14396463,
+            "seconds": 23.375527341966517,
+            "delta_vs_previous": 0.0033825919221142503
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.12568948158080026,
+            "final_terms": 64915391,
+            "peak_terms": 204946663,
+            "seconds": 385.73778992996085,
+            "delta_vs_previous": 0.0029138666280865977
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 170624.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.25688955897931,
+    "final_terms": 6356,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 3.366905730217695e-05,
+    "peak_terms": 79029,
+    "expectation_value": 0.10841628278416796,
+    "absolute_error": 0.017273198796632305,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.12568948158080026,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_seconds": 411.3532085310435,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1.32e+09 terms (growth 20.3x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.10186234826665663,
+            "final_terms": 367,
+            "peak_terms": 6311,
+            "seconds": 0.18531599000561982,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.10841628278416796,
+            "final_terms": 6356,
+            "peak_terms": 79029,
+            "seconds": 0.28488482104148716,
+            "delta_vs_previous": 0.006553934517511323
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.11939302303059941,
+            "final_terms": 155416,
+            "peak_terms": 1071093,
+            "seconds": 1.7696904480690137,
+            "delta_vs_previous": 0.010976740246431457
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.12277561495271366,
+            "final_terms": 3196258,
+            "peak_terms": 14396463,
+            "seconds": 23.375527341966517,
+            "delta_vs_previous": 0.0033825919221142503
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.12568948158080026,
+            "final_terms": 64915391,
+            "peak_terms": 204946663,
+            "seconds": 385.73778992996085,
+            "delta_vs_previous": 0.0029138666280865977
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 170624.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 17.55186643905472,
+    "final_terms": 155416,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0004510929575189948,
+    "peak_terms": 1071093,
+    "expectation_value": 0.11939302303059941,
+    "absolute_error": 0.006296458550200848,
+    "peak_memory_kb": 372948.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.12568948158080026,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_seconds": 411.3532085310435,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1.32e+09 terms (growth 20.3x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.10186234826665663,
+            "final_terms": 367,
+            "peak_terms": 6311,
+            "seconds": 0.18531599000561982,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.10841628278416796,
+            "final_terms": 6356,
+            "peak_terms": 79029,
+            "seconds": 0.28488482104148716,
+            "delta_vs_previous": 0.006553934517511323
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.11939302303059941,
+            "final_terms": 155416,
+            "peak_terms": 1071093,
+            "seconds": 1.7696904480690137,
+            "delta_vs_previous": 0.010976740246431457
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.12277561495271366,
+            "final_terms": 3196258,
+            "peak_terms": 14396463,
+            "seconds": 23.375527341966517,
+            "delta_vs_previous": 0.0033825919221142503
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.12568948158080026,
+            "final_terms": 64915391,
+            "peak_terms": 204946663,
+            "seconds": 385.73778992996085,
+            "delta_vs_previous": 0.0029138666280865977
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 238824.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 229.28576670598704,
+    "final_terms": 3196258,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.013946096994914114,
+    "peak_terms": 14396463,
+    "expectation_value": 0.12277561495271366,
+    "absolute_error": 0.0029138666280865977,
+    "peak_memory_kb": 1140596.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 9,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.12568948158080026,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_seconds": 411.3532085310435,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1.32e+09 terms (growth 20.3x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.10186234826665663,
+            "final_terms": 367,
+            "peak_terms": 6311,
+            "seconds": 0.18531599000561982,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.10841628278416796,
+            "final_terms": 6356,
+            "peak_terms": 79029,
+            "seconds": 0.28488482104148716,
+            "delta_vs_previous": 0.006553934517511323
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.11939302303059941,
+            "final_terms": 155416,
+            "peak_terms": 1071093,
+            "seconds": 1.7696904480690137,
+            "delta_vs_previous": 0.010976740246431457
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.12277561495271366,
+            "final_terms": 3196258,
+            "peak_terms": 14396463,
+            "seconds": 23.375527341966517,
+            "delta_vs_previous": 0.0033825919221142503
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.12568948158080026,
+            "final_terms": 64915391,
+            "peak_terms": 204946663,
+            "seconds": 385.73778992996085,
+            "delta_vs_previous": 0.0029138666280865977
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 372948.0,
+      "peak_memory_kb_delta": 767648.0,
+      "rss_kb_after": 1139584.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.1270456250058487,
+    "final_terms": 54,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.69629929587245e-05,
+    "peak_terms": 6311,
+    "expectation_value": 0.03563899381400101,
+    "absolute_error": 0.005279602677067695,
+    "peak_memory_kb": 1140596.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.04091859649106871,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_seconds": 578.2779464439955,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~7041 s (growth 12.9x), over the remaining 322 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.03563899381400101,
+            "final_terms": 54,
+            "peak_terms": 6311,
+            "seconds": 0.23867982800584286,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.0373559259539577,
+            "final_terms": 979,
+            "peak_terms": 79029,
+            "seconds": 0.3509724059840664,
+            "delta_vs_previous": 0.0017169321399566895
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.03925268297239186,
+            "final_terms": 10694,
+            "peak_terms": 1071093,
+            "seconds": 2.6053972740191966,
+            "delta_vs_previous": 0.001896757018434156
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.04133398092636959,
+            "final_terms": 239480,
+            "peak_terms": 14396463,
+            "seconds": 31.0669170540059,
+            "delta_vs_previous": 0.002081297953977733
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.04091859649106871,
+            "final_terms": 3099331,
+            "peak_terms": 204946663,
+            "seconds": 544.0159798819805,
+            "delta_vs_previous": 0.0004153844353008834
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 1140596.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 339892.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.2739633560413495,
+    "final_terms": 979,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 1.614296343177557e-05,
+    "peak_terms": 79029,
+    "expectation_value": 0.0373559259539577,
+    "absolute_error": 0.0035626705371110054,
+    "peak_memory_kb": 1140596.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.04091859649106871,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_seconds": 578.2779464439955,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~7041 s (growth 12.9x), over the remaining 322 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.03563899381400101,
+            "final_terms": 54,
+            "peak_terms": 6311,
+            "seconds": 0.23867982800584286,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.0373559259539577,
+            "final_terms": 979,
+            "peak_terms": 79029,
+            "seconds": 0.3509724059840664,
+            "delta_vs_previous": 0.0017169321399566895
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.03925268297239186,
+            "final_terms": 10694,
+            "peak_terms": 1071093,
+            "seconds": 2.6053972740191966,
+            "delta_vs_previous": 0.001896757018434156
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.04133398092636959,
+            "final_terms": 239480,
+            "peak_terms": 14396463,
+            "seconds": 31.0669170540059,
+            "delta_vs_previous": 0.002081297953977733
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.04091859649106871,
+            "final_terms": 3099331,
+            "peak_terms": 204946663,
+            "seconds": 544.0159798819805,
+            "delta_vs_previous": 0.0004153844353008834
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 1140596.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 339892.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 19.814859748934396,
+    "final_terms": 10694,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 9.032199159264565e-05,
+    "peak_terms": 1071093,
+    "expectation_value": 0.03925268297239186,
+    "absolute_error": 0.0016659135186768495,
+    "peak_memory_kb": 1140596.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.04091859649106871,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_seconds": 578.2779464439955,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~7041 s (growth 12.9x), over the remaining 322 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.03563899381400101,
+            "final_terms": 54,
+            "peak_terms": 6311,
+            "seconds": 0.23867982800584286,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.0373559259539577,
+            "final_terms": 979,
+            "peak_terms": 79029,
+            "seconds": 0.3509724059840664,
+            "delta_vs_previous": 0.0017169321399566895
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.03925268297239186,
+            "final_terms": 10694,
+            "peak_terms": 1071093,
+            "seconds": 2.6053972740191966,
+            "delta_vs_previous": 0.001896757018434156
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.04133398092636959,
+            "final_terms": 239480,
+            "peak_terms": 14396463,
+            "seconds": 31.0669170540059,
+            "delta_vs_previous": 0.002081297953977733
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.04091859649106871,
+            "final_terms": 3099331,
+            "peak_terms": 204946663,
+            "seconds": 544.0159798819805,
+            "delta_vs_previous": 0.0004153844353008834
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 1140596.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 351280.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 285.1818837209139,
+    "final_terms": 239480,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0016714619705453515,
+    "peak_terms": 14396463,
+    "expectation_value": 0.04133398092636959,
+    "absolute_error": 0.0004153844353008834,
+    "peak_memory_kb": 1167940.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 15,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.04091859649106871,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_seconds": 578.2779464439955,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~7041 s (growth 12.9x), over the remaining 322 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.03563899381400101,
+            "final_terms": 54,
+            "peak_terms": 6311,
+            "seconds": 0.23867982800584286,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.0373559259539577,
+            "final_terms": 979,
+            "peak_terms": 79029,
+            "seconds": 0.3509724059840664,
+            "delta_vs_previous": 0.0017169321399566895
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.03925268297239186,
+            "final_terms": 10694,
+            "peak_terms": 1071093,
+            "seconds": 2.6053972740191966,
+            "delta_vs_previous": 0.001896757018434156
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.04133398092636959,
+            "final_terms": 239480,
+            "peak_terms": 14396463,
+            "seconds": 31.0669170540059,
+            "delta_vs_previous": 0.002081297953977733
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.04091859649106871,
+            "final_terms": 3099331,
+            "peak_terms": 204946663,
+            "seconds": 544.0159798819805,
+            "delta_vs_previous": 0.0004153844353008834
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 1140596.0,
+      "peak_memory_kb_delta": 27344.0,
+      "rss_kb_after": 1167940.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.00390625
+    },
+    "propagation_time_s": 0.12654002394992858,
+    "final_terms": 11,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 9.375042282044888e-06,
+    "peak_terms": 6311,
+    "expectation_value": 0.01194127658346102,
+    "absolute_error": 0.004190097802507009,
+    "peak_memory_kb": 1167000.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_seconds": 36.40649678884074,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": true,
+        "stopped_early": null,
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.01194127658346102,
+            "final_terms": 11,
+            "peak_terms": 6311,
+            "seconds": 0.24193070898763835,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.01472967176453593,
+            "final_terms": 119,
+            "peak_terms": 79029,
+            "seconds": 0.37795404193457216,
+            "delta_vs_previous": 0.002788395181074911
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.015481385130588122,
+            "final_terms": 2543,
+            "peak_terms": 1071093,
+            "seconds": 2.7858830189798027,
+            "delta_vs_previous": 0.0007517133660521914
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.01613137438596803,
+            "final_terms": 34698,
+            "peak_terms": 14396463,
+            "seconds": 33.00072901893873,
+            "delta_vs_previous": 0.0006499892553799066
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-8",
+      "baseline_peak_memory_kb": 1167000.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 368384.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.427344241994433,
+    "final_terms": 119,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 2.292194403707981e-05,
+    "peak_terms": 79029,
+    "expectation_value": 0.01472967176453593,
+    "absolute_error": 0.001401702621432098,
+    "peak_memory_kb": 1167000.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_seconds": 36.40649678884074,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": true,
+        "stopped_early": null,
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.01194127658346102,
+            "final_terms": 11,
+            "peak_terms": 6311,
+            "seconds": 0.24193070898763835,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.01472967176453593,
+            "final_terms": 119,
+            "peak_terms": 79029,
+            "seconds": 0.37795404193457216,
+            "delta_vs_previous": 0.002788395181074911
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.015481385130588122,
+            "final_terms": 2543,
+            "peak_terms": 1071093,
+            "seconds": 2.7858830189798027,
+            "delta_vs_previous": 0.0007517133660521914
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.01613137438596803,
+            "final_terms": 34698,
+            "peak_terms": 14396463,
+            "seconds": 33.00072901893873,
+            "delta_vs_previous": 0.0006499892553799066
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 1167000.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 368484.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 21.217368399025872,
+    "final_terms": 2543,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 8.26340401545167e-05,
+    "peak_terms": 1071093,
+    "expectation_value": 0.015481385130588122,
+    "absolute_error": 0.0006499892553799066,
+    "peak_memory_kb": 1167000.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_seconds": 36.40649678884074,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": true,
+        "stopped_early": null,
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.01194127658346102,
+            "final_terms": 11,
+            "peak_terms": 6311,
+            "seconds": 0.24193070898763835,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.01472967176453593,
+            "final_terms": 119,
+            "peak_terms": 79029,
+            "seconds": 0.37795404193457216,
+            "delta_vs_previous": 0.002788395181074911
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.015481385130588122,
+            "final_terms": 2543,
+            "peak_terms": 1071093,
+            "seconds": 2.7858830189798027,
+            "delta_vs_previous": 0.0007517133660521914
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.01613137438596803,
+            "final_terms": 34698,
+            "peak_terms": 14396463,
+            "seconds": 33.00072901893873,
+            "delta_vs_previous": 0.0006499892553799066
+          }
+        ]
+      },
+      "warm": true,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 1167000.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 368908.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 295.618312058039,
+    "final_terms": 34698,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "numpy": "2.4.6",
+        "qiskit": "2.5.2",
+        "stim": "1.16.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.0008615369442850351,
+    "peak_terms": 14396463,
+    "expectation_value": 0.01613137438596803,
+    "absolute_error": 0.0,
+    "peak_memory_kb": 1168500.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "5pi/16",
+      "theta_h": 0.9817477042468103,
+      "trotter_steps": 20,
+      "sweep": "min_abs_coeff",
+      "reference_value": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_seconds": 36.40649678884074,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": true,
+        "stopped_early": null,
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.01194127658346102,
+            "final_terms": 11,
+            "peak_terms": 6311,
+            "seconds": 0.24193070898763835,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.01472967176453593,
+            "final_terms": 119,
+            "peak_terms": 79029,
+            "seconds": 0.37795404193457216,
+            "delta_vs_previous": 0.002788395181074911
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.015481385130588122,
+            "final_terms": 2543,
+            "peak_terms": 1071093,
+            "seconds": 2.7858830189798027,
+            "delta_vs_previous": 0.0007517133660521914
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.01613137438596803,
+            "final_terms": 34698,
+            "peak_terms": 14396463,
+            "seconds": 33.00072901893873,
+            "delta_vs_previous": 0.0006499892553799066
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 1167000.0,
+      "peak_memory_kb_delta": 1500.0,
+      "rss_kb_after": 1168500.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.211371180950664,
+    "final_terms": 8046,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 3.370293416082859e-05,
+    "peak_terms": 17659,
+    "expectation_value": 0.3958875797712089,
+    "absolute_error": 0.0012778265851645099,
+    "peak_memory_kb": 1167168.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-10",
+      "baseline_peak_memory_kb": 1167168.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 369412.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0009765625
+    },
+    "propagation_time_s": 1.728660783,
+    "final_terms": 8046,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 17659,
+    "expectation_value": 0.395887579771209,
+    "absolute_error": 0.0012778265851644544,
+    "peak_memory_kb": 689004.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "wall_cold_s": 3.16277809,
+      "min_abs_coeff_label": "2^-10",
+      "julia_min_abs_coeff": 0.0009765625000000002,
+      "one_ulp_perturbation": 2.168404344971009e-19,
+      "julia_notes": [
+        "min_abs_coeff boundary: PauliPropagation.jl drops |c| < eps (strict), paulistrings drops |c| <= eps (inclusive); the two disagree only when a coefficient lands exactly on the threshold.",
+        "max_weight boundary: both engines keep weight == max_weight.",
+        "exact-zero coefficients survive in PauliPropagation.jl but are dropped by the paulistrings merge, so an exactly-cancelling circuit can differ by term count.",
+        "truncation is applied after every gate (no layer concept), so one gate object must equal one paulistrings channel.",
+        "per_layer_terms is in APPLICATION order, which for direction=\"heisenberg\" is the reverse of the order gates appear in the task file."
+      ]
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 14.73500745894853,
+    "final_terms": 138220,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.00022191100288182497,
+    "peak_terms": 204728,
+    "expectation_value": 0.2464150205236891,
+    "absolute_error": 0.15075038583268432,
+    "peak_memory_kb": 1167168.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-12",
+      "baseline_peak_memory_kb": 1167168.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 372412.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.000244140625
+    },
+    "propagation_time_s": 33.160368095,
+    "final_terms": 138220,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 204728,
+    "expectation_value": 0.24641502052368908,
+    "absolute_error": 0.15075038583268435,
+    "peak_memory_kb": 827272.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "wall_cold_s": 34.60649961,
+      "min_abs_coeff_label": "2^-12",
+      "julia_min_abs_coeff": 0.00024414062500000005,
+      "one_ulp_perturbation": 5.421010862427522e-20,
+      "julia_notes": [
+        "min_abs_coeff boundary: PauliPropagation.jl drops |c| < eps (strict), paulistrings drops |c| <= eps (inclusive); the two disagree only when a coefficient lands exactly on the threshold.",
+        "max_weight boundary: both engines keep weight == max_weight.",
+        "exact-zero coefficients survive in PauliPropagation.jl but are dropped by the paulistrings merge, so an exactly-cancelling circuit can differ by term count.",
+        "truncation is applied after every gate (no layer concept), so one gate object must equal one paulistrings channel.",
+        "per_layer_terms is in APPLICATION order, which for direction=\"heisenberg\" is the reverse of the order gates appear in the task file."
+      ]
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 201.07143800193444,
+    "final_terms": 2441936,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": 0.007793937111273408,
+    "peak_terms": 3108582,
+    "expectation_value": 0.253480590101201,
+    "absolute_error": 0.14368481625517243,
+    "peak_memory_kb": 1167168.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": false,
+      "min_abs_coeff_label": "2^-14",
+      "baseline_peak_memory_kb": 1167168.0,
+      "peak_memory_kb_delta": 0.0,
+      "rss_kb_after": 412092.0,
+      "state": "z+",
+      "observed_threads": 33
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 127,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 6.103515625e-05
+    },
+    "propagation_time_s": 454.270984793,
+    "final_terms": 2441936,
+    "provenance": {
+      "commit": "e024d8b91414212ad9267aeb5a63254814473bc7",
+      "dirty": false,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0",
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "seeds": {},
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-08-31"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 3108582,
+    "expectation_value": 0.25348059010120105,
+    "absolute_error": 0.14368481625517238,
+    "peak_memory_kb": 2093012.0,
+    "extra": {
+      "benchmark": "C",
+      "observable": "z62",
+      "theta_h_label": "7pi/32",
+      "theta_h": 0.6872233929727672,
+      "trotter_steps": 20,
+      "sweep": "parity",
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      },
+      "warm": true,
+      "wall_cold_s": 456.933315873,
+      "min_abs_coeff_label": "2^-14",
+      "julia_min_abs_coeff": 6.103515625000001e-05,
+      "one_ulp_perturbation": 1.3552527156068805e-20,
+      "julia_notes": [
+        "min_abs_coeff boundary: PauliPropagation.jl drops |c| < eps (strict), paulistrings drops |c| <= eps (inclusive); the two disagree only when a coefficient lands exactly on the threshold.",
+        "max_weight boundary: both engines keep weight == max_weight.",
+        "exact-zero coefficients survive in PauliPropagation.jl but are dropped by the paulistrings merge, so an exactly-cancelling circuit can differ by term count.",
+        "truncation is applied after every gate (no layer concept), so one gate object must equal one paulistrings channel.",
+        "per_layer_terms is in APPLICATION order, which for direction=\"heisenberg\" is the reverse of the order gates appear in the task file."
+      ]
+    }
+  }
+]

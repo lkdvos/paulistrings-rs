@@ -67,6 +67,10 @@ pub use crate::bucket::sum::PauliSum;
 /// Each variant names the single-qubit Pauli whose `+1` eigenstate is taken on
 /// every qubit. These are the states quench experiments actually start from, and
 /// each one makes the expectation a masked scan rather than a simulation.
+///
+/// They are the uniform special cases of [`ProductBasis`], which allows a
+/// different axis and sign per qubit; there is exactly one scan underneath
+/// ([`PauliSum::expectation_product_basis`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductState {
     /// `|+…+⟩`, the `+1` eigenstate of `X` on every qubit.
@@ -75,6 +79,156 @@ pub enum ProductState {
     YPlus,
     /// `|0…0⟩`, the `+1` eigenstate of `Z` on every qubit.
     ZPlus,
+}
+
+/// One of the three single-qubit Pauli axes: the axis a [`ProductBasis`] qubit
+/// is an eigenstate of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauliAxis {
+    /// `X`, with eigenstates `|+⟩` (`+1`) and `|-⟩` (`-1`).
+    X,
+    /// `Y`, with eigenstates `|+i⟩` (`+1`) and `|-i⟩` (`-1`).
+    Y,
+    /// `Z`, with eigenstates `|0⟩` (`+1`) and `|1⟩` (`-1`).
+    Z,
+}
+
+impl PauliAxis {
+    /// The axis Pauli's symplectic bits `(x, z)`: `X = (1, 0)`, `Z = (0, 1)`,
+    /// `Y = (1, 1)` — the crate's Hermitian-`Y` convention, with no phase.
+    #[inline]
+    const fn bits(self) -> (bool, bool) {
+        match self {
+            PauliAxis::X => (true, false),
+            PauliAxis::Y => (true, true),
+            PauliAxis::Z => (false, true),
+        }
+    }
+}
+
+/// A product of single-qubit stabilizer states, one per qubit: on qubit `q` an
+/// axis `A_q ∈ {X, Y, Z}` with a sign `s_q ∈ {+1, -1}`, i.e.
+/// `|ψ⟩ = ⊗_q |A_q, s_q⟩`.
+///
+/// Stored as per-word bit masks in the same symplectic layout as a
+/// [`PauliString`] key, so [`PauliSum::expectation_product_basis`] stays a
+/// masked scan over the key columns — never an expansion over `2ⁿ` basis
+/// states. Build one with [`ProductBasis::uniform`] or
+/// [`ProductBasis::from_axes`].
+///
+/// # Semantics
+///
+/// For a term `P` with key `(x, z)`, `⟨ψ|P|ψ⟩ = Π_q ⟨P_q⟩`, where
+/// `⟨P_q⟩ = 1` if `P_q = I`, `s_q` if `P_q = A_q`, and `0` otherwise (two
+/// distinct single-qubit Paulis anticommute, so every off-axis component of
+/// the Bloch vector vanishes). Written bit-parallel per word, with
+/// `sup = x | z` the term's support mask, the term contributes iff
+///
+/// ```text
+/// x == sup & ax_x   &&   z == sup & ax_z
+/// ```
+///
+/// — every non-identity site's Pauli equals that qubit's axis **exactly**.
+/// This is an equality on both halves of the key, not a subset test: an `X`
+/// term on a `Y`-axis qubit has `(x, z) = (1, 0)` against
+/// `(ax_x, ax_z) = (1, 1)`, so the `z` half fails and the term contributes
+/// `0` — which is right, since `⟨+i|X|+i⟩ = 0`. When it does contribute, its
+/// sign is `(-1)^popcount(sup & neg)`: identity sites carry no sign, because
+/// they are not in `sup`.
+///
+/// # Examples
+///
+/// `⟨01|Z⊗Z|01⟩ = ⟨0|Z|0⟩·⟨1|Z|1⟩ = (+1)(-1) = -1`.
+///
+/// ```
+/// use paulistrings::{BuildAccumulator, PauliAxis, PauliString, Phase, ProductBasis};
+/// use num_complex::Complex64;
+///
+/// let mut acc = BuildAccumulator::<1>::new(2);
+/// let mut zz = PauliString::<1>::z(0);
+/// zz.mul_assign(&PauliString::<1>::z(1));
+/// acc.add_term(zz, Phase::ONE, Complex64::new(1.0, 0.0));
+/// let sum = acc.finalize();
+///
+/// // Qubit 0 in |0⟩, qubit 1 in |1⟩ — both Z-axis, the second one negative.
+/// let basis = ProductBasis::<1>::from_axes([(PauliAxis::Z, false), (PauliAxis::Z, true)]);
+/// assert!((sum.expectation_product_basis(&basis).re + 1.0).abs() < 1e-12);
+/// ```
+///
+/// [`PauliString`]: crate::PauliString
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductBasis<const W: usize> {
+    /// `x`-bit of each qubit's axis Pauli.
+    pub ax_x: [u64; W],
+    /// `z`-bit of each qubit's axis Pauli.
+    pub ax_z: [u64; W],
+    /// Sign bit per qubit: `1` selects the `-1` eigenstate.
+    pub neg: [u64; W],
+}
+
+impl<const W: usize> ProductBasis<W> {
+    /// The uniform basis of a [`ProductState`]: the same axis, sign `+1`, on
+    /// every qubit.
+    ///
+    /// The axis masks are all-ones rather than trimmed to a qubit count, which
+    /// is safe at any width because a stored key never has a bit set beyond
+    /// `num_qubits` — those mask bits are simply never read. The match
+    /// condition then reduces to `x == 0` for `ZPlus`, `z == 0` for `XPlus`
+    /// and `x == z` for `YPlus`.
+    pub fn uniform(state: ProductState) -> Self {
+        let axis = match state {
+            ProductState::XPlus => PauliAxis::X,
+            ProductState::YPlus => PauliAxis::Y,
+            ProductState::ZPlus => PauliAxis::Z,
+        };
+        let (bx, bz) = axis.bits();
+        let all = |b: bool| if b { [!0u64; W] } else { [0u64; W] };
+        Self {
+            ax_x: all(bx),
+            ax_z: all(bz),
+            neg: [0u64; W],
+        }
+    }
+
+    /// A basis from per-qubit `(axis, minus)` pairs: item `i` describes qubit
+    /// `i`, and `minus = true` selects that axis's `-1` eigenstate.
+    ///
+    /// Qubits past the end of the iterator keep an all-zero (identity) axis,
+    /// which matches only an identity factor — so supply one pair per qubit
+    /// the sum actually uses.
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than `64 * W` pairs are supplied.
+    pub fn from_axes<I>(axes: I) -> Self
+    where
+        I: IntoIterator<Item = (PauliAxis, bool)>,
+    {
+        let mut out = Self {
+            ax_x: [0u64; W],
+            ax_z: [0u64; W],
+            neg: [0u64; W],
+        };
+        for (q, (axis, minus)) in axes.into_iter().enumerate() {
+            assert!(
+                q < 64 * W,
+                "ProductBasis::from_axes: qubit {q} exceeds the {W}-word width",
+            );
+            let word = q / 64;
+            let bit = 1u64 << (q % 64);
+            let (bx, bz) = axis.bits();
+            if bx {
+                out.ax_x[word] |= bit;
+            }
+            if bz {
+                out.ax_z[word] |= bit;
+            }
+            if minus {
+                out.neg[word] |= bit;
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]

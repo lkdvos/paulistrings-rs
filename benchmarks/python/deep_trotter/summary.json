@@ -1,0 +1,964 @@
+{
+  "benchmark": "C",
+  "n_qubits": 127,
+  "observable": "z62",
+  "theta_zz": -1.5707963267948966,
+  "state": "z+",
+  "direction": "heisenberg",
+  "step_points": [
+    5,
+    9,
+    15,
+    20
+  ],
+  "theta_points": [
+    [
+      "7pi/32",
+      0.6872233929727672
+    ],
+    [
+      "5pi/16",
+      0.9817477042468103
+    ]
+  ],
+  "plan_coeff_grid": [
+    6.103515625e-05,
+    1.52587890625e-05,
+    3.814697265625e-06
+  ],
+  "coeff_grid": [
+    0.00390625,
+    0.0009765625,
+    0.000244140625,
+    6.103515625e-05,
+    1.52587890625e-05,
+    3.814697265625e-06
+  ],
+  "coeff_grid_labels": [
+    "2^-8",
+    "2^-10",
+    "2^-12",
+    "2^-14",
+    "2^-16",
+    "2^-18"
+  ],
+  "coeff_grid_cuts": {
+    "7pi/32@9steps": 6.103515625e-05,
+    "7pi/32@15steps": 6.103515625e-05,
+    "7pi/32@20steps": 6.103515625e-05,
+    "5pi/16@9steps": 6.103515625e-05,
+    "5pi/16@15steps": 6.103515625e-05,
+    "5pi/16@20steps": 6.103515625e-05
+  },
+  "accuracy_epsilon": 0.01,
+  "term_count_envelope": [
+    1200000,
+    9300000
+  ],
+  "self_convergence_tol": 0.001,
+  "self_convergence_extra_powers": 2,
+  "self_convergence_criterion": "bench_b_theta_sweep._plateau_is_real, imported verbatim: two successive |\u0394\u27e8O\u27e9| below tol=0.001 AND (saturated term count OR both differences strictly nonzero); a zero-term sum is rejected outright",
+  "reference_threads": 16,
+  "cone_sizes": {
+    "5": 19,
+    "9": 65,
+    "10": 81,
+    "15": 127,
+    "20": 127
+  },
+  "exact_reference_steps": [
+    5
+  ],
+  "self_convergence_validation": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "exact_value": 0.6555630507494944,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.655563050749491,
+      "estimated_uncertainty": 3.7148114763296824e-05,
+      "true_error": 3.4416913763379853e-15,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "exact_value": 0.2384771180185389,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.2384771180185387,
+      "estimated_uncertainty": 0.0,
+      "true_error": 2.220446049250313e-16,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0
+    }
+  ],
+  "julia_memory_headroom": 0.5,
+  "julia_memory_model_prior": {
+    "base_gib": 4.0,
+    "slope_bytes_per_term": 24000.0,
+    "provenance": "base measured on a 1925-term task on this host; slope is Benchmark B's 67.6 GiB / 2.85e6 terms, the pessimistic prior"
+  },
+  "julia_one_ulp_mitigation": "this engine drops |c| <= eps, PauliPropagation.jl drops |c| < eps (benchmarks/julia/README.md \u00a7P3). Rust runs use the dyadic verbatim; jl runs get math.nextafter(eps, inf), which makes jl's rule exactly this engine's. Both numbers are recorded per parity case.",
+  "kim2023_provenance": {
+    "source": "Y. Kim, A. Eddins, S. Anand, K. X. Wei, E. van den Berg, S. Rosenblatt, H. Nayfeh, Y. Wu, M. Zaletel, K. Temme, A. Kandala, \"Evidence for the utility of quantum computing before fault tolerance\", Nature 618, 500-505 (2023)",
+    "doi": "10.1038/s41586-023-06096-3",
+    "url": "https://escholarship.org/content/qt6bf3w13h/qt6bf3w13h.pdf",
+    "supplementary_url": "https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-023-06096-3/MediaObjects/41586_2023_6096_MOESM1_ESM.pdf",
+    "checked": "The published-version PDF (UC eScholarship mirror of the Nature article; nature.com itself requires cookie auth and refuses automated fetch) and the Supplementary Information PDF were both fetched and text-extracted. The operator supports are printed as the Fig. 3 / Fig. 4 panel titles, e.g. Fig. 3b's title is the literal string \"<X13,29,31 Y9,30 Z8,12,17,28,32>\"; the per-observable `source_detail` below quotes the panel title it was read from. The main text and PubMed Central copy (https://pmc.ncbi.nlm.nih.gov/articles/PMC10266970/) were cross-read for the accompanying definitions and Clifford eigenvalues.",
+    "corroborating_sources": [
+      "T. Begusic, J. Gray, G. K.-L. Chan, Sci. Adv. (arXiv:2308.05077), Fig. 3 caption, which expands all four panel labels verbatim and so disambiguates the two distinct weight-17 operators",
+      "T. Begusic, G. K.-L. Chan, arXiv:2306.16372, Fig. 1 panel titles",
+      "J. Tindall, M. Fishman, E. M. Stoudenmire, D. Sels, PRX Quantum 5, 010308 (2024) (arXiv:2306.14887), Eq. (4), which also states the Z_13 stabilizer origin",
+      "Y. Liao, D. Wang, Z. Zhou, X. Zhang, Z.-Y. Xiang, arXiv:2308.03082"
+    ],
+    "retrieved": "2026-08-31",
+    "qubit_indexing": "IBM Eagle device numbering 0..126. The experiment ran on ibm_kyiv; this repo's lattice comes from the ibm_sherbrooke (FakeSherbrooke) coupling map. No fetched source asserts the two index maps are identical, but the `verification` note below closes that gap computationally: the published supports are reproduced exactly on the Sherbrooke map, including the weight-17 operator whose 5-step causal cone covers 68 qubits.",
+    "verification": "Every entry with a `stabilizer_origin` is reproduced by this repo's own engine, not merely transcribed: propagating the seed observable forward through `circuits.heavy_hex_kicked_ising(127, trotter_steps, theta_h=pi/2, order='x-then-zz')` yields a single Pauli string whose support and sign equal the `support` and `clifford_eigenvalue` recorded here. This is checked by `test_published_supports_are_reproduced_by_the_stabilizer_relation` in `python/paulistrings/tests/test_examples_circuits.py`. It simultaneously validates the support transcription, the heavy-hex edge list, the Trotter layer order, and the ibm_kyiv/ibm_sherbrooke index correspondence."
+  },
+  "published_cross_check": {
+    "status": "unavailable",
+    "detail": "no provenance-tagged reference file is checked in. See `PUBLISHED_ANCHOR` for the located upstream file, its column-to-observable mapping, the conventions cross-check that was possible without it, and why it was not retrieved byte-exactly here. References in this run are exact (5 steps, causal cone) or self-converged (deeper), per plan D5.",
+    "anchor": {
+      "paper": "T. Begu\u0161i\u0107, J. Gray, G. K.-L. Chan, 'Fast and converged classical simulations of evidence for the utility of quantum computing before fault tolerance', arXiv:2308.05077",
+      "data_url": "https://raw.githubusercontent.com/tbegusic/arxiv-2308.05077-data/main/exact.csv",
+      "doi": "10.5281/zenodo.10223349",
+      "header_row": "theta_h,4a,4b,4c,4d,5a",
+      "theta_grid": "k*pi/32, k = 0..16",
+      "columns": {
+        "4a": "magnetization M_Z, 5 Trotter steps",
+        "4b": "weight-10 operator, 5 Trotter steps",
+        "4c": "weight-17 operator, 5 Trotter steps",
+        "4d": "weight-17 modified, 5 steps + one extra single-qubit layer",
+        "5a": "<Z_62>, 9 Trotter steps  <-- this benchmark's 9-step rung",
+        "5b": "ABSENT from exact.csv (<Z_62> at 20 steps has no exact benchmark)"
+      },
+      "checked_in": false,
+      "why_not_checked_in": "only a summarizing fetch was available in this environment (curl/wget blocked); a reference file transcribed through a summarizer is not a citation, and examples/data/references/README.md requires the header to be written from the fetch",
+      "conventions_cross_check": "a rendering of column 4b matched this repo's independent exact weight-10 references to 12 significant figures at theta_h = pi/8, pi/4, 3pi/8, and the Clifford endpoints of 4b/4c/4d matched the exact 0/+1/-1 integers"
+    }
+  },
+  "published_anchor": {
+    "paper": "T. Begu\u0161i\u0107, J. Gray, G. K.-L. Chan, 'Fast and converged classical simulations of evidence for the utility of quantum computing before fault tolerance', arXiv:2308.05077",
+    "data_url": "https://raw.githubusercontent.com/tbegusic/arxiv-2308.05077-data/main/exact.csv",
+    "doi": "10.5281/zenodo.10223349",
+    "header_row": "theta_h,4a,4b,4c,4d,5a",
+    "theta_grid": "k*pi/32, k = 0..16",
+    "columns": {
+      "4a": "magnetization M_Z, 5 Trotter steps",
+      "4b": "weight-10 operator, 5 Trotter steps",
+      "4c": "weight-17 operator, 5 Trotter steps",
+      "4d": "weight-17 modified, 5 steps + one extra single-qubit layer",
+      "5a": "<Z_62>, 9 Trotter steps  <-- this benchmark's 9-step rung",
+      "5b": "ABSENT from exact.csv (<Z_62> at 20 steps has no exact benchmark)"
+    },
+    "checked_in": false,
+    "why_not_checked_in": "only a summarizing fetch was available in this environment (curl/wget blocked); a reference file transcribed through a summarizer is not a citation, and examples/data/references/README.md requires the header to be written from the fetch",
+    "conventions_cross_check": "a rendering of column 4b matched this repo's independent exact weight-10 references to 12 significant figures at theta_h = pi/8, pi/4, 3pi/8, and the Clifford endpoints of 4b/4c/4d matched the exact 0/+1/-1 integers"
+  },
+  "references": {
+    "7pi/32@5steps": {
+      "reference_value": 0.6555630507494944,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.372442518011667,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      }
+    },
+    "7pi/32@9steps": {
+      "reference_value": 0.62763595262563,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_seconds": 336.43256789504085,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=3.8147e-06 projects to ~2.76e+09 terms (growth 10.6x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.6902829768543903,
+            "final_terms": 882,
+            "peak_terms": 1838,
+            "seconds": 0.1604938559466973,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.7337853310851348,
+            "final_terms": 12765,
+            "peak_terms": 17659,
+            "seconds": 0.1611197650199756,
+            "delta_vs_previous": 0.043502354230744444
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.6740544982910783,
+            "final_terms": 176208,
+            "peak_terms": 196256,
+            "seconds": 0.48121770995203406,
+            "delta_vs_previous": 0.05973083279405644
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.6316235522110016,
+            "final_terms": 2195788,
+            "peak_terms": 2245594,
+            "seconds": 3.601724826032296,
+            "delta_vs_previous": 0.04243094608007669
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.6211709837737257,
+            "final_terms": 24677168,
+            "peak_terms": 24677168,
+            "seconds": 32.943245253991336,
+            "delta_vs_previous": 0.010452568437275933
+          },
+          {
+            "min_abs_coeff": 3.814697265625e-06,
+            "value": 0.62763595262563,
+            "final_terms": 260944832,
+            "peak_terms": 260944832,
+            "seconds": 299.0847664840985,
+            "delta_vs_previous": 0.006464968851904285
+          }
+        ]
+      }
+    },
+    "7pi/32@15steps": {
+      "reference_value": 0.4869808516241403,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_seconds": 148.4958116238704,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1836 s (growth 13.5x), over the remaining 752 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5212311648149739,
+            "final_terms": 961,
+            "peak_terms": 1838,
+            "seconds": 0.2801618849625811,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.48369702634801065,
+            "final_terms": 11571,
+            "peak_terms": 17659,
+            "seconds": 0.3221629789331928,
+            "delta_vs_previous": 0.03753413846696324
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.48123902308239064,
+            "final_terms": 143838,
+            "peak_terms": 196256,
+            "seconds": 1.2343926320318133,
+            "delta_vs_previous": 0.0024580032656200124
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.46578543731799843,
+            "final_terms": 1817494,
+            "peak_terms": 2254084,
+            "seconds": 10.835261443979107,
+            "delta_vs_previous": 0.015453585764392208
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.4869808516241403,
+            "final_terms": 24561988,
+            "peak_terms": 26483579,
+            "seconds": 135.8238326839637,
+            "delta_vs_previous": 0.021195414306141858
+          }
+        ]
+      }
+    },
+    "7pi/32@20steps": {
+      "reference_value": 0.39716540635637343,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_seconds": 297.14311805495527,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~6.16e+08 terms (growth 15.9x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.5209684039281507,
+            "final_terms": 363,
+            "peak_terms": 1838,
+            "seconds": 0.38683960295747966,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.3958875797712089,
+            "final_terms": 8046,
+            "peak_terms": 17659,
+            "seconds": 0.42349385702982545,
+            "delta_vs_previous": 0.12508082415694177
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.2464150205236891,
+            "final_terms": 138220,
+            "peak_terms": 204728,
+            "seconds": 1.630083692027256,
+            "delta_vs_previous": 0.14947255924751982
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.253480590101201,
+            "final_terms": 2441936,
+            "peak_terms": 3108582,
+            "seconds": 18.617617215961218,
+            "delta_vs_previous": 0.007065569577511893
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.39716540635637343,
+            "final_terms": 38791218,
+            "peak_terms": 45418769,
+            "seconds": 276.0850836869795,
+            "delta_vs_previous": 0.14368481625517243
+          }
+        ]
+      }
+    },
+    "5pi/16@5steps": {
+      "reference_value": 0.2384771180185389,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 3.339366731001064,
+      "reference_evidence": {
+        "cone_qubits": 19,
+        "cone_gates": 83,
+        "agreement": "Aer statevector and untruncated Pauli propagation over the same cone, required to agree by oracles.light_cone_exact(method='both')"
+      }
+    },
+    "5pi/16@9steps": {
+      "reference_value": 0.12568948158080026,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_seconds": 411.3532085310435,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~1.32e+09 terms (growth 20.3x), over max_terms=400000000",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.10186234826665663,
+            "final_terms": 367,
+            "peak_terms": 6311,
+            "seconds": 0.18531599000561982,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.10841628278416796,
+            "final_terms": 6356,
+            "peak_terms": 79029,
+            "seconds": 0.28488482104148716,
+            "delta_vs_previous": 0.006553934517511323
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.11939302303059941,
+            "final_terms": 155416,
+            "peak_terms": 1071093,
+            "seconds": 1.7696904480690137,
+            "delta_vs_previous": 0.010976740246431457
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.12277561495271366,
+            "final_terms": 3196258,
+            "peak_terms": 14396463,
+            "seconds": 23.375527341966517,
+            "delta_vs_previous": 0.0033825919221142503
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.12568948158080026,
+            "final_terms": 64915391,
+            "peak_terms": 204946663,
+            "seconds": 385.73778992996085,
+            "delta_vs_previous": 0.0029138666280865977
+          }
+        ]
+      }
+    },
+    "5pi/16@15steps": {
+      "reference_value": 0.04091859649106871,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_seconds": 578.2779464439955,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1.52588e-05 projects to ~7041 s (growth 12.9x), over the remaining 322 s of max_seconds=900",
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.03563899381400101,
+            "final_terms": 54,
+            "peak_terms": 6311,
+            "seconds": 0.23867982800584286,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.0373559259539577,
+            "final_terms": 979,
+            "peak_terms": 79029,
+            "seconds": 0.3509724059840664,
+            "delta_vs_previous": 0.0017169321399566895
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.03925268297239186,
+            "final_terms": 10694,
+            "peak_terms": 1071093,
+            "seconds": 2.6053972740191966,
+            "delta_vs_previous": 0.001896757018434156
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.04133398092636959,
+            "final_terms": 239480,
+            "peak_terms": 14396463,
+            "seconds": 31.0669170540059,
+            "delta_vs_previous": 0.002081297953977733
+          },
+          {
+            "min_abs_coeff": 1.52587890625e-05,
+            "value": 0.04091859649106871,
+            "final_terms": 3099331,
+            "peak_terms": 204946663,
+            "seconds": 544.0159798819805,
+            "delta_vs_previous": 0.0004153844353008834
+          }
+        ]
+      }
+    },
+    "5pi/16@20steps": {
+      "reference_value": 0.01613137438596803,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_seconds": 36.40649678884074,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=0.001 while tightening min_abs_coeff",
+        "converged": true,
+        "stopped_early": null,
+        "tol": 0.001,
+        "points": [
+          {
+            "min_abs_coeff": 0.00390625,
+            "value": 0.01194127658346102,
+            "final_terms": 11,
+            "peak_terms": 6311,
+            "seconds": 0.24193070898763835,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0009765625,
+            "value": 0.01472967176453593,
+            "final_terms": 119,
+            "peak_terms": 79029,
+            "seconds": 0.37795404193457216,
+            "delta_vs_previous": 0.002788395181074911
+          },
+          {
+            "min_abs_coeff": 0.000244140625,
+            "value": 0.015481385130588122,
+            "final_terms": 2543,
+            "peak_terms": 1071093,
+            "seconds": 2.7858830189798027,
+            "delta_vs_previous": 0.0007517133660521914
+          },
+          {
+            "min_abs_coeff": 6.103515625e-05,
+            "value": 0.01613137438596803,
+            "final_terms": 34698,
+            "peak_terms": 14396463,
+            "seconds": 33.00072901893873,
+            "delta_vs_previous": 0.0006499892553799066
+          }
+        ]
+      }
+    }
+  },
+  "time_to_accuracy": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": true,
+      "reference_value": 0.6555630507494944,
+      "reference_uncertainty": null,
+      "reference_converged": null,
+      "first_truncation": {
+        "min_abs_coeff": 0.000244140625
+      },
+      "first_time_s": 0.10870584601070732,
+      "first_terms": 59336,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.000244140625
+      },
+      "cheapest_time_s": 0.10870584601070732,
+      "cheapest_terms": 59336,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05,
+        1.52587890625e-05,
+        3.814697265625e-06
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 9,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": false,
+      "reference_value": 0.62763595262563,
+      "reference_uncertainty": 0.010452568437275933,
+      "reference_converged": false,
+      "first_truncation": {
+        "min_abs_coeff": 6.103515625e-05
+      },
+      "first_time_s": 37.29181709198747,
+      "first_terms": 2195788,
+      "cheapest_truncation": {
+        "min_abs_coeff": 6.103515625e-05
+      },
+      "cheapest_time_s": 37.29181709198747,
+      "cheapest_terms": 2195788,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 15,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": false,
+      "reference_value": 0.4869808516241403,
+      "reference_uncertainty": 0.021195414306141858,
+      "reference_converged": false,
+      "first_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "first_time_s": 0.8311936509562656,
+      "first_terms": 11571,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "cheapest_time_s": 0.8311936509562656,
+      "cheapest_terms": 11571,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 20,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": false,
+      "reference_value": 0.39716540635637343,
+      "reference_uncertainty": 0.14368481625517243,
+      "reference_converged": false,
+      "first_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "first_time_s": 1.2337924239691347,
+      "first_terms": 8046,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "cheapest_time_s": 1.2337924239691347,
+      "cheapest_terms": 8046,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": true,
+      "reference_value": 0.2384771180185389,
+      "reference_uncertainty": null,
+      "reference_converged": null,
+      "first_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "first_time_s": 0.14093956106808037,
+      "first_terms": 72352,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.0009765625
+      },
+      "cheapest_time_s": 0.14093956106808037,
+      "cheapest_terms": 72352,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05,
+        1.52587890625e-05,
+        3.814697265625e-06
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 9,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": false,
+      "reference_value": 0.12568948158080026,
+      "reference_uncertainty": 0.0033825919221142503,
+      "reference_converged": false,
+      "first_truncation": {
+        "min_abs_coeff": 0.000244140625
+      },
+      "first_time_s": 17.55231753201224,
+      "first_terms": 155416,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.000244140625
+      },
+      "cheapest_time_s": 17.55231753201224,
+      "cheapest_terms": 155416,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 15,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": false,
+      "reference_value": 0.04091859649106871,
+      "reference_uncertainty": 0.002081297953977733,
+      "reference_converged": false,
+      "first_truncation": {
+        "min_abs_coeff": 0.00390625
+      },
+      "first_time_s": 0.12706258799880743,
+      "first_terms": 54,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.00390625
+      },
+      "cheapest_time_s": 0.12706258799880743,
+      "cheapest_terms": 54,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 20,
+      "epsilon": 0.01,
+      "achieved": true,
+      "claimable": true,
+      "reference_value": 0.01613137438596803,
+      "reference_uncertainty": 0.0007517133660521914,
+      "reference_converged": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.00390625
+      },
+      "first_time_s": 0.12654939899221063,
+      "first_terms": 11,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.00390625
+      },
+      "cheapest_time_s": 0.12654939899221063,
+      "cheapest_terms": 11,
+      "coeff_grid_used": [
+        0.00390625,
+        0.0009765625,
+        0.000244140625,
+        6.103515625e-05
+      ],
+      "coeff_grid_cut": true
+    }
+  ],
+  "envelope_checks": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 329534,
+      "peak_terms": 329534,
+      "scored_terms": 329534,
+      "inside_envelope": false,
+      "needs_investigation": false,
+      "verdict": "below the envelope floor 1.2e+06, expected at 5 of 20 steps (a shallower circuit reaches fewer strings; the handoff's envelope is a headline-depth statement)"
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "min_abs_coeff": 1.52587890625e-05,
+      "min_abs_coeff_label": "2^-16",
+      "final_terms": 882375,
+      "peak_terms": 882375,
+      "scored_terms": 882375,
+      "inside_envelope": false,
+      "needs_investigation": false,
+      "verdict": "below the envelope floor 1.2e+06, expected at 5 of 20 steps (a shallower circuit reaches fewer strings; the handoff's envelope is a headline-depth statement)"
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 5,
+      "min_abs_coeff": 3.814697265625e-06,
+      "min_abs_coeff_label": "2^-18",
+      "final_terms": 1865949,
+      "peak_terms": 1865949,
+      "scored_terms": 1865949,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 9,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 2195788,
+      "peak_terms": 2245594,
+      "scored_terms": 2245594,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 15,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 1817494,
+      "peak_terms": 2254084,
+      "scored_terms": 2254084,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 20,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 2441936,
+      "peak_terms": 3108582,
+      "scored_terms": 3108582,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 1544083,
+      "peak_terms": 1544083,
+      "scored_terms": 1544083,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "min_abs_coeff": 1.52587890625e-05,
+      "min_abs_coeff_label": "2^-16",
+      "final_terms": 2121774,
+      "peak_terms": 2121774,
+      "scored_terms": 2121774,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 5,
+      "min_abs_coeff": 3.814697265625e-06,
+      "min_abs_coeff_label": "2^-18",
+      "final_terms": 2146424,
+      "peak_terms": 2146424,
+      "scored_terms": 2146424,
+      "inside_envelope": true,
+      "needs_investigation": false,
+      "verdict": "inside [1.2e+06, 9.3e+06]"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 9,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 3196258,
+      "peak_terms": 14396463,
+      "scored_terms": 14396463,
+      "inside_envelope": false,
+      "needs_investigation": false,
+      "verdict": "above the envelope ceiling 9.3e+06 (expected: a tighter cutoff keeps more; a cost fact, not a semantics fault)"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 15,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 239480,
+      "peak_terms": 14396463,
+      "scored_terms": 14396463,
+      "inside_envelope": false,
+      "needs_investigation": false,
+      "verdict": "above the envelope ceiling 9.3e+06 (expected: a tighter cutoff keeps more; a cost fact, not a semantics fault)"
+    },
+    {
+      "theta_h_label": "5pi/16",
+      "trotter_steps": 20,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "final_terms": 34698,
+      "peak_terms": 14396463,
+      "scored_terms": 14396463,
+      "inside_envelope": false,
+      "needs_investigation": false,
+      "verdict": "above the envelope ceiling 9.3e+06 (expected: a tighter cutoff keeps more; a cost fact, not a semantics fault)"
+    }
+  ],
+  "julia_parity": [
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 20,
+      "min_abs_coeff": 0.0009765625,
+      "min_abs_coeff_label": "2^-10",
+      "julia_min_abs_coeff": 0.0009765625000000002,
+      "one_ulp_perturbation": 2.168404344971009e-19,
+      "ran": true,
+      "ok": true,
+      "detail": "5420/5420 per-layer term counts identical; final 8046 terms on both; |\u0394\u27e8O\u27e9| = 5.551e-17",
+      "layers_compared": 5420,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 8046,
+      "julia_final_terms": 8046,
+      "rust_peak_terms": 17659,
+      "julia_peak_terms": 17659,
+      "rust_propagation_time_s": 1.211371180950664,
+      "julia_propagation_time_s": 1.728660783,
+      "julia_peak_rss_gib": 0.6570854187011719,
+      "projected_julia_gib": 4.394709408283234,
+      "mem_available_gib": 237.9827117919922,
+      "bytes_per_term": 24000.0
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 20,
+      "min_abs_coeff": 0.000244140625,
+      "min_abs_coeff_label": "2^-12",
+      "julia_min_abs_coeff": 0.00024414062500000005,
+      "one_ulp_perturbation": 5.421010862427522e-20,
+      "ran": true,
+      "ok": true,
+      "detail": "5420/5420 per-layer term counts identical; final 138220 terms on both; |\u0394\u27e8O\u27e9| = 2.776e-17",
+      "layers_compared": 5420,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 138220,
+      "julia_final_terms": 138220,
+      "rust_peak_terms": 204728,
+      "julia_peak_terms": 204728,
+      "rust_propagation_time_s": 14.73500745894853,
+      "julia_propagation_time_s": 33.160368095,
+      "julia_peak_rss_gib": 0.7889480590820312,
+      "projected_julia_gib": 8.576027393341064,
+      "mem_available_gib": 237.9832534790039,
+      "bytes_per_term": 24000.0
+    },
+    {
+      "theta_h_label": "7pi/32",
+      "trotter_steps": 20,
+      "min_abs_coeff": 6.103515625e-05,
+      "min_abs_coeff_label": "2^-14",
+      "julia_min_abs_coeff": 6.103515625000001e-05,
+      "one_ulp_perturbation": 1.3552527156068805e-20,
+      "ran": true,
+      "ok": true,
+      "detail": "5420/5420 per-layer term counts identical; final 2441936 terms on both; |\u0394\u27e8O\u27e9| = 5.551e-17",
+      "layers_compared": 5420,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 2441936,
+      "julia_final_terms": 2441936,
+      "rust_peak_terms": 3108582,
+      "julia_peak_terms": 3108582,
+      "rust_propagation_time_s": 201.07143800193444,
+      "julia_propagation_time_s": 454.270984793,
+      "julia_peak_rss_gib": 1.9960517883300781,
+      "projected_julia_gib": 2.835839076409969,
+      "mem_available_gib": 238.21599197387695,
+      "bytes_per_term": 756.8674232502445
+    }
+  ],
+  "julia_parity_point": [
+    "7pi/32",
+    20
+  ],
+  "julia_skip_reason": null,
+  "mem_available_gib_at_end": 238.23266983032227,
+  "wall_clock_s": 5143.006523326039,
+  "measured_pilot": "theta_h  steps  cutoff   <Z_62>        final terms   peak terms   wall\n0.7      5      2^-14    +0.639626084      389 804      389 804     1.0 s\n0.7      5      2^-16    +0.638708946    1 011 254    1 011 254     1.2 s\n0.7      5      2^-18    +0.638708946    2 079 048    2 079 048     2.3 s\n0.7      10     2^-14    +0.487348444    2 235 674    2 582 120      64 s\n0.7      20     2^-8     +0.493356018          372        2 012    0.31 s\n0.7      20     2^-10    +0.380652188        7 787       19 336     1.3 s\n0.7      20     2^-12    +0.238520762      133 109      219 016      16 s\n0.7      20     2^-14    +0.228420592    2 399 125    3 237 089     246 s\n0.7      20     2^-14    +0.228420592    2 399 125    3 237 089      22 s  [32 threads]\n0.7      20     2^-16    +0.368476045   38 840 616   47 644 820     404 s  [32 threads]\n1.0      5      2^-14    +0.215511154    1 543 616    1 543 616     1.7 s\n1.0      5      2^-16    +0.215535472    2 072 871    2 072 871     2.3 s\n1.0      5      2^-18    +0.215535472    2 146 412    2 146 412     2.5 s\n1.0      10     2^-14    +0.081905150    1 437 964   15 288 166     256 s\n1.0      20     2^-8     +0.000000000            6        6 625    0.20 s\n1.0      20     2^-10    +0.009333665           84       82 868     1.5 s\n1.0      20     2^-12    +0.010138239        1 570    1 112 920      30 s\n1.0      20     2^-14    +0.010388188       20 140   15 288 166     355 s\n\nAt 5 steps the sum *saturates*: 2^-16 and 2^-18 give the same value to 1e-15,\nwhich is also the exact light-cone answer, so the plan's full grid is affordable\nthere (2.5 s at the tightest point) and is kept.\n\nAt 20 steps it does not. Dyad-to-dyad ratios at theta_h = 0.7, 20 steps: wall\n4x, 12x, 15.5x, 16.4x and peak terms 9.6x, 11x, 15x, 15x per factor of four in\nthe cutoff. So 2^-18 projects to ~6.6e3 s at 32 threads (~7e4 s single-threaded)\nand ~7e8 resident terms (~37 GiB of columns) at that point -- out of the plan's\nwhole time box for a single grid point, never mind eight.\n"
+}

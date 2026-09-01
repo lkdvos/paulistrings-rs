@@ -85,6 +85,11 @@ pub struct LayerScratch<const W: usize> {
     /// counters live in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
+    /// The opt-in per-layer term-count trace, `None` unless
+    /// [`Self::enable_term_trace`] was called. Written only by
+    /// `propagate_with_scratch`'s per-layer epilogue — nothing in this module
+    /// touches it, so it costs the layer nothing.
+    pub(crate) term_trace: Option<TermTrace>,
 }
 
 impl<const W: usize> LayerScratch<W> {
@@ -110,6 +115,75 @@ impl<const W: usize> LayerScratch<W> {
             total.absorb_coset(&std::mem::take(&mut ws.stats));
         }
         total
+    }
+
+    /// Start recording a [`TermTrace`] on every subsequent
+    /// [`propagate_with_scratch`](crate::propagate_with_scratch) call driven
+    /// by this scratch. Idempotent, and it never discards counts already
+    /// recorded.
+    ///
+    /// Unlike `take_stats` this is always compiled: the
+    /// counts come from the `sum.len()` reads the layer loop already performs,
+    /// so recording them is two `usize` pushes per *layer* on the calling
+    /// thread — no clock, no per-term work, nothing inside the coset loop.
+    pub fn enable_term_trace(&mut self) {
+        self.term_trace.get_or_insert_with(TermTrace::default);
+    }
+
+    /// Drain and return the per-layer term counts, or `None` if tracing was
+    /// never enabled (`Some` ⟺ tracing is on).
+    ///
+    /// Draining leaves tracing *enabled* with empty vectors, so a scratch
+    /// reused across calls (a Trotter driver stepping an observable) reports
+    /// each call separately without re-enabling; counts accumulate across
+    /// layers and calls until drained.
+    pub fn take_term_trace(&mut self) -> Option<TermTrace> {
+        self.term_trace.as_mut().map(std::mem::take)
+    }
+}
+
+/// Per-layer resident term counts, recorded by
+/// [`propagate_with_scratch`](crate::propagate_with_scratch) when the
+/// driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace)
+/// set. Both vectors have one entry per layer applied, in application order
+/// (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)).
+///
+/// Always compiled — the `phase-timing` feature gates the *timing* counters
+/// (`PhaseStats`), not these counts.
+///
+/// # What is *not* here
+///
+/// These are the counts of the sum as it rests between layers: `terms_in[k]`
+/// is read before layer `k` starts, `terms_out[k]` after that layer's
+/// `finalize_layer`, i.e. **post-truncation**. The transient in-layer
+/// expansion — the sum after a channel's fanout but before the merge
+/// deduplicates and the policy filters — is deliberately not captured:
+/// observing it would mean instrumenting the coset loop, which is where the
+/// engine's time goes. Peak *memory* is a harness-level measurement
+/// (`/proc/self/status`), not this struct's job.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TermTrace {
+    /// Resident term count before each layer. `terms_in[k + 1]` equals
+    /// `terms_out[k]`, so the whole trace is the sequence
+    /// `terms_in[0], terms_out[0], terms_out[1], …`.
+    pub terms_in: Vec<usize>,
+    /// Resident term count after each layer, i.e. after the truncation
+    /// policy's `finalize_layer`.
+    pub terms_out: Vec<usize>,
+}
+
+impl TermTrace {
+    /// Peak *resident* term count: `max(terms_in[0], terms_out…)` — the
+    /// largest the sum ever was between layers (see the type's "What is not
+    /// here"). `None` for a zero-layer trace, where the resident count never
+    /// changed and only the caller knows it.
+    pub fn peak_terms(&self) -> Option<usize> {
+        self.terms_in
+            .first()
+            .copied()
+            .into_iter()
+            .chain(self.terms_out.iter().copied())
+            .max()
     }
 }
 
@@ -806,6 +880,52 @@ mod tests {
 
     pub(super) struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
+
+    /// The term trace's state machine, independent of any propagation:
+    /// `None` ⟺ off, `enable` is idempotent and non-destructive, `take`
+    /// drains but stays on. What the counts *mean* is pinned by
+    /// `tests/term_trace.rs`, which drives the layer loop that writes them.
+    #[test]
+    fn term_trace_is_opt_in_and_drains_on_take() {
+        let mut scratch = LayerScratch::<1>::new();
+        assert!(scratch.take_term_trace().is_none(), "off by default");
+
+        scratch.enable_term_trace();
+        scratch.term_trace.as_mut().unwrap().terms_in.push(7);
+        scratch.enable_term_trace(); // idempotent: must not clear the 7
+        assert_eq!(
+            scratch.take_term_trace(),
+            Some(TermTrace {
+                terms_in: vec![7],
+                terms_out: vec![],
+            })
+        );
+        assert_eq!(scratch.take_term_trace(), Some(TermTrace::default()));
+    }
+
+    /// `peak_terms` is the between-layer resident maximum, which lives in
+    /// `terms_out` except for a first layer that only ever shrinks.
+    #[test]
+    fn peak_terms_spans_the_first_input_and_every_output() {
+        assert_eq!(TermTrace::default().peak_terms(), None);
+        assert_eq!(
+            TermTrace {
+                terms_in: vec![9, 4],
+                terms_out: vec![4, 6],
+            }
+            .peak_terms(),
+            Some(9),
+            "a shrinking first layer keeps the input as the peak"
+        );
+        assert_eq!(
+            TermTrace {
+                terms_in: vec![1, 5],
+                terms_out: vec![5, 3],
+            }
+            .peak_terms(),
+            Some(5)
+        );
+    }
 
     /// Run one layer through the bucketed engine, converting in and out.
     pub(super) fn bucketed_layer<const W: usize, C, T>(
@@ -1611,10 +1731,12 @@ mod tests {
         ("depolarizing", false, 5, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 2, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 5, 0x0c2d_0f88_a7cb_3051),
-        ("amp_damping", false, 2, 0xd3cf_d844_cd3d_2be8),
-        ("amp_damping", false, 5, 0xd3cf_d844_cd3d_2be8),
-        ("amp_damping", true, 2, 0x8b0f_59fb_c452_c0bf),
-        ("amp_damping", true, 5, 0x8b0f_59fb_c452_c0bf),
+        // Re-pinned: `AmplitudeDamping`'s `apply`/`apply_adjoint` were swapped,
+        // so these two rows exchanged values (nothing else moved).
+        ("amp_damping", false, 2, 0x8b0f_59fb_c452_c0bf),
+        ("amp_damping", false, 5, 0x8b0f_59fb_c452_c0bf),
+        ("amp_damping", true, 2, 0xd3cf_d844_cd3d_2be8),
+        ("amp_damping", true, 5, 0xd3cf_d844_cd3d_2be8),
     ];
 
     /// Exact-bit characterization of one bucketed layer, across every

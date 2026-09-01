@@ -28,10 +28,14 @@ pip install --upgrade pip
 # Rust build with the flags we want.
 pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'pytest-benchmark>=4' ruff 'numpy>=1.24'
 
-# Optional: cross-library benchmark deps. Best-effort — failures here shouldn't
-# block the rest of the setup.
-if ! pip install qiskit openfermion stim; then
-  echo "warning: optional benchmark deps (qiskit/openfermion/stim) failed to install — skipping" >&2
+# Optional: cross-library benchmark deps, plus what the examples suite's oracles
+# and report plots need (`[examples]` in pyproject.toml — qiskit-aer runs the
+# dense reference in `examples/common/oracles.py`). Best-effort: failures here
+# shouldn't block the rest of the setup, and every test that touches these
+# importorskips them. But leaving qiskit-aer out means a fresh venv silently
+# *skips* every statevector cross-check rather than failing, so it belongs here.
+if ! pip install qiskit qiskit-aer openfermion stim matplotlib; then
+  echo "warning: optional deps (qiskit/qiskit-aer/openfermion/stim/matplotlib) failed to install — skipping" >&2
 fi
 
 # Build the Rust extension into the venv (release mode for perf parity).

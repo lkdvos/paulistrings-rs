@@ -49,7 +49,7 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(circuit)  # Heisenberg picture by default
+evolved = observable.propagate(circuit, direction="heisenberg")
 print(evolved.expectation("x+").real)
 ```
 
@@ -83,6 +83,11 @@ truncation finishes in seconds to minutes.
 
 Full walkthrough: [`crates/paulistrings/docs/examples/ising_2d_quench.md`](crates/paulistrings/docs/examples/ising_2d_quench.md).
 
+A larger Python examples & benchmarks suite — a 127-qubit heavy-hex kicked-Ising cross-check
+against `PauliPropagation.jl` and `stim`, operator-scrambling/OTOC diagnostics, noisy utility
+verification, and operator-backpropagation depth reduction — lives under
+[`examples/`](examples/); start at [`examples/README.md`](examples/README.md).
+
 ## Documentation
 
 - API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings)
@@ -102,11 +107,17 @@ crates/
   membench/             # memory-bandwidth roofline probe
 python/
   paulistrings/         # Python package; re-exports the extension module
+examples/
+  common/               # circuit builders, oracles, timing harness, report plots
+  data/                 # checked-in, provenance-tagged inputs (127q coupling map, published observables)
+  <slug>/               # one Part-B showcase per directory (scrambling, noisy verification,
+                        #   operator backpropagation, resource probes) — see examples/README.md
 benchmarks/
-  python/               # pytest-benchmark suites + cross-library comparisons
+  python/               # pytest-benchmark suites + cross-library comparisons (Part A benchmarks)
+  julia/                # subprocess-driven PauliPropagation.jl baseline
   results/              # raw benchmark output (gitignored)
 research/
-  ideas/  plans/  notes/   # negative-result notes, hardware fact sheets, and design notes
+  plans/  notes/        # execution plans, negative-result notes, hardware fact sheets, design notes
 ```
 
 ## Development

@@ -1,0 +1,123 @@
+{
+  "benchmark": "D",
+  "mode": "julia",
+  "note": "cutoffs are non-dyadic and strictly positive; see benchmarks/julia/README.md \u00a7P3 and \u00a7P9",
+  "parity_gate": "per-layer term counts must match index-by-index before any timing is recorded (plan \u00a77 rule 2)",
+  "rows": [
+    {
+      "n": 40,
+      "Jz": 0.0,
+      "steps": 6,
+      "min_abs_coeff": 1e-06,
+      "channels": 702,
+      "layers_compared": 702,
+      "final_terms_paulistrings": 257,
+      "final_terms_julia": 257,
+      "expectation_paulistrings": 0.12933493156817066,
+      "expectation_julia": 0.12933493156817058,
+      "expectation_abs_delta": 8.326672684688674e-17,
+      "parity_ok": true,
+      "parity_problems": [],
+      "julia_versions": {
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "paulistrings_propagation_s": 0.007625647936947644,
+      "paulistrings_total_s": 0.007629829924553633,
+      "julia_wall_warm_s": 0.001829338,
+      "julia_wall_cold_s": 1.509081907,
+      "speedup_vs_julia_warm": 0.23989279535664457
+    },
+    {
+      "n": 20,
+      "Jz": 0.5,
+      "steps": 3,
+      "min_abs_coeff": 1e-05,
+      "channels": 171,
+      "layers_compared": 171,
+      "final_terms_paulistrings": 3272,
+      "final_terms_julia": 3272,
+      "expectation_paulistrings": -0.43280675874045965,
+      "expectation_julia": -0.4328067587404598,
+      "expectation_abs_delta": 1.6653345369377348e-16,
+      "parity_ok": true,
+      "parity_problems": [],
+      "julia_versions": {
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "paulistrings_propagation_s": 0.014126280904747546,
+      "paulistrings_total_s": 0.01416918879840523,
+      "julia_wall_warm_s": 0.004436817,
+      "julia_wall_cold_s": 1.436501028,
+      "speedup_vs_julia_warm": 0.31408245594980905
+    },
+    {
+      "n": 40,
+      "Jz": 0.5,
+      "steps": 4,
+      "min_abs_coeff": 1e-06,
+      "channels": 468,
+      "layers_compared": 468,
+      "final_terms_paulistrings": 29745,
+      "final_terms_julia": 29745,
+      "expectation_paulistrings": -0.1821151759898443,
+      "expectation_julia": -0.18211517598984425,
+      "expectation_abs_delta": 5.551115123125783e-17,
+      "parity_ok": true,
+      "parity_problems": [],
+      "julia_versions": {
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "paulistrings_propagation_s": 0.07350263500120491,
+      "paulistrings_total_s": 0.073563938960433,
+      "julia_wall_warm_s": 0.106847181,
+      "julia_wall_cold_s": 1.549183644,
+      "speedup_vs_julia_warm": 1.4536510289494857
+    },
+    {
+      "n": 40,
+      "Jz": 0.5,
+      "steps": 6,
+      "min_abs_coeff": 1e-06,
+      "channels": 702,
+      "layers_compared": 702,
+      "final_terms_paulistrings": 206035,
+      "final_terms_julia": 206035,
+      "expectation_paulistrings": 0.024799187125965714,
+      "expectation_julia": 0.02479918712596572,
+      "expectation_abs_delta": 6.938893903907228e-18,
+      "parity_ok": true,
+      "parity_problems": [],
+      "julia_versions": {
+        "julia": "1.12.6",
+        "PauliPropagation": "0.8.2",
+        "JSON3": "1.14.3"
+      },
+      "paulistrings_propagation_s": 0.615825327928178,
+      "paulistrings_total_s": 0.6161221918882802,
+      "julia_wall_warm_s": 0.97938717,
+      "julia_wall_cold_s": 2.416894443,
+      "speedup_vs_julia_warm": 1.5903651986756595
+    }
+  ],
+  "provenance": {
+    "commit": "94077fa07753396912f65ad895584391dc4ac1f2",
+    "dirty": false,
+    "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+    "python_version": "3.11.11",
+    "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "library_versions": {
+      "paulistrings": "0.1.0"
+    },
+    "seeds": {},
+    "thread_count": 1,
+    "hostname": "ccqlin038",
+    "date": "2026-08-31",
+    "import_thread_count": 32
+  }
+}

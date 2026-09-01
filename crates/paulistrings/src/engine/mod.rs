@@ -118,6 +118,12 @@ where
 /// `LayerScratch::take_stats` (the method — and so a resolvable doc link to
 /// it — exists only when that feature is enabled).
 ///
+/// It is also the only entry point that records a
+/// [`TermTrace`](bucketed::TermTrace) — the always-compiled, opt-in per-layer
+/// term counts. Call [`LayerScratch::enable_term_trace`] before propagating
+/// and [`LayerScratch::take_term_trace`] afterwards; [`propagate`], which owns
+/// its scratch, never enables it.
+///
 /// # Progress logging
 ///
 /// This is where the events described under [`propagate`] are emitted: target
@@ -154,6 +160,11 @@ where
         target: LOG_TARGET,
         "propagate: {terms_in} terms through {n} channels ({direction:?})",
     );
+
+    // Hoisted out of the layer loop: nothing inside it can enable or disable
+    // the trace, so the per-layer test is on a register rather than a load
+    // through `scratch`.
+    let tracing = scratch.term_trace.is_some();
 
     for k in 0..n {
         let idx = match direction {
@@ -216,6 +227,17 @@ where
             st.lap(&mut scratch.stats.finalize_ns);
             scratch.stats.terms_out += sum.len() as u64;
         }
+        // Opt-in term trace (`LayerScratch::enable_term_trace`), both counts
+        // in one call: `terms_before` from the read above, `sum.len()`
+        // post-truncation, so the pair says what the layer actually left
+        // resident. Placed last so it is outside every measured phase, and
+        // behind a hoisted flag + a `#[cold]` callee so the untraced layer
+        // body grows by a register test and a not-taken branch — this loop
+        // inlines `apply_layer_bucketed`, whose merge kernels are sensitive
+        // to a few bytes of code motion (CLAUDE.md §Performance discipline).
+        if tracing {
+            record_layer_terms(scratch, terms_before, sum.len());
+        }
 
         if let Some(t0) = layer_t0 {
             log::debug!(
@@ -241,6 +263,29 @@ where
     );
 
     sum
+}
+
+/// Append one layer's `(terms_in, terms_out)` to the scratch's trace.
+///
+/// Deliberately `#[cold]` + `#[inline(never)]`: the layer loop is the caller
+/// that inlines [`apply_layer_bucketed`] and, through it, the merge kernels,
+/// whose measured throughput moves by 6–34% under a few bytes of code motion
+/// (CLAUDE.md §Performance discipline; the first A/B of this feature with the
+/// two `Vec::push`es inline in the loop body measured a direction-consistent
+/// +7% single-thread regression with `merge_ns` +20%). Keeping the pushes
+/// out-of-line and marked cold puts the whole trace off the layer's code
+/// path; the tracing caller pays a call, which is nothing next to a layer.
+#[cold]
+#[inline(never)]
+fn record_layer_terms<const W: usize>(
+    scratch: &mut LayerScratch<W>,
+    terms_in: usize,
+    terms_out: usize,
+) {
+    if let Some(trace) = scratch.term_trace.as_mut() {
+        trace.terms_in.push(terms_in);
+        trace.terms_out.push(terms_out);
+    }
 }
 
 /// Bucket-count floor: enough buckets that Rayon has slack to load-balance.

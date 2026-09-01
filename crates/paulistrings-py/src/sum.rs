@@ -3,14 +3,17 @@
 
 use crate::truncation_spec::{PolicySpec, PyTruncation, SpecPolicy};
 use num_complex::Complex64;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
-use paulistrings::{propagate, Direction, PauliSum as CorePauliSum, ProductState};
+use paulistrings::{
+    propagate, propagate_with_scratch, Direction, LayerScratch, PauliAxis,
+    PauliSum as CorePauliSum, ProductBasis, ProductState, TermTrace,
+};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyComplex, PyDict};
+use pyo3::types::{PyAny, PyComplex, PyDict};
 
 /// Width-dispatch enum. The Python boundary picks the smallest width that
 /// fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
@@ -37,8 +40,18 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.len())
     }
 
-    pub fn expectation(&self, state: ProductState) -> Complex64 {
+    /// Uniform product state: the same `+1` eigenstate on every qubit.
+    pub fn expectation_uniform(&self, state: ProductState) -> Complex64 {
         for_each_width!(self, |s| s.expectation_product_state(state))
+    }
+
+    /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. The
+    /// caller has already checked that there is exactly one entry per qubit,
+    /// so the resulting masks have no bit set past `num_qubits`.
+    pub fn expectation_labels(&self, axes: &[(PauliAxis, bool)]) -> Complex64 {
+        for_each_width!(self, |s| s.expectation_product_basis(
+            &ProductBasis::from_axes(axes.iter().copied())
+        ))
     }
 
     pub fn identity_coefficient(&self) -> Complex64 {
@@ -89,6 +102,42 @@ impl PauliSumImpl {
     /// width. The width must already match `num_qubits` (caller's job).
     pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
         for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
+    }
+
+    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
+    /// of [`Self::xz_flat`] / [`Self::coeffs`]. See `PauliSum::from_arrays`
+    /// for the shape/dtype contract; this just picks the width band for
+    /// `num_qubits` and delegates.
+    pub fn from_arrays(
+        num_qubits: usize,
+        x: &PyReadonlyArray2<'_, u64>,
+        z: &PyReadonlyArray2<'_, u64>,
+        coefficients: &[Complex64],
+    ) -> PyResult<Self> {
+        let x_shape = x.as_array().shape().to_vec();
+        let z_shape = z.as_array().shape().to_vec();
+        if x_shape != z_shape {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_arrays: x.shape {:?} != z.shape {:?}",
+                x_shape, z_shape
+            )));
+        }
+        if x_shape[0] != coefficients.len() {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_arrays: coefficients length {} != x/z row count {}",
+                coefficients.len(),
+                x_shape[0]
+            )));
+        }
+        for_num_qubits!(num_qubits, |W| build_from_arrays::<W>(
+            num_qubits,
+            x,
+            z,
+            coefficients
+        )?)
+        .ok_or_else(|| {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
         })
     }
@@ -145,6 +194,94 @@ fn parse_terms<const W: usize>(
     Ok(acc.finalize())
 }
 
+/// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually
+/// covers within `num_qubits` — `!0u64` for a word entirely below
+/// `num_qubits`, `0` for one entirely at or above it, and a low-bits mask for
+/// the boundary word. Any set bit outside this mask addresses a qubit that
+/// does not exist.
+fn word_mask(word: usize, num_qubits: usize) -> u64 {
+    let start = word * 64;
+    if start >= num_qubits {
+        0
+    } else {
+        let bits_in_word = (num_qubits - start).min(64);
+        if bits_in_word == 64 {
+            !0u64
+        } else {
+            (1u64 << bits_in_word) - 1
+        }
+    }
+}
+
+/// Build a `PauliSum<W>` from raw `(x, z, coefficients)` arrays.
+///
+/// `x`/`z` rows are symplectic keys in the Hermitian convention (no phase —
+/// every row is folded in with `Phase::ONE`, matching `parse_terms`). A row
+/// narrower than `W` words is zero-padded on the high side; a row wider than
+/// `W` is a `ValueError`, since silently truncating would drop data. Ingest
+/// goes through `BuildAccumulator`, so duplicate `(x, z)` rows sum their
+/// coefficients and rows that cancel to exact `0+0i` are dropped.
+fn build_from_arrays<const W: usize>(
+    num_qubits: usize,
+    x: &PyReadonlyArray2<'_, u64>,
+    z: &PyReadonlyArray2<'_, u64>,
+    coefficients: &[Complex64],
+) -> PyResult<CorePauliSum<W>> {
+    let xa = x.as_array();
+    let za = z.as_array();
+    let n = xa.shape()[0];
+    let w_in = xa.shape()[1];
+    if w_in > W {
+        return Err(PyValueError::new_err(format!(
+            "PauliSum.from_arrays: array width {w_in} exceeds the band width {W} \
+             for num_qubits={num_qubits}"
+        )));
+    }
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for row in 0..n {
+        let mut px = [0u64; W];
+        let mut pz = [0u64; W];
+        for j in 0..w_in {
+            px[j] = xa[[row, j]];
+            pz[j] = za[[row, j]];
+        }
+        for j in 0..w_in {
+            let mask = word_mask(j, num_qubits);
+            if px[j] & !mask != 0 || pz[j] & !mask != 0 {
+                return Err(PyValueError::new_err(format!(
+                    "PauliSum.from_arrays: row {row} has a bit set at or beyond qubit \
+                     {num_qubits} (word {j}, x={:#x}, z={:#x})",
+                    px[j], pz[j]
+                )));
+            }
+        }
+        acc.add_term(
+            PauliString::<W> { x: px, z: pz },
+            Phase::ONE,
+            coefficients[row],
+        );
+    }
+    Ok(acc.finalize())
+}
+
+/// Extract a Python 1-D array of `complex128` or a real-float dtype
+/// (`float64`, cast to a zero-imaginary complex) into a `Vec<Complex64>`.
+fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
+    if let Ok(arr) = val.extract::<PyReadonlyArray1<Complex64>>() {
+        return Ok(arr.as_array().to_vec());
+    }
+    if let Ok(arr) = val.extract::<PyReadonlyArray1<f64>>() {
+        return Ok(arr
+            .as_array()
+            .iter()
+            .map(|&re| Complex64::new(re, 0.0))
+            .collect());
+    }
+    Err(PyTypeError::new_err(
+        "PauliSum.from_arrays: coefficients must be a complex128 or float64 NumPy array",
+    ))
+}
+
 /// Extract a Python complex/float/int into `Complex64`.
 fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if let Ok(c) = val.downcast::<PyComplex>() {
@@ -156,6 +293,128 @@ fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     Err(PyTypeError::new_err(
         "expected complex, float, or int coefficient",
     ))
+}
+
+/// One character of a per-qubit product-state label, in qiskit's
+/// `Statevector.from_label` alphabet: `0`/`1` are the `Z` eigenstates, `+`/`-`
+/// the `X` ones and `r`/`l` the `Y` ones. `None` for anything else.
+///
+/// Returns `(axis, minus)`, which is exactly what `ProductBasis::from_axes`
+/// consumes.
+fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
+    Some(match ch {
+        '0' => (PauliAxis::Z, false),
+        '1' => (PauliAxis::Z, true),
+        '+' => (PauliAxis::X, false),
+        '-' => (PauliAxis::X, true),
+        'r' => (PauliAxis::Y, false),
+        'l' => (PauliAxis::Y, true),
+        _ => return None,
+    })
+}
+
+/// `"forward"` (the default when `None`) or `"heisenberg"`.
+///
+/// Shared by `propagate` and `propagate_with_stats` so the accepted spellings
+/// and the error message cannot drift apart.
+fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
+    match direction.unwrap_or("forward") {
+        "forward" => Ok(Direction::Forward),
+        "heisenberg" => Ok(Direction::Heisenberg),
+        other => Err(PyValueError::new_err(format!(
+            "direction must be 'forward' or 'heisenberg', got {:?}",
+            other
+        ))),
+    }
+}
+
+/// Both propagation entry points require the sum and the circuit to agree on
+/// the qubit count (they would otherwise be monomorphized at different widths,
+/// which the width dispatch cannot pair up).
+fn check_num_qubits(sum: &PauliSumImpl, circuit: &crate::circuit::Circuit) -> PyResult<()> {
+    if sum.num_qubits() != circuit.inner.num_qubits() {
+        return Err(PyValueError::new_err(format!(
+            "PauliSum.num_qubits ({}) != Circuit.num_qubits ({})",
+            sum.num_qubits(),
+            circuit.inner.num_qubits()
+        )));
+    }
+    Ok(())
+}
+
+/// Per-layer term counts from `PauliSum.propagate_with_stats`.
+///
+/// A plain record with read-only attributes; `terms_in` and `terms_out` have
+/// one entry per layer applied, in application order (so *reverse* circuit
+/// order under `direction="heisenberg"`).
+#[pyclass(
+    frozen,
+    module = "paulistrings._paulistrings",
+    name = "PropagationStats"
+)]
+pub struct PropagationStats {
+    layers: usize,
+    terms_in: Vec<usize>,
+    terms_out: Vec<usize>,
+    peak_terms: usize,
+    final_terms: usize,
+}
+
+#[pymethods]
+impl PropagationStats {
+    /// Number of layers (channels) applied.
+    #[getter]
+    fn layers(&self) -> usize {
+        self.layers
+    }
+
+    /// Term count before each layer. `terms_in[k + 1] == terms_out[k]`.
+    #[getter]
+    fn terms_in(&self) -> Vec<usize> {
+        self.terms_in.clone()
+    }
+
+    /// Term count after each layer, i.e. **after** that layer's truncation.
+    #[getter]
+    fn terms_out(&self) -> Vec<usize> {
+        self.terms_out.clone()
+    }
+
+    /// Peak *resident* term count: `max(terms_in[0], terms_out...)`, or the
+    /// input's term count for a zero-layer circuit.
+    ///
+    /// This is how large the sum ever got *between* layers. The transient
+    /// in-layer expansion — after a channel's fanout, before the merge
+    /// deduplicates and truncation filters — is deliberately not measured;
+    /// capturing it would mean instrumenting the engine's hot loop. For a
+    /// memory figure, read peak RSS from `/proc/self/status` instead.
+    #[getter]
+    fn peak_terms(&self) -> usize {
+        self.peak_terms
+    }
+
+    /// Term count of the returned sum: `terms_out[-1]`, or the input's count
+    /// for a zero-layer circuit.
+    #[getter]
+    fn final_terms(&self) -> usize {
+        self.final_terms
+    }
+}
+
+impl PropagationStats {
+    /// Derive the Python-facing record from a core [`TermTrace`] plus the
+    /// length of the propagated sum (which is what "peak" falls back to when
+    /// no layer ran).
+    fn from_trace(trace: TermTrace, final_terms: usize) -> Self {
+        debug_assert_eq!(trace.terms_in.len(), trace.terms_out.len());
+        Self {
+            layers: trace.terms_out.len(),
+            peak_terms: trace.peak_terms().unwrap_or(final_terms),
+            final_terms,
+            terms_in: trace.terms_in,
+            terms_out: trace.terms_out,
+        }
+    }
 }
 
 #[pyclass(module = "paulistrings._paulistrings", name = "PauliSum")]
@@ -190,6 +449,35 @@ impl PauliSum {
         Ok(Self { inner })
     }
 
+    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
+    /// of `x_array` / `z_array` / `coefficients_array`.
+    ///
+    /// `x` and `z` are `uint64` arrays of shape `(n_terms, w)`; `w` may be
+    /// anywhere from `1` up to the band width `num_qubits` picks (the same
+    /// width `.width` would report), and a narrower array is zero-padded on
+    /// ingest, so a sum exported at its own band and re-imported round-trips
+    /// exactly. `coefficients` is a 1-D array of length `n_terms`,
+    /// `complex128` or a real-float dtype (cast to a zero-imaginary complex).
+    ///
+    /// Rows are symplectic keys in the Hermitian convention — no phase is
+    /// applied, matching `from_strings`. Ingest routes through the same
+    /// `BuildAccumulator` `from_strings` uses: duplicate `(x, z)` rows sum
+    /// their coefficients, and rows whose accumulated coefficient is exact
+    /// `0+0i` are dropped. A set bit at or beyond qubit index `num_qubits` in
+    /// any row is a `ValueError`.
+    #[classmethod]
+    fn from_arrays(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        x: PyReadonlyArray2<'_, u64>,
+        z: PyReadonlyArray2<'_, u64>,
+        coefficients: &Bound<'_, PyAny>,
+        num_qubits: usize,
+    ) -> PyResult<Self> {
+        let coeffs = extract_complex_array(coefficients)?;
+        let inner = PauliSumImpl::from_arrays(num_qubits, &x, &z, &coeffs)?;
+        Ok(Self { inner })
+    }
+
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.num_qubits()
@@ -204,24 +492,64 @@ impl PauliSum {
         self.inner.coeffs()
     }
 
-    /// Expectation value in a uniform single-qubit product state.
+    /// Expectation value in a single-qubit product state.
     ///
-    /// `state` is one of `"x+"` (`|+...+>`), `"y+"` (`|+i...+i>`) or `"z+"`
-    /// (`|0...0>`) — each the `+1` eigenstate of that Pauli on every qubit.
-    /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    /// `state` is either a **uniform** name — `"x+"` (`|+...+>`), `"y+"`
+    /// (`|+i...+i>`) or `"z+"` (`|0...0>`), each the `+1` eigenstate of that
+    /// Pauli on every qubit, matched case-insensitively — or a **per-qubit
+    /// label string** of exactly `num_qubits` characters, where character `i`
+    /// gives qubit `i`'s state in qiskit's `Statevector.from_label` alphabet:
+    ///
+    /// | label | state | axis |
+    /// |---|---|---|
+    /// | `0` / `1` | `\|0>` / `\|1>` | Z ± |
+    /// | `+` / `-` | `\|+>` / `\|->` | X ± |
+    /// | `r` / `l` | `\|+i>` / `\|-i>` | Y ± |
+    ///
+    /// The label characters are case-sensitive (`r`/`l`, not `R`/`L`), so a
+    /// mistyped uniform name is an error rather than a silent reinterpretation.
+    /// Qubit indexing matches `from_strings`.
+    ///
+    /// Cost is one masked pass over the terms in either case — never an
+    /// expansion over basis states. Returns a Python complex; take `.real`
+    /// when the operator is Hermitian.
     #[pyo3(signature = (state="x+"))]
     fn expectation(&self, state: &str) -> PyResult<Complex64> {
-        let st = match state {
-            "x+" | "X+" => ProductState::XPlus,
-            "y+" | "Y+" => ProductState::YPlus,
-            "z+" | "Z+" => ProductState::ZPlus,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown product state {other:?}; expected \"x+\", \"y+\" or \"z+\"",
-                )))
-            }
+        // The uniform names win first, case-insensitively, so `"x+"` keeps
+        // meaning |+...+> at any qubit count. They cannot collide with a label
+        // string: `x`, `y` and `z` are not in the per-qubit alphabet.
+        let uniform = match state.to_ascii_lowercase().as_str() {
+            "x+" => Some(ProductState::XPlus),
+            "y+" => Some(ProductState::YPlus),
+            "z+" => Some(ProductState::ZPlus),
+            _ => None,
         };
-        Ok(self.inner.expectation(st))
+        if let Some(st) = uniform {
+            return Ok(self.inner.expectation_uniform(st));
+        }
+        let num_qubits = self.inner.num_qubits();
+        let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
+        for (q, ch) in state.chars().enumerate() {
+            match parse_state_label(ch) {
+                Some(entry) => axes.push(entry),
+                None => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown product state {state:?}: {ch:?} at qubit {q} is not a per-qubit \
+                         label; expected a character from \"01+-rl\" (0/1 = Z±, +/- = X±, \
+                         r/l = Y±), or one of the uniform names \"x+\", \"y+\", \"z+\"",
+                    )))
+                }
+            }
+        }
+        if axes.len() != num_qubits {
+            return Err(PyValueError::new_err(format!(
+                "unknown product state {state:?}: a per-qubit label string over \"01+-rl\" needs \
+                 one character per qubit (got {}, num_qubits is {num_qubits}); the uniform names \
+                 are \"x+\", \"y+\", \"z+\"",
+                axes.len(),
+            )));
+        }
+        Ok(self.inner.expectation_labels(&axes))
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.
@@ -299,23 +627,8 @@ impl PauliSum {
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
     ) -> PyResult<Self> {
-        let dir = match direction.unwrap_or("forward") {
-            "forward" => Direction::Forward,
-            "heisenberg" => Direction::Heisenberg,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "direction must be 'forward' or 'heisenberg', got {:?}",
-                    other
-                )));
-            }
-        };
-        if self.inner.num_qubits() != circuit.inner.num_qubits() {
-            return Err(PyValueError::new_err(format!(
-                "PauliSum.num_qubits ({}) != Circuit.num_qubits ({})",
-                self.inner.num_qubits(),
-                circuit.inner.num_qubits()
-            )));
-        }
+        let dir = parse_direction(direction)?;
+        check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
@@ -347,5 +660,67 @@ impl PauliSum {
             })
             .map_err(PyValueError::new_err)?;
         Ok(Self { inner })
+    }
+
+    /// Propagate `self` through `circuit`, returning
+    /// `(evolved, PropagationStats)`.
+    ///
+    /// Arguments and semantics are `propagate`'s, exactly — the only
+    /// difference is that the engine records per-layer term counts (before
+    /// each layer, and after each layer's truncation) on the calling thread.
+    /// The counts come from length reads the layer loop already performs, so
+    /// the propagation itself is untouched: `evolved` agrees with
+    /// `propagate`'s result to floating-point tolerance.
+    ///
+    /// See `PropagationStats.peak_terms` for what "peak" does and does not
+    /// mean.
+    #[pyo3(signature = (circuit, policy=None, direction=None))]
+    fn propagate_with_stats(
+        &self,
+        py: Python<'_>,
+        circuit: &crate::circuit::Circuit,
+        policy: Option<&PyTruncation>,
+        direction: Option<&str>,
+    ) -> PyResult<(Self, PropagationStats)> {
+        let dir = parse_direction(direction)?;
+        check_num_qubits(&self.inner, circuit)?;
+        let no_op = PolicySpec::NoOp;
+        let spec: &PolicySpec = match policy {
+            Some(p) => &p.spec,
+            None => &no_op,
+        };
+        // GIL released for the propagation, as in `propagate` above. The
+        // trace is moved out of the locally-created scratch inside the
+        // closure — `LayerScratch` is not `Send`-shared with anything, it is
+        // built and dropped within this call.
+        let mut trace: Option<TermTrace> = None;
+        let inner = py
+            .allow_threads(|| -> Result<PauliSumImpl, &'static str> {
+                Ok(for_each_width_propagate!(
+                    &self.inner,
+                    &circuit.inner,
+                    |s, c, W| {
+                        let mut scratch = LayerScratch::<W>::new();
+                        scratch.enable_term_trace();
+                        let out = propagate_with_scratch(
+                            c,
+                            s.clone(),
+                            &SpecPolicy::<W>(spec),
+                            dir,
+                            &mut scratch,
+                        );
+                        trace = scratch.take_term_trace();
+                        out
+                    },
+                    else {
+                        // Unreachable for the same reason as in `propagate`.
+                        return Err("internal: PauliSum and Circuit width mismatch");
+                    }
+                ))
+            })
+            .map_err(PyValueError::new_err)?;
+        let trace = trace.expect("the trace is enabled before the layer loop runs");
+        let stats = PropagationStats::from_trace(trace, inner.len());
+        Ok((Self { inner }, stats))
     }
 }

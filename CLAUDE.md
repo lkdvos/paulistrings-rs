@@ -124,13 +124,20 @@ reject an optimization to keep output bits stable.
 - `crates/paulistrings-py/` — PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22. Modules: `sum`, `circuit`,
   `gates`, `noise`, `truncation`, `channel_spec`, `truncation_spec`, `macros`.
 - `crates/membench/` — STREAM-style memory-bandwidth probe behind `scripts/bandwidth.sh`. `python/paulistrings/` — the
-  Python package shipped to users: a thin re-export of the extension, plus `tests/`.
-- `benchmarks/` — `python/` (pytest-benchmark suites, cross-library comparisons against `PauliStrings.jl`,
-  `qiskit.SparsePauliOp`, `openfermion.QubitOperator`, `stim.PauliString`), `PROFILING.md`, gitignored `results/`.
-  `scripts/` — setup, campaign, A/B, profiling, perf-counter, bandwidth, topology and reporting tooling.
-- `research/` — `ideas/`, `plans/`, `notes/`, named `YYYY-MM-DD-short-slug.md`; `notes/` holds negative-result write-ups,
-  hardware fact sheets, and forward design notes. Nothing here is load-bearing for the build. **Read the negative-result
-  notes in `research/notes/` before re-attempting an optimization idea:** `2026-08-26-why-s5-concatenation-fails.md`
+  Python package shipped to users: a thin re-export of the extension, `interop.py` (stim/qiskit/task-JSON circuit
+  importers) and `io.py` (`.npz` save/load), plus `tests/`.
+- `benchmarks/` — `python/` (pytest-benchmark suites, cross-library comparisons against `qiskit.SparsePauliOp`,
+  `openfermion.QubitOperator`, `stim.PauliString`, plus the suite's Part A benchmarks A/B/C/E — Benchmark D lives in
+  `examples/xxz_chain/`), `julia/` (subprocess-driven baseline against `PauliPropagation.jl`, pinned version, schema-v1
+  task JSON, out of CI), `PROFILING.md`, gitignored `results/`. `scripts/` — setup, campaign, A/B, profiling,
+  perf-counter, bandwidth, topology and reporting tooling.
+- `examples/` — the Python examples & benchmarks suite's showcases (Part B): `common/` (circuit builders, oracles,
+  timing harness, report plots), `data/` (checked-in, provenance-tagged inputs), one directory per showcase. See
+  `examples/README.md`.
+- `research/` — `plans/`, `notes/`, named `YYYY-MM-DD-short-slug.md`; `notes/` holds negative-result write-ups,
+  hardware fact sheets, and forward design notes; `plans/` holds execution plans (e.g. the examples & benchmarks suite).
+  Nothing here is load-bearing for the build. **Read the negative-result notes in `research/notes/` before
+  re-attempting an optimization idea:** `2026-08-26-why-s5-concatenation-fails.md`
   (support-bit bucket concatenation cannot replace a sort), `2026-08-31-v0.6-results.md` (three rejected gather/merge
   variants — recompute-in-merge borrowing, segment-copy merging, interleaved transient key layout),
   `2026-08-30-static-coset-placement.md` (static coset→worker placement, 1.25–1.9× slower than work-stealing), and the

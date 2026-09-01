@@ -1,0 +1,1136 @@
+{
+  "benchmark": "B",
+  "n_qubits": 127,
+  "trotter_steps": 5,
+  "theta_zz": -1.5707963267948966,
+  "state": "z+",
+  "direction": "heisenberg",
+  "coeff_grid": [
+    0.01,
+    0.001,
+    0.0001,
+    1e-05,
+    1e-06,
+    1e-07,
+    1e-08,
+    1e-09
+  ],
+  "weight_grid": [
+    2,
+    4,
+    6,
+    8,
+    10,
+    12
+  ],
+  "weight_sweep_min_abs_coeff": 1e-10,
+  "accuracy_epsilon": 0.001,
+  "coeff_grid_cuts": {
+    "weight_10@0.2": [
+      0.01,
+      0.001,
+      0.0001,
+      1e-05,
+      1e-06,
+      1e-07
+    ],
+    "weight_10@pi/8": [
+      0.01,
+      0.001,
+      0.0001,
+      1e-05,
+      1e-06
+    ],
+    "weight_10@pi/4": [
+      0.01,
+      0.001,
+      0.0001
+    ],
+    "weight_10@3pi/8": [
+      0.01,
+      0.001,
+      0.0001
+    ],
+    "weight_17@0.2": [
+      0.01,
+      0.001,
+      0.0001,
+      1e-05
+    ],
+    "weight_17@pi/8": [
+      0.01,
+      0.001,
+      0.0001
+    ],
+    "weight_17@pi/4": [
+      0.01,
+      0.001,
+      0.0001
+    ],
+    "weight_17@3pi/8": [
+      0.01,
+      0.001,
+      0.0001
+    ]
+  },
+  "self_convergence_grid": [
+    0.001,
+    0.0001,
+    1e-05,
+    1e-06,
+    1e-07,
+    1e-08,
+    1e-09,
+    1e-10
+  ],
+  "self_convergence_tol": 1e-05,
+  "parity_min_abs_coeffs": [
+    0.001,
+    0.0001,
+    1e-05
+  ],
+  "parity_theta_h_label": "0.2",
+  "kim2023_provenance": {
+    "source": "Y. Kim, A. Eddins, S. Anand, K. X. Wei, E. van den Berg, S. Rosenblatt, H. Nayfeh, Y. Wu, M. Zaletel, K. Temme, A. Kandala, \"Evidence for the utility of quantum computing before fault tolerance\", Nature 618, 500-505 (2023)",
+    "doi": "10.1038/s41586-023-06096-3",
+    "url": "https://escholarship.org/content/qt6bf3w13h/qt6bf3w13h.pdf",
+    "supplementary_url": "https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-023-06096-3/MediaObjects/41586_2023_6096_MOESM1_ESM.pdf",
+    "checked": "The published-version PDF (UC eScholarship mirror of the Nature article; nature.com itself requires cookie auth and refuses automated fetch) and the Supplementary Information PDF were both fetched and text-extracted. The operator supports are printed as the Fig. 3 / Fig. 4 panel titles, e.g. Fig. 3b's title is the literal string \"<X13,29,31 Y9,30 Z8,12,17,28,32>\"; the per-observable `source_detail` below quotes the panel title it was read from. The main text and PubMed Central copy (https://pmc.ncbi.nlm.nih.gov/articles/PMC10266970/) were cross-read for the accompanying definitions and Clifford eigenvalues.",
+    "corroborating_sources": [
+      "T. Begusic, J. Gray, G. K.-L. Chan, Sci. Adv. (arXiv:2308.05077), Fig. 3 caption, which expands all four panel labels verbatim and so disambiguates the two distinct weight-17 operators",
+      "T. Begusic, G. K.-L. Chan, arXiv:2306.16372, Fig. 1 panel titles",
+      "J. Tindall, M. Fishman, E. M. Stoudenmire, D. Sels, PRX Quantum 5, 010308 (2024) (arXiv:2306.14887), Eq. (4), which also states the Z_13 stabilizer origin",
+      "Y. Liao, D. Wang, Z. Zhou, X. Zhang, Z.-Y. Xiang, arXiv:2308.03082"
+    ],
+    "retrieved": "2026-08-31",
+    "qubit_indexing": "IBM Eagle device numbering 0..126. The experiment ran on ibm_kyiv; this repo's lattice comes from the ibm_sherbrooke (FakeSherbrooke) coupling map. No fetched source asserts the two index maps are identical, but the `verification` note below closes that gap computationally: the published supports are reproduced exactly on the Sherbrooke map, including the weight-17 operator whose 5-step causal cone covers 68 qubits.",
+    "verification": "Every entry with a `stabilizer_origin` is reproduced by this repo's own engine, not merely transcribed: propagating the seed observable forward through `circuits.heavy_hex_kicked_ising(127, trotter_steps, theta_h=pi/2, order='x-then-zz')` yields a single Pauli string whose support and sign equal the `support` and `clifford_eigenvalue` recorded here. This is checked by `test_published_supports_are_reproduced_by_the_stabilizer_relation` in `python/paulistrings/tests/test_examples_circuits.py`. It simultaneously validates the support transcription, the heavy-hex edge list, the Trotter layer order, and the ibm_kyiv/ibm_sherbrooke index correspondence."
+  },
+  "references": {
+    "z62@0": {
+      "reference_value": 1.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.022132829995825887,
+      "reference_evidence": {
+        "raw_value": 1.0
+      }
+    },
+    "z62@0.2": {
+      "reference_value": 0.9810773578935476,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 15.023298752959818
+    },
+    "z62@pi/8": {
+      "reference_value": 0.9223340532235974,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 15.24171013396699
+    },
+    "z62@pi/4": {
+      "reference_value": 0.5194110175524836,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 15.189625774975866
+    },
+    "z62@3pi/8": {
+      "reference_value": 0.05929906866104356,
+      "reference_method": "light_cone_exact:both",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 15.253135322942398
+    },
+    "z62@pi/2": {
+      "reference_value": 0.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.0359304070007056,
+      "reference_evidence": {
+        "raw_value": 0.0
+      }
+    },
+    "weight_10@0": {
+      "reference_value": 0.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.02293654007371515,
+      "reference_evidence": {
+        "raw_value": 0.0
+      }
+    },
+    "weight_10@0.2": {
+      "reference_value": -0.0006502892486887803,
+      "reference_method": "light_cone_exact:statevector",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 142.17964436404873
+    },
+    "weight_10@pi/8": {
+      "reference_value": -0.007714801813142649,
+      "reference_method": "light_cone_exact:statevector",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 141.32775006291922
+    },
+    "weight_10@pi/4": {
+      "reference_value": -0.01284089548233606,
+      "reference_method": "light_cone_exact:statevector",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 148.31724068697076
+    },
+    "weight_10@3pi/8": {
+      "reference_value": 0.31747505635537854,
+      "reference_method": "light_cone_exact:statevector",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 197.08294300106354
+    },
+    "weight_10@pi/2": {
+      "reference_value": 1.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.03221170394681394,
+      "reference_evidence": {
+        "raw_value": 1.0
+      }
+    },
+    "weight_17@0": {
+      "reference_value": 0.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.02240988297853619,
+      "reference_evidence": {
+        "raw_value": 0.0
+      }
+    },
+    "weight_17@0.2": {
+      "reference_value": 7.674430496124301e-08,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 7.674430496124301e-08,
+      "reference_seconds": 66.12394201988354,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=1e-05 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1e-07 projects to ~5.98e+08 terms (growth 5.7x), over max_terms=200000000",
+        "tol": 1e-05,
+        "points": [
+          {
+            "min_abs_coeff": 0.001,
+            "value": 0.0,
+            "final_terms": 32859,
+            "peak_terms": 32861,
+            "seconds": 0.13404281402472407,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0001,
+            "value": 0.0,
+            "final_terms": 351100,
+            "peak_terms": 351100,
+            "seconds": 0.3523165639489889,
+            "delta_vs_previous": 0.0
+          },
+          {
+            "min_abs_coeff": 1e-05,
+            "value": 0.0,
+            "final_terms": 2853283,
+            "peak_terms": 2853283,
+            "seconds": 1.8512069939170033,
+            "delta_vs_previous": 0.0
+          },
+          {
+            "min_abs_coeff": 1e-06,
+            "value": 0.0,
+            "final_terms": 18193203,
+            "peak_terms": 18193203,
+            "seconds": 10.424338190001436,
+            "delta_vs_previous": 0.0
+          },
+          {
+            "min_abs_coeff": 1e-07,
+            "value": 7.674430496124301e-08,
+            "final_terms": 104343599,
+            "peak_terms": 104343599,
+            "seconds": 53.36203745799139,
+            "delta_vs_previous": 7.674430496124301e-08
+          }
+        ]
+      }
+    },
+    "weight_17@pi/8": {
+      "reference_value": 0.0,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.0,
+      "reference_seconds": 63.16094655706547,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=1e-05 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=1e-05 projects to ~1.15e+09 terms (growth 21.9x), over max_terms=200000000",
+        "tol": 1e-05,
+        "points": [
+          {
+            "min_abs_coeff": 0.001,
+            "value": 0.0,
+            "final_terms": 39543,
+            "peak_terms": 115666,
+            "seconds": 0.29020795796532184,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0001,
+            "value": 0.0,
+            "final_terms": 2394400,
+            "peak_terms": 3771518,
+            "seconds": 4.250169845065102,
+            "delta_vs_previous": 0.0
+          },
+          {
+            "min_abs_coeff": 1e-05,
+            "value": 0.0,
+            "final_terms": 52499256,
+            "peak_terms": 68053308,
+            "seconds": 58.62056875403505,
+            "delta_vs_previous": 0.0
+          }
+        ]
+      }
+    },
+    "weight_17@pi/4": {
+      "reference_value": -3.624628971936859e-05,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 3.624628971936859e-05,
+      "reference_seconds": 10.649907201062888,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=1e-05 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=0.0001 projects to ~1.13e+12 terms (growth 1061514.0x), over max_terms=200000000",
+        "tol": 1e-05,
+        "points": [
+          {
+            "min_abs_coeff": 0.001,
+            "value": 0.0,
+            "final_terms": 0,
+            "peak_terms": 223296,
+            "seconds": 0.14476957404986024,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0001,
+            "value": -3.624628971936859e-05,
+            "final_terms": 1061514,
+            "peak_terms": 12465248,
+            "seconds": 10.505137627013028,
+            "delta_vs_previous": 3.624628971936859e-05
+          }
+        ]
+      }
+    },
+    "weight_17@3pi/8": {
+      "reference_value": -0.1336579508238342,
+      "reference_method": "self_converged(min_abs_coeff)",
+      "reference_exact": false,
+      "reference_uncertainty": 0.00157020784297901,
+      "reference_seconds": 7.654498999938369,
+      "reference_evidence": {
+        "criterion": "two successive |\u0394<O>| below tol=1e-05 while tightening min_abs_coeff",
+        "converged": false,
+        "stopped_early": "budget: the next tightening past min_abs_coeff=0.0001 projects to ~5.95e+08 terms (growth 138.6x), over max_terms=200000000",
+        "tol": 1e-05,
+        "points": [
+          {
+            "min_abs_coeff": 0.001,
+            "value": -0.1352281586668132,
+            "final_terms": 30958,
+            "peak_terms": 80635,
+            "seconds": 0.2265301119768992,
+            "delta_vs_previous": null
+          },
+          {
+            "min_abs_coeff": 0.0001,
+            "value": -0.1336579508238342,
+            "final_terms": 4291840,
+            "peak_terms": 5545855,
+            "seconds": 7.42796888796147,
+            "delta_vs_previous": 0.00157020784297901
+          }
+        ]
+      }
+    },
+    "weight_17@pi/2": {
+      "reference_value": -1.0,
+      "reference_method": "stim_clifford_exact",
+      "reference_exact": true,
+      "reference_uncertainty": null,
+      "reference_seconds": 0.06074934301432222,
+      "reference_evidence": {
+        "raw_value": -1.0
+      }
+    }
+  },
+  "endpoints": [
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0",
+      "clifford_integer": 0.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 0.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": [
+        2,
+        4,
+        6,
+        8
+      ]
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/2",
+      "clifford_integer": 1.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 1.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": [
+        2,
+        4,
+        6,
+        8
+      ]
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0",
+      "clifford_integer": 0.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 0.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": [
+        2,
+        4,
+        6,
+        8,
+        10,
+        12
+      ]
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "pi/2",
+      "clifford_integer": -1.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 1.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": [
+        2,
+        4,
+        6,
+        8,
+        10,
+        12
+      ]
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "0",
+      "clifford_integer": 1.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 0.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": []
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/2",
+      "clifford_integer": 0.0,
+      "worst_engine_deviation": 0.0,
+      "runs": 8,
+      "weight_sweep_worst_deviation": 0.0,
+      "weight_sweep_runs": 6,
+      "weight_caps_that_emptied_the_sum": [
+        2,
+        4,
+        6,
+        8,
+        10,
+        12
+      ]
+    }
+  ],
+  "time_to_accuracy": [
+    {
+      "observable": "z62",
+      "theta_h_label": "0",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004635946010239422,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-09
+      },
+      "cheapest_time_s": 0.0012380339903756976,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "0.2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.001
+      },
+      "first_time_s": 0.004428350133821368,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.0001
+      },
+      "cheapest_time_s": 0.0039901339914649725,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/8",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.007053573033772409,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.001
+      },
+      "cheapest_time_s": 0.006118088960647583,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/4",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 1e-05
+      },
+      "first_time_s": 2.4406877800356597,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-05
+      },
+      "cheapest_time_s": 2.4406877800356597,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "3pi/8",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.017612588009797037,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "cheapest_time_s": 0.017612588009797037,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004359218990430236,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-09
+      },
+      "cheapest_time_s": 0.0013713949592784047,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004677748074755073,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-09
+      },
+      "cheapest_time_s": 0.0012700119987130165,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0.2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004102942068129778,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "cheapest_time_s": 0.004102942068129778,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/8",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.001
+      },
+      "first_time_s": 0.2678403238533065,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.001
+      },
+      "cheapest_time_s": 0.2678403238533065,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/4",
+      "epsilon": 0.001,
+      "achieved": false,
+      "first_truncation": null,
+      "first_time_s": null,
+      "cheapest_truncation": null,
+      "cheapest_time_s": null,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "3pi/8",
+      "epsilon": 0.001,
+      "achieved": false,
+      "first_truncation": null,
+      "first_time_s": null,
+      "cheapest_truncation": null,
+      "cheapest_time_s": null,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004285103059373796,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-08
+      },
+      "cheapest_time_s": 0.001343696960248053,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.004440247896127403,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-08
+      },
+      "cheapest_time_s": 0.00126293592620641,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0.2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.02019885997287929,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "cheapest_time_s": 0.02019885997287929,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "pi/8",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.07437506597489119,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "cheapest_time_s": 0.07437506597489119,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "pi/4",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.04929613193962723,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "cheapest_time_s": 0.04929613193962723,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "3pi/8",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.0001
+      },
+      "first_time_s": 101.17521259887144,
+      "cheapest_truncation": {
+        "min_abs_coeff": 0.0001
+      },
+      "cheapest_time_s": 101.17521259887144,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001
+      ],
+      "coeff_grid_cut": true
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "pi/2",
+      "epsilon": 0.001,
+      "achieved": true,
+      "first_truncation": {
+        "min_abs_coeff": 0.01
+      },
+      "first_time_s": 0.0028888100059702992,
+      "cheapest_truncation": {
+        "min_abs_coeff": 1e-09
+      },
+      "cheapest_time_s": 0.0027427419554442167,
+      "coeff_grid_used": [
+        0.01,
+        0.001,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e-08,
+        1e-09
+      ],
+      "coeff_grid_cut": false
+    }
+  ],
+  "julia_parity": [
+    {
+      "observable": "z62",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 59 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 59,
+      "julia_final_terms": 59,
+      "rust_peak_terms": 59,
+      "julia_peak_terms": 59,
+      "rust_propagation_time_s": 0.0041906030382961035,
+      "julia_propagation_time_s": 0.001953101
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.0001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 225 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 225,
+      "julia_final_terms": 225,
+      "rust_peak_terms": 225,
+      "julia_peak_terms": 225,
+      "rust_propagation_time_s": 0.005912875989452004,
+      "julia_propagation_time_s": 0.003947311
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 1e-05,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 728 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 728,
+      "julia_final_terms": 728,
+      "rust_peak_terms": 728,
+      "julia_peak_terms": 728,
+      "rust_propagation_time_s": 0.010067746043205261,
+      "julia_propagation_time_s": 0.006519569
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 1415 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 1415,
+      "julia_final_terms": 1415,
+      "rust_peak_terms": 1424,
+      "julia_peak_terms": 1424,
+      "rust_propagation_time_s": 0.052827031002379954,
+      "julia_propagation_time_s": 0.03905
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.0001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 9641 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 9641,
+      "julia_final_terms": 9641,
+      "rust_peak_terms": 9641,
+      "julia_peak_terms": 9641,
+      "rust_propagation_time_s": 0.23156246007420123,
+      "julia_propagation_time_s": 0.105413698
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 1e-05,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 53310 terms on both; |\u0394<O>| = 2.168e-19",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 53310,
+      "julia_final_terms": 53310,
+      "rust_peak_terms": 53310,
+      "julia_peak_terms": 53310,
+      "rust_propagation_time_s": 0.3211059480672702,
+      "julia_propagation_time_s": 0.474499684
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 32859 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 32859,
+      "julia_final_terms": 32859,
+      "rust_peak_terms": 32861,
+      "julia_peak_terms": 32861,
+      "rust_propagation_time_s": 0.5488790480885655,
+      "julia_propagation_time_s": 1.785687439
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 0.0001,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 351100 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 351100,
+      "julia_final_terms": 351100,
+      "rust_peak_terms": 351100,
+      "julia_peak_terms": 351100,
+      "rust_propagation_time_s": 4.584094651974738,
+      "julia_propagation_time_s": 5.600206311
+    },
+    {
+      "observable": "weight_17",
+      "theta_h_label": "0.2",
+      "min_abs_coeff": 1e-05,
+      "ok": true,
+      "detail": "1355/1355 per-layer term counts identical; final 2853283 terms on both; |\u0394<O>| = 0.000e+00",
+      "layers_compared": 1355,
+      "first_layer_mismatch": null,
+      "rust_final_terms": 2853283,
+      "julia_final_terms": 2853283,
+      "rust_peak_terms": 2853283,
+      "julia_peak_terms": 2853283,
+      "rust_propagation_time_s": 29.1506692499388,
+      "julia_propagation_time_s": 42.730341396
+    }
+  ],
+  "julia_skip_reason": null,
+  "self_convergence_validation": [
+    {
+      "observable": "z62",
+      "theta_h_label": "0.2",
+      "exact_value": 0.9810773578935476,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.9810773549087723,
+      "estimated_uncertainty": 4.779736606508322e-07,
+      "true_error": 2.984775204772916e-09,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/8",
+      "exact_value": 0.9223340532235974,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.9223340545653508,
+      "estimated_uncertainty": 2.3686496763986042e-07,
+      "true_error": 1.3417533750725852e-09,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "pi/4",
+      "exact_value": 0.5194110175524836,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.5194110175524962,
+      "estimated_uncertainty": 0.0,
+      "true_error": 1.2545520178264269e-14,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "z62",
+      "theta_h_label": "3pi/8",
+      "exact_value": 0.05929906866104356,
+      "exact_method": "light_cone_exact:both",
+      "self_converged_value": 0.059299068661043564,
+      "estimated_uncertainty": 0.0,
+      "true_error": 6.938893903907228e-18,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "0.2",
+      "exact_value": -0.0006502892486887803,
+      "exact_method": "light_cone_exact:statevector",
+      "self_converged_value": -0.000650114250444095,
+      "estimated_uncertainty": 6.501792502625059e-06,
+      "true_error": 1.7499824468529285e-07,
+      "converged": true,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/8",
+      "exact_value": -0.007714801813142649,
+      "exact_method": "light_cone_exact:statevector",
+      "self_converged_value": -0.00770777086352128,
+      "estimated_uncertainty": 0.00045717390233878004,
+      "true_error": 7.03094962136927e-06,
+      "converged": false,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "pi/4",
+      "exact_value": -0.01284089548233606,
+      "exact_method": "light_cone_exact:statevector",
+      "self_converged_value": -0.010838146388273424,
+      "estimated_uncertainty": 0.004310442490906154,
+      "true_error": 0.002002749094062636,
+      "converged": false,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    },
+    {
+      "observable": "weight_10",
+      "theta_h_label": "3pi/8",
+      "exact_value": 0.31747505635537854,
+      "exact_method": "light_cone_exact:statevector",
+      "self_converged_value": 0.3174680542530946,
+      "estimated_uncertainty": 0.0070699092774835215,
+      "true_error": 7.002102283937273e-06,
+      "converged": false,
+      "conservative": true,
+      "uncertainty_slack": 10.0,
+      "fp_noise_floor": 1e-12
+    }
+  ],
+  "wall_clock_s": 2375.524194636033,
+  "measured_weight_10_pauli_path": "m= 40 gates: peak 6.4e1      0.00 s\nm= 80 gates: peak 5.2e4      0.03 s\nm=120 gates: peak 4.3e6      0.93 s\nm=160 gates: exceeded a 26 GiB address-space cap\nfull cone (305 gates in the reduced circuit): unreachable\nstatevector over the same cone: 125 s, 16.1 GiB \u2014 the cheaper path at every theta_h\n",
+  "notes": [
+    "self_convergence_validation.conservative was recomputed from the recorded true_error and estimated_uncertainty with the driver's documented rule true_error <= max(estimate * uncertainty_slack, fp_noise_floor); the run itself scored it with an earlier, floor-less form of the same rule, which marked a plateau reached by saturation (estimate legitimately 0, true error at the 1e-14 rounding level) as not conservative. No measurement changed.",
+    "endpoints[] was recomputed from results.json to score the *coefficient* sweep only: the run's own version maxed over the max_weight sweep too, where a cap below the mid-circuit operator weight legitimately empties the sum and makes the deviation 1.0 by construction. The weight-sweep figures are now reported in their own fields. No measurement changed."
+  ]
+}

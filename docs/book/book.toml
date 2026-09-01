@@ -1,0 +1,24 @@
+[book]
+title = "paulistrings-rs"
+description = "Pauli propagation in Rust: showcases, benchmarks, and cross-engine comparisons."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "site"
+# A SUMMARY.md entry with no file behind it is an error, not a silently created
+# empty page — the site is assembled from committed material only.
+create-missing = false
+
+[output.html]
+site-url = "/paulistrings-rs/"
+git-repository-url = "https://github.com/lkdvos/paulistrings-rs"
+edit-url-template = "https://github.com/lkdvos/paulistrings-rs/edit/main/docs/book/{path}"
+default-theme = "rust"
+preferred-dark-theme = "navy"
+additional-css = ["theme/custom.css"]
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 1

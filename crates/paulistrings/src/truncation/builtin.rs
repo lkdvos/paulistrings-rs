@@ -24,6 +24,11 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
         c.norm() > self.0
     }
+
+    /// Per-term only — no layer pass.
+    fn finalizes_layer(&self) -> bool {
+        false
+    }
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -45,6 +50,11 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], _c: Complex64) -> bool {
         let weight: u32 = (0..W).map(|i| (x[i] | z[i]).count_ones()).sum();
         weight <= self.0
+    }
+
+    /// Per-term only — no layer pass.
+    fn finalizes_layer(&self) -> bool {
+        false
     }
 }
 
@@ -212,6 +222,12 @@ where
         self.0.finalize_layer(sum);
         self.1.finalize_layer(sum);
     }
+
+    /// Both sides' layer passes run, so either one wanting a layer means the
+    /// composition does.
+    fn finalizes_layer(&self) -> bool {
+        self.0.finalizes_layer() || self.1.finalizes_layer()
+    }
 }
 
 /// Logical OR of two policies — either accepting is enough.
@@ -244,11 +260,52 @@ where
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }
+
+    /// `Or` does not forward `finalize_layer` to either side (see the type
+    /// docs), so it has no layer pass regardless of what its children answer.
+    fn finalizes_layer(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The layer-finalization hint must agree with which builtins actually
+    /// override `finalize_layer`: only `TopN` does, and `And` inherits it from
+    /// either side while `Or` — whose `finalize_layer` is the trait's no-op
+    /// default — never does.
+    #[test]
+    fn layer_finalize_hint_matches_the_builtins() {
+        assert!(!<CoefficientThreshold as TruncationPolicy<1>>::finalizes_layer(
+            &CoefficientThreshold(1e-9)
+        ));
+        assert!(!<WeightCutoff as TruncationPolicy<2>>::finalizes_layer(&WeightCutoff(3)));
+        assert!(<TopN as TruncationPolicy<1>>::finalizes_layer(&TopN(4)));
+
+        let cheap = And(CoefficientThreshold(1e-9), WeightCutoff(2));
+        assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&cheap));
+        let with_topn = And(CoefficientThreshold(1e-9), TopN(4));
+        assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&with_topn));
+        let topn_first = And(TopN(4), WeightCutoff(2));
+        assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&topn_first));
+
+        // `Or` does not forward `finalize_layer` to either side, so it has no
+        // layer pass however its children answer.
+        let ored = Or(CoefficientThreshold(1e-9), TopN(4));
+        assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&ored));
+    }
+
+    /// The hint defaults to `true` — the conservative answer — so a policy that
+    /// overrides `finalize_layer` and forgets the hint still gets its layer
+    /// pass run.
+    #[test]
+    fn layer_finalize_hint_defaults_to_conservative_true() {
+        struct Silent;
+        impl<const W: usize> TruncationPolicy<W> for Silent {}
+        assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&Silent));
+    }
 
     /// `WeightCutoff(2)` keeps weights 0, 1, 2 and drops 3.
     /// Identity I (weight 0), single X (1), XZ on qubits 0+1 (2) all kept;

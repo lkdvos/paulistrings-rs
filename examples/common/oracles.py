@@ -1036,8 +1036,21 @@ def statevector_expectation(
     which Aer holds one copy and Python another. Above the guard this raises
     `ConeTooLarge` rather than trying.
     """
-    _QuantumCircuit, SparsePauliOp, Statevector, AerSimulator = _import_aer()
     spec = as_circuit_spec(circuit)
+    if not spec.is_unitary:
+        noisy = sorted(
+            {str(g["name"]) for g in spec.gates if g["name"] in _NOISE_GATE_NAMES}
+        )
+        # Refuse before _import_aer(): the refusal is a property of the request,
+        # not of the environment, so it must win over SkipOracle when qiskit is
+        # absent (CI's numpy-only job sees this ordering).
+        raise OracleError(
+            f"the statevector oracle is unitary-only, but the circuit contains the "
+            f"noise channel(s) {noisy}. Use light_cone_exact's Pauli path (or a "
+            "density-matrix reference, which this module does not provide) for "
+            "noisy circuits."
+        )
+    _QuantumCircuit, SparsePauliOp, Statevector, AerSimulator = _import_aer()
     n = spec.num_qubits
     if n > max_qubits:
         raise ConeTooLarge(

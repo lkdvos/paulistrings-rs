@@ -884,6 +884,26 @@ def test_light_cone_exact_handles_noise_on_the_pauli_path_only():
         oracles.light_cone_exact(spec, {"ZZII": 1.0}, method="statevector")
 
 
+def test_unitary_only_refusal_wins_over_missing_qiskit(monkeypatch):
+    """The unitary-only refusal fires before the qiskit import is attempted.
+
+    CI's numpy-only job has no qiskit; a noisy statevector request must still
+    raise the request-validity error, not SkipOracle. Reproduced here by
+    forcing _import_aer to behave as if qiskit were absent.
+    """
+
+    def _no_aer():
+        raise oracles.SkipOracle("qiskit deliberately unavailable in this test")
+
+    monkeypatch.setattr(oracles, "_import_aer", _no_aer)
+    recorder = oracles.RecordingCircuit(4)
+    recorder.h(0)
+    recorder.cnot(0, 1)
+    recorder.depolarize(0.25, [0, 1])
+    with pytest.raises(oracles.OracleError, match="unitary-only"):
+        oracles.light_cone_exact(recorder.spec, {"ZZII": 1.0}, method="statevector")
+
+
 def test_light_cone_exact_guards_and_rejections():
     recorder = oracles.RecordingCircuit(8)
     for q in range(8):

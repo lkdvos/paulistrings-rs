@@ -9,7 +9,7 @@ use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
     propagate, propagate_with_scratch, Direction, LayerScratch, PauliAxis,
-    PauliSum as CorePauliSum, ProductBasis, ProductState, TermTrace,
+    PauliSum as CorePauliSum, ProductBasis, ProductState, StabilizerState, TermTrace,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -52,6 +52,14 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.expectation_product_basis(
             &ProductBasis::from_axes(axes.iter().copied())
         ))
+    }
+
+    /// Stabilizer state given by one signed Pauli generator per qubit. The
+    /// generator strings are parsed at the active width and validated by the
+    /// core, so both a malformed string and an invalid generator set surface
+    /// as a `ValueError`.
+    pub fn expectation_stabilizer(&self, generators: &[String]) -> PyResult<Complex64> {
+        for_each_width!(self, |s| stabilizer_expectation(s, generators))
     }
 
     pub fn identity_coefficient(&self) -> Complex64 {
@@ -168,30 +176,78 @@ fn parse_terms<const W: usize>(
             )));
         }
         let c = extract_complex(&val)?;
-        let mut x = [0u64; W];
-        let mut z = [0u64; W];
-        for (i, ch) in s.chars().enumerate() {
-            let word = i / 64;
-            let bit = 1u64 << (i % 64);
-            match ch {
-                'I' => {}
-                'X' => x[word] |= bit,
-                'Z' => z[word] |= bit,
-                'Y' => {
-                    x[word] |= bit;
-                    z[word] |= bit;
-                }
-                other => {
-                    return Err(PyValueError::new_err(format!(
-                        "unexpected Pauli character {:?} (expected I/X/Y/Z)",
-                        other
-                    )));
-                }
-            }
-        }
-        acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
+        acc.add_term(parse_pauli_key::<W>(&s)?, Phase::ONE, c);
     }
     Ok(acc.finalize())
+}
+
+/// Parse an `I/X/Y/Z` label into a symplectic key: character `i` addresses
+/// qubit `i`, `Y` maps to `(x=1, z=1)` with no phase factor (the crate's
+/// Hermitian convention).
+///
+/// The caller checks the label's length against `num_qubits` first — this only
+/// rejects characters outside the alphabet.
+fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
+    let mut x = [0u64; W];
+    let mut z = [0u64; W];
+    for (i, ch) in s.chars().enumerate() {
+        let word = i / 64;
+        let bit = 1u64 << (i % 64);
+        match ch {
+            'I' => {}
+            'X' => x[word] |= bit,
+            'Z' => z[word] |= bit,
+            'Y' => {
+                x[word] |= bit;
+                z[word] |= bit;
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unexpected Pauli character {:?} (expected I/X/Y/Z)",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(PauliString::<W> { x, z })
+}
+
+/// Contract `sum` against the stabilizer state spelled by `generators`.
+///
+/// Generators are signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"`
+/// for `+` — with the same `I/X/Y/Z` alphabet and qubit indexing as
+/// `from_strings`. The core validates the set (count, range, commutation,
+/// GF(2) independence) and its `StabilizerError` becomes the `ValueError`
+/// message verbatim.
+fn stabilizer_expectation<const W: usize>(
+    sum: &CorePauliSum<W>,
+    generators: &[String],
+) -> PyResult<Complex64> {
+    let num_qubits = sum.num_qubits();
+    let mut gens: Vec<(PauliString<W>, bool)> = Vec::with_capacity(generators.len());
+    for (i, spec) in generators.iter().enumerate() {
+        let (minus, body) = match spec.as_bytes().first() {
+            Some(b'-') => (true, &spec[1..]),
+            Some(b'+') => (false, &spec[1..]),
+            _ => (false, spec.as_str()),
+        };
+        if body.len() != num_qubits {
+            return Err(PyValueError::new_err(format!(
+                "expectation_stabilizer: generator {i} {spec:?} has length {} after the optional \
+                 sign, expected {num_qubits} (one character per qubit)",
+                body.len(),
+            )));
+        }
+        let key = parse_pauli_key::<W>(body).map_err(|e| {
+            PyValueError::new_err(format!(
+                "expectation_stabilizer: generator {i} {spec:?}: {e}"
+            ))
+        })?;
+        gens.push((key, minus));
+    }
+    let state = StabilizerState::<W>::from_generators(num_qubits, &gens)
+        .map_err(|e| PyValueError::new_err(format!("expectation_stabilizer: {e}")))?;
+    Ok(sum.expectation_stabilizer(&state))
 }
 
 /// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually
@@ -550,6 +606,37 @@ impl PauliSum {
             )));
         }
         Ok(self.inner.expectation_labels(&axes))
+    }
+
+    /// Expectation value in a stabilizer state given by its generators.
+    ///
+    /// `generators` is a list of exactly `num_qubits` signed Pauli strings —
+    /// `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — each of length
+    /// `num_qubits`, in the same `I/X/Y/Z` alphabet and qubit indexing as
+    /// `from_strings` (character `i` is qubit `i`, `Y` Hermitian with no phase
+    /// factor). They must be pairwise commuting and independent over GF(2);
+    /// anything else is a `ValueError`, including a set implying `-I` is a
+    /// stabilizer.
+    ///
+    /// This reads any stabilizer state — Bell, GHZ, cluster, the output of a
+    /// Clifford circuit (see `paulistrings.interop.stabilizers_from_stim`) —
+    /// where `expectation` reads only single-qubit product states. Each term
+    /// `P` contributes `+c_P` or `-c_P` when `±P` is in the stabilizer group
+    /// and `0` otherwise, so the cost is `O(terms · num_qubits² / 64)` word
+    /// operations after a one-off `O(num_qubits³ / 64)` reduction of the
+    /// generators — never an expansion over basis states. For a state that
+    /// factorizes, `expectation`'s masked scan is `num_qubits` times cheaper
+    /// per term; prefer it there.
+    ///
+    /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    ///
+    /// ```python
+    /// bell = ["XX", "ZZ"]                      # (|00> + |11>) / sqrt(2)
+    /// PauliSum.from_strings({"YY": 1.0}, num_qubits=2).expectation_stabilizer(bell)
+    /// # (-1+0j), since XX·ZZ = -YY
+    /// ```
+    fn expectation_stabilizer(&self, generators: Vec<String>) -> PyResult<Complex64> {
+        self.inner.expectation_stabilizer(&generators)
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.

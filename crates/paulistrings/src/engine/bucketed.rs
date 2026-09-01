@@ -921,8 +921,7 @@ mod tests {
     /// 2.5e-16. Every PTM entry is nonzero, so all 16 bucket deltas are
     /// realized: the gather run is 15 concatenated rest streams with ~15-fold
     /// duplicate keys, which is the shape the radix sort kernel is chosen for.
-    pub(super) fn haar_su4<const W: usize>(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
-        let _ = std::marker::PhantomData::<[(); W]>;
+    pub(super) fn haar_su4(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
         crate::channel::GeneralUnitary2Q::from_matrix(
             q0,
             q1,
@@ -1178,7 +1177,7 @@ mod tests {
                 // dense-PTM gather run — the shape the per-run sort kernel is
                 // selected on (see `merge::sort_rows_radix_with_scratch`).
                 "haar_su4",
-                Box::new(haar_su4::<1>(1, 5)),
+                Box::new(haar_su4(1, 5)),
             ),
             (
                 // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
@@ -1246,7 +1245,7 @@ mod tests {
             ),
             // Dense SU(4), support straddling the word boundary — the
             // dense-PTM run shape at `W = 2`.
-            ("haar_su4_cross_word", Box::new(haar_su4::<2>(60, 70))),
+            ("haar_su4_cross_word", Box::new(haar_su4(60, 70))),
         ];
         for (name, ch) in &channels {
             let cr: &dyn Channel<2> = ch.as_ref();
@@ -1641,7 +1640,7 @@ mod tests {
         };
         let mut selected = Vec::new();
         let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("haar_su4", Box::new(haar_su4::<1>(1, 5))),
+            ("haar_su4", Box::new(haar_su4(1, 5))),
             ("gu2q_sqrt_swap", Box::new(sqrt_swap_w1(1, 5))),
             ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
             ("cz", Box::new(Clifford2Q::cz(1, 5))),

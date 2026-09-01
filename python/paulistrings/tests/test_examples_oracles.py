@@ -7,12 +7,12 @@ package -- the same pattern as `test_examples_report.py`.
 
 What is checked here, and why each check exists:
 
-* **The gate-list plumbing** (`CircuitSpec`, `RecordingCircuit`,
-  `record_gates`). The oracles cannot read a `paulistrings.Circuit`, so every
-  one of them consumes a recorded gate list instead; if the recording drops or
+* **The gate-list plumbing** (`CircuitSpec`, `as_circuit_spec`,
+  `record_gates`). Every oracle consumes a gate list read out of a
+  `paulistrings.Circuit` via `Circuit.gates`; if that read-out drops or
   reorders a gate, every oracle silently answers a different question. The
-  round-trip test therefore evolves the same observable through the recorded
-  spec's `to_circuit()` and through the builder's own `Circuit` and requires
+  round-trip test therefore evolves the same observable through the spec's
+  `to_circuit()` and through the builder's own `Circuit` and requires
   agreement.
 * **The three conversion traps** named in the module docstring: label
   endianness (qiskit reverses, stim does not), the Hermitian-Y convention (no
@@ -108,8 +108,9 @@ def _random_spec(n: int, depth: int, seed: int) -> oracles.CircuitSpec:
 # =============================================================================
 
 
-def test_recording_circuit_mirrors_circuit_surface():
+def test_recording_circuit_wraps_a_real_circuit():
     recorder = oracles.RecordingCircuit(4)
+    assert isinstance(recorder.circuit, Circuit)
     recorder.h(0)
     recorder.pauli_rotation("ZZ", [1, 2], -math.pi / 2)
     recorder.depolarize(0.1, [0, 3])
@@ -122,16 +123,17 @@ def test_recording_circuit_mirrors_circuit_surface():
 
 
 def test_recording_circuit_rejects_bad_gates():
+    """The wrapper forwards, so these are the engine's own validation errors."""
     recorder = oracles.RecordingCircuit(3)
     with pytest.raises(ValueError, match="out of range"):
         recorder.h(3)
-    with pytest.raises(ValueError, match="repeats a qubit index"):
+    with pytest.raises(ValueError, match="must differ"):
         recorder.cnot(1, 1)
-    with pytest.raises(ValueError, match="characters but"):
+    with pytest.raises(ValueError, match="same length"):
         recorder.pauli_rotation("ZZ", [0], 0.3)
     with pytest.raises(ValueError, match="unexpected Pauli character"):
         recorder.pauli_rotation("IZ", [0, 1], 0.3)
-    with pytest.raises(TypeError, match="recording gates/noise shims"):
+    with pytest.raises(TypeError, match="Channel"):
         recorder.append(object())
 
 
@@ -193,28 +195,47 @@ def test_record_gates_round_trips_through_the_engine(builder, args):
     )
 
 
-def test_record_gates_fails_loudly_when_it_records_nothing():
-    def builder_using_an_unpatched_name():
-        import paulistrings
+def test_record_gates_fails_loudly_on_a_builder_that_returns_no_circuit():
+    def builder_returning_something_else():
+        return [{"name": "h", "qubits": [0]}]
 
-        return paulistrings.Circuit(2)
-
-    with pytest.raises(oracles.OracleError, match="not a RecordingCircuit"):
-        oracles.record_gates(builder_using_an_unpatched_name)
+    with pytest.raises(oracles.OracleError, match="not a paulistrings.Circuit"):
+        oracles.record_gates(builder_returning_something_else)
 
 
-def test_record_gates_restores_the_builder_globals():
+def test_record_gates_leaves_the_builder_globals_alone():
+    """It runs the builder against the real API -- nothing is rebound.
+
+    A tripwire kept from when `record_gates` installed recording shims into
+    `builder.__globals__`: a leak there made the *next* real build silently
+    produce nothing.
+    """
     circuit_before, gates_before = circuits.Circuit, circuits.gates
     oracles.record_gates(circuits.xxz_chain_trotter, 4, 1)
     assert circuits.Circuit is circuit_before
     assert circuits.gates is gates_before
-    # A leaked shim would make the *next* real build silently produce nothing.
     assert isinstance(circuits.xxz_chain_trotter(4, 1), Circuit)
 
 
-def test_as_circuit_spec_rejects_an_opaque_circuit():
-    with pytest.raises(TypeError, match="record_gates"):
-        oracles.as_circuit_spec(Circuit(3))
+def test_as_circuit_spec_reads_a_real_circuit():
+    """The workaround this replaces: a `Circuit` used to be unreadable here."""
+    c = Circuit(3)
+    c.h(0)
+    c.pauli_rotation("ZZ", [1, 2], -math.pi / 2)
+    c.depolarize(0.1, [0])
+    c.unitary_1q(2, np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex))
+    spec = oracles.as_circuit_spec(c)
+    assert spec.num_qubits == 3
+    assert spec.gate_names == ("h", "pauli_rotation", "depolarize", "unitary_1q")
+    assert spec.support(1) == (1, 2)
+    assert not spec.is_unitary
+    # A `matrix` arrives as the JSON [re, im] form and is converted on ingest.
+    assert isinstance(spec.gates[3]["matrix"], np.ndarray)
+    # ... and every oracle takes the Circuit itself, with no coercion by hand.
+    pytest.importorskip("qiskit_aer")
+    unitary = Circuit(1)
+    unitary.h(0)
+    assert oracles.statevector_expectation(unitary, "X") == pytest.approx(1.0, abs=1e-12)
 
 
 def test_circuit_spec_round_trips_through_task_json():

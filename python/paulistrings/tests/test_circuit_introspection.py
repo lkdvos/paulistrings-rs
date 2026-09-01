@@ -61,7 +61,9 @@ def _haar_unitary(rng, n):
 
 
 def _matrix_from_json(nested):
-    return np.array([[complex(re, im) for re, im in row] for row in nested], dtype=complex)
+    return np.array(
+        [[complex(re, im) for re, im in row] for row in nested], dtype=complex
+    )
 
 
 def _unitary_circuit(n=4, seed=7):

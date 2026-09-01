@@ -1,11 +1,12 @@
-"""``PauliSum.expectation_stabilizer``.
+"""``PauliSum.expectation_stabilizer`` and ``interop.stabilizers_from_stim``.
 
 Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A8-ii.
 The core's own hand-computed cases live in
 ``crates/paulistrings/src/stabilizer.rs``; what is added here is the *string*
-surface (signed generator specs, their error messages) plus an independent
-oracle the Rust side cannot reach: a dense ``numpy`` projector
-``Pi = prod_i (I + s_i G_i) / 2`` at ``n <= 6``.
+surface (signed generator specs, their error messages) plus two independent
+oracles the Rust side cannot reach: a dense ``numpy`` projector
+``Pi = prod_i (I + s_i G_i) / 2`` at ``n <= 6``, and ``stim``'s own
+``TableauSimulator.peek_observable_expectation``.
 
 Note CI does not run these (see CLAUDE.md); run locally with
 ``maturin develop --release`` then ``pytest python/paulistrings/tests``.
@@ -18,6 +19,7 @@ import numpy as np
 import pytest
 
 from paulistrings import PauliSum
+from paulistrings import interop
 
 TOL = 1e-12
 
@@ -345,3 +347,125 @@ def test_a_non_string_generator_is_a_type_error():
 
 def test_an_empty_sum_contracts_to_zero():
     assert PauliSum(3).expectation_stabilizer(["ZII", "IZI", "IIZ"]) == 0.0
+
+
+# =============================================================================
+# stim tableau ingestion
+# =============================================================================
+
+
+def test_stabilizers_from_stim_bell():
+    stim = pytest.importorskip("stim")
+    gens = interop.stabilizers_from_stim(stim.Circuit("H 0\nCNOT 0 1"))
+    assert gens == ["+XX", "+ZZ"]
+    assert _sum({"YY": 1.0}, 2).expectation_stabilizer(gens).real == pytest.approx(-1.0)
+
+
+def test_stabilizers_from_stim_accepts_program_text_and_a_tableau():
+    stim = pytest.importorskip("stim")
+    text = "H 0\nCNOT 0 1\nCNOT 1 2"
+    from_text = interop.stabilizers_from_stim(text)
+    from_circuit = interop.stabilizers_from_stim(stim.Circuit(text))
+    from_tableau = interop.stabilizers_from_stim(stim.Circuit(text).to_tableau())
+    assert from_text == from_circuit == from_tableau
+    # GHZ up to the generator spelling stim happens to produce.
+    assert _sum({"XXX": 1.0}, 3).expectation_stabilizer(from_text).real == pytest.approx(1.0)
+    assert _sum({"YYX": 1.0}, 3).expectation_stabilizer(from_text).real == pytest.approx(-1.0)
+    assert _sum({"ZII": 1.0}, 3).expectation_stabilizer(from_text).real == pytest.approx(0.0)
+
+
+def test_stabilizers_from_stim_accepts_a_tableau_simulator():
+    stim = pytest.importorskip("stim")
+    sim = stim.TableauSimulator()
+    sim.do(stim.Circuit("H 0\nCNOT 0 1"))
+    assert interop.stabilizers_from_stim(sim) == ["+XX", "+ZZ"]
+
+
+def test_stabilizers_from_stim_pads_to_num_qubits():
+    stim = pytest.importorskip("stim")
+    gens = interop.stabilizers_from_stim(stim.Circuit("H 0\nCNOT 0 1"), num_qubits=4)
+    assert gens == ["+XXII", "+ZZII", "+IIZI", "+IIIZ"]
+    s = _sum({"YYII": 1.0, "IIZI": 1.0}, 4)
+    assert s.expectation_stabilizer(gens).real == pytest.approx(0.0)
+
+
+def test_stabilizers_from_stim_refuses_to_shrink():
+    stim = pytest.importorskip("stim")
+    with pytest.raises(ValueError, match="num_qubits=1"):
+        interop.stabilizers_from_stim(stim.Circuit("H 0\nCNOT 0 1"), num_qubits=1)
+
+
+def test_stabilizers_from_stim_rejects_a_measurement():
+    stim = pytest.importorskip("stim")
+    with pytest.raises(Exception):
+        interop.stabilizers_from_stim(stim.Circuit("H 0\nM 0"))
+
+
+def test_stabilizers_from_stim_rejects_a_wrong_type():
+    pytest.importorskip("stim")
+    with pytest.raises(TypeError, match="stabilizers_from_stim"):
+        interop.stabilizers_from_stim(42)
+
+
+def _random_clifford_circuit(stim, n, depth, rng):
+    c = stim.Circuit()
+    for _ in range(depth):
+        for q in range(n):
+            gate = rng.choice(["H", "S", "X", "Z", "I"])
+            if gate != "I":
+                c.append(gate, [q])
+        for q in range(0, n - 1, 2):
+            if rng.integers(0, 2):
+                c.append("CNOT", [q, q + 1])
+        for q in range(1, n - 1, 2):
+            if rng.integers(0, 2):
+                c.append("CZ", [q, q + 1])
+    return c
+
+
+@pytest.mark.parametrize("n", [3, 5, 8])
+def test_random_clifford_output_states_match_stim_peek(n):
+    """stim's own expectations on the same state, as an end-to-end oracle."""
+    stim = pytest.importorskip("stim")
+    rng = np.random.default_rng(0xC1A + n)
+    nonzero = 0
+    for _ in range(3):
+        circuit = _random_clifford_circuit(stim, n, 4, rng)
+        gens = interop.stabilizers_from_stim(circuit, num_qubits=n)
+        sim = stim.TableauSimulator()
+        sim.set_num_qubits(n)
+        sim.do(circuit)
+        # Every group element, so the +-1 branch is exercised and not just the 0
+        # one that a random weight-n probe almost always lands on.
+        probes = [
+            "".join(rng.choice(list("IXYZ")) for _ in range(n)) for _ in range(8)
+        ] + [_split_sign(g)[1] for g in gens]
+        for label in probes:
+            want = sim.peek_observable_expectation(stim.PauliString(label))
+            got = _sum({label: 1.0}, n).expectation_stabilizer(gens)
+            assert abs(got - want) < TOL, f"{label}: {got} vs stim {want}"
+            nonzero += abs(want) > 0
+    # The generator probes are group elements, so they must all be +-1.
+    assert nonzero >= 3 * n, f"only {nonzero} non-zero expectations seen"
+
+
+def test_random_clifford_multi_term_sum_matches_stim_peek():
+    """Linearity end to end: one contraction versus stim, term by term."""
+    stim = pytest.importorskip("stim")
+    n = 6
+    rng = np.random.default_rng(0xC1B)
+    circuit = _random_clifford_circuit(stim, n, 6, rng)
+    gens = interop.stabilizers_from_stim(circuit, num_qubits=n)
+    sim = stim.TableauSimulator()
+    sim.set_num_qubits(n)
+    sim.do(circuit)
+
+    terms = _random_terms(n, 40, rng)
+    want = sum(
+        c * sim.peek_observable_expectation(stim.PauliString(label))
+        for label, c in terms.items()
+    )
+    got = _sum(terms, n).expectation_stabilizer(gens)
+    assert abs(got - want) < TOL, f"{got} vs stim {want}"
+    # The probe has to be non-trivial, or the assertion above is vacuous.
+    assert abs(want) > 1e-6

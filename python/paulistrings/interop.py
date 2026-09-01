@@ -1,5 +1,9 @@
 """Circuit/task importers: ``stim``, ``qiskit``, and the frozen task-JSON schema.
 
+Also ``stabilizers_from_stim``, which reads a Clifford circuit's *output state*
+rather than its gates, as the signed generator list
+``PauliSum.expectation_stabilizer`` contracts against (design source §A8-ii).
+
 Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A5. This
 module is shipped API (consumed by the examples & benchmarks suite and by
 ``benchmarks/julia/runner.jl``'s task-JSON counterpart), not example code, so
@@ -23,8 +27,8 @@ conflict recorded in
 because the *parser's* Y-phase folding (not stim's convention, which was
 always Hermitian) was the thing that got fixed.
 
-``circuit_from_stim`` and ``circuit_from_qiskit`` both lazily import their
-respective optional dependency inside the function body, so
+``circuit_from_stim``, ``stabilizers_from_stim`` and ``circuit_from_qiskit`` all
+lazily import their respective optional dependency inside the function body, so
 ``import paulistrings`` and this module's own import never require ``stim``
 or ``qiskit`` to be installed.
 """
@@ -47,6 +51,7 @@ __all__ = [
     "circuit_from_qiskit",
     "circuit_from_json",
     "load_task",
+    "stabilizers_from_stim",
     "Task",
 ]
 
@@ -597,3 +602,86 @@ def load_task(path) -> Task:
         state=state,
         raw=raw,
     )
+
+
+# =============================================================================
+# stim stabilizer-state ingestion
+# =============================================================================
+
+# stim's `PauliString.__getitem__` alphabet, index -> our character.
+_STIM_PAULI_CHARS = "IXYZ"
+
+
+def stabilizers_from_stim(src, *, num_qubits=None):
+    """Signed stabilizer generators of a Clifford circuit's output state.
+
+    Returns the list of ``"+XX"``-style signed Pauli strings
+    ``PauliSum.expectation_stabilizer`` consumes: one generator per qubit, each
+    of length ``num_qubits``, in this library's Hermitian convention — which is
+    stim's too (see this module's header), so no phase has to be reconciled.
+
+    `src` is a ``stim.Tableau``, a ``stim.Circuit`` (or its program text / a
+    path to it, as ``circuit_from_stim`` accepts), or a
+    ``stim.TableauSimulator``. A circuit is turned into a tableau with
+    ``Circuit.to_tableau()``, which hard-errors on measurements, resets and
+    noise rather than skipping them; the generators are then the images
+    ``U Z_k U^dagger = tableau.z_output(k)`` of the ``|0...0>`` stabilizers.
+
+    `num_qubits` pads the register on the right: the extra qubits are given
+    ``+Z`` generators, i.e. left in ``|0>``. This is what lets a stim circuit
+    that only mentions its first few qubits be read against a ``PauliSum`` on a
+    wider register. Passing fewer qubits than the tableau has is a
+    ``ValueError`` — dropping generators would silently change the state.
+
+    >>> import stim  # doctest: +SKIP
+    >>> stabilizers_from_stim(stim.Circuit("H 0\\nCNOT 0 1"))  # doctest: +SKIP
+    ['+XX', '+ZZ']
+    """
+    import stim
+
+    if isinstance(src, stim.Tableau):
+        paulis = [src.z_output(k) for k in range(len(src))]
+    elif isinstance(src, stim.TableauSimulator):
+        paulis = list(src.canonical_stabilizers())
+    elif isinstance(src, (stim.Circuit, str, os.PathLike)):
+        tableau = _load_stim_circuit(src).to_tableau()
+        paulis = [tableau.z_output(k) for k in range(len(tableau))]
+    else:
+        raise TypeError(
+            "stabilizers_from_stim expects a stim.Tableau, stim.Circuit, "
+            "stim.TableauSimulator, or stim program text/path; got "
+            f"{type(src).__name__}"
+        )
+
+    n = len(paulis)
+    if num_qubits is None:
+        width = n
+    elif num_qubits < n:
+        raise ValueError(
+            f"stabilizers_from_stim: num_qubits={num_qubits} is smaller than the "
+            f"{n} qubits the tableau covers; dropping generators would change the state"
+        )
+    else:
+        width = num_qubits
+
+    generators = []
+    for k, ps in enumerate(paulis):
+        sign = ps.sign
+        if sign == 1:
+            prefix = "+"
+        elif sign == -1:
+            prefix = "-"
+        else:
+            # Unreachable for a tableau's Z-images (they are Hermitian), but a
+            # silent wrong sign would be far worse than a hard error.
+            raise ValueError(
+                f"stabilizers_from_stim: generator {k} has non-real sign {sign!r}; "
+                "a stabilizer generator must be Hermitian"
+            )
+        chars = [_STIM_PAULI_CHARS[ps[q]] for q in range(len(ps))]
+        chars += ["I"] * (width - len(chars))
+        generators.append(prefix + "".join(chars))
+    # Padding qubits stay in |0>, i.e. are stabilized by +Z.
+    for q in range(n, width):
+        generators.append("+" + "".join("Z" if i == q else "I" for i in range(width)))
+    return generators

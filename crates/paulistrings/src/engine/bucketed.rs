@@ -881,6 +881,49 @@ mod tests {
     pub(super) struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
+    /// One Haar-random SU(4) block — the *dense*-PTM two-qubit gate.
+    ///
+    /// Entries transcribed from `examples/phase_breakdown.rs::haar_su4_block`
+    /// (itself `examples/common/circuits.py::haar_su4` under
+    /// `default_rng(0xC0FFEE)`), so the differential net and the
+    /// `phase_breakdown` `su4` cell exercise the same matrix. Unitary to
+    /// 2.5e-16. Every PTM entry is nonzero, so all 16 bucket deltas are
+    /// realized: the gather run is 15 concatenated rest streams with ~15-fold
+    /// duplicate keys, which is the shape the radix sort kernel is chosen for.
+    pub(super) fn haar_su4<const W: usize>(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
+        let _ = std::marker::PhantomData::<[(); W]>;
+        crate::channel::GeneralUnitary2Q::from_matrix(
+            q0,
+            q1,
+            [
+                [
+                    Complex64::new(0.44535882417102446, 0.1243885298575445),
+                    Complex64::new(-0.09402453034947537, -0.14670085591185988),
+                    Complex64::new(0.7459177705812382, -0.3801992439705379),
+                    Complex64::new(0.052557524520682804, 0.22828530169893588),
+                ],
+                [
+                    Complex64::new(-0.04863200501298571, -0.40347772310563557),
+                    Complex64::new(0.7069517563162028, 0.008408200837924597),
+                    Complex64::new(0.26012555224671347, -0.12053357328338017),
+                    Complex64::new(-0.3528728311960538, -0.3581567969892209),
+                ],
+                [
+                    Complex64::new(-0.35880447773297086, 0.11743595956162649),
+                    Complex64::new(-0.3097428484619983, 0.594366207605036),
+                    Complex64::new(0.1610278707748687, -0.25258937630123157),
+                    Complex64::new(-0.5597163461470217, 0.07240555858329784),
+                ],
+                [
+                    Complex64::new(-0.578592686173378, -0.3791072567045837),
+                    Complex64::new(0.05738813758483608, 0.13145928539206422),
+                    Complex64::new(0.3453330441780492, 0.08874282848443517),
+                    Complex64::new(0.5033919610984813, 0.34698642893070086),
+                ],
+            ],
+        )
+    }
+
     /// The term trace's state machine, independent of any propagation:
     /// `None` ⟺ off, `enable` is idempotent and non-destructive, `take`
     /// drains but stays on. What the counts *mean* is pinned by
@@ -1097,6 +1140,16 @@ mod tests {
                 }),
             ),
             (
+                // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
+                // deltas are realized (fanout ~15). `general_2q` above is
+                // sqrt(SWAP), whose PTM is sparse (measured fanout 3.65), so
+                // without this cell nothing in the net exercises the
+                // dense-PTM gather run — the shape the per-run sort kernel is
+                // selected on (see `merge::sort_rows_radix_with_scratch`).
+                "haar_su4",
+                Box::new(haar_su4::<1>(1, 5)),
+            ),
+            (
                 // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
                 "rot_wide",
                 Box::new(PauliRotation::new(
@@ -1160,6 +1213,9 @@ mod tests {
                     0.33,
                 )),
             ),
+            // Dense SU(4), support straddling the word boundary — the
+            // dense-PTM run shape at `W = 2`.
+            ("haar_su4_cross_word", Box::new(haar_su4::<2>(60, 70))),
         ];
         for (name, ch) in &channels {
             let cr: &dyn Channel<2> = ch.as_ref();

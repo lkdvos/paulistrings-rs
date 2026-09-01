@@ -1,26 +1,43 @@
 //! Per-run sort and fused two-stream merge — the bucketed engine's inner
 //! kernels.
 //!
-//! [`sort_rows_with_scratch`] canonicalizes one gather run's *rest* stream and
-//! [`merge2_into`] fuses the id/rest two-stream merge with the segmented
+//! [`sort_rows_with_scratch`] and [`sort_rows_radix_with_scratch`] canonicalize
+//! one gather run's *rest* stream — the first by comparison, the second by a
+//! radix pass over a monotone surrogate; `bucketed.rs` picks between them per
+//! layer from the plan's rest-delta count, see [`RADIX_MIN_REST_STREAMS`].
+//! [`merge2_into`] then fuses the id/rest two-stream merge with the segmented
 //! reduction that restores the `PauliSum` invariant (strictly ascending, no
-//! duplicates) inside a destination bucket. Both are called per gather run by
+//! duplicates) inside a destination bucket. All are called per gather run by
 //! `engine::bucketed`; [`SortScratch`] is the worker-persistent scratch the
-//! sort reuses so a steady-state layer allocates nothing.
+//! sorts reuse so a steady-state layer allocates nothing.
+//!
+//! Both sorts satisfy one contract and nothing more, pinned by
+//! `tests::assert_sort_contract`: the output is **ascending** in lex `(x, z)`
+//! with duplicates allowed, and is a permutation of the input `(x, z, c)`
+//! triples. Equal-key order is unspecified (ARCHITECTURE.md §Determinism), so
+//! the two kernels are interchangeable to floating-point tolerance and not
+//! bitwise.
 
 use num_complex::Complex64;
 
 use crate::truncation::TruncationPolicy;
 
-/// Worker-persistent scratch for [`sort_rows_with_scratch`].
+/// Worker-persistent scratch for the per-run sorts.
 ///
 /// Held across coset tasks (one instance per `CosetScratch`, in turn one per
-/// Rayon worker, per `bucketed.rs`'s `LayerScratch`): `perm` and the `tmp_*`
-/// triple retain their high-water capacity across calls, so a run at or below
-/// a previously-seen size sorts without allocating.
+/// Rayon worker, per `bucketed.rs`'s `LayerScratch`): every buffer retains its
+/// high-water capacity across calls, so a run at or below a previously-seen
+/// size sorts without allocating. `perm` serves the comparison kernel;
+/// `packed`/`aux` serve the radix kernel; the `tmp_*` triple is the output
+/// staging both share.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SortScratch<const W: usize> {
     perm: Vec<u32>,
+    /// `(surrogate << 32) | row index` records, in sorted order once the
+    /// radix kernel has run. Empty unless that kernel is selected.
+    packed: Vec<u64>,
+    /// The radix kernel's double buffer for `packed`.
+    aux: Vec<u64>,
     tmp_x: Vec<[u64; W]>,
     tmp_z: Vec<[u64; W]>,
     tmp_c: Vec<Complex64>,
@@ -33,7 +50,12 @@ impl<const W: usize> SortScratch<W> {
     /// needs it to confirm the sort scratch's footprint stops growing too.
     #[cfg(test)]
     pub(crate) fn total_capacity(&self) -> usize {
-        self.perm.capacity() + self.tmp_x.capacity() + self.tmp_z.capacity() + self.tmp_c.capacity()
+        self.perm.capacity()
+            + self.packed.capacity()
+            + self.aux.capacity()
+            + self.tmp_x.capacity()
+            + self.tmp_z.capacity()
+            + self.tmp_c.capacity()
     }
 }
 
@@ -109,6 +131,230 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     std::mem::swap(x, &mut s.tmp_x);
     std::mem::swap(z, &mut s.tmp_z);
     std::mem::swap(c, &mut s.tmp_c);
+}
+
+/// Minimum number of *rest* delta streams in a gather run before
+/// `bucketed.rs` switches that layer to [`sort_rows_radix_with_scratch`].
+///
+/// The two kernels win in opposite regimes, and the crossover is steep, so
+/// this is deliberately conservative — only a genuinely dense two-qubit PTM
+/// (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears
+/// it. Measured on synthetic runs faithful to `fill_coset`'s output-major
+/// gather (non-authoritative microbench, `research/notes/2026-09-01-sort-kernel.md`):
+///
+/// | run shape | rest streams | duplicate density | radix vs comparison |
+/// |---|---|---|---|
+/// | dense PTM (`su4`) | 15 | ~15× | **−36…−51 % at `W = 1`, −7…−16 % at `W = 2`** |
+/// | dense PTM, one bucket | 15 | ~15× | **−31…−38 % at `W = 2`** |
+/// | sparse PTM (`rotation_zz`) | 1 | ~1× | **+130…+165 %** |
+///
+/// The sparse-PTM row is why this is a gate and not a replacement: with one
+/// nearly-sorted stream the comparison sort costs about one comparison per row
+/// and the radix's fixed passes are pure overhead. `2..8` rest streams —
+/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — is **unmeasured**
+/// and deliberately left on the comparison kernel.
+pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
+
+/// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
+///
+/// 16 bits is two passes. It is not chosen to resolve every key — it is chosen
+/// to resolve *groups*: a dense-PTM run of `n` rows holds about `n / 15`
+/// distinct keys, so 65536 surrogate values leave the residual tie groups at
+/// the duplicate groups themselves, which the fixup pass then orders with
+/// roughly one full-key comparison per row. Wider surrogates buy fewer ties at
+/// the cost of another whole pass and measured worse everywhere (24 bits
+/// −2…−38 %, 32 bits +11…−32 % against 16 bits' −7…−51 %); a single 11-bit
+/// pass beat it below ~8 k rows and lost above.
+const RADIX_SURROGATE_BITS: u32 = 16;
+/// Digit width per radix pass. 256 counters is 1 KiB of stack histogram.
+const RADIX_DIGIT_BITS: u32 = 8;
+const RADIX_BUCKETS: usize = 1 << RADIX_DIGIT_BITS;
+/// Below this many *discriminating* bits in the surrogate window the radix
+/// pass cannot separate the run into useful groups, so the comparison kernel
+/// runs instead. Reached by low-weight sums (a `WeightCutoff`-truncated sum
+/// whose `x` words are nearly constant) and by narrow key spaces.
+const RADIX_MIN_WINDOW_BITS: u32 = 8;
+
+/// Word `k` of the lex key `(x, z)`: `k < W` selects `x[k]`, `k >= W` selects
+/// `z[k - W]`. Word 0 is the **most** significant, matching the derived `Ord`
+/// on `[u64; W]` and hence `PauliString`'s (ARCHITECTURE.md §Data-Model).
+#[inline(always)]
+fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) -> u64 {
+    if k < W {
+        x[i][k]
+    } else {
+        z[i][k - W]
+    }
+}
+
+/// The most significant key word the rows disagree on, its index, and the
+/// disagreeing bits within it. `None` ⟺ every row carries the same key.
+///
+/// One `OR`/`AND` reduction per word, stopping at the first word that
+/// disagrees — for the dense-PTM runs this kernel serves that is word 0, so
+/// the scan touches only the `x` column.
+fn discriminating_window<const W: usize>(
+    x: &[[u64; W]],
+    z: &[[u64; W]],
+) -> Option<(usize, u32, u64)> {
+    let n = x.len();
+    for k in 0..2 * W {
+        let mut any = 0u64;
+        let mut all = !0u64;
+        for i in 0..n {
+            let v = key_word(x, z, k, i);
+            any |= v;
+            all &= v;
+        }
+        let diff = any & !all;
+        if diff != 0 {
+            // Rows agree on every word before `k` and, within word `k`, on
+            // every bit above the highest set bit of `diff`.
+            return Some((k, 63 - diff.leading_zeros(), diff));
+        }
+    }
+    None
+}
+
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone — radix
+/// variant, for gather runs assembled from many delta streams.
+///
+/// Same contract as [`sort_rows_with_scratch`] and freely interchangeable with
+/// it (equal-key order differs; see the module doc). Chosen per layer by
+/// `bucketed.rs` when the plan has at least [`RADIX_MIN_REST_STREAMS`] rest
+/// streams, and it falls back to the comparison kernel itself whenever its
+/// surrogate cannot discriminate.
+///
+/// # Why a surrogate, and why it is order-faithful
+///
+/// The full key is `16·W` bytes — 32 at `W = 2` — so an LSD radix over all of
+/// it would be 32 passes. Instead one pass finds
+/// [`discriminating_window`]: the most significant key word `k` the rows
+/// actually disagree on, and the highest disagreeing bit `hb` inside it. Every
+/// row then shares the same value on words before `k` and on bits above `hb`,
+/// so writing `word_k = H·2^(hb+1) + L` with `H` **constant across the run**,
+///
+/// ```text
+/// surrogate = (word_k >> shift) & (2^NBITS − 1) = L >> shift,
+///     shift = (hb + 1) − NBITS
+/// ```
+///
+/// — the mask erases exactly the constant `H`, and `L >> shift` is monotone in
+/// `L`, which is monotone in the key. So `key₁ < key₂ ⟹ surrogate₁ ≤
+/// surrogate₂`: sorting by the surrogate never puts two rows in the wrong
+/// order, it only leaves ties, which the fixup pass resolves on the full key.
+/// A run whose keys are *all equal* needs no work at all and returns early.
+///
+/// # Why this beats the comparison sort where it is selected
+///
+/// Not by doing less work — a dense-PTM run arrives as ~15 ascending blocks
+/// and driftsort already merges them at about `log₂ 15 + 1 ≈ 4.9` comparisons
+/// per row, the information-theoretic floor. It wins on the cost of that work:
+/// each of those comparisons is a *dependent indexed load* into a 100–400 KiB
+/// key column (the permutation sort's whole cost, ~10–13 cycles), whereas a
+/// radix pass streams 8-byte records sequentially at ~2 cycles each. Two
+/// passes plus the fixup replace 4.9 such comparisons with ~1.
+// No `#[inline]` hint, deliberately: the one on `sort_rows_with_scratch` is
+// A/B-verified worth ~6% and the one tried on `merge2_into` cost +20-34%
+// (both recorded on those items), so the attribute is load-bearing in both
+// directions here and this function has no measurement either way yet. Leave
+// it at the default and A/B the hint as its own change.
+pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
+    x: &mut Vec<[u64; W]>,
+    z: &mut Vec<[u64; W]>,
+    c: &mut Vec<Complex64>,
+    s: &mut SortScratch<W>,
+) {
+    let len = x.len();
+    debug_assert_eq!(len, z.len());
+    debug_assert_eq!(len, c.len());
+    if len < 2 {
+        return;
+    }
+    // The record packs the row index into the low 32 bits.
+    if len > u32::MAX as usize {
+        sort_rows_with_scratch(x, z, c, s);
+        return;
+    }
+    let Some((k, hb, diff)) = discriminating_window(x, z) else {
+        // Every row carries the same key, so any order is already ascending.
+        return;
+    };
+    let shift = (hb + 1).saturating_sub(RADIX_SURROGATE_BITS);
+    let mask = (1u64 << RADIX_SURROGATE_BITS) - 1;
+    if ((diff >> shift) & mask).count_ones() < RADIX_MIN_WINDOW_BITS {
+        sort_rows_with_scratch(x, z, c, s);
+        return;
+    }
+
+    let SortScratch {
+        packed,
+        aux,
+        tmp_x,
+        tmp_z,
+        tmp_c,
+        ..
+    } = s;
+    packed.clear();
+    packed.extend((0..len).map(|i| (((key_word(x, z, k, i) >> shift) & mask) << 32) | i as u64));
+    // Exactly `len`, so the pass-to-pass `swap` keeps both buffers that long;
+    // `resize` on the retained capacity writes only when the run grew.
+    aux.resize(len, 0);
+
+    let mut digit = 0u32;
+    while digit * RADIX_DIGIT_BITS < RADIX_SURROGATE_BITS {
+        let sh = 32 + digit * RADIX_DIGIT_BITS;
+        let mut count = [0u32; RADIX_BUCKETS + 1];
+        for &v in packed.iter() {
+            count[(((v >> sh) as usize) & (RADIX_BUCKETS - 1)) + 1] += 1;
+        }
+        // A constant digit contributes no ordering: skip its scatter. Common
+        // on the high digit, whose bits the window shift often leaves fixed.
+        if count[1..].iter().filter(|&&n| n != 0).count() > 1 {
+            for t in 1..=RADIX_BUCKETS {
+                count[t] += count[t - 1];
+            }
+            for &v in packed.iter() {
+                let b = ((v >> sh) as usize) & (RADIX_BUCKETS - 1);
+                aux[count[b] as usize] = v;
+                count[b] += 1;
+            }
+            std::mem::swap(packed, aux);
+        }
+        digit += 1;
+    }
+
+    // Fixup: rows sharing a surrogate are ordered on the full key. The radix
+    // is stable and the index sits in the low bits, so a group arrives in
+    // gather order; on the dense-PTM runs this kernel serves, a group is one
+    // duplicate key's ~15 rows and this costs ~1 comparison per row.
+    let mut i = 0usize;
+    while i < len {
+        let surrogate = packed[i] >> 32;
+        let mut j = i + 1;
+        while j < len && packed[j] >> 32 == surrogate {
+            j += 1;
+        }
+        if j - i > 1 {
+            packed[i..j].sort_by(|&a, &b| {
+                let (ia, ib) = (a as u32 as usize, b as u32 as usize);
+                x[ia].cmp(&x[ib]).then_with(|| z[ia].cmp(&z[ib]))
+            });
+        }
+        i = j;
+    }
+
+    // Read the columns out through the record order into the staging triple,
+    // then swap — the same capacity circulation `sort_rows_with_scratch` does.
+    tmp_x.clear();
+    tmp_x.extend(packed.iter().map(|&v| x[v as u32 as usize]));
+    tmp_z.clear();
+    tmp_z.extend(packed.iter().map(|&v| z[v as u32 as usize]));
+    tmp_c.clear();
+    tmp_c.extend(packed.iter().map(|&v| c[v as u32 as usize]));
+    std::mem::swap(x, tmp_x);
+    std::mem::swap(z, tmp_z);
+    std::mem::swap(c, tmp_c);
 }
 
 /// Fused two-stream merge + segmented reduction.
@@ -405,7 +651,136 @@ mod tests {
         }
     }
 
+    /// The radix kernel satisfies the *same* contract on every shape — the
+    /// point of the harness. Includes the two shapes that must reach its
+    /// fallbacks: `thin_window` (fewer than `RADIX_MIN_WINDOW_BITS`
+    /// discriminating bits) and `all_equal` (no discriminating word at all).
+    #[test]
+    fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
+        for (label, x, z, c) in sort_fixtures::<1>(64) {
+            assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
+        }
+        for (label, x, z, c) in sort_fixtures::<2>(128) {
+            assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
+        }
+        for (label, x, z, c) in sort_fixtures::<2>(65) {
+            assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
+        }
+        // Narrow qubit counts put every discriminating bit low in word 0, so
+        // the window shift saturates at 0 and the mask covers the whole word.
+        for q in [3usize, 8, 17, 33] {
+            for (label, x, z, c) in sort_fixtures::<1>(q) {
+                assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
+            }
+        }
+    }
+
+    /// Both kernels agree on the *reduced* content of every fixture: same keys
+    /// in the same order, and equal-key coefficient sums that agree exactly
+    /// (the fixtures' coefficients are small integers, so any summation order
+    /// is exact). This is the interchangeability claim `bucketed.rs` relies on
+    /// when it picks a kernel per layer.
+    #[test]
+    fn the_two_sort_kernels_reduce_to_the_same_sum() {
+        #[allow(clippy::type_complexity)]
+        fn reduced<const W: usize>(
+            kernel: SortKernel<W>,
+            x: &[[u64; W]],
+            z: &[[u64; W]],
+            c: &[Complex64],
+        ) -> Vec<([u64; W], [u64; W], Complex64)> {
+            let (mut gx, mut gz, mut gc) = (x.to_vec(), z.to_vec(), c.to_vec());
+            let mut scratch = SortScratch::<W>::default();
+            kernel(&mut gx, &mut gz, &mut gc, &mut scratch);
+            let (mut ox, mut oz, mut oc) = (Vec::new(), Vec::new(), Vec::new());
+            merge2_into(
+                &[],
+                &[],
+                &[],
+                &gx,
+                &gz,
+                &gc,
+                &mut ox,
+                &mut oz,
+                &mut oc,
+                &AlwaysKeep,
+            );
+            ox.into_iter()
+                .zip(oz)
+                .zip(oc)
+                .map(|((a, b), v)| (a, b, v))
+                .collect()
+        }
+        for (label, x, z, c) in sort_fixtures::<1>(64) {
+            assert_eq!(
+                reduced(sort_rows_radix_with_scratch::<1>, &x, &z, &c),
+                reduced(sort_rows_with_scratch::<1>, &x, &z, &c),
+                "{label}",
+            );
+        }
+        for (label, x, z, c) in sort_fixtures::<2>(128) {
+            assert_eq!(
+                reduced(sort_rows_radix_with_scratch::<2>, &x, &z, &c),
+                reduced(sort_rows_with_scratch::<2>, &x, &z, &c),
+                "{label}",
+            );
+        }
+    }
+
+    /// A steady-state layer must not allocate: the radix kernel's own buffers
+    /// have to stop growing once the largest run has been seen.
+    #[test]
+    fn radix_sort_scratch_capacity_stabilizes() {
+        let mut scratch = SortScratch::<2>::default();
+        let fixtures = sort_fixtures::<2>(128);
+        let run = |s: &mut SortScratch<2>| {
+            for (_, x, z, c) in fixtures.iter() {
+                let (mut gx, mut gz, mut gc) = (x.clone(), z.clone(), c.clone());
+                sort_rows_radix_with_scratch(&mut gx, &mut gz, &mut gc, s);
+            }
+        };
+        run(&mut scratch);
+        run(&mut scratch);
+        let after_two = scratch.total_capacity();
+        run(&mut scratch);
+        run(&mut scratch);
+        assert_eq!(
+            scratch.total_capacity(),
+            after_two,
+            "radix scratch capacity kept growing after the high-water run",
+        );
+    }
+
     proptest! {
+        /// Randomized shapes, including short runs, narrow key spaces and
+        /// heavy duplication (the `% modulus` draw makes collisions common).
+        #[test]
+        fn sort_rows_radix_contract_proptest(
+            rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
+            modulus in 1u64..64,
+            spread in 0u32..60,
+        ) {
+            // `spread` slides the varying bits up and down word 0, exercising
+            // every window shift including the saturating one.
+            let x: Vec<[u64; 1]> = rows.iter().map(|r| [(r.0 % modulus) << spread]).collect();
+            let z: Vec<[u64; 1]> = rows.iter().map(|r| [(r.1 % modulus) << spread]).collect();
+            let c: Vec<Complex64> = rows
+                .iter()
+                .map(|r| Complex64::new((r.0 % 11) as f64 - 5.0, (r.1 % 7) as f64 - 3.0))
+                .collect();
+            assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, "radix proptest w1");
+
+            let x2: Vec<[u64; 2]> = rows
+                .iter()
+                .map(|r| [(r.0 % modulus) << spread, r.1 % modulus])
+                .collect();
+            let z2: Vec<[u64; 2]> = rows
+                .iter()
+                .map(|r| [(r.1 % modulus) << spread, r.0 % modulus])
+                .collect();
+            assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x2, &z2, &c, "radix proptest w2");
+        }
+
         /// Randomized shapes, including short runs, narrow key spaces and
         /// heavy duplication (the `% modulus` draw makes collisions common).
         #[test]

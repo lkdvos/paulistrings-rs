@@ -39,7 +39,10 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::coset::Gf2Span;
-use super::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
+use super::merge::{
+    merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
+    RADIX_MIN_REST_STREAMS,
+};
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -305,6 +308,14 @@ enum DeltaPlan<'p, const W: usize> {
         /// borrowing there would make the merge scan mostly-skipped rows,
         /// measured +15–30% on cnot/h (`research/notes/2026-08-31-v0.6-results.md`).
         dense_identity: bool,
+        /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch`
+        /// instead of the comparison kernel — true exactly when the plan has
+        /// at least `merge::RADIX_MIN_REST_STREAMS` rest streams, i.e. a dense
+        /// two-qubit PTM. Decided once per layer, so the kernel choice costs
+        /// nothing per run and every sparse-PTM layer keeps the code path it
+        /// had. See `RADIX_MIN_REST_STREAMS` for the measurements behind the
+        /// threshold.
+        radix_sort: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
     /// generator pass.
@@ -333,11 +344,17 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
                     has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
+                // `deltas()` is the *realized* delta set (§Bucketing), so its
+                // length minus the identity entry is exactly the number of
+                // streams the gather concatenates into a run's rest columns —
+                // the quantity the two sort kernels' crossover turns on.
+                let rest_streams = ptm.deltas().len() - has_identity as usize;
                 DeltaPlan::Local {
                     ptm,
                     coords,
                     has_identity,
                     dense_identity,
+                    radix_sort: rest_streams >= RADIX_MIN_REST_STREAMS,
                 }
             }
             Prepared::Rotation(r) => DeltaPlan::Rotation {
@@ -580,6 +597,7 @@ fn fill_coset<const W: usize, T>(
             coords,
             has_identity,
             dense_identity,
+            ..
         } => {
             if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
                 gather_local_output_major(old, runs, ptm, coords, *has_identity, *dense_identity);
@@ -639,13 +657,26 @@ fn fill_coset<const W: usize, T>(
     // they are the source bucket's own key columns, borrowed here, with the
     // gathered `id_coeff` aligned to them row for row; `H·0 = 0`
     // means member `j`'s id source is `old[j]`.
+    // Which sort kernel this layer uses, hoisted out of the run loop: a
+    // per-layer property of the plan, never a per-run one.
+    let radix = matches!(
+        plan,
+        DeltaPlan::Local {
+            radix_sort: true,
+            ..
+        }
+    );
     for (j, (run, dst)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += run.len() as u64;
             stats.rows_sorted += run.coeff.len() as u64;
         }
-        sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
+        if radix {
+            sort_rows_radix_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
+        } else {
+            sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
+        }
         #[cfg(feature = "phase-timing")]
         st.lap(&mut stats.sort_ns);
         let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
@@ -1573,6 +1604,87 @@ mod tests {
         // 16; H: 2 of 4) — these keep the materialized id stream.
         check(&Clifford2Q::cnot(1, 4), false, "cnot");
         check(&Clifford1Q::h(3), false, "h");
+    }
+
+    /// Which sort kernel each built-in's layer gets.
+    ///
+    /// The radix kernel wins on many-stream, high-duplicate runs and loses
+    /// badly (+130–165 %) on a single nearly-sorted stream, so the gate must
+    /// fire for dense two-qubit PTMs and *only* those. Pinned per channel
+    /// because the trigger is the realized delta-set size, which a PTM change
+    /// could move silently in either direction — a gate that quietly stopped
+    /// firing would look like nothing more than a lost speedup, and one that
+    /// started firing on `rotation_zz` would be a large regression.
+    #[test]
+    fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
+        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
+        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool) {
+            let prep = ch.prepare(&hash, false).unwrap();
+            let span = Gf2Span::new(&prep.bucket_deltas(), 8);
+            match DeltaPlan::new(&prep, &span) {
+                DeltaPlan::Local {
+                    ptm,
+                    has_identity,
+                    radix_sort,
+                    ..
+                } => (ptm.deltas().len() - has_identity as usize, radix_sort),
+                // A wide rotation has one rest stream by construction and no
+                // `radix_sort` field: `fill_coset` reads `false` for it.
+                DeltaPlan::Rotation { .. } => {
+                    assert!(
+                        label.starts_with("rot"),
+                        "{label}: unexpected Rotation plan"
+                    );
+                    (1, false)
+                }
+            }
+        };
+        let mut selected = Vec::new();
+        let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
+            ("haar_su4", Box::new(haar_su4::<1>(1, 5))),
+            ("gu2q_sqrt_swap", Box::new(sqrt_swap_w1(1, 5))),
+            ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
+            ("cz", Box::new(Clifford2Q::cz(1, 5))),
+            ("swap", Box::new(Clifford2Q::swap(1, 5))),
+            ("h", Box::new(Clifford1Q::h(3))),
+            ("s", Box::new(Clifford1Q::s(3))),
+            (
+                "rot_zz",
+                Box::new(PauliRotation::new(
+                    {
+                        let mut g = PauliString::<1>::z(1);
+                        g.mul_assign(&PauliString::<1>::z(5));
+                        g
+                    },
+                    0.3,
+                )),
+            ),
+            (
+                "depolarizing",
+                Box::new(Depolarizing {
+                    support: [3],
+                    p: 0.05,
+                }),
+            ),
+        ];
+        for (label, ch) in &cases {
+            let (streams, radix) = rest_streams(ch.as_ref(), label);
+            assert_eq!(
+                radix,
+                streams >= RADIX_MIN_REST_STREAMS,
+                "{label}: {streams} rest streams but radix_sort = {radix}",
+            );
+            if radix {
+                selected.push(*label);
+            }
+        }
+        // The dense SU(4) realizes all 16 deltas; nothing else here comes
+        // close (sqrt(SWAP) is the runner-up at 3).
+        assert_eq!(
+            selected,
+            vec!["haar_su4"],
+            "the radix gate fired on an unexpected set of channels",
+        );
     }
 
     // ---- multi-layer, staying bucketed ----

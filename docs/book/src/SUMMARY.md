@@ -19,3 +19,7 @@
 - [C — Deep Trotter, and a reachability boundary](benchmarks/c-deep-trotter.md)
 - [D — XXZ chain scaling, and the crossover](benchmarks/d-xxz-chain.md)
 - [E — Random SU(4) brickwork](benchmarks/e-su4-brickwork.md)
+
+# Comparisons
+
+- [Against other tools](comparisons.md)

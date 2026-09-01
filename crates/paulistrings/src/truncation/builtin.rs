@@ -301,6 +301,166 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
     }
 }
 
+/// Number of bins in [`ApproxTopN`]'s histogram: one per `f64` binade, i.e.
+/// the full range of the 11-bit biased exponent. `+∞` and `NaN` share the top
+/// bin; every subnormal and `0.0` share bin 0.
+///
+/// `2048 × 4 B = 8 KB`, so a bin counter array is L1-resident and the
+/// histogram pass costs one L1 increment per term. Adding mantissa bits for a
+/// finer threshold would leave L1 (3 bits → 64 KB) and turn that increment
+/// into an L2 access — the resolution/cost trade-off is documented on
+/// [`ApproxTopN`] and deliberately settled in favour of the cache.
+const APPROX_BINS: usize = 2048;
+
+/// Retain **approximately** `n` terms: at most `n`, and more than `n - p`
+/// where `p` is the population of the coarsest octave that did not fit. The
+/// cheap sibling of [`TopN`] — no selection, no candidate array, no tie rule.
+///
+/// # Semantics
+///
+/// Bin every term by the binade (octave) of `|c|²` — a factor of 2 in `|c|²`,
+/// i.e. `√2` in `|c|` — and let `S_k` be the number of terms in bin `k` and
+/// above. The kept set is `{ |c|² ≥ 2^(k*-1023) }` for the **lowest** `k*`
+/// with `S_k* ≤ n`, so:
+///
+/// 1. `kept = S_k* ≤ n` — the bound [`TopN`] exists to provide still holds
+///    exactly, which is why the rounding goes this way.
+/// 2. `kept > n - p` with `p = S_{k*-1} - S_k*` the population of the next
+///    octave down: including it would have overshot `n`.
+/// 3. Every kept magnitude is ≥ every dropped one, and the retained set is a
+///    union of *whole* octaves.
+///
+/// So the shortfall against `n` is bounded by how many terms sit inside one
+/// `√2`-wide magnitude band around the cut. On a magnitude distribution spread
+/// over many octaves that is a small fraction of `n`; on a tightly clustered
+/// one it is not, and the degenerate case is item 4 below.
+///
+/// # `ApproxTopN` versus `TopN`
+///
+/// | | [`TopN`] | `ApproxTopN` |
+/// |---|---|---|
+/// | retained | exactly `n`, or fewer if a tie group straddles | `(n - p, n]` |
+/// | work | fill an `8 B/term` array, `select_nth_unstable`, suffix scan, compact | histogram (8 KB, L1), compact |
+/// | per-layer allocation | one pooled buffer, `8 B/term` | none |
+/// | tie groups | kept whole *iff they fit*, else dropped whole | always kept whole |
+/// | threshold | the exact `n`-th largest `\|c\|²` | an octave edge |
+///
+/// [`TopN`] remains the default and the one to use when the retained count
+/// matters. Reach for this when `n` is a *memory budget* and a few percent of
+/// slack in the term count is cheaper than the selection.
+///
+/// Like [`TopN`], the retained set is a pure function of the magnitude
+/// multiset: independent of the bucket partition, the hash seed and the thread
+/// count. Unlike [`TopN`], it needs no tie rule to get there — equal
+/// magnitudes have equal squares and therefore share an octave, so a symmetry
+/// multiplet can never be split, whatever `n` is.
+///
+/// # ⚠ A sum inside a single octave is wiped to empty
+///
+/// **If every magnitude lands in one octave of `|c|²` and `len > n`, nothing
+/// is kept.** `S_k*` can only be `0` or `len`, and `len > n`. This is
+/// [`TopN`]'s all-tied wipe with a wider notion of "tied" (a factor of `√2`
+/// in `|c|` rather than bitwise equality), and it resolves the same way for
+/// the same reason: keeping the octave anyway would let the policy retain
+/// unboundedly more than `n`. Pair with [`CoefficientThreshold`] via [`And`],
+/// or use [`TopN`], if that outcome would be wrong for your workload.
+///
+/// Squares underflow to `0.0` below `|c| ≈ 1.57e-162`, which lumps that band
+/// into bin 0 along with the exact zeros — see [`TopN`]'s "Ranked on `|c|²`"
+/// for why that is accepted.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::ApproxTopN;
+/// let policy = ApproxTopN(1_000_000);
+/// # let _ = policy;
+/// ```
+pub struct ApproxTopN(
+    /// Target term count, and a hard upper bound on what is retained. Terms
+    /// below the chosen octave edge are dropped at layer finalization.
+    pub usize,
+);
+
+impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
+    /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²`,
+    /// walk the 2048 bins down from the top to the last edge that still fits
+    /// in `n`, then [`PauliSum::retain`] against that edge.
+    ///
+    /// The bin index is `norm_sqr().to_bits() >> 52`: the `f64` bit pattern of
+    /// a non-negative number is monotone in its value, so the high 12 bits
+    /// (sign always 0, then the exponent) are a `log₂` bucketing, and
+    /// `f64::from_bits(k << 52)` inverts it to the bin's lower edge. Comparing
+    /// `norm_sqr() >= edge` is then the same predicate as `bin >= k` for one
+    /// `f64` compare — and drops `NaN`, which the bin index would keep.
+    ///
+    /// The histogram is accumulated in a fixed number of tasks (four per
+    /// worker) rather than through a `fold`-per-split, so the number of 8 KB
+    /// accumulators and elementwise reductions is bounded by the thread count
+    /// instead of by rayon's splitting.
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        let n = self.0;
+        if sum.len() <= n {
+            return;
+        }
+        if n == 0 {
+            sum.clear();
+            return;
+        }
+        // A bin counter is `u32`; a sum of 2^32 terms is >100 GB of columns.
+        debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
+
+        let hist = {
+            let view = &*sum;
+            let nb = view.num_buckets();
+            let tasks = (rayon::current_num_threads() * 4).clamp(1, nb);
+            (0..tasks)
+                .into_par_iter()
+                .map(|t| {
+                    let mut h = [0u32; APPROX_BINS];
+                    for b in (nb * t / tasks)..(nb * (t + 1) / tasks) {
+                        for c in view.bucket(b).2 {
+                            h[(c.norm_sqr().to_bits() >> 52) as usize] += 1;
+                        }
+                    }
+                    h
+                })
+                .reduce(
+                    || [0u32; APPROX_BINS],
+                    |mut a, b| {
+                        for (x, y) in a.iter_mut().zip(b.iter()) {
+                            *x += y;
+                        }
+                        a
+                    },
+                )
+        };
+
+        // Walk down from the top bin while the running count still fits. `S_k`
+        // is non-increasing in `k`, so the first overshoot is the boundary.
+        let mut kept = 0usize;
+        let mut edge = APPROX_BINS;
+        for bin in (0..APPROX_BINS).rev() {
+            let next = kept + hist[bin] as usize;
+            if next > n {
+                break;
+            }
+            kept = next;
+            edge = bin;
+        }
+        if kept == 0 {
+            // Even the top octave alone overshoots `n` — the single-octave
+            // wipe documented on the type.
+            sum.clear();
+            return;
+        }
+
+        let threshold = f64::from_bits((edge as u64) << 52);
+        sum.retain(|_, _, c| c.norm_sqr() >= threshold);
+        debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
+    }
+}
+
 /// Logical AND of two policies — both must accept.
 ///
 /// # Examples
@@ -368,6 +528,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// `CoefficientThreshold` compares `|c|²` against `ε²`, so a magnitude
     /// whose *square* underflows to zero is indistinguishable from an exact
@@ -870,6 +1031,328 @@ mod tests {
             ]
         );
         sum.assert_invariants();
+    }
+
+    // -----------------------------------------------------------------
+    // ApproxTopN
+    // -----------------------------------------------------------------
+
+    /// A `W = 1` sum of `mags.len()` distinct keys (`x = i`, `z = 0`) with the
+    /// given real coefficients, single-bucket and already in key order.
+    fn sum_of_mags(mags: &[f64]) -> PauliSum<1> {
+        PauliSum::<1>::from_sorted_columns(
+            (0u64..mags.len() as u64).map(|i| [i]).collect(),
+            vec![[0u64]; mags.len()],
+            mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
+            32,
+        )
+    }
+
+    /// The surviving magnitudes, in canonical order.
+    fn kept_mags<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
+        sum.iter().map(|(_, _, c)| c.norm()).collect()
+    }
+
+    /// Octave of `|c|²`, i.e. the bin `ApproxTopN` histograms into, derived
+    /// here from the definition rather than from the implementation.
+    fn octave(c: Complex64) -> usize {
+        (c.norm_sqr().to_bits() >> 52) as usize
+    }
+
+    /// The threshold can only land on an octave boundary of `|c|²`, so the
+    /// retained count is a *cumulative octave population*, not `n`.
+    ///
+    /// Magnitudes 8, 4, 4, 2, 2, 2, 1, 1, 1, 1 — squares 64, 16, 16, 4, 4, 4,
+    /// 1, 1, 1, 1, each a power of two, so the four magnitudes sit in four
+    /// distinct octaves with populations 1, 2, 3, 4 and cumulative counts
+    /// 1, 3, 6, 10 from the top. `ApproxTopN(n)` keeps the largest cumulative
+    /// count that is `<= n`, hand-tabulated below.
+    #[test]
+    fn approx_top_n_keeps_a_cumulative_octave_population() {
+        let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
+        for (n, want) in [
+            (1usize, 1usize),
+            (2, 1),
+            (3, 3),
+            (4, 3),
+            (5, 3),
+            (6, 6),
+            (7, 6),
+            (8, 6),
+            (9, 6),
+        ] {
+            let mut sum = sum_of_mags(&mags);
+            ApproxTopN(n).finalize_layer(&mut sum);
+            sum.assert_invariants();
+            assert_eq!(sum.len(), want, "n={n}");
+            // Whatever survives is the largest `want` magnitudes.
+            let mut got = kept_mags(&sum);
+            got.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            let mut all = mags.to_vec();
+            all.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            assert_eq!(got, all[..want].to_vec(), "n={n}");
+        }
+        // `n >= len` is a no-op, like every other policy's.
+        let mut sum = sum_of_mags(&mags);
+        ApproxTopN(10).finalize_layer(&mut sum);
+        assert_eq!(sum.len(), 10);
+    }
+
+    /// When the cut lands exactly on an octave boundary, the approximation is
+    /// no approximation: the same set [`TopN`] would keep.
+    ///
+    /// `1, 3, 6` are the cumulative octave populations of the fixture above
+    /// (10 is the no-op case). `TopN`'s tie group at each of those `n` fits
+    /// exactly, so both policies return the top `n`.
+    #[test]
+    fn approx_top_n_matches_top_n_when_the_histogram_resolves_exactly() {
+        let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
+        for n in [1usize, 3, 6] {
+            let mut approx = sum_of_mags(&mags);
+            ApproxTopN(n).finalize_layer(&mut approx);
+            let mut exact = sum_of_mags(&mags);
+            TopN(n).finalize_layer(&mut exact);
+            assert_eq!(exact.len(), n, "n={n}: TopN must resolve exactly here");
+            assert_eq!(
+                approx.to_arrays(),
+                exact.to_arrays(),
+                "n={n}: the two policies must agree term for term"
+            );
+        }
+    }
+
+    /// Larger `n` keeps a superset. The threshold is an octave edge that can
+    /// only move *down* as `n` grows, so the retained sets are nested — the
+    /// property that makes the policy safe to tune.
+    #[test]
+    fn approx_top_n_is_monotone_in_n() {
+        let input = crate::test_support::rand_sum::<1>(2000, 10, 0xA9C7);
+        let mut previous: Option<std::collections::HashSet<(u64, u64)>> = None;
+        for n in [1usize, 5, 50, 300, 700, 1300, 1900] {
+            let mut sum = input.clone();
+            ApproxTopN(n).finalize_layer(&mut sum);
+            sum.assert_invariants();
+            // `(x, z)` — `rand_sum` draws both, so `x` alone is not a key.
+            let keys: std::collections::HashSet<(u64, u64)> =
+                sum.iter().map(|(x, z, _)| (x[0], z[0])).collect();
+            if let Some(prev) = &previous {
+                assert!(
+                    prev.is_subset(&keys),
+                    "n={n}: the kept set must be a superset of every smaller n's"
+                );
+            }
+            previous = Some(keys);
+        }
+    }
+
+    /// The `≈n` contract, checked against a bound derived from the input:
+    /// `kept <= n`, and `kept > n - p` where `p` is the population of the
+    /// highest *excluded* octave. Equivalently `kept + p > n`: the next octave
+    /// down would have overshot.
+    #[test]
+    fn approx_top_n_shortfall_is_bounded_by_one_octave() {
+        let input = crate::test_support::rand_sum::<1>(3000, 10, 0xB0117);
+        let len = input.len();
+        for n in [1usize, 17, 200, 900, 2000, len - 1] {
+            let mut sum = input.clone();
+            ApproxTopN(n).finalize_layer(&mut sum);
+            let kept = sum.len();
+            assert!(kept <= n, "n={n}: kept {kept} exceeds the bound");
+
+            // The highest excluded octave: the largest octave of a *dropped*
+            // term. Its population in the *input* is the slack. `(x, z)` is
+            // the key — `rand_sum` draws both.
+            let survivors: std::collections::HashSet<(u64, u64)> =
+                sum.iter().map(|(x, z, _)| (x[0], z[0])).collect();
+            let dropped_octaves: Vec<usize> = input
+                .iter()
+                .filter(|(x, z, _)| !survivors.contains(&(x[0], z[0])))
+                .map(|(_, _, c)| octave(c))
+                .collect();
+            let p = match dropped_octaves.iter().copied().max() {
+                None => 0,
+                Some(top) => input.iter().filter(|(_, _, c)| octave(*c) == top).count(),
+            };
+            assert!(
+                kept + p > n,
+                "n={n}: kept {kept} + excluded octave {p} must overshoot n, \
+                 else that octave should have been kept"
+            );
+        }
+    }
+
+    /// Equal magnitudes share an octave, so `ApproxTopN` cannot split a
+    /// symmetry multiplet — no tie rule, no fits-or-not test, no degenerate
+    /// tie case beyond the one every bound-preserving policy has.
+    ///
+    /// The fixture's magnitudes are 1, ½, ¼, ⅛ (`tie_heavy_sum`), whose
+    /// squares are one per octave, so every retained set must be a union of
+    /// whole magnitude groups.
+    #[test]
+    fn approx_top_n_never_splits_a_tie_group() {
+        let input = crate::test_support::tie_heavy_sum::<1>(2000, 8, 0x7135);
+        for n in [3usize, 250, 700, 1200, 1900] {
+            let mut sum = input.clone();
+            ApproxTopN(n).finalize_layer(&mut sum);
+            sum.assert_invariants();
+            for mag in [1.0f64, 0.5, 0.25, 0.125] {
+                let want = input.iter().filter(|(_, _, c)| c.norm() == mag).count();
+                let got = sum.iter().filter(|(_, _, c)| c.norm() == mag).count();
+                assert!(
+                    got == 0 || got == want,
+                    "n={n}: magnitude {mag} group is split, {got} of {want} kept"
+                );
+            }
+        }
+    }
+
+    /// One octave holding everything is the degenerate case, and it resolves
+    /// the way [`TopN`]'s all-tied sum does: the bound wins and the sum is
+    /// wiped. Magnitudes 1, 1⅛, 1¼, 1⅜ square to 1, 1.265625, 1.5625 and
+    /// 1.890625 — all inside the single octave `[1, 2)`.
+    #[test]
+    fn approx_top_n_wipes_a_single_octave_sum() {
+        let mags = [1.0f64, 1.125, 1.25, 1.375];
+        let mut sum = sum_of_mags(&mags);
+        ApproxTopN(3).finalize_layer(&mut sum);
+        assert!(
+            sum.is_empty(),
+            "one octave cannot be split, so nothing fits"
+        );
+        sum.assert_invariants();
+        // …and it is a no-op at n >= len, as always.
+        let mut sum = sum_of_mags(&mags);
+        ApproxTopN(4).finalize_layer(&mut sum);
+        assert_eq!(sum.len(), 4);
+    }
+
+    /// `ApproxTopN(0)` empties the sum.
+    #[test]
+    fn approx_top_n_zero_empties_sum() {
+        let mut sum = sum_of_mags(&[1.0, 2.0]);
+        ApproxTopN(0).finalize_layer(&mut sum);
+        assert!(sum.is_empty());
+        sum.assert_invariants();
+    }
+
+    /// `W = 2`: the const-generic surface, on keys that straddle the word
+    /// boundary. Magnitudes 4, 2, 2, 1 — squares 16, 4, 4, 1, three octaves
+    /// with cumulative counts 1, 3, 4 — so `n = 2` keeps 1 and `n = 3` keeps 3.
+    #[test]
+    fn approx_top_n_w2() {
+        let build = || {
+            PauliSum::<2>::from_sorted_columns(
+                vec![[0, 1], [0, 2], [1, 0], [2, 0]],
+                vec![[0, 0]; 4],
+                vec![
+                    Complex64::new(4.0, 0.0),
+                    Complex64::new(2.0, 0.0),
+                    Complex64::new(2.0, 0.0),
+                    Complex64::new(1.0, 0.0),
+                ],
+                128,
+            )
+        };
+        let mut sum = build();
+        ApproxTopN(2).finalize_layer(&mut sum);
+        assert_eq!(kept_mags(&sum), vec![4.0]);
+        sum.assert_invariants();
+
+        let mut sum = build();
+        ApproxTopN(3).finalize_layer(&mut sum);
+        assert_eq!(kept_mags(&sum), vec![4.0, 2.0, 2.0]);
+        sum.assert_invariants();
+    }
+
+    /// A complex coefficient is ranked by `re² + im²` like everywhere else.
+    /// Octaves, from the top: `36 ∈ [32, 64)`, `25 ∈ [16, 32)`, `4 ∈ [4, 8)`,
+    /// so the cumulative counts are 1, 2, 3.
+    #[test]
+    fn approx_top_n_ranks_complex_coefficients_by_squared_magnitude() {
+        let build = || {
+            PauliSum::<1>::from_sorted_columns(
+                vec![[0], [1], [2]],
+                vec![[0]; 3],
+                vec![
+                    // |c|² = 25 → octave [16, 32)
+                    Complex64::new(3.0, 4.0),
+                    // |c|² = 36 → octave [32, 64), the largest
+                    Complex64::new(0.0, 6.0),
+                    // |c|² = 4 → octave [4, 8)
+                    Complex64::new(-2.0, 0.0),
+                ],
+                8,
+            )
+        };
+        let mut sum = build();
+        ApproxTopN(1).finalize_layer(&mut sum);
+        assert_eq!(kept_mags(&sum), vec![6.0], "only 6i fits in one slot");
+        sum.assert_invariants();
+
+        // Two slots take both of the top two octaves; magnitudes come back in
+        // key order, not magnitude order.
+        let mut sum = build();
+        ApproxTopN(2).finalize_layer(&mut sum);
+        assert_eq!(kept_mags(&sum), vec![5.0, 6.0]);
+        sum.assert_invariants();
+    }
+
+    proptest! {
+        /// The whole contract, over tie-dense magnitude multisets: `kept <= n`,
+        /// the kept set is a *union of whole octaves* of `|c|²`, and those are
+        /// the top ones — plus the shortfall bound, `kept + p > n` for `p` the
+        /// population of the highest excluded octave.
+        ///
+        /// Magnitudes are small integers so that squares collide into few
+        /// octaves and the interesting branches (a straddling octave, an
+        /// all-one-octave sum) are hit often.
+        #[test]
+        fn approx_top_n_thresholds_on_an_octave_edge(
+            values in proptest::collection::vec(1u32..40u32, 1..48),
+            n in 1usize..48,
+        ) {
+            let mags: Vec<f64> = values.iter().map(|&v| f64::from(v)).collect();
+            let mut sum = sum_of_mags(&mags);
+            ApproxTopN(n).finalize_layer(&mut sum);
+
+            // Key `i` carries `mags[i]`, so a key identifies its magnitude.
+            let survivors: std::collections::HashSet<u64> =
+                sum.iter().map(|(x, _, _)| x[0]).collect();
+            let oct = |m: f64| (m * m).to_bits() >> 52;
+
+            if mags.len() <= n {
+                prop_assert_eq!(survivors.len(), mags.len(), "n >= len must be a no-op");
+                return Ok(());
+            }
+            prop_assert!(survivors.len() <= n, "kept {} > n {}", survivors.len(), n);
+
+            // Every kept octave is kept whole and outranks every dropped one.
+            let dropped_top = mags
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !survivors.contains(&(*i as u64)))
+                .map(|(_, &m)| oct(m))
+                .max();
+            let kept_low = mags
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| survivors.contains(&(*i as u64)))
+                .map(|(_, &m)| oct(m))
+                .min();
+            if let (Some(d), Some(k)) = (dropped_top, kept_low) {
+                prop_assert!(d < k, "dropped octave {} is not below kept octave {}", d, k);
+            }
+
+            // Shortfall bound: including the next octave down would overshoot.
+            if let Some(d) = dropped_top {
+                let p = mags.iter().filter(|&&m| oct(m) == d).count();
+                prop_assert!(
+                    survivors.len() + p > n,
+                    "kept {} + octave {} must exceed n {}",
+                    survivors.len(), p, n,
+                );
+            }
+        }
     }
 
     /// `And` requires both policies to accept. Pair a coeff threshold with

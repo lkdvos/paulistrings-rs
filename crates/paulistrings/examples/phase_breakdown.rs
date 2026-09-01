@@ -69,12 +69,14 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
+use paulistrings::bucket::hash::B_MAX_BITS;
+use paulistrings::bucket::sum::DEFAULT_HASH_SEED;
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
-use paulistrings::test_support::{low_weight_sum, rand_sum};
+use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::truncation::{CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
+    propagate_with_scratch, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PhaseStats,
     TruncationPolicy,
 };
 
@@ -110,6 +112,21 @@ Options:
                             large --n has been measured driving it to tens
                             of GB of RSS.
   --seed <u64|0xHEX>       RNG seed for the input sum (default: 0xC0FFEE)
+  --hash-seed <u64|0xHEX>  Seed for the partitioning hash H (default: the
+                            library's DEFAULT_HASH_SEED). Changing it re-draws
+                            H's rows, which changes the rank of the layer's
+                            bucket-delta span and therefore the coset
+                            dimension `r` — see
+                            research/notes/2026-09-01-bucket-cliff.md.
+  --bucket-bits <u8>       Pre-refine the input sum to this many bucket bits
+                            (B = 2^bits) before propagating. 0 (default)
+                            leaves the sum as built, i.e. the engine's own
+                            `desired_bits` policy alone decides B. Because
+                            `rebucket` is grow-only, a value above what the
+                            policy would pick sticks for the whole run: this
+                            is the knob that measures what raising
+                            `desired_bits`'s parallelism floor would buy,
+                            without changing the policy.
   --truncation <spec>      Truncation policy for every cell, one of:
                               keep          no truncation (default)
                               coeff:<t>     CoefficientThreshold(t): a
@@ -231,6 +248,11 @@ impl TruncSpec {
 struct Config {
     n: usize,
     qubits: usize,
+    /// Seed for the partitioning hash `H`. See `--hash-seed`.
+    hash_seed: u64,
+    /// Bucket bits to pre-refine the input sum to; 0 = leave it to the
+    /// engine's own `desired_bits` policy. See `--bucket-bits`.
+    bucket_bits: u8,
     threads: Vec<usize>,
     layers: Vec<LayerKind>,
     reps: usize,
@@ -292,6 +314,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut layers: Vec<LayerKind> = default_layers();
     let mut reps: usize = 8;
     let mut seed: u64 = 0xC0FFEE;
+    let mut hash_seed: u64 = DEFAULT_HASH_SEED;
+    let mut bucket_bits: u8 = 0;
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
@@ -309,6 +333,16 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--layers" => layers = parse_csv_layers(value)?,
             "--reps" => reps = parse_usize(value, "--reps")?,
             "--seed" => seed = parse_seed(value)?,
+            "--hash-seed" => hash_seed = parse_seed(value)?,
+            "--bucket-bits" => {
+                let b = parse_usize(value, "--bucket-bits")?;
+                if b > B_MAX_BITS as usize {
+                    return Err(format!(
+                        "--bucket-bits must be at most B_MAX_BITS ({B_MAX_BITS}), got {b}"
+                    ));
+                }
+                bucket_bits = b as u8;
+            }
             "--truncation" => truncation = TruncSpec::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
@@ -336,6 +370,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     Ok(Config {
         n,
         qubits,
+        hash_seed,
+        bucket_bits,
         threads,
         layers,
         reps,
@@ -391,46 +427,11 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
 /// the PTM stays dense and the closed key set is a fixed ~16x the number of
 /// distinct off-support key patterns.
 ///
-/// The entries are `examples/common/circuits.py::haar_su4` (Mezzadri
-/// phase-fixed QR of a complex Ginibre matrix, then divided by
-/// `det^(1/4)`) drawn from `numpy.random.default_rng(0xC0FFEE)`, transcribed
-/// via Python `repr` (shortest round-tripping `f64` literals) — i.e. one draw
-/// of exactly the distribution
-/// `benchmarks/python/bench_jl_performance.py::su4_gates` and benchmark E's
-/// `random_su4_staircase` use, so this cell's PTM is the same *kind* of object
-/// the cross-engine su4 curve measures. Unitary to 2.5e-16; `from_matrix` does
-/// not check, and a non-unitary matrix would silently give a non-physical PTM.
+/// The matrix is `test_support::haar_su4_matrix` — shared with the crate's
+/// tests and `examples/delta_span_diagnostics.rs`, which need the same dense
+/// PTM. See its doc comment for provenance.
 fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
-    GeneralUnitary2Q::from_matrix(
-        q0,
-        q1,
-        [
-            [
-                Complex64::new(0.44535882417102446, 0.1243885298575445),
-                Complex64::new(-0.09402453034947537, -0.14670085591185988),
-                Complex64::new(0.7459177705812382, -0.3801992439705379),
-                Complex64::new(0.052557524520682804, 0.22828530169893588),
-            ],
-            [
-                Complex64::new(-0.04863200501298571, -0.40347772310563557),
-                Complex64::new(0.7069517563162028, 0.008408200837924597),
-                Complex64::new(0.26012555224671347, -0.12053357328338017),
-                Complex64::new(-0.3528728311960538, -0.3581567969892209),
-            ],
-            [
-                Complex64::new(-0.35880447773297086, 0.11743595956162649),
-                Complex64::new(-0.3097428484619983, 0.594366207605036),
-                Complex64::new(0.1610278707748687, -0.25258937630123157),
-                Complex64::new(-0.5597163461470217, 0.07240555858329784),
-            ],
-            [
-                Complex64::new(-0.578592686173378, -0.3791072567045837),
-                Complex64::new(0.05738813758483608, 0.13145928539206422),
-                Complex64::new(0.3453330441780492, 0.08874282848443517),
-                Complex64::new(0.5033919610984813, 0.34698642893070086),
-            ],
-        ],
-    )
+    GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }
 
 /// Qubit count of the fixed [`trotter_circuit`] chain — also the qubit
@@ -540,6 +541,8 @@ struct CellResult {
     reps: usize,
     qubits: usize,
     seed: u64,
+    hash_seed: u64,
+    bucket_bits: u8,
     wall_ns: u64,
     stats: PhaseStats,
     vmrss_kb: u64,
@@ -605,6 +608,22 @@ where
         }
         _ => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
     };
+    // `--hash-seed` re-draws H's rows. It is *not* cosmetic: the rank of the
+    // layer's bucket-delta span `h(D)` — hence the coset dimension `r`, hence
+    // the sort's comparison count — depends on which rows H happens to have
+    // (research/notes/2026-09-01-bucket-cliff.md). `with_hash` rescatters at
+    // zero bucket bits; `--bucket-bits` then refines, and the engine's
+    // grow-only `rebucket` keeps whatever it finds.
+    let mut base = if cfg.hash_seed == DEFAULT_HASH_SEED {
+        base
+    } else {
+        let nq = base.num_qubits();
+        base.with_hash(Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
+    };
+    while base.hash().bits() < cfg.bucket_bits {
+        base.refine();
+    }
+    let base = base;
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps);
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -650,6 +669,8 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
+        hash_seed: cfg.hash_seed,
+        bucket_bits: cfg.bucket_bits,
         wall_ns,
         stats,
         vmrss_kb,
@@ -789,7 +810,7 @@ fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
     format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
-         \"qubits\":{},\"seed\":{},\
+         \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
@@ -803,6 +824,8 @@ fn json_line(cell: &CellResult) -> String {
         cell.reps,
         cell.qubits,
         cell.seed,
+        cell.hash_seed,
+        cell.bucket_bits,
         cell.wall_ns,
         s.rebucket_ns,
         s.prepare_ns,

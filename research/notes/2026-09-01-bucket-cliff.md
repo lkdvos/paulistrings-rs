@@ -26,6 +26,15 @@ channel's fanout, and choosing its constant needs the campaign's serialized `ab-
 sweep is *non-monotone* on single-shot data and entangled with the parallel task count. §6 specifies that gate.
 **No default constant was changed in this experiment.**
 
+**Gate outcome.** The floor sweep (§6.1) was **skipped by scope decision**: E2's radix kernel passed first, takes
+the same cell −24.0%/−37.9% with no policy change, and is non-additive with this — a radix sort is indifferent
+to how presorted its input is, hence indifferent to `r`. It is deferred to a post-radix re-evaluation. The
+non-perturbation null-check (§6.2) **ran and passed**: work counts bit-identical in all six cells, wall deltas
+0 to +3.9% inside the ±4–7% LTO-layout band, every cell's wall delta exactly its share-weighted phase sum, and
+the layout shift is structurally probe-only — every line this branch changes in `src/` is a doc comment, inside
+`#[cfg(test)]`, or inside the `test-utils`-gated `test_support`, so a shipped build compiles identical code on
+both sides.
+
 ---
 
 ## 0. What the sort actually costs
@@ -261,6 +270,12 @@ buy `0.084 × 1.8×` on dense-PTM layers only. Recorded here so it is not re-der
   targeted, smaller prize. More important for E2: **at full rank this sort is already at its comparison floor
   (`log2(15) + 1`)**, so a radix replacement's value is not "fewer comparisons at the asymptote" but "immunity
   to the 3.3× configuration spread" — a robustness argument, and it should be sold and gated as one.
+  *Update, after E2's gate passed (−24.0% layer / −37.9% sort on the mid-`m` dense cell):* the two experiments
+  are **non-additive** and E2 subsumes most of this one. A radix sort does not care how presorted its input is,
+  so it is indifferent to `r` — which is to say it collapses §1's whole mechanism into a non-issue wherever it
+  applies. What survives E2 is (i) the diagnosis itself, as the explanation of the Phase-1 numbers and as the
+  reason the `W = 1` "defect" was mis-sized, and (ii) the rank effect wherever a comparison sort remains.
+  E4's floor proposal (§6.1) is therefore deferred to a post-radix re-evaluation, not merely re-ordered.
 - **E5 (`expt/mem-growth`)**: unaffected, but note that any policy that changes `B` changes the per-bucket
   capacity slack, so E4's proposed fix and E5's RSS accounting interact. Gate them in the log's order (E5 last).
 - **E1, E3**: unaffected.
@@ -269,13 +284,20 @@ buy `0.084 × 1.8×` on dense-PTM layers only. Recorded here so it is not re-der
 
 ---
 
-## 6. Proposed gate (for the serialized benchmarking pass)
+## 6. Gate
 
-Two independent questions, in this order. Both dense-PTM cells at **`--threads 1` and `--threads 8`** only —
-the fact sheet's §4 shows `su4` saturates the write path from 16 threads, so 16/32 would measure the memory
-controller.
+Two independent questions. Both dense-PTM cells at **`--threads 1` and `--threads 8`** only — the fact sheet's
+§4 shows `su4` saturates the write path from 16 threads, so 16/32 would measure the memory controller.
 
-### 6.1 Does a channel-aware bucket floor pay? (no code change needed to answer)
+**Status:** §6.2 **ran and passed** (results in §6.2.1). §6.1 was **skipped this campaign** by orchestrator
+scope decision — E2's radix kernel passed its own gate first and already takes the mid-`m` dense cell −24.0%
+layer / −37.9% sort *with no policy change*; the two changes were flagged non-additive (both attack the same
+comparison count, and a radix sort is indifferent to how presorted its input is, i.e. indifferent to `r`); and
+the forced floor's +47–96% sparse-PTM cost makes it a strictly post-radix re-evaluation. It stays recorded
+below as future work, and note that **if the radix kernel lands, most of §1's mechanism stops having a cost
+attached** — the rank effect survives only wherever the comparison sort does.
+
+### 6.1 Does a channel-aware bucket floor pay? (deferred — see status above)
 
 `--bucket-bits` forces the partition without touching the policy, so the question is answerable with the
 committed probe, in one arm each:
@@ -319,22 +341,74 @@ such — it is a check on the probe edit and the `test_support` move, not on a p
 invocation per cell (`ab-compare.sh` takes a single `--probe` string):
 
 ```bash
-TIP=<campaign-tip-sha>
-for probe in \
-  '--n 70    --qubits 128 --threads 1 --layers su4 --reps 300' \
-  '--n 560   --qubits 128 --threads 1 --layers su4 --reps 55' \
-  '--n 4480  --qubits 128 --threads 1 --layers su4 --reps 6' \
-  '--n 4480  --qubits 65  --threads 1 --layers su4 --reps 6' \
-  '--n 70500 --qubits 128 --threads 8 --layers su4 --reps 40' \
-  '--n 1000000 --qubits 128 --threads 1 --layers rotation_zz --reps 8' ; do
-  scripts/ab-compare.sh null-check --a "$TIP" --b . --features phase-timing \
-    --probe "$probe" --pairs 3
-done
+# name                probe
+# null-su4-m980       --n 70      --qubits 128 --threads 1 --layers su4         --reps 300
+# null-su4-m7868      --n 560     --qubits 128 --threads 1 --layers su4         --reps 55
+# null-su4-m63k       --n 4480    --qubits 128 --threads 1 --layers su4         --reps 8
+# null-su4-q65        --n 4480    --qubits 65  --threads 1 --layers su4         --reps 8
+# null-su4-8t         --n 70500   --qubits 128 --threads 8 --layers su4         --reps 40
+# null-rotzz-1e6      --n 1000000 --qubits 128 --threads 1 --layers rotation_zz --reps 8
+scripts/ab-compare.sh <name> --a f592c43 --b expt/bucket-cliff \
+  --features phase-timing --order abba --pairs 3 --probe '<probe>'
 ```
 
-Expected: no consistent change in any cell (signs disagree). A consistent change anywhere means the
-`haar_su4_matrix` move or the `run_cell` knob plumbing perturbed code layout, which would be worth knowing —
-`merge.rs`'s `#[inline]` history says such effects are real here.
+Expected: no consistent change in any cell. A consistent change means code layout moved, which is worth
+knowing — `merge.rs`'s `#[inline]` history says such effects are real here.
+
+#### 6.2.1 Results — **layout-band motion, not perturbation**
+
+Ran 2026-09-01 12:46–12:56 on ccqlin038, box exclusively ours, `RUST_LOG` unset, `--order abba --pairs 3`,
+A = `f592c43` (campaign tip), B = `204a529` (`expt/bucket-cliff`), both clean, rustc 1.94.0, governor
+`powersave`. Artefacts: `benchmarks/results/2026-09-01-ccqlin038/null-*-{ab.log,a.probe.jsonl,b.probe.jsonl}`.
+
+| cell | wall median Δ% | range | verdict | gather | sort | merge |
+|---|---|---|---|---|---|---|
+| `su4` q=128 `m`=980 1t | **+2.21** | +1.72…+2.56 | 3/3 B slower | +5.14 | +0.92 | **+27.24** |
+| `su4` q=128 `m`=7868 1t | **+0.22** | +0.17…+3.24 | 3/3 B slower | −4.31 | −0.37 (null) | **+29.76** |
+| `su4` q=128 `m`=63 518 1t | **+3.16** | +2.29…+3.27 | 3/3 B slower | −2.95 | +2.77 | **+33.66** |
+| `su4` q=65 `m`=63 518 1t | **+3.87** | +2.49…+5.01 | 3/3 B slower | −2.25 | +3.61 | **+33.94** |
+| `su4` q=128 `m`=996 292 8t | −0.10 | −2.79…+0.02 | **null** (2neg/1pos) | −2.87 | −0.57 (null) | +12.81 |
+| `rotation_zz` q=128 `m`=1.5×10⁶ 1t | +0.13 | −0.58…+6.51 | **null** (1neg/2pos) | +9.53 | +18.18 | **−13.39** |
+
+**Verdict: layout, on all four counts the campaign's calibration names.**
+
+1. **Work counts are bit-identical**, every field, every run, every cell: `terms_in`, `terms_out`,
+   `rows_gathered`, `rows_sorted`, `rows_id`, `layers`, `cosets`, `runs`. The engine touches exactly the same
+   terms, rows, cosets and runs on both sides — layout cannot change these, and a behavioural change could not
+   avoid changing them.
+2. **The deltas live in the kernels and cancel differently per cell.** Phase deltas swing ±13–34% in *both*
+   directions: `merge` is +27…+34% on the single-threaded `su4` cells but **−13%** on `rotation_zz`; `gather`
+   is +5% on one `su4` cell and −2…−4% on the other four but **+9.5%** on `rotation_zz`. That is redistribution
+   between kernels, not more work.
+3. **Every cell's wall delta is exactly its share-weighted phase sum.** Using the fact sheet's own phase shares:
+   `su4` `m`=980 (sort 87% / gather 8.5% / merge 3.6%) predicts **+2.22%**, observed +2.21; `m`=7868
+   (71/23/4.9) predicts **+0.21%**, observed +0.22; `m`=63 518 (59/33/7) predicts **+3.02%**, observed +3.16;
+   q=65 predicts **+3.77%**, observed +3.87; `rotation_zz` (6.8/48.6/44.1) predicts **−0.03%**, observed +0.13.
+   Five for five. Nothing is unaccounted for.
+4. **Magnitude is inside the ±4–7% band** the three finished gates calibrated (worst median +3.87%, worst
+   single pair +5.01%).
+
+**And the source of the layout shift is probe-only, structurally.** Every line this branch changes under
+`crates/paulistrings/src/` is one of: a doc comment (`bucket/sum.rs`, `engine/bucketed.rs`, `engine/merge.rs` —
+verified, *zero* non-comment added lines in those three files), code inside a `#[cfg(test)] mod tests` block
+(`bucket/hash.rs`, `engine/coset.rs`), or the 93 new lines in `test_support.rs`, which is
+`#[cfg(any(test, feature = "test-utils"))]`. `phase_breakdown` links `test-utils`, so both A and B contain
+`test_support` and B contains more of it; with `lto = "fat"` and `codegen-units = 1` that reshuffles the whole
+probe binary. **A shipped build — no `test-utils`, no `phase-timing` — compiles identical code on both sides,**
+so this delta does not exist in anything users run. It is an artifact of measuring through an example that
+links the test fixtures.
+
+No further investigation, per the gate's own rule (work counts identical, delta inside the band). The one
+caveat worth stating plainly: the four cells that moved are all *the same code path* (dense PTM, one thread) at
+four sizes, so their agreeing sign is one path, not four independent ones — and the two genuinely different
+paths measured (`rotation_zz`, `su4` at 8 threads) are both null. If a future campaign wants the dense-PTM
+single-thread path back to A's layout, `merge.rs`'s `#[inline]` set is the known lever, but CLAUDE.md's
+performance discipline says that set is A/B-verified load-bearing in both directions and it must not be touched
+speculatively.
+
+Per-cell "load at start" in the logs reads 0.7–6.6: that is the *harness's own* build of the two sides
+decaying, not another tenant — the box was exclusively ours, and each invocation builds before it measures.
+`--order abba` plus 3/3 consistency with ranges as tight as +2.29…+3.27 is not what that noise looks like.
 
 ### 6.3 Optional, cheap, and independent of both
 

@@ -51,6 +51,13 @@
 //!   `len <= N` and would otherwise be measured as free. Pairing a `coeff:0.0`
 //!   run with a `topn:<N>` run at the same `--n` isolates the selection cost:
 //!   the former's `finalize` is zero by construction.
+//! - `atopn:<N>` — [`ApproxTopN`]`(N)`: the same shape of work as `topn`, but
+//!   an octave histogram and a threshold instead of a candidate array and a
+//!   selection, so `topn:<N>` versus `atopn:<N>` at one `--n` is the two
+//!   policies' `finalize` cost side by side *on the same binary*. Note the two
+//!   do not keep the same number of terms (`ApproxTopN` keeps `<= N`, short by
+//!   at most one octave's population), so the steady-state `m` differs a
+//!   little between the pair and the per-term figures are the ones to compare.
 //!
 //! Each `(layer, thread count)` cell runs the circuit twice inside a
 //! dedicated Rayon thread pool of that width: an untimed warm-up call
@@ -72,7 +79,7 @@ use num_complex::Complex64;
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{low_weight_sum, rand_sum};
-use paulistrings::truncation::{CoefficientThreshold, TopN};
+use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
     propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
     TruncationPolicy,
@@ -120,6 +127,11 @@ Options:
                                             must be BELOW the cell's
                                             steady-state term count, else
                                             TopN returns immediately.
+                              atopn:<N>     ApproxTopN(N): the same, with a
+                                            histogram threshold instead of a
+                                            selection. Keeps <= N, so its
+                                            steady-state m differs from
+                                            topn:<N>'s -- compare per-term.
   --format table|json|tsv  Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE,
                            regardless of --format (input for scripts/perf-viz.py)
@@ -190,6 +202,7 @@ enum TruncSpec {
     Keep,
     Coeff(f64),
     TopN(usize),
+    ApproxTopN(usize),
 }
 
 impl TruncSpec {
@@ -200,6 +213,7 @@ impl TruncSpec {
             TruncSpec::Keep => "keep".to_string(),
             TruncSpec::Coeff(t) => format!("coeff:{t}"),
             TruncSpec::TopN(n) => format!("topn:{n}"),
+            TruncSpec::ApproxTopN(n) => format!("atopn:{n}"),
         }
     }
 
@@ -222,8 +236,14 @@ impl TruncSpec {
         if let Some(v) = t.strip_prefix("topn:") {
             return Ok(TruncSpec::TopN(parse_usize(v, "--truncation topn:<N>")?));
         }
+        if let Some(v) = t.strip_prefix("atopn:") {
+            return Ok(TruncSpec::ApproxTopN(parse_usize(
+                v,
+                "--truncation atopn:<N>",
+            )?));
+        }
         Err(format!(
-            "--truncation expects keep | coeff:<t> | topn:<N>, got '{s}'"
+            "--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N>, got '{s}'"
         ))
     }
 }
@@ -888,6 +908,7 @@ fn run<const W: usize>(cfg: &Config) {
         TruncSpec::Keep => run_cells::<W, _>(cfg, &AlwaysKeep),
         TruncSpec::Coeff(t) => run_cells::<W, _>(cfg, &CoefficientThreshold(t)),
         TruncSpec::TopN(n) => run_cells::<W, _>(cfg, &TopN(n)),
+        TruncSpec::ApproxTopN(n) => run_cells::<W, _>(cfg, &ApproxTopN(n)),
     }
 }
 

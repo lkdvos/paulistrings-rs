@@ -13,7 +13,13 @@
 //! [`WeightCutoff`] drops terms above a Pauli weight; [`TopN`] keeps **at
 //! most** `n` largest-magnitude terms via a layer-finalization partial
 //! selection, never splitting a group of equal magnitudes (see [`TopN`] for
-//! the rule and its degenerate case).
+//! the rule and its degenerate case); [`ApproxTopN`] trades the exact count
+//! for a histogram threshold — cheaper, still bounded by `n`, and short of it
+//! by at most one octave's population.
+//!
+//! Both magnitude-comparing policies work on `|c|²` rather than `|c|`, since
+//! `Complex64::norm()` is a `hypot` call; [`TopN`]'s "Ranked on `|c|²`" has
+//! the equivalence argument and its two floating-point riders.
 //!
 //! # Examples
 //!
@@ -33,7 +39,7 @@
 
 pub mod builtin;
 
-pub use builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
+pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
 
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;

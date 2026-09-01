@@ -242,3 +242,65 @@ Decisions:
   Known merge conflict to resolve at integration: duplicate Haar-SU(4) fixtures (E4 test_support::haar_su4_matrix
   vs E2 bucketed::tests::haar_su4 -- integrate on the shared fixture), plus 3-way touches on ARCHITECTURE.md,
   phase_breakdown knobs, and truncation/mod.rs (E1 magnitude semantics x E3 finalizes_layer).
+### Phase 2, E1 `expt/topn-finalize` — implemented and gated (`research/notes/2026-09-01-topn-finalize.md`)
+
+- 10:20-11:20 implementation, TDD, five commits on `f592c43`: `d9569ee` squared-magnitude comparisons in
+  `CoefficientThreshold::keep_term` + all three `TopN` sites; `31289c4` pooled, singly-written magnitude buffer
+  and a suffix-only tie test; `4498ac3` `ApproxTopN` (new opt-in policy, exact `TopN` untouched and default);
+  `3505dda` `--truncation atopn:<N>` probe knob; `eeb6bfb` ARCHITECTURE.md §Truncation. `cargo test --workspace`
+  and `--release` green at every commit, clippy/fmt clean. Core Rust only — no Python binding touched.
+- **Design decisions worth the record.** (i) Squaring changes the *tie grouping*, not the ordering; symmetry
+  multiplets are exactly preserved because their members differ by a sign or a power of `i` and `re²+im²` is
+  bitwise invariant under both. (ii) Squares underflow to 0 below |c| ~ 1.57e-162 — accepted and tested, not
+  guarded (determinism policy: tolerance is the bar); the consequence is benign (an all-underflow sum is wiped;
+  an underflowing *tail* is dropped whole, keeping the representable terms). (iii) The tie test collapses to "no
+  element after the pivot equals the pivot" by substituting `select_nth_unstable`'s partition into the stated
+  rule. (iv) The buffer pool is `thread_local!` + `take()`/`set()`, NOT `LayerScratch`: threading scratch into
+  `finalize_layer` needs a trait-signature change that touches the bindings, and would have left the Python path
+  (every `TopN` user) unimproved.
+- 11:28-11:47 **gate run, box exclusively ours** (siblings done; load 0.86 at start, timed regions single-threaded
+  and alone). `ab-compare.sh --a f592c43 --b expt/topn-finalize --pairs 3`, `RUST_LOG` unset:
+
+  | leg | median Δ% wall | pairs | mechanism |
+  |---|---|---|---|
+  | `topn:100000`, m=1e5 | **-44.09** | 3/3 neg | `finalize` 51.0 -> 11.2 ns/term (-78%) |
+  | `topn:1000000`, m=1e6 | **-45.40** | 3/3 neg | `finalize` 57.9 -> 15.2 ns/term (-73.7%) |
+  | `coeff:0.0`, m=1e6 | **-25.81** | 3/3 neg | `merge` 24.72 -> 12.89 ns/term (-47.8%) |
+  | `keep`, m=1.5e6 | +4.44 | 3/3 pos | gather +8.9%; `finalize_ns` ~2us on BOTH sides |
+
+  A-side reproduces the fact sheet's published numbers (93.2 vs 91.12; merge 24.72 vs 24.76; keep 30.1 vs 29.90),
+  so the effects are measured against the campaign's own baseline.
+- 11:47 **VERDICT: E1 PASSES.** Legs 1-3 are decisive and land at/above the predicted range, with the whole
+  effect in the phase each targeted and the other phases flat. `CoefficientThreshold`'s merge is now
+  indistinguishable from no-truncation's (12.89 vs 13.12 ns/term), i.e. the +40-48% the fact sheet charged every
+  `min_abs_coeff` caller is gone.
+- 11:47 **Free correctness corroboration at scale:** across legs 1-3 (18 runs, ~12 000 layer applications)
+  `terms_in`/`terms_out`/`rows_gathered`/`rows_sorted`/`cosets` are **identical between the two sides in every
+  run**. The squared-magnitude selection keeps exactly the terms the `hypot` version kept on realistic data, and
+  `CoefficientThreshold(0.0)` drops nothing extra — the tie/underflow riders never fire.
+- 11:47 **METHODOLOGICAL FINDING, applies to every remaining phase-2 gate: a non-perturbation control cannot be
+  tested by pairing two fixed binaries.** The `keep` leg came back +4.44% with 3/3 direction consistency, on a
+  configuration where `AlwaysKeep` means *none of the change executes* (`finalize_ns` ~2us on both sides, work
+  counts identical, gather source byte-identical). Two extra legs with the same probe:
+  `f592c43 -> d9569ee` (norm_sqr only) is **-7.48%** on the keep path (merge -17.9%, 3/3);
+  `f592c43 -> 4498ac3` (library only, no probe change) is **+2.42%**; the tip is +4.44%. A ~12-point spread on
+  untouched source, i.e. LTO code layout — the effect CLAUDE.md already documents for `engine/merge.rs`.
+  Direction consistency resolves *run-to-run noise*, which it does well; a build-to-build layout difference is
+  not noise, so it presents as a perfectly consistent direction while saying nothing about semantics. E3/E2/E4/E5
+  should expect the same artefact in their own default-path controls and should read a consistent few-% move
+  there as layout until shown otherwise. Testing layout neutrality properly needs per-side layout perturbation
+  (several builds with a trivial unrelated code-size change, or randomized function ordering) — not attempted.
+- 11:47 Open risk carried to the merge decision, not resolved by argument: on the *untruncated* path this branch
+  sits +4.4% (= +1.3 ns/term) up inside that layout band, against -39.9 and -42.7 ns/term wherever `TopN` runs
+  and -11.8 wherever a coefficient threshold does. Options if the orchestrator wants it addressed: gate
+  `ApproxTopN` behind a feature to keep it out of the binary, re-order the new code, or measure layout properly.
+- 11:47 **`ApproxTopN`, measured within the candidate binary** (not an A/B — no committed baseline accepts
+  `atopn:`), 3 interleaved rounds: `finalize` **-16.5%** at N=1e5 and **-18.6%** at 1e6 (3/3 rounds negative at
+  both), wall -4.9%/-6.0%, peak RSS **-11.7 MB** at m~1e6, and the approximate-N shortfall is **0.23%** at
+  N=1e5 / **1.23%** at 1e6. So the fact sheet's ranking was right: the histogram is the *smallest* of the three
+  wins — once `hypot` and the double-write are gone both policies are dominated by the two coefficient passes
+  they share, and the histogram's remaining edge is the buffer more than the arithmetic. It earns opt-in status
+  for memory-bounded runs, not the default.
+- 11:47 Consequence for the slate: E1's `norm_sqr` result means **any later experiment quoting a `finalize` or a
+  `min_abs_coeff` merge cost from the phase-1 fact sheet must re-baseline** — those two numbers moved by 74-78%
+  and 48%. Nothing else in the fact sheet is affected.

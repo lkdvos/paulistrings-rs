@@ -2432,6 +2432,41 @@ mod tie_tests {
         }
     }
 
+    /// `ApproxTopN`'s threshold is a function of the octave histogram, which
+    /// is a function of the magnitude multiset — so, exactly like `TopN`, the
+    /// retained set cannot depend on the bucket count or the hash seed. The
+    /// per-bucket `retain` is where a partition-sensitive drop would hide.
+    ///
+    /// `tie_heavy_sum`'s four magnitudes (1, ½, ¼, ⅛) square into four
+    /// distinct octaves with equal populations, so `n = 700` of 2000 terms
+    /// cuts between the first and second: 500 terms fit, 1000 do not.
+    #[test]
+    fn approx_top_n_is_partition_independent_on_tied_magnitudes() {
+        use crate::truncation::builtin::ApproxTopN;
+        let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
+        let n = 700;
+        let reference = {
+            let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, 0, 0x99));
+            ApproxTopN(n).finalize_layer(&mut b);
+            b
+        };
+        assert_eq!(
+            reference.len(),
+            input.iter().filter(|(_, _, c)| c.norm() == 1.0).count(),
+            "the fixture must cut between the top two octaves"
+        );
+        for (bits, seed) in [(1u8, 0x99u64), (2, 0x99), (4, 3), (6, 13), (9, 0x99)] {
+            let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, seed));
+            ApproxTopN(n).finalize_layer(&mut b);
+            b.assert_invariants();
+            assert_same_terms(
+                &b,
+                &reference,
+                &format!("bits={bits} seed={seed}: ApproxTopN kept a different set"),
+            );
+        }
+    }
+
     /// Tie-dense data multi-bucket: a straddling group leaves no member behind
     /// in *any* bucket. The per-bucket compaction is where a partial drop would
     /// hide, so this is checked on the real partition rather than at `B = 1`.

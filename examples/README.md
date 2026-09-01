@@ -38,11 +38,12 @@ example code — they live under `python/paulistrings/`, consumed by both this t
 | **B2** | [`b2_noisy_verification/`](b2_noisy_verification/) | per-gate noise on the 127q kicked Ising: the tracked set **collapses** as the noise grows (651× fewer peak terms and 1080× less wall time at `p = 3e-2` than at `p = 0`, same cutoff), so noise makes this simulation *cheaper* — plus a utility-verification demo whose `p = 0` limit reproduces Benchmark C's claimable references, and an independent dense density-matrix cross-check of all five noise channels in both directions | CI-safe gate (`test_showcase_b2.py`, numpy-only, ~1 s) + `manual-long` script (~26 min, time-boxed) |
 | **B5** | [`b5_operator_backpropagation/`](b5_operator_backpropagation/) | hybrid depth reduction: back-propagate an observable through a circuit's tail layers classically (`direction="heisenberg"`), serialize the evolved observable + residual front circuit as a schema-v1 task file (`PauliSum.from_arrays`/`.npz` + `interop`), and check the composed expectation matches the full-circuit one | CI-safe gate (`test_showcase_b5.py`) + `manual-short` script |
 | **B6** | [`b6_resource_probes/`](b6_resource_probes/) | resource-theoretic diagnostics computed read-only over the numpy export: Pauli-spectrum entropy/purity (magic-adjacent, but explicitly *not* the pure-state stabilizer Rényi entropy) and operator entanglement across a bipartition (matrix-product-operator cost model) | CI-safe gate (`test_showcase_b6.py`, numpy-only, <1s) + `manual-short` script |
+| **B7** | [`b7_stabilizer_prep/`](b7_stabilizer_prep/) | a capability neither tool has alone: prepare a stabilizer state with an arbitrarily deep Clifford circuit in **stim** (a 36-qubit 2D cluster state), read its signed generators (`interop.stabilizers_from_stim`), back-propagate the observable through a **non-Clifford** tail, and contract against the generators (`PauliSum.expectation_stabilizer`) at `O(m·n²/64)` — never a `2ⁿ` expansion (which would be 1.0 TiB here). Includes a *derived closed form* `⟨K_q⟩ = cos^deg(q)(θ_h)` matched to 1.1e-16, the measured cost law (per-term slope 1.88 vs the bound's 2 over the top decade, `n` up to 1024), preparation depth grown 523× at zero cost to the estimate, and a dense `n ≤ 12` cross-check agreeing to 2.2e-15 | CI-safe gate (`test_showcase_b7.py`, 36 tests, 0.5 s, `stim` only for 4 of them) + `manual-short` script (116 s) |
 
-B3 (variational pre-training), B4 (QML/QCNN) and B7 (stabilizer-prep → PP-estimate) are **design
-stubs only** on this branch — see the plan §3/§6 and `research/notes/2026-09-01-python-api-extensions.md`
-§A8 for why (blocked on a symbolic-coefficient core redesign, or on phase-2 stabilizer-membership
-contraction).
+B3 (variational pre-training) and B4 (QML/QCNN) are **design stubs only** on this branch — see the
+plan §3/§6 and `research/notes/2026-09-01-python-api-extensions.md` §A8-i for why (blocked on a
+symbolic-coefficient core redesign). B7's dependency, the stabilizer-generator contraction, shipped
+as a real core feature (§A8-ii), so B7 is implemented above.
 
 ## Running
 
@@ -56,6 +57,7 @@ RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py --quick   # full run: drop --quick
 RAYON_NUM_THREADS=1 python examples/b5_operator_backpropagation/run_b5.py
 RAYON_NUM_THREADS=1 python examples/b6_resource_probes/run_b6.py
+RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py            # --quick: 40 s instead of 116 s
 RAYON_NUM_THREADS=1 python examples/xxz_chain/run_benchmark_d.py all
 ```
 

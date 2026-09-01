@@ -16,8 +16,9 @@ B1–B7, M0–M4) are preserved for traceability.
 
 Scope of the current branch (`examples-benchmarks-suite`): through milestone **M2** — Part 0
 infrastructure, benchmarks A/B/D/E plus the headline C, showcases B1 (1D and 2D/3D) and B2, plus
-B5/B6 from M4 where they need no gated capability. M3 items (F, B3, B4) and B7 ship as design
-stubs only (§3, A8). Deliverables are runnable scripts plus markdown narrative pages with
+B5/B6 from M4 where they need no gated capability. M3 items (F, B3, B4) ship as design stubs only
+(§3, A8-i). B7 was planned as a stub too, but its dependency (A8-ii, the stabilizer-generator
+contraction) proved small enough to build, so B7 is implemented — `examples/b7_stabilizer_prep/`. Deliverables are runnable scripts plus markdown narrative pages with
 committed figures — **no notebooks** (§8, D7).
 
 ## 2. Interface mapping
@@ -34,7 +35,7 @@ hard-code the handoff's names; use the right column.**
 | ZZ / multi-qubit Pauli rotations (`exp(iθ/2 · Z_iZ_j)`) | Not exposed to Python today; the core `PauliRotation` accepts **any** generator weight (`channel/rotation.rs:68`) — a bindings-only gap. New `gates.pauli_rotation(pauli, qubits, theta)` (A1). CNOT–RZ–CNOT decomposition is **rejected for benchmarks**: it triples layer count and shifts per-layer truncation timing, breaking term-count parity with jl, which applies ZZ natively. Convention: `pauli_rotation` implements `U = exp(-i·θ·P/2)` (the core's convention); the handoff's `exp(iπ/4·ZZ)` is `theta = -π/2`. |
 | Haar SU(4) blocks, "KAK-decomposed" | Unnecessary: `gates.unitary_2q(q0, q1, matrix)` takes a raw 4×4 unitary and is first-class in the engine (`GeneralUnitary2Q::from_matrix`). Circuits pass the matrix directly; no KAK. |
 | `(observable, truncation) → evolved Pauli sum`, same type in/out | Holds today: `PauliSum.propagate(...) -> PauliSum`, round-trippable (needed by B5). |
-| Expectation vs. initial state, "defaulting to all-zero", product states, stabilizer-by-generators | `PauliSum.expectation(state=...)` supports exactly three **uniform** product states: `"x+"` (`\|+…+⟩`), `"y+"`, `"z+"` (`\|0…0⟩`). The default is `"x+"`, **not** all-zero — suite code always passes `state=` explicitly. Non-uniform product states = A4 (small core addition). Stabilizer-by-generators contraction = phase-2 core feature (§3); until then B7 is a design stub. `overlap()` (Hilbert–Schmidt) is the general fallback. |
+| Expectation vs. initial state, "defaulting to all-zero", product states, stabilizer-by-generators | `PauliSum.expectation(state=...)` supports exactly three **uniform** product states: `"x+"` (`\|+…+⟩`), `"y+"`, `"z+"` (`\|0…0⟩`). The default is `"x+"`, **not** all-zero — suite code always passes `state=` explicitly. Non-uniform product states = A4 (small core addition). Stabilizer-by-generators contraction = `PauliSum.expectation_stabilizer(generators)`, since implemented (§3, A8-ii). `overlap()` (Hilbert–Schmidt) is the general fallback. |
 | Non-unitary channel support | Present: `depolarize(p, q)`, `dephase(p, q)`, `amplitude_damping(gamma, q)` — all single-qubit. Pauli channel with independent `(px, py, pz)` = A6 (small addition). Channels on >2 qubits **panic** (`MAX_LOCAL_SUPPORT = 2`, no fallback); everything in this suite fits within 2-local. |
 | Symbolic / surrogate coefficients | **Blocked.** `Complex64` is hardcoded in the `Channel` and `TruncationPolicy` trait signatures, the SoA storage, and the `Pod`/GPU-readiness constraint (`ARCHITECTURE.md §Data-Model, §GPU-Readiness`). Unbaking it is a core redesign — F/B3/B4 are design stubs pointing at the A8 analysis note. |
 | Per-run statistics (peak/final term count, phase timings) | Nothing is exposed today, and **no peak-term-count exists even in Rust** (`PhaseStats.terms_in/out` are sums over layers, and the whole struct is compile-gated behind `phase-timing`). A2 adds an always-on lightweight `propagate_with_stats` (per-layer in/out + peak). Interim channel: per-layer DEBUG records on logger `paulistrings.propagate` (`"layer {k}/{n} [...]: {before} -> {after} terms, {ms} ms"`); call `paulistrings.reset_log_cache()` after level changes. **Timed runs keep logging off** — an enabled DEBUG filter adds a clock read per layer (CLAUDE.md §Performance discipline). |
@@ -60,8 +61,8 @@ this branch, Wave 2) / **phase-2 core** (design stub now) / **blocked** (design 
 | A5 | Importers `circuit_from_stim` / `circuit_from_qiskit` / `circuit_from_json` (pure Python, lazy imports) | **small addition** | 0.6 data files, A (shared-file guarantee), B2 |
 | A6 | Pauli channel noise `(px, py, pz)` (1q; optionally 2q depolarizing — fits `MAX_LOCAL_SUPPORT=2`) | **small addition** (core + bindings) | B2 |
 | A7 | Harness truncation aliases (`min_abs_coeff`/`max_weight`) + thread-pin verification | **small addition** (pure Python) | harness (0.4) |
-| A8 | Design notes: (i) symbolic-surrogate coefficient unbaking analysis; (ii) stabilizer-generator contraction (O(n²) membership test as an *expectation* feature — not stabilizer simulation, so not in conflict with the `lib.rs` non-goal) | **docs only** | F, B3, B4, B7 |
-| — | Stabilizer-state input + generator-membership contraction | **phase-2 core** (stub via A8-ii) | B7 |
+| A8 | Design notes: (i) symbolic-surrogate coefficient unbaking analysis; (ii) stabilizer-generator contraction (O(n²) membership test as an *expectation* feature — not stabilizer simulation, so not in conflict with the `lib.rs` non-goal) | **docs only** (A8-ii has since been implemented — next row) | F, B3, B4, B7 |
+| — | Stabilizer-state input + generator-membership contraction | **implemented** (`crates/paulistrings/src/stabilizer.rs`, `PauliSum.expectation_stabilizer`, `interop.stabilizers_from_stim`; A8-ii's status line in the API note records the two deviations from its sketch) | B7 |
 | — | Symbolic/surrogate coefficients, analytic gradients, landscape evaluation | **blocked** (stub via A8-i) | F, B3, B4 |
 
 ## 4. File-layout reconciliation
@@ -186,7 +187,7 @@ projects past ~3–4 h; workstation only, never Slurm).
 | **B4** QML/QCNN | **design stub** (blocked, A8-i) | — | stub |
 | **B5** operator backpropagation | Propagate observable through final k layers (`direction="heisenberg"`), serialize evolved observable + residual circuit via A3/A5 task files; compose and check | Composed expectation = full-circuit expectation within truncation error | manual-short |
 | **B6** resource probes | Stabilizer-Rényi-style magic proxies and operator-entanglement across depth/size, computed in pure Python over `x_array`/`z_array`/`coefficients_array` — read-only, no core changes | Small-system exact comparison | manual-short |
-| **B7** stabilizer-prep → PP-estimate | **design stub** (phase-2 core, A8-ii): generator-membership contraction is an expectation feature (not stabilizer simulation), but a real core addition; never approximated by a 2ⁿ-term expansion | — | stub |
+| **B7** stabilizer-prep → PP-estimate | **implemented** (`examples/b7_stabilizer_prep/`): 36-qubit 2D cluster state prepared in stim, generators read off the tableau, non-Clifford kicked-Ising tail back-propagated, contracted by generator membership at O(m·n²/64) — never a 2ⁿ-term expansion | Derived closed form `⟨K_q⟩ = cos^deg(q)(θ_h)` at every sweep point (1.1e-16); Clifford endpoints vs `stim_clifford_exact` on the composed circuit; dense `n ≤ 12` state-vector and projector routes (2.2e-15); the all-zero product-state special case | manual-short (116 s) |
 
 ## 7. Milestones & global rules
 
@@ -194,7 +195,8 @@ projects past ~3–4 h; workstation only, never Slurm).
 - **M1** — Benchmarks B, D, E + Showcase B1-1D.
 - **M2** — Benchmark C (headline) + Showcase B2 + B1-2D/3D.
 - **M3** *(deferred)* — F, B3, B4: design stubs on this branch (A8-i).
-- **M4** — B5, B6 implemented; B7 stubbed (A8-ii).
+- **M4** — B5, B6, B7 implemented (B7 needed A8-ii, which shipped as a real core feature rather
+  than the planned stub).
 
 Global rules (restated from the handoff, all binding):
 1. Every numeric claim is computed by an oracle or loaded from a provenance-tagged reference file.

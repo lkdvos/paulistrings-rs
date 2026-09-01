@@ -11,11 +11,11 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
-#[cfg(any(test, debug_assertions))]
 use crate::pauli_string::PauliString;
 #[cfg(test)]
 use crate::pauli_sum::PauliAxis;
 use crate::pauli_sum::{ProductBasis, ProductState};
+use crate::stabilizer::StabilizerState;
 
 /// Default seed for the partitioning hash.
 ///
@@ -526,6 +526,68 @@ impl<const W: usize> PauliSum<W> {
                         } else {
                             acc -= cols.coeff[i];
                         }
+                    }
+                }
+                acc
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
+    }
+
+    /// Expectation value `⟨ψ|O|ψ⟩` in a stabilizer state.
+    ///
+    /// `⟨ψ|P|ψ⟩` is `±1` when `±P` lies in the state's stabilizer group and `0`
+    /// otherwise, so this is a *filter with a sign*, exactly like
+    /// [`Self::expectation_product_basis`] — a term either contributes its
+    /// coefficient, contributes its negation, or drops out. What widens is the
+    /// admissible state: any stabilizer state (Bell, GHZ, cluster, a Clifford
+    /// circuit's output) rather than only a product state. See
+    /// [`StabilizerState`] for the membership test and the sign bookkeeping.
+    ///
+    /// Cost is `O(terms · n²/64)` word operations — `O(n)` pivot tests per
+    /// term plus a `W`-word Pauli multiply per pivot hit — after the state's
+    /// one-time `O(n³/64)` reduction, and never an expansion over basis
+    /// states. That is `n` (= `num_qubits`) times more work per term than the
+    /// product-state scan, so keep using
+    /// [`Self::expectation_product_basis`] for states that factorize.
+    ///
+    /// Run as the same per-bucket parallel reduction
+    /// [`Self::expectation_product_basis`] uses. Returns `Complex64` rather
+    /// than `f64` because `self` need not be Hermitian; take `.re` when it is.
+    ///
+    /// # Summation order
+    ///
+    /// As in [`Self::expectation_product_state`] — partials are combined in
+    /// bucket order, so two partitions of the same terms can differ in the
+    /// last bits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`]: the
+    /// membership test would silently report `0` for every term supported
+    /// outside the state's qubits.
+    pub fn expectation_stabilizer(&self, state: &StabilizerState<W>) -> Complex64 {
+        assert_eq!(
+            self.num_qubits,
+            state.num_qubits(),
+            "PauliSum::expectation_stabilizer: num_qubits mismatch ({} vs {})",
+            self.num_qubits,
+            state.num_qubits(),
+        );
+        self.buckets
+            .par_iter()
+            .map(|cols| {
+                let mut acc = Complex64::new(0.0, 0.0);
+                for i in 0..cols.len() {
+                    let key = PauliString::<W> {
+                        x: cols.x[i],
+                        z: cols.z[i],
+                    };
+                    match state.sign_of(&key) {
+                        None => {}
+                        Some(false) => acc += cols.coeff[i],
+                        Some(true) => acc -= cols.coeff[i],
                     }
                 }
                 acc

@@ -1,5 +1,9 @@
 """Circuit/task importers: ``stim``, ``qiskit``, and the frozen task-JSON schema.
 
+Also ``stabilizers_from_stim``, which reads a Clifford circuit's *output state*
+rather than its gates, as the signed generator list
+``PauliSum.expectation_stabilizer`` contracts against (design source §A8-ii).
+
 Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A5. This
 module is shipped API (consumed by the examples & benchmarks suite and by
 ``benchmarks/julia/runner.jl``'s task-JSON counterpart), not example code, so
@@ -23,8 +27,8 @@ conflict recorded in
 because the *parser's* Y-phase folding (not stim's convention, which was
 always Hermitian) was the thing that got fixed.
 
-``circuit_from_stim`` and ``circuit_from_qiskit`` both lazily import their
-respective optional dependency inside the function body, so
+``circuit_from_stim``, ``stabilizers_from_stim`` and ``circuit_from_qiskit`` all
+lazily import their respective optional dependency inside the function body, so
 ``import paulistrings`` and this module's own import never require ``stim``
 or ``qiskit`` to be installed.
 """
@@ -47,6 +51,7 @@ __all__ = [
     "circuit_from_qiskit",
     "circuit_from_json",
     "load_task",
+    "stabilizers_from_stim",
     "Task",
 ]
 
@@ -55,9 +60,10 @@ __all__ = [
 # stim importer
 # =============================================================================
 
-# Named single-qubit unitaries: stim's canonical name is already the
-# lower-cased Circuit method name.
-_STIM_1Q_NAMED = ("H", "S", "X", "Y", "Z")
+# Named single-qubit unitaries: stim canonical name -> Circuit method name.
+# All but S_DAG lower-case verbatim; stim spells the S adjoint "S_DAG" where
+# this package names it "sdg".
+_STIM_1Q_NAMED = {"H": "h", "S": "s", "S_DAG": "sdg", "X": "x", "Y": "y", "Z": "z"}
 
 # Named two-qubit unitaries: stim canonical name -> Circuit method name.
 # stim canonicalizes "CNOT" to "CX" on parse, but both spellings are accepted
@@ -125,8 +131,9 @@ def circuit_from_stim(src):
     expanded via ``stim.Circuit.flattened()`` before translation, so they
     reach the instruction loop below already unrolled.
 
-    Supported instructions: ``H``, ``S``, ``X``, ``Y``, ``Z``, ``CX``/``CNOT``,
-    ``CZ``, ``SWAP``, ``DEPOLARIZE1(p)``, ``DEPOLARIZE2(p)``,
+    Supported instructions: ``H``, ``S``, ``S_DAG`` (stim's spelling of the
+    ``S`` adjoint; mapped to ``Circuit.sdg``), ``X``, ``Y``, ``Z``,
+    ``CX``/``CNOT``, ``CZ``, ``SWAP``, ``DEPOLARIZE1(p)``, ``DEPOLARIZE2(p)``,
     ``X_ERROR``/``Y_ERROR``/``Z_ERROR(p)``, ``I`` (skipped), the annotations
     ``TICK``/``QUBIT_COORDS``/``SHIFT_COORDS`` (skipped, not operations), and
     ``OBSERVABLE_INCLUDE`` with Pauli targets (surfaced as the returned
@@ -158,7 +165,7 @@ def circuit_from_stim(src):
             continue
 
         if name in _STIM_1Q_NAMED:
-            method = getattr(circuit, name.lower())
+            method = getattr(circuit, _STIM_1Q_NAMED[name])
             for q in _stim_plain_qubits(name, index, targets):
                 method(q)
             continue
@@ -232,7 +239,7 @@ def circuit_from_stim(src):
 # qiskit importer
 # =============================================================================
 
-_QISKIT_1Q_NAMED = ("h", "s", "x", "y", "z")
+_QISKIT_1Q_NAMED = ("h", "s", "sdg", "x", "y", "z")
 _QISKIT_1Q_ROT = ("rz", "rx", "ry")
 _QISKIT_2Q_NAMED = {"cx": "cnot", "cz": "cz", "swap": "swap"}
 _QISKIT_2Q_ROT = {"rzz": "ZZ", "rxx": "XX", "ryy": "YY"}
@@ -272,9 +279,9 @@ def _qiskit_operator_matrix(op):
 def circuit_from_qiskit(qc):
     """Import a ``qiskit.QuantumCircuit`` as a paulistrings ``Circuit``.
 
-    Named mapping where exact: ``h s x y z cx cz swap rz rx ry``, plus
+    Named mapping where exact: ``h s sdg x y z cx cz swap rz rx ry``, plus
     ``rzz/rxx/ryy`` (mapped to ``pauli_rotation("ZZ"/"XX"/"YY", ...)``) and
-    ``sdg/t/tdg`` (mapped through the checked ``unitary_1q`` fallback, since
+    ``t/tdg`` (mapped through the checked ``unitary_1q`` fallback, since
     they have no direct spelling here). Any other 1- or 2-qubit gate that
     exposes a unitary via ``qiskit.quantum_info.Operator`` falls back to
     ``unitary_1q``/``unitary_2q`` — the binding's own unitarity check is the
@@ -363,7 +370,12 @@ _TASK_REQUIRED_KEYS = {"version", "n_qubits", "circuit", "run"}
 _RUN_KEYS = {"direction", "threads", "state"}
 _TRUNCATION_KEYS = {"max_weight", "min_abs_coeff"}
 
-_TASK_1Q = ("h", "s", "x", "y", "z")
+# `sdg` joined this table with `Circuit.adjoint()`, which needs a named
+# spelling for `S^dagger`; it is an *addition* to schema v1's gate vocabulary
+# (a reader that predates it hard-errors on the name, which is the schema's
+# documented behavior for an unknown gate — `benchmarks/julia/runner.jl` does
+# not implement it).
+_TASK_1Q = ("h", "s", "sdg", "x", "y", "z")
 _TASK_1Q_ROT = ("rz", "rx", "ry")
 _TASK_2Q_NAMED = ("cz", "swap")
 _TASK_1Q_NOISE_P = ("depolarize", "dephase")
@@ -592,3 +604,86 @@ def load_task(path) -> Task:
         state=state,
         raw=raw,
     )
+
+
+# =============================================================================
+# stim stabilizer-state ingestion
+# =============================================================================
+
+# stim's `PauliString.__getitem__` alphabet, index -> our character.
+_STIM_PAULI_CHARS = "IXYZ"
+
+
+def stabilizers_from_stim(src, *, num_qubits=None):
+    """Signed stabilizer generators of a Clifford circuit's output state.
+
+    Returns the list of ``"+XX"``-style signed Pauli strings
+    ``PauliSum.expectation_stabilizer`` consumes: one generator per qubit, each
+    of length ``num_qubits``, in this library's Hermitian convention — which is
+    stim's too (see this module's header), so no phase has to be reconciled.
+
+    `src` is a ``stim.Tableau``, a ``stim.Circuit`` (or its program text / a
+    path to it, as ``circuit_from_stim`` accepts), or a
+    ``stim.TableauSimulator``. A circuit is turned into a tableau with
+    ``Circuit.to_tableau()``, which hard-errors on measurements, resets and
+    noise rather than skipping them; the generators are then the images
+    ``U Z_k U^dagger = tableau.z_output(k)`` of the ``|0...0>`` stabilizers.
+
+    `num_qubits` pads the register on the right: the extra qubits are given
+    ``+Z`` generators, i.e. left in ``|0>``. This is what lets a stim circuit
+    that only mentions its first few qubits be read against a ``PauliSum`` on a
+    wider register. Passing fewer qubits than the tableau has is a
+    ``ValueError`` — dropping generators would silently change the state.
+
+    >>> import stim  # doctest: +SKIP
+    >>> stabilizers_from_stim(stim.Circuit("H 0\\nCNOT 0 1"))  # doctest: +SKIP
+    ['+XX', '+ZZ']
+    """
+    import stim
+
+    if isinstance(src, stim.Tableau):
+        paulis = [src.z_output(k) for k in range(len(src))]
+    elif isinstance(src, stim.TableauSimulator):
+        paulis = list(src.canonical_stabilizers())
+    elif isinstance(src, (stim.Circuit, str, os.PathLike)):
+        tableau = _load_stim_circuit(src).to_tableau()
+        paulis = [tableau.z_output(k) for k in range(len(tableau))]
+    else:
+        raise TypeError(
+            "stabilizers_from_stim expects a stim.Tableau, stim.Circuit, "
+            "stim.TableauSimulator, or stim program text/path; got "
+            f"{type(src).__name__}"
+        )
+
+    n = len(paulis)
+    if num_qubits is None:
+        width = n
+    elif num_qubits < n:
+        raise ValueError(
+            f"stabilizers_from_stim: num_qubits={num_qubits} is smaller than the "
+            f"{n} qubits the tableau covers; dropping generators would change the state"
+        )
+    else:
+        width = num_qubits
+
+    generators = []
+    for k, ps in enumerate(paulis):
+        sign = ps.sign
+        if sign == 1:
+            prefix = "+"
+        elif sign == -1:
+            prefix = "-"
+        else:
+            # Unreachable for a tableau's Z-images (they are Hermitian), but a
+            # silent wrong sign would be far worse than a hard error.
+            raise ValueError(
+                f"stabilizers_from_stim: generator {k} has non-real sign {sign!r}; "
+                "a stabilizer generator must be Hermitian"
+            )
+        chars = [_STIM_PAULI_CHARS[ps[q]] for q in range(len(ps))]
+        chars += ["I"] * (width - len(chars))
+        generators.append(prefix + "".join(chars))
+    # Padding qubits stay in |0>, i.e. are stabilized by +Z.
+    for q in range(n, width):
+        generators.append("+" + "".join("Z" if i == q else "I" for i in range(width)))
+    return generators

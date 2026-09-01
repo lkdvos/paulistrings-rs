@@ -4,6 +4,7 @@ from ._paulistrings import gates as _gates
 
 h = _gates.h
 s = _gates.s
+sdg = _gates.sdg
 x = _gates.x
 y = _gates.y
 z = _gates.z
@@ -20,6 +21,7 @@ unitary_2q = _gates.unitary_2q
 __all__ = [
     "h",
     "s",
+    "sdg",
     "x",
     "y",
     "z",

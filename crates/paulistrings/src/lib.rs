@@ -80,6 +80,11 @@
 //! - [`propagate`] / [`Direction`] — the propagation entry point. `sum`
 //!   is a single [`PauliSum`], bucketed for the run and returned bucketed;
 //!   there is no separate flat/working-form conversion to pay.
+//! - [`ProductBasis`] / [`StabilizerState`] — read-out states for
+//!   [`PauliSum::expectation_product_basis`] and
+//!   [`PauliSum::expectation_stabilizer`]: a single-qubit product state, or any
+//!   stabilizer state given by `n` signed commuting generators. Contraction
+//!   only — neither is ever evolved, so the stabilizer non-goal above stands.
 //! - [`engine`] — the bucketed propagation engine: [`engine::bucketed`] (the
 //!   coset layer loop), `engine::coset` (the GF(2) span and its cosets) and
 //!   `engine::merge` (the per-run sort and fused merge kernels). Most users
@@ -113,6 +118,7 @@ pub mod examples;
 pub mod pauli_string;
 pub mod pauli_sum;
 pub mod phase;
+pub mod stabilizer;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_support;
@@ -129,4 +135,5 @@ pub use engine::{default_min_buckets, propagate, propagate_with_scratch, Directi
 pub use pauli_string::PauliString;
 pub use pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
 pub use phase::Phase;
+pub use stabilizer::{StabilizerError, StabilizerState};
 pub use truncation::TruncationPolicy;

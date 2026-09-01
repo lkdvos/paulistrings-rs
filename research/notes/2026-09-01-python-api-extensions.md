@@ -329,7 +329,7 @@ Gate object vocabulary (name → required fields; `qubits` is always a list of i
 
 | name | fields |
 |---|---|
-| `h` `s` `x` `y` `z` | `qubits` (len 1) |
+| `h` `s` `sdg` `x` `y` `z` | `qubits` (len 1) |
 | `cnot` | `qubits` = `[control, target]` |
 | `cz` `swap` | `qubits` (len 2) |
 | `rz` `rx` `ry` | `qubits` (len 1), `theta` |
@@ -343,6 +343,19 @@ Gate object vocabulary (name → required fields; `qubits` is always a list of i
 
 One gate object = one channel push (the one-gate-per-channel parity rule is structural in this
 format).
+
+**Addition, PR #2 (`Circuit` ergonomics).** `sdg` (`S^dagger`) joined the 1-qubit row above.
+`Circuit.adjoint()` needs a named spelling for `S`'s dagger — the one non-self-adjoint named
+Clifford — and a gate list that cannot round-trip its own adjoint through this schema would be a
+hole in `Circuit.gates`. This is an *addition* to the v1 vocabulary, not a change to any existing
+gate object: a reader that predates it hard-errors on the unknown name, which is exactly what the
+schema prescribes. `benchmarks/julia/runner.jl` does not implement `sdg` and therefore refuses a
+task file containing one; the suite's own circuits emit none.
+
+`Circuit.gates` (PR #2) serializes to this vocabulary verbatim, so
+`interop.circuit_from_json({"gates": c.gates}, c.num_qubits)` reproduces `c`. Matrices are emitted
+in the JSON-native form the table specifies — nested rows of `[re, im]` pairs, never NumPy arrays —
+so `json.dumps` needs no encoder.
 
 ### `circuit_from_stim` mapping
 
@@ -503,7 +516,9 @@ measured before implementation and where it needed correcting after.
 
 ---
 
-## A8 — deferred designs (docs only, no code)
+## A8 — deferred designs
+
+A8-i is still deferred; A8-ii shipped (see its status line below).
 
 ### A8-i — symbolic / surrogate coefficients (blocks F, B3, B4)
 
@@ -528,6 +543,18 @@ trait implemented by `Complex64` and `TapeHandle`, leaving the shipping path unt
 core redesign with its own plan/measurement cycle — out of scope for this branch.
 
 ### A8-ii — stabilizer-state contraction (blocks B7)
+
+**Status: implemented.** Core in `crates/paulistrings/src/stabilizer.rs`
+(`StabilizerState<W>` + `PauliSum::expectation_stabilizer`), binding
+`PauliSum.expectation_stabilizer(generators)` in `crates/paulistrings-py/src/sum.rs`,
+stim ingestion `interop.stabilizers_from_stim`. Two deviations from the sketch below,
+both recorded in the module docs: the type is named `StabilizerState` (not
+`StabilizerBasis`) and takes the generators directly rather than being routed through
+`expectation(state=...)` — a `list[str]` argument there would collide with A4's
+per-qubit label strings; and the signs are tracked by composing the signed group
+elements themselves (`mul_assign`'s `i^k` folded into a per-row `neg` bit) rather than
+by a separate Aaronson–Gottesman phase table, which is the same arithmetic with no
+second representation to keep consistent.
 
 Scope: an *expectation* feature — `⟨ψ|P|ψ⟩` for a stabilizer state `|ψ⟩` given by `n` signed
 generators — not stabilizer simulation (no tableau updates under gates), so it does not conflict

@@ -160,6 +160,21 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     debug_assert_eq!(an, a_z.len());
     debug_assert_eq!(bn, b_x.len());
     debug_assert_eq!(bn, b_z.len());
+    // `dst` is always freshly cleared by the caller before this call
+    // (`fill_coset` swaps and clears the coset's write slot right before the
+    // per-run merge loop), so its length is 0 here and `an + bn` — every row
+    // either stream could possibly emit, since truncation/zero-drop only ever
+    // *removes* rows — is a safe, exact upper bound known before the first
+    // write. Reserving it in one shot avoids `push`'s amortized-doubling
+    // growth, which otherwise leaves capacity up to ~2x the eventual length
+    // once a bucket's inherited (circulated) capacity falls short
+    // (research/notes/2026-09-01-mem-growth.md). `reserve_exact`, not
+    // `reserve`: the latter's amortized growth heuristic can still overshoot
+    // when the existing capacity is already more than half of what's needed.
+    let upper_bound = an + bn;
+    dst_x.reserve_exact(upper_bound.saturating_sub(dst_x.len()));
+    dst_z.reserve_exact(upper_bound.saturating_sub(dst_z.len()));
+    dst_coeff.reserve_exact(upper_bound.saturating_sub(dst_coeff.len()));
     let (mut i, mut j) = (0usize, 0usize);
     while i < an || j < bn {
         // Take the smaller next key; on a tie the `a` row seeds the sum. After
@@ -426,6 +441,42 @@ mod tests {
         // then removes — matching the single-stream reduction on the
         // concatenated streams.
         assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
+    }
+
+    /// The destination columns start empty every call (`fill_coset` always
+    /// clears `dst` before merging into it — ARCHITECTURE.md §Engine), so the
+    /// output length is bounded above by `an + bn` and known *before* the
+    /// first push. A caller that reserves that upper bound up front pays one
+    /// allocation of the right size; one that only calls `push` inherits
+    /// `Vec`'s amortized-doubling growth, which can leave capacity up to ~2x
+    /// the final length (research/notes/2026-09-01-mem-growth.md). This is
+    /// exactly the `dst_x`/`dst_z`/`dst_coeff` triple's real-world shape: no
+    /// duplicate keys between the two inputs, so nothing here drops a row and
+    /// `an + bn` is exact, not just an upper bound.
+    #[test]
+    fn merge2_into_does_not_leave_doubled_capacity_on_dst() {
+        let n = 1030usize; // just above the 1024 -> 2048 push-doubling step.
+        let b_x: Vec<[u64; 1]> = (0..n as u64).map(|k| [k]).collect();
+        let b_z: Vec<[u64; 1]> = vec![[0]; n];
+        let b_c: Vec<Complex64> = (0..n).map(|k| Complex64::new(k as f64 + 1.0, 0.0)).collect();
+        let empty: (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) = (vec![], vec![], vec![]);
+
+        let mut dst_x: Vec<[u64; 1]> = Vec::new();
+        let mut dst_z: Vec<[u64; 1]> = Vec::new();
+        let mut dst_coeff: Vec<Complex64> = Vec::new();
+        merge2_into(
+            &empty.0, &empty.1, &empty.2, &b_x, &b_z, &b_c, &mut dst_x, &mut dst_z,
+            &mut dst_coeff, &AlwaysKeep,
+        );
+
+        assert_eq!(dst_x.len(), n);
+        let ratio = dst_x.capacity() as f64 / dst_x.len() as f64;
+        assert!(
+            ratio <= 1.10,
+            "dst capacity {} for length {} (ratio {ratio:.3}) looks push-doubled, not reserved",
+            dst_x.capacity(),
+            dst_x.len(),
+        );
     }
 
     /// `keep_term` sees the fully summed coefficient.

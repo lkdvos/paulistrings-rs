@@ -12,8 +12,8 @@ rank the sort is already at `log₂ 15 + 1 = 4.9` comparisons per row — *"at f
 left"* — and predicted a run-oblivious radix would therefore lose exactly there. It does not. The floor is a
 floor on **comparison count**, and each of those comparisons is a *dependent indexed load* through the `Vec<u32>`
 permutation into a 100–400 KiB key column, ~10–13 cycles. Two 8-bit radix passes over 8-byte records read
-sequentially do the same job for ~2 cycles each. Measured in situ at full rank, `W = 2`, `m = 9.9 × 10⁵`:
-**sort −24.9 %, layer −15.2 %, 3/3 paired**. The headroom is in cost per comparison, not in the number of them.
+sequentially do the same job for ~2 cycles each. Gated at full rank, `W = 2`, `m = 9.9 × 10⁵`:
+**sort −25.4 %, layer −15.2 %, 3/3 pairs**. The headroom is in cost per comparison, not in the number of them.
 
 **Answer to (b): E4 is right that the 1.9× is mostly a rank effect, and the ≈1.35× residual it isolates is a
 codegen pathology in `<[u64; 1] as Ord>::cmp`.** With *identical key content* — a `[u64; 2]` column whose word 1
@@ -22,29 +22,34 @@ costs **16.3 ns/row through `[u64; 1]` columns and 7.5 ns/row through `[u64; 2]`
 comparator into driftsort's fully branchless cmov merge (22 instructions, loop-carried dependency straight
 through the compare) and the two-word comparator into a branchy variant (39 instructions) whose predicted branch
 lets the next iteration's loads issue early. **The radix kernel removes the residual as a side effect** — it has
-no key comparator on the hot path — and in situ the `W = 1` sort lands at 11.10 ns/row against `W = 2`'s
-12.11, i.e. the width penalty inverts from 1.35× to 0.92×.
+no key comparator on the hot path — and at the gate the `W = 1` sort lands at 11.11 ns/row against `W = 2`'s
+12.07 at matched `m` and rank, i.e. the width penalty inverts from 1.36× to 0.92×.
 
-**Landed on this branch, not proposed:** the kernel, gated to dense two-qubit PTMs only. It is a merge candidate
-pending the campaign's serialized `ab-compare` pass (§5). No default constant, no `#[inline]` attribute and no
-sparse-PTM code path was changed.
+**GATE: PASS**, every cell, 3/3 pairs (§3). Dense-PTM layers −10.5 % to −33.8 %; the sort phase −17 % to −50 %;
+sparse-PTM controls unperturbed (§3.2). **Landed on this branch, not proposed:** the kernel, gated to dense
+two-qubit PTMs only. No default constant, no `#[inline]` attribute and no sparse-PTM code path was changed.
 
 ---
 
-## 0. Provenance and what these numbers are worth
+## 0. Provenance, and which numbers here are authoritative
 
-Host ccqlin038 (reference host), 2026-09-01, rustc 1.94.0, branch `expt/sort-kernel` off campaign tip
-`f592c43`. **The box was not quiet**: sibling E-agents were building and testing throughout (load average
-0.1–4.4 over the session). Per `benchmarks/PROFILING.md` single-shot noise here is ±5–8 % single-threaded and
-±10–26 % at 8+ threads.
+Host ccqlin038 (reference host), 2026-09-01, rustc 1.94.0, powersave governor, branch `expt/sort-kernel`
+(`968598c`) against campaign tip `f592c43`. Per `benchmarks/PROFILING.md` single-shot noise here is ±5–8 %
+single-threaded and ±10–26 % at 8+ threads, which is why everything below is paired rather than compared as
+campaign means.
 
-Every timing in this note is therefore **NON-AUTHORITATIVE** and labelled. They are reported the way E4 reports
-its own: interleaved A/B adjacent in time, 3 pairs per cell, acceptance by **direction consistency across every
-pair** with the median Δ% as effect size. They exist to say which way the kernel points at effect sizes far
-above the noise floor, not to certify a number. §5 specifies the gate that would.
+Two tiers, and they are labelled everywhere:
 
-Two of the four structural claims below rest on nothing timed at all: comparison counts (§1.2) and the
-disassembly (§2.2) are exact and reproduce anywhere.
+- **§3 is AUTHORITATIVE.** Run on an exclusively-held box (E1 and E3 gates finished, E4 queued behind),
+  `scripts/ab-compare.sh` with two prebuilt binaries alternated adjacent in time, **3 pairs per cell,
+  `--order abba`** so a monotone drift in machine state cannot masquerade as a consistent B-is-faster signal,
+  `RUST_LOG` unset. Acceptance is **direction consistency across every pair**, median Δ% as effect size.
+  Raw artefacts in the gitignored `benchmarks/results/2026-09-01-ccqlin038/e2-*`.
+- **§1.2 and §2.2 are NON-AUTHORITATIVE microbench**, taken earlier with siblings building (load 0.1–4.4).
+  They chose the design; they do not certify it. Where §3 measures the same quantity, §3 wins.
+
+Two of the load-bearing claims rest on nothing timed at all: comparison counts (§1.2) and the disassembly
+(§1.3) are exact and reproduce anywhere.
 
 ---
 
@@ -184,11 +189,11 @@ rows, else 16" was measured and is not better than plain `16/8` there; left as a
 `RADIX_MIN_REST_STREAMS = 8`, tested against the plan's *realized* rest-delta count once per layer — so the
 choice costs nothing per run and every sparse-PTM layer keeps byte-identical code.
 
-| run shape | rest streams | duplicate density | radix vs comparison (microbench) |
+| run shape | rest streams | duplicate density | radix vs comparison |
 |---|---|---|---|
-| dense PTM (`su4`) | 15 | ~15× | **−36…−51 % (`W=1`), −10…−46 % (`W=2`)** |
-| dense PTM, single bucket | 15 | ~15× | **−31…−38 % (`W=2`)** |
-| **sparse PTM (`rotation_zz`)** | **1** | ~1× | **+133…+165 %** |
+| dense PTM (`su4`), **gated in situ** | 15 | ~15× | **sort −45…−50 % (`W=1`), −17…−42 % (`W=2`)** (§3.1) |
+| dense PTM, single bucket, microbench | 15 | ~15× | −31…−38 % (`W=2`) |
+| **sparse PTM (`rotation_zz`), microbench** | **1** | ~1× | **+133…+165 %** |
 
 The sparse row is the whole reason for the gate: with one nearly-sorted stream the comparison sort costs about
 one comparison per row and the radix's fixed passes are pure overhead. `2..8` rest streams — `sqrt(SWAP)`'s
@@ -200,58 +205,86 @@ silently stopped firing would look like nothing worse than a lost speedup, and o
 
 ---
 
-## 3. Smoke timings — **NON-AUTHORITATIVE**
+## 3. Gate results — **AUTHORITATIVE**
 
-Protocol per §0: two prebuilt `phase_breakdown --features phase-timing` binaries (A = `f592c43`,
-B = `expt/sort-kernel` tip), alternated adjacent in time, 3 pairs per cell, `RUST_LOG` unset, `--reps`
-auto-scaled to ≳200 ms. `runs/coset` = `2^r` is quoted because it is what E4 showed the comparison sort's cost
-tracks.
+Protocol and provenance per §0: exclusively-held box, `scripts/ab-compare.sh --a f592c43 --b expt/sort-kernel
+--pairs 3 --order abba`, seven invocations (one per `(n, qubits, reps)` triple, since those are per-invocation
+while `--layers`/`--threads` are CSV). Δ% is per-term wall, `(B − A)/A`. Phase columns are worker-summed busy
+time and do not sum to wall — they explain a wall effect, they are not one.
 
-| cell | `m` | `2^r` | A ns/term | B ns/term | Δ per pair | consistent | **median Δ** | sort ns/row A → B | sort % of layer A → B |
+### 3.1 Dense-PTM cells — the target
+
+| cell | `W` | thr | `m` | A ns/term | B ns/term | Δ per pair | **median Δ** | sort ns/row A → B | sort % of layer A → B |
 |---|---|---|---|---|---|---|---|---|---|
-| `su4` `q=128` 1t | 9 884 | 16 | 413.3 | 316.7 | −23.4 / −25.3 / −22.3 | **3/3** | **−23.4 %** | 18.61 → 11.58 (−37.8 %) | 62.3 → 50.6 % |
-| `su4` `q=128` 1t | 63 518 | 16 | 372.7 | 314.0 | −15.7 / −15.6 / −15.2 | **3/3** | **−15.6 %** | 15.60 → 11.51 (−26.2 %) | 58.4 → 51.1 % |
-| `su4` `q=128` 1t | 989 268 | 16 | 380.2 | 322.5 | −15.2 / −14.1 / −15.3 | **3/3** | **−15.2 %** | 16.11 → 12.11 (−24.9 %) | 58.8 → 51.7 % |
-| `su4` `q=128` **8t** | 989 268 | 16 | 65.95 | 60.25 | −8.6 / −11.7 / −9.1 | **3/3** | **−9.1 %** | 21.98 → 18.13 (−17.5 %) | — |
-| `su4` `q=64` 1t | 63 364 | **8** | 574.1 | 377.7 | −34.2 / −34.3 / −35.0 | **3/3** | **−34.3 %** | 30.83 → 16.64 (−46.0 %) | 74.5 → 61.4 % |
-| `su4` `q=64` 1t | 991 060 | 16 | 459.4 | 304.5 | −33.7 / −33.7 / −32.8 | **3/3** | **−33.7 %** | 22.12 → 11.10 (−49.8 %) | 67.6 → 50.9 % |
-| `rotation_zz` `q=128` 1t | 149 957 | 2 | 29.49 | 27.64 | −6.3 / −6.2 / −6.7 | 3/3 | −6.3 % | 3.53 → 3.60 (+1.8 %) | 7.9 → 8.7 % |
-| `rotation_zz` `q=64` 1t | 150 114 | 2 | 23.53 | 23.99 | +1.9 / +1.8 / +3.9 | 3/3 | **+1.9 %** | 3.25 → 3.25 (−0.0 %) | 9.2 → 9.0 % |
-| `cnot` `q=128` 1t | 100 000 | 4 | 42.48 | 40.20 | −5.4 / −2.6 / −3.4 | 3/3 | −3.4 % | 12.72 → 12.46 (−2.0 %) | 22.5 → 23.0 % |
+| `su4` `q=128` | 2 | 1 | 9 884 | 417.9 | 318.3 | −24.1 / −23.7 / −24.0 | **−24.0 %** | 18.69 → 11.61 (−37.9 %) | 62.4 → 50.9 % |
+| `su4` `q=128` | 2 | 1 | 99 386 | 379.4 | 320.5 | −15.9 / −14.5 / −15.9 | **−15.9 %** | 16.03 → 11.87 (−26.0 %) | 58.9 → 51.8 % |
+| `su4` `q=128` | 2 | 1 | 989 268 | 383.2 | 325.1 | −15.2 / −14.7 / −15.8 | **−15.2 %** | 16.18 → 12.07 (−25.4 %) | 58.9 → 51.9 % |
+| `su4` `q=128` | 2 | 8 | 9 884 | 85.1 | 59.6 | −36.1 / −27.1 / −30.3 | **−30.3 %** | 22.45 → 13.06 (−41.8 %) | — |
+| `su4` `q=128` | 2 | 8 | 99 386 | 74.4 | 70.6 | −15.3 / −5.1 / −14.0 | **−14.0 %** | 22.09 → 18.33 (−17.0 %) | — |
+| `su4` `q=128` | 2 | 8 | 989 268 | 69.4 | 60.3 | −10.5 / −13.0 / −9.3 | **−10.5 %** | 22.99 → 18.19 (−20.9 %) | — |
+| `su4` `q=64` | **1** | 1 | 63 364 | 579.0 | 382.9 | −33.7 / −33.8 / −34.0 | **−33.8 %** | 30.95 → 16.87 (−45.5 %) | 74.5 → 61.4 % |
+| `su4` `q=64` | **1** | 1 | 991 060 | 455.3 | 304.3 | −33.0 / −33.4 / −33.2 | **−33.2 %** | 22.08 → 11.11 (−49.7 %) | 67.6 → 51.0 % |
 
-### What the table says
+**8/8 direction-consistent, 3/3 pairs each.** Against the acceptance thresholds (median ≤ −10 % at `W = 2`,
+≤ −25 % at `W = 1`): every `W = 2` cell clears, the tightest by 0.5 points (8 threads, `m` = 9.9 × 10⁵, −10.5 %);
+both `W = 1` cells clear by ~9 points. **PASS.**
 
-**The sort phase is where every dense-PTM change lands**, and the baseline column reproduces the fact sheet's
-own numbers independently — 58.4–58.8 % of the layer at `W = 2` against its 58–60 %, 16.11 ns/sorted row against
-its 16.1, `rotation_zz` at 7.9 % against its 7 %. That agreement is what licenses reading the rest.
+Five things the table settles:
 
-1. **`W = 2`, full rank: sort −25 to −26 %, layer −15 %, at both `m = 6.4 × 10⁴` and `m = 9.9 × 10⁵`.** This is
-   the cell E4's floor argument predicted a radix would lose, and the microbench had put at only −7…−16 % on the
-   sort. In situ it is −25 %, because the engine's key columns are colder than the microbench's and the
-   dependent indexed load costs more, not less, than the harness suggested.
-2. **`W = 1`: sort −46 to −50 %, layer −34 %, in *both* rank regimes.** At `m = 6.3 × 10⁴` the default seed puts
-   this support at `r = 3` (`2^r = 8`, E4 §1.3) and the baseline sort is 30.83 ns/row; at `m = 9.9 × 10⁵` the
-   bucket count lifts it to `r = 4` and the baseline is 22.12 — E4's measured 22.14/22.12/22.28 at that
-   configuration, reproduced. The radix lands at 16.64 and 11.10 respectively: **it is favourable in both, and
-   by a similar margin, because it is order-oblivious.** It does not repair the rank draw; it removes the
-   sensitivity to it.
-3. **The width residual is gone.** `W = 1` 11.10 ns/row against `W = 2` 12.11 at the same rank and comparable
-   rows/run: 0.92×, against the comparison kernel's 1.37× (22.12 / 16.11) — itself E4's ≈1.35×, reproduced a
-   third time. A kernel with no key comparator on the hot path cannot have a comparator pathology.
-4. **The mid-`m` cell moves most (−23.4 % at `m = 9884`), without a policy change.** E4 §1.5 explains why the
-   baseline is bad there — 15 runs of only ~62 rows, so driftsort loses its adaptivity even at full rank
-   (9.72 comparisons/row, not 4.9) — and a fixed-cost radix is indifferent to run length. This is the overlap
-   with E4's cliff, reached from the other side; see §6.
-5. **8 threads: −9.1 %, consistent, and smaller than 1t.** Expected: the fact sheet has this layer at 63 % of
-   the measured write ceiling at 8 threads already, so a compute-side win is partly absorbed. The direction is
-   what matters here; a 16-thread number would be a memory-controller measurement (fact sheet §7 item 7) and was
-   not taken.
-6. **The sparse controls behave exactly like code layout, which is the honest reading.** Their code path is
-   byte-identical — the gate cannot fire — and the sort phase confirms it: **+1.8 %, −0.0 %, −2.0 %**. Yet the
-   *layers* move −6.3 %, **+1.9 %** and −3.4 %, each 3/3 consistent within its own cell but **disagreeing in
-   sign across cells**. That is the signature of LTO placement shifting around ~200 lines of new code in
-   `engine/merge.rs`, not of anything the kernel does. It is also the risk §6 item 1 names, and the reason §5
-   treats a consistent sparse regression as a module-layout problem rather than a verdict on the kernel.
+1. **The baseline column reproduces the Phase-1 fact sheet independently** — 58.9 % sort share at `W = 2`
+   against its 58–60 %, 16.18 ns/sorted row against its 16.1, 22.08 ns/row at `W = 1` against E4's
+   22.12–22.28 at `r = 4`. That agreement is what licenses reading the rest as a measurement of the change.
+2. **The `W = 2` win is bigger in situ than the microbench predicted** (−25 % on the sort against a predicted
+   −10…−16 %), because the engine's key columns are colder than the harness's, so the dependent indexed load
+   the radix removes costs *more* in the real layer, not less.
+3. **`W = 1` is where the kernel pays most: −33 % on the layer, −45…−50 % on the sort, in both rank regimes**
+   (`m` = 63 364 is `r = 3` at the default seed, `m` = 991 060 is `r = 4`; E4 §1.3). Nearly identical Δ in the
+   two — the kernel is order-oblivious, so it does not repair a deficient rank draw, it removes the sort's
+   sensitivity to one.
+4. **The width residual is gone.** `W = 1` 11.11 ns/row against `W = 2` 12.07 at matched `m` and rank: **0.92×**,
+   where the comparison kernel is 22.08 / 16.18 = **1.36×** — E4's ≈1.35×, reproduced a third time and then
+   removed. A kernel with no key comparator on the hot path cannot have a comparator pathology.
+5. **8 threads is favourable but smaller, as predicted.** The fact sheet has this layer at 63 % of the measured
+   write ceiling at 8 threads, so a compute-side win is partly absorbed; the sort phase still moves −17…−42 %.
+   No 16- or 32-thread cell was run: at 16+ the dense path measures the memory controller (fact sheet §7 item 7).
+
+### 3.2 Sparse-PTM controls — layout, not perturbation
+
+The gate's controls run channels that **cannot** clear the radix gate, so their code path is byte-identical
+between the two binaries. The discriminator (orchestrator's calibration from the E1 and E3 gates): a
+direction-consistent ±4–7 % wall move with **bit-identical work counts**, concentrated in the motion-sensitive
+merge kernel, is LTO code layout rather than semantics.
+
+| control | `m` | Δ per pair | median Δ | sort Δ | gather Δ | **merge Δ** | work counts |
+|---|---|---|---|---|---|---|---|
+| `rotation_zz` `q=128` | 149 957 | −5.9 / −7.3 / −7.8 | **−7.3 %** | +1.0 % | −1.0 % | **−15.0 %** | identical |
+| `cnot` `q=128` | 100 000 | −4.0 / −4.1 / −3.7 | **−4.0 %** | −2.2 % | +0.2 % | **−14.0 %** | identical |
+| `rotation_zz` `q=64` | 150 114 | +1.5 / +2.2 / +2.6 | **+2.2 %** | −0.6 % | −1.6 % | **+7.2 %** | identical |
+
+Every criterion of the discriminator is met, and the reading is unambiguous:
+
+- **Work counts are bit-identical** — `terms_in`, `terms_out`, `rows_gathered`, `rows_sorted`, `rows_id`,
+  `cosets`, `runs`, every pair, every cell. Nothing semantic changed, which is what the byte-identical source
+  path already implied and this confirms empirically.
+- **The sort phase — the only phase whose source gained a neighbour — does not move: +1.0 %, −2.2 %, −0.6 %.**
+- **The delta is concentrated in `merge2_into`, whose source is byte-identical between the two sides**
+  (−15.0 %, −14.0 %, +7.2 %). A ±15 % swing in a function nobody edited, at identical work, is placement.
+- **The three cells disagree in sign** (−7.3 %, −4.0 %, **+2.2 %**). A real perturbation from adding a
+  never-taken branch would not flip sign between two `rotation_zz` cells that differ only in width.
+
+**No module move.** Per the calibration, surgery is warranted only for a delta clearly outside the ±4–7 % band
+or with changed work counts; neither holds. The largest magnitude here (−7.3 %) is a *speedup* on an untouched
+path — moving `sort_rows_radix_with_scratch` into its own module to undo an accidental win would be
+superstition — and the only regression, +2.2 %, sits comfortably inside the band. `engine/merge.rs` keeps its
+current shape and its current `#[inline]` set.
+
+### 3.3 A correctness result the gate gives for free
+
+`terms_out` is bit-identical between the two sides on **every** cell, including the dense-PTM ones the radix
+kernel actually serves — 40 layers over 9.9 × 10⁵ terms, and 2000 layers at `m` = 9884. The two kernels are only
+required to agree to floating-point tolerance (equal-key summation order is unspecified), so an identical
+*surviving term count* at that scale is a differential check far wider than the unit tests reach: no key was
+gained, lost, or spuriously cancelled by the reordering.
 
 ---
 
@@ -281,41 +314,48 @@ its 16.1, `rotation_zz` at 7.9 % against its 7 %. That agreement is what license
 
 ---
 
-## 5. Proposed gate
+## 5. The gate, exactly as run
 
-`scripts/ab-compare.sh --a f592c43 --b expt/sort-kernel`, dense-PTM cells at **≤ 8 threads** per the fact
-sheet's write-ceiling finding (§7 item 7: at 16+ threads the dense path measures the memory controller).
-`su4`'s closure factor is ~14.2×, so `--n` is the pre-closure seed and `m ≈ 14.2 × --n`.
+Seven `ab-compare.sh` invocations, `--a f592c43 --b expt/sort-kernel --pairs 3 --order abba`, dense-PTM cells at
+**≤ 8 threads** per the fact sheet's write-ceiling finding (§7 item 7: at 16+ threads the dense path measures
+the memory controller). `su4`'s closure factor is ~14.2×, so `--n` is the pre-closure seed and `m ≈ 14.2 × --n`.
+`--reps` is carried over from the smoke run, raised on the controls so their timed region is ~2 s rather than
+~0.2 s — the controls are where the layout-vs-perturbation discrimination happens and they need the resolution.
 
 ```bash
-# --- the win: dense PTM, m near 1e4 / 1e5 / 1e6, one thread
---n 700    --qubits 128 --layers su4 --reps 2000   # m ~ 1.0e4
---n 7000   --qubits 128 --layers su4 --reps 200    # m ~ 1.0e5
---n 70000  --qubits 128 --layers su4 --reps 40     # m ~ 1.0e6
-# --- the same three at 8 threads (never 16 or 32 for this layer)
---n 70000  --qubits 128 --layers su4 --reps 40 --threads 8
-# --- W = 1: the width residual, and (at the default seed, per E4) the r=3 regime
---n 70000  --qubits 64  --layers su4 --reps 40     # m ~ 1.0e6, W = 1
---n 4480   --qubits 64  --layers su4 --reps 400    # m ~ 6.3e4, W = 1
-# --- controls: the sparse path must not move at all (identical code path)
---n 100000 --qubits 128 --layers rotation_zz --reps 40
---n 100000 --qubits 64  --layers rotation_zz --reps 40
---n 100000 --qubits 128 --layers cnot        --reps 40
+A=f592c43; B=expt/sort-kernel; unset RUST_LOG
+ab() { scripts/ab-compare.sh "$1" --a $A --b $B --pairs 3 --order abba --probe "${*:2}"; }
+
+# dense PTM, W = 2: m near 1e4 / 1e5 / 1e6, threads 1 and 8
+ab e2-su4-1e4     --n 700    --qubits 128 --layers su4 --threads 1,8 --reps 2000
+ab e2-su4-1e5     --n 7000   --qubits 128 --layers su4 --threads 1,8 --reps 200
+ab e2-su4-1e6     --n 70000  --qubits 128 --layers su4 --threads 1,8 --reps 40
+# dense PTM, W = 1: the width residual, r = 3 and r = 4 regimes
+ab e2-su4-w1-1e6  --n 70000  --qubits 64  --layers su4 --threads 1   --reps 40
+ab e2-su4-w1-6e4  --n 4480   --qubits 64  --layers su4 --threads 1   --reps 400
+# controls: sparse PTM, byte-identical code path
+ab e2-sparse-q128 --n 100000 --qubits 128 --layers rotation_zz,cnot --threads 1 --reps 400
+ab e2-sparse-q64  --n 100000 --qubits 64  --layers rotation_zz      --threads 1 --reps 400
 ```
 
-Acceptance:
+`--order abba` rather than the default `abab`: with the box exclusively held there was no reason not to take
+the stronger protocol, and it removes the one alternative explanation a uniformly-negative result invites
+(a monotone drift in machine state that happens to favour whichever side runs second).
 
-1. **Dense-PTM cells**: direction-consistent across all pairs, median Δ ≤ −10 % at `W = 2` and ≤ −25 % at
-   `W = 1`. Below that, treat as null and keep the branch as a negative result.
-2. **Sparse-PTM controls**: the code path is byte-identical, so any consistent movement is an LTO layout
-   artefact of adding a second kernel to the module. Read a consistent regression > 5 % as a reason to move
-   `sort_rows_radix_with_scratch` into its own module (or to A/B its `#[inline]`), not as a reason to drop it.
-3. If E4's bucket-policy change lands too, **re-run cell 1 after it**: both changes attack the mid-`m` cliff by
-   different routes (§6) and their effects are not additive.
+**Verdict against the acceptance criteria stated before the run:**
 
-E4's `phase_breakdown --hash-seed` / `--bucket-bits` knobs (on `expt/bucket-cliff`) would sharpen this: pinning
-`--bucket-bits 7` separates the kernel's effect from the bucket-count policy's, and `--hash-seed` separates it
-from the rank draw. Worth taking that branch's probe first if the two are gated in sequence.
+| criterion | result |
+|---|---|
+| Dense-PTM cells direction-consistent, median Δ ≤ −10 % (`W = 2`) / ≤ −25 % (`W = 1`) | **PASS** — 8/8 cells, 3/3 pairs each; `W = 2` −10.5…−30.3 %, `W = 1` −33.2 / −33.8 % (§3.1) |
+| Sparse-PTM controls: consistent regression > 5 % ⇒ move the kernel to its own module | **Not triggered** — work counts bit-identical, sort phase within ±2.2 %, deltas −7.3 / −4.0 / **+2.2 %** disagreeing in sign, concentrated in the untouched `merge2_into`. Layout, not perturbation; no module move (§3.2) |
+| If E4's bucket-policy change lands, re-run the `m` = 1e4 cell after it | **Outstanding** — both attack the mid-`m` cliff by different routes and are not additive (§6) |
+
+Not run, and worth saying so: E4's `phase_breakdown --hash-seed` / `--bucket-bits` knobs live on
+`expt/bucket-cliff`, so this gate could not pin `bits` independently of the term count. It did not need to —
+the `W = 1` pair (`m` = 63 364 at `r = 3`, `m` = 991 060 at `r = 4`) brackets both rank regimes anyway and the Δ
+is the same in each — but a post-merge re-run with `--bucket-bits 7` would separate the kernel's effect from the
+bucket-count policy's on the same cell, which is the one measurement that would let E4's constant be chosen
+against a fixed sort kernel.
 
 ---
 
@@ -328,28 +368,36 @@ cliff, and the two are not additive:
   ascending, restoring the 4.9-comparison floor. Worth −38.6 % at `m = 980`, but it costs **+46.6 %** on a
   rotation layer at `m = 1497`, so it needs a fanout-aware constant that E4 explicitly did not choose.
 - E2's route is the kernel — make the comparisons cheap enough that presortedness stops mattering. The radix is
-  order-oblivious, so it removes the cliff's *sensitivity* rather than its cause: microbench −31…−38 % on the
-  single-bucket corner, in situ −23.4 % on the layer at `m = 9884`, both without touching a default constant or
-  the rotation path.
+  order-oblivious, so it removes the cliff's *sensitivity* rather than its cause: **gated at −24.0 % on the
+  layer and −37.9 % on the sort at `m` = 9884** (§3.1), and −33 % at `W = 1` in E4's own `r = 3` regime, all
+  without touching a default constant or the rotation path.
 
-They should be gated in sequence, not together, and cell 1 of §5 re-run after whichever lands first.
+They should be gated in sequence, not together, and the `m` = 1e4 cell re-run after whichever lands first. The
+sequencing matters in one direction specifically: this kernel has already taken the mid-`m` cell most of the way,
+so E4's bucket-policy constant should be chosen against the *post-merge* sort, not against the comparison
+kernel's numbers — otherwise it will be tuned to close a gap that no longer exists, at the +46.6 % rotation-layer
+cost it carries.
 
 **Merge conflicts to expect.** E4 added `test_support::haar_su4_matrix`; E2 added an equivalent
 `bucketed::tests::haar_su4`. Whichever lands second should delete its copy and use the shared fixture.
 
 **Risks.**
 
-1. **The `#[inline]` set.** Untouched — `sort_rows_with_scratch` keeps its hint, `merge2_into` keeps its
-   absence, and the new function carries no attribute at all, recorded in its doc as its own A/B. But
-   `engine/merge.rs` grew by ~200 lines of new code in a module whose layout is A/B-verified load-bearing in
-   both directions (±6 %, +20–34 %). **The sparse-PTM controls in §5 exist to catch exactly that**, and a
-   consistent sparse regression is a layout problem with a known remedy (separate module), not a reason to
-   reject the kernel.
-2. **Scratch growth.** `SortScratch` gains `packed` + `aux`, 16 bytes per row of the largest run seen —
-   ~245 KiB per worker at a 15 k-row run, against a run's own 48 B/row ≈ 737 KiB. The fact sheet already puts
-   the dense path at 100 % of the measured write ceiling at 16 threads, so this is a real L2/L3 pressure
-   increase at high thread counts even though the 8-thread smoke cell was favourable (−9.1 %). It is the reason
-   §5 caps the dense cells at 8 threads and the reason a 16-thread cell should quote bandwidth alongside.
+1. **The `#[inline]` set — measured, and it held.** Untouched: `sort_rows_with_scratch` keeps its hint,
+   `merge2_into` keeps its absence, and the new function carries no attribute at all, recorded in its doc as its
+   own A/B. `engine/merge.rs` did grow by ~200 lines in a module whose layout is A/B-verified load-bearing in
+   both directions (±6 %, +20–34 %), and §3.2 shows exactly that effect: ±15 % swings in the *untouched*
+   `merge2_into` at bit-identical work. But they land as −7.3 / −4.0 / **+2.2 %** on the layer — sign-inconsistent
+   and inside the calibrated ±4–7 % band — so **no module move was made**, and the residual risk is now bounded
+   by measurement rather than argued. The `#[inline]` hint on the new function remains untested and is the one
+   cheap follow-up A/B here.
+2. **Scratch growth — still the open one.** `SortScratch` gains `packed` + `aux`, 16 bytes per row of the largest
+   run seen — ~245 KiB per worker at a 15 k-row run, against a run's own 48 B/row ≈ 737 KiB. The fact sheet puts
+   the dense path at 100 % of the measured write ceiling at 16 threads, and the gate deliberately stopped at 8
+   (where it measured −10.5…−30.3 %), so **the 16- and 32-thread behaviour of this kernel is unmeasured**. The
+   trend across the three 8-thread cells is mildly discouraging at scale — −30.3 % at `m` = 9884 but only −10.5 %
+   at `m` = 9.9 × 10⁵ — consistent with a compute win being progressively absorbed as the layer approaches the
+   write ceiling. Anyone taking a 16-thread number must quote measured bandwidth alongside it.
 3. **`2..8` rest streams is unmeasured.** `sqrt(SWAP)`'s sort is 33 % of its layer and is left entirely alone.
    That is a deliberate omission, not an oversight: the crossover between the two kernels is steep and nothing
    in this experiment locates it.
@@ -368,7 +416,7 @@ They should be gated in sequence, not together, and cell 1 of §5 re-run after w
   it — and would have to be gated on the plan to stay honest.
 - **No repair of the `W = 1` comparator itself** (§1.4), which is what would carry the residual to the sparse
   path too.
-- **No authoritative benchmark.** Siblings were building throughout; §5 is the gate.
+- **No merge.** The branch is a gated merge candidate; the orchestrator merges.
 
 ## 7. Reproduction
 
@@ -377,6 +425,15 @@ cargo test -p paulistrings --lib engine::merge          # the contract harness, 
 cargo test -p paulistrings --lib radix                  # the gate's channel pinning
 cargo build --release --features phase-timing -p paulistrings --example phase_breakdown
 ./target/release/examples/phase_breakdown --n 70000 --qubits 64 --layers su4 --reps 40 --format json
+```
+
+The gate itself is the seven `ab-compare.sh` lines in §5, verbatim. Its archived artefacts — provenance header,
+every run's stdout, both prebuilt binaries and the paired report — are in the gitignored
+`benchmarks/results/2026-09-01-ccqlin038/e2-*`; the report can be regenerated from the sidecars at any time
+without re-running anything:
+
+```bash
+python3 scripts/ab-report.py benchmarks/results/2026-09-01-ccqlin038/e2-su4-1e6-{a,b}.probe.jsonl --all-phases
 ```
 
 The standalone microbench harness of §1.2 and §2.2 (the faithful gather-run generator plus the storage-type and

@@ -139,14 +139,16 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// The two kernels win in opposite regimes, and the crossover is steep, so
 /// this is deliberately conservative — only a genuinely dense two-qubit PTM
 /// (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears
-/// it. Non-authoritative smoke measurements, full data and protocol in
-/// `research/notes/2026-09-01-sort-kernel.md`:
+/// it. Gated with `scripts/ab-compare.sh`, 3 pairs per cell, all
+/// direction-consistent; full data and protocol in
+/// `research/notes/2026-09-01-sort-kernel.md` §3:
 ///
 /// | run shape | rest streams | radix vs comparison, sort phase |
 /// |---|---|---|
-/// | `su4` layer in situ, `W = 2` | 15 | **−25…−26 %** (layer −15 %) |
-/// | `su4` layer in situ, `W = 1` | 15 | **−46…−50 %** (layer −34 %) |
-/// | `su4` layer in situ, short runs (`m` = 9884) | 15 | **−38 %** (layer −23 %) |
+/// | `su4` layer, `W = 2`, 1 thread | 15 | **−25…−26 %** (layer −15 %) |
+/// | `su4` layer, `W = 2`, 8 threads | 15 | **−17…−42 %** (layer −10…−30 %) |
+/// | `su4` layer, `W = 1` | 15 | **−45…−50 %** (layer −33 %) |
+/// | `su4` layer, short runs (`m` = 9884) | 15 | **−38 %** (layer −24 %) |
 /// | microbench, one bucket, `W = 2` | 15 | −31…−38 % |
 /// | **microbench, sparse PTM (`rotation_zz`)** | **1** | **+133…+165 %** |
 ///

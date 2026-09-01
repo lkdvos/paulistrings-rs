@@ -806,11 +806,14 @@ def _summarize_memory(samples: Sequence[Mapping[str, Any]], terms: int) -> dict[
 # ==========================================================================
 # Workloads
 #
-# Three, chosen to separate what the engines actually differ at rather than to
+# Four, chosen to separate what the engines actually differ at rather than to
 # cover physics: two that exercise the native rotation path with different
-# generator mixes, and one that exercises the dense matrix-gate path on both
-# sides. Every configuration is Heisenberg, one gate per channel, single
-# threaded, contracted against a state both engines can express.
+# generator mixes, one that exercises the dense matrix-gate path on both sides,
+# and one — `kicked_ising_deep` — that is the first workload's circuit taken to
+# 20 Trotter steps purely to move a fixed term count away from the reachable
+# set's closure, which is the saturation hypothesis's falsification test. Every
+# configuration is Heisenberg, one gate per channel, single threaded, contracted
+# against a state both engines can express.
 # ==========================================================================
 
 
@@ -850,9 +853,18 @@ SU4_SEED = 20260831
 #: `-pi/2`, which is what makes the cutoffs' dyadic straddle possible at all.
 KICKED_ISING_THETA_H = 5.0 * math.pi / 16.0
 
+#: The deep kicked-Ising angle, and the depth that goes with it. Benchmark C
+#: proved per-layer parity at exactly this angle and depth — all 5420 layers
+#: identical at `min_abs_coeff = 2^-14` (2 441 936 final / 3 108 582 peak
+#: terms), which is what the thread-scaling section reuses — so the saturation
+#: falsification test inherits a proven configuration rather than opening a new
+#: untested one.
+KICKED_ISING_DEEP_THETA_H = 7.0 * math.pi / 32.0
+KICKED_ISING_DEEP_STEPS = 20
+
 
 def workloads() -> dict[str, Workload]:
-    """The three workloads, built lazily so `--workload` can pick one."""
+    """The four workloads, built lazily so `--workload` can pick one."""
     return {
         "kicked_ising": Workload(
             key="kicked_ising",
@@ -872,6 +884,40 @@ def workloads() -> dict[str, Workload]:
                 "Native ZZ pauli_rotations on both engines (jl PauliRotation, not a "
                 "transfer map), 1355 channels (5 x (127 rx + 144 ZZ)), observable Z_62, "
                 "theta_zz = -pi/2 at the Clifford point. Benchmark C's configuration."
+            ),
+        ),
+        "kicked_ising_deep": Workload(
+            key="kicked_ising_deep",
+            title=(
+                "kicked-Ising, heavy-hex 127q, 20 Trotter steps, theta_h = 7pi/32 "
+                "(saturation falsification test)"
+            ),
+            n_qubits=127,
+            observable={_z_at(62, 127): 1.0},
+            state="z+",
+            # Dyadic on purpose, same as the 5-step curve: this is the case the
+            # one-ulp threshold mitigation exists for, so the falsification test
+            # exercises it rather than dodging it with powers of ten. The two
+            # tightest points (2^-13, 2^-14) are the ones that decide the
+            # verdict; 2^-13 is inserted between the usual even exponents to put
+            # a second measured point inside the 1e6-3e6 term band the 5-step
+            # curve decayed across.
+            cutoffs=(2.0**-8, 2.0**-10, 2.0**-12, 2.0**-13, 2.0**-14),
+            gates_factory=lambda: kicked_ising_gates(
+                127,
+                trotter_steps=KICKED_ISING_DEEP_STEPS,
+                theta_h=KICKED_ISING_DEEP_THETA_H,
+            ),
+            notes=(
+                "The saturation falsification test for the 5-step curve's ratio decay "
+                "(jl_performance/README.md, 'Hypothesis'). Same circuit family, same "
+                "observable Z_62 and theta_zz = -pi/2, but 20 Trotter steps instead of "
+                "5 — 5420 channels (20 x (127 rx + 144 ZZ)) — so that ~2-3e6 terms is "
+                "far from the reachable Pauli set's closure instead of at it. If the "
+                "ratio keeps rising with the term count and jl's per-term cost stays "
+                "flat, the decay was a saturation regime; if it decays here too, it is "
+                "a large-m property of this engine. Benchmark C's angle and depth, "
+                "whose 5420 per-layer counts it already proved identical at 2^-14."
             ),
         ),
         "xxz": Workload(

@@ -656,6 +656,58 @@ def test_kicked_ising_gate_list_mirrors_the_circuit_builder(driver, circuits_mod
     )
 
 
+def test_kicked_ising_deep_workload_is_the_configuration_it_claims(driver, circuits_module):
+    """The saturation falsification test's workload, pinned to its claim.
+
+    ``kicked_ising_deep`` exists to move a *fixed* term count away from the
+    reachable Pauli set's closure by deepening the circuit, so the only thing
+    that may differ from ``kicked_ising`` is the depth and the kick angle — same
+    lattice, same observable, same Clifford ``theta_zz``. It also reuses
+    benchmark C's proven angle/depth (all 5420 per-layer counts identical at
+    ``2^-14``), which is only true if the gate list really is 20 steps at
+    ``7pi/32``: pin both here rather than trusting the workload's prose.
+    """
+    workloads = driver.workloads()
+    deep = workloads["kicked_ising_deep"]
+    shallow = workloads["kicked_ising"]
+
+    assert driver.KICKED_ISING_DEEP_STEPS == 20
+    assert deep.n_qubits == shallow.n_qubits == 127
+    assert deep.observable == shallow.observable  # Z_62, same seed operator
+    assert deep.state == shallow.state == "z+"
+    # a weight variant would put a second knob on the size axis, and the
+    # falsification test reads a single-parameter ratio-vs-terms trend
+    assert deep.weight_variant is None
+    # the two tightest points are what decide the verdict; 2^-13 is deliberately
+    # between the even exponents so the decisive band has two measured points
+    assert deep.cutoffs == (2.0**-8, 2.0**-10, 2.0**-12, 2.0**-13, 2.0**-14)
+    assert all(driver.is_dyadic(eps) for eps in deep.cutoffs), (
+        "dyadic on purpose: the one-ulp threshold mitigation must be load-bearing "
+        "in the falsification test too, not dodged with powers of ten"
+    )
+
+    gates = deep.gates()
+    assert len(gates) == 20 * (127 + 144) == 5420
+    reference = circuits_module.heavy_hex_kicked_ising(
+        127, trotter_steps=20, theta_h=driver.KICKED_ISING_DEEP_THETA_H
+    )
+    assert len(_channels_from_gate_list(gates, 127)) == len(reference) == len(gates)
+    assert [g["name"] for g in gates[:127]] == ["rx"] * 127
+    assert all(g["theta"] == pytest.approx(7.0 * math.pi / 32.0) for g in gates[:127])
+    assert all(
+        g["theta"] == pytest.approx(-math.pi / 2)
+        for g in gates
+        if g["name"] == "pauli_rotation"
+    )
+    # Depth only *appends* Trotter steps: the deep list's first five steps are
+    # the five-step list at the same angle, gate for gate. That is what makes
+    # "same circuit family, more steps" a true statement about the comparison
+    # rather than about the prose.
+    assert gates[: 5 * (127 + 144)] == driver.kicked_ising_gates(
+        127, trotter_steps=5, theta_h=driver.KICKED_ISING_DEEP_THETA_H
+    )
+
+
 def test_xxz_gate_list_mirrors_the_circuit_builder(driver, circuits_module):
     gates = driver.xxz_gates(20, 2, Jz=0.5, dt=0.1)
     reference = circuits_module.xxz_chain_trotter(20, 2, Jz=0.5, dt=0.1)

@@ -19,8 +19,10 @@ benchmarks/results/*
 # Schema-v1 task files the jl head-to-head writes for each configuration: ~4 MB
 # of circuit JSON that bench_jl_performance.py regenerates deterministically
 # from the same seeds (its README's "Reproducing" section). The committed
-# artifacts are the summary, results, figures and log.
-benchmarks/python/jl_performance/tasks/
+# artifacts are the summary, results, figures and log. The `**/` covers the
+# follow-up runs' own subdirectories (deep-kicked-ising/, ...), each of which
+# writes its own tasks/.
+benchmarks/python/jl_performance/**/tasks/
 
 # Rendered docs site (mdbook build-dir); the source is docs/book/src.
 docs/book/site/

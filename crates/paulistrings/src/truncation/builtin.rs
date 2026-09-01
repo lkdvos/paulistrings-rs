@@ -278,10 +278,14 @@ mod tests {
     /// default — never does.
     #[test]
     fn layer_finalize_hint_matches_the_builtins() {
-        assert!(!<CoefficientThreshold as TruncationPolicy<1>>::finalizes_layer(
-            &CoefficientThreshold(1e-9)
+        assert!(
+            !<CoefficientThreshold as TruncationPolicy<1>>::finalizes_layer(&CoefficientThreshold(
+                1e-9
+            ))
+        );
+        assert!(!<WeightCutoff as TruncationPolicy<2>>::finalizes_layer(
+            &WeightCutoff(3)
         ));
-        assert!(!<WeightCutoff as TruncationPolicy<2>>::finalizes_layer(&WeightCutoff(3)));
         assert!(<TopN as TruncationPolicy<1>>::finalizes_layer(&TopN(4)));
 
         let cheap = And(CoefficientThreshold(1e-9), WeightCutoff(2));

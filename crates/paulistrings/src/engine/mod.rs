@@ -8,6 +8,7 @@
 
 pub mod bucketed;
 pub(crate) mod coset;
+pub(crate) mod direct;
 pub(crate) mod merge;
 #[cfg(feature = "phase-timing")]
 pub mod stats;
@@ -37,6 +38,113 @@ pub enum Direction {
     /// Apply channels in reverse order, using each channel's
     /// [`Channel::apply_adjoint`].
     Heisenberg,
+}
+
+/// Which layer engine [`propagate_with_options`] uses.
+///
+/// The bucketed sorting engine ([`bucketed`]) is canonical at every term count;
+/// the alternative is a strictly additive small-sum path (`engine::direct`) that
+/// applies a layer through [`Channel::apply`] into a hash map, skipping
+/// [`Channel::prepare`] and the bucketed machinery. See
+/// `research/notes/2026-09-01-small-m-path.md`.
+///
+/// The default is [`EngineSelection::SortedOnly`]: today's behaviour, unchanged,
+/// for every caller that does not ask for anything else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineSelection {
+    /// The bucketed sorting engine for every layer. The default.
+    #[default]
+    SortedOnly,
+    /// The small-sum direct path while it is expected to be faster — the sum is
+    /// at most [`PropagateOptions::small_sum_threshold`] terms *and* the policy
+    /// reports no layer finalization
+    /// ([`TruncationPolicy::finalizes_layer`]) — then the sorting engine for
+    /// the rest of the circuit.
+    ///
+    /// The policy condition is a performance decision, not a correctness one: a
+    /// finalizing policy would make the direct path pay a materialize →
+    /// finalize → re-ingest round trip per layer, which is what the direct path
+    /// exists to avoid. Use [`EngineSelection::SmallSumDirect`] to take the
+    /// direct path anyway.
+    Auto,
+    /// The small-sum direct path whenever the sum is at most
+    /// [`PropagateOptions::small_sum_threshold`] terms, whatever the policy.
+    ///
+    /// A policy with a layer pass still gets it, once per layer, on a
+    /// materialized sum — the results match [`EngineSelection::SortedOnly`] to
+    /// floating-point tolerance either way. Mainly an A/B knob: it is the only
+    /// way to measure the direct path against a `TopN`-style policy.
+    SmallSumDirect,
+}
+
+/// Default for [`PropagateOptions::small_sum_threshold`].
+///
+/// The direct path's whole win is the bucketed layer's per-layer fixed cost,
+/// measured at 1.43 µs for a two-qubit rotation at `W = 2` and 5.4 µs for a
+/// dense two-qubit PTM (`research/notes/2026-09-01-large-m-phase-breakdown.md`
+/// §2). Against the sorting engine's ~29 ns/term that fixed cost is 9% of a
+/// 500-term layer, 3.3% of a 1500-term one and 1.2% of a 4096-term one — so
+/// 4096 is where there stops being anything to win even if the two paths' per-term
+/// costs were equal. It also sits below `desired_bits`'s `worth_splitting` floor
+/// (`DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`), so a sum on this path is
+/// one the sorting engine would have run in few buckets anyway.
+///
+/// This is a starting point chosen from fixed-cost arithmetic, not a measured
+/// crossover; the field is public so a measurement can move it.
+pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 4096;
+
+/// Tuning knobs for [`propagate_with_options`].
+///
+/// [`Default`] is exactly today's behaviour — the sorting engine for every
+/// layer — so `PropagateOptions::default()` and [`propagate`] agree bit for bit.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::{EngineSelection, PropagateOptions};
+///
+/// let opts = PropagateOptions {
+///     engine: EngineSelection::Auto,
+///     ..PropagateOptions::default()
+/// };
+/// assert_eq!(PropagateOptions::default().engine, EngineSelection::SortedOnly);
+/// # let _ = opts;
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PropagateOptions {
+    /// Which layer engine to use. Default [`EngineSelection::SortedOnly`].
+    pub engine: EngineSelection,
+    /// Resident term count up to which the small-sum direct path is used.
+    /// Ignored under [`EngineSelection::SortedOnly`]. Default
+    /// [`DEFAULT_SMALL_SUM_THRESHOLD`].
+    pub small_sum_threshold: usize,
+}
+
+impl Default for PropagateOptions {
+    fn default() -> Self {
+        Self {
+            engine: EngineSelection::SortedOnly,
+            small_sum_threshold: DEFAULT_SMALL_SUM_THRESHOLD,
+        }
+    }
+}
+
+impl PropagateOptions {
+    /// Whether a propagation starting at `len` terms under a policy that
+    /// answers `policy_finalizes` to [`TruncationPolicy::finalizes_layer`]
+    /// starts on the direct path.
+    ///
+    /// Evaluated once per [`propagate_with_options`] call, outside the layer
+    /// loop. The direct path is entered only here: once the sum outgrows the
+    /// threshold the run continues on the sorting engine and never comes back
+    /// (see [`propagate_with_options`]).
+    fn starts_direct(&self, len: usize, policy_finalizes: bool) -> bool {
+        match self.engine {
+            EngineSelection::SortedOnly => false,
+            EngineSelection::Auto => len <= self.small_sum_threshold && !policy_finalizes,
+            EngineSelection::SmallSumDirect => len <= self.small_sum_threshold,
+        }
+    }
 }
 
 /// Propagate `initial` through `circuit` under `policy`.
@@ -132,10 +240,120 @@ where
 /// region, so a logger implementation never runs inside a parallel layer.
 pub fn propagate_with_scratch<const W: usize, T>(
     circuit: &Circuit<W>,
+    sum: PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    scratch: &mut LayerScratch<W>,
+) -> PauliSum<W>
+where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    propagate_with_scratch_and_options(
+        circuit,
+        sum,
+        policy,
+        direction,
+        scratch,
+        PropagateOptions::default(),
+    )
+}
+
+/// [`propagate`] with [`PropagateOptions`].
+///
+/// `PropagateOptions::default()` is [`propagate`] exactly — same code path, same
+/// bits — so this is only interesting for opting into a non-default
+/// [`EngineSelection`].
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::{
+///     BuildAccumulator, Circuit, Direction, EngineSelection, PauliString, Phase,
+///     PropagateOptions, TruncationPolicy, channel::Clifford1Q, propagate_with_options,
+/// };
+/// use num_complex::Complex64;
+///
+/// struct KeepAll;
+/// impl<const W: usize> TruncationPolicy<W> for KeepAll {
+///     // The direct path skips the finalize round trip only for a policy that
+///     // says it has no layer pass; the trait's default answer is the
+///     // conservative `true`.
+///     fn finalizes_layer(&self) -> bool { false }
+/// }
+///
+/// let mut acc = BuildAccumulator::<1>::new(1);
+/// acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+/// let mut circuit = Circuit::<1>::new(1);
+/// circuit.push(Clifford1Q::h(0));
+///
+/// let opts = PropagateOptions {
+///     engine: EngineSelection::Auto,
+///     ..PropagateOptions::default()
+/// };
+/// let evolved = propagate_with_options(
+///     &circuit, acc.finalize(), &KeepAll, Direction::Heisenberg, opts,
+/// );
+/// // H conjugates Z to X, whichever engine ran the layer.
+/// assert_eq!(evolved.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
+/// ```
+pub fn propagate_with_options<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    options: PropagateOptions,
+) -> PauliSum<W>
+where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    let mut scratch = LayerScratch::<W>::new();
+    propagate_with_scratch_and_options(circuit, sum, policy, direction, &mut scratch, options)
+}
+
+/// [`propagate_with_scratch`] with [`PropagateOptions`] — the implementation
+/// every other entry point delegates to.
+///
+/// # The small-sum path, when selected
+///
+/// Under [`EngineSelection::Auto`] or [`EngineSelection::SmallSumDirect`] and a
+/// starting sum within [`PropagateOptions::small_sum_threshold`], the leading
+/// layers run on the direct path (`engine::direct`): the sum is held in a hash
+/// map across those layers, and materialized back into a [`PauliSum`] once —
+/// when a layer leaves it above the threshold, or when the circuit ends. From
+/// that point the sorting engine runs every remaining layer.
+///
+/// The transition is **one-way**. Re-entering the direct path when a later
+/// truncation drops the sum back under the threshold is deliberately not done:
+/// each crossing costs an `O(n)` ingest plus an `O(n log n)` materialize, a sum
+/// oscillating around the threshold would pay them per layer, and the upside is
+/// bounded by the fixed cost the direct path saves (1.43 µs/layer for a
+/// two-qubit rotation). One crossing per call is also trivially reasoned about:
+/// the per-layer term counts and the [`TermTrace`](bucketed::TermTrace) are the
+/// same records in the same order regardless of where it happened.
+///
+/// Truncation is applied identically on both sides of the transition:
+/// `keep_term` runs per layer on summed coefficients (where the merge phase runs
+/// it), and `finalize_layer` runs per layer on a materialized sum whenever
+/// [`TruncationPolicy::finalizes_layer`] says there is one. Progress logging and
+/// the term trace emit the same records from either path.
+///
+/// # Channels wider than the sorting engine can prepare
+///
+/// The direct path calls only [`Channel::apply`], so it applies a channel of any
+/// support width — including the `> MAX_LOCAL_SUPPORT` channels for which
+/// `Channel::prepare` returns `None` and the sorting engine panics. It is a
+/// wider path, not a narrower one, and that asymmetry is visible: a circuit
+/// containing such a channel propagates while the sum is under the threshold and
+/// panics on the layer after it grows past it, exactly as it panics today under
+/// [`EngineSelection::SortedOnly`]. The generalization design for the sorting
+/// engine is `research/notes/2026-08-31-local-ptm-generalization.md`.
+pub fn propagate_with_scratch_and_options<const W: usize, T>(
+    circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
     policy: &T,
     direction: Direction,
     scratch: &mut LayerScratch<W>,
+    options: PropagateOptions,
 ) -> PauliSum<W>
 where
     T: TruncationPolicy<W> + ?Sized,
@@ -166,7 +384,20 @@ where
     // through `scratch`.
     let tracing = scratch.term_trace.is_some();
 
-    for k in 0..n {
+    // The engine choice is made once, here, outside every loop: a layer's own
+    // code path cannot change it, and under the default `SortedOnly` this is
+    // one not-taken branch before the loop and nothing inside it. `n > 0`
+    // keeps a zero-layer call off the direct path entirely, so it stays a
+    // no-op rather than an ingest/materialize round trip.
+    let mut start = 0usize;
+    if n > 0 && options.starts_direct(terms_in, policy.finalizes_layer()) {
+        let (out, applied) =
+            direct::run_direct_prefix(circuit, sum, policy, direction, scratch, options);
+        sum = out;
+        start = applied;
+    }
+
+    for k in start..n {
         let idx = match direction {
             Direction::Forward => k,
             Direction::Heisenberg => n - 1 - k,

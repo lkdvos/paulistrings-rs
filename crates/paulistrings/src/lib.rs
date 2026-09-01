@@ -131,7 +131,11 @@ pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
-pub use engine::{default_min_buckets, propagate, propagate_with_scratch, Direction};
+pub use engine::{
+    default_min_buckets, propagate, propagate_with_options, propagate_with_scratch,
+    propagate_with_scratch_and_options, Direction, EngineSelection, PropagateOptions,
+    DEFAULT_SMALL_SUM_THRESHOLD,
+};
 pub use pauli_string::PauliString;
 pub use pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
 pub use phase::Phase;

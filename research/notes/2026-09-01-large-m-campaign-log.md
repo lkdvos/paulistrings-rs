@@ -341,3 +341,44 @@ Decisions:
 - 12:06 **VERDICT: E3 passes all three gates.** `EngineSelection::Auto` stays **off by default** as planned -- flipping
   it is a separate decision, and the one piece of evidence still missing for it is a multi-thread cell (the direct
   path has no parallelism, so its crossover moves down with thread count). Not merged; the orchestrator merges.
+### Phase 2 gate: E2 `expt/sort-kernel` -- **PASS** (`research/notes/2026-09-01-sort-kernel.md`)
+
+- 12:08 box handed over exclusively (E1 and E3 gates done and PASSED, E4's null-check queued behind). Waited
+  load down to 0.85 before the first build; `RUST_LOG` unset; `cargo test --workspace` and `--release` green at
+  968598c.
+- 12:12-12:34 seven `ab-compare.sh` invocations, `--a f592c43 --b expt/sort-kernel --pairs 3 --order abba`
+  (one per `(n, qubits, reps)` triple, since those are per-invocation while `--layers`/`--threads` are CSV).
+  **`--order abba` rather than the default `abab`**: with the box exclusively held there was no reason not to
+  take the stronger protocol, and it removes the one alternative explanation a uniformly-negative result invites.
+- 12:35 **VERDICT: PASS, 8/8 dense cells, 3/3 pairs each.** Layer medians: `W = 2` `q = 128` **-24.0%**
+  (m=9884) / **-15.9%** (1e5) / **-15.2%** (1e6) at 1 thread, **-30.3% / -14.0% / -10.5%** at 8 threads;
+  `W = 1` `q = 64` **-33.8%** (m=63364, `r = 3`) / **-33.2%** (m=991060, `r = 4`). Sort phase -17% to -50%.
+  Acceptance was median <= -10% (`W = 2`) / <= -25% (`W = 1`); tightest margin 0.5 points (8t, m=1e6).
+- 12:35 The baseline arm reproduces Phase-1 independently -- 58.9% sort share and 16.18 ns/sorted row at
+  `W = 2` against the fact sheet's 58-60% and 16.1; 22.08 ns/row at `W = 1`, `r = 4` against E4's 22.12-22.28.
+  That agreement is what licenses reading the deltas as a measurement of the change rather than of the box.
+- 12:35 **The `W = 1` width residual is removed, not merely reduced**: 11.11 ns/row against `W = 2`'s 12.07 at
+  matched `m` and rank (0.92x), where the comparison kernel is 1.36x -- E4's ~1.35x reproduced and then closed.
+  The kernel is order-oblivious, so the near-identical Delta in the `r = 3` and `r = 4` cells is expected: it
+  does not repair a deficient rank draw, it removes the sort's sensitivity to one.
+- 12:35 **Controls: layout, not perturbation -- no module move.** Applying the discriminator calibrated on the
+  E1/E3 gates: work counts (terms_in/out, rows_gathered/sorted/id, cosets, runs) **bit-identical** on every
+  control pair; the sort phase, the only phase whose source gained a neighbour, moves +1.0 / -2.2 / -0.6%; the
+  delta is concentrated in the **byte-identical** `merge2_into` (-15.0 / -14.0 / +7.2%); and the three layer
+  deltas **disagree in sign** (-7.3% rotation_zz q128, -4.0% cnot q128, **+2.2%** rotation_zz q64), all inside
+  or at the edge of the calibrated +-4-7% band. The largest magnitude is a *speedup* on an untouched path.
+  Risk #1's contingency ("a consistent sparse regression means move the kernel to its own module") is therefore
+  **not triggered**; `engine/merge.rs` keeps its shape and its `#[inline]` set.
+- 12:35 Free correctness result: `terms_out` is bit-identical between the two sides on every cell including the
+  dense-PTM ones, over 40 layers at m=9.9e5 and 2000 layers at m=9884. The kernels are only required to agree
+  to FP tolerance, so an identical surviving term count at that scale is a differential check far wider than
+  the unit tests reach.
+- 12:35 **Campaign consequence for E4**: this kernel already takes the mid-`m` cell -24.0% (layer) / -37.9%
+  (sort) with no policy change, so E4's bucket-count constant must be chosen against the **post-merge** sort,
+  not against the comparison kernel's numbers -- otherwise it is tuned to close a gap that no longer exists,
+  at the +46.6% rotation-layer cost it carries. The two are not additive; gate in sequence and re-run the
+  m=1e4 cell after whichever lands first.
+- 12:35 Unmeasured and flagged: 16/32 threads for this kernel (the gate stopped at 8 per the write-ceiling
+  finding; the 8-thread trend -30.3% -> -10.5% as `m` grows is consistent with a compute win being absorbed as
+  the layer approaches the ceiling), 2-7 rest streams (`sqrt(SWAP)`'s regime, left on the comparison kernel),
+  and an `#[inline]` hint on the new function.

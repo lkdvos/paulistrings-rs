@@ -303,8 +303,16 @@ id stream is 1:1 with the source bucket, so the gather materializes only the
 bucket in place — id keys are neither written nor re-read. Sparse identity
 streams materialize pre-filtered keys and coefficients.
 
-**The sort.** `sort_rows_with_scratch` (in `engine/merge.rs`, alongside its
-worker-persistent `SortScratch`) is a permutation sort over the run.
+**The sort.** Two kernels live in `engine/merge.rs` alongside their shared
+worker-persistent `SortScratch`, and the layer picks between them *once*, from
+its plan's realized rest-delta count — so the choice costs nothing per run.
+Both satisfy one contract and nothing more: the output is ascending in lex
+`(x, z)` with duplicates allowed, and is a permutation of the input triples, so
+they are interchangeable to floating-point tolerance (§Determinism) and never
+bitwise. `merge::tests::assert_sort_contract` holds both to it.
+
+`sort_rows_with_scratch` — the default, and the only kernel a sparse-PTM layer
+ever sees — is a permutation sort over the run.
 
 > Its comparison sort **must remain the standard library's stable adaptive
 > `sort_by`**. A gather run is a concatenation of per-delta streams, each
@@ -313,6 +321,29 @@ worker-persistent `SortScratch`) is a permutation sort over the run.
 > `sort_unstable_by` (pdqsort, no run detection) measured **+77%** on a
 > rotation layer. Stability per se is irrelevant; adaptivity is the point.
 > Recorded on the function's doc — do not "simplify" it.
+
+`sort_rows_radix_with_scratch` serves the dense-PTM path, where the sort is
+**58–60% of layer wall time** and the run arrives as ~15 ascending blocks with
+~15-fold duplicate keys. Adaptivity already puts that at `log₂ 15 + 1 ≈ 4.9`
+comparisons per row — the information-theoretic floor — so the win is not in
+the comparison *count* but in what one costs: each is a dependent indexed load
+through the permutation into a 100–400 KiB key column. The radix kernel finds
+the most significant key word the rows actually disagree on, extracts an
+order-faithful 16-bit surrogate from it (every row shares the bits above, so
+the shifted masked window is monotone in the key), sorts
+`(surrogate, row index)` records with two 8-bit passes of sequential reads, and
+orders the residual ties on the full key at ~1 comparison per row. Runs whose
+keys are all equal return immediately; runs whose window cannot discriminate
+delegate to the comparison kernel.
+
+> This kernel is **selected, never a replacement**: on a single nearly-sorted
+> stream it measured **+130–165%**. `RADIX_MIN_REST_STREAMS` gates it at 8, so
+> today only a dense two-qubit PTM reaches it and every rotation/Clifford layer
+> keeps byte-identical code. It is also order-*oblivious*, so it does not
+> repair a deficient delta-span rank draw (§Hash) — it removes the sort's
+> sensitivity to one. Measurements, the `W = 1` comparator diagnosis it also
+> resolves, and the unmeasured 2–7-stream gap in
+> `research/notes/2026-09-01-sort-kernel.md`.
 
 **The merge.** `merge2_into` fuses the two-stream merge with the segmented
 reduction: a two-pointer walk over id + rest, id-first on key ties, summing

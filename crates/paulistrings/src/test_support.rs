@@ -435,3 +435,96 @@ pub fn assert_terms_close<const W: usize>(
         );
     }
 }
+
+/// One draw of Haar-random SU(4), as a 4×4 unitary in the computational basis.
+///
+/// The entries come from `examples/common/circuits.py::haar_su4` (Mezzadri
+/// phase-fixed QR of a complex Ginibre matrix, then divided by `det^(1/4)`)
+/// under `numpy.random.default_rng(0xC0FFEE)`, transcribed via Python `repr`
+/// (shortest round-tripping `f64` literals) — i.e. one draw of exactly the
+/// distribution `benchmarks/python/bench_jl_performance.py::su4_gates` and
+/// benchmark E's `random_su4_staircase` sample. Unitary to 2.5e-16;
+/// `GeneralUnitary2Q::from_matrix` does not check, and a non-unitary matrix
+/// would silently give a non-physical PTM.
+///
+/// Shared because it is the canonical **dense-PTM** fixture: a generic SU(4)
+/// gives all sixteen local delta entries a nonzero amplitude, which is what
+/// makes the sort dominate the layer and what
+/// `research/notes/2026-09-01-bucket-cliff.md` is about. `sqrt(SWAP)` and the
+/// Cliffords are not substitutes — their PTMs are sparse (steady-state fanout
+/// 3.65 and 1.0 against a dense PTM's 14.94).
+pub fn haar_su4_matrix() -> [[Complex64; 4]; 4] {
+    [
+        [
+            Complex64::new(0.44535882417102446, 0.1243885298575445),
+            Complex64::new(-0.09402453034947537, -0.14670085591185988),
+            Complex64::new(0.7459177705812382, -0.3801992439705379),
+            Complex64::new(0.052557524520682804, 0.22828530169893588),
+        ],
+        [
+            Complex64::new(-0.04863200501298571, -0.40347772310563557),
+            Complex64::new(0.7069517563162028, 0.008408200837924597),
+            Complex64::new(0.26012555224671347, -0.12053357328338017),
+            Complex64::new(-0.3528728311960538, -0.3581567969892209),
+        ],
+        [
+            Complex64::new(-0.35880447773297086, 0.11743595956162649),
+            Complex64::new(-0.3097428484619983, 0.594366207605036),
+            Complex64::new(0.1610278707748687, -0.25258937630123157),
+            Complex64::new(-0.5597163461470217, 0.07240555858329784),
+        ],
+        [
+            Complex64::new(-0.578592686173378, -0.3791072567045837),
+            Complex64::new(0.05738813758483608, 0.13145928539206422),
+            Complex64::new(0.3453330441780492, 0.08874282848443517),
+            Complex64::new(0.5033919610984813, 0.34698642893070086),
+        ],
+    ]
+}
+
+/// GF(2) rank of a set of bucket indices, by Gaussian elimination.
+///
+/// One pivot slot per bit position, so each vector is either absorbed by an
+/// existing pivot or becomes a new one. (The naive "reduce against a `Vec` of
+/// vectors" version overcounts unless that `Vec` is kept *reduced* — the same
+/// subtlety `engine::coset::Gf2Span::new` handles by back-substituting.)
+///
+/// Used to reason about the **coset dimension** the engine gets for a layer:
+/// `Gf2Span::r()` is exactly this rank applied to the prepared channel's
+/// `bucket_deltas()`, and it is the quantity the dense-PTM sort's cost turns
+/// on (`research/notes/2026-09-01-bucket-cliff.md`).
+pub fn gf2_rank(vs: &[u32]) -> usize {
+    let mut pivot = [0u32; 32];
+    let mut r = 0usize;
+    for &v in vs {
+        let mut v = v;
+        while v != 0 {
+            let hb = (31 - v.leading_zeros()) as usize;
+            if pivot[hb] == 0 {
+                pivot[hb] = v;
+                r += 1;
+                break;
+            }
+            v ^= pivot[hb];
+        }
+    }
+    r
+}
+
+/// Rank of `h` restricted to the key-delta space of a support.
+///
+/// A channel supported on `qubits` can only change those qubits' `x` and `z`
+/// bits, so its key-delta set lies in `span{X_q, Z_q : q ∈ qubits}` — dimension
+/// `2·|qubits|`. Its *bucket*-delta span is the image of that space under `h`,
+/// and this returns that image's dimension. Full rank (`2·|qubits|`) means `h`
+/// separates every local delta; anything less means two distinct local deltas
+/// share one bucket delta, which is the rank deficiency the note above
+/// diagnoses.
+pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits: &[u32]) -> usize {
+    let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
+    for &q in qubits {
+        imgs.push(h.bucket_of_pauli(&PauliString::<W>::x(q)));
+        imgs.push(h.bucket_of_pauli(&PauliString::<W>::z(q)));
+    }
+    gf2_rank(&imgs)
+}

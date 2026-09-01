@@ -18,6 +18,15 @@ Decisions are logged here as they are made, for post-hoc review (autonomous-exec
    the saturation verdict is ambiguous.
 4. Follow-up cross-engine data lands in new subdirectories under `benchmarks/python/jl_performance/` (append,
    never overwrite the committed study).
+5. **`phase_breakdown` cells are auto-reps'd, never run at the default `--reps`.** The powersave governor measures
+   a sub-50 ms timed region at ~1200 MHz instead of ~3600 MHz (measured 3.62× at `m = 150`), so every cell gets a
+   throwaway `--reps 8` calibration pass followed by the recorded pass at
+   `reps = clamp(200 ms / per-layer, 4, 40 000)`. Uncorrected batches are kept beside corrected ones rather than
+   deleted, so the artefact stays documented.
+6. **Probe extensions are committed before any timed run they feed, and never change a default.** Phase 1c needed
+   a faithful matrix-gate layer (`--layers su4`) and a `finalize_layer`-bearing policy (`--truncation`); both went
+   in as 6715918 with `--layers` defaults and `--truncation keep` preserving prior behaviour exactly, workspace
+   tests green and clippy clean, so no committed baseline is invalidated.
 
 ## Timeline
 
@@ -113,3 +122,79 @@ Decisions are logged here as they are made, for post-hoc review (autonomous-exec
   1.3-1.5x, consistent with a fixed 16-byte coefficient and `W`-independent transient buffers.
 - 09:06 `pytest python/paulistrings/tests/test_jl_performance_protocol.py` green (50 tests) — the driver
   was not edited, so this is a drift check rather than a gate on a change.
+
+### Phase 1c: the per-phase breakdown (`research/notes/2026-09-01-large-m-phase-breakdown.md`)
+
+- 09:11 preflight: load 0.23, 229 GiB free, `cargo test --workspace` green at 44782fe, probe built
+  `--release --features phase-timing`. All timed runs single-threaded unless noted, `RUST_LOG` unset, box idle.
+- 09:20 **methodology stop-the-line: the powersave governor invalidates every small-`m` number taken at the
+  probe's default `--reps`.** A `--reps 8` cell at `m = 150` runs for 0.25 ms and is measured at ~1200 MHz;
+  `ns/term` falls 143.1 → 39.6 (**3.62×**, exactly 1200/3600 MHz) as `--reps` goes 8 → 10 000, and converges once
+  the timed region exceeds ~50 ms. **Decision 5: every cell in this phase is run twice** — a throwaway
+  calibration pass at `--reps 8`, then the recorded pass at `reps = clamp(200 ms / per-layer, 4, 40 000)`. The
+  first (uncorrected) batch is kept beside the corrected one as `small-m.log` vs `small-m2.log` rather than
+  deleted, so the artefact is documented rather than hidden.
+- 09:22 **probe fidelity decision 6: `gu2q` (= `sqrt(SWAP)`) is not a matrix-gate proxy, so a `su4` layer was
+  added.** Measured: `sqrt(SWAP)`'s steady-state fanout is 3.65 rows/term against a dense PTM's 14.94, and
+  `sqrt(SWAP)² = SWAP` is Clifford, so repeating one block puts the term count in a **period-2 cycle**
+  (10 000 ↔ 32 503) instead of a fixed point — which also makes the reported `n` depend on `--reps` parity.
+  `--layers su4` uses one Haar SU(4) block from `circuits.py::haar_su4` under `default_rng(0xC0FFEE)`, i.e. the
+  same distribution `su4_gates` and benchmark E draw from. Also added `--truncation keep|coeff:<t>|topn:<N>`,
+  statically dispatched, since no existing layer exercised `finalize_layer`. Committed separately (6715918)
+  before any timed run; `cargo test --workspace` green, clippy clean, defaults unchanged.
+- 09:32 m-sweep done, `--n` 10⁴ → 10⁷ for `rotation_zz`/`gu2q` and the matching `m` grid for `su4`.
+  **No cell skipped**: peak RSS 1.48 GB (`rotation_zz`, `m` = 1.5 × 10⁷), 1.65 GB (`su4`, 9.9 × 10⁶), 3.3 GB
+  (`gu2q`, 2.1 × 10⁷) — two orders below the 100 GB budget, longest cell 29 s.
+- 09:38 **VERDICT (large `m`): no phase is superlinear, anywhere.** Per-term cost is flat to ±10 % over 1000× in
+  every channel class (`rotation_zz` 29.2–32.3 ns/term, `gu2q` 61.9–70.9, `su4` 377.9–426.1). The only phase that
+  moves with `m` is `gather`, +19 % peak. This is the deep-KI cross-engine verdict reproduced from inside the
+  engine.
+- 09:39 **VERDICT (small `m`): the fixed cost is `prepare`, not the pipeline.** Per-layer fixed cost is
+  **1.43 µs** (2q rotation), of which `prepare` is 70 %; the `rebucket → span_plan → permute → unpermute →
+  recount → finalize` serial pipeline is **0.19 µs** and is independent of `m` *and* of the channel to three
+  digits. Break-even at `m ≈ 49` terms; 3.3 % of the layer by `m = 1497`. The study README's attribution of the
+  small-`m` regime loss to that pipeline is quantitatively wrong by ~7×. `prepare` for a dense 2q PTM is
+  **4.19–5.71 µs per gate** (95 % of `su4`'s fixed cost).
+- 09:40 **new finding: a bucket-count cliff in the sort at `W = 2`.** `su4` costs 841 ns/term at `m` = 980 (1
+  bucket) against 378 at `m` ≥ 1.6 × 10⁴ (≥ 128 buckets) — **2.2× on the layer, 3.3× per sorted row** — and the
+  trigger is `desired_bits`'s `worth_splitting` floor at `DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`. Not
+  run length (rows/run is ~14 700 at 1, 2, 4 and 8 buckets alike). perf says branch misses, not cache:
+  2.50 % → 0.71 % miss rate, 535 → 329 insn/row, IPC 2.14 → 2.93, LLC load-miss under 1.2 % throughout.
+- 09:48 **and it is `W`-specific, which kills the obvious projection onto the su4 curve.** A one-qubit flip
+  `q = 64` (`W = 1`) → `q = 65` (`W = 2`) turns the cliff on and off: at `W = 1` the `su4` sort is a flat
+  ~30.5 ns/sorted row at *every* bucket count, at `W = 2` it is 16.1 (B ≥ 128) / 52.5 (B = 1). Since the
+  committed su4 curve is `n = 36` qubits, i.e. **`W = 1`**, the cliff cannot explain its 0.620 point, and the
+  projection "fixing the floor turns 0.620 into a tie" was **withdrawn before it went into the note**. What
+  survives instead: at `W = 1` our matrix-gate per-term cost is flat across the deficit band, both engines see
+  parity-identical per-layer term counts, so Julia's per-term cost fell 17.2/10.7 = **1.61×** over that step
+  while ours did not move — **the mid-`m` deficit is created on Julia's side, uniform on ours.** That is the
+  answer to the phase-correlation question the handoff asked. Separately, `W = 1`'s sort is **1.9× slower per row
+  than `W = 2`'s** on high-duplicate runs for half the key bytes, which is a defect in its own right.
+- 09:50 **VERDICT (roofline): one phase is bandwidth-bound, and only above 8 threads.** Single-threaded, every
+  cell is 2.2–11.7× below its modelled traffic because the traffic is cache-served: `rotation_zz`/`gu2q` at
+  `m ≥ 10⁶` measure 2.5–3.9 GB/s = 26–41 % of the 1-core mixed ceiling with 28–36 % LLC load-miss (**latency**,
+  not bandwidth); `su4` measures 0.61 GB/s = 6 % with 6.5 % LLC miss and IPC 2.73 (**compute-bound — do not
+  optimize its traffic at 1 thread**). At 16 threads `su4`'s write stream hits **25.2 GB/s against the measured
+  25.3 GB/s write ceiling (100 %)** and 32 threads adds no bandwidth while costing 8 % of wall time.
+  Consequence for Phase 2: **the dense-PTM path must be measured at ≤ 8 threads or the memory controller is the
+  independent variable.**
+- 09:52 **VERDICT (`TopN`): a big constant, not superlinear.** `finalize_layer` is **61–71 % of layer wall time**
+  at every `m` and thread count, 52.4 → 64.2 ns/term over a 30× `m` range (**+22 %**, sub-logarithmic). Its
+  zero-finalize control `coeff:0.0` costs +40–48 % over `keep` all by itself, entirely in the merge — and both
+  costs share one named cause: `Complex64::norm()` is `hypot` (num-complex `src/lib.rs:217`), one libm call per
+  merged term for `CoefficientThreshold` and **two per candidate** for `TopN`. Decision: the note ranks
+  `norm_sqr` ahead of histogram selection as experiment (1)'s first step, with the tie-semantics rider spelled
+  out.
+- 09:58 fact sheet written. Six planned Phase-2 experiments mapped to evidence: (1) `TopN` **supported, re-scoped**
+  (`norm_sqr` first, histogram last); (2) bucket tuning **supported but narrowly** — `W = 2` dense PTM below 8192
+  terms only, explicitly *not* the su4 curve's numbers; (3) SIMD **partially** — not `gather` (latency-bound), yes
+  a radix replacement for the sort, plus the unplanned `W = 1` defect; (4) hybrid/dictionary **supported with a
+  different rationale** (the sort, not the pipeline), **not evidenced** for the saturated regime; (5) memory-step
+  smoothing **not supported** as a throughput experiment; (6) merge/finalize **implicated as arithmetic, not
+  traffic**. Plus two unplanned items (7 `prepare` cost for dense PTMs, 8 the ≤ 8-thread measurement constraint).
+- 09:58 Skips and non-measurements, for the record: `--n 10⁷` was run for every layer (nothing skipped for RSS or
+  time); `su4`'s `m` grid uses `--n` scaled by its own 14.2× closure factor rather than the literal `--n` values,
+  since `--n 10⁷` would have meant `m` = 1.4 × 10⁸; `scripts/host-topology.sh` is not executable in the checkout,
+  so `lscpu` output stands in it in `provenance.txt`; the flamegraph HTML name is derived from layer + commit, so
+  successive cells of one layer overwrite each other — `perf-report.txt` (symbol tables per cell) is the quotable
+  artefact and agrees with `PhaseStats` to within 2 points.

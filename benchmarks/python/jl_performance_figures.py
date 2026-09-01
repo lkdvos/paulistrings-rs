@@ -85,6 +85,21 @@ def _timed_points(curve: Mapping[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+def _sweep_points(curve: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Only the `min_abs_coeff` sweep — the joined curve's actual points.
+
+    A `max_weight` configuration is a knob-*equivalence* demonstration, not a
+    point on the coefficient-cutoff size curve. Joining it into the same line
+    draws a dip that is purely an artifact of putting two different knobs on one
+    axis; it gets its own open marker instead.
+    """
+    return [p for p in _timed_points(curve) if p.get("max_weight") is None]
+
+
+def _variant_points(curve: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [p for p in _timed_points(curve) if p.get("max_weight") is not None]
+
+
 def _shade_zone(ax, curve: Mapping[str, Any], *, label: bool = True) -> None:
     """Shade the term-count band where the pairs disagreed on a direction."""
     zone = curve["crossover"].get("indistinguishable_zone")
@@ -147,7 +162,7 @@ def plot_time_vs_terms(curves: Sequence[Mapping[str, Any]], save_path: Path) -> 
         1, len(curves), figsize=(4.4 * len(curves), 3.8), squeeze=False
     )
     for ax, curve in zip(axes[0], curves):
-        pts = _timed_points(curve)
+        pts = _sweep_points(curve)
         x = [p["peak_terms"] for p in pts]
         _shade_zone(ax, curve)
         ax.plot(
@@ -158,6 +173,16 @@ def plot_time_vs_terms(curves: Sequence[Mapping[str, Any]], save_path: Path) -> 
             x, [p["jl_s_median"] for p in pts],
             "-s", color=JL_COLOR, lw=2.0, ms=5, label=JL_LABEL, zorder=3,
         )
+        for v in _variant_points(curve):
+            ax.plot(
+                [v["peak_terms"]], [v["rust_s_median"]], "o", mfc="none",
+                mec=RUST_COLOR, ms=9, mew=1.5, zorder=4,
+                label=f"max_weight={v['max_weight']} variant",
+            )
+            ax.plot(
+                [v["peak_terms"]], [v["jl_s_median"]], "s", mfc="none",
+                mec=JL_COLOR, ms=9, mew=1.5, zorder=4,
+            )
         _mark_crossover(ax, curve)
         ax.set_xscale("log")
         ax.set_yscale("log")
@@ -194,7 +219,7 @@ def plot_ratio_vs_terms(curves: Sequence[Mapping[str, Any]], save_path: Path) ->
         1, len(curves), figsize=(4.4 * len(curves), 3.8), squeeze=False
     )
     for ax, curve in zip(axes[0], curves):
-        pts = _timed_points(curve)
+        pts = _sweep_points(curve)
         # Keyed on the label, not the term count: two configurations can land on
         # the same peak (a saturated sum reached from two cutoffs), and keying on
         # the count would silently drop one of their scatters.
@@ -228,6 +253,12 @@ def plot_ratio_vs_terms(curves: Sequence[Mapping[str, Any]], save_path: Path) ->
                 "o", mfc="none", mec=MUTED, ms=10, mew=1.4, zorder=4,
                 label="pairs disagreed",
             )
+        for v in _variant_points(curve):
+            ax.plot(
+                [v["peak_terms"]], [v["median_ratio_jl_over_rust"]], "D",
+                mfc="none", mec=JL_COLOR, ms=8, mew=1.5, zorder=4,
+                label=f"max_weight={v['max_weight']} variant",
+            )
         _mark_crossover(ax, curve)
         ax.set_xscale("log")
         ax.set_yscale("log")
@@ -241,6 +272,57 @@ def plot_ratio_vs_terms(curves: Sequence[Mapping[str, Any]], save_path: Path) ->
     )
     fig.suptitle(
         "Per-pair time ratio vs peak term count — every pair drawn, median joined",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# --------------------------------------------------------------------------
+# 2b. per-term cost — where the ratio's shape comes from
+# --------------------------------------------------------------------------
+
+
+def plot_per_term_cost(curves: Sequence[Mapping[str, Any]], save_path: Path) -> Path:
+    """Nanoseconds per peak term, per engine, per workload.
+
+    The ratio figure says *that* the advantage changes with size; this one says
+    *whose* cost moved, which is the only version of the observation an
+    optimization can act on. Dividing out the term count removes the trivially
+    dominant linear growth and leaves the per-term efficiency, so a curve that
+    falls is an engine still amortizing fixed cost and a curve that flattens is
+    one that has stopped.
+
+    Read the two panels against each other: where one engine's curve keeps
+    falling and the other's has plateaued, the ratio moves for a structural
+    reason rather than a noisy one.
+    """
+    plt = _plt()
+    curves = [c for c in curves if _timed_points(c)]
+    fig, axes = plt.subplots(
+        1, len(curves), figsize=(4.4 * len(curves), 3.8), squeeze=False
+    )
+    for ax, curve in zip(axes[0], curves):
+        pts = _sweep_points(curve)
+        x = [p["peak_terms"] for p in pts]
+        ax.plot(
+            x, [p["rust_s_median"] / p["peak_terms"] * 1e9 for p in pts],
+            "-o", color=RUST_COLOR, lw=2.0, ms=5, label=RUST_LABEL,
+        )
+        ax.plot(
+            x, [p["jl_s_median"] / p["peak_terms"] * 1e9 for p in pts],
+            "-s", color=JL_COLOR, lw=2.0, ms=5, label=JL_LABEL,
+        )
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("peak terms")
+        ax.set_title(curve["workload"], fontsize=9)
+        report._style_axes(ax)
+    axes[0][0].set_ylabel("ns per peak term (warm, 1 thread)")
+    axes[0][0].legend(frameon=False, fontsize=7.5, loc="best")
+    fig.suptitle(
+        "Per-term cost — the shape behind the ratio "
+        "(falling = still amortizing fixed cost)",
         fontsize=10,
     )
     fig.tight_layout()
@@ -466,6 +548,7 @@ def render_all(summary: Mapping[str, Any], out_dir: Path) -> list[Path]:
     if curves:
         written.append(plot_time_vs_terms(curves, out_dir / "time-vs-terms.svg"))
         written.append(plot_ratio_vs_terms(curves, out_dir / "ratio-vs-terms.svg"))
+        written.append(plot_per_term_cost(curves, out_dir / "per-term-cost.svg"))
         written.append(plot_memory(curves, out_dir / "memory-per-term.svg"))
     accuracy = summary.get("accuracy") or []
     if any(

@@ -64,17 +64,38 @@ def pair(rust_s: float, jl_s: float) -> dict[str, float]:
 # --------------------------------------------------------------------------
 
 
-def test_driver_imports_without_engine_or_plotting_deps(driver):
-    """Module-level imports are stdlib only.
+def test_driver_top_level_imports_are_stdlib_only():
+    """The driver's *module-level* imports must all be stdlib.
 
-    The driver is imported here, in CI, purely for its protocol math. If an
-    engine or plotting import migrates to module level, this test is where that
-    is caught — not in a CI run that suddenly needs matplotlib.
+    CI imports this driver purely for its protocol math, in a job that has
+    neither Julia nor matplotlib. Engine, plotting and harness imports therefore
+    have to stay inside functions.
+
+    Checked by reading the file's AST rather than by inspecting
+    ``sys.modules``: a ``sys.modules`` check is order-dependent — another test in
+    the same session that imports matplotlib would make it pass or fail for
+    reasons having nothing to do with this file — whereas the AST *is* the
+    property.
     """
-    assert driver.DEFAULT_PAIRS >= 5, "the protocol's bar is at least 5 pairs"
-    # `paulistrings` is legitimately already imported by the rest of this test
-    # session, so only the ones nothing else pulls in can be asserted absent.
-    assert "matplotlib" not in sys.modules
+    import ast
+
+    source = DRIVER_PATH.read_text()
+    roots: set[str] = set()
+    for node in ast.parse(source).body:  # module level only, not nested
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    non_stdlib = sorted(r for r in roots if r not in sys.stdlib_module_names)
+    assert not non_stdlib, (
+        f"{DRIVER_PATH.name} imports {non_stdlib} at module level; CI imports it "
+        "for the protocol math alone, so engine/plotting imports must be inside "
+        "functions"
+    )
+
+
+def test_protocol_bar_is_at_least_five_pairs(driver):
+    assert driver.DEFAULT_PAIRS >= 5
 
 
 # --------------------------------------------------------------------------
@@ -712,6 +733,21 @@ def test_accuracy_references_carry_an_oracle_and_its_provenance(driver):
 
 def test_accuracy_bars_are_the_two_stated_ones(driver):
     assert driver.ACCURACY_BARS == (1e-2, 1e-3)
+
+
+def test_extension_provenance_resolves_the_binary_that_actually_ran(driver):
+    """It must describe the imported ``.so``, not the driver's working tree.
+
+    A study can run from a branch with no build of its own, against an
+    extension built elsewhere; attributing the numbers to the branch would name
+    code that never executed.
+    """
+    out = driver.extension_provenance()
+    assert "error" not in out, out.get("error")
+    assert out["package_path"].endswith("paulistrings/__init__.py")
+    # resolved from the imported module, so it is the checkout really in use
+    assert Path(out["checkout"]).is_dir()
+    assert out["commit"] and out["branch"]
 
 
 def test_thread_counts_start_at_one_and_are_powers_of_two(driver):

@@ -1336,6 +1336,7 @@ def run_curve(
         points.append(
             {
                 "label": label,
+                "max_weight": max_weight,
                 "final_terms": timing["final_terms"],
                 "peak_terms": timing["peak_terms"],
                 "median_ratio_jl_over_rust": timing["median_ratio_jl_over_rust"],
@@ -1351,7 +1352,12 @@ def run_curve(
             f"{timing['median_ratio_jl_over_rust']:6.3f}  [{verdict}]"
         )
 
-    crossover = interpolate_crossover(points, "peak_terms")
+    # The max_weight point is a knob-*equivalence* demonstration, not a point on
+    # the min_abs_coeff size curve, so it must not bracket the crossover: a
+    # crossover is only meaningful along a single-parameter family, and mixing
+    # two knobs on one axis can manufacture a bracket where the sweep has none.
+    curve_points = [p for p in points if p.get("max_weight") is None]
+    crossover = interpolate_crossover(curve_points, "peak_terms")
     if crossover["crossover_terms"] is not None:
         log(
             f"  crossover at ~{crossover['crossover_terms']:.3g} terms"
@@ -1700,6 +1706,49 @@ def run_thread_scaling(
 # ==========================================================================
 
 
+def extension_provenance() -> dict[str, Any]:
+    """Where the compiled extension actually came from.
+
+    ``report.collect_provenance`` records the commit of the *working tree the
+    driver runs in*, which is not necessarily the commit the ``.so`` was built
+    from — a study can legitimately run from a branch that has no build of its
+    own, against an extension built elsewhere. Recording only the former would
+    attribute the measurements to code that never executed.
+
+    So this resolves the extension the interpreter actually imported, finds the
+    checkout it lives in, and reads *that* checkout's HEAD. When the two differ
+    the README is obliged to say why the difference is harmless — the honest
+    version of which is "the propagation source is identical, here is the diff".
+    """
+    out: dict[str, Any] = {}
+    try:
+        import paulistrings
+
+        pkg_init = Path(paulistrings.__file__).resolve()
+        out["package_path"] = str(pkg_init)
+        ext = pkg_init.parent / "_paulistrings.abi3.so"
+        if ext.exists():
+            out["extension_path"] = str(ext)
+            out["extension_mtime"] = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(ext.stat().st_mtime)
+            )
+        checkout = pkg_init.parents[2]
+        out["checkout"] = str(checkout)
+        for key, cmd in (
+            ("commit", ["git", "rev-parse", "HEAD"]),
+            ("branch", ["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        ):
+            try:
+                out[key] = subprocess.run(
+                    cmd, cwd=checkout, capture_output=True, text=True, check=True
+                ).stdout.strip()
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+                out[key] = "unknown"
+    except Exception as exc:  # pragma: no cover - provenance must never break a run
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def build_run_records(curves: Sequence[Mapping[str, Any]]) -> list[Any]:
     """One `report.RunRecord` per (configuration, engine), from the pair medians.
 
@@ -1929,6 +1978,7 @@ def main(argv: Sequence[str]) -> int:
 
     summary["wall_clock_s"] = time.time() - started
     summary["free_ram_gib_at_end"] = free_ram_gib()
+    summary["extension_provenance"] = extension_provenance()
 
     # results.json is a snapshot, regenerated wholesale: report.write_results
     # appends by design (right for a gitignored campaign directory, wrong for a

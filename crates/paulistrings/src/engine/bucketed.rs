@@ -927,43 +927,18 @@ mod tests {
 
     /// One Haar-random SU(4) block — the *dense*-PTM two-qubit gate.
     ///
-    /// Entries transcribed from `examples/phase_breakdown.rs::haar_su4_block`
-    /// (itself `examples/common/circuits.py::haar_su4` under
-    /// `default_rng(0xC0FFEE)`), so the differential net and the
-    /// `phase_breakdown` `su4` cell exercise the same matrix. Unitary to
-    /// 2.5e-16. Every PTM entry is nonzero, so all 16 bucket deltas are
-    /// realized: the gather run is 15 concatenated rest streams with ~15-fold
-    /// duplicate keys, which is the shape the radix sort kernel is chosen for.
+    /// The matrix is the shared canonical dense-PTM fixture
+    /// [`crate::test_support::haar_su4_matrix`] (see its doc for provenance),
+    /// so the differential net and the `phase_breakdown` `su4` cell exercise
+    /// the same matrix. Every PTM entry is nonzero, so all 16 bucket deltas
+    /// are realized: the gather run is 15 concatenated rest streams with
+    /// ~15-fold duplicate keys, which is the shape the radix sort kernel is
+    /// chosen for.
     pub(super) fn haar_su4(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
         crate::channel::GeneralUnitary2Q::from_matrix(
             q0,
             q1,
-            [
-                [
-                    Complex64::new(0.44535882417102446, 0.1243885298575445),
-                    Complex64::new(-0.09402453034947537, -0.14670085591185988),
-                    Complex64::new(0.7459177705812382, -0.3801992439705379),
-                    Complex64::new(0.052557524520682804, 0.22828530169893588),
-                ],
-                [
-                    Complex64::new(-0.04863200501298571, -0.40347772310563557),
-                    Complex64::new(0.7069517563162028, 0.008408200837924597),
-                    Complex64::new(0.26012555224671347, -0.12053357328338017),
-                    Complex64::new(-0.3528728311960538, -0.3581567969892209),
-                ],
-                [
-                    Complex64::new(-0.35880447773297086, 0.11743595956162649),
-                    Complex64::new(-0.3097428484619983, 0.594366207605036),
-                    Complex64::new(0.1610278707748687, -0.25258937630123157),
-                    Complex64::new(-0.5597163461470217, 0.07240555858329784),
-                ],
-                [
-                    Complex64::new(-0.578592686173378, -0.3791072567045837),
-                    Complex64::new(0.05738813758483608, 0.13145928539206422),
-                    Complex64::new(0.3453330441780492, 0.08874282848443517),
-                    Complex64::new(0.5033919610984813, 0.34698642893070086),
-                ],
-            ],
+            crate::test_support::haar_su4_matrix(),
         )
     }
 

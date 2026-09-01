@@ -33,8 +33,8 @@ Single-threaded, core-versus-core, on parity-gated configurations, under an inte
 > same task files and the same Julia, at 5 pairs:
 > [`post-optimization/README.md`](post-optimization/README.md) (default engine, directly comparable
 > configuration for configuration) and
-> [`post-optimization-auto/README.md`](../jl_performance/post-optimization-auto/README.md) (the
-> small-`m` end with the opt-in direct-apply path enabled).
+> [`post-optimization-auto/README.md`](post-optimization-auto/README.md) (the small-`m` end with the
+> opt-in direct-apply path enabled).
 >
 > Headline: the kicked-Ising crossover moved **3.79 × 10³ → 2.73 × 10³**, the SU(4) crossover
 > **disappeared** (we are faster at every sign-consistent point on that sweep), and the best ratios

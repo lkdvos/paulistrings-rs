@@ -145,21 +145,6 @@ fn refine_bucket<const W: usize>(
 ) {
     let _ = b; // referenced only inside the `cfg(debug_assertions)` block below
     let n = cols.len();
-
-    // `up` starts as a brand-new, capacity-0 `BucketCols` (refine's caller
-    // builds it fresh per split), so a naive push loop below would grow it by
-    // `Vec`'s amortized doubling from zero — up to ~2x the split's actual
-    // size once `n_up` lands just above a power of two
-    // (research/notes/2026-09-01-mem-growth.md). A first pass over the same
-    // cheap `row_parity` test used below gives the exact "up" count before
-    // any row moves, so `push` never has to grow `up` at all.
-    let n_up = (0..n)
-        .filter(|&i| hash.row_parity(&cols.x[i], &cols.z[i], new_bit) == 1)
-        .count();
-    up.x.reserve_exact(n_up);
-    up.z.reserve_exact(n_up);
-    up.coeff.reserve_exact(n_up);
-
     let mut keep = 0usize;
     for i in 0..n {
         let bit = hash.row_parity(&cols.x[i], &cols.z[i], new_bit);
@@ -661,14 +646,6 @@ impl<const W: usize> PauliSum<W> {
     #[inline]
     pub fn bucket_len(&self, b: usize) -> usize {
         self.buckets[b].len()
-    }
-
-    /// Test-only: bucket `b`'s `x` column heap capacity (element count), a
-    /// proxy for that bucket's over-allocation — `x`, `z` and `coeff` are
-    /// always grown together by every write path in this module.
-    #[cfg(test)]
-    pub(crate) fn bucket_x_capacity(&self, b: usize) -> usize {
-        self.buckets[b].x.capacity()
     }
 
     /// Double the bucket count, splitting each bucket in two.
@@ -1284,40 +1261,6 @@ mod tests {
                 "bucket {i} did not split into (i, i + B)",
             );
         }
-    }
-
-    /// `refine_bucket` builds the "up" half by `push`ing into a brand-new
-    /// `BucketCols::new()` (capacity 0), so naive push-driven growth doubles
-    /// from empty and can leave capacity up to ~2x the split's actual size —
-    /// exactly the mechanism behind the observed large-`m` capacity slack
-    /// (research/notes/2026-09-01-mem-growth.md). The hash spreads keys
-    /// close to uniformly (ARCHITECTURE.md §Hash), so sizing `m` and the
-    /// pre-split bucket count to put the expected upper-half count just above
-    /// a doubling step (1024) pushes most upper buckets through it.
-    #[test]
-    fn refine_upper_half_capacity_is_not_doubled() {
-        let old_nb = 16usize;
-        let m = old_nb * 2 * 1050; // E[upper-half count per bucket] ~= 1050
-        let sum = rand_sum::<1>(m, 64, 0xB1DE);
-        let h = Gf2Hash::<1>::new(64, old_nb.trailing_zeros() as u8, 0xC0DE);
-        let mut b = sum.with_hash(h);
-        assert_eq!(b.num_buckets(), old_nb);
-
-        b.refine();
-        let new_nb = b.num_buckets();
-        assert_eq!(new_nb, 2 * old_nb);
-
-        let (mut up_len, mut up_cap) = (0usize, 0usize);
-        for i in old_nb..new_nb {
-            up_len += b.bucket_len(i);
-            up_cap += b.bucket_x_capacity(i);
-        }
-        let ratio = up_cap as f64 / up_len as f64;
-        assert!(
-            ratio <= 1.10,
-            "upper-half capacity {up_cap} for length {up_len} (ratio {ratio:.3}) \
-             looks push-doubled, not reserved",
-        );
     }
 
     #[test]

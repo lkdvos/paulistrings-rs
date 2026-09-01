@@ -390,6 +390,8 @@ One line on stdout (or `-o path`); diagnostics go to stderr, so stdout is always
              "peak_terms":… | null, "terms": {…} | null},
   "timing": {"wall_cold_s":…, "wall_warm_s":…, "wall_warm_all_s":[…],
              "gc_warm_s":…, "bytes_warm":…},
+  "memory": {"vmrss_start_kb":…, "vmrss_pre_propagate_kb":…,
+             "vmrss_post_propagate_kb":…, "vmhwm_kb":…, "source":…},
   "host":   {"hostname":…, "cpu":…, "ncores":…},
   "notes":  ["…"]
 }
@@ -400,6 +402,28 @@ One line on stdout (or `-o path`); diagnostics go to stderr, so stdout is always
 because `@countpaulis` takes a lock per gate — never fold them into a timed run. `peak_terms` is
 `max(input_terms, per_layer_terms…)`, i.e. the peak *resident* count between gates, matching the A2
 definition on the Rust side (the transient in-layer expansion is not observable on either engine).
+
+### Memory
+
+The `memory` block is sampled from **this process's own** `/proc/self/status`, which is the only
+per-process source. A Python driver's `getrusage(RUSAGE_CHILDREN)` conflates every child it has
+reaped, so a sibling engine's peak leaks into the other's number — it must never be used for
+cross-engine memory comparison. Both engines therefore sample themselves, in their own process.
+
+| field | meaning |
+|---|---|
+| `vmrss_start_kb` | Julia runtime + loaded packages, before the task is parsed — this engine's fixed per-process floor (~0.6 GiB on ccqlin038) |
+| `vmrss_pre_propagate_kb` | after the circuit and observable are built, before any propagation |
+| `vmrss_post_propagate_kb` | resident set after the timed propagations |
+| `vmhwm_kb` | **peak** resident set over the process lifetime |
+| `source` | `/proc/self/status`, or `"unavailable"` off Linux |
+
+`vmhwm_kb` is monotone: it covers the cold run and every warm run, and it includes GC slack Julia
+has not returned to the OS. It is sampled **before** the `@countpaulis` pass, which is a whole extra
+propagation that would otherwise inflate the peak with work no timed run did. Per-term figures
+should subtract `vmrss_start_kb` as the fixed floor and divide the remainder by the term count;
+report both the raw peak and the floor-subtracted figure, since at small term counts the floor
+dominates completely.
 
 `notes` restates the P3/P4/P5/P9 findings in every result file, so a results archive carries its own
 semantics caveats.

@@ -323,6 +323,31 @@ class JuliaResult:
         return None if v is None else float(v)
 
     @property
+    def memory(self) -> dict[str, Any]:
+        """The runner's own ``/proc/self/status`` sampling, in KiB.
+
+        Keys: ``vmrss_start_kb`` (Julia runtime + loaded packages, before the
+        task is parsed), ``vmrss_pre_propagate_kb`` (after the circuit and
+        observable are built), ``vmrss_post_propagate_kb``, ``vmhwm_kb`` (the
+        process-lifetime peak, covering the cold run and every warm run but not
+        the untimed ``@countpaulis`` pass) and ``source``.
+
+        Each engine samples **its own** process. A Python driver's
+        ``getrusage(RUSAGE_CHILDREN)`` conflates every child it has reaped, so
+        a sibling engine's peak leaks into the other's number — it must never
+        be used for cross-engine memory comparison.
+
+        Empty dict for a result produced by a runner predating this block.
+        """
+        return dict(self.raw.get("memory", {}))
+
+    @property
+    def peak_memory_kb(self) -> float | None:
+        """``VmHWM`` in KiB, or ``None`` when the runner did not sample it."""
+        v = self.memory.get("vmhwm_kb")
+        return None if v is None else float(v)
+
+    @property
     def versions(self) -> dict[str, str]:
         return dict(self.raw["versions"])
 

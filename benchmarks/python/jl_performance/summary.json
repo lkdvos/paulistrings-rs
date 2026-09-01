@@ -1,0 +1,2415 @@
+{
+  "status": "partial",
+  "reconstructed_from": "benchmarks/python/jl_performance/run.log",
+  "reconstructed_by": "benchmarks/python/jl_performance_recover.py",
+  "cancelled_note": "user redirected effort into an optimization investigation of the large-m regime this data exposed",
+  "dropped_configurations": [
+    {
+      "label": "xxz eps=1.000e-09",
+      "completed_pairs": 0,
+      "expected_pairs": 5,
+      "reason": "cancelled before the pair set completed"
+    }
+  ],
+  "protocol": {
+    "ratio_convention": "ratio = t_julia / t_paulistrings; > 1 means paulistrings faster",
+    "pairs_per_configuration": 5,
+    "within_pair_order": "abba \u2014 rust-first on even pairs, julia-first on odd",
+    "acceptance": "direction consistency across every pair; median ratio is the effect size. Mixed signs are reported as 'indistinguishable', never as a small win (benchmarks/PROFILING.md).",
+    "direction": "heisenberg",
+    "threads": {
+      "rayon": 1,
+      "julia": 1
+    },
+    "timing": "warm in-process on both sides: one untimed propagation, then one timed propagation, in the same process. Construction, contraction, oracles and logging are all outside the timed region.",
+    "parity_gate": "every timed configuration first passes a per-layer term-count comparison; a failure disqualifies the configuration and no timing for it is reported.",
+    "cutoff_mitigation": "the julia task carries nextafter(eps, +inf) so its strict |c| < eps equals this engine's inclusive |c| <= eps bit for bit; the threshold moves by one ulp and no coefficient is touched.",
+    "memory": "each engine samples its own /proc/self/status. Values marked source=joined were sampled during a 1-pair run of the identical configuration, because the driver logs memory only in the summary it never got to write; peak RSS is deterministic in the term count to within allocator slack."
+  },
+  "curves": [
+    {
+      "workload": "kicked_ising",
+      "title": "kicked-Ising, heavy-hex 127q, 5 Trotter steps, theta_h = 5pi/16",
+      "notes": "Native ZZ pauli_rotations on both engines (jl PauliRotation, not a transfer map), 1355 channels (5 x (127 rx + 144 ZZ)), observable Z_62, theta_zz = -pi/2 at the Clifford point. Benchmark C's configuration.",
+      "n_qubits": 127,
+      "observable": {
+        "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII": 1.0
+      },
+      "state": "z+",
+      "points": [
+        {
+          "label": "kicked_ising eps=6.250e-02",
+          "max_weight": null,
+          "final_terms": 7,
+          "peak_terms": 68,
+          "median_ratio_jl_over_rust": 0.3225806451612903,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.0031,
+          "jl_s_median": 0.0009
+        },
+        {
+          "label": "kicked_ising eps=1.562e-02",
+          "max_weight": null,
+          "final_terms": 408,
+          "peak_terms": 517,
+          "median_ratio_jl_over_rust": 0.6290322580645161,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.0062,
+          "jl_s_median": 0.0038
+        },
+        {
+          "label": "kicked_ising eps=3.906e-03",
+          "max_weight": null,
+          "final_terms": 5038,
+          "peak_terms": 6311,
+          "median_ratio_jl_over_rust": 1.1257668711656443,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 0.0326,
+          "jl_s_median": 0.0367
+        },
+        {
+          "label": "kicked_ising eps=9.766e-04",
+          "max_weight": null,
+          "final_terms": 72352,
+          "peak_terms": 79029,
+          "median_ratio_jl_over_rust": 1.361837455830389,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 0.1427,
+          "jl_s_median": 0.1932
+        },
+        {
+          "label": "kicked_ising eps=2.441e-04",
+          "max_weight": null,
+          "final_terms": 637219,
+          "peak_terms": 637219,
+          "median_ratio_jl_over_rust": 1.925205684367988,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 0.798,
+          "jl_s_median": 1.5444
+        },
+        {
+          "label": "kicked_ising eps=6.104e-05",
+          "max_weight": null,
+          "final_terms": 1544083,
+          "peak_terms": 1544083,
+          "median_ratio_jl_over_rust": 1.690273037542662,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 1.7611,
+          "jl_s_median": 2.9968
+        },
+        {
+          "label": "kicked_ising eps=1.526e-05",
+          "max_weight": null,
+          "final_terms": 2121774,
+          "peak_terms": 2121774,
+          "median_ratio_jl_over_rust": 1.430898828358847,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 2.367,
+          "jl_s_median": 3.3463
+        },
+        {
+          "label": "kicked_ising eps=3.815e-06",
+          "max_weight": null,
+          "final_terms": 2146424,
+          "peak_terms": 2146424,
+          "median_ratio_jl_over_rust": 1.3892307057026057,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 2.4044,
+          "jl_s_median": 3.3643
+        },
+        {
+          "label": "kicked_ising eps=3.815e-06 max_weight=6",
+          "max_weight": 6,
+          "final_terms": 712,
+          "peak_terms": 712,
+          "median_ratio_jl_over_rust": 0.4482758620689655,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.005,
+          "jl_s_median": 0.0022
+        }
+      ],
+      "configs": [
+        {
+          "label": "kicked_ising eps=6.250e-02",
+          "truncation": {
+            "min_abs_coeff": 0.0625
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 7,
+            "jl_final_terms": 7,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.2664771323582529,
+            "expectation_jl": 0.2664771323582529,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.2647058823529412,
+              0.3,
+              0.3243243243243243,
+              0.40909090909090906,
+              0.3225806451612903
+            ],
+            "median_ratio_jl_over_rust": 0.3225806451612903,
+            "min_ratio": 0.2647058823529412,
+            "max_ratio": 0.40909090909090906,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.0034,
+              0.003,
+              0.0037,
+              0.0022,
+              0.0031
+            ],
+            "jl_s_per_pair": [
+              0.0009,
+              0.0009,
+              0.0012,
+              0.0009,
+              0.001
+            ],
+            "rust_s_median": 0.0031,
+            "jl_s_median": 0.0009,
+            "label": "kicked_ising eps=6.250e-02",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0034,
+                "jl_s": 0.0009,
+                "ratio_jl_over_rust": 0.262
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.003,
+                "jl_s": 0.0009,
+                "ratio_jl_over_rust": 0.315
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0037,
+                "jl_s": 0.0012,
+                "ratio_jl_over_rust": 0.31
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0022,
+                "jl_s": 0.0009,
+                "ratio_jl_over_rust": 0.426
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.0031,
+                "jl_s": 0.001,
+                "ratio_jl_over_rust": 0.309
+              }
+            ],
+            "final_terms": 7,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 7,
+              "jl_final_terms": 7,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.2664771323582529,
+              "expectation_jl": 0.2664771323582529,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.0625
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.0625,
+              "min_abs_coeff_julia": 0.06250000000000001,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 0.31,
+            "median_ratio_log_precision_bound": 0.026252525252525253,
+            "peak_terms": 68,
+            "peak_memory": {
+              "final_terms": 7,
+              "rust_vmhwm_kb": 39856.0,
+              "rust_floor_kb": 38696.0,
+              "rust_bytes_per_term": 169691.42857142858,
+              "jl_vmhwm_kb": 687756.0,
+              "jl_floor_kb": 630368.0,
+              "jl_bytes_per_term": 8395044.57142857,
+              "peak_terms": 68,
+              "rust_bytes_per_peak_term": 17468.235294117647,
+              "jl_bytes_per_peak_term": 864195.7647058824,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=1.562e-02",
+          "truncation": {
+            "min_abs_coeff": 0.015625
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 408,
+            "jl_final_terms": 408,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.2140091471178993,
+            "expectation_jl": 0.2140091471178993,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.5362318840579711,
+              0.578125,
+              0.7017543859649122,
+              0.7307692307692308,
+              0.6290322580645161
+            ],
+            "median_ratio_jl_over_rust": 0.6290322580645161,
+            "min_ratio": 0.5362318840579711,
+            "max_ratio": 0.7307692307692308,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.0069,
+              0.0064,
+              0.0057,
+              0.0052,
+              0.0062
+            ],
+            "jl_s_per_pair": [
+              0.0037,
+              0.0037,
+              0.004,
+              0.0038,
+              0.0039
+            ],
+            "rust_s_median": 0.0062,
+            "jl_s_median": 0.0038,
+            "label": "kicked_ising eps=1.562e-02",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0069,
+                "jl_s": 0.0037,
+                "ratio_jl_over_rust": 0.536
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.0064,
+                "jl_s": 0.0037,
+                "ratio_jl_over_rust": 0.579
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0057,
+                "jl_s": 0.004,
+                "ratio_jl_over_rust": 0.692
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0052,
+                "jl_s": 0.0038,
+                "ratio_jl_over_rust": 0.727
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.0062,
+                "jl_s": 0.0039,
+                "ratio_jl_over_rust": 0.624
+              }
+            ],
+            "final_terms": 408,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 408,
+              "jl_final_terms": 408,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.2140091471178993,
+              "expectation_jl": 0.2140091471178993,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.015625
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.015625,
+              "min_abs_coeff_julia": 0.015625000000000003,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 0.624,
+            "median_ratio_log_precision_bound": 0.015325127334465196,
+            "peak_terms": 517,
+            "peak_memory": {
+              "final_terms": 408,
+              "rust_vmhwm_kb": 40052.0,
+              "rust_floor_kb": 38624.0,
+              "rust_bytes_per_term": 3584.0,
+              "jl_vmhwm_kb": 687132.0,
+              "jl_floor_kb": 628360.0,
+              "jl_bytes_per_term": 147506.19607843139,
+              "peak_terms": 517,
+              "rust_bytes_per_peak_term": 2828.3791102514506,
+              "jl_bytes_per_peak_term": 116407.21083172147,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=3.906e-03",
+          "truncation": {
+            "min_abs_coeff": 0.00390625
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 5038,
+            "jl_final_terms": 5038,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.2140091471178993,
+            "expectation_jl": 0.2140091471178993,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.1117824773413898,
+              1.4124513618677041,
+              1.1257668711656443,
+              1.2567567567567566,
+              1.076923076923077
+            ],
+            "median_ratio_jl_over_rust": 1.1257668711656443,
+            "min_ratio": 1.076923076923077,
+            "max_ratio": 1.4124513618677041,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              0.0331,
+              0.0257,
+              0.0326,
+              0.0296,
+              0.0338
+            ],
+            "jl_s_per_pair": [
+              0.0368,
+              0.0363,
+              0.0367,
+              0.0372,
+              0.0364
+            ],
+            "rust_s_median": 0.0326,
+            "jl_s_median": 0.0367,
+            "label": "kicked_ising eps=3.906e-03",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0331,
+                "jl_s": 0.0368,
+                "ratio_jl_over_rust": 1.113
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.0257,
+                "jl_s": 0.0363,
+                "ratio_jl_over_rust": 1.414
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0326,
+                "jl_s": 0.0367,
+                "ratio_jl_over_rust": 1.128
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0296,
+                "jl_s": 0.0372,
+                "ratio_jl_over_rust": 1.257
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.0338,
+                "jl_s": 0.0364,
+                "ratio_jl_over_rust": 1.078
+              }
+            ],
+            "final_terms": 5038,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 5038,
+              "jl_final_terms": 5038,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.2140091471178993,
+              "expectation_jl": 0.2140091471178993,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.00390625
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.00390625,
+              "min_abs_coeff_julia": 0.003906250000000001,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.128,
+            "median_ratio_log_precision_bound": 0.004740850993786643,
+            "peak_terms": 6311,
+            "peak_memory": {
+              "final_terms": 5038,
+              "rust_vmhwm_kb": 40884.0,
+              "rust_floor_kb": 38748.0,
+              "rust_bytes_per_term": 434.15323541087736,
+              "jl_vmhwm_kb": 690500.0,
+              "jl_floor_kb": 630468.0,
+              "jl_bytes_per_term": 12201.8197697499,
+              "peak_terms": 6311,
+              "rust_bytes_per_peak_term": 346.5796228806845,
+              "jl_bytes_per_peak_term": 9740.574869275868,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=9.766e-04",
+          "truncation": {
+            "min_abs_coeff": 0.0009765625
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 72352,
+            "jl_final_terms": 72352,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.23928770151774437,
+            "expectation_jl": 0.23928770151774437,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.4039408866995073,
+              1.3435326842837274,
+              1.4173611111111113,
+              1.361837455830389,
+              1.3440784863349686
+            ],
+            "median_ratio_jl_over_rust": 1.361837455830389,
+            "min_ratio": 1.3435326842837274,
+            "max_ratio": 1.4173611111111113,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              0.1421,
+              0.1438,
+              0.144,
+              0.1415,
+              0.1427
+            ],
+            "jl_s_per_pair": [
+              0.1995,
+              0.1932,
+              0.2041,
+              0.1927,
+              0.1918
+            ],
+            "rust_s_median": 0.1427,
+            "jl_s_median": 0.1932,
+            "label": "kicked_ising eps=9.766e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.1421,
+                "jl_s": 0.1995,
+                "ratio_jl_over_rust": 1.404
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.1438,
+                "jl_s": 0.1932,
+                "ratio_jl_over_rust": 1.343
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.144,
+                "jl_s": 0.2041,
+                "ratio_jl_over_rust": 1.417
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.1415,
+                "jl_s": 0.1927,
+                "ratio_jl_over_rust": 1.362
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.1427,
+                "jl_s": 0.1918,
+                "ratio_jl_over_rust": 1.345
+              }
+            ],
+            "final_terms": 72352,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 72352,
+              "jl_final_terms": 72352,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.23928770151774437,
+              "expectation_jl": 0.23928770151774437,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.0009765625
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.0009765625,
+              "min_abs_coeff_julia": 0.0009765625000000002,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.362,
+            "median_ratio_log_precision_bound": 0.0018345715391626819,
+            "peak_terms": 79029,
+            "peak_memory": {
+              "final_terms": 72352,
+              "rust_vmhwm_kb": 46544.0,
+              "rust_floor_kb": 38660.0,
+              "rust_bytes_per_term": 111.58248562582928,
+              "jl_vmhwm_kb": 686444.0,
+              "jl_floor_kb": 627776.0,
+              "jl_bytes_per_term": 830.3299425033172,
+              "peak_terms": 79029,
+              "rust_bytes_per_peak_term": 102.15510761872224,
+              "jl_bytes_per_peak_term": 760.1770489314049,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=2.441e-04",
+          "truncation": {
+            "min_abs_coeff": 0.000244140625
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 637219,
+            "jl_final_terms": 637219,
+            "expectation_delta": 8.33e-17,
+            "expectation_rust": 0.23557009182075322,
+            "expectation_jl": 0.2355700918207533,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.925205684367988,
+              1.9164160401002506,
+              1.883248730964467,
+              1.9555135475740393,
+              1.9271239773442417
+            ],
+            "median_ratio_jl_over_rust": 1.925205684367988,
+            "min_ratio": 1.883248730964467,
+            "max_ratio": 1.9555135475740393,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              0.8022,
+              0.798,
+              0.8274,
+              0.7935,
+              0.7945
+            ],
+            "jl_s_per_pair": [
+              1.5444,
+              1.5293,
+              1.5582,
+              1.5517,
+              1.5311
+            ],
+            "rust_s_median": 0.798,
+            "jl_s_median": 1.5444,
+            "label": "kicked_ising eps=2.441e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.8022,
+                "jl_s": 1.5444,
+                "ratio_jl_over_rust": 1.925
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.798,
+                "jl_s": 1.5293,
+                "ratio_jl_over_rust": 1.916
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.8274,
+                "jl_s": 1.5582,
+                "ratio_jl_over_rust": 1.883
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.7935,
+                "jl_s": 1.5517,
+                "ratio_jl_over_rust": 1.955
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.7945,
+                "jl_s": 1.5311,
+                "ratio_jl_over_rust": 1.927
+              }
+            ],
+            "final_terms": 637219,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 637219,
+              "jl_final_terms": 637219,
+              "expectation_delta": 8.33e-17,
+              "expectation_rust": 0.23557009182075322,
+              "expectation_jl": 0.2355700918207533,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.000244140625
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.000244140625,
+              "min_abs_coeff_julia": 0.00024414062500000005,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.925,
+            "median_ratio_log_precision_bound": 0.0011840283364911819,
+            "peak_terms": 637219,
+            "peak_memory": {
+              "final_terms": 637219,
+              "rust_vmhwm_kb": 103700.0,
+              "rust_floor_kb": 38616.0,
+              "rust_bytes_per_term": 104.58887132995093,
+              "jl_vmhwm_kb": 852736.0,
+              "jl_floor_kb": 630372.0,
+              "jl_bytes_per_term": 357.335132819329,
+              "peak_terms": 637219,
+              "rust_bytes_per_peak_term": 104.58887132995093,
+              "jl_bytes_per_peak_term": 357.335132819329,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=6.104e-05",
+          "truncation": {
+            "min_abs_coeff": 6.103515625e-05
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 1544083,
+            "jl_final_terms": 1544083,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.23886314745214962,
+            "expectation_jl": 0.23886314745214962,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.6617951794088777,
+              1.6997899040372493,
+              1.744505181642182,
+              1.690273037542662,
+              1.6719482258424458
+            ],
+            "median_ratio_jl_over_rust": 1.690273037542662,
+            "min_ratio": 1.6617951794088777,
+            "max_ratio": 1.744505181642182,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              1.8338,
+              1.7611,
+              1.7562,
+              1.758,
+              1.7924
+            ],
+            "jl_s_per_pair": [
+              3.0474,
+              2.9935,
+              3.0637,
+              2.9715,
+              2.9968
+            ],
+            "rust_s_median": 1.7611,
+            "jl_s_median": 2.9968,
+            "label": "kicked_ising eps=6.104e-05",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 1.8338,
+                "jl_s": 3.0474,
+                "ratio_jl_over_rust": 1.662
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 1.7611,
+                "jl_s": 2.9935,
+                "ratio_jl_over_rust": 1.7
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 1.7562,
+                "jl_s": 3.0637,
+                "ratio_jl_over_rust": 1.745
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 1.758,
+                "jl_s": 2.9715,
+                "ratio_jl_over_rust": 1.69
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 1.7924,
+                "jl_s": 2.9968,
+                "ratio_jl_over_rust": 1.672
+              }
+            ],
+            "final_terms": 1544083,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 1544083,
+              "jl_final_terms": 1544083,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.23886314745214962,
+              "expectation_jl": 0.23886314745214962,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 6.103515625e-05
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 6.103515625e-05,
+              "min_abs_coeff_julia": 6.103515625000001e-05,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.69,
+            "median_ratio_log_precision_bound": 0.0010765151603396661,
+            "peak_terms": 1544083,
+            "peak_memory": {
+              "final_terms": 1544083,
+              "rust_vmhwm_kb": 176040.0,
+              "rust_floor_kb": 38788.0,
+              "rust_bytes_per_term": 91.02234012031737,
+              "jl_vmhwm_kb": 1137500.0,
+              "jl_floor_kb": 629256.0,
+              "jl_bytes_per_term": 337.0556220099567,
+              "peak_terms": 1544083,
+              "rust_bytes_per_peak_term": 91.02234012031737,
+              "jl_bytes_per_peak_term": 337.0556220099567,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=1.526e-05",
+          "truncation": {
+            "min_abs_coeff": 1.52587890625e-05
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 2121774,
+            "jl_final_terms": 2121774,
+            "expectation_delta": 5.55e-17,
+            "expectation_rust": 0.2384771180185387,
+            "expectation_jl": 0.23847711801853874,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.3927896923658036,
+              1.430898828358847,
+              1.4654780782582608,
+              1.455278102555537,
+              1.4071820870299958
+            ],
+            "median_ratio_jl_over_rust": 1.430898828358847,
+            "min_ratio": 1.3927896923658036,
+            "max_ratio": 1.4654780782582608,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              2.3827,
+              2.3386,
+              2.3333,
+              2.3948,
+              2.367
+            ],
+            "jl_s_per_pair": [
+              3.3186,
+              3.3463,
+              3.4194,
+              3.4851,
+              3.3308
+            ],
+            "rust_s_median": 2.367,
+            "jl_s_median": 3.3463,
+            "label": "kicked_ising eps=1.526e-05",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 2.3827,
+                "jl_s": 3.3186,
+                "ratio_jl_over_rust": 1.393
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 2.3386,
+                "jl_s": 3.3463,
+                "ratio_jl_over_rust": 1.431
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 2.3333,
+                "jl_s": 3.4194,
+                "ratio_jl_over_rust": 1.465
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 2.3948,
+                "jl_s": 3.4851,
+                "ratio_jl_over_rust": 1.455
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 2.367,
+                "jl_s": 3.3308,
+                "ratio_jl_over_rust": 1.407
+              }
+            ],
+            "final_terms": 2121774,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 2121774,
+              "jl_final_terms": 2121774,
+              "expectation_delta": 5.55e-17,
+              "expectation_rust": 0.2384771180185387,
+              "expectation_jl": 0.23847711801853874,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 1.52587890625e-05
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 1.52587890625e-05,
+              "min_abs_coeff_julia": 1.5258789062500003e-05,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.431,
+            "median_ratio_log_precision_bound": 0.0010519733778405638,
+            "peak_terms": 2121774,
+            "peak_memory": {
+              "final_terms": 2121774,
+              "rust_vmhwm_kb": 297608.0,
+              "rust_floor_kb": 38600.0,
+              "rust_bytes_per_term": 125.00115092370818,
+              "jl_vmhwm_kb": 1120676.0,
+              "jl_floor_kb": 629988.0,
+              "jl_bytes_per_term": 236.81339859947383,
+              "peak_terms": 2121774,
+              "rust_bytes_per_peak_term": 125.00115092370818,
+              "jl_bytes_per_peak_term": 236.81339859947383,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=3.815e-06",
+          "truncation": {
+            "min_abs_coeff": 3.814697265625e-06
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 2146424,
+            "jl_final_terms": 2146424,
+            "expectation_delta": 5.55e-17,
+            "expectation_rust": 0.2384771180185387,
+            "expectation_jl": 0.23847711801853874,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.413985019040047,
+              1.3892307057026057,
+              1.2407784132345603,
+              1.3767066267066266,
+              1.4302528697388122
+            ],
+            "median_ratio_jl_over_rust": 1.3892307057026057,
+            "min_ratio": 1.2407784132345603,
+            "max_ratio": 1.4302528697388122,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              2.3897,
+              2.4217,
+              2.6053,
+              2.4024,
+              2.4044
+            ],
+            "jl_s_per_pair": [
+              3.379,
+              3.3643,
+              3.2326,
+              3.3074,
+              3.4389
+            ],
+            "rust_s_median": 2.4044,
+            "jl_s_median": 3.3643,
+            "label": "kicked_ising eps=3.815e-06",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 2.3897,
+                "jl_s": 3.379,
+                "ratio_jl_over_rust": 1.414
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 2.4217,
+                "jl_s": 3.3643,
+                "ratio_jl_over_rust": 1.389
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 2.6053,
+                "jl_s": 3.2326,
+                "ratio_jl_over_rust": 1.241
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 2.4024,
+                "jl_s": 3.3074,
+                "ratio_jl_over_rust": 1.377
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 2.4044,
+                "jl_s": 3.4389,
+                "ratio_jl_over_rust": 1.43
+              }
+            ],
+            "final_terms": 2146424,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 2146424,
+              "jl_final_terms": 2146424,
+              "expectation_delta": 5.55e-17,
+              "expectation_rust": 0.2384771180185387,
+              "expectation_jl": 0.23847711801853874,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 3.814697265625e-06
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 3.814697265625e-06,
+              "min_abs_coeff_julia": 3.814697265625001e-06,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 1.389,
+            "median_ratio_log_precision_bound": 0.0010499152479934042,
+            "peak_terms": 2146424,
+            "peak_memory": {
+              "final_terms": 2146424,
+              "rust_vmhwm_kb": 296576.0,
+              "rust_floor_kb": 38584.0,
+              "rust_bytes_per_term": 123.08090479793368,
+              "jl_vmhwm_kb": 1125308.0,
+              "jl_floor_kb": 629552.0,
+              "jl_bytes_per_term": 236.51158578174676,
+              "peak_terms": 2146424,
+              "rust_bytes_per_peak_term": 123.08090479793368,
+              "jl_bytes_per_peak_term": 236.51158578174676,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "kicked_ising eps=3.815e-06 max_weight=6",
+          "truncation": {
+            "min_abs_coeff": 3.814697265625e-06,
+            "max_weight": 6
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1355,
+            "rust_final_terms": 712,
+            "jl_final_terms": 712,
+            "expectation_delta": 0.0,
+            "expectation_rust": null,
+            "expectation_jl": null,
+            "expectation_source": "unavailable"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.6153846153846153,
+              0.44,
+              0.30303030303030304,
+              0.4482758620689655,
+              0.5384615384615384
+            ],
+            "median_ratio_jl_over_rust": 0.4482758620689655,
+            "min_ratio": 0.30303030303030304,
+            "max_ratio": 0.6153846153846153,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.0039,
+              0.005,
+              0.0066,
+              0.0058,
+              0.0039
+            ],
+            "jl_s_per_pair": [
+              0.0024,
+              0.0022,
+              0.002,
+              0.0026,
+              0.0021
+            ],
+            "rust_s_median": 0.005,
+            "jl_s_median": 0.0022,
+            "label": "kicked_ising eps=3.815e-06 max_weight=6",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0039,
+                "jl_s": 0.0024,
+                "ratio_jl_over_rust": 0.63
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.005,
+                "jl_s": 0.0022,
+                "ratio_jl_over_rust": 0.435
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0066,
+                "jl_s": 0.002,
+                "ratio_jl_over_rust": 0.308
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0058,
+                "jl_s": 0.0026,
+                "ratio_jl_over_rust": 0.453
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.0039,
+                "jl_s": 0.0021,
+                "ratio_jl_over_rust": 0.531
+              }
+            ],
+            "final_terms": 712,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1355,
+              "rust_final_terms": 712,
+              "jl_final_terms": 712,
+              "expectation_delta": 0.0,
+              "expectation_rust": null,
+              "expectation_jl": null,
+              "expectation_source": "unavailable"
+            },
+            "truncation": {
+              "min_abs_coeff": 3.814697265625e-06,
+              "max_weight": 6
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 3.814697265625e-06,
+              "min_abs_coeff_julia": 3.814697265625001e-06,
+              "cutoff_is_dyadic": true
+            },
+            "median_ratio_logged": 0.453,
+            "median_ratio_log_precision_bound": 0.017420361247947456,
+            "peak_terms": 712,
+            "peak_terms_source": "unavailable; using final_terms",
+            "peak_memory": {
+              "source": "unavailable",
+              "final_terms": 712,
+              "peak_terms": 712,
+              "rust_vmhwm_kb": null,
+              "rust_floor_kb": null,
+              "rust_bytes_per_term": null,
+              "rust_bytes_per_peak_term": null,
+              "jl_vmhwm_kb": null,
+              "jl_floor_kb": null,
+              "jl_bytes_per_term": null,
+              "jl_bytes_per_peak_term": null
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        }
+      ],
+      "curve_points_excluding_weight_variant": [
+        "kicked_ising eps=6.250e-02",
+        "kicked_ising eps=1.562e-02",
+        "kicked_ising eps=3.906e-03",
+        "kicked_ising eps=9.766e-04",
+        "kicked_ising eps=2.441e-04",
+        "kicked_ising eps=6.104e-05",
+        "kicked_ising eps=1.526e-05",
+        "kicked_ising eps=3.815e-06"
+      ],
+      "crossover": {
+        "crossover_terms": 3792.594259174356,
+        "lower": {
+          "peak_terms": 517,
+          "median_ratio": 0.6290322580645161
+        },
+        "upper": {
+          "peak_terms": 6311,
+          "median_ratio": 1.1257668711656443
+        },
+        "indistinguishable_zone": null,
+        "inside_indistinguishable_zone": false,
+        "method": "linear in log10(ratio) vs log10(terms), solved for ratio = 1",
+        "terms_key": "peak_terms"
+      },
+      "cuts": [],
+      "projections": [],
+      "free_ram_gib_at_start": 240.0
+    },
+    {
+      "workload": "xxz",
+      "title": "XXZ chain n=100, Jz=0.5, 6 Trotter steps, dt=0.1",
+      "notes": "Rotations only, three generator types per bond (XX, YY, ZZ), 1782 channels (6 x 3 x 99), observable Z_50 against a domain-wall state. Benchmark D's configuration.",
+      "n_qubits": 100,
+      "observable": {
+        "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII": 1.0
+      },
+      "state": "0000000000000000000000000000000000000000000000000011111111111111111111111111111111111111111111111111",
+      "points": [
+        {
+          "label": "xxz eps=1.000e-02",
+          "max_weight": null,
+          "final_terms": 156,
+          "peak_terms": 164,
+          "median_ratio_jl_over_rust": 0.45999999999999996,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.005,
+          "jl_s_median": 0.0023
+        },
+        {
+          "label": "xxz eps=1.000e-03",
+          "max_weight": null,
+          "final_terms": 1625,
+          "peak_terms": 1625,
+          "median_ratio_jl_over_rust": 0.45265588914549654,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.0433,
+          "jl_s_median": 0.0191
+        },
+        {
+          "label": "xxz eps=1.000e-04",
+          "max_weight": null,
+          "final_terms": 9918,
+          "peak_terms": 9918,
+          "median_ratio_jl_over_rust": 0.8952837729816148,
+          "sign_consistent": true,
+          "verdict": "julia",
+          "rust_s_median": 0.1287,
+          "jl_s_median": 0.1146
+        },
+        {
+          "label": "xxz eps=1.000e-05",
+          "max_weight": null,
+          "final_terms": 48599,
+          "peak_terms": 48599,
+          "median_ratio_jl_over_rust": 1.264359351988218,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 0.4074,
+          "jl_s_median": 0.5234
+        },
+        {
+          "label": "xxz eps=1.000e-06",
+          "max_weight": null,
+          "final_terms": 206035,
+          "peak_terms": 206035,
+          "median_ratio_jl_over_rust": 1.4382312925170067,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 1.4601,
+          "jl_s_median": 2.1041
+        },
+        {
+          "label": "xxz eps=1.000e-07",
+          "max_weight": null,
+          "final_terms": 776432,
+          "peak_terms": 776432,
+          "median_ratio_jl_over_rust": 1.6817964453654262,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 5.0183,
+          "jl_s_median": 8.3988
+        },
+        {
+          "label": "xxz eps=1.000e-08",
+          "max_weight": null,
+          "final_terms": 2661871,
+          "peak_terms": 2661873,
+          "median_ratio_jl_over_rust": 1.797540381791483,
+          "sign_consistent": true,
+          "verdict": "paulistrings",
+          "rust_s_median": 16.3357,
+          "jl_s_median": 29.3587
+        }
+      ],
+      "configs": [
+        {
+          "label": "xxz eps=1.000e-02",
+          "truncation": {
+            "min_abs_coeff": 0.01
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 156,
+            "jl_final_terms": 156,
+            "expectation_delta": 2.78e-17,
+            "expectation_rust": 0.054856703133932594,
+            "expectation_jl": 0.05485670313393262,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.46808510638297873,
+              0.43137254901960786,
+              0.4791666666666667,
+              0.36764705882352944,
+              0.45999999999999996
+            ],
+            "median_ratio_jl_over_rust": 0.45999999999999996,
+            "min_ratio": 0.36764705882352944,
+            "max_ratio": 0.4791666666666667,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.0047,
+              0.0051,
+              0.0048,
+              0.0068,
+              0.005
+            ],
+            "jl_s_per_pair": [
+              0.0022,
+              0.0022,
+              0.0023,
+              0.0025,
+              0.0023
+            ],
+            "rust_s_median": 0.005,
+            "jl_s_median": 0.0023,
+            "label": "xxz eps=1.000e-02",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0047,
+                "jl_s": 0.0022,
+                "ratio_jl_over_rust": 0.47
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.0051,
+                "jl_s": 0.0022,
+                "ratio_jl_over_rust": 0.432
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0048,
+                "jl_s": 0.0023,
+                "ratio_jl_over_rust": 0.481
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0068,
+                "jl_s": 0.0025,
+                "ratio_jl_over_rust": 0.365
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.005,
+                "jl_s": 0.0023,
+                "ratio_jl_over_rust": 0.449
+              }
+            ],
+            "final_terms": 156,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 156,
+              "jl_final_terms": 156,
+              "expectation_delta": 2.78e-17,
+              "expectation_rust": 0.054856703133932594,
+              "expectation_jl": 0.05485670313393262,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.01
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.01,
+              "min_abs_coeff_julia": 0.010000000000000002,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 0.449,
+            "median_ratio_log_precision_bound": 0.01634816247582205,
+            "peak_terms": 164,
+            "peak_memory": {
+              "final_terms": 156,
+              "rust_vmhwm_kb": 39664.0,
+              "rust_floor_kb": 38624.0,
+              "rust_bytes_per_term": 6826.666666666667,
+              "jl_vmhwm_kb": 685464.0,
+              "jl_floor_kb": 624516.0,
+              "jl_bytes_per_term": 400068.92307692306,
+              "peak_terms": 164,
+              "rust_bytes_per_peak_term": 6493.658536585366,
+              "jl_bytes_per_peak_term": 380553.3658536585,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-03",
+          "truncation": {
+            "min_abs_coeff": 0.001
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 1625,
+            "jl_final_terms": 1625,
+            "expectation_delta": 0.0,
+            "expectation_rust": 0.04696636132800264,
+            "expectation_jl": 0.04696636132800264,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.47630922693266836,
+              0.45265588914549654,
+              0.30487804878048785,
+              0.5681818181818181,
+              0.32580037664783423
+            ],
+            "median_ratio_jl_over_rust": 0.45265588914549654,
+            "min_ratio": 0.30487804878048785,
+            "max_ratio": 0.5681818181818181,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.0401,
+              0.0433,
+              0.0574,
+              0.0352,
+              0.0531
+            ],
+            "jl_s_per_pair": [
+              0.0191,
+              0.0196,
+              0.0175,
+              0.02,
+              0.0173
+            ],
+            "rust_s_median": 0.0433,
+            "jl_s_median": 0.0191,
+            "label": "xxz eps=1.000e-03",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.0401,
+                "jl_s": 0.0191,
+                "ratio_jl_over_rust": 0.476
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.0433,
+                "jl_s": 0.0196,
+                "ratio_jl_over_rust": 0.452
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.0574,
+                "jl_s": 0.0175,
+                "ratio_jl_over_rust": 0.305
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.0352,
+                "jl_s": 0.02,
+                "ratio_jl_over_rust": 0.569
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.0531,
+                "jl_s": 0.0173,
+                "ratio_jl_over_rust": 0.327
+              }
+            ],
+            "final_terms": 1625,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 1625,
+              "jl_final_terms": 1625,
+              "expectation_delta": 0.0,
+              "expectation_rust": 0.04696636132800264,
+              "expectation_jl": 0.04696636132800264,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.001
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.001,
+              "min_abs_coeff_julia": 0.0010000000000000002,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 0.452,
+            "median_ratio_log_precision_bound": 0.0027746168381272305,
+            "peak_terms": 1625,
+            "peak_memory": {
+              "final_terms": 1625,
+              "rust_vmhwm_kb": 39948.0,
+              "rust_floor_kb": 38524.0,
+              "rust_bytes_per_term": 897.339076923077,
+              "jl_vmhwm_kb": 686076.0,
+              "jl_floor_kb": 630332.0,
+              "jl_bytes_per_term": 35127.296,
+              "peak_terms": 1625,
+              "rust_bytes_per_peak_term": 897.339076923077,
+              "jl_bytes_per_peak_term": 35127.296,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-04",
+          "truncation": {
+            "min_abs_coeff": 0.0001
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 9918,
+            "jl_final_terms": 9918,
+            "expectation_delta": 6.59e-17,
+            "expectation_rust": 0.026769547577935437,
+            "expectation_jl": 0.02676954757793537,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              0.7636746143057503,
+              0.8952837729816148,
+              0.9234488315874294,
+              0.8974358974358975,
+              0.8890589135424636
+            ],
+            "median_ratio_jl_over_rust": 0.8952837729816148,
+            "min_ratio": 0.7636746143057503,
+            "max_ratio": 0.9234488315874294,
+            "faster_per_pair": [
+              "julia",
+              "julia",
+              "julia",
+              "julia",
+              "julia"
+            ],
+            "sign_consistent": true,
+            "verdict": "julia",
+            "rust_s_per_pair": [
+              0.1426,
+              0.1251,
+              0.1241,
+              0.1287,
+              0.1307
+            ],
+            "jl_s_per_pair": [
+              0.1089,
+              0.112,
+              0.1146,
+              0.1155,
+              0.1162
+            ],
+            "rust_s_median": 0.1287,
+            "jl_s_median": 0.1146,
+            "label": "xxz eps=1.000e-04",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.1426,
+                "jl_s": 0.1089,
+                "ratio_jl_over_rust": 0.764
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.1251,
+                "jl_s": 0.112,
+                "ratio_jl_over_rust": 0.895
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.1241,
+                "jl_s": 0.1146,
+                "ratio_jl_over_rust": 0.923
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.1287,
+                "jl_s": 0.1155,
+                "ratio_jl_over_rust": 0.898
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.1307,
+                "jl_s": 0.1162,
+                "ratio_jl_over_rust": 0.889
+              }
+            ],
+            "final_terms": 9918,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 9918,
+              "jl_final_terms": 9918,
+              "expectation_delta": 6.59e-17,
+              "expectation_rust": 0.026769547577935437,
+              "expectation_jl": 0.02676954757793537,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 0.0001
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 0.0001,
+              "min_abs_coeff_julia": 0.00010000000000000002,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 0.895,
+            "median_ratio_log_precision_bound": 0.001757507503190094,
+            "peak_terms": 9918,
+            "peak_memory": {
+              "final_terms": 9918,
+              "rust_vmhwm_kb": 42232.0,
+              "rust_floor_kb": 38640.0,
+              "rust_bytes_per_term": 370.86186731195806,
+              "jl_vmhwm_kb": 688388.0,
+              "jl_floor_kb": 630052.0,
+              "jl_bytes_per_term": 6022.99495866102,
+              "peak_terms": 9918,
+              "rust_bytes_per_peak_term": 370.86186731195806,
+              "jl_bytes_per_peak_term": 6022.99495866102,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-05",
+          "truncation": {
+            "min_abs_coeff": 1e-05
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 48599,
+            "jl_final_terms": 48599,
+            "expectation_delta": 4.16e-17,
+            "expectation_rust": 0.02502093950920519,
+            "expectation_jl": 0.02502093950920515,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.2228704784130688,
+              1.2885278188084686,
+              1.264359351988218,
+              1.3183492999263078,
+              1.2636961285609933
+            ],
+            "median_ratio_jl_over_rust": 1.264359351988218,
+            "min_ratio": 1.2228704784130688,
+            "max_ratio": 1.3183492999263078,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              0.4285,
+              0.4062,
+              0.4074,
+              0.4071,
+              0.4107
+            ],
+            "jl_s_per_pair": [
+              0.524,
+              0.5234,
+              0.5151,
+              0.5367,
+              0.519
+            ],
+            "rust_s_median": 0.4074,
+            "jl_s_median": 0.5234,
+            "label": "xxz eps=1.000e-05",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 0.4285,
+                "jl_s": 0.524,
+                "ratio_jl_over_rust": 1.223
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 0.4062,
+                "jl_s": 0.5234,
+                "ratio_jl_over_rust": 1.288
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 0.4074,
+                "jl_s": 0.5151,
+                "ratio_jl_over_rust": 1.264
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 0.4071,
+                "jl_s": 0.5367,
+                "ratio_jl_over_rust": 1.318
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 0.4107,
+                "jl_s": 0.519,
+                "ratio_jl_over_rust": 1.264
+              }
+            ],
+            "final_terms": 48599,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 48599,
+              "jl_final_terms": 48599,
+              "expectation_delta": 4.16e-17,
+              "expectation_rust": 0.02502093950920519,
+              "expectation_jl": 0.02502093950920515,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 1e-05
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 1e-05,
+              "min_abs_coeff_julia": 1.0000000000000003e-05,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 1.264,
+            "median_ratio_log_precision_bound": 0.0012779037005385637,
+            "peak_terms": 48599,
+            "peak_memory": {
+              "final_terms": 48599,
+              "rust_vmhwm_kb": 44260.0,
+              "rust_floor_kb": 38772.0,
+              "rust_bytes_per_term": 115.63431346323999,
+              "jl_vmhwm_kb": 684668.0,
+              "jl_floor_kb": 629212.0,
+              "jl_bytes_per_term": 1168.4796806518652,
+              "peak_terms": 48599,
+              "rust_bytes_per_peak_term": 115.63431346323999,
+              "jl_bytes_per_peak_term": 1168.4796806518652,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-06",
+          "truncation": {
+            "min_abs_coeff": 1e-06
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 206035,
+            "jl_final_terms": 206035,
+            "expectation_delta": 6.94e-18,
+            "expectation_rust": 0.024799187125965745,
+            "expectation_jl": 0.024799187125965752,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.4464852454588426,
+              1.4382312925170067,
+              1.4448259287234773,
+              1.4016163276487912,
+              1.398483804272915
+            ],
+            "median_ratio_jl_over_rust": 1.4382312925170067,
+            "min_ratio": 1.398483804272915,
+            "max_ratio": 1.4464852454588426,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              1.4809,
+              1.47,
+              1.4563,
+              1.4601,
+              1.451
+            ],
+            "jl_s_per_pair": [
+              2.1421,
+              2.1142,
+              2.1041,
+              2.0465,
+              2.0292
+            ],
+            "rust_s_median": 1.4601,
+            "jl_s_median": 2.1041,
+            "label": "xxz eps=1.000e-06",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 1.4809,
+                "jl_s": 2.1421,
+                "ratio_jl_over_rust": 1.447
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 1.47,
+                "jl_s": 2.1142,
+                "ratio_jl_over_rust": 1.438
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 1.4563,
+                "jl_s": 2.1041,
+                "ratio_jl_over_rust": 1.445
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 1.4601,
+                "jl_s": 2.0465,
+                "ratio_jl_over_rust": 1.402
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 1.451,
+                "jl_s": 2.0292,
+                "ratio_jl_over_rust": 1.399
+              }
+            ],
+            "final_terms": 206035,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 206035,
+              "jl_final_terms": 206035,
+              "expectation_delta": 6.94e-18,
+              "expectation_rust": 0.024799187125965745,
+              "expectation_jl": 0.024799187125965752,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 1e-06
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 1e-06,
+              "min_abs_coeff_julia": 1.0000000000000002e-06,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 1.438,
+            "median_ratio_log_precision_bound": 0.001084998385124693,
+            "peak_terms": 206035,
+            "peak_memory": {
+              "final_terms": 206035,
+              "rust_vmhwm_kb": 56908.0,
+              "rust_floor_kb": 38468.0,
+              "rust_bytes_per_term": 91.64734147110927,
+              "jl_vmhwm_kb": 712404.0,
+              "jl_floor_kb": 632224.0,
+              "jl_bytes_per_term": 398.49695440095127,
+              "peak_terms": 206035,
+              "rust_bytes_per_peak_term": 91.64734147110927,
+              "jl_bytes_per_peak_term": 398.49695440095127,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-07",
+          "truncation": {
+            "min_abs_coeff": 1e-07
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 776432,
+            "jl_final_terms": 776432,
+            "expectation_delta": 2.64e-16,
+            "expectation_rust": 0.02478009068705039,
+            "expectation_jl": 0.024780090687050654,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.686340607172777,
+              1.6847806463260515,
+              1.6569953968475382,
+              1.6287901381847103,
+              1.6817964453654262
+            ],
+            "median_ratio_jl_over_rust": 1.6817964453654262,
+            "min_ratio": 1.6287901381847103,
+            "max_ratio": 1.686340607172777,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              5.0134,
+              4.9851,
+              5.0183,
+              5.0295,
+              5.0188
+            ],
+            "jl_s_per_pair": [
+              8.4543,
+              8.3988,
+              8.3153,
+              8.192,
+              8.4406
+            ],
+            "rust_s_median": 5.0183,
+            "jl_s_median": 8.3988,
+            "label": "xxz eps=1.000e-07",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 5.0134,
+                "jl_s": 8.4543,
+                "ratio_jl_over_rust": 1.686
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 4.9851,
+                "jl_s": 8.3988,
+                "ratio_jl_over_rust": 1.685
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 5.0183,
+                "jl_s": 8.3153,
+                "ratio_jl_over_rust": 1.657
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 5.0295,
+                "jl_s": 8.192,
+                "ratio_jl_over_rust": 1.629
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 5.0188,
+                "jl_s": 8.4406,
+                "ratio_jl_over_rust": 1.682
+              }
+            ],
+            "final_terms": 776432,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 776432,
+              "jl_final_terms": 776432,
+              "expectation_delta": 2.64e-16,
+              "expectation_rust": 0.02478009068705039,
+              "expectation_jl": 0.024780090687050654,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 1e-07
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 1e-07,
+              "min_abs_coeff_julia": 1.0000000000000001e-07,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 1.682,
+            "median_ratio_log_precision_bound": 0.0010269841913452804,
+            "peak_terms": 776432,
+            "peak_memory": {
+              "final_terms": 776432,
+              "rust_vmhwm_kb": 110516.0,
+              "rust_floor_kb": 38568.0,
+              "rust_bytes_per_term": 94.88886599212809,
+              "jl_vmhwm_kb": 835736.0,
+              "jl_floor_kb": 628768.0,
+              "jl_bytes_per_term": 272.9604550044305,
+              "peak_terms": 776432,
+              "rust_bytes_per_peak_term": 94.88886599212809,
+              "jl_bytes_per_peak_term": 272.9604550044305,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        },
+        {
+          "label": "xxz eps=1.000e-08",
+          "truncation": {
+            "min_abs_coeff": 1e-08
+          },
+          "parity": {
+            "ok": true,
+            "problems": [],
+            "n_layers": 1782,
+            "rust_final_terms": 2661871,
+            "jl_final_terms": 2661871,
+            "expectation_delta": 1.21e-16,
+            "expectation_rust": 0.024779365781311406,
+            "expectation_jl": 0.024779365781311284,
+            "expectation_source": "joined"
+          },
+          "timing": {
+            "n_pairs": 5,
+            "ratio_jl_over_rust_per_pair": [
+              1.7536873156342183,
+              1.763266955196288,
+              1.7993699474751932,
+              1.8125672014106922,
+              1.797540381791483
+            ],
+            "median_ratio_jl_over_rust": 1.797540381791483,
+            "min_ratio": 1.7536873156342183,
+            "max_ratio": 1.8125672014106922,
+            "faster_per_pair": [
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings",
+              "paulistrings"
+            ],
+            "sign_consistent": true,
+            "verdict": "paulistrings",
+            "rust_s_per_pair": [
+              16.3398,
+              16.3357,
+              16.3161,
+              16.2757,
+              16.344
+            ],
+            "jl_s_per_pair": [
+              28.6549,
+              28.8042,
+              29.3587,
+              29.5008,
+              29.379
+            ],
+            "rust_s_median": 16.3357,
+            "jl_s_median": 29.3587,
+            "label": "xxz eps=1.000e-08",
+            "pairs": [
+              {
+                "pair": 0,
+                "order": "rust-first",
+                "rust_s": 16.3398,
+                "jl_s": 28.6549,
+                "ratio_jl_over_rust": 1.754
+              },
+              {
+                "pair": 1,
+                "order": "julia-first",
+                "rust_s": 16.3357,
+                "jl_s": 28.8042,
+                "ratio_jl_over_rust": 1.763
+              },
+              {
+                "pair": 2,
+                "order": "rust-first",
+                "rust_s": 16.3161,
+                "jl_s": 29.3587,
+                "ratio_jl_over_rust": 1.799
+              },
+              {
+                "pair": 3,
+                "order": "julia-first",
+                "rust_s": 16.2757,
+                "jl_s": 29.5008,
+                "ratio_jl_over_rust": 1.813
+              },
+              {
+                "pair": 4,
+                "order": "rust-first",
+                "rust_s": 16.344,
+                "jl_s": 29.379,
+                "ratio_jl_over_rust": 1.798
+              }
+            ],
+            "final_terms": 2661871,
+            "parity": {
+              "ok": true,
+              "problems": [],
+              "n_layers": 1782,
+              "rust_final_terms": 2661871,
+              "jl_final_terms": 2661871,
+              "expectation_delta": 1.21e-16,
+              "expectation_rust": 0.024779365781311406,
+              "expectation_jl": 0.024779365781311284,
+              "expectation_source": "joined"
+            },
+            "truncation": {
+              "min_abs_coeff": 1e-08
+            },
+            "mitigation": {
+              "min_abs_coeff_rust": 1e-08,
+              "min_abs_coeff_julia": 1.0000000000000002e-08,
+              "cutoff_is_dyadic": false
+            },
+            "median_ratio_logged": 1.798,
+            "median_ratio_log_precision_bound": 0.0010086370291794414,
+            "peak_terms": 2661873,
+            "peak_memory": {
+              "final_terms": 2661871,
+              "rust_vmhwm_kb": 303356.0,
+              "rust_floor_kb": 38604.0,
+              "rust_bytes_per_term": 101.84792876889978,
+              "jl_vmhwm_kb": 1540276.0,
+              "jl_floor_kb": 631712.0,
+              "jl_bytes_per_term": 349.51713888464167,
+              "peak_terms": 2661873,
+              "rust_bytes_per_peak_term": 101.84785224539263,
+              "jl_bytes_per_peak_term": 349.51687627471335,
+              "source": "joined",
+              "joined_from": "/tmp/claude-2699/-mnt-home-ldevos-Projects-paulistrings-rs/7e8bf8f2-38de-414d-9411-9018b28befae/scratchpad/pilot_xxz/summary.json"
+            }
+          },
+          "cut": null,
+          "disqualified": null
+        }
+      ],
+      "curve_points_excluding_weight_variant": [
+        "xxz eps=1.000e-02",
+        "xxz eps=1.000e-03",
+        "xxz eps=1.000e-04",
+        "xxz eps=1.000e-05",
+        "xxz eps=1.000e-06",
+        "xxz eps=1.000e-07",
+        "xxz eps=1.000e-08"
+      ],
+      "crossover": {
+        "crossover_terms": 16504.519872705096,
+        "lower": {
+          "peak_terms": 9918,
+          "median_ratio": 0.8952837729816148
+        },
+        "upper": {
+          "peak_terms": 48599,
+          "median_ratio": 1.264359351988218
+        },
+        "indistinguishable_zone": null,
+        "inside_indistinguishable_zone": false,
+        "method": "linear in log10(ratio) vs log10(terms), solved for ratio = 1",
+        "terms_key": "peak_terms"
+      },
+      "cuts": [],
+      "projections": [],
+      "free_ram_gib_at_start": 240.0
+    }
+  ],
+  "accuracy": [],
+  "thread_scaling": null,
+  "cuts": [],
+  "extension_provenance": {
+    "package_path": "/mnt/home/ldevos/Projects/paulistrings-rs/python/paulistrings/__init__.py",
+    "extension_path": "/mnt/home/ldevos/Projects/paulistrings-rs/python/paulistrings/_paulistrings.abi3.so",
+    "extension_mtime": "2026-09-01 03:19:44",
+    "checkout": "/mnt/home/ldevos/Projects/paulistrings-rs",
+    "commit": "4768fe4a37973cff3536b3c4c67867ace4e23f4d",
+    "branch": "main"
+  }
+}

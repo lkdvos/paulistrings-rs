@@ -224,3 +224,21 @@ worktrees (branches `expt/<slug>`), with ALL authoritative timing deferred to a 
 
 Bench-gate order once implementations land: E1 -> E3 -> E2 -> E4 -> E5, one at a time on a quiet box; dense-PTM
 probes at <=8 threads per the fact sheet's write-ceiling finding.
+
+## Gate phase (orchestrator, 12:35)
+
+All five implementation agents landed (E1 6 commits, E2 5, E3 5, E4 5, E5 net doc-only after a measured
+self-revert). Serialized gate order on the quiet box: **E1 -> E3 -> E2 -> E4(null-check) -> merge pass**; E5 has
+no timing gate (its diff is the negative-result note alone).
+
+Decisions:
+- **E4 §6.1 (channel-aware bucket-bit floor sweep) skipped this campaign.** Rationale: it targets the same
+  dense-PTM comparison-sort cliff E2's radix kernel attacks from the kernel side; the forced floor costs the
+  sparse paths +47-96%; E4 flagged the two changes as non-additive ("re-run the m=1e4 cell after whichever lands
+  first"). Recorded as future work to re-evaluate after the radix lands. E4's gate is the null-check only (its
+  diff changes no defaults; the risk is code-layout perturbation from the test_support additions).
+- Cross-experiment coordination: E4's rank finding was relayed to E2 mid-flight; E2's probe independently
+  confirmed the ~1.35x width residual and localized its mechanism (branchless-vs-branchy comparator codegen).
+  Known merge conflict to resolve at integration: duplicate Haar-SU(4) fixtures (E4 test_support::haar_su4_matrix
+  vs E2 bucketed::tests::haar_su4 -- integrate on the shared fixture), plus 3-way touches on ARCHITECTURE.md,
+  phase_breakdown knobs, and truncation/mod.rs (E1 magnitude semantics x E3 finalizes_layer).

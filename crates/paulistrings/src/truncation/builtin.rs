@@ -7,6 +7,30 @@ use rayon::prelude::*;
 
 /// Drop terms whose coefficient magnitude is at most `epsilon`.
 ///
+/// # The test is `|c|² > ε²`, not `|c| > ε`
+///
+/// `Complex64::norm()` is `hypot`, a libm call that measured at **11.8–14.4
+/// ns per merged term** on the reference host — nearly doubling the cost of
+/// the merge phase all by itself
+/// (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6). Since
+/// `x ↦ x²` is strictly increasing on `[0, ∞)`, comparing squares decides
+/// the same predicate for a few arithmetic instructions instead, and
+/// `norm_sqr()` is `re·re + im·im`.
+///
+/// Two riders follow from working in squared space, both accepted rather
+/// than guarded (the correctness bar is floating-point tolerance):
+///
+/// - **Underflow.** `|c|² ` loses precision below `|c| ≈ 1.49e-154` and
+///   rounds to `0.0` below `|c| ≈ 1.57e-162`. So `CoefficientThreshold(0.0)`
+///   — "drop only the exact zeros" — also drops magnitudes under
+///   `≈1.57e-162`, and any `ε` in the subnormal-square band resolves
+///   coarsely. Every such coefficient is numerically zero.
+/// - **Overflow.** `ε > ≈1.34e154` squares to `+∞`, so nothing is kept; the
+///   unsquared test kept only `|c| > ε`, which for a finite sum is also
+///   nothing.
+///
+/// A negative `ε` still keeps everything, as `|c| > ε` does.
+///
 /// # Examples
 ///
 /// ```
@@ -22,7 +46,14 @@ pub struct CoefficientThreshold(
 impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     #[inline]
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
-        c.norm() > self.0
+        let eps = self.0;
+        // `|c| > ε ⟺ |c|² > ε²` for ε >= 0; see the type docs for why the
+        // squared form is the one that ships. A negative ε keeps everything,
+        // which squaring would otherwise invert. Both `eps` and the loop-
+        // invariant `eps * eps` hoist out of the merge's inner loop: `&self`
+        // is `noalias readonly` and `CoefficientThreshold` has no interior
+        // mutability. NaN drops everything either way.
+        eps < 0.0 || c.norm_sqr() > eps * eps
     }
 }
 
@@ -81,6 +112,34 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 /// function of the magnitude multiset — independent of the bucket partition,
 /// the hash seed, and the thread count.
 ///
+/// # Ranked on `|c|²`
+///
+/// The implementation never computes `|c|`: it selects and compares
+/// `norm_sqr()` against `t²`, because `Complex64::norm()` is `hypot` and
+/// `finalize_layer` called it **twice per candidate** — ~24 of its ~56
+/// ns/term (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6).
+/// Squaring preserves the order of finite magnitudes, so ranks 1..n are the
+/// same ranks; what shifts slightly is which magnitudes count as *equal*,
+/// i.e. the boundaries of the tie group:
+///
+/// - A symmetry multiplet — the thing the tie rule exists for — stays intact.
+///   Its members differ by a sign or a power of `i`, and `re² + im²` is
+///   invariant under both (negation is exact, and swapping the two squares
+///   is exact because addition commutes), so bitwise-equal magnitudes remain
+///   bitwise-equal squares.
+/// - Two magnitudes that differ by ~1 ulp *may* square to the same `f64` and
+///   so be treated as one group, or (with different `re`/`im` splits) tie
+///   under `hypot` yet differ by an ulp when squared. Both are inside
+///   floating-point tolerance and neither can break the `≤ n` bound: `t²` is
+///   the `n`-th largest square, so `count(> t²) ≤ n - 1` by construction.
+/// - **Underflow.** `|c|² ` rounds to `0.0` below `|c| ≈ 1.57e-162` (and is
+///   subnormal below `≈1.49e-154`), so magnitudes in that band collapse into
+///   one tie group. Consequences: a sum whose magnitudes *all* underflow is
+///   wiped (it is zero to any tolerance — see the degenerate case below), and
+///   a cut landing inside an underflowing *tail* drops that tail whole and
+///   keeps the representable terms, which is the better of the two outcomes.
+///   Overflow (`|c| > ≈1.34e154`) collapses the same way at `+∞`.
+///
 /// # ⚠ A fully degenerate sum is wiped to empty
 ///
 /// **If every candidate ties at the threshold, truncation keeps nothing.**
@@ -109,23 +168,25 @@ pub struct TopN(
 impl<const W: usize> TruncationPolicy<W> for TopN {
     /// Bucket-native top-`n` selection; see the type docs for the rule.
     ///
-    /// Three `O(n)` passes and one `select_nth_unstable`: gather the
-    /// magnitudes, select the threshold `t` at rank `n`, count the terms above
-    /// and at `t`, then compact each bucket in place against the resulting
-    /// predicate. Per-bucket filtering preserves within-bucket order
+    /// Three `O(n)` passes and one `select_nth_unstable`: gather the squared
+    /// magnitudes, select the threshold `t²` at rank `n`, count the terms
+    /// above and at `t²`, then compact each bucket in place against the
+    /// resulting predicate. Per-bucket filtering preserves within-bucket order
     /// automatically, so the canonical-order invariant holds with no re-sort.
     /// At a single bucket this degenerates to a plain partial selection over
     /// the lex-sorted sum.
     ///
-    /// The predicate is `|c| > t || (fits && |c| == t)`, so no keys are read
-    /// during selection or compaction at all — which is both why the result is
-    /// partition-independent and why there is no comparator to pay for on
-    /// tie-dense data.
+    /// The predicate is `|c|² > t² || (fits && |c|² == t²)`, so no keys are
+    /// read during selection or compaction at all — which is both why the
+    /// result is partition-independent and why there is no comparator to pay
+    /// for on tie-dense data. Squares rather than magnitudes because `norm()`
+    /// is `hypot`; see the type docs' "Ranked on `|c|²`".
     ///
-    /// Exact `f64` equality against `t` is the right test here rather than a
+    /// Exact `f64` equality against `t²` is the right test here rather than a
     /// tolerance: a symmetry multiplet's magnitudes are bitwise equal, having
-    /// been produced by the same arithmetic. Two coefficients that merely
-    /// round to nearby values are different magnitudes and are ranked as such.
+    /// been produced by the same arithmetic, and squaring preserves that.
+    /// Two coefficients that merely round to nearby values are different
+    /// magnitudes and are ranked as such.
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
         if sum.len() <= n {
@@ -136,27 +197,27 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             return;
         }
 
-        // Magnitudes only; `select_nth_unstable` permutes them, which is fine
-        // because every later step reads this as a multiset.
+        // Squared magnitudes only; `select_nth_unstable` permutes them, which
+        // is fine because every later step reads this as a multiset.
         let nb = sum.num_buckets();
         let view = &*sum;
         let mut mags: Vec<f64> = (0..nb)
             .into_par_iter()
-            .flat_map_iter(|b| view.bucket(b).2.iter().map(|c| c.norm()))
+            .flat_map_iter(|b| view.bucket(b).2.iter().map(|c| c.norm_sqr()))
             .collect();
 
-        // `t` = the n-th largest magnitude.
+        // `t2` = the n-th largest squared magnitude.
         mags.select_nth_unstable_by(n - 1, |a, b| {
             b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal)
         });
-        let t = mags[n - 1];
+        let t2 = mags[n - 1];
 
         // One pass for both counts. `count_gt < n <= count_gt + count_eq` by
         // construction, so the group fits exactly when the sum equals `n`; the
         // inequality is written out anyway because it is the stated rule.
         let (count_gt, count_eq) = mags
             .par_iter()
-            .map(|&m| (usize::from(m > t), usize::from(m == t)))
+            .map(|&m| (usize::from(m > t2), usize::from(m == t2)))
             .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         let keep_tied = count_gt + count_eq <= n;
 
@@ -165,8 +226,8 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             let len = cols.len();
             let mut write = 0usize;
             for i in 0..len {
-                let m = cols.coeff[i].norm();
-                if !(m > t || (keep_tied && m == t)) {
+                let m = cols.coeff[i].norm_sqr();
+                if !(m > t2 || (keep_tied && m == t2)) {
                     continue;
                 }
                 cols.x[write] = cols.x[i];
@@ -249,6 +310,56 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CoefficientThreshold` compares `|c|²` against `ε²`, so a magnitude
+    /// whose *square* underflows to zero is indistinguishable from an exact
+    /// zero. At `ε = 0` — "drop only the exact zeros" — that means every
+    /// magnitude below `≈1.57e-162` is dropped as well.
+    ///
+    /// `(1e-100)² = 1e-200` is a normal `f64` and survives; `(1e-200)² ` is
+    /// below the smallest subnormal (`4.94e-324`) and rounds to `0.0`, which
+    /// is not `> 0.0`.
+    #[test]
+    fn coefficient_threshold_drops_squares_that_underflow_to_zero() {
+        let policy = CoefficientThreshold(0.0);
+        assert!(<CoefficientThreshold as TruncationPolicy<1>>::keep_term(
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(1e-100, 0.0)
+        ));
+        assert!(!<CoefficientThreshold as TruncationPolicy<1>>::keep_term(
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(1e-200, 0.0)
+        ));
+        // An exact zero is dropped at ε = 0, exactly as it was before.
+        assert!(!<CoefficientThreshold as TruncationPolicy<1>>::keep_term(
+            &policy,
+            &[1],
+            &[0],
+            Complex64::new(0.0, 0.0)
+        ));
+    }
+
+    /// A negative threshold keeps *everything*, including an exact zero —
+    /// `|c| > ε` is vacuously true for `ε < 0` and the squared form must not
+    /// silently invert that (`ε² > 0` would drop the zero).
+    #[test]
+    fn coefficient_threshold_negative_epsilon_keeps_everything() {
+        let policy = CoefficientThreshold(-1.0);
+        for c in [
+            Complex64::new(0.0, 0.0),
+            Complex64::new(1e-300, 0.0),
+            Complex64::new(3.0, -4.0),
+        ] {
+            assert!(
+                <CoefficientThreshold as TruncationPolicy<1>>::keep_term(&policy, &[1], &[0], c),
+                "negative epsilon must keep {c}"
+            );
+        }
+    }
 
     /// `WeightCutoff(2)` keeps weights 0, 1, 2 and drops 3.
     /// Identity I (weight 0), single X (1), XZ on qubits 0+1 (2) all kept;
@@ -508,6 +619,76 @@ mod tests {
             sum.is_empty(),
             "an all-tied sum is wiped: t is the maximum, nothing exceeds it, \
              and the single group of size 6 does not fit in 3"
+        );
+        sum.assert_invariants();
+    }
+
+    /// Selection ranks on `|c|²`, so magnitudes below the square-underflow
+    /// floor (`≈1.57e-162`) all collapse to `0.0` and become **one tie
+    /// group** however distinct they were.
+    ///
+    /// Magnitudes 1e-200, 2e-200, …, 6e-200 with `n = 3`: every square is
+    /// `0.0`, so `t² = 0`, nothing exceeds it, and the single group of six
+    /// does not fit in three — the documented all-tied wipe. Such a sum is
+    /// zero to any tolerance, which is why this is accepted rather than
+    /// guarded.
+    #[test]
+    fn top_n_wipes_a_sum_whose_squares_all_underflow() {
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            (0u64..6).map(|i| [i]).collect(),
+            vec![[0u64]; 6],
+            (1..=6)
+                .map(|i| Complex64::new(i as f64 * 1e-200, 0.0))
+                .collect(),
+            3,
+        );
+        sum.assert_invariants();
+        TopN(3).finalize_layer(&mut sum);
+        assert!(
+            sum.is_empty(),
+            "squares all underflow to 0.0, so the whole sum is one tie group"
+        );
+        sum.assert_invariants();
+    }
+
+    /// The useful half of the same edge: when the cut falls *inside* an
+    /// underflowing tail, the tail is dropped whole and the representable
+    /// terms are kept — a strictly better outcome than padding the result
+    /// with numerical noise.
+    ///
+    /// Magnitudes 3, 2, 1 and then five terms at 1e-200 with `n = 5`: the
+    /// 5th largest square is `0.0`, `count(> 0) = 3`, `count(== 0) = 5`, and
+    /// `3 + 5 > 5`, so the underflow group is discarded whole and exactly the
+    /// three representable terms survive.
+    #[test]
+    fn top_n_drops_an_underflowing_tail_and_keeps_the_rest() {
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            (0u64..8).map(|i| [i]).collect(),
+            vec![[0u64]; 8],
+            vec![
+                Complex64::new(3.0, 0.0),
+                Complex64::new(2.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(5e-200, 0.0),
+                Complex64::new(4e-200, 0.0),
+                Complex64::new(3e-200, 0.0),
+                Complex64::new(2e-200, 0.0),
+                Complex64::new(1e-200, 0.0),
+            ],
+            3,
+        );
+        sum.assert_invariants();
+        TopN(5).finalize_layer(&mut sum);
+        assert_eq!(sum.len(), 3, "the underflowing tail must go whole");
+        let (x, _, c) = sum.to_arrays();
+        assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
+        assert_eq!(
+            c,
+            vec![
+                Complex64::new(3.0, 0.0),
+                Complex64::new(2.0, 0.0),
+                Complex64::new(1.0, 0.0),
+            ]
         );
         sum.assert_invariants();
     }

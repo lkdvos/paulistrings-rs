@@ -198,3 +198,29 @@ Decisions are logged here as they are made, for post-hoc review (autonomous-exec
   so `lscpu` output stands in it in `provenance.txt`; the flamegraph HTML name is derived from layer + commit, so
   successive cells of one layer overwrite each other — `perf-report.txt` (symbol tables per cell) is the quotable
   artefact and agrees with `PhaseStats` to within 2 points.
+
+## Phase 2 slate (orchestrator decision, 10:15, from the phase-breakdown fact sheet)
+
+Evidence-driven re-scope of the plan's six experiments into five, run as parallel implementation agents in git
+worktrees (branches `expt/<slug>`), with ALL authoritative timing deferred to a serialized ab-compare pass:
+
+- **E1 `expt/topn-finalize`** — TopN finalize cost (61-71% of layer wall): norm_sqr instead of norm/hypot first,
+  drop the per-layer candidate Vec, histogram-approximate selection last (plan's experiment 1, re-ordered per
+  the fact sheet's decomposition).
+- **E2 `expt/sort-kernel`** — the dense-PTM sort (58-60% of layer): radix-sort replacement evaluated against the
+  current kernel, plus the W=1 sort defect (1.9x slower than W=2 on half the key bytes). Plan's experiment 3,
+  narrowed; `engine/merge.rs` inline set is a known danger zone.
+- **E3 `expt/small-m-path`** — plan's experiment 4 re-rationalized: a runtime-selectable direct/dictionary apply
+  path for small sums that skips Channel::prepare (the measured small-m fixed cost, 70% of 1.43 us/layer;
+  4.2-5.7 us/gate for dense PTMs) and the bucketed machinery below an auto threshold. Additive; sort path stays
+  canonical; gate = default-path non-perturbation ab-compare + small-m cross-engine wins (effects >=1.5x, above
+  single-shot noise). The saturated-regime hybrid is dropped: fact sheet found no our-side evidence.
+- **E4 `expt/bucket-cliff`** — plan's experiment 2, narrowed to where evidence points: the W=2-only bucket-count
+  cliff (q=64 -> 65 flips it) and dense-PTM sums below 8192 terms; diagnose, then tuned policy or fact sheet.
+- **E5 `expt/mem-growth`** — plan's experiment 5, demoted to an RSS-only target (no throughput evidence): smooth
+  the power-of-two capacity slack (63-73 B/term live vs 91-125 observed), A/B to confirm timing neutrality.
+- Plan's experiment 6 (merge/finalize traffic) is NOT run: fact sheet says arithmetic-bound, 91% cache-served,
+  and the v0.6 rejections stand.
+
+Bench-gate order once implementations land: E1 -> E3 -> E2 -> E4 -> E5, one at a time on a quiet box; dense-PTM
+probes at <=8 threads per the fact sheet's write-ceiling finding.

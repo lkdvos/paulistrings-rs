@@ -380,8 +380,18 @@ potentially billions of times — and must inline to nanoseconds; it sees the
 and may be non-local.
 
 Built-ins: `CoefficientThreshold(eps)` and `WeightCutoff(k)` are per-term
-filters; `TopN(n)` is a layer finalization. Policies compose with `And` / `Or`
-(Python: `&` / `|`).
+filters; `TopN(n)` and `ApproxTopN(n)` are layer finalizations. Policies
+compose with `And` / `Or` (Python: `&` / `|`).
+
+**Magnitudes are compared as `|c|²`, never as `|c|`.** `Complex64::norm()` is
+`hypot`, a libm call, and it was on the hot path twice per candidate; `x ↦ x²`
+is strictly increasing on `[0, ∞)`, so `|c|² > t²` decides the same predicate
+for a multiply-multiply-add. The equivalence is exact for the *ordering* and
+near-exact for the *tie grouping*: a symmetry multiplet's members differ by a
+sign or a power of `i`, and `re² + im²` is bitwise invariant under both, so
+exact ties survive. What squaring does lose is the band below
+`|c| ≈ 1.57e-162`, whose squares underflow to `0.0` and therefore tie — a
+coefficient that is numerically zero either way.
 
 **`TopN` never splits a tie group.** Terms with exactly equal magnitude are
 typically a symmetry multiplet (lattice symmetries produce exact ties), and
@@ -390,9 +400,24 @@ magnitude is kept only if it fits entirely within `n` and discarded whole
 otherwise. Consequences, all deliberate: `TopN(n)` retains *at most* `n`
 (discarding is the safe direction for its memory-bounding job); it retains
 exactly `n` when magnitudes are distinct; and a sum whose coefficients all
-share one magnitude is wiped to empty. Implementation: gather magnitudes,
-select the `n`-th largest once globally, filter each bucket in parallel —
-per-bucket filtering preserves within-bucket order automatically.
+share one magnitude is wiped to empty. Implementation: gather squared
+magnitudes into a per-thread pooled buffer, select the `n`-th largest once
+globally, decide the tie group from the selection's own partition (the group
+fits iff nothing after the pivot equals the pivot), then filter each bucket in
+parallel — per-bucket filtering preserves within-bucket order automatically.
+
+**`ApproxTopN(n)` trades the exact count for the selection.** It histograms the
+octave of `|c|²` (the 11-bit `f64` exponent: 2048 bins, 8 KB, L1-resident),
+walks the bins down to the lowest edge whose cumulative count still fits in
+`n`, and retains against that edge — two `O(m)` passes, no candidate array, no
+selection. It keeps `≤ n` (so the memory bound is exact) and `> n - p`, where
+`p` is the population of the coarsest octave that did not fit, i.e. the
+shortfall is bounded by the terms inside one `√2`-wide magnitude band at the
+cut. Tie groups need no rule here at all: equal magnitudes share an octave, so
+a multiplet is always kept or dropped whole — at the price of a wider
+degenerate case, since a sum confined to a single octave of `|c|²` is wiped
+exactly as an all-tied sum is under `TopN`. `TopN` remains the default and the
+choice whenever the retained count itself matters.
 
 ## Channels
 

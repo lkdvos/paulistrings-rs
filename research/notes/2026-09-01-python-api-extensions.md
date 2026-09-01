@@ -516,7 +516,9 @@ measured before implementation and where it needed correcting after.
 
 ---
 
-## A8 — deferred designs (docs only, no code)
+## A8 — deferred designs
+
+A8-i is still deferred; A8-ii shipped (see its status line below).
 
 ### A8-i — symbolic / surrogate coefficients (blocks F, B3, B4)
 
@@ -541,6 +543,18 @@ trait implemented by `Complex64` and `TapeHandle`, leaving the shipping path unt
 core redesign with its own plan/measurement cycle — out of scope for this branch.
 
 ### A8-ii — stabilizer-state contraction (blocks B7)
+
+**Status: implemented.** Core in `crates/paulistrings/src/stabilizer.rs`
+(`StabilizerState<W>` + `PauliSum::expectation_stabilizer`), binding
+`PauliSum.expectation_stabilizer(generators)` in `crates/paulistrings-py/src/sum.rs`,
+stim ingestion `interop.stabilizers_from_stim`. Two deviations from the sketch below,
+both recorded in the module docs: the type is named `StabilizerState` (not
+`StabilizerBasis`) and takes the generators directly rather than being routed through
+`expectation(state=...)` — a `list[str]` argument there would collide with A4's
+per-qubit label strings; and the signs are tracked by composing the signed group
+elements themselves (`mul_assign`'s `i^k` folded into a per-row `neg` bit) rather than
+by a separate Aaronson–Gottesman phase table, which is the same arithmetic with no
+second representation to keep consistent.
 
 Scope: an *expectation* feature — `⟨ψ|P|ψ⟩` for a stabilizer state `|ψ⟩` given by `n` signed
 generators — not stabilizer simulation (no tableau updates under gates), so it does not conflict

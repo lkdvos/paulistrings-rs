@@ -443,6 +443,16 @@ objects composed with `&` / `|` and translated to core policies at the
 boundary. The extension module is `paulistrings._paulistrings` (abi3), and
 `python/paulistrings/` re-exports it.
 
+The Python `Circuit` additionally keeps the width-erased `ChannelSpec` of every
+channel pushed, alongside the materialized `Circuit<W>`: the core stores
+prepared channels and cannot hand a gate description back out, so that list is
+what serves gate-list introspection (`Circuit.gates`, emitted in the frozen
+task-JSON gate vocabulary), slicing, concatenation, and `adjoint()`. The two
+are appended to together and never diverge; the cost is one spec per channel,
+dominated by a 2-qubit unitary's 4×4 matrix and negligible against the prepared
+channel's own Pauli-transfer matrix. Everything those methods do is
+spec-rewriting outside any hot loop — no core code changes and no per-term work.
+
 ## GPU-Readiness
 
 The design decisions a GPU backend needs are already in place: `PauliString`

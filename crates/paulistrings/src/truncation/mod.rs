@@ -13,7 +13,13 @@
 //! [`WeightCutoff`] drops terms above a Pauli weight; [`TopN`] keeps **at
 //! most** `n` largest-magnitude terms via a layer-finalization partial
 //! selection, never splitting a group of equal magnitudes (see [`TopN`] for
-//! the rule and its degenerate case).
+//! the rule and its degenerate case); [`ApproxTopN`] trades the exact count
+//! for a histogram threshold — cheaper, still bounded by `n`, and short of it
+//! by at most one octave's population.
+//!
+//! Both magnitude-comparing policies work on `|c|²` rather than `|c|`, since
+//! `Complex64::norm()` is a `hypot` call; [`TopN`]'s "Ranked on `|c|²`" has
+//! the equivalence argument and its two floating-point riders.
 //!
 //! # Examples
 //!
@@ -33,7 +39,7 @@
 
 pub mod builtin;
 
-pub use builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
+pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
 
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
@@ -82,4 +88,36 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// view first (like [`TopN`]'s selection) can read terms via
     /// [`PauliSum::iter`] or per bucket via [`PauliSum::bucket`].
     fn finalize_layer(&self, _sum: &mut PauliSum<W>) {}
+
+    /// Whether [`finalize_layer`](Self::finalize_layer) does anything at all.
+    ///
+    /// Purely an optimization hint, and only the engine reads it: it never
+    /// changes what a policy *means*. The engine's small-sum direct path holds
+    /// the sum in a hash map between layers, so honouring a layer pass there
+    /// costs a full materialize → finalize → re-ingest round trip per layer.
+    /// This method lets a policy say that round trip is pointless.
+    ///
+    /// **The default is `true`, the conservative answer**, so a policy that
+    /// overrides `finalize_layer` and never thinks about this method still gets
+    /// its layer pass run on every layer, on every path. Override it with
+    /// `false` only if `finalize_layer` is genuinely a no-op — returning
+    /// `false` while `finalize_layer` does something makes the direct path skip
+    /// it, which is a wrong answer, not a slow one.
+    ///
+    /// The built-ins answer for themselves: [`CoefficientThreshold`] and
+    /// [`WeightCutoff`] are `false` (they filter per term), [`TopN`] is `true`,
+    /// [`And`] is the disjunction of its two sides, and [`Or`] is `false`
+    /// because its `finalize_layer` is this trait's no-op default rather than
+    /// either child's.
+    ///
+    /// ```
+    /// use paulistrings::TruncationPolicy;
+    /// use paulistrings::truncation::{CoefficientThreshold, TopN};
+    ///
+    /// assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&CoefficientThreshold(1e-9)));
+    /// assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&TopN(1000)));
+    /// ```
+    fn finalizes_layer(&self) -> bool {
+        true
+    }
 }

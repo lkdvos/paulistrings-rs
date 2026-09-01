@@ -1,0 +1,52 @@
+
+### bench_jl_performance start 2026-09-01 08:48:19
+    pairs=5 pilot=False sections=curves
+
+=== curve: SU(4) brickwork n=36, depth 6 ===
+    unitary_2q on this engine, TransferMapGate (a dense 16x16 PTM per block) on jl -- the matrix-gate path rather than the rotation kernel. Haar-random blocks from numpy default_rng(20260831) in layer-major emission order, so the circuit is a deterministic function of (n, depth, seed). Benchmark E's configuration and seed.
+    free RAM: 240 GiB
+  su4 eps=1.000e-02: parity gate ...
+    parity OK: 105 layers identical, 193 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0092s  jl    0.0092s  ratio  1.007
+    pair 1 (julia-first): rust    0.0091s  jl    0.0091s  ratio  0.999
+    pair 2 ( rust-first): rust    0.0092s  jl    0.0089s  ratio  0.972
+    pair 3 (julia-first): rust    0.0092s  jl    0.0091s  ratio  0.983
+    pair 4 ( rust-first): rust    0.0092s  jl    0.0090s  ratio  0.977
+    ->       193 terms  median ratio  0.983  [indistinguishable]
+  su4 eps=3.000e-03: parity gate ...
+    parity OK: 105 layers identical, 7089 terms, |dE| = 7.63e-17
+    pair 0 ( rust-first): rust    0.1761s  jl    0.0971s  ratio  0.552
+    pair 1 (julia-first): rust    0.1642s  jl    0.0982s  ratio  0.598
+    pair 2 ( rust-first): rust    0.1501s  jl    0.0993s  ratio  0.662
+    pair 3 (julia-first): rust    0.1416s  jl    0.0975s  ratio  0.689
+    pair 4 ( rust-first): rust    0.1574s  jl    0.0975s  ratio  0.620
+    ->      7089 terms  median ratio  0.620  [julia]
+  su4 eps=1.000e-03: parity gate ...
+    parity OK: 105 layers identical, 84836 terms, |dE| = 1.25e-16
+    pair 0 ( rust-first): rust    0.6200s  jl    0.6423s  ratio  1.036
+    pair 1 (julia-first): rust    0.6114s  jl    0.6282s  ratio  1.027
+    pair 2 ( rust-first): rust    0.6101s  jl    0.6236s  ratio  1.022
+    pair 3 (julia-first): rust    0.6320s  jl    0.6286s  ratio  0.995
+    pair 4 ( rust-first): rust    0.6171s  jl    0.6419s  ratio  1.040
+    ->     84836 terms  median ratio  1.027  [indistinguishable]
+  su4 eps=3.000e-04: parity gate ...
+    parity OK: 105 layers identical, 573826 terms, |dE| = 4.34e-18
+    pair 0 ( rust-first): rust    2.6797s  jl    4.4058s  ratio  1.644
+    pair 1 (julia-first): rust    2.6257s  jl    4.4416s  ratio  1.692
+    pair 2 ( rust-first): rust    2.6304s  jl    4.4082s  ratio  1.676
+    pair 3 (julia-first): rust    2.6496s  jl    4.4169s  ratio  1.667
+    pair 4 ( rust-first): rust    2.6214s  jl    4.4543s  ratio  1.699
+    ->    573826 terms  median ratio  1.676  [paulistrings]
+  su4 eps=1.000e-04: parity gate ...
+    parity OK: 105 layers identical, 2296294 terms, |dE| = 5.16e-17
+    pair 0 ( rust-first): rust    7.8060s  jl   15.6007s  ratio  1.999
+    pair 1 (julia-first): rust    7.8475s  jl   15.1753s  ratio  1.934
+    pair 2 ( rust-first): rust    7.7723s  jl   15.4576s  ratio  1.989
+    pair 3 (julia-first): rust    7.7923s  jl   15.1203s  ratio  1.940
+    pair 4 ( rust-first): rust    7.8382s  jl   15.4719s  ratio  1.974
+    ->   2296294 terms  median ratio  1.974  [paulistrings]
+  crossover at ~8.01e+04 terms  (inside the indistinguishable zone)
+wrote benchmarks/python/jl_performance/su4-curve/results.json
+wrote benchmarks/python/jl_performance/su4-curve/summary.json
+wrote figures to benchmarks/python/jl_performance/su4-curve
+### done in 13.4 min

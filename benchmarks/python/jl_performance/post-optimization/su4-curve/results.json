@@ -1,0 +1,657 @@
+[
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.01
+    },
+    "propagation_time_s": 0.008199986070394516,
+    "final_terms": 193,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 1416,
+    "expectation_value": 0.017932694859932187,
+    "absolute_error": null,
+    "peak_memory_kb": 40064.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-02",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 1.0971044689432996,
+      "ratio_jl_over_rust_per_pair": [
+        1.1376000739444576,
+        1.1255266573620313,
+        1.0871786760939084,
+        1.0929004525692934,
+        1.0971044689432996
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.01,
+        "min_abs_coeff_julia": 0.010000000000000002,
+        "one_ulp_delta": 1.734723475976807e-18,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.00791307701729238,
+        0.007932028034701943,
+        0.008199986070394516,
+        0.008314028033055365,
+        0.008305240073241293
+      ],
+      "memory_floor_kb": 38732.0,
+      "bytes_per_final_term": 7067.191709844559,
+      "bytes_per_peak_term": 963.2542372881356
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.01
+    },
+    "propagation_time_s": 0.009001917,
+    "final_terms": 193,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 1416,
+    "expectation_value": 0.017932694859932187,
+    "absolute_error": null,
+    "peak_memory_kb": 688524.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-02",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 1.0971044689432996,
+      "ratio_jl_over_rust_per_pair": [
+        1.1376000739444576,
+        1.1255266573620313,
+        1.0871786760939084,
+        1.0929004525692934,
+        1.0971044689432996
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.01,
+        "min_abs_coeff_julia": 0.010000000000000002,
+        "one_ulp_delta": 1.734723475976807e-18,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.009001917,
+        0.008927709,
+        0.00891485,
+        0.009086405,
+        0.009111716
+      ],
+      "memory_floor_kb": 629972.0,
+      "bytes_per_final_term": 310659.3160621762,
+      "bytes_per_peak_term": 42342.68926553673,
+      "julia_version": "1.12.6"
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.003
+    },
+    "propagation_time_s": 0.14786260295659304,
+    "final_terms": 7089,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 12924,
+    "expectation_value": -0.01099668859883634,
+    "absolute_error": null,
+    "peak_memory_kb": 46376.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=3.000e-03",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 0.6584217175493663,
+      "ratio_jl_over_rust_per_pair": [
+        0.6578377104150834,
+        0.6584217175493663,
+        0.7724880905584973,
+        0.592695860188987,
+        1.2221447446854445
+      ],
+      "sign_consistent": false,
+      "verdict": "indistinguishable",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.003,
+        "min_abs_coeff_julia": 0.0030000000000000005,
+        "one_ulp_delta": 4.336808689942018e-19,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.14843831001780927,
+        0.14786260295659304,
+        0.12299784703645855,
+        0.16008617298211902,
+        0.07843335694633424
+      ],
+      "memory_floor_kb": 38764.0,
+      "bytes_per_final_term": 1099.5469036535478,
+      "bytes_per_peak_term": 603.1173011451563
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.003
+    },
+    "propagation_time_s": 0.095856915,
+    "final_terms": 7089,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 12924,
+    "expectation_value": -0.010996688598836263,
+    "absolute_error": null,
+    "peak_memory_kb": 687672.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=3.000e-03",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 0.6584217175493663,
+      "ratio_jl_over_rust_per_pair": [
+        0.6578377104150834,
+        0.6584217175493663,
+        0.7724880905584973,
+        0.592695860188987,
+        1.2221447446854445
+      ],
+      "sign_consistent": false,
+      "verdict": "indistinguishable",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.003,
+        "min_abs_coeff_julia": 0.0030000000000000005,
+        "one_ulp_delta": 4.336808689942018e-19,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.097648318,
+        0.097355949,
+        0.095014372,
+        0.094882412,
+        0.095856915
+      ],
+      "memory_floor_kb": 630544.0,
+      "bytes_per_final_term": 8252.090844971082,
+      "bytes_per_peak_term": 4526.390591148252,
+      "julia_version": "1.12.6"
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.001
+    },
+    "propagation_time_s": 0.45241832197643816,
+    "final_terms": 84836,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 84836,
+    "expectation_value": -0.0030947264746490136,
+    "absolute_error": null,
+    "peak_memory_kb": 52140.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-03",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 1.4161768589567263,
+      "ratio_jl_over_rust_per_pair": [
+        1.4574444481952067,
+        1.4568566438034203,
+        1.410106540807215,
+        1.4161768589567263,
+        1.3784951080671985
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.001,
+        "min_abs_coeff_julia": 0.0010000000000000002,
+        "one_ulp_delta": 2.168404344971009e-19,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.43719735101331025,
+        0.4439209799747914,
+        0.45241832197643816,
+        0.4566257349215448,
+        0.4534896840341389
+      ],
+      "memory_floor_kb": 38784.0,
+      "bytes_per_final_term": 161.21156112970908,
+      "bytes_per_peak_term": 161.21156112970908
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.001
+    },
+    "propagation_time_s": 0.637958035,
+    "final_terms": 84836,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 84836,
+    "expectation_value": -0.0030947264746488887,
+    "absolute_error": null,
+    "peak_memory_kb": 745548.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-03",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 1.4161768589567263,
+      "ratio_jl_over_rust_per_pair": [
+        1.4574444481952067,
+        1.4568566438034203,
+        1.410106540807215,
+        1.4161768589567263,
+        1.3784951080671985
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.001,
+        "min_abs_coeff_julia": 0.0010000000000000002,
+        "one_ulp_delta": 2.168404344971009e-19,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        0.637190852,
+        0.646729229,
+        0.637958035,
+        0.646662799,
+        0.625133311
+      ],
+      "memory_floor_kb": 630480.0,
+      "bytes_per_final_term": 1388.9107454382574,
+      "bytes_per_peak_term": 1388.9107454382574,
+      "julia_version": "1.12.6"
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0003
+    },
+    "propagation_time_s": 1.8808847940526903,
+    "final_terms": 573826,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 573826,
+    "expectation_value": 0.003727133573757398,
+    "absolute_error": null,
+    "peak_memory_kb": 95184.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=3.000e-04",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 2.3256225229560332,
+      "ratio_jl_over_rust_per_pair": [
+        2.252086258574029,
+        2.310768562616305,
+        2.416664287623377,
+        2.3656091755581166,
+        2.3256225229560332
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.0003,
+        "min_abs_coeff_julia": 0.00030000000000000003,
+        "one_ulp_delta": 5.421010862427522e-20,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        1.9189030120614916,
+        1.8808847940526903,
+        1.8714533740421757,
+        1.8654922789428383,
+        1.8858839659951627
+      ],
+      "memory_floor_kb": 38916.0,
+      "bytes_per_final_term": 100.41098172616786,
+      "bytes_per_peak_term": 100.41098172616786
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0003
+    },
+    "propagation_time_s": 4.385854227,
+    "final_terms": 573826,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 573826,
+    "expectation_value": 0.0037271335737574024,
+    "absolute_error": null,
+    "peak_memory_kb": 1001808.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=3.000e-04",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 2.3256225229560332,
+      "ratio_jl_over_rust_per_pair": [
+        2.252086258574029,
+        2.310768562616305,
+        2.416664287623377,
+        2.3656091755581166,
+        2.3256225229560332
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.0003,
+        "min_abs_coeff_julia": 0.00030000000000000003,
+        "one_ulp_delta": 5.421010862427522e-20,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        4.321535105,
+        4.346289452,
+        4.522674535,
+        4.413025652,
+        4.385854227
+      ],
+      "memory_floor_kb": 630612.0,
+      "bytes_per_final_term": 662.4041155332801,
+      "bytes_per_peak_term": 662.4041155332801,
+      "julia_version": "1.12.6"
+    }
+  },
+  {
+    "engine": "paulistrings",
+    "engine_version": "0.1.0",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0001
+    },
+    "propagation_time_s": 5.2083715660264716,
+    "final_terms": 2296294,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 2296294,
+    "expectation_value": 0.003840421866402812,
+    "absolute_error": null,
+    "peak_memory_kb": 250792.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-04",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 2.920878741344047,
+      "ratio_jl_over_rust_per_pair": [
+        2.920878741344047,
+        2.9320191114081195,
+        2.938300382529716,
+        2.8885742148534597,
+        2.911102632204345
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.0001,
+        "min_abs_coeff_julia": 0.00010000000000000002,
+        "one_ulp_delta": 1.3552527156068805e-20,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        5.218221827992238,
+        5.198050129925832,
+        5.20694834808819,
+        5.2083715660264716,
+        5.300183706101961
+      ],
+      "memory_floor_kb": 38672.0,
+      "bytes_per_final_term": 94.59192943063911,
+      "bytes_per_peak_term": 94.59192943063911
+    }
+  },
+  {
+    "engine": "PauliPropagation.jl",
+    "engine_version": "0.8.2",
+    "n_qubits": 36,
+    "direction": "heisenberg",
+    "truncation": {
+      "min_abs_coeff": 0.0001
+    },
+    "propagation_time_s": 15.241793205,
+    "final_terms": 2296294,
+    "provenance": {
+      "commit": "0f0020724fc85bdd0c82de8773ed0272483aaf19",
+      "dirty": true,
+      "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+      "python_version": "3.11.11",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "library_versions": {
+        "paulistrings": "0.1.0"
+      },
+      "seeds": {
+        "su4_circuit": 20260831
+      },
+      "thread_count": 1,
+      "hostname": "ccqlin038",
+      "date": "2026-09-01"
+    },
+    "contraction_time_s": null,
+    "peak_terms": 2296294,
+    "expectation_value": 0.0038404218664027604,
+    "absolute_error": null,
+    "peak_memory_kb": 1703476.0,
+    "extra": {
+      "workload": "su4",
+      "label": "su4 eps=1.000e-04",
+      "rust_engine": "sorted",
+      "n_pairs": 5,
+      "median_ratio_jl_over_rust": 2.920878741344047,
+      "ratio_jl_over_rust_per_pair": [
+        2.920878741344047,
+        2.9320191114081195,
+        2.938300382529716,
+        2.8885742148534597,
+        2.911102632204345
+      ],
+      "sign_consistent": true,
+      "verdict": "paulistrings",
+      "mitigation": {
+        "min_abs_coeff_rust": 0.0001,
+        "min_abs_coeff_julia": 0.00010000000000000002,
+        "one_ulp_delta": 1.3552527156068805e-20,
+        "cutoff_is_dyadic": false,
+        "n_gates": 105
+      },
+      "wall_s_per_pair": [
+        15.241793205,
+        15.240782323,
+        15.299578323,
+        15.044767807,
+        15.429378738
+      ],
+      "memory_floor_kb": 629420.0,
+      "bytes_per_final_term": 478.9601610246772,
+      "bytes_per_peak_term": 478.9601610246772,
+      "julia_version": "1.12.6"
+    }
+  }
+]

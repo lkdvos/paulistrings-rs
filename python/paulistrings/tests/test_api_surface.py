@@ -16,6 +16,7 @@ def test_top_level_names():
     assert hasattr(paulistrings, "gates")
     assert hasattr(paulistrings, "noise")
     assert hasattr(paulistrings, "truncation")
+    assert hasattr(paulistrings, "DEFAULT_SMALL_SUM_THRESHOLD")
 
 
 def test_factory_module_names():
@@ -29,7 +30,7 @@ def test_factory_module_names():
         "depolarize2",
     ):
         assert hasattr(noise, name)
-    for name in ("coeff", "weight", "topn"):
+    for name in ("coeff", "weight", "topn", "approx_topn"):
         assert hasattr(truncation, name)
 
 

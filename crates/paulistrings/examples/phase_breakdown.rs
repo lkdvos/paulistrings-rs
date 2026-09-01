@@ -15,8 +15,8 @@
 //! ```bash
 //! cargo run --release --features phase-timing --example phase_breakdown -- \
 //!     [--n 1000000] [--qubits 128] [--threads 1,8,16,32] \
-//!     [--layers rotation_zz,cnot,gu2q,depolarizing,trotter] [--reps 8] \
-//!     [--seed 0xC0FFEE] [--format table|json|tsv]
+//!     [--layers rotation_zz,cnot,gu2q,su4,depolarizing,trotter] [--reps 8] \
+//!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -36,6 +36,29 @@
 //! `TROTTER_MAX_N`'s doc comment for the measurement. A capped cell prints
 //! a note to stderr.
 //!
+//! `--truncation` selects the [`TruncationPolicy`] every cell runs under,
+//! statically (one monomorphization per spec, so `keep_term` inlines into the
+//! merge exactly as it does in a real caller — a `dyn` policy would change the
+//! thing being measured):
+//!
+//! - `keep` (default) — `AlwaysKeep`, no filter and no finalize pass.
+//! - `coeff:<t>` — [`CoefficientThreshold`]`(t)`: a `keep_term` filter inside
+//!   the merge, and *no* `finalize_layer` work at all.
+//! - `topn:<N>` — [`TopN`]`(N)`: no `keep_term`, all the cost in
+//!   `finalize_layer` (three O(m) passes + a `select_nth_unstable`), which
+//!   lands in the probe's `finalize` row. `N` is absolute, so pick it *below*
+//!   the cell's steady-state term count — `TopN` returns immediately when
+//!   `len <= N` and would otherwise be measured as free. Pairing a `coeff:0.0`
+//!   run with a `topn:<N>` run at the same `--n` isolates the selection cost:
+//!   the former's `finalize` is zero by construction.
+//! - `atopn:<N>` — [`ApproxTopN`]`(N)`: the same shape of work as `topn`, but
+//!   an octave histogram and a threshold instead of a candidate array and a
+//!   selection, so `topn:<N>` versus `atopn:<N>` at one `--n` is the two
+//!   policies' `finalize` cost side by side *on the same binary*. Note the two
+//!   do not keep the same number of terms (`ApproxTopN` keeps `<= N`, short by
+//!   at most one octave's population), so the steady-state `m` differs a
+//!   little between the pair and the per-term figures are the ones to compare.
+//!
 //! Each `(layer, thread count)` cell runs the circuit twice inside a
 //! dedicated Rayon thread pool of that width: an untimed warm-up call
 //! (which, for the fanout-bounded channels, drives the input to its closed
@@ -53,11 +76,14 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
+use paulistrings::bucket::hash::B_MAX_BITS;
+use paulistrings::bucket::sum::DEFAULT_HASH_SEED;
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
-use paulistrings::test_support::{low_weight_sum, rand_sum};
+use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
+use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
+    propagate_with_scratch, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PhaseStats,
     TruncationPolicy,
 };
 
@@ -78,8 +104,12 @@ Options:
   --threads <csv>          Comma-separated thread counts (default: 1,8,16,32;
                             16 = the reference host's physical-core count)
   --layers <csv>           Comma-separated layers, from:
-                              rotation_zz, cnot, gu2q, depolarizing, trotter
-                            (default: rotation_zz,cnot,gu2q,depolarizing,trotter)
+                              rotation_zz, cnot, gu2q, su4, depolarizing,
+                              trotter
+                            (default: rotation_zz,cnot,gu2q,depolarizing,trotter
+                            — su4 is opt-in, being the heaviest cell per --n:
+                            a dense 16x16 PTM, so ~16x the fanout of gu2q's
+                            sqrt(SWAP) and a ~16x larger closed key set)
   --reps <usize>           Channel repetitions per cell, ignored by trotter
                             (default: 8)
                             NOTE: trotter also ignores --n above 100 (see
@@ -89,6 +119,36 @@ Options:
                             large --n has been measured driving it to tens
                             of GB of RSS.
   --seed <u64|0xHEX>       RNG seed for the input sum (default: 0xC0FFEE)
+  --hash-seed <u64|0xHEX>  Seed for the partitioning hash H (default: the
+                            library's DEFAULT_HASH_SEED). Changing it re-draws
+                            H's rows, which changes the rank of the layer's
+                            bucket-delta span and therefore the coset
+                            dimension `r` — see
+                            research/notes/2026-09-01-bucket-cliff.md.
+  --bucket-bits <u8>       Pre-refine the input sum to this many bucket bits
+                            (B = 2^bits) before propagating. 0 (default)
+                            leaves the sum as built, i.e. the engine's own
+                            `desired_bits` policy alone decides B. Because
+                            `rebucket` is grow-only, a value above what the
+                            policy would pick sticks for the whole run: this
+                            is the knob that measures what raising
+                            `desired_bits`'s parallelism floor would buy,
+                            without changing the policy.
+  --truncation <spec>      Truncation policy for every cell, one of:
+                              keep          no truncation (default)
+                              coeff:<t>     CoefficientThreshold(t): a
+                                            keep_term filter in the merge, no
+                                            finalize_layer pass
+                              topn:<N>      TopN(N): all cost in
+                                            finalize_layer. N is absolute and
+                                            must be BELOW the cell's
+                                            steady-state term count, else
+                                            TopN returns immediately.
+                              atopn:<N>     ApproxTopN(N): the same, with a
+                                            histogram threshold instead of a
+                                            selection. Keeps <= N, so its
+                                            steady-state m differs from
+                                            topn:<N>'s -- compare per-term.
   --format table|json|tsv  Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE,
                            regardless of --format (input for scripts/perf-viz.py)
@@ -100,6 +160,7 @@ enum LayerKind {
     RotationZz,
     Cnot,
     Gu2q,
+    Su4,
     Depolarizing,
     Trotter,
 }
@@ -110,6 +171,7 @@ impl LayerKind {
             LayerKind::RotationZz => "rotation_zz",
             LayerKind::Cnot => "cnot",
             LayerKind::Gu2q => "gu2q",
+            LayerKind::Su4 => "su4",
             LayerKind::Depolarizing => "depolarizing",
             LayerKind::Trotter => "trotter",
         }
@@ -120,10 +182,11 @@ impl LayerKind {
             "rotation_zz" => Ok(LayerKind::RotationZz),
             "cnot" => Ok(LayerKind::Cnot),
             "gu2q" => Ok(LayerKind::Gu2q),
+            "su4" => Ok(LayerKind::Su4),
             "depolarizing" => Ok(LayerKind::Depolarizing),
             "trotter" => Ok(LayerKind::Trotter),
             other => Err(format!(
-                "unknown layer '{other}' (expected one of: rotation_zz, cnot, gu2q, \
+                "unknown layer '{other}' (expected one of: rotation_zz, cnot, gu2q, su4, \
                  depolarizing, trotter)"
             )),
         }
@@ -147,13 +210,74 @@ enum Format {
     Tsv,
 }
 
+/// Which [`TruncationPolicy`] every cell runs under. Kept as a *spec* rather
+/// than a boxed policy so `run` can dispatch it into one monomorphization per
+/// variant: `keep_term` has to inline into the merge for the measurement to
+/// mean anything.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TruncSpec {
+    Keep,
+    Coeff(f64),
+    TopN(usize),
+    ApproxTopN(usize),
+}
+
+impl TruncSpec {
+    /// The spec as it was written on the command line — echoed into every
+    /// output format so a raw log identifies its own policy.
+    fn label(self) -> String {
+        match self {
+            TruncSpec::Keep => "keep".to_string(),
+            TruncSpec::Coeff(t) => format!("coeff:{t}"),
+            TruncSpec::TopN(n) => format!("topn:{n}"),
+            TruncSpec::ApproxTopN(n) => format!("atopn:{n}"),
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        let t = s.trim();
+        if t == "keep" {
+            return Ok(TruncSpec::Keep);
+        }
+        if let Some(v) = t.strip_prefix("coeff:") {
+            let thr = v.parse::<f64>().map_err(|_| {
+                format!("--truncation coeff:<t> expects a float threshold, got '{v}'")
+            })?;
+            if !thr.is_finite() || thr < 0.0 {
+                return Err(format!(
+                    "--truncation coeff:<t> expects a finite, non-negative threshold, got '{v}'"
+                ));
+            }
+            return Ok(TruncSpec::Coeff(thr));
+        }
+        if let Some(v) = t.strip_prefix("topn:") {
+            return Ok(TruncSpec::TopN(parse_usize(v, "--truncation topn:<N>")?));
+        }
+        if let Some(v) = t.strip_prefix("atopn:") {
+            return Ok(TruncSpec::ApproxTopN(parse_usize(
+                v,
+                "--truncation atopn:<N>",
+            )?));
+        }
+        Err(format!(
+            "--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N>, got '{s}'"
+        ))
+    }
+}
+
 struct Config {
     n: usize,
     qubits: usize,
+    /// Seed for the partitioning hash `H`. See `--hash-seed`.
+    hash_seed: u64,
+    /// Bucket bits to pre-refine the input sum to; 0 = leave it to the
+    /// engine's own `desired_bits` policy. See `--bucket-bits`.
+    bucket_bits: u8,
     threads: Vec<usize>,
     layers: Vec<LayerKind>,
     reps: usize,
     seed: u64,
+    truncation: TruncSpec,
     format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of
     /// the stdout `--format` — the input `scripts/perf-viz.py` renders.
@@ -210,6 +334,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut layers: Vec<LayerKind> = default_layers();
     let mut reps: usize = 8;
     let mut seed: u64 = 0xC0FFEE;
+    let mut hash_seed: u64 = DEFAULT_HASH_SEED;
+    let mut bucket_bits: u8 = 0;
+    let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
 
@@ -226,6 +353,17 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--layers" => layers = parse_csv_layers(value)?,
             "--reps" => reps = parse_usize(value, "--reps")?,
             "--seed" => seed = parse_seed(value)?,
+            "--hash-seed" => hash_seed = parse_seed(value)?,
+            "--bucket-bits" => {
+                let b = parse_usize(value, "--bucket-bits")?;
+                if b > B_MAX_BITS as usize {
+                    return Err(format!(
+                        "--bucket-bits must be at most B_MAX_BITS ({B_MAX_BITS}), got {b}"
+                    ));
+                }
+                bucket_bits = b as u8;
+            }
+            "--truncation" => truncation = TruncSpec::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -252,10 +390,13 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     Ok(Config {
         n,
         qubits,
+        hash_seed,
+        bucket_bits,
         threads,
         layers,
         reps,
         seed,
+        truncation,
         format,
         json_out,
     })
@@ -292,6 +433,25 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
             [zero, zero, zero, one],
         ],
     )
+}
+
+/// One fixed Haar-random SU(4) block on `(q0, q1)` — the probe's stand-in for
+/// the *general matrix-gate* path.
+///
+/// [`sqrt_swap`] is a poor proxy for that path in two ways, both measured: its
+/// PTM is sparse (steady-state fanout 3.65 rows gathered per input term at
+/// `--qubits 128`, against a dense PTM's 16), and `sqrt(SWAP)^2 = SWAP` is
+/// Clifford, so repeating it drives the term count into a **period-2 cycle**
+/// (10 000 -> 32 503 -> 10 000 ... at `--n 10000`) rather than to a fixed
+/// point. A generic SU(4) has neither property: every `U^k` stays generic, so
+/// the PTM stays dense and the closed key set is a fixed ~16x the number of
+/// distinct off-support key patterns.
+///
+/// The matrix is `test_support::haar_su4_matrix` — shared with the crate's
+/// tests and `examples/delta_span_diagnostics.rs`, which need the same dense
+/// PTM. See its doc comment for provenance.
+fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
+    GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }
 
 /// Qubit count of the fixed [`trotter_circuit`] chain — also the qubit
@@ -368,6 +528,13 @@ fn build_circuit<const W: usize>(layer: LayerKind, qubits: usize, reps: usize) -
             }
             c
         }
+        LayerKind::Su4 => {
+            let mut c = Circuit::<W>::new(qubits);
+            for _ in 0..reps {
+                c.push(haar_su4_block(0, 1));
+            }
+            c
+        }
         LayerKind::Depolarizing => {
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
@@ -388,11 +555,14 @@ fn build_circuit<const W: usize>(layer: LayerKind, qubits: usize, reps: usize) -
 
 struct CellResult {
     layer: &'static str,
+    truncation: String,
     threads: usize,
     n: usize,
     reps: usize,
     qubits: usize,
     seed: u64,
+    hash_seed: u64,
+    bucket_bits: u8,
     wall_ns: u64,
     stats: PhaseStats,
     vmrss_kb: u64,
@@ -424,10 +594,18 @@ fn parse_kb_field(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> CellResult {
+fn run_cell<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: TruncationPolicy<W>,
+{
     // `trotter` is 64 *distinct* generators applied once each, not one
     // generator repeated — the latter provably closes to a bounded key set,
-    // which is what keeps rotation_zz/cnot/gu2q bounded here. A dense input
+    // which is what keeps rotation_zz/cnot/gu2q/su4 bounded here. A dense input
     // can anticommute with most of 64 distinct generators and blow up
     // combinatorially (`benches/pauli_ops.rs` puts it at "up to 2^64", and
     // benches only low-weight inputs for that reason): a dense `rand_sum`
@@ -450,6 +628,22 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
         }
         _ => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
     };
+    // `--hash-seed` re-draws H's rows. It is *not* cosmetic: the rank of the
+    // layer's bucket-delta span `h(D)` — hence the coset dimension `r`, hence
+    // the sort's comparison count — depends on which rows H happens to have
+    // (research/notes/2026-09-01-bucket-cliff.md). `with_hash` rescatters at
+    // zero bucket bits; `--bucket-bits` then refines, and the engine's
+    // grow-only `rebucket` keeps whatever it finds.
+    let mut base = if cfg.hash_seed == DEFAULT_HASH_SEED {
+        base
+    } else {
+        let nq = base.num_qubits();
+        base.with_hash(Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
+    };
+    while base.hash().bits() < cfg.bucket_bits {
+        base.refine();
+    }
+    let base = base;
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps);
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -460,14 +654,15 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
     let (steady_n, wall_ns, stats) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
-        // Untimed warm-up: for rotation_zz/cnot/gu2q this drives the input
-        // to its closed key set, so the timed call below measures
+        // Untimed warm-up: for rotation_zz/cnot/gu2q/su4 this drives the input
+        // to its closed key set (or, under a truncating policy, to the
+        // steady state that policy admits), so the timed call below measures
         // steady-state cost rather than first-layer growth; for
         // depolarizing/trotter it just warms scratch/buffer capacity.
         let warmed = propagate_with_scratch(
             &circuit,
             base.clone(),
-            &AlwaysKeep,
+            policy,
             Direction::Forward,
             &mut scratch,
         );
@@ -475,13 +670,8 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
 
         let steady_n = warmed.len();
         let start = Instant::now();
-        let output = propagate_with_scratch(
-            &circuit,
-            warmed,
-            &AlwaysKeep,
-            Direction::Forward,
-            &mut scratch,
-        );
+        let output =
+            propagate_with_scratch(&circuit, warmed, policy, Direction::Forward, &mut scratch);
         let wall_ns = start.elapsed().as_nanos() as u64;
         let stats = scratch.take_stats();
         std::hint::black_box(&output);
@@ -493,11 +683,14 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
 
     CellResult {
         layer: layer.name(),
+        truncation: cfg.truncation.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
+        hash_seed: cfg.hash_seed,
+        bucket_bits: cfg.bucket_bits,
         wall_ns,
         stats,
         vmrss_kb,
@@ -510,15 +703,17 @@ fn run_cell<const W: usize>(layer: LayerKind, threads: usize, cfg: &Config) -> C
 // ---------------------------------------------------------------------
 
 /// Always printed first for every cell, in every format: `n=` and
-/// `layers=` are a contract other scripts grep for.
+/// `layers=` are a contract other scripts grep for. `trunc=` is appended
+/// last so those greps keep matching unchanged.
 fn print_cell_line(cell: &CellResult) {
     println!(
-        "cell layer={} threads={} n={} layers={} wall_ms={:.3}",
+        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={}",
         cell.layer,
         cell.threads,
         cell.n,
         cell.stats.layers,
         cell.wall_ns as f64 / 1e6,
+        cell.truncation,
     );
 }
 
@@ -634,7 +829,8 @@ fn print_json(cell: &CellResult) {
 fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
     format!(
-        "{{\"layer\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\"qubits\":{},\"seed\":{},\
+        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
+         \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
@@ -642,11 +838,14 @@ fn json_line(cell: &CellResult) -> String {
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
          \"vmhwm_kb\":{}}}",
         cell.layer,
+        cell.truncation,
         cell.threads,
         cell.n,
         cell.reps,
         cell.qubits,
         cell.seed,
+        cell.hash_seed,
+        cell.bucket_bits,
         cell.wall_ns,
         s.rebucket_ns,
         s.prepare_ns,
@@ -677,7 +876,7 @@ fn json_line(cell: &CellResult) -> String {
 }
 
 const TSV_HEADER: &str =
-    "layer\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
+    "layer\ttruncation\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
 swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
 terms_in\tterms_out\tvmrss_kb\tvmhwm_kb";
@@ -686,8 +885,9 @@ fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
+        cell.truncation,
         cell.threads,
         cell.n,
         cell.reps,
@@ -722,7 +922,23 @@ fn print_tsv_row(cell: &CellResult) {
     );
 }
 
+/// Dispatch `--truncation` into exactly one monomorphization of
+/// [`run_cells`], so the policy's `keep_term` inlines into the merge the way a
+/// real caller's does. A `&dyn TruncationPolicy` would be one line shorter and
+/// would change the thing being measured.
 fn run<const W: usize>(cfg: &Config) {
+    match cfg.truncation {
+        TruncSpec::Keep => run_cells::<W, _>(cfg, &AlwaysKeep),
+        TruncSpec::Coeff(t) => run_cells::<W, _>(cfg, &CoefficientThreshold(t)),
+        TruncSpec::TopN(n) => run_cells::<W, _>(cfg, &TopN(n)),
+        TruncSpec::ApproxTopN(n) => run_cells::<W, _>(cfg, &ApproxTopN(n)),
+    }
+}
+
+fn run_cells<const W: usize, P>(cfg: &Config, policy: &P)
+where
+    P: TruncationPolicy<W>,
+{
     if cfg.format == Format::Tsv {
         println!("{TSV_HEADER}");
     }
@@ -740,7 +956,7 @@ fn run<const W: usize>(cfg: &Config) {
 
     for &layer in &cfg.layers {
         for &threads in &cfg.threads {
-            let cell = run_cell::<W>(layer, threads, cfg);
+            let cell = run_cell::<W, P>(layer, threads, cfg, policy);
 
             print_cell_line(&cell);
             match cfg.format {

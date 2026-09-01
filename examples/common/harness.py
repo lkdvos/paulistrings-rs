@@ -492,6 +492,7 @@ def run_propagation(
     oracle_value: float | None = None,
     engine: str = "paulistrings",
     engine_version: str | None = None,
+    propagate_engine: str | None = None,
     threads: int | None = None,
     seeds: Mapping[str, int] | None = None,
     library_versions: Mapping[str, str] | None = None,
@@ -534,6 +535,15 @@ def run_propagation(
         Reference value; when given together with a contraction, the record
         carries `absolute_error`. Plan §7 rule 1: every numeric claim comes
         from an oracle or a provenance-tagged reference file.
+    `propagate_engine`
+        `PauliSum.propagate`'s `engine` kwarg — `"sorted"`, `"auto"` or
+        `"direct"` — forwarded to *both* the warmup and the timed pass so the
+        two are the same code path. `None` (the default) does not pass the
+        kwarg at all, which is the binding's `"sorted"` default and therefore
+        byte-for-byte today's behaviour: an existing caller cannot be moved
+        onto the direct path by accident. When given it is recorded in
+        `RunRecord.extra["propagate_engine"]`, since a timing measured on a
+        different layer engine is not comparable with one that was not.
     `threads`
         `1` asserts the single-thread pin before doing anything else
         (`assert_single_threaded`); any other value is recorded as-is, for a
@@ -560,9 +570,16 @@ def run_propagation(
     policy_obj, truncation_labels = _policy_and_labels(policy)
     baseline_peak_kb = peak_memory_kb()
 
+    # Omitted entirely when `propagate_engine` is None, rather than passed as
+    # the string `"sorted"`: the two are the same selection, but not passing it
+    # keeps this call identical to what every existing caller already issues.
+    engine_kwargs: dict[str, Any] = {}
+    if propagate_engine is not None:
+        engine_kwargs["engine"] = propagate_engine
+
     if warmup:
         warm_evolved, _ = observable.propagate_with_stats(
-            circuit, policy_obj, direction=direction
+            circuit, policy_obj, direction=direction, **engine_kwargs
         )
         if state is not None:
             warm_evolved.expectation(state)
@@ -572,7 +589,7 @@ def run_propagation(
 
     start = time.perf_counter()
     evolved, stats = observable.propagate_with_stats(
-        circuit, policy_obj, direction=direction
+        circuit, policy_obj, direction=direction, **engine_kwargs
     )
     propagation_time_s = time.perf_counter() - start
 
@@ -608,6 +625,8 @@ def run_propagation(
         record_extra.setdefault("rss_kb_after", rss_kb)
     if state is not None:
         record_extra.setdefault("state", state)
+    if propagate_engine is not None:
+        record_extra.setdefault("propagate_engine", propagate_engine)
     observed = observed_thread_count()
     if observed is not None:
         record_extra.setdefault("observed_threads", observed)

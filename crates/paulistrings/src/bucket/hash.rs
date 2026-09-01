@@ -602,6 +602,190 @@ mod tests {
         assert!(min > mean / 2, "min load {min} vs mean {mean}");
     }
 
+    // ---- rank of `h` on a channel's delta space ----
+    //
+    // These pin the mechanism in `research/notes/2026-09-01-bucket-cliff.md`.
+    // A channel supported on qubits `{i, j}` has a 4-dimensional key-delta
+    // space `span{X_i, Z_i, X_j, Z_j}`; the engine's coset dimension is
+    // `r = rank(h(D))` (`engine::coset::Gf2Span::r`), and the per-run sort's
+    // comparison count collapses to its `log2(fanout)` floor exactly when
+    // `r` is full (4). `r` is *not* a property of the channel alone: it
+    // depends on which rows `H` happens to have, so it moves with the hash
+    // seed and — because `Gf2Hash::new` draws `2W` words per row — with `W`.
+
+    /// Occupancy balance is not the whole story: a dense random `H` can still
+    /// fail to *separate* a two-qubit channel's four delta generators, and
+    /// then two distinct local deltas share one bucket delta.
+    #[test]
+    fn support_delta_rank_is_usually_full_but_not_always() {
+        // Deterministic given the seed, so these counts are not flaky.
+        let h = Gf2Hash::<2>::new(128, 7, crate::bucket::sum::DEFAULT_HASH_SEED);
+        let mut deficient = 0usize;
+        let mut total = 0usize;
+        for i in 0..128u32 {
+            for j in (i + 1)..128u32 {
+                total += 1;
+                if crate::test_support::support_delta_rank(&h, &[i, j]) < 4 {
+                    deficient += 1;
+                }
+            }
+        }
+        // ~10% of placements at the default bucket-count floor (B = 128).
+        // The bound is loose on purpose: it pins the order of magnitude, which
+        // is the load-bearing fact, not the exact draw.
+        assert_eq!(total, 8128);
+        assert!(
+            (200..2000).contains(&deficient),
+            "expected O(10%) rank-deficient support pairs at 7 bucket bits, got {deficient}/{total}"
+        );
+    }
+
+    /// Rank is monotone in the number of active bucket bits, since the active
+    /// hash is a *prefix* of one fixed matrix: refining can only separate
+    /// deltas that were colliding, never merge separated ones.
+    #[test]
+    fn support_delta_rank_is_monotone_in_bits() {
+        for seed in [0x1u64, 0xBEEF, crate::bucket::sum::DEFAULT_HASH_SEED] {
+            let mut last = 0usize;
+            for bits in 0..=12u8 {
+                let h = Gf2Hash::<2>::new(128, bits, seed);
+                let r = crate::test_support::support_delta_rank(&h, &[0, 1]);
+                assert!(
+                    r >= last && r <= 4,
+                    "seed {seed:#x}: rank went {last} -> {r} at bits {bits}"
+                );
+                assert!(r <= bits as usize, "rank {r} exceeds bits {bits}");
+                last = r;
+            }
+        }
+    }
+
+    /// The `q = 64 -> q = 65` flip the Phase-1 fact sheet found, pinned at its
+    /// root: it is not the near-empty second word, it is that `Gf2Hash::new`
+    /// draws `2W` words per row, so `W = 1` and `W = 2` get *unrelated* row
+    /// bit patterns in word 0 and their delta-span ranks are independent
+    /// draws. At the default seed, the su4 probe's support `(0, 1)` happens to
+    /// be rank-deficient at `W = 1` and full-rank at `W = 2`, for every bucket
+    /// count the engine's own policy reaches.
+    #[test]
+    fn support_delta_rank_differs_across_the_word_boundary_at_the_default_seed() {
+        let seed = crate::bucket::sum::DEFAULT_HASH_SEED;
+        for bits in 7..=9u8 {
+            let w1 = Gf2Hash::<1>::new(64, bits, seed);
+            let w2 = Gf2Hash::<2>::new(65, bits, seed);
+            assert_eq!(
+                crate::test_support::support_delta_rank(&w1, &[0, 1]),
+                3,
+                "W=1/q=64 at {bits} bits: expected the deficient rank the fact sheet measured"
+            );
+            assert_eq!(
+                crate::test_support::support_delta_rank(&w2, &[0, 1]),
+                4,
+                "W=2/q=65 at {bits} bits: expected full rank"
+            );
+        }
+        // The masking is not what does it: at `W = 2` only 130 of 256 columns
+        // are live at q = 65, and the rank is full anyway.
+        let w2_wide = Gf2Hash::<2>::new(128, 7, seed);
+        assert_eq!(
+            crate::test_support::support_delta_rank(&w2_wide, &[0, 1]),
+            4
+        );
+    }
+
+    /// **The mechanism.** A support delta cannot reorder a bucket's key column
+    /// exactly when `h` separates the support's delta space.
+    ///
+    /// Why it matters: the engine's per-run "rest" stream is a concatenation of
+    /// blocks `{v ⊕ d : v ∈ bucket}`, one per non-identity delta `d`, and
+    /// `merge::sort_rows_with_scratch` is a *stable* sort chosen for its run
+    /// adaptivity. At full delta rank each bucket holds at most one of the
+    /// `2^(2k)` local variants of any off-support pattern, so no two of its
+    /// keys differ only inside the support, so XOR-by-`d` preserves the
+    /// column's order and every block arrives already ascending. One rank short
+    /// and each bucket holds *two* such variants — adjacent in key order,
+    /// differing only in the support — and half the deltas invert every such
+    /// adjacent pair, shattering the block into runs of ~2.
+    #[test]
+    fn support_delta_preserves_bucket_order_iff_the_delta_span_is_full_rank() {
+        assert!(!order_broken_by_some_delta::<2>(128, 7, &[0, 1]));
+        assert!(order_broken_by_some_delta::<1>(64, 7, &[0, 1]));
+    }
+
+    /// Partition a *closed* key set under `h`, then check every non-identity
+    /// support delta against every bucket's (ascending) key column. Returns
+    /// `true` if any delta reorders any bucket.
+    ///
+    /// The key set has to be the closed one — every off-support pattern paired
+    /// with all `2^(2k)` local patterns — because that is the fixed point a
+    /// repeated dense-PTM layer drives the sum to, and it is precisely the
+    /// structure that puts local variants of one pattern in the same bucket
+    /// when the rank is short. Keys drawn uniformly at random over the whole
+    /// space would essentially never contain such a pair and the effect would
+    /// be invisible.
+    fn order_broken_by_some_delta<const W: usize>(
+        num_qubits: usize,
+        bits: u8,
+        support: &[u32],
+    ) -> bool {
+        let h = Gf2Hash::<W>::new(num_qubits, bits, crate::bucket::sum::DEFAULT_HASH_SEED);
+        // Enumerate the support's delta space: one bit per (qubit, x-or-z).
+        let gens: Vec<PauliString<W>> = support
+            .iter()
+            .flat_map(|&q| [PauliString::<W>::x(q), PauliString::<W>::z(q)])
+            .collect();
+        let local = |combo: usize| -> PauliString<W> {
+            let mut d = PauliString::<W> {
+                x: [0u64; W],
+                z: [0u64; W],
+            };
+            for (g, gen) in gens.iter().enumerate() {
+                if combo >> g & 1 == 1 {
+                    d = xor(&d, gen);
+                }
+            }
+            d
+        };
+        let mut rng = Xs64::new(0xD17A);
+        let mut buckets: Vec<Vec<([u64; W], [u64; W])>> = vec![Vec::new(); h.num_buckets()];
+        for _ in 0..2_000 {
+            // A random off-support pattern, then its whole local orbit.
+            let mut rest = rand_key::<W>(&mut rng, num_qubits);
+            for &q in support {
+                let (w, bit) = ((q / 64) as usize, 1u64 << (q % 64));
+                rest.x[w] &= !bit;
+                rest.z[w] &= !bit;
+            }
+            for combo in 0..(1usize << gens.len()) {
+                let p = xor(&rest, &local(combo));
+                buckets[h.bucket_of_pauli(&p) as usize].push((p.x, p.z));
+            }
+        }
+        for cols in buckets.iter_mut() {
+            cols.sort_unstable();
+            cols.dedup();
+            for combo in 1..(1usize << gens.len()) {
+                let d = local(combo);
+                let translated: Vec<([u64; W], [u64; W])> = cols
+                    .iter()
+                    .map(|(x, z)| {
+                        let mut kx = *x;
+                        let mut kz = *z;
+                        for w in 0..W {
+                            kx[w] ^= d.x[w];
+                            kz[w] ^= d.z[w];
+                        }
+                        (kx, kz)
+                    })
+                    .collect();
+                if translated.windows(2).any(|w| w[1] < w[0]) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn occupancy_is_balanced_on_dense_keys() {
         let h = Gf2Hash::<2>::new(128, 8, 0x0CC2);

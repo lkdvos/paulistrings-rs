@@ -8,8 +8,9 @@ use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
-    propagate, propagate_with_scratch, Direction, LayerScratch, PauliAxis,
-    PauliSum as CorePauliSum, ProductBasis, ProductState, StabilizerState, TermTrace,
+    propagate_with_options, propagate_with_scratch_and_options, Direction, EngineSelection,
+    LayerScratch, PauliAxis, PauliSum as CorePauliSum, ProductBasis, ProductState,
+    PropagateOptions, StabilizerState, TermTrace, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -384,6 +385,37 @@ fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     }
 }
 
+/// `"sorted"` (the default when `None`), `"auto"` or `"direct"`, paired with an
+/// optional small-sum threshold, as a core [`PropagateOptions`].
+///
+/// `None`/`None` is `PropagateOptions::default()` exactly, which the core
+/// documents as bit-for-bit today's `propagate` — so the kwargs are additive and
+/// omitting them changes nothing. The parse happens once at the boundary,
+/// outside the width dispatch and every loop.
+///
+/// Shared by `propagate` and `propagate_with_stats` so the accepted spellings
+/// and the error message cannot drift apart, exactly as `parse_direction` is.
+fn parse_engine(
+    engine: Option<&str>,
+    small_sum_threshold: Option<usize>,
+) -> PyResult<PropagateOptions> {
+    let engine = match engine.unwrap_or("sorted") {
+        "sorted" => EngineSelection::SortedOnly,
+        "auto" => EngineSelection::Auto,
+        "direct" => EngineSelection::SmallSumDirect,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "engine must be 'sorted', 'auto', or 'direct', got {:?}",
+                other
+            )))
+        }
+    };
+    Ok(PropagateOptions {
+        engine,
+        small_sum_threshold: small_sum_threshold.unwrap_or(DEFAULT_SMALL_SUM_THRESHOLD),
+    })
+}
+
 /// Both propagation entry points require the sum and the circuit to agree on
 /// the qubit count (they would otherwise be monomorphized at different widths,
 /// which the width dispatch cannot pair up).
@@ -715,18 +747,47 @@ impl PauliSum {
     /// per-term filtering is applied (the engine's merge phase still drops
     /// exact-zero terms).
     ///
+    /// `engine` picks the layer engine, and defaults to the bucketed sorting
+    /// engine at every term count — today's behaviour, unchanged:
+    ///
+    /// | `engine` | layers on the small-sum direct path |
+    /// |---|---|
+    /// | `"sorted"` (default) | none |
+    /// | `"auto"` | the leading ones, while the sum is within `small_sum_threshold` **and** the policy has no layer pass |
+    /// | `"direct"` | the leading ones, while the sum is within `small_sum_threshold`, whatever the policy |
+    ///
+    /// The direct path applies each layer term by term into a hash map, skipping
+    /// the bucketed machinery and its per-layer fixed cost; it is 1.5–2.4× faster
+    /// below a few hundred terms and slower above a few thousand, which is what
+    /// `small_sum_threshold` (default 2048, `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD`)
+    /// prices. The transition is one-way: once a layer leaves the sum above the
+    /// threshold the rest of the circuit runs on the sorting engine. Entry is
+    /// re-decided on every call, so a Trotter driver stepping a small observable
+    /// through many short circuits gets it each time.
+    ///
+    /// Only the *speed* differs. Both engines apply the same truncation in the
+    /// same place and emit the same per-layer term counts and progress records;
+    /// the results agree to floating-point tolerance, since equal-key summation
+    /// order is unspecified (ARCHITECTURE.md §Determinism). `"auto"` declines a
+    /// policy with a layer pass — `topn`, `approx_topn`, or an `&` composition
+    /// containing one — because the round trip through a materialized sum would
+    /// eat the win; `"direct"` takes it anyway, and stays correct.
+    ///
     /// The GIL is released for the duration of the propagation, so Python
     /// threads — including `logging` handlers draining the engine's per-layer
     /// progress records — run while a long simulation is in flight.
-    #[pyo3(signature = (circuit, policy=None, direction=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None))]
     fn propagate(
         &self,
         py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
+        engine: Option<&str>,
+        small_sum_threshold: Option<usize>,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
+        let options = parse_engine(engine, small_sum_threshold)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
@@ -748,7 +809,13 @@ impl PauliSum {
                 Ok(for_each_width_propagate!(
                     &self.inner,
                     &circuit.inner,
-                    |s, c, W| propagate(c, s.clone(), &SpecPolicy::<W>(spec), dir),
+                    |s, c, W| propagate_with_options(
+                        c,
+                        s.clone(),
+                        &SpecPolicy::<W>(spec),
+                        dir,
+                        options
+                    ),
                     else {
                         // Same num_qubits but different widths is impossible
                         // because both width pickers map num_qubits to the
@@ -773,15 +840,23 @@ impl PauliSum {
     ///
     /// See `PropagationStats.peak_terms` for what "peak" does and does not
     /// mean.
-    #[pyo3(signature = (circuit, policy=None, direction=None))]
+    ///
+    /// `engine` and `small_sum_threshold` work exactly as in `propagate`, and
+    /// the recorded counts are the same records in the same order whichever
+    /// engine ran the layer — which is what makes this the way to check the two
+    /// engines against each other.
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None))]
     fn propagate_with_stats(
         &self,
         py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
+        engine: Option<&str>,
+        small_sum_threshold: Option<usize>,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
+        let options = parse_engine(engine, small_sum_threshold)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
@@ -801,12 +876,13 @@ impl PauliSum {
                     |s, c, W| {
                         let mut scratch = LayerScratch::<W>::new();
                         scratch.enable_term_trace();
-                        let out = propagate_with_scratch(
+                        let out = propagate_with_scratch_and_options(
                             c,
                             s.clone(),
                             &SpecPolicy::<W>(spec),
                             dir,
                             &mut scratch,
+                            options,
                         );
                         trace = scratch.take_term_trace();
                         out

@@ -1,0 +1,42 @@
+
+### bench_jl_performance start 2026-09-01 06:35:25
+    pairs=3 pilot=False sections=curves
+
+=== curve: kicked-Ising, heavy-hex 127q, 20 Trotter steps, theta_h = 7pi/32 (saturation falsification test) ===
+    The saturation falsification test for the 5-step curve's ratio decay (jl_performance/README.md, 'Hypothesis'). Same circuit family, same observable Z_62 and theta_zz = -pi/2, but 20 Trotter steps instead of 5 — 5420 channels (20 x (127 rx + 144 ZZ)) — so that ~2-3e6 terms is far from the reachable Pauli set's closure instead of at it. If the ratio keeps rising with the term count and jl's per-term cost stays flat, the decay was a saturation regime; if it decays here too, it is a large-m property of this engine. Benchmark C's angle and depth, whose 5420 per-layer counts it already proved identical at 2^-14.
+    free RAM: 240 GiB
+  kicked_ising_deep eps=3.906e-03: parity gate ...
+    parity OK: 5420 layers identical, 363 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.3391s  jl    0.1154s  ratio  0.340
+    pair 1 (julia-first): rust    0.3285s  jl    0.1252s  ratio  0.381
+    pair 2 ( rust-first): rust    0.3282s  jl    0.1297s  ratio  0.395
+    ->       363 terms  median ratio  0.381  [julia]
+  kicked_ising_deep eps=9.766e-04: parity gate ...
+    parity OK: 5420 layers identical, 8046 terms, |dE| = 5.55e-17
+    pair 0 ( rust-first): rust    1.2233s  jl    1.7489s  ratio  1.430
+    pair 1 (julia-first): rust    1.2034s  jl    1.7984s  ratio  1.494
+    pair 2 ( rust-first): rust    1.2056s  jl    1.7628s  ratio  1.462
+    ->      8046 terms  median ratio  1.462  [paulistrings]
+  kicked_ising_deep eps=2.441e-04: parity gate ...
+    parity OK: 5420 layers identical, 138220 terms, |dE| = 2.78e-17
+    pair 0 ( rust-first): rust   14.8884s  jl   33.4043s  ratio  2.244
+    pair 1 (julia-first): rust   15.0884s  jl   34.3147s  ratio  2.274
+    pair 2 ( rust-first): rust   14.8869s  jl   33.1526s  ratio  2.227
+    ->    138220 terms  median ratio  2.244  [paulistrings]
+  kicked_ising_deep eps=1.221e-04: parity gate ...
+    parity OK: 5420 layers identical, 579312 terms, |dE| = 2.22e-16
+    pair 0 ( rust-first): rust   54.9885s  jl  121.6237s  ratio  2.212
+    pair 1 (julia-first): rust   55.3605s  jl  125.7296s  ratio  2.271
+    pair 2 ( rust-first): rust   55.1816s  jl  121.5367s  ratio  2.202
+    ->    579312 terms  median ratio  2.212  [paulistrings]
+  kicked_ising_deep eps=6.104e-05: parity gate ...
+    parity OK: 5420 layers identical, 2441936 terms, |dE| = 5.55e-17
+    pair 0 ( rust-first): rust  201.9725s  jl  443.6590s  ratio  2.197
+    pair 1 (julia-first): rust  203.4023s  jl  441.6897s  ratio  2.172
+    pair 2 ( rust-first): rust  201.4952s  jl  457.9532s  ratio  2.273
+    ->   2441936 terms  median ratio  2.197  [paulistrings]
+  crossover at ~9.32e+03 terms
+wrote benchmarks/python/jl_performance/deep-kicked-ising/results.json
+wrote benchmarks/python/jl_performance/deep-kicked-ising/summary.json
+wrote figures to benchmarks/python/jl_performance/deep-kicked-ising
+### done in 116.9 min

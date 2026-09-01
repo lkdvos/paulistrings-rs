@@ -1,0 +1,149 @@
+
+### bench_jl_performance start 2026-09-01 13:42:38
+    engine=sorted
+    pairs=5 pilot=False sections=curves
+
+=== curve: kicked-Ising, heavy-hex 127q, 5 Trotter steps, theta_h = 5pi/16 ===
+    Native ZZ pauli_rotations on both engines (jl PauliRotation, not a transfer map), 1355 channels (5 x (127 rx + 144 ZZ)), observable Z_62, theta_zz = -pi/2 at the Clifford point. Benchmark C's configuration.
+    rust layer engine: sorted
+    free RAM: 240 GiB
+  kicked_ising eps=6.250e-02: parity gate ...
+    parity OK: 1355 layers identical, 7 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0037s  jl    0.0009s  ratio  0.242
+    pair 1 (julia-first): rust    0.0034s  jl    0.0009s  ratio  0.280
+    pair 2 ( rust-first): rust    0.0029s  jl    0.0009s  ratio  0.327
+    pair 3 (julia-first): rust    0.0026s  jl    0.0009s  ratio  0.353
+    pair 4 ( rust-first): rust    0.0032s  jl    0.0009s  ratio  0.280
+    ->         7 terms  median ratio  0.280  [julia]
+  kicked_ising eps=1.562e-02: parity gate ...
+    parity OK: 1355 layers identical, 408 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0066s  jl    0.0040s  ratio  0.616
+    pair 1 (julia-first): rust    0.0058s  jl    0.0037s  ratio  0.634
+    pair 2 ( rust-first): rust    0.0048s  jl    0.0038s  ratio  0.790
+    pair 3 (julia-first): rust    0.0060s  jl    0.0038s  ratio  0.641
+    pair 4 ( rust-first): rust    0.0062s  jl    0.0040s  ratio  0.645
+    ->       408 terms  median ratio  0.641  [julia]
+  kicked_ising eps=3.906e-03: parity gate ...
+    parity OK: 1355 layers identical, 5038 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0293s  jl    0.0378s  ratio  1.288
+    pair 1 (julia-first): rust    0.0300s  jl    0.0372s  ratio  1.238
+    pair 2 ( rust-first): rust    0.0225s  jl    0.0372s  ratio  1.652
+    pair 3 (julia-first): rust    0.0296s  jl    0.0371s  ratio  1.254
+    pair 4 ( rust-first): rust    0.0320s  jl    0.0372s  ratio  1.165
+    ->      5038 terms  median ratio  1.254  [paulistrings]
+  kicked_ising eps=9.766e-04: parity gate ...
+    parity OK: 1355 layers identical, 72352 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.1209s  jl    0.2028s  ratio  1.677
+    pair 1 (julia-first): rust    0.1211s  jl    0.2001s  ratio  1.653
+    pair 2 ( rust-first): rust    0.1267s  jl    0.1986s  ratio  1.567
+    pair 3 (julia-first): rust    0.1234s  jl    0.1997s  ratio  1.618
+    pair 4 ( rust-first): rust    0.1232s  jl    0.2034s  ratio  1.651
+    ->     72352 terms  median ratio  1.651  [paulistrings]
+  kicked_ising eps=2.441e-04: parity gate ...
+    parity OK: 1355 layers identical, 637219 terms, |dE| = 8.33e-17
+    pair 0 ( rust-first): rust    0.6911s  jl    1.5567s  ratio  2.253
+    pair 1 (julia-first): rust    0.7371s  jl    1.5462s  ratio  2.098
+    pair 2 ( rust-first): rust    0.7185s  jl    1.5331s  ratio  2.134
+    pair 3 (julia-first): rust    0.6992s  jl    1.5003s  ratio  2.146
+    pair 4 ( rust-first): rust    0.6935s  jl    1.5129s  ratio  2.182
+    ->    637219 terms  median ratio  2.146  [paulistrings]
+  kicked_ising eps=6.104e-05: parity gate ...
+    parity OK: 1355 layers identical, 1544083 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    1.4924s  jl    2.9142s  ratio  1.953
+    pair 1 (julia-first): rust    1.4850s  jl    2.8955s  ratio  1.950
+    pair 2 ( rust-first): rust    1.4875s  jl    3.0110s  ratio  2.024
+    pair 3 (julia-first): rust    1.5237s  jl    2.9547s  ratio  1.939
+    pair 4 ( rust-first): rust    1.5400s  jl    3.0456s  ratio  1.978
+    ->   1544083 terms  median ratio  1.953  [paulistrings]
+  kicked_ising eps=1.526e-05: parity gate ...
+    parity OK: 1355 layers identical, 2121774 terms, |dE| = 5.55e-17
+    pair 0 ( rust-first): rust    1.9941s  jl    3.2664s  ratio  1.638
+    pair 1 (julia-first): rust    1.9780s  jl    3.4269s  ratio  1.732
+    pair 2 ( rust-first): rust    1.9845s  jl    3.2887s  ratio  1.657
+    pair 3 (julia-first): rust    2.0179s  jl    3.1821s  ratio  1.577
+    pair 4 ( rust-first): rust    2.0067s  jl    3.2651s  ratio  1.627
+    ->   2121774 terms  median ratio  1.638  [paulistrings]
+  kicked_ising eps=3.815e-06: parity gate ...
+    parity OK: 1355 layers identical, 2146424 terms, |dE| = 5.55e-17
+    pair 0 ( rust-first): rust    2.0697s  jl    3.2597s  ratio  1.575
+    pair 1 (julia-first): rust    2.0563s  jl    3.3269s  ratio  1.618
+    pair 2 ( rust-first): rust    2.1023s  jl    3.3856s  ratio  1.610
+    pair 3 (julia-first): rust    2.0779s  jl    3.3111s  ratio  1.594
+    pair 4 ( rust-first): rust    2.0474s  jl    3.3469s  ratio  1.635
+    ->   2146424 terms  median ratio  1.610  [paulistrings]
+  kicked_ising eps=3.815e-06 max_weight=6: parity gate ...
+    parity OK: 1355 layers identical, 712 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0046s  jl    0.0021s  ratio  0.453
+    pair 1 (julia-first): rust    0.0042s  jl    0.0024s  ratio  0.566
+    pair 2 ( rust-first): rust    0.0072s  jl    0.0023s  ratio  0.316
+    pair 3 (julia-first): rust    0.0041s  jl    0.0020s  ratio  0.495
+    pair 4 ( rust-first): rust    0.0041s  jl    0.0024s  ratio  0.570
+    ->       712 terms  median ratio  0.495  [julia]
+  crossover at ~2.72e+03 terms
+
+=== curve: XXZ chain n=100, Jz=0.5, 6 Trotter steps, dt=0.1 ===
+    Rotations only, three generator types per bond (XX, YY, ZZ), 1782 channels (6 x 3 x 99), observable Z_50 against a domain-wall state. Benchmark D's configuration.
+    rust layer engine: sorted
+    free RAM: 240 GiB
+  xxz eps=1.000e-02: parity gate ...
+    parity OK: 1782 layers identical, 156 terms, |dE| = 2.78e-17
+    pair 0 ( rust-first): rust    0.0050s  jl    0.0022s  ratio  0.427
+    pair 1 (julia-first): rust    0.0061s  jl    0.0023s  ratio  0.369
+    pair 2 ( rust-first): rust    0.0050s  jl    0.0022s  ratio  0.444
+    pair 3 (julia-first): rust    0.0045s  jl    0.0022s  ratio  0.496
+    pair 4 ( rust-first): rust    0.0064s  jl    0.0023s  ratio  0.360
+    ->       156 terms  median ratio  0.427  [julia]
+  xxz eps=1.000e-03: parity gate ...
+    parity OK: 1782 layers identical, 1625 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0263s  jl    0.0171s  ratio  0.650
+    pair 1 (julia-first): rust    0.0510s  jl    0.0187s  ratio  0.367
+    pair 2 ( rust-first): rust    0.0511s  jl    0.0190s  ratio  0.371
+    pair 3 (julia-first): rust    0.0388s  jl    0.0188s  ratio  0.486
+    pair 4 ( rust-first): rust    0.0502s  jl    0.0172s  ratio  0.343
+    ->      1625 terms  median ratio  0.371  [julia]
+  xxz eps=1.000e-04: parity gate ...
+    parity OK: 1782 layers identical, 9918 terms, |dE| = 6.59e-17
+    pair 0 ( rust-first): rust    0.1367s  jl    0.1138s  ratio  0.832
+    pair 1 (julia-first): rust    0.1364s  jl    0.1191s  ratio  0.873
+    pair 2 ( rust-first): rust    0.1358s  jl    0.1141s  ratio  0.840
+    pair 3 (julia-first): rust    0.1285s  jl    0.1136s  ratio  0.884
+    pair 4 ( rust-first): rust    0.1178s  jl    0.1174s  ratio  0.996
+    ->      9918 terms  median ratio  0.873  [julia]
+  xxz eps=1.000e-05: parity gate ...
+    parity OK: 1782 layers identical, 48599 terms, |dE| = 4.16e-17
+    pair 0 ( rust-first): rust    0.4334s  jl    0.5199s  ratio  1.200
+    pair 1 (julia-first): rust    0.4337s  jl    0.5147s  ratio  1.187
+    pair 2 ( rust-first): rust    0.4564s  jl    0.5224s  ratio  1.145
+    pair 3 (julia-first): rust    0.4296s  jl    0.5228s  ratio  1.217
+    pair 4 ( rust-first): rust    0.4349s  jl    0.5147s  ratio  1.183
+    ->     48599 terms  median ratio  1.187  [paulistrings]
+  xxz eps=1.000e-06: parity gate ...
+    parity OK: 1782 layers identical, 206035 terms, |dE| = 6.94e-18
+    pair 0 ( rust-first): rust    1.2947s  jl    2.0289s  ratio  1.567
+    pair 1 (julia-first): rust    1.2915s  jl    2.1505s  ratio  1.665
+    pair 2 ( rust-first): rust    1.3116s  jl    2.1804s  ratio  1.662
+    pair 3 (julia-first): rust    1.2961s  jl    2.1442s  ratio  1.654
+    pair 4 ( rust-first): rust    1.2970s  jl    2.1347s  ratio  1.646
+    ->    206035 terms  median ratio  1.654  [paulistrings]
+  xxz eps=1.000e-07: parity gate ...
+    parity OK: 1782 layers identical, 776432 terms, |dE| = 2.64e-16
+    pair 0 ( rust-first): rust    4.3993s  jl    8.3998s  ratio  1.909
+    pair 1 (julia-first): rust    4.3865s  jl    8.1510s  ratio  1.858
+    pair 2 ( rust-first): rust    4.4018s  jl    8.1875s  ratio  1.860
+    pair 3 (julia-first): rust    4.3808s  jl    8.4030s  ratio  1.918
+    pair 4 ( rust-first): rust    4.4161s  jl    8.5003s  ratio  1.925
+    ->    776432 terms  median ratio  1.909  [paulistrings]
+  xxz eps=1.000e-08: parity gate ...
+    parity OK: 1782 layers identical, 2661871 terms, |dE| = 1.21e-16
+    pair 0 ( rust-first): rust   14.2571s  jl   28.8868s  ratio  2.026
+    pair 1 (julia-first): rust   14.2692s  jl   28.8614s  ratio  2.023
+    pair 2 ( rust-first): rust   14.1078s  jl   28.7280s  ratio  2.036
+    pair 3 (julia-first): rust   14.3349s  jl   28.2990s  ratio  1.974
+    pair 4 ( rust-first): rust   14.3271s  jl   28.8538s  ratio  2.014
+    ->   2661871 terms  median ratio  2.023  [paulistrings]
+  xxz eps=1.000e-09: parity gate ...
+    parity OK: 1782 layers identical, 8473952 terms, |dE| = 7.63e-17
+    pair 0 ( rust-first): rust   43.7007s  jl   97.4702s  ratio  2.230
+    pair 1 (julia-first): rust   43.6560s  jl   97.2274s  ratio  2.227
+    pair 2 ( rust-first): rust   43.6036s  jl   97.2343s  ratio  2.230
+    pair 3 (julia-first): rust   43.5155s  jl   97.1786s  ratio  2.233

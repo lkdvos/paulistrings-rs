@@ -13,7 +13,7 @@ Single-threaded, core-versus-core, on parity-gated configurations, under an inte
 > | kicked-Ising curve (9 configurations) | ✅ **complete**, 5 pairs each |
 > | XXZ curve (7 of 8 configurations) | ✅ **complete** for those 7, 5 pairs each |
 > | XXZ `min_abs_coeff = 1e-9` (8.47 M terms) | ⛔ cancelled mid-pairs — reconnaissance value only, see below |
-> | SU(4) brickwork curve | ⛔ **not run** |
+> | SU(4) brickwork curve | ⛔ not run here — ✅ since measured, [`su4-curve/README.md`](su4-curve/README.md) |
 > | Time to fixed accuracy (3 references) | ⛔ **not run** |
 > | Thread scaling (1→32 threads) | ⛔ **not run** |
 >
@@ -25,6 +25,24 @@ Single-threaded, core-versus-core, on parity-gated configurations, under an inte
 > `benchmarks/python/jl_performance_recover.py`. That tool *imports* the driver's protocol math rather than
 > reimplementing it, and refuses to write if a recomputed median or verdict disagrees with what the driver
 > logged. See "Provenance of the numbers" for the two fields the log does not carry.
+
+> ## ↻ Post-optimization rerun: see [`post-optimization/`](post-optimization/)
+>
+> Everything below measures the engine as it stood on 2026-09-01 03:19:44, **before** the large-`m`
+> optimization campaign. The same protocol has since been re-run against the improved engine, with the
+> same task files and the same Julia, at 5 pairs:
+> [`post-optimization/README.md`](post-optimization/README.md) (default engine, directly comparable
+> configuration for configuration) and
+> [`post-optimization-auto/README.md`](post-optimization-auto/README.md) (the small-`m` end with the
+> opt-in direct-apply path enabled).
+>
+> Headline: the kicked-Ising crossover moved **3.79 × 10³ → 2.73 × 10³**, the SU(4) crossover
+> **disappeared** (we are faster at every sign-consistent point on that sweep), and the best ratios
+> rose to **2.146** (kicked-Ising), **2.023** (XXZ) and **2.921** (SU(4)). Julia's times were
+> statistically unchanged — median −0.7 % across 21 configurations — so the movement is ours.
+>
+> **This document is not rewritten.** It is the baseline the rerun is measured against, and its
+> numbers stay as they were recorded.
 
 Driver: `benchmarks/python/bench_jl_performance.py`. Figures: `benchmarks/python/jl_performance_figures.py`.
 Data: `results.json` (one record per configuration per engine, the suite's flat-array convention) and
@@ -201,7 +219,7 @@ contracted against a state both engines can express.
 |---|---|---|---|---|---|
 | `kicked_ising` | kicked-Ising on the 127-qubit Eagle heavy-hex map, 5 Trotter steps, `theta_h = 5pi/16`, `theta_zz = -pi/2` | 1355 = 5 × (127 `rx` + 144 `ZZ`) | `Z_62`, `z+` | `min_abs_coeff` 2⁻⁴…2⁻¹⁸ + one `max_weight=6` point | ✅ 9 configs |
 | `xxz` | open XXZ chain, n=100, `Jz=0.5`, `dt=0.1`, 6 Trotter steps | 1782 = 6 × 3 × 99 | `Z_50`, domain wall `0⁵⁰1⁵⁰` | `min_abs_coeff` 1e-2…1e-8 | ✅ 7 configs |
-| `su4` | Haar-random SU(4) brickwork, n=36, depth 6, seed 20260831 | 105 | `Z_18`, `z+` | `min_abs_coeff` 1e-2…1e-4 | ⛔ not run |
+| `su4` | Haar-random SU(4) brickwork, n=36, depth 6, seed 20260831 | 105 | `Z_18`, `z+` | `min_abs_coeff` 1e-2…1e-4 | ✅ **since measured** — [`su4-curve/README.md`](su4-curve/README.md) |
 
 `kicked_ising` exercises native `pauli_rotation` on both engines (Julia's `PauliRotation`, its fast path — not a
 transfer map). `xxz` is rotations only but with three generator types per bond and non-Clifford angles. `su4`
@@ -328,6 +346,14 @@ should keep *rising* (XXZ-like) instead of decaying, and Julia's per-term cost s
 dropping 35%. If the ratio decays anyway, the effect is a genuine large-`m` property of our engine and the
 hypothesis is wrong.
 
+> **This prediction has since been tested: the hypothesis HOLDS.**
+> [`deep-kicked-ising/README.md`](deep-kicked-ising/README.md) — the same circuit at 20 Trotter
+> steps, where a halved cutoff still multiplies the term count by 4.2 instead of 1.0116. Over
+> 8.1 × 10⁵ → 3.1 × 10⁶ peak terms the ratio moves 2.212 → 2.197 (**−0.7%**, against this curve's
+> −27.8% over a span of the same width), and Julia's per-term cost falls only 4.5% against our 4.2%
+> — the 35% discount is absent exactly where saturation is. At 3.1 × 10⁶ terms, 47% *more* than this
+> curve's endpoint, the ratio is **2.197** against 1.389 here.
+
 **One thing we did see on our own side.** Our floor-subtracted memory per term jumps from 91 B/term at
 1 544 083 terms to 125 B/term at 2 121 774 — peak RSS 0.168 → 0.284 GiB, a 1.69× jump for 1.37× the terms. That
 is the signature of a capacity-doubling reallocation landing just past a power-of-two boundary, and it is a
@@ -367,7 +393,8 @@ allocator granularity and mean nothing; the figure shows them converging to thei
 
 Time to fixed accuracy, thread scaling (1→32), and the entire SU(4) matrix-gate workload were cancelled before
 they ran. The driver implements all three and their CI-tested logic is in place, so re-running is
-`--accuracy`, `--threads`, `--workload su4`.
+`--accuracy`, `--threads`, `--workload su4`. (`--workload su4` has since been run under this protocol —
+[`su4-curve/README.md`](su4-curve/README.md); the other two remain unmeasured.)
 
 Nothing in this document depends on them. In particular **no thread-scaling claim is made**: the head-to-head
 above is single-threaded on both sides, and PauliPropagation.jl 0.8.2's dict backend has no threaded
@@ -386,8 +413,10 @@ milliseconds.
 * **One Julia version, one backend.** PauliPropagation.jl 0.8.2 on Julia 1.12.6, `PP_BACKEND=dict`,
   `PP_FUSED=0` (the experimental fused rotation kernel truncates during gate application and has no established
   term-count parity). A different version or backend could move everything here.
-* **Two workloads, both rotation-driven.** The matrix-gate path is entirely unmeasured. The crossover already
-  moves 4.4× between the two workloads that did run, so treat every number as workload-specific.
+* **Two workloads, both rotation-driven.** The matrix-gate path is unmeasured *here* (since measured
+  separately — [`su4-curve/README.md`](su4-curve/README.md), which moves the crossover spread from 4.4× to
+  21×). The crossover already moves 4.4× between the two workloads that did run, so treat every number as
+  workload-specific.
 * **`Float64` coefficients throughout.** Real observables, and the Hermitian-Y convention keeps them real under
   every gate in the vocabulary. A complex observable roughly doubles Julia's coefficient storage.
 * **Heisenberg only**, and only `min_abs_coeff` / `max_weight` — the two knobs both engines have. `topn` (ours)
@@ -396,9 +425,10 @@ milliseconds.
   would have said "indistinguishable"; they did not, at any configuration, so every quoted ratio is directional.
   The magnitude still carries the within-configuration spread shown in the ratio figure.
 * **Contraction is excluded.** Only propagation is timed.
-* **The saturation hypothesis is a hypothesis.** It is consistent with every number here and it makes a
-  falsifiable prediction, but it has not been tested. Nothing above depends on it being true; it is offered as
-  the reason to run the follow-up, not as a finding.
+* **The saturation hypothesis was a hypothesis when this document was written.** It is consistent with every
+  number here and it made a falsifiable prediction; nothing above depends on it being true. It has since been
+  tested and held — [`deep-kicked-ising/README.md`](deep-kicked-ising/README.md), 2026-09-01, same host, same
+  extension binary, same protocol at 3 pairs.
 
 ### Provenance of the numbers
 
@@ -440,6 +470,12 @@ milliseconds.
   `unitary_2q` local-PTM application against Julia's dense 16×16 `TransferMapGate`), and a pilot of it put the
   crossover near 7.6 × 10⁴ peak terms — 20× higher than kicked-Ising's. If that holds up under the full
   protocol it would be the widest workload spread in the study.
+
+  > **Since measured, and it does hold:** [`su4-curve/README.md`](su4-curve/README.md) — crossover
+  > **8.01 × 10⁴** peak terms, **21.1×** kicked-Ising's and the widest workload spread in the study. The
+  > matrix path reaches **1.974 at 2.30 × 10⁶** peak terms, still rising, so its deficit is at *mid* `m`
+  > (0.620 at 1.29 × 10⁴) rather than at large `m`. It also produced this study's first two
+  > indistinguishable configurations.
 
 ## Reproducing
 

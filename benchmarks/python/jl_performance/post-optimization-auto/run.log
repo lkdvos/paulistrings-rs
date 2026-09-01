@@ -1,0 +1,101 @@
+
+### bench_jl_performance start 2026-09-01 14:56:43
+    engine=auto max_configs=3
+    pairs=5 pilot=False sections=curves
+
+=== curve: kicked-Ising, heavy-hex 127q, 5 Trotter steps, theta_h = 5pi/16 ===
+    Native ZZ pauli_rotations on both engines (jl PauliRotation, not a transfer map), 1355 channels (5 x (127 rx + 144 ZZ)), observable Z_62, theta_zz = -pi/2 at the Clifford point. Benchmark C's configuration.
+    rust layer engine: auto
+    free RAM: 240 GiB
+    --max-configs 3: the 3 loosest cutoffs of 8, weight variant dropped
+  kicked_ising eps=6.250e-02: parity gate ...
+    parity OK: 1355 layers identical, 7 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0019s  jl    0.0009s  ratio  0.470
+    pair 1 (julia-first): rust    0.0014s  jl    0.0009s  ratio  0.668
+    pair 2 ( rust-first): rust    0.0017s  jl    0.0009s  ratio  0.538
+    pair 3 (julia-first): rust    0.0020s  jl    0.0009s  ratio  0.466
+    pair 4 ( rust-first): rust    0.0020s  jl    0.0010s  ratio  0.490
+    ->         7 terms  median ratio  0.490  [julia]
+  kicked_ising eps=1.562e-02: parity gate ...
+    parity OK: 1355 layers identical, 408 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0046s  jl    0.0040s  ratio  0.861
+    pair 1 (julia-first): rust    0.0058s  jl    0.0037s  ratio  0.637
+    pair 2 ( rust-first): rust    0.0055s  jl    0.0038s  ratio  0.684
+    pair 3 (julia-first): rust    0.0054s  jl    0.0038s  ratio  0.696
+    pair 4 ( rust-first): rust    0.0040s  jl    0.0041s  ratio  1.012
+    ->       408 terms  median ratio  0.696  [indistinguishable]
+  kicked_ising eps=3.906e-03: parity gate ...
+    parity OK: 1355 layers identical, 5038 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0274s  jl    0.0363s  ratio  1.326
+    pair 1 (julia-first): rust    0.0276s  jl    0.0359s  ratio  1.297
+    pair 2 ( rust-first): rust    0.0305s  jl    0.0360s  ratio  1.180
+    pair 3 (julia-first): rust    0.0269s  jl    0.0360s  ratio  1.337
+    pair 4 ( rust-first): rust    0.0271s  jl    0.0346s  ratio  1.275
+    ->      5038 terms  median ratio  1.297  [paulistrings]
+  crossover at ~1.88e+03 terms
+
+=== curve: XXZ chain n=100, Jz=0.5, 6 Trotter steps, dt=0.1 ===
+    Rotations only, three generator types per bond (XX, YY, ZZ), 1782 channels (6 x 3 x 99), observable Z_50 against a domain-wall state. Benchmark D's configuration.
+    rust layer engine: auto
+    free RAM: 240 GiB
+    --max-configs 3: the 3 loosest cutoffs of 8
+  xxz eps=1.000e-02: parity gate ...
+    parity OK: 1782 layers identical, 156 terms, |dE| = 2.78e-17
+    pair 0 ( rust-first): rust    0.0046s  jl    0.0023s  ratio  0.508
+    pair 1 (julia-first): rust    0.0029s  jl    0.0022s  ratio  0.776
+    pair 2 ( rust-first): rust    0.0034s  jl    0.0022s  ratio  0.649
+    pair 3 (julia-first): rust    0.0031s  jl    0.0022s  ratio  0.720
+    pair 4 ( rust-first): rust    0.0041s  jl    0.0023s  ratio  0.564
+    ->       156 terms  median ratio  0.649  [julia]
+  xxz eps=1.000e-03: parity gate ...
+    parity OK: 1782 layers identical, 1625 terms, |dE| = 0.00e+00
+    pair 0 ( rust-first): rust    0.0184s  jl    0.0192s  ratio  1.046
+    pair 1 (julia-first): rust    0.0186s  jl    0.0182s  ratio  0.974
+    pair 2 ( rust-first): rust    0.0189s  jl    0.0197s  ratio  1.041
+    pair 3 (julia-first): rust    0.0184s  jl    0.0174s  ratio  0.944
+    pair 4 ( rust-first): rust    0.0188s  jl    0.0196s  ratio  1.040
+    ->      1625 terms  median ratio  1.040  [indistinguishable]
+  xxz eps=1.000e-04: parity gate ...
+    parity OK: 1782 layers identical, 9918 terms, |dE| = 6.59e-17
+    pair 0 ( rust-first): rust    0.1050s  jl    0.1182s  ratio  1.126
+    pair 1 (julia-first): rust    0.1092s  jl    0.1148s  ratio  1.051
+    pair 2 ( rust-first): rust    0.1143s  jl    0.1105s  ratio  0.967
+    pair 3 (julia-first): rust    0.1099s  jl    0.1155s  ratio  1.051
+    pair 4 ( rust-first): rust    0.1191s  jl    0.1271s  ratio  1.067
+    ->      9918 terms  median ratio  1.051  [indistinguishable]
+  no crossover: 1 sign-consistent configuration(s): a crossover needs two that bracket ratio = 1
+
+=== curve: SU(4) brickwork n=36, depth 6 ===
+    unitary_2q on this engine, TransferMapGate (a dense 16x16 PTM per block) on jl -- the matrix-gate path rather than the rotation kernel. Haar-random blocks from numpy default_rng(20260831) in layer-major emission order, so the circuit is a deterministic function of (n, depth, seed). Benchmark E's configuration and seed.
+    rust layer engine: auto
+    free RAM: 240 GiB
+    --max-configs 3: the 3 loosest cutoffs of 5
+  su4 eps=1.000e-02: parity gate ...
+    parity OK: 105 layers identical, 193 terms, |dE| = 2.08e-17
+    pair 0 ( rust-first): rust    0.0058s  jl    0.0091s  ratio  1.572
+    pair 1 (julia-first): rust    0.0061s  jl    0.0089s  ratio  1.463
+    pair 2 ( rust-first): rust    0.0048s  jl    0.0091s  ratio  1.897
+    pair 3 (julia-first): rust    0.0050s  jl    0.0088s  ratio  1.743
+    pair 4 ( rust-first): rust    0.0056s  jl    0.0093s  ratio  1.660
+    ->       193 terms  median ratio  1.660  [paulistrings]
+  su4 eps=3.000e-03: parity gate ...
+    parity OK: 105 layers identical, 7089 terms, |dE| = 6.25e-17
+    pair 0 ( rust-first): rust    0.1216s  jl    0.0964s  ratio  0.793
+    pair 1 (julia-first): rust    0.1324s  jl    0.1253s  ratio  0.946
+    pair 2 ( rust-first): rust    0.1194s  jl    0.0989s  ratio  0.829
+    pair 3 (julia-first): rust    0.1257s  jl    0.0960s  ratio  0.764
+    pair 4 ( rust-first): rust    0.1218s  jl    0.0977s  ratio  0.802
+    ->      7089 terms  median ratio  0.802  [julia]
+  su4 eps=1.000e-03: parity gate ...
+    parity OK: 105 layers identical, 84836 terms, |dE| = 9.02e-17
+    pair 0 ( rust-first): rust    0.4556s  jl    0.6290s  ratio  1.381
+    pair 1 (julia-first): rust    0.4368s  jl    0.6336s  ratio  1.450
+    pair 2 ( rust-first): rust    0.4614s  jl    0.6392s  ratio  1.385
+    pair 3 (julia-first): rust    0.4389s  jl    0.6328s  ratio  1.442
+    pair 4 ( rust-first): rust    0.4540s  jl    0.6395s  ratio  1.409
+    ->     84836 terms  median ratio  1.409  [paulistrings]
+  crossover at ~6.62e+03 terms
+wrote benchmarks/python/jl_performance/post-optimization-auto/results.json
+wrote benchmarks/python/jl_performance/post-optimization-auto/summary.json
+wrote figures to benchmarks/python/jl_performance/post-optimization-auto
+### done in 11.6 min

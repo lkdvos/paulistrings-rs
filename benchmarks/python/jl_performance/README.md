@@ -13,7 +13,7 @@ Single-threaded, core-versus-core, on parity-gated configurations, under an inte
 > | kicked-Ising curve (9 configurations) | ✅ **complete**, 5 pairs each |
 > | XXZ curve (7 of 8 configurations) | ✅ **complete** for those 7, 5 pairs each |
 > | XXZ `min_abs_coeff = 1e-9` (8.47 M terms) | ⛔ cancelled mid-pairs — reconnaissance value only, see below |
-> | SU(4) brickwork curve | ⛔ **not run** |
+> | SU(4) brickwork curve | ⛔ not run here — ✅ since measured, [`su4-curve/README.md`](su4-curve/README.md) |
 > | Time to fixed accuracy (3 references) | ⛔ **not run** |
 > | Thread scaling (1→32 threads) | ⛔ **not run** |
 >
@@ -201,7 +201,7 @@ contracted against a state both engines can express.
 |---|---|---|---|---|---|
 | `kicked_ising` | kicked-Ising on the 127-qubit Eagle heavy-hex map, 5 Trotter steps, `theta_h = 5pi/16`, `theta_zz = -pi/2` | 1355 = 5 × (127 `rx` + 144 `ZZ`) | `Z_62`, `z+` | `min_abs_coeff` 2⁻⁴…2⁻¹⁸ + one `max_weight=6` point | ✅ 9 configs |
 | `xxz` | open XXZ chain, n=100, `Jz=0.5`, `dt=0.1`, 6 Trotter steps | 1782 = 6 × 3 × 99 | `Z_50`, domain wall `0⁵⁰1⁵⁰` | `min_abs_coeff` 1e-2…1e-8 | ✅ 7 configs |
-| `su4` | Haar-random SU(4) brickwork, n=36, depth 6, seed 20260831 | 105 | `Z_18`, `z+` | `min_abs_coeff` 1e-2…1e-4 | ⛔ not run |
+| `su4` | Haar-random SU(4) brickwork, n=36, depth 6, seed 20260831 | 105 | `Z_18`, `z+` | `min_abs_coeff` 1e-2…1e-4 | ✅ **since measured** — [`su4-curve/README.md`](su4-curve/README.md) |
 
 `kicked_ising` exercises native `pauli_rotation` on both engines (Julia's `PauliRotation`, its fast path — not a
 transfer map). `xxz` is rotations only but with three generator types per bond and non-Clifford angles. `su4`
@@ -375,7 +375,8 @@ allocator granularity and mean nothing; the figure shows them converging to thei
 
 Time to fixed accuracy, thread scaling (1→32), and the entire SU(4) matrix-gate workload were cancelled before
 they ran. The driver implements all three and their CI-tested logic is in place, so re-running is
-`--accuracy`, `--threads`, `--workload su4`.
+`--accuracy`, `--threads`, `--workload su4`. (`--workload su4` has since been run under this protocol —
+[`su4-curve/README.md`](su4-curve/README.md); the other two remain unmeasured.)
 
 Nothing in this document depends on them. In particular **no thread-scaling claim is made**: the head-to-head
 above is single-threaded on both sides, and PauliPropagation.jl 0.8.2's dict backend has no threaded
@@ -394,8 +395,10 @@ milliseconds.
 * **One Julia version, one backend.** PauliPropagation.jl 0.8.2 on Julia 1.12.6, `PP_BACKEND=dict`,
   `PP_FUSED=0` (the experimental fused rotation kernel truncates during gate application and has no established
   term-count parity). A different version or backend could move everything here.
-* **Two workloads, both rotation-driven.** The matrix-gate path is entirely unmeasured. The crossover already
-  moves 4.4× between the two workloads that did run, so treat every number as workload-specific.
+* **Two workloads, both rotation-driven.** The matrix-gate path is unmeasured *here* (since measured
+  separately — [`su4-curve/README.md`](su4-curve/README.md), which moves the crossover spread from 4.4× to
+  21×). The crossover already moves 4.4× between the two workloads that did run, so treat every number as
+  workload-specific.
 * **`Float64` coefficients throughout.** Real observables, and the Hermitian-Y convention keeps them real under
   every gate in the vocabulary. A complex observable roughly doubles Julia's coefficient storage.
 * **Heisenberg only**, and only `min_abs_coeff` / `max_weight` — the two knobs both engines have. `topn` (ours)
@@ -449,6 +452,12 @@ milliseconds.
   `unitary_2q` local-PTM application against Julia's dense 16×16 `TransferMapGate`), and a pilot of it put the
   crossover near 7.6 × 10⁴ peak terms — 20× higher than kicked-Ising's. If that holds up under the full
   protocol it would be the widest workload spread in the study.
+
+  > **Since measured, and it does hold:** [`su4-curve/README.md`](su4-curve/README.md) — crossover
+  > **8.01 × 10⁴** peak terms, **21.1×** kicked-Ising's and the widest workload spread in the study. The
+  > matrix path reaches **1.974 at 2.30 × 10⁶** peak terms, still rising, so its deficit is at *mid* `m`
+  > (0.620 at 1.29 × 10⁴) rather than at large `m`. It also produced this study's first two
+  > indistinguishable configurations.
 
 ## Reproducing
 

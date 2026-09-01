@@ -524,6 +524,42 @@ end
 envflag(name, default) = get(ENV, name, default ? "1" : "0") in ("1", "true", "yes")
 envint(name, default) = haskey(ENV, name) ? parse(Int, ENV[name]) : default
 
+# ---------------------------------------------------------------------------
+# Per-process memory sampling
+# ---------------------------------------------------------------------------
+#
+# Each engine must sample ITS OWN process. `getrusage(RUSAGE_CHILDREN)` from a
+# Python driver conflates every child it has ever reaped -- a sibling engine's
+# peak leaks into this one's number -- so it is never used for cross-engine
+# memory comparison. /proc/self/status is per-process by construction.
+#
+#   VmRSS  resident set size right now
+#   VmHWM  peak resident set size over the whole process lifetime (monotone:
+#          it never falls when memory is released, and in Julia it also
+#          includes whatever slack the GC has not returned to the OS)
+#
+# Linux-only; every field comes back `nothing` elsewhere, and the Python side
+# reports it as unavailable rather than substituting a guess.
+
+const _STATUS_PATH = "/proc/self/status"
+
+function status_kb(field::AbstractString)
+    isfile(_STATUS_PATH) || return nothing
+    prefix = field * ":"
+    try
+        for line in eachline(_STATUS_PATH)
+            if startswith(line, prefix)
+                parts = split(line[length(prefix)+1:end])
+                isempty(parts) && return nothing
+                return tryparse(Float64, parts[1])
+            end
+        end
+    catch
+        return nothing
+    end
+    return nothing
+end
+
 function make_input(task::Task, backend::String)
     psum = deepcopy(task.observable)
     if backend == "vector"
@@ -566,7 +602,15 @@ function main(args)
         end
     end
 
+    # Sampled before anything task-specific exists: the Julia runtime plus the
+    # loaded packages, i.e. this engine's fixed per-process floor.
+    mem_start_kb = status_kb("VmRSS")
+
     task = parse_task(task_path)
+
+    # After the circuit and observable are built, before any propagation: the
+    # baseline the propagation's own growth is measured against.
+    mem_pre_propagate_kb = status_kb("VmRSS")
 
     backend = get(ENV, "PP_BACKEND", "dict")
     warm_repeats = envint("PP_WARM_REPEATS", 3)
@@ -597,6 +641,12 @@ function main(args)
         push!(warm_bytes, t.bytes)
         psum_out = t.value
     end
+
+    # Sampled HERE -- after the timed propagations, and deliberately BEFORE the
+    # `@countpaulis` pass below, which is a whole extra propagation and would
+    # otherwise inflate VmHWM with work no timed run did.
+    mem_post_propagate_kb = status_kb("VmRSS")
+    mem_hwm_kb = status_kb("VmHWM")
 
     # Per-gate term counts: a separate, untimed propagation, because
     # `@countpaulis` installs a global counter that locks once per gate.
@@ -636,6 +686,9 @@ function main(args)
         "paulistrings merge, so an exactly-cancelling circuit can differ by term count.",
         "truncation is applied after every gate (no layer concept), so one gate object must " *
         "equal one paulistrings channel.",
+        "memory.* is sampled from this process's own /proc/self/status. vmhwm_kb is a " *
+        "process-lifetime peak covering the cold run and every warm run (not the untimed " *
+        "@countpaulis pass), and includes GC slack Julia has not returned to the OS.",
     ]
     if layer_counts !== nothing
         push!(notes,
@@ -690,6 +743,17 @@ function main(args)
             wall_warm_all_s = warm_times,
             gc_warm_s = isempty(warm_gc) ? nothing : minimum(warm_gc),
             bytes_warm = isempty(warm_bytes) ? nothing : minimum(warm_bytes),
+        ),
+        # Per-process, sampled from this process's own /proc/self/status --
+        # never getrusage(RUSAGE_CHILDREN), which conflates sibling processes.
+        # `vmhwm_kb` is a process-lifetime peak, so it covers the cold run and
+        # every warm run, but not the untimed @countpaulis pass.
+        memory = (
+            vmrss_start_kb = mem_start_kb,
+            vmrss_pre_propagate_kb = mem_pre_propagate_kb,
+            vmrss_post_propagate_kb = mem_post_propagate_kb,
+            vmhwm_kb = mem_hwm_kb,
+            source = mem_hwm_kb === nothing ? "unavailable" : _STATUS_PATH,
         ),
         host = (
             hostname = gethostname(),

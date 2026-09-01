@@ -16,6 +16,7 @@ def test_top_level_names():
     assert hasattr(paulistrings, "gates")
     assert hasattr(paulistrings, "noise")
     assert hasattr(paulistrings, "truncation")
+    assert hasattr(paulistrings, "DEFAULT_SMALL_SUM_THRESHOLD")
 
 
 def test_factory_module_names():

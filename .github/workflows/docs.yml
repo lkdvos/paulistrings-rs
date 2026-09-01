@@ -3,6 +3,13 @@ name: docs
 on:
   push:
     branches: [main]
+  # A pull request that touches the site builds and link-checks it, but stops
+  # short of the Pages steps (a fork PR's token cannot write Pages).
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - "README.md"
   workflow_dispatch:
 
 # Pages deployment needs these scopes.
@@ -17,11 +24,17 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  # Keep this in step with the version docs/README.md tells contributors to
+  # install, so a local build and CI cannot disagree about rendering.
+  MDBOOK_VERSION: 0.5.4
+
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
+      PUBLISHING: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,26 +42,92 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Prefer the prebuilt binary (seconds); fall back to a pinned
+      # `cargo install` if the release asset ever moves.
+      - name: Install mdBook
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          if curl -sSfL -o /tmp/mdbook.tar.gz "$url"; then
+            tar -xzf /tmp/mdbook.tar.gz -C "$HOME/.local/bin"
+          else
+            echo "prebuilt mdBook v${MDBOOK_VERSION} not found; building from source"
+            cargo install mdbook --locked --version "${MDBOOK_VERSION}"
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The figures are relative symlinks into the repository (see
+      # docs/sync-assets.sh); this both validates them and proves the committed
+      # set is what the script produces.
+      - name: Check the figure links resolve
+        run: ./docs/sync-assets.sh
+
+      - name: Fail if sync-assets.sh changed anything
+        run: git diff --exit-code -- docs/book/src/assets
+
+      - name: Build the book
+        run: mdbook build docs/book
+
       - name: Build rustdoc
         run: cargo doc --no-deps -p paulistrings
 
-      - name: Add Pages redirect + disable Jekyll
+      # The book is the site root; rustdoc is mounted under /api/ with a
+      # redirect so /api/ alone lands on the crate index. README.md's
+      # Documentation section points at both.
+      - name: Assemble the site
         run: |
-          cat > target/doc/index.html <<'HTML'
+          mv docs/book/site _site
+          mkdir -p _site/api
+          cp -r target/doc/. _site/api/
+          cat > _site/api/index.html <<'HTML'
           <!DOCTYPE html>
           <meta http-equiv="refresh" content="0; url=paulistrings/index.html">
           <link rel="canonical" href="paulistrings/index.html">
-          <title>paulistrings</title>
+          <title>paulistrings API reference</title>
           HTML
-          touch target/doc/.nojekyll
+          touch _site/.nojekyll
+
+      - name: Check for broken internal links and images
+        run: |
+          python3 - <<'PY'
+          import html, re, sys
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          root = Path("_site").resolve()
+          attr = re.compile(r'(?:href|src)\s*=\s*"([^"]+)"')
+          # rustdoc's own output is not ours to police; check the book pages.
+          pages = [p for p in root.rglob("*.html") if "api" not in p.relative_to(root).parts]
+          problems = []
+          for page in pages:
+              text = page.read_text(encoding="utf-8", errors="replace")
+              for raw in attr.findall(text):
+                  parsed = urlparse(html.unescape(raw))
+                  if parsed.scheme or parsed.netloc or not parsed.path:
+                      continue
+                  path = unquote(parsed.path)
+                  if path.startswith("/"):
+                      target = root / path.lstrip("/").removeprefix("paulistrings-rs/")
+                  else:
+                      target = (page.parent / path).resolve()
+                  if not target.exists():
+                      problems.append(f"{page.relative_to(root)} -> {raw}")
+          print(f"checked {len(pages)} book pages")
+          for p in problems:
+              print("BROKEN:", p)
+          sys.exit(1 if problems else 0)
+          PY
 
       - uses: actions/configure-pages@v5
+        if: env.PUBLISHING == 'true'
 
       - uses: actions/upload-pages-artifact@v3
+        if: env.PUBLISHING == 'true'
         with:
-          path: target/doc
+          path: _site
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:

@@ -16,6 +16,9 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 .benchmarks/
 
+# Rendered docs site (mdbook build-dir); the source is docs/book/src.
+docs/book/site/
+
 .DS_Store
 .idea/
 .vscode/

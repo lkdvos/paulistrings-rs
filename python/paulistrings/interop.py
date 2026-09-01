@@ -60,9 +60,10 @@ __all__ = [
 # stim importer
 # =============================================================================
 
-# Named single-qubit unitaries: stim's canonical name is already the
-# lower-cased Circuit method name.
-_STIM_1Q_NAMED = ("H", "S", "X", "Y", "Z")
+# Named single-qubit unitaries: stim canonical name -> Circuit method name.
+# All but S_DAG lower-case verbatim; stim spells the S adjoint "S_DAG" where
+# this package names it "sdg".
+_STIM_1Q_NAMED = {"H": "h", "S": "s", "S_DAG": "sdg", "X": "x", "Y": "y", "Z": "z"}
 
 # Named two-qubit unitaries: stim canonical name -> Circuit method name.
 # stim canonicalizes "CNOT" to "CX" on parse, but both spellings are accepted
@@ -130,8 +131,9 @@ def circuit_from_stim(src):
     expanded via ``stim.Circuit.flattened()`` before translation, so they
     reach the instruction loop below already unrolled.
 
-    Supported instructions: ``H``, ``S``, ``X``, ``Y``, ``Z``, ``CX``/``CNOT``,
-    ``CZ``, ``SWAP``, ``DEPOLARIZE1(p)``, ``DEPOLARIZE2(p)``,
+    Supported instructions: ``H``, ``S``, ``S_DAG`` (stim's spelling of the
+    ``S`` adjoint; mapped to ``Circuit.sdg``), ``X``, ``Y``, ``Z``,
+    ``CX``/``CNOT``, ``CZ``, ``SWAP``, ``DEPOLARIZE1(p)``, ``DEPOLARIZE2(p)``,
     ``X_ERROR``/``Y_ERROR``/``Z_ERROR(p)``, ``I`` (skipped), the annotations
     ``TICK``/``QUBIT_COORDS``/``SHIFT_COORDS`` (skipped, not operations), and
     ``OBSERVABLE_INCLUDE`` with Pauli targets (surfaced as the returned
@@ -163,7 +165,7 @@ def circuit_from_stim(src):
             continue
 
         if name in _STIM_1Q_NAMED:
-            method = getattr(circuit, name.lower())
+            method = getattr(circuit, _STIM_1Q_NAMED[name])
             for q in _stim_plain_qubits(name, index, targets):
                 method(q)
             continue

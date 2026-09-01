@@ -455,6 +455,18 @@ impl PropagationStats {
     fn final_terms(&self) -> usize {
         self.final_terms
     }
+
+    /// All five fields, in the order the getters are declared, so a stats
+    /// record printed from a REPL or a log line is readable without poking at
+    /// it attribute by attribute. The per-layer lists are printed in full —
+    /// they are one entry per layer, not per term.
+    fn __repr__(&self) -> String {
+        format!(
+            "PropagationStats(layers={}, terms_in={:?}, terms_out={:?}, \
+             peak_terms={}, final_terms={})",
+            self.layers, self.terms_in, self.terms_out, self.peak_terms, self.final_terms
+        )
+    }
 }
 
 impl PropagationStats {

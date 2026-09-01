@@ -139,3 +139,21 @@ def test_bad_direction_rejected():
 def test_qubit_count_mismatch_rejected():
     with pytest.raises(ValueError, match="num_qubits"):
         _x0().propagate_with_stats(Circuit(NUM_QUBITS + 1))
+
+
+def test_stats_repr_names_all_fields():
+    circuit = Circuit(NUM_QUBITS)
+    circuit.h(0)
+    _, stats = _x0().propagate_with_stats(circuit)
+    text = repr(stats)
+    assert text.startswith("PropagationStats(")
+    for field in ("layers=", "terms_in=", "terms_out=", "peak_terms=", "final_terms="):
+        assert field in text
+    assert f"layers={stats.layers}" in text
+    assert f"final_terms={stats.final_terms}" in text
+    # One layer, `h(0)` relabelling X₀ → Z₀, so every count is 1: the whole
+    # format is pinned, not just the field names.
+    assert text == (
+        "PropagationStats(layers=1, terms_in=[1], terms_out=[1], "
+        "peak_terms=1, final_terms=1)"
+    )

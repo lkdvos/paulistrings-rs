@@ -1,7 +1,8 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle.
 //!
 //! Free factories `truncation.coeff(...)`, `truncation.weight(...)`,
-//! `truncation.topn(...)` return a `PyTruncation`. The `&` / `|` operators
+//! `truncation.topn(...)`, `truncation.approx_topn(...)` return a
+//! `PyTruncation`. The `&` / `|` operators
 //! compose them via `And` / `Or`. The composed spec is materialized at the
 //! correct width inside `PauliSum.propagate` via the `SpecPolicy<'_, W>`
 //! adapter, which implements `paulistrings::TruncationPolicy<W>` for any
@@ -10,7 +11,7 @@
 use num_complex::Complex64;
 use paulistrings::pauli_sum::PauliSum;
 use paulistrings::truncation::{
-    And, CoefficientThreshold, Or, TopN, TruncationPolicy, WeightCutoff,
+    And, ApproxTopN, CoefficientThreshold, Or, TopN, TruncationPolicy, WeightCutoff,
 };
 use pyo3::prelude::*;
 
@@ -23,6 +24,10 @@ pub enum PolicySpec {
     /// Keep **at most** n terms by magnitude after each layer, never splitting
     /// a group of equal magnitudes. See `paulistrings::truncation::TopN`.
     TopN(usize),
+    /// Keep **approximately** n terms after each layer: at most n, and short of
+    /// it by at most one octave's population. See
+    /// `paulistrings::truncation::ApproxTopN`.
+    ApproxTopN(usize),
     And(Box<PolicySpec>, Box<PolicySpec>),
     Or(Box<PolicySpec>, Box<PolicySpec>),
     /// Default — no filtering. Exact-zero coefficients are still dropped by
@@ -58,8 +63,8 @@ fn keep_spec<const W: usize>(spec: &PolicySpec, x: &[u64; W], z: &[u64; W], c: C
     match spec {
         PolicySpec::Coeff(eps) => CoefficientThreshold(*eps).keep_term(x, z, c),
         PolicySpec::Weight(k) => WeightCutoff(*k).keep_term(x, z, c),
-        // TopN runs in finalize_layer, not per-term.
-        PolicySpec::TopN(_) => true,
+        // Both TopN flavours run in finalize_layer, not per-term.
+        PolicySpec::TopN(_) | PolicySpec::ApproxTopN(_) => true,
         PolicySpec::And(a, b) => And(SpecPolicy::<W>(a), SpecPolicy::<W>(b)).keep_term(x, z, c),
         PolicySpec::Or(a, b) => Or(SpecPolicy::<W>(a), SpecPolicy::<W>(b)).keep_term(x, z, c),
         PolicySpec::NoOp => true,
@@ -69,6 +74,7 @@ fn keep_spec<const W: usize>(spec: &PolicySpec, x: &[u64; W], z: &[u64; W], c: C
 fn finalize_spec<const W: usize>(spec: &PolicySpec, sum: &mut PauliSum<W>) {
     match spec {
         PolicySpec::TopN(n) => TopN(*n).finalize_layer(sum),
+        PolicySpec::ApproxTopN(n) => ApproxTopN(*n).finalize_layer(sum),
         // `And::finalize_layer` runs both sides' `finalize_layer` in order,
         // which recurses back into `finalize_spec` through `SpecPolicy`.
         PolicySpec::And(a, b) => And(SpecPolicy::<W>(a), SpecPolicy::<W>(b)).finalize_layer(sum),

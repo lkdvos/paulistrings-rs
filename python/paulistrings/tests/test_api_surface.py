@@ -29,7 +29,7 @@ def test_factory_module_names():
         "depolarize2",
     ):
         assert hasattr(noise, name)
-    for name in ("coeff", "weight", "topn"):
+    for name in ("coeff", "weight", "topn", "approx_topn"):
         assert hasattr(truncation, name)
 
 

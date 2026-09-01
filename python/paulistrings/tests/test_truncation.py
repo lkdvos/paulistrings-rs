@@ -2,7 +2,10 @@
 
 Pin the policy semantics by running ``propagate`` through circuits whose
 output coefficients straddle the cutoff, and check both the simple factories
-and the ``And`` / ``Or`` combinators thread through.
+and the ``And`` / ``Or`` combinators thread through. ``approx_topn``'s
+approximate-``n`` contract — at most ``n``, short of it by at most the coarsest
+excluded octave's population, tie groups whole, single-octave wipe — is pinned
+against hand-computed octave arithmetic and against ``topn`` on the same sums.
 
 Note: the truncation policy only fires inside the engine's merge / finalize
 passes, which only run when at least one channel is in the circuit. These
@@ -72,6 +75,111 @@ def test_topn_keeps_largest_after_layer():
     assert len(coeffs) == 2
     mags = sorted((abs(c) for c in coeffs), reverse=True)
     assert mags == [1.0, 0.5]
+
+
+def _mags(sum_):
+    return sorted((abs(c) for c in sum_.coefficients()), reverse=True)
+
+
+def test_approx_topn_matches_topn_on_a_well_separated_spectrum():
+    # Magnitudes 1, 1/4, 1/16, 1/64 square to 1, 1/16, 1/256, 1/4096 — one per
+    # octave of |c|², four octaves apart — so every prefix is an octave
+    # boundary and the histogram threshold lands exactly where TopN's does.
+    s = PauliSum.from_strings(
+        {"II": 1.0, "XI": 0.25, "ZI": 0.0625, "XX": 0.015625},
+        num_qubits=2,
+    )
+    for n in (1, 2, 3, 4):
+        approx = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
+        exact = s.propagate(_probe_circuit(2), policy=truncation.topn(n))
+        assert len(approx.coefficients()) == n
+        assert _mags(approx) == pytest.approx(_mags(exact))
+
+
+# |c|² of 1.0, 0.9, 0.7, 0.6, 0.5 is 1.0, 0.81, 0.49, 0.36, 0.25: the top two
+# get an octave each ([1, 2) and [0.5, 1)) and the bottom three share [0.25, 0.5)
+# without being a tie group — which is exactly where the two policies part ways.
+_CLUSTERED = {"II": 1.0, "XI": 0.9, "ZI": 0.7, "XX": 0.6, "YI": 0.5}
+
+
+@pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 6])
+def test_approx_topn_never_keeps_more_than_n(n):
+    s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
+    out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
+    assert len(out.coefficients()) <= n
+
+
+def test_approx_topn_shortfall_is_the_coarsest_excluded_octaves_population():
+    # n = 4, hand-computed on `_CLUSTERED`. The octaves from the top hold 1, 1
+    # and 3 terms, so the running counts are S = 1, 2, 5. Five overshoots 4, so
+    # the cut is the octave above it: two terms kept, the three-term octave
+    # dropped whole.
+    #
+    # TopN(4) keeps four — 0.6 is the 4th largest and nothing ties it — so this
+    # is a case where the two genuinely differ, and the shortfall 4 - 2 = 2 is
+    # inside the documented bound: kept > n - p with p = 3.
+    s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
+    approx = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
+    exact = s.propagate(_probe_circuit(2), policy=truncation.topn(4))
+    assert _mags(approx) == pytest.approx([1.0, 0.9])
+    assert _mags(exact) == pytest.approx([1.0, 0.9, 0.7, 0.6])
+    kept, n, p = len(approx.coefficients()), 4, 3
+    assert kept <= n
+    assert kept > n - p
+
+
+def test_approx_topn_keeps_a_tie_group_whole():
+    # The three 0.5s share an octave, so they are kept or dropped together
+    # whatever n is — no tie rule needed, unlike TopN.
+    s = PauliSum.from_strings(
+        {"II": 1.0, "XI": 0.5, "ZI": 0.5, "XX": 0.5},
+        num_qubits=2,
+    )
+    for n in range(5):
+        out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
+        kept_ties = sum(1 for m in _mags(out) if abs(m - 0.5) < TOL)
+        assert kept_ties in (0, 3), f"n={n} split the multiplet: {_mags(out)}"
+
+
+def test_approx_topn_wipes_a_single_octave_sum():
+    # 1.0, 1.1, 1.2, 1.3 square into [1, 2) together: one octave, so S is 0 or
+    # 4 and neither fits in 3. The degenerate case, documented on the factory.
+    s = PauliSum.from_strings(
+        {"II": 1.0, "XI": 1.1, "ZI": 1.2, "XX": 1.3},
+        num_qubits=2,
+    )
+    out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(3))
+    assert out.coefficients() == []
+    # ... and pairing it with a coefficient threshold is the documented escape
+    # hatch only insofar as it removes candidates; with n >= len nothing is cut.
+    kept = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
+    assert len(kept.coefficients()) == 4
+
+
+def test_approx_topn_composes_with_the_operators():
+    s = PauliSum.from_strings(
+        {"II": 1.0, "XI": 0.25, "ZI": 0.0625, "XX": 0.015625},
+        num_qubits=2,
+    )
+    # And: the weight cutoff drops XX per term, then approx_topn(2) cuts the
+    # rest to the top two octaves.
+    out = s.propagate(
+        _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1)
+    )
+    assert _mags(out) == pytest.approx([1.0, 0.25])
+    # Or keeps a term if either arm does, and both TopN flavours' *per-term*
+    # predicate is unconditionally true — they work in the layer pass, which
+    # `Or` does not run (matching `builtin::Or`). So an `Or` containing one
+    # keeps everything, exactly as it does with `topn`.
+    ored = s.propagate(
+        _probe_circuit(2), policy=truncation.approx_topn(1) | truncation.weight(1)
+    )
+    assert len(ored.coefficients()) == 4
+    assert len(
+        s.propagate(
+            _probe_circuit(2), policy=truncation.topn(1) | truncation.weight(1)
+        ).coefficients()
+    ) == 4
 
 
 def test_and_combinator_requires_both_to_keep():

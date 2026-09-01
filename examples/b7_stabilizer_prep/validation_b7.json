@@ -1,0 +1,85 @@
+{
+  "what": "Showcase B7 dense cross-check: a 2^n state-vector reference for the composed stabilizer-preparation + non-Clifford-tail circuit, against Heisenberg Pauli propagation contracted on the preparation's stabilizer generators.",
+  "tolerance": 1e-10,
+  "worst_gap": 2.220446049250313e-15,
+  "cases": [
+    {
+      "lattice": "3x4",
+      "n_qubits": 12,
+      "tail_steps": 2,
+      "theta_h": 0.6,
+      "terms": 16,
+      "pauli_propagation": 0.4640046627956811,
+      "dense_statevector": 0.46400466279567887,
+      "dense_gap": 2.220446049250313e-15,
+      "projector_gap": null,
+      "qiskit_aer_gap": 1.5543122344752192e-15
+    },
+    {
+      "lattice": "3x4",
+      "n_qubits": 12,
+      "tail_steps": 3,
+      "theta_h": 0.6,
+      "terms": 529,
+      "pauli_propagation": 0.06375312113930658,
+      "dense_statevector": 0.06375312113930628,
+      "dense_gap": 2.915161381400467e-16,
+      "projector_gap": null,
+      "qiskit_aer_gap": 2.914335439641036e-16
+    },
+    {
+      "lattice": "3x4",
+      "n_qubits": 12,
+      "tail_steps": 2,
+      "theta_h": 1.0,
+      "terms": 16,
+      "pauli_propagation": 0.08522112911847735,
+      "dense_statevector": 0.08522112911847735,
+      "dense_gap": 5.204170427930421e-18,
+      "projector_gap": null,
+      "qiskit_aer_gap": 1.8041124150158794e-16
+    },
+    {
+      "lattice": "2x4",
+      "n_qubits": 8,
+      "tail_steps": 2,
+      "theta_h": 0.6,
+      "terms": 10,
+      "pauli_propagation": -0.4640046627956811,
+      "dense_statevector": -0.46400466279567965,
+      "dense_gap": 1.4432899320127035e-15,
+      "projector_gap": 0.0,
+      "qiskit_aer_gap": 8.326672684688674e-16
+    },
+    {
+      "lattice": "2x4",
+      "n_qubits": 8,
+      "tail_steps": 3,
+      "theta_h": 0.35,
+      "terms": 108,
+      "pauli_propagation": 0.09746377709078266,
+      "dense_statevector": 0.09746377709078233,
+      "dense_gap": 3.3306690738754696e-16,
+      "projector_gap": 0.0,
+      "qiskit_aer_gap": 2.0816681711721685e-16
+    }
+  ],
+  "provenance": {
+    "commit": "13e7e9a7bab4c98fa5bb17b6b9259bd242988a43",
+    "dirty": true,
+    "cpu_model": "Intel(R) Xeon(R) Gold 6244 CPU @ 3.60GHz",
+    "python_version": "3.11.11",
+    "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "library_versions": {
+      "paulistrings": "0.1.0",
+      "stim": "1.16.0",
+      "numpy": "2.4.6"
+    },
+    "seeds": {
+      "preparation": 183
+    },
+    "thread_count": 1,
+    "hostname": "ccqlin038",
+    "date": "2026-09-01"
+  }
+}

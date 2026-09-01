@@ -30,23 +30,23 @@ Four oracles, plus one optional:
     Optional low-magic oracle, behind a capability check: raises `SkipOracle`
     when `tsim` is not installed. Nothing in the suite depends on it.
 
-Why this module needs its own circuit type
-------------------------------------------
-`paulistrings.Circuit` is **opaque** at the Python boundary: it exposes
-`num_qubits` and `len()` and nothing else, so a `Circuit` cannot be translated
-to qiskit or stim, and its channel supports cannot be read out to compute a
-light cone. Every oracle here therefore consumes a `CircuitSpec` -- a plain
-gate list in the *already frozen* task-JSON gate-object vocabulary
+How a circuit reaches an oracle
+-------------------------------
+Every oracle here consumes a `CircuitSpec` -- a plain gate list in the
+*already frozen* task-JSON gate-object vocabulary
 (`python/paulistrings/interop.py`, schema v1), which is also what
 `benchmarks/julia/runner.jl` consumes. `CircuitSpec.to_circuit()` builds the
 engine's `Circuit` from that same list through `interop.circuit_from_json`, so
 engine and oracle are driven from one description rather than two
 transcriptions of it.
 
-Circuit builders that write into a `paulistrings.Circuit` (everything in
-`examples/common/circuits.py` does) are captured with
-`record_gates(builder, *args)`, which runs the builder against a recording
-stand-in. See its docstring for the mechanism and its one caveat.
+`as_circuit_spec` accepts a `paulistrings.Circuit` **directly**: `Circuit.gates`
+returns its channel list in exactly that vocabulary, so a builder that writes
+into a real `Circuit` (everything in `examples/common/circuits.py` does) is read
+back with no stand-in, no shimmed factories and no rebinding of module globals.
+`record_gates(builder, *args)` is the thin convenience around that -- it runs
+the builder and coerces the result -- and `RecordingCircuit` survives only as a
+deprecated wrapper for call sites that still name it.
 
 Conventions, and the traps between them
 ---------------------------------------
@@ -212,6 +212,7 @@ REFERENCES_DIR = Path(__file__).resolve().parents[1] / "data" / "references"
 _GATE_SPECS: dict[str, tuple[int | None, tuple[str, ...]]] = {
     "h": (1, ()),
     "s": (1, ()),
+    "sdg": (1, ()),
     "x": (1, ()),
     "y": (1, ()),
     "z": (1, ()),
@@ -239,7 +240,10 @@ _NOISE_GATE_NAMES = frozenset(
 )
 
 #: Gate names that are Clifford for every parameter value.
-_ALWAYS_CLIFFORD = frozenset({"h", "s", "x", "y", "z", "cnot", "cz", "swap"})
+_ALWAYS_CLIFFORD = frozenset({"h", "s", "sdg", "x", "y", "z", "cnot", "cz", "swap"})
+
+#: Gate names whose stim `TableauSimulator` method is not just the name.
+_STIM_SIM_METHOD = {"sdg": "s_dag"}
 
 #: `rz`/`rx`/`ry` as the weight-1 spelling of `pauli_rotation`.
 _ROTATION_AXIS = {"rz": "Z", "rx": "X", "ry": "Y"}
@@ -314,10 +318,10 @@ class CircuitSpec:
 
     `gates` is a tuple of gate objects -- plain mappings `{"name": ..., "qubits":
     [...], ...}` with the extra fields each name requires (`theta`, `pauli`,
-    `p`, `gamma`, `px`/`py`/`pz`, `matrix`). A `matrix` field may hold either a
-    NumPy array (the in-memory form; what `RecordingCircuit` records) or the
-    JSON nested `[re, im]` pair form; `to_circuit()` and `to_circuit_json()`
-    accept both.
+    `p`, `gamma`, `px`/`py`/`pz`, `matrix`). A `matrix` field holds a NumPy
+    array: that is the in-memory form every consumer here wants, and
+    `as_circuit_spec` converts the JSON nested `[re, im]` pair form (which is
+    what `Circuit.gates` and task JSON carry) on the way in.
 
     One gate object per gate, matching the suite's one-gate-per-channel
     construction rule (plan §5, decision D10): the gate list index *is* the
@@ -388,324 +392,88 @@ class CircuitSpec:
 
 
 class RecordingCircuit:
-    """A stand-in for `paulistrings.Circuit` that records a `CircuitSpec`.
+    """Deprecated thin wrapper around a real `paulistrings.Circuit`.
 
-    Every mutating method of `Circuit` is mirrored with the same signature and
-    the same argument validation, so a builder written against `Circuit` runs
-    against this unchanged and the recorded gate list is what the real circuit
-    would have held. `spec` is the accumulated `CircuitSpec`.
+    It exists only so call sites that still name it keep working. `Circuit` is
+    introspectable now (`Circuit.gates`), so there is nothing left to record:
+    this builds a real `Circuit`, forwards every attribute to it, and adds the
+    one thing the old stand-in had that `Circuit` does not -- a `spec` property,
+    which is just `as_circuit_spec(self.circuit)`.
 
-    `append` accepts what `Circuit.append` accepts *structurally* -- a channel
-    object produced by the recording `gates`/`noise` shims (see `record_gates`).
-    A real `paulistrings` `Channel` is opaque and raises: there is no way to
-    read a gate back out of one.
+    New code should build a `paulistrings.Circuit` and pass it straight to
+    `as_circuit_spec` (or to any oracle, which calls that itself).
     """
+
+    __slots__ = ("circuit",)
 
     def __init__(self, num_qubits: int) -> None:
         if num_qubits < 1:
             raise ValueError(f"num_qubits must be >= 1, got {num_qubits}")
-        self._num_qubits = int(num_qubits)
-        self._gates: list[dict[str, Any]] = []
+        self.circuit = Circuit(int(num_qubits))
 
-    # --- Circuit's read-only surface ------------------------------------
-    @property
-    def num_qubits(self) -> int:
-        return self._num_qubits
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for names not found normally, i.e. everything the real
+        # Circuit provides: h/s/sdg/.../unitary_2q, append, num_qubits.
+        return getattr(self.circuit, name)
 
     def __len__(self) -> int:
-        return len(self._gates)
+        return len(self.circuit)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"RecordingCircuit({self.circuit.num_qubits}, {len(self.circuit)} gates)"
 
     @property
     def spec(self) -> CircuitSpec:
-        return CircuitSpec(num_qubits=self._num_qubits, gates=tuple(self._gates))
-
-    # --- recording ------------------------------------------------------
-    def _push(self, **gate: Any) -> None:
-        _validate_gate(gate, self._num_qubits, len(self._gates))
-        self._gates.append(gate)
-
-    def append(self, channel: Any) -> None:
-        gate = getattr(channel, "gate", None)
-        if gate is None and isinstance(channel, Mapping) and "name" in channel:
-            gate = channel
-        if gate is None:
-            raise TypeError(
-                "RecordingCircuit.append needs a channel from the recording gates/noise "
-                f"shims, got {type(channel).__name__}. A paulistrings Channel carries no "
-                "readable gate description; build the circuit through record_gates so the "
-                "factories are shimmed too."
-            )
-        self._push(**{k: v for k, v in gate.items()})
-
-    def h(self, qubit: int) -> None:
-        self._push(name="h", qubits=[qubit])
-
-    def s(self, qubit: int) -> None:
-        self._push(name="s", qubits=[qubit])
-
-    def x(self, qubit: int) -> None:
-        self._push(name="x", qubits=[qubit])
-
-    def y(self, qubit: int) -> None:
-        self._push(name="y", qubits=[qubit])
-
-    def z(self, qubit: int) -> None:
-        self._push(name="z", qubits=[qubit])
-
-    def cnot(self, control: int, target: int) -> None:
-        self._push(name="cnot", qubits=[control, target])
-
-    def cz(self, q0: int, q1: int) -> None:
-        self._push(name="cz", qubits=[q0, q1])
-
-    def swap(self, q0: int, q1: int) -> None:
-        self._push(name="swap", qubits=[q0, q1])
-
-    def rz(self, theta: float, qubit: int) -> None:
-        self._push(name="rz", qubits=[qubit], theta=float(theta))
-
-    def rx(self, theta: float, qubit: int) -> None:
-        self._push(name="rx", qubits=[qubit], theta=float(theta))
-
-    def ry(self, theta: float, qubit: int) -> None:
-        self._push(name="ry", qubits=[qubit], theta=float(theta))
-
-    def pauli_rotation(self, pauli: str, qubits: Sequence[int], theta: float) -> None:
-        self._push(
-            name="pauli_rotation",
-            qubits=list(qubits),
-            pauli=str(pauli),
-            theta=float(theta),
-        )
-
-    def depolarize(self, p: float, qubits: Sequence[int]) -> None:
-        for q in qubits:
-            self._push(name="depolarize", qubits=[q], p=float(p))
-
-    def dephase(self, p: float, qubits: Sequence[int]) -> None:
-        for q in qubits:
-            self._push(name="dephase", qubits=[q], p=float(p))
-
-    def amplitude_damping(self, gamma: float, qubits: Sequence[int]) -> None:
-        for q in qubits:
-            self._push(name="amplitude_damping", qubits=[q], gamma=float(gamma))
-
-    def pauli_channel(
-        self, px: float, py: float, pz: float, qubits: Sequence[int]
-    ) -> None:
-        for q in qubits:
-            self._push(
-                name="pauli_channel",
-                qubits=[q],
-                px=float(px),
-                py=float(py),
-                pz=float(pz),
-            )
-
-    def depolarize2(self, p: float, pairs: Sequence[tuple[int, int]]) -> None:
-        for q0, q1 in pairs:
-            self._push(name="depolarize2", qubits=[q0, q1], p=float(p))
-
-    def unitary_1q(self, qubit: int, matrix) -> None:
-        self._push(
-            name="unitary_1q", qubits=[qubit], matrix=np.array(matrix, dtype=complex)
-        )
-
-    def unitary_2q(self, q0: int, q1: int, matrix) -> None:
-        self._push(
-            name="unitary_2q", qubits=[q0, q1], matrix=np.array(matrix, dtype=complex)
-        )
-
-
-class _RecordedChannel:
-    """What the recording `gates`/`noise` shims return: one gate object."""
-
-    __slots__ = ("gate",)
-
-    def __init__(self, **gate: Any) -> None:
-        self.gate = gate
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"_RecordedChannel({self.gate!r})"
-
-
-class _RecordingFactories:
-    """Namespace mirroring `paulistrings.gates` / `paulistrings.noise`.
-
-    Free-function factories there return a width-agnostic `Channel`; here they
-    return a `_RecordedChannel`, which `RecordingCircuit.append` understands.
-    """
-
-    @staticmethod
-    def h(qubit):
-        return _RecordedChannel(name="h", qubits=[qubit])
-
-    @staticmethod
-    def s(qubit):
-        return _RecordedChannel(name="s", qubits=[qubit])
-
-    @staticmethod
-    def x(qubit):
-        return _RecordedChannel(name="x", qubits=[qubit])
-
-    @staticmethod
-    def y(qubit):
-        return _RecordedChannel(name="y", qubits=[qubit])
-
-    @staticmethod
-    def z(qubit):
-        return _RecordedChannel(name="z", qubits=[qubit])
-
-    @staticmethod
-    def cnot(control, target):
-        return _RecordedChannel(name="cnot", qubits=[control, target])
-
-    @staticmethod
-    def cz(q0, q1):
-        return _RecordedChannel(name="cz", qubits=[q0, q1])
-
-    @staticmethod
-    def swap(q0, q1):
-        return _RecordedChannel(name="swap", qubits=[q0, q1])
-
-    @staticmethod
-    def rz(theta, qubit):
-        return _RecordedChannel(name="rz", qubits=[qubit], theta=float(theta))
-
-    @staticmethod
-    def rx(theta, qubit):
-        return _RecordedChannel(name="rx", qubits=[qubit], theta=float(theta))
-
-    @staticmethod
-    def ry(theta, qubit):
-        return _RecordedChannel(name="ry", qubits=[qubit], theta=float(theta))
-
-    @staticmethod
-    def pauli_rotation(pauli, qubits, theta):
-        return _RecordedChannel(
-            name="pauli_rotation",
-            qubits=list(qubits),
-            pauli=str(pauli),
-            theta=float(theta),
-        )
-
-    @staticmethod
-    def unitary_1q(qubit, matrix):
-        return _RecordedChannel(
-            name="unitary_1q", qubits=[qubit], matrix=np.array(matrix, dtype=complex)
-        )
-
-    @staticmethod
-    def unitary_2q(q0, q1, matrix):
-        return _RecordedChannel(
-            name="unitary_2q", qubits=[q0, q1], matrix=np.array(matrix, dtype=complex)
-        )
-
-    @staticmethod
-    def depolarize(p, qubit):
-        return _RecordedChannel(name="depolarize", qubits=[qubit], p=float(p))
-
-    @staticmethod
-    def dephase(p, qubit):
-        return _RecordedChannel(name="dephase", qubits=[qubit], p=float(p))
-
-    @staticmethod
-    def amplitude_damping(gamma, qubit):
-        return _RecordedChannel(
-            name="amplitude_damping", qubits=[qubit], gamma=float(gamma)
-        )
-
-    @staticmethod
-    def pauli_channel(px, py, pz, qubit):
-        return _RecordedChannel(
-            name="pauli_channel",
-            qubits=[qubit],
-            px=float(px),
-            py=float(py),
-            pz=float(pz),
-        )
-
-    @staticmethod
-    def depolarize2(p, q0, q1):
-        return _RecordedChannel(name="depolarize2", qubits=[q0, q1], p=float(p))
-
-
-_RECORDING_FACTORIES = _RecordingFactories()
-
-#: Module-global names a builder may have imported that must be shimmed while
-#: recording. `circuits.py` does `from paulistrings import Circuit, gates`.
-_RECORDING_PATCHES: dict[str, Any] = {
-    "Circuit": RecordingCircuit,
-    "gates": _RECORDING_FACTORIES,
-    "noise": _RECORDING_FACTORIES,
-}
+        return as_circuit_spec(self.circuit)
 
 
 def record_gates(builder, *args: Any, **kwargs: Any) -> CircuitSpec:
-    """Run a `Circuit`-building function against a recorder; return its gate list.
+    """Run a `Circuit`-building function and return its gate list.
 
     `builder` is any function that constructs and returns a
-    `paulistrings.Circuit` using module-global names -- every builder in
-    `examples/common/circuits.py`, which does
-    `from paulistrings import Circuit, gates`. For the duration of the call,
-    those names are rebound in `builder.__globals__` to `RecordingCircuit` and
-    the recording factory namespace, and restored afterwards.
+    `paulistrings.Circuit` -- every builder in `examples/common/circuits.py`.
+    Since `Circuit.gates` exposes the channel list, this is now just
+    `as_circuit_spec(builder(*args, **kwargs))`: the builder runs untouched,
+    against the real API, and nothing is rebound. (It used to run against a
+    recording stand-in installed into `builder.__globals__`, which was neither
+    thread-safe nor able to see names the builder did not resolve as module
+    globals; both caveats are gone with the mechanism.)
 
-    Why rebinding rather than a factory argument: the builders are already
-    written and committed against `Circuit`, and threading a factory parameter
-    through every one of them would put an oracle concern into the circuit API.
-    The cost is the usual one for this technique -- **not thread-safe**, and it
-    only reaches names the builder resolves as module globals.
-
-    It fails loudly rather than silently: if the builder returns anything but a
-    `RecordingCircuit` (because it constructed a real `Circuit` through a name
-    this function did not rebind), the result is an `OracleError` naming the
-    problem, never a spec that is missing gates.
+    Kept as a named function because the suite's call sites read as "capture
+    this builder's gate list", and because it fails loudly -- `OracleError`,
+    never a spec that is missing gates -- when the builder returns something
+    that is not a circuit.
     """
-    globs = getattr(builder, "__globals__", None)
-    if globs is None:
-        raise TypeError(
-            f"record_gates needs a Python function with __globals__, got "
-            f"{type(builder).__name__}"
-        )
-    saved = {k: globs[k] for k in _RECORDING_PATCHES if k in globs}
-    try:
-        for name, shim in _RECORDING_PATCHES.items():
-            if name in globs:
-                globs[name] = shim
-        result = builder(*args, **kwargs)
-    finally:
-        globs.update(saved)
-    if not isinstance(result, RecordingCircuit):
+    result = builder(*args, **kwargs)
+    if not isinstance(result, (Circuit, RecordingCircuit)):
         raise OracleError(
             f"{getattr(builder, '__qualname__', builder)} returned "
-            f"{type(result).__name__}, not a RecordingCircuit: it does not build its "
-            "circuit through the module-global names 'Circuit'/'gates'/'noise', so its "
-            "gate list cannot be recorded. Pass a CircuitSpec built another way."
+            f"{type(result).__name__}, not a paulistrings.Circuit, so it has no gate "
+            "list to read. Pass a CircuitSpec built another way."
         )
-    return result.spec
+    return as_circuit_spec(result)
 
 
 def as_circuit_spec(circuit: Any, num_qubits: int | None = None) -> CircuitSpec:
     """Coerce a supported circuit description to a `CircuitSpec`.
 
-    Accepted: a `CircuitSpec`, a `RecordingCircuit`, or a task-JSON circuit
-    object `{"gates": [...]}` (then `num_qubits` is required).
+    Accepted: a `CircuitSpec`, a `paulistrings.Circuit`, a `RecordingCircuit`,
+    or a task-JSON circuit object `{"gates": [...]}` (then `num_qubits` is
+    required).
 
-    A `paulistrings.Circuit` is rejected with a pointer to `record_gates`: it
-    exposes no gate list, so no oracle can read it.
+    A `Circuit` is read through `Circuit.gates`, which emits exactly the
+    task-JSON gate objects this module's vocabulary is, so the `Circuit` and
+    the JSON paths are the same conversion -- including turning a `matrix`
+    from the JSON `[re, im]` pair form into a complex array.
     """
     if isinstance(circuit, CircuitSpec):
         return circuit
     if isinstance(circuit, RecordingCircuit):
         return circuit.spec
     if isinstance(circuit, Circuit):
-        raise TypeError(
-            "a paulistrings.Circuit is opaque at the Python boundary (no gate list is "
-            "exposed), so the oracles cannot read it. Capture the builder with "
-            "oracles.record_gates(builder, *args) and pass the resulting CircuitSpec; "
-            "CircuitSpec.to_circuit() then builds the engine's Circuit from the same "
-            "gate list."
+        return CircuitSpec(
+            num_qubits=circuit.num_qubits,
+            gates=tuple(_json_gate_to_spec_gate(g) for g in circuit.gates),
         )
     if isinstance(circuit, Mapping) and "gates" in circuit:
         if num_qubits is None:
@@ -716,7 +484,7 @@ def as_circuit_spec(circuit: Any, num_qubits: int | None = None) -> CircuitSpec:
         return CircuitSpec(num_qubits=num_qubits, gates=tuple(gates))
     raise TypeError(
         f"unsupported circuit description {type(circuit).__name__}; expected a "
-        "CircuitSpec, a RecordingCircuit, or a task-JSON circuit object"
+        "CircuitSpec, a paulistrings.Circuit, or a task-JSON circuit object"
     )
 
 
@@ -965,7 +733,8 @@ def _emit_qiskit_gate(qc, gate: Mapping[str, Any]) -> None:
             "Pauli path (or a density-matrix reference, which this module does not "
             "provide) for noisy circuits."
         )
-    if name in ("h", "s", "x", "y", "z"):
+    # qiskit spells `S^dagger` `sdg` too, so the name goes through unchanged.
+    if name in ("h", "s", "sdg", "x", "y", "z"):
         getattr(qc, name)(qubits[0])
     elif name == "cnot":
         qc.cx(qubits[0], qubits[1])
@@ -1154,8 +923,9 @@ def _apply_spec_gate_to_tableau_sim(stim, sim, gate: Mapping[str, Any]) -> None:
             "averaging over them, so its expectation value would be a sample, not the "
             "channel's. Use light_cone_exact's Pauli path for noisy circuits."
         )
-    if name in ("h", "s", "x", "y", "z", "cnot", "cz", "swap"):
-        getattr(sim, name)(*qubits)
+    if name in _ALWAYS_CLIFFORD:
+        # stim's simulator spells `S^dagger` `s_dag`; every other name matches.
+        getattr(sim, _STIM_SIM_METHOD.get(name, name))(*qubits)
         return
     if name in _ROTATION_AXIS:
         axis = _ROTATION_AXIS[name]
@@ -1242,7 +1012,7 @@ def stim_clifford_exact(
 
     `circuit_or_stim_file` is either
 
-    - a `CircuitSpec` / `RecordingCircuit` -- each gate is applied to
+    - a `CircuitSpec` / `paulistrings.Circuit` -- each gate is applied to
       `stim.TableauSimulator`; a gate outside the Clifford group raises
       `NonCliffordGate` naming it, and noise channels are refused (a tableau
       simulation would *sample* an error, not average over the channel); or

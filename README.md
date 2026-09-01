@@ -4,12 +4,16 @@
 [![docs](https://github.com/lkdvos/paulistrings-rs/actions/workflows/docs.yml/badge.svg)](https://lkdvos.github.io/paulistrings-rs/)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-<!-- Pitch paragraph is single-sourced with crates/paulistrings/README.md — keep the two word-identical. -->
+<!-- Pitch paragraph is single-sourced with crates/paulistrings/README.md — keep the two word-identical.
+     The docs site pulls this same text in mechanically through the ANCHOR markers below
+     (docs/book/src/index.md), so it cannot drift there; only these two files need syncing by hand. -->
+<!-- ANCHOR: pitch -->
 Classical simulation of quantum circuits by Pauli propagation — evolving
 operators in the Pauli basis under gates and noise channels, in either
 the forward or Heisenberg picture. Aimed at workloads where state-vector
 or tensor-network simulators are infeasible (10⁶–10⁸ terms) but the
 operator stays sparse in the Pauli basis.
+<!-- ANCHOR_END: pitch -->
 
 Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl).
 
@@ -90,9 +94,13 @@ verification, and operator-backpropagation depth reduction — lives under
 
 ## Documentation
 
-- API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings)
-- Rendered rustdoc preview (rebuilt on every push to `main`):
-  [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/)
+- **Documentation site** — the gallery of showcases, benchmarks and cross-engine
+  comparisons, rebuilt on every push to `main`:
+  [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
+  Source and local build instructions: [`docs/`](docs/README.md).
+- API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the
+  rustdoc rendered alongside the site at
+  [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/)
 - System design and the propagation engine: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 ## Repository layout
@@ -116,6 +124,10 @@ benchmarks/
   python/               # pytest-benchmark suites + cross-library comparisons (Part A benchmarks)
   julia/                # subprocess-driven PauliPropagation.jl baseline
   results/              # raw benchmark output (gitignored)
+docs/
+  book/                 # mdBook source for the documentation site (showcases, benchmarks,
+                        #   comparisons); rendered to docs/book/site/ (gitignored)
+  sync-assets.sh        # links the site's figures to the committed SVGs they came from
 research/
   plans/  notes/        # execution plans, negative-result notes, hardware fact sheets, design notes
 ```

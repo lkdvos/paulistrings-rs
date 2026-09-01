@@ -22,6 +22,9 @@ benchmarks/results/*
 # artifacts are the summary, results, figures and log.
 benchmarks/python/jl_performance/tasks/
 
+# Rendered docs site (mdbook build-dir); the source is docs/book/src.
+docs/book/site/
+
 .DS_Store
 .idea/
 .vscode/

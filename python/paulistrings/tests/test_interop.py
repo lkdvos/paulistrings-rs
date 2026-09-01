@@ -90,6 +90,29 @@ def test_stim_hermitian_y_convention_matches_stim():
     assert got == {"Y": pytest.approx(1.0 + 0.0j)}
 
 
+def test_stim_s_dag_maps_to_the_named_sdg_gate():
+    # Hand-derived: S = diag(1, i), so S^dagger X S = diag(1, -i) [[0, i], [1, 0]]
+    # = [[0, i], [-i, 0]] = -Y. Forward propagation conjugates as U O U^dagger,
+    # and the gate here is U = S^dagger, so X must land on -Y — the mirror of
+    # `test_stim_hermitian_y_convention_matches_stim`'s +Y for S.
+    stim = pytest.importorskip("stim")
+    tab = stim.Tableau.from_named_gate("S_DAG")
+    assert str(tab(stim.PauliString("+X"))) == "-Y"
+
+    circuit, observable = interop.circuit_from_stim("S_DAG 0")
+    assert observable is None
+    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    assert _full_dict(out, 1) == {"Y": pytest.approx(-1.0 + 0.0j)}
+
+    # ...and it is the *named* sdg channel, not a unitary_1q fallback.
+    assert [g["name"] for g in circuit.gates] == ["sdg"]
+    # S then S^dagger is the identity on every Pauli.
+    both, _ = interop.circuit_from_stim("S 0\nS_DAG 0")
+    for label in ("X", "Y", "Z"):
+        initial = _sum(1, {label: 1.0})
+        _assert_close(initial.propagate(circuit=both, direction="forward"), initial)
+
+
 def test_stim_round_trip_matches_tableau_conjugation():
     stim = pytest.importorskip("stim")
     src = "H 0\nS 0\nCX 0 1"
@@ -342,13 +365,15 @@ def test_qiskit_t_gate_fallback_matches_general_unitary_conjugation():
         assert abs(abs(coeff) - r) < TOL
 
 
-def test_qiskit_sdg_fallback_matches_s_adjoint():
+def test_qiskit_sdg_maps_to_the_named_sdg_gate():
     pytest.importorskip("qiskit")
     from qiskit import QuantumCircuit
 
     qc = QuantumCircuit(1)
     qc.sdg(0)
     imported = interop.circuit_from_qiskit(qc)
+    # Named, not the unitary_1q fallback it used before `sdg` existed.
+    assert imported.gates == [{"name": "sdg", "qubits": [0]}]
 
     forward_s = Circuit(1)
     forward_s.s(0)
@@ -707,3 +732,19 @@ def test_load_task_n_qubits_mismatch_with_stim_file_hard_errors(tmp_path):
 
     with pytest.raises(ValueError, match="n_qubits"):
         interop.load_task(task_path)
+
+
+def test_stim_s_dag_maps_to_the_named_sdg_gate():
+    # Hand-derived: S X S^-1 = +Y (pinned above), so the adjoint conjugation is
+    # S^-1 X S = -Y. stim spells the adjoint "S_DAG"; the importer must map it
+    # to this package's named `sdg` gate, and forward propagation of X through
+    # it must land on -Y. Cross-checked against stim's own tableau.
+    stim = pytest.importorskip("stim")
+    tab = stim.Tableau.from_named_gate("S_DAG")
+    assert str(tab(stim.PauliString("+X"))) == "-Y"
+
+    circuit, observable = interop.circuit_from_stim("S_DAG 0")
+    assert observable is None
+    assert circuit.gates == [{"name": "sdg", "qubits": [0]}]
+    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    assert _full_dict(out, 1) == {"Y": pytest.approx(-1.0 + 0.0j)}

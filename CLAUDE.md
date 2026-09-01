@@ -119,7 +119,8 @@ reject an optimization to keep output bits stable.
 
 - `crates/paulistrings/` — pure Rust core, no Python deps. Modules: `pauli_string`, `phase`, `pauli_sum`,
   `bucket/{hash,sum}`, `accumulator`, `circuit`, `channel/{clifford,rotation,unitary,noise,identity,prepared}`,
-  `truncation/{builtin}`, `engine/{bucketed,coset,merge,stats}`, `test_support`, `examples`; re-exports in `lib.rs`. Also
+  `truncation/{builtin}`, `engine/{bucketed,coset,merge,stats}`, `stabilizer`, `test_support`, `examples`; re-exports in
+  `lib.rs`. Also
   `benches/pauli_ops.rs` (criterion), runnable `examples/`, and walkthroughs in `docs/examples/`.
 - `crates/paulistrings-py/` — PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22. Modules: `sum`, `circuit`,
   `gates`, `noise`, `truncation`, `channel_spec`, `truncation_spec`, `macros`.

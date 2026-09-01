@@ -382,3 +382,35 @@ Decisions:
   finding; the 8-thread trend -30.3% -> -10.5% as `m` grows is consistent with a compute win being absorbed as
   the layer approaches the ceiling), 2-7 rest streams (`sqrt(SWAP)`'s regime, left on the comparison kernel),
   and an `#[inline]` hint on the new function.
+### Phase 2 gate: E4 `expt/bucket-cliff` (`research/notes/2026-09-01-bucket-cliff.md`)
+
+- 12:41 E4 gate handed the box exclusively. Waited for load to fall below 1.0 (0.95 at 12:45) before starting;
+  `RUST_LOG` unset throughout.
+- 12:45 **scope decision (orchestrator): E4's §6.1 channel-aware-floor sweep is SKIPPED this campaign.** E2's
+  radix kernel passed its gate first and already takes the mid-`m` dense cell -24.0% layer / -37.9% sort with no
+  policy change; the two are **non-additive** (a radix sort is indifferent to how presorted its input is, hence
+  indifferent to the coset dimension `r`, which is E4's whole mechanism); and E4's forced floor costs the sparse
+  path +47-96%, so it is strictly a post-radix re-evaluation. Recorded as future work in the note's §6.1, not
+  cancelled.
+- 12:46-12:56 **§6.2 null-check ran: 6 cells, `ab-compare.sh --a f592c43 --b expt/bucket-cliff --order abba
+  --pairs 3`,** one invocation per cell. Artefacts `benchmarks/results/2026-09-01-ccqlin038/null-*`.
+  Wall medians: su4 q=128 m=980 **+2.21%** (3/3), m=7868 **+0.22%** (3/3), m=63518 **+3.16%** (3/3), su4 q=65
+  m=63518 **+3.87%** (3/3), su4 8t m=1e6 **-0.10% null**, rotation_zz 1t m=1.5e6 **+0.13% null**.
+- 12:58 **VERDICT: layout-band motion, not perturbation.** Four discriminators, all pointing the same way.
+  (1) **Work counts bit-identical** in every cell and every run -- `terms_in`/`terms_out`/`rows_gathered`/
+  `rows_sorted`/`rows_id`/`layers`/`cosets`/`runs`; layout cannot change these and a behavioural change could
+  not avoid changing them. (2) Deltas concentrated in the motion-sensitive kernels and **sign-inconsistent
+  across cells**: merge +27..+34% on the 1t su4 cells but **-13%** on rotation_zz; gather +5% / -2..-4% / +9.5%.
+  (3) **Every cell's wall delta is exactly its share-weighted phase sum** at the fact sheet's own phase shares
+  (predicted +2.22 / +0.21 / +3.02 / +3.77 / -0.03 against observed +2.21 / +0.22 / +3.16 / +3.87 / +0.13).
+  (4) Worst median +3.87%, worst single pair +5.01% -- inside the +-4-7% band the three finished gates
+  calibrated. Not investigated further, per the gate's own rule.
+- 12:58 **The layout shift is structurally probe-only.** Verified mechanically: every line E4 changes under
+  `crates/paulistrings/src/` is a doc comment (zero non-comment added lines in `bucket/sum.rs`,
+  `engine/bucketed.rs`, `engine/merge.rs`), code inside `#[cfg(test)] mod tests`, or one of the 93 new lines in
+  `test_support.rs`, which is `#[cfg(any(test, feature = "test-utils"))]`. `phase_breakdown` links `test-utils`,
+  so with `lto = "fat"` + `codegen-units = 1` the extra fixture code reshuffles the probe binary -- but **a
+  shipped build compiles identical code on both sides**, so no user-visible delta exists. Caveat recorded in the
+  note: the four cells that moved are one code path at four sizes, not four independent paths, and the two
+  genuinely different paths measured are both null.
+- E4 gate **PASSED**. No default constant changed on the branch; branch tip 204a529 plus the results commit.

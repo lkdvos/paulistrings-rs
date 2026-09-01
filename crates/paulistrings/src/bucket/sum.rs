@@ -57,6 +57,22 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 /// `min_buckets × MIN_TERMS_PER_TASK` total terms we would rather have few
 /// buckets and let the small-`n` fallback to the whole-sum path handle it.
 /// See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value.
+///
+/// # This gate has a measured cost on the dense-PTM path
+///
+/// The bucket count is not only about parallelism: it caps the engine's coset
+/// dimension `r = min(rank(h(D)), bits)`, and the per-run sort's comparison
+/// count reaches its `log2(fanout)` floor only at *full* delta rank (`r = 4`
+/// for a two-qubit channel). Below `min_buckets × MIN_TERMS_PER_TASK` terms
+/// `bits ≤ 3`, so a **dense** 16×16 PTM cannot get there and its sort — 58–60%
+/// of that layer — costs up to 2.2× its asymptote. Forcing `bits = 7` at 980
+/// terms measured **−38.6%** on a Haar-SU(4) layer (3/3 paired, non-authoritative).
+///
+/// Do **not** just lower or drop the gate: the same forcing costs a
+/// `rotation_zz` layer **+46.6%** at 1497 terms (3/3 paired), because its sort
+/// is only 7% of the layer and the extra buckets are pure per-run overhead. Any
+/// fix has to key off the channel's fanout. Mechanism, numbers and the tuning
+/// gate: `research/notes/2026-09-01-bucket-cliff.md`.
 pub const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Default target terms per bucket.
@@ -65,6 +81,18 @@ pub const MIN_TERMS_PER_TASK: usize = 64;
 /// `W = 2` is `2·8·2 + 16 = 48` bytes, so 1024 terms is ~48 KB against 1 MiB of
 /// L2 per core on the reference host. See ARCHITECTURE.md §Bucket-Policy for
 /// the sweep that set this value.
+///
+/// Two caveats the sweep behind it does not cover, both measured since:
+///
+/// - The object that has to stay resident is the **gather run**, not the
+///   bucket. At a dense PTM's fanout of 14.94 that is `14.94 × 1024 × 48 B ≈
+///   737 KB` per live coset — nearly all of L2, and the reason the dense-PTM
+///   path saturates the write path from 16 threads
+///   (`research/notes/2026-09-01-large-m-phase-breakdown.md` §4). The 48 KB
+///   figure is a rotation layer's.
+/// - The sweep is a rotation layer, whose sort is 7% of the layer. See
+///   [`MIN_TERMS_PER_TASK`] for what the bucket count does to a dense-PTM
+///   layer's sort, which is 58–60% of it.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
 /// Default floor on the bucket count.

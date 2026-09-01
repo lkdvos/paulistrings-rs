@@ -472,4 +472,68 @@ mod tests {
             }
         }
     }
+
+    // ---- the coset dimension a real dense-PTM channel actually gets ----
+
+    /// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))`
+    /// is a property of the *hash rows*, not of the channel — so the same Haar
+    /// SU(4) block gets a 16-member coset at one width and an 8-member one at
+    /// another under the same seed.
+    ///
+    /// This is the bridge in `research/notes/2026-09-01-bucket-cliff.md`
+    /// between `bucket::hash`'s rank tests and the dense-PTM sort's cost: the
+    /// per-run sort's comparison count sits at its `log2(fanout)` floor exactly
+    /// when `r` is full, and `r` is what this pins.
+    #[test]
+    fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
+        use crate::bucket::sum::DEFAULT_HASH_SEED;
+        use crate::bucket::Gf2Hash;
+        use crate::channel::{Channel, GeneralUnitary2Q};
+        use crate::test_support::{haar_su4_matrix, support_delta_rank};
+
+        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+
+        for bits in 0..=9u8 {
+            // W = 2: full rank from `bits = 7`, the engine's own floor.
+            let h2 = Gf2Hash::<2>::new(128, bits, DEFAULT_HASH_SEED);
+            let want2 = support_delta_rank(&h2, &[0, 1]).min(bits as usize);
+            let prep2 = Channel::<2>::prepare(&ch, &h2, false).expect("prepare W=2");
+            assert_eq!(
+                Gf2Span::new(&prep2.bucket_deltas(), bits).r(),
+                want2,
+                "W=2 at {bits} bits"
+            );
+
+            // W = 1: one rank short at every bucket count this policy reaches.
+            let h1 = Gf2Hash::<1>::new(64, bits, DEFAULT_HASH_SEED);
+            let want1 = support_delta_rank(&h1, &[0, 1]).min(bits as usize);
+            let prep1 = Channel::<1>::prepare(&ch, &h1, false).expect("prepare W=1");
+            assert_eq!(
+                Gf2Span::new(&prep1.bucket_deltas(), bits).r(),
+                want1,
+                "W=1 at {bits} bits"
+            );
+        }
+
+        // At the default bucket-count floor the two widths get different coset
+        // widths from the same gate — 16 members against 8. That difference,
+        // not the key width, is what the Phase-1 fact sheet measured as a
+        // "W = 1 sort defect".
+        let h2 = Gf2Hash::<2>::new(128, 7, DEFAULT_HASH_SEED);
+        let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
+        let s2 = Gf2Span::new(
+            &Channel::<2>::prepare(&ch, &h2, false)
+                .unwrap()
+                .bucket_deltas(),
+            7,
+        );
+        let s1 = Gf2Span::new(
+            &Channel::<1>::prepare(&ch, &h1, false)
+                .unwrap()
+                .bucket_deltas(),
+            7,
+        );
+        assert_eq!((s2.coset_size(), s2.num_cosets()), (16, 8));
+        assert_eq!((s1.coset_size(), s1.num_cosets()), (8, 16));
+    }
 }

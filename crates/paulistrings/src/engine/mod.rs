@@ -79,19 +79,28 @@ pub enum EngineSelection {
 
 /// Default for [`PropagateOptions::small_sum_threshold`].
 ///
-/// The direct path's whole win is the bucketed layer's per-layer fixed cost,
-/// measured at 1.43 µs for a two-qubit rotation at `W = 2` and 5.4 µs for a
-/// dense two-qubit PTM (`research/notes/2026-09-01-large-m-phase-breakdown.md`
-/// §2). Against the sorting engine's ~29 ns/term that fixed cost is 9% of a
-/// 500-term layer, 3.3% of a 1500-term one and 1.2% of a 4096-term one — so
-/// 4096 is where there stops being anything to win even if the two paths' per-term
-/// costs were equal. It also sits below `desired_bits`'s `worth_splitting` floor
+/// Two costs move in opposite directions with the term count. The direct path
+/// saves the bucketed layer's **fixed** cost — 1.43 µs for a two-qubit rotation
+/// at `W = 2`, 5.4 µs for a dense two-qubit PTM
+/// (`research/notes/2026-09-01-large-m-phase-breakdown.md` §2) — and pays a
+/// *per-term* cost that rises as its map leaves cache, where the sorting engine's
+/// is flat in `m` to ±10% over three decades (same sheet, §1). So there is a
+/// crossover, and it is workload-dependent: measured on the head-to-head study's
+/// own circuits (`examples/small_m_ab.rs`) it is **≈ 1.5 × 10²** resident terms
+/// for kicked-Ising and **≈ 2 × 10³** for XXZ — a 14× spread, in keeping with the
+/// 4.4–21× spread of the study's own cross-engine crossovers.
+///
+/// 512 is the geometric mean of those two, rounded to a power of two. At that
+/// value no configuration in the harness regresses, and the three the study lost
+/// gain 2.36× / 1.10× / 1.62×; at 4096 the kicked-Ising configuration just above
+/// its crossover instead **loses 1.4×**. Raising it is worth up to ~1.4× more on
+/// an XXZ-shaped workload and costs that much on a kicked-Ising-shaped one, so
+/// the knob is the answer rather than the constant.
+///
+/// It also sits below `desired_bits`'s `worth_splitting` floor
 /// (`DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`), so a sum on this path is
 /// one the sorting engine would have run in few buckets anyway.
-///
-/// This is a starting point chosen from fixed-cost arithmetic, not a measured
-/// crossover; the field is public so a measurement can move it.
-pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 4096;
+pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 512;
 
 /// Tuning knobs for [`propagate_with_options`].
 ///

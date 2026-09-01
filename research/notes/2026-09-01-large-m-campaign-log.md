@@ -414,3 +414,59 @@ Decisions:
   note: the four cells that moved are one code path at four sizes, not four independent paths, and the two
   genuinely different paths measured are both null.
 - E4 gate **PASSED**. No default constant changed on the branch; branch tip 204a529 plus the results commit.
+
+### Bindings follow-up: E3's engine kwarg and E1's `ApproxTopN` reach Python
+
+- 13:05 Scope handed over: expose the two merged features on the Python surface, no timing work. Three
+  commits on `large-m-optimization`, `d8e5808` / `9043ae8` / `81c568a`.
+- 13:05 **`truncation.approx_topn(n)`** (`d8e5808`), wired exactly as `topn` is — a `PolicySpec::ApproxTopN`
+  arm in `keep_spec` (unconditionally `true`; it works in the layer pass) and in `finalize_spec` (delegating
+  to the core `ApproxTopN`), plus the `python/paulistrings/truncation.py` re-export. Exact `topn` stays the
+  default everywhere; this is opt-in, as E1 shipped it.
+- 13:05 **`SpecPolicy::finalizes_layer` overridden** (`9043ae8`), closing the gap the small-`m` note flagged
+  in its §4(2) and §7 risk 5. `SpecPolicy` overrides `finalize_layer` unconditionally — it must, since the
+  spec is only known at runtime — so it inherited the trait's conservative `true` and `EngineSelection::Auto`
+  would have declined the direct path for *every* Python policy, `propagate(policy=None)`'s `NoOp` included.
+  `finalizes_spec` now mirrors `finalize_spec` arm for arm (both TopN flavours true, `And` the disjunction,
+  `Coeff`/`Weight`/`Or`/`NoOp` false), and **both matches were made exhaustive** so a future `PolicySpec`
+  variant cannot be added to one without answering in the other — the failure mode being a `false` against a
+  real layer pass, which is a wrong answer rather than a slow one.
+- 13:05 **`engine=` / `small_sum_threshold=` on `propagate` and `propagate_with_stats`** (`81c568a`):
+  `"sorted"` (default) / `"auto"` / `"direct"` → `EngineSelection::{SortedOnly, Auto, SmallSumDirect}`, one
+  `parse_engine` at the boundary shared by both methods (the shape `parse_direction` already set), mapping to
+  `PropagateOptions` and calling `propagate_with_options` / `propagate_with_scratch_and_options`. The width
+  dispatch is untouched and the selection is made once, outside every loop. The core's
+  `DEFAULT_SMALL_SUM_THRESHOLD` is re-exported as `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` (2048) so the
+  Python default cannot drift from the Rust one.
+- 13:05 Default behaviour is `PropagateOptions::default()`, which the core documents as bit-for-bit today's
+  path — so the two new tests for it assert **exact** dict equality against `engine="sorted"`, not tolerance.
+- 13:20 **The finalization hint has no Python-visible discriminator, and that is a property of the surface,
+  not an omission.** The only observable difference between `Auto` taking the direct path and `Auto` declining
+  it is the wide-channel capability (`> MAX_LOCAL_SUPPORT`, which the sorting engine panics on), and the sole
+  `> 2`-support channel the bindings can construct is `pauli_rotation`, which overrides `prepare` and runs on
+  both engines. Everything else agrees to FP tolerance with equal per-layer counts by design. So the hint is
+  pinned by a Rust unit test in the bindings crate instead —
+  `truncation_spec::tests::spec_finalizes_matches_core_builtins`, checking every arm against the core builtin
+  the matching `finalize_spec` arm delegates to, in the same file as the existing `spec_keep_matches_core_builtins`.
+- 13:20 Python tests: `python/paulistrings/tests/test_engine_selection.py`, **38 new**, plus 11 `approx_topn`
+  tests in `test_truncation.py` and one name in `test_api_surface.py`. The engine file covers the kwargs'
+  acceptance and defaults (including positionally, and `small_sum_threshold` alone being inert under the
+  default engine), direct-vs-sorted agreement across **all three width bands** (8 / 68 / 130 qubits → `W ∈
+  {1, 2, 4}`) × both directions × `{auto, direct}`, per-layer term-count **equality** on the whole
+  `terms_in`/`terms_out`/`peak`/`final` record, a threshold sweep `{0, 1, 2, 3, 8, 33, 200, 2²⁰}` walking the
+  small→large handover across the circuit including both undivided ends, a finalizing (`topn`) and a per-term
+  (`coeff`) policy on all three engines, the zero-layer no-op, and the `ValueError` spellings.
+- 13:20 The seeded circuit is 76 layers and **peaks at 2666 terms, above the shipped 2048 threshold**, so the
+  default-threshold `auto`/`direct` cases genuinely exercise the one-way transition rather than sitting wholly
+  on one path. Recorded because a follow-up that shrinks it would silently turn those cases vacuous.
+- 13:24 Suites: `cargo test --workspace` **524 → 525** (green; the one addition is the hint test),
+  `cargo clippy --workspace --all-targets` clean, `cargo fmt` applied. `pytest python/paulistrings/tests`
+  **874 → 924 passed, 1 skipped** — all green, not only the new files.
+- 13:24 Consequence for the campaign: E3's gate (c) can now be run literally — the cross-engine head-to-head
+  driver can be pointed at `engine="auto"` and its per-layer term-count parity gate exercised against
+  `PauliPropagation.jl` with the path enabled, which the note's §5.3 and §6(c) had to substitute two
+  ours-only checks for. Not run here (no timing work in this scope).
+- 13:24 Deliberately not done: no `docs/book/` change (Phase 3 owns the docs site); no ARCHITECTURE.md change
+  (§Truncation already documents `ApproxTopN` from E1, §Python-Bindings' description of the truncation
+  factories stays accurate, and the small-`m` note's §7 defers a `§Small-Sum-Path` until the default flips);
+  no default flipped — `engine` defaults to `"sorted"` and `topn` stays the default policy.

@@ -470,3 +470,175 @@ Decisions:
   (§Truncation already documents `ApproxTopN` from E1, §Python-Bindings' description of the truncation
   factories stays accurate, and the small-`m` note's §7 defers a `§Small-Sum-Path` until the default flips);
   no default flipped — `engine` defaults to `"sorted"` and `topn` stays the default policy.
+
+## Phase 3: re-validation — the head-to-head on the improved engine
+
+Results: `benchmarks/python/jl_performance/post-optimization/README.md` (Part A, default engine) and
+`post-optimization-auto/` (Part B, `engine="auto"`).
+
+- 13:31 **Preflight.** Host ccqlin038, load 1.00 with no compute tenant (the average is interactive tooling —
+  `herdr`, `htop`, `nvim`, agent sessions; no build, no benchmark), 205 GiB free of 251. Tree clean at
+  `eb8d5cd`. Extension provenance verified rather than assumed:
+  `python/paulistrings/_paulistrings.abi3.so` mtime **2026-09-01 13:29:28**, which postdates `81c568a`
+  (13:26:50), the last commit to touch the bindings — so the binary contains E1 + E2 + E3 *and* the
+  `engine=` kwarg. `RUST_LOG` unset in the campaign shell.
+- 13:35 **Driver extension (`0f00207`), committed before any timed run.** `--engine {sorted,auto,direct}`
+  forwarded on each rust leg's argv, and `--max-configs N` to keep the N loosest cutoffs of a curve.
+  `harness.run_propagation` grew a `propagate_engine` keyword that is *omitted from the call* when `None`,
+  so no existing caller changes behaviour. `sorted` is the default at every level, which is what every
+  committed result file measured — the flag reinterprets no existing number.
+  Decision: **the parity gate takes the same `--engine` as the timed legs.** A layer engine that changed
+  per-layer counts has to disqualify its own configuration; a gate that ran the *other* engine would wave
+  it through. This is what turns E3's outstanding gate (c) into a measurement against
+  PauliPropagation.jl rather than two ours-only checks.
+  `pytest python/paulistrings/tests/test_jl_performance_protocol.py` **50 → 61** (green), harness suite
+  50 passed / 1 skipped.
+- 13:41 **Plumbing smoke** (`su4 --pilot --max-configs 1 --engine auto`, 0.5 min, scratch dir, not reported
+  as a measurement): parity **105/105 layers identical with the direct path enabled**, |dE| = 2.1e-17 —
+  the first evidence for gate (c) against jl. rust 0.0049 s against the committed 0.00917 s.
+- 13:42 **Part A launched**: `--curves --workload kicked_ising --workload xxz --workload su4 --pairs 5`,
+  one invocation into `post-optimization/`. **One invocation, not three, deliberately**: `summary.json`
+  and `results.json` are written wholesale at the end of a run, so three invocations into one `--out`
+  would each clobber the previous curve's structured record (only `run.log` appends).
+- 13:42 **Projection and the pair-count decision — 5 pairs, kept.** No fresh pilot was run: the committed
+  5-pair study *is* a better projection basis than a new 1-pair pilot, being the same configurations on
+  the same host measured hours earlier, and a pilot of the heavy tail would itself have cost ~20 min.
+  Projected from it at a ~20 s/pair fixed cost (julia process start + JIT-cold propagation, calibrated on
+  the su4 curve's committed 13.4 min): kicked-Ising ~23 min, XXZ ~26 min, su4 ~12 min, **~61 min for the
+  committed 21 configurations**.
+  The `--pairs 3` rule was therefore **not** triggered, and dropping to 3 would in any case have destroyed
+  the one-to-one comparability with the baseline that is this phase's whole purpose.
+- 13:42 **Known overshoot, accepted: the XXZ `1e-9` configuration.** The baseline study *cancelled* it by
+  hand mid-pairs; the driver's own cut rule now authorizes it (projected julia leg ~201 s against the
+  1800 s budget, ~7.1 GiB against 240 GiB free), so a protocol-identical invocation runs it. That adds
+  ~31 min, taking the projection to **~92 min** against the phase's ~90 min box. Accepted rather than
+  suppressed: it is the study's largest configuration (8.5 × 10⁶ terms, previously reconnaissance-only at
+  one pair), it *adds* a measurement instead of repeating one, and suppressing it would have meant either
+  a hand-editing deviation or `--max-configs`, which is global and would have truncated kicked-Ising too.
+- 13:42 **Deviation, recorded: `kicked_ising_deep` skipped.** 117 min at 3 pairs, and its regime overlaps
+  the kicked-Ising curve's top end. Nothing merged targets large-`m` rotations beyond E1, whose effect the
+  5-step curve measures at the same term counts. The deep curve's committed numbers therefore still
+  describe the *pre-optimization* engine and are flagged as such wherever they are quoted.
+- 14:42 **Part A interrupted — the agent harness killed the background driver** during xxz `1e-9` pair 4,
+  ~60 min in. The kicked-Ising curve (9 configurations) and XXZ through `1e-8` (7) had completed all five
+  pairs; `su4` had not started. No measurement was lost: `run.log` is flushed line by line, and the
+  structured record was rebuilt with the study's own committed
+  `jl_performance_recover.py --memory-from <study summary>` — the parent study's precedent, tool for tool.
+  The tool imports the driver's protocol math and refuses to write on a median or verdict disagreement; it
+  wrote, so every median here is the driver's. It dropped xxz `1e-9` on its own rule (4/5 pairs).
+- 14:44 Recovery consequences, both recorded in the results README rather than papered over: `peak_terms`
+  is **joined** from the study (exact — deterministic in the configuration, and every final count matches
+  the study's), and the **memory block is joined too and is therefore not a measurement of this engine**,
+  so no memory number is quoted from that directory.
+- 14:44 **su4 re-run as its own invocation** into `post-optimization/su4-curve/` (12.7 min), mirroring the
+  study's own `su4-curve/` layout. Driver-written summary, so its memory and `peak_terms` *are* measured.
+  Relaunched under `setsid nohup` so a harness task kill cannot reach it again; the same for Part B.
+- 14:56 **Part B launched**, `--engine auto --max-configs 3` over all three workloads, 11.6 min.
+  **Scope extended beyond the handoff's named kicked-Ising + XXZ to su4's three loosest cutoffs**, because
+  all three are configurations the study lost or tied (0.983 / **0.620, the study's deepest deficit** /
+  1.027) and they cost ~4 min. `--max-configs` is global, so this also gave the three loosest of each
+  rotation workload — exactly the six the handoff named.
+
+### Phase 3 results
+
+**Part A — protocol-identical rerun, default engine** (`post-optimization/`, 21 configurations, 5 pairs
+each, all parity-clean: 1355 / 1782 / 105 per-layer counts identical, |dE| ≤ 2.6e-16, term sets
+bit-identical to the study's).
+
+| workload | crossover before → after | best ratio before → after | our leg, large `m` |
+|---|---|---|---|
+| kicked-Ising | 3.79e3 → **2.73e3** (−28 %) | 1.925 → **2.146** | −12 to −16 % |
+| XXZ | 1.65e4 → 2.00e4 (+21 %, **unresolved**) | 1.798 → **2.023** | −11 to −13 % |
+| su4 | 8.01e4 → **none** (we win at every sign-consistent point) | 1.974 → **2.921** | −27 to −33 % |
+
+- 14:44 **The jl side did not move.** Median jl warm-time delta across all 21 configurations **−0.7 %**,
+  full range −4.3 % to +4.5 %, no systematic direction — an order of magnitude below the ratio movements
+  at the top of each sweep. So the ratio gains are ours, not governor drift. This was the check the
+  handoff asked for and it comes out clean.
+- 14:44 **Mechanism attribution holds cell for cell.** E1 acts on every configuration (all use
+  `min_abs_coeff`) and shows up as a roughly *constant fractional* 13–16 % per-term saving across a decade
+  of `m` on both rotation workloads — what a per-term change predicts. E2 acts only on su4 and delivers
+  −26.7 / −28.5 / −33.3 % on its three heaviest points against the gate's `W = 1` cells of −33.2 / −33.8 %.
+  E3 is inert in Part A by construction.
+- 14:44 **Honest negative: XXZ 1.6e3–4.9e4 is 5.5–16 % slower than the baseline campaign measured**, while
+  kicked-Ising moved −3 to −9 % over the same band. Both are `pauli_rotation` at `W = 2`, so this is not a
+  uniform small-`m` cost of the merged changes. Only the 4.9e4 point resolves (non-overlapping per-pair
+  ranges, ~6 %); the other two sit inside their own runs' spread (1e-3's five pairs span 89.8 %).
+  **Not attributed.** LTO code layout is live — E1's gate measured untouched code moving −7.5 % to +4.4 %
+  on layout alone, and three merged branches is a new layout. **Follow-up: `ab-compare` the pre- and
+  post-campaign binaries at `xxz eps=1e-5`**, which is the instrument a between-campaign delta is not.
+- 14:44 **Bonus point, below the bar:** xxz `1e-9`, 8 473 952 terms, all 1782 layers parity-clean,
+  |dE| = 7.6e-17, four pairs at 2.230 / 2.227 / 2.230 / 2.233 (rust 43.5–43.7 s vs jl 97.2–97.5 s). The
+  study's one-pair pilot read 55.0 / 99.8 / ≈1.81. Quoted as reconnaissance only, in no table or verdict.
+  XXZ's ratio has still not turned over at 8.5e6 terms.
+- 14:44 **The kicked-Ising saturation decay is unchanged and is still Julia's.** Above 6.4e5 terms our
+  ns/peak-term falls 1097 → 964 (−12 %) against Julia's 2406 → 1550 (−36 %) — the same discount Phase 1
+  attributed to near-closure. The campaign did not target it; every point in the decaying range is simply
+  ~15 % better than it was.
+
+**Part B — `engine="auto"` at the small-`m` end** (`post-optimization-auto/`, 9 configurations, 5 pairs).
+
+| configuration | peak terms | study | Part A | **Part B** | path speedup |
+|---|---|---|---|---|---|
+| xxz 1e-3 | 1 625 | 0.453 | 0.372 | **1.040** (tie) | **2.69×** |
+| xxz 1e-4 | 9 918 | 0.895 | 0.873 | **1.051** (tie) | 1.24× |
+| xxz 1e-2 | 164 | 0.460 | 0.440 | **0.649** | 1.47× |
+| ki 2⁻⁴ | 68 | 0.323 | 0.281 | **0.490** | 1.65× |
+| ki 2⁻⁶ | 517 | 0.629 | 0.638 | **0.696** (tie) | 1.11× |
+| ki 2⁻⁸ | 6 311 | 1.126 | 1.253 | **1.297** | 1.08× |
+| su4 1e-2 | 1 416 | 0.983 | 1.097 | **1.660** | 1.47× |
+| su4 3e-3 | 12 924 | 0.620 | 0.658 | **0.802** | 1.21× |
+| su4 1e-3 | 84 836 | 1.027 | 1.416 | 1.409 | 1.00× — **inert control** |
+
+- 15:08 **E3 gate (c): PASS, and now measured against an independent engine.** The parity gate takes the
+  same `--engine` as the timed legs by construction, so all nine ran with the path enabled and taken:
+  **9 618 per-layer term counts, every one identical to PauliPropagation.jl's**, |dE| ≤ 9.0e-17, final
+  counts identical to Part A's and the study's, at both `W = 1` and `W = 2`, over 105- to 1782-channel
+  circuits, across fully- and partially-resident sums. The note's §6(c) had to substitute two ours-only
+  checks for this; it is closed.
+- 15:08 The su4 `1e-3` row is the taper control: 1.409 on `auto` against 1.416 on `sorted`, a 0.5 %
+  difference on a sum that leaves the 2048 threshold in its first few layers. Inert above threshold, as
+  designed.
+- 15:08 Three configurations became **`indistinguishable` by improving**. Reported as ties, not wins — the
+  study's rule that a mixed-sign result is "not a small win, not a trend" applies unchanged when the
+  direction is favourable.
+- 15:08 kicked-Ising crossover with the path on: **1.88e3** (3.79e3 → 2.73e3 → 1.88e3). su4's, on the
+  truncated three-cutoff sweep, is 6.62e3 — not comparable with Part A's "none", which comes from the full
+  five-cutoff sweep. XXZ has no bracket on the truncated sweep (one sign-consistent point, two ties), which
+  is itself the finding: with the path on XXZ is no longer *losing* anywhere above 1.6e3 terms.
+
+## Phase 3 verdict
+
+**The campaign delivered, and the ratio movements are ours — Julia's times are statistically unchanged
+(median −0.7 % across 21 configurations).**
+
+**Crossovers, before → after (default engine):**
+
+| workload | before | after | with `engine="auto"` |
+|---|---|---|---|
+| kicked-Ising | 3.79 × 10³ | **2.73 × 10³** | **1.88 × 10³** |
+| XXZ | 1.65 × 10⁴ | 2.00 × 10⁴ (unresolved) | no longer losing above 1.6 × 10³ |
+| su4 | 8.01 × 10⁴ | **none on the sweep** | — |
+
+**Headline ratios, before → after:** kicked-Ising **1.925 → 2.146** (peak) and 1.389 → **1.610** at
+2.15e6; XXZ **1.798 → 2.023** at 2.66e6, still rising, plus 2.23 at 8.5e6 as reconnaissance; su4
+**1.974 → 2.921** at 2.30e6, the campaign's largest single movement.
+
+**What each experiment bought, measured end-to-end rather than at the layer:**
+
+- **E1** — 13–16 % of our per-term cost on both rotation workloads, at every `m` where the merge dominates.
+  Applies to every `min_abs_coeff` caller, i.e. essentially every user.
+- **E2** — 27–33 % of su4's wall, matching its `W = 1` gate cells; turned a tie and a loss into wins and
+  erased that workload's crossover.
+- **E3** — 1.08–2.69× below its threshold; closed the study's small-`m` deficit from "Julia wins
+  unanimously" to a tie on three configurations. Still opt-in.
+
+**Outstanding, and named rather than hidden:**
+
+1. `ab-compare` the pre-/post-campaign binaries at `xxz eps=1e-5` to settle the unattributed 5.5–16 %
+   small-`m` XXZ slowdown (layout vs. real cost).
+2. `deep-kicked-ising/` was not re-measured; its numbers still describe the pre-optimization engine.
+3. Memory for the rotation workloads was joined, not measured, in `post-optimization/`; su4's is measured
+   and unchanged (95 vs 93 B/peak-term).
+4. A tighter XXZ grid between 1.6e3 and 1e4 terms would localize the `engine="auto"` crossover, which this
+   sweep can only bound.

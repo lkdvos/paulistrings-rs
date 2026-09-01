@@ -199,8 +199,85 @@ carries the physics that fix turned on.
 
 ### Performance: it depends on the size of the tracked set
 
-There is no single ratio, and reporting one would be misleading. Three committed
-measurements, in increasing tracked-set size:
+There is no single ratio, and reporting one would be misleading — the ranking
+changes sign, and *where* it changes sign depends on the workload by more than an
+order of magnitude.
+
+The authoritative source is a dedicated head-to-head study that asks only this
+question, sweeps the term count deliberately rather than incidentally, and uses
+the one protocol that can resolve differences near this host's noise floor:
+**five interleaved `abba` pairs per configuration, accepted on direction
+consistency, never on a difference of two independently-noisy means.** Every
+configuration passes a per-layer term-count parity gate before any timing is
+reported.
+
+The numbers below are the **post-optimization rerun** — the study's protocol
+re-run against the current engine, after the large-`m` campaign
+([`jl_performance/post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md)).
+The pre-campaign baseline they are measured against is
+[`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md).
+
+#### Where the ranking changes sign
+
+| workload | channels | crossover, before the campaign | **crossover now** |
+|---|---|---|---|
+| kicked-Ising 127 q, 5 steps | 1 355 | 3.79 · 10³ peak terms | **2.73 · 10³** |
+| XXZ chain, `n = 100` | 1 782 | 1.65 · 10⁴ | **2.00 · 10⁴** (moved by less than the bracketing points resolve) |
+| Haar SU(4) brickwork, `n = 36` | 105 | 8.01 · 10⁴ | **none on that sweep** — faster at every sign-consistent point |
+
+> **The crossover is workload-specific, and that is the headline.** It spans 7× across
+> these three, and the SU(4) matrix-gate path no longer has one at all. Quoting a
+> single global crossover would be wrong by an order of magnitude for one workload
+> or the other.
+
+#### Above the crossover
+
+| workload | tracked set | before | **now** |
+|---|---|---|---|
+| kicked-Ising | 6.4 · 10⁵ peak terms | 1.925× | **2.146×** |
+| kicked-Ising | 2.15 · 10⁶ | 1.389× | **1.610×** |
+| XXZ | 2.66 · 10⁶ | 1.798× | **2.023×**, still rising |
+| Haar SU(4) | 2.30 · 10⁶ | 1.974× | **2.921×** |
+
+Julia's own times were statistically unchanged between the two campaigns — a
+median of −0.7% across all 21 configurations, range −4.3% to +4.5% — so these are
+movements on this engine's side of the fraction, not drift on the other. The SU(4)
+figure is the largest and has a named mechanism: a gated radix sort for dense-PTM
+gather runs, whose strongest case is exactly this workload's `W = 1` 16-way fanout.
+
+#### Below the crossover, and the opt-in path that moves it
+
+Below the crossover jl's hash-map backend still wins, by up to **3.6×** at 68
+terms. The reason is structural: a hash-map insert per term costs little at 10²
+terms, while this engine pays a bucketed per-layer pipeline whose cost is nearly
+independent of the term count.
+
+That fixed cost is now avoidable. `propagate(engine="auto")` routes layers below
+2 048 terms through a direct-apply path instead, one-way, and it is worth
+**1.08–2.69×** on exactly those configurations
+([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)):
+
+| workload | tracked set | default engine | **`engine="auto"`** |
+|---|---|---|---|
+| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040× — a measured tie** |
+| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051× — a measured tie** |
+| Haar SU(4) | 1 416 terms | 1.097× | **1.660×** |
+| kicked-Ising | crossover | 2.73 · 10³ terms | **1.88 · 10³ terms** |
+
+It is **not the default** — `engine` defaults to `"sorted"`, the bucketed engine at
+every term count — and above its threshold it is inert, which that run measures as
+its own control (SU(4) at 84 836 terms: 1.409× with the path on, 1.416× with it
+off). The nine configurations it was measured on all passed the per-layer parity
+gate *with the path enabled*: 9 618 per-layer counts, every one identical to
+PauliPropagation.jl's.
+
+#### The earlier, incidental numbers
+
+Benchmarks C, D and E each produced cross-engine timings as a side effect of asking
+a different question, and they disagreed about which engine is faster — which is
+what motivated the dedicated study. They are not contradictions; they are samples
+of a crossing curve taken at different points on it, with single-shot timings whose
+noise floor is comparable to some of the differences quoted.
 
 | source | configuration | tracked set | result |
 |---|---|---|---|
@@ -211,18 +288,10 @@ measurements, in increasing tracked-set size:
 | [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ, `n = 40`, `Jz = 0.5`, 702 layers | 206 035 terms | **this engine 1.59× faster** |
 | [Benchmark C](benchmarks/c-deep-trotter.md#wall-time-reported-not-claimed) | 127 q kicked Ising, 20 steps, 5 420 layers | 8·10³ → 2.4·10⁶ terms | this engine 1.4×, 2.3×, 2.3× faster |
 
-> **The ranking changes sign somewhere between 3·10³ and 3·10⁴ tracked terms.**
-> Below the crossover jl's hash-map backend wins by 3–4×; above it this engine
-> wins by ~1.5× and pulls away.
-
-The mechanism is not mysterious. These circuits have `3(n−1)` channels per Trotter
-step, and this engine pays a bucketed per-layer pass per channel — a fixed cost
-that a 257-term sum cannot amortize, and one that a 2·10⁵-term sum amortizes
-easily while the bucketed layout's cache behaviour and write-disjoint parallelism
-start to matter. **A single-point comparison would have "shown" either engine
-winning by 3–4×**, which is precisely why four sizes are reported.
-
-Two caveats on the timing numbers, both from the source READMEs:
+**Every row in that table predates the optimization campaign** and has not been
+re-measured; the ratios above it supersede them for the "which is faster" question.
+Their term counts, accuracy rows and parity outcomes are unaffected and remain
+current. Two caveats from their source READMEs:
 
 - The D ratios are far outside the ±5–8% single-thread noise floor, and the first
   three rows were measured twice, reproducing as 0.24/0.28, 0.31/0.32 and
@@ -332,4 +401,15 @@ subprocess: no PyJulia wiring anywhere.
 [`benchmarks/julia/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md)
 (the probes, the divergences, the gaps, the bug record) and
 [`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md),
-plus the per-benchmark READMEs linked inline above.
+plus the per-benchmark READMEs linked inline above. All performance numbers come
+from the head-to-head study and its reruns:
+[`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)
+(the protocol and the pre-campaign baseline),
+[`post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md)
+(the current engine, default settings) and
+[`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)
+(the opt-in small-sum path). Two further sweeps under the same protocol are not
+quoted on this page and were **not** re-measured after the campaign:
+[`deep-kicked-ising/`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/deep-kicked-ising/README.md)
+(the saturation falsification test) and the baseline
+[`su4-curve/`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/su4-curve/README.md).

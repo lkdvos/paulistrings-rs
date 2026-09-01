@@ -26,6 +26,24 @@ Single-threaded, core-versus-core, on parity-gated configurations, under an inte
 > reimplementing it, and refuses to write if a recomputed median or verdict disagrees with what the driver
 > logged. See "Provenance of the numbers" for the two fields the log does not carry.
 
+> ## ↻ Post-optimization rerun: see [`post-optimization/`](post-optimization/)
+>
+> Everything below measures the engine as it stood on 2026-09-01 03:19:44, **before** the large-`m`
+> optimization campaign. The same protocol has since been re-run against the improved engine, with the
+> same task files and the same Julia, at 5 pairs:
+> [`post-optimization/README.md`](post-optimization/README.md) (default engine, directly comparable
+> configuration for configuration) and
+> [`post-optimization-auto/README.md`](../jl_performance/post-optimization-auto/README.md) (the
+> small-`m` end with the opt-in direct-apply path enabled).
+>
+> Headline: the kicked-Ising crossover moved **3.79 × 10³ → 2.73 × 10³**, the SU(4) crossover
+> **disappeared** (we are faster at every sign-consistent point on that sweep), and the best ratios
+> rose to **2.146** (kicked-Ising), **2.023** (XXZ) and **2.921** (SU(4)). Julia's times were
+> statistically unchanged — median −0.7 % across 21 configurations — so the movement is ours.
+>
+> **This document is not rewritten.** It is the baseline the rerun is measured against, and its
+> numbers stay as they were recorded.
+
 Driver: `benchmarks/python/bench_jl_performance.py`. Figures: `benchmarks/python/jl_performance_figures.py`.
 Data: `results.json` (one record per configuration per engine, the suite's flat-array convention) and
 `summary.json` (per-pair ratios, crossovers, parity evidence). `run.log` is the full transcript. CI gate on the

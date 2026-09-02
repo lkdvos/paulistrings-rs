@@ -33,7 +33,7 @@ by rendering `cargo doc` alongside the book. Everything else resolves locally.
 |---|---|
 | `book/src/index.md` | landing page: what Pauli propagation is, what the library is and is not |
 | `book/src/getting-started.md` | install, both quickstarts, truncation, direction semantics, threads |
-| `book/src/showcases/` | one page per Part-B showcase, adapted from that showcase's README |
+| `book/src/showcases/` | one page per Part-B showcase: setup, method, measured result |
 | `book/src/benchmarks/` | one page per Part-A benchmark A–E, setup → oracle → result |
 | `book/src/comparisons.md` | `PauliPropagation.jl` parity and crossover; state-vector, stabilizer and MPO methods |
 
@@ -44,10 +44,12 @@ repository `README.md` with mdBook's `{{#include ../../../README.md:pitch}}`,
 between the `ANCHOR: pitch` / `ANCHOR_END: pitch` comments there. Do not
 paraphrase it into the book — edit the README and both follow.
 
-**Every number on the site is traceable.** Each page cites the committed results
-file or README it was copied from, and no page introduces a measurement of its
-own. When a benchmark is rerun and its README changes, the corresponding page has
-to be updated from it; nothing on the site regenerates itself.
+**Every number on the site is traceable.** A page is the writeup of record for
+its study, and cites two things: the committed results artifact it draws from
+(`results*.json` or `.csv`, next to the script that produced it) and the
+provenance block in that study's README. No page introduces a measurement of its
+own, and nothing on the site regenerates itself. When a benchmark is rerun, the
+artifact, the README's tables and the page are updated in the same commit.
 
 ## Figures
 

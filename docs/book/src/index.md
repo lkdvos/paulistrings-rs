@@ -7,10 +7,6 @@ compared, term for term, against
 [`PauliPropagation.jl`](https://github.com/MSRudolph/PauliPropagation.jl) — see
 [Comparisons](comparisons.md).
 
-*(That paragraph is pulled verbatim out of the repository
-[`README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/README.md) at
-build time, so it cannot drift from the pitch the crate ships with.)*
-
 ![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](assets/ising-quench/ising_quench.svg)
 
 A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
@@ -38,13 +34,12 @@ applied, giving `U†OU`; in the forward picture it is walked as written, giving
 over the surviving terms — never an expansion over `2^n` amplitudes.
 
 The cost is not the qubit count. It is the number of Pauli strings the operator
-spreads over, which grows with circuit depth until **truncation** — a
-coefficient threshold, a Pauli-weight cap, a top-`k` budget — holds it. So the
-central question for every result on this site is not "did it run?" but "how
-much of the operator did the truncation delete, and does the answer still move
-when you tighten it?" Every showcase and benchmark page here answers that
-explicitly, with a convergence sweep, and says so when the answer is *no,
-this point is not resolved*.
+spreads over, which grows with circuit depth until **truncation** holds it: a
+coefficient threshold, a Pauli-weight cap, a top-`k` budget. What every result on
+this site therefore has to report is how much of the operator the truncation
+deleted, and whether the answer still moves when the cutoff is tightened. Every
+showcase and benchmark page answers that with a convergence sweep, and says so
+when the point is *not resolved*.
 
 ## What this library is
 
@@ -67,9 +62,9 @@ this point is not resolved*.
 State-vector, tensor-network, stabilizer and matrix-product-state simulation
 are **explicit non-goals**. This engine has one storage type — a bucketed
 `PauliSum<W>` of structure-of-arrays `x`/`z`/coefficient columns — and one
-loop. Where those other methods are the right tool, they are the right tool;
-[Comparisons](comparisons.md) says which is which, including the two places
-this engine is measurably *slower* than the alternative.
+loop. [Comparisons](comparisons.md) says which method fits which problem,
+including the two places this engine is measurably *slower* than the
+alternative.
 
 Two hard edges worth knowing before you start:
 
@@ -79,7 +74,7 @@ Two hard edges worth knowing before you start:
 - A truncated Pauli sum has **no variational bound**. Discarded terms carry
   signs, so a partial sum can sit on either side of the truth and the error
   need not be monotone in the cutoff. This is measured, not hypothetical —
-  [Benchmark B §3.3a](benchmarks/b-theta-sweep.md#truncation-error-is-not-monotone-in-the-cutoff)
+  [Benchmark B](benchmarks/b-theta-sweep.md#truncation-error-is-not-monotone-in-the-cutoff)
   and [Benchmark C](benchmarks/c-deep-trotter.md) both show it happening.
 
 ## Start here
@@ -87,8 +82,9 @@ Two hard edges worth knowing before you start:
 | | |
 |---|---|
 | [Getting started](getting-started.md) | install, both quickstarts, truncation, direction semantics |
-| [Showcases](showcases/index.md) | four measured applications: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, operator-complexity probes |
-| [Benchmarks](benchmarks/index.md) | five benchmarks A–E: setup, oracle, result — including the two honest negative results |
+| [Showcases](showcases/index.md) | five measured applications: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, operator-complexity probes, stabilizer-state preparation |
+| [Benchmarks](benchmarks/index.md) | five benchmarks A–E: setup, oracle, result — including the two negative results |
+| [Design](design/index.md) | how the engine works and why it is fast: the bucketed layout, coset parallelism, and the measured roofline |
 | [Comparisons](comparisons.md) | vs `PauliPropagation.jl` (term-for-term parity, and the measured crossover), vs state-vector and stabilizer simulators |
 | [API reference](api/paulistrings/index.html) | rustdoc for the core crate, rebuilt on every push to `main` |
 
@@ -116,5 +112,6 @@ taken to build this site. Three consequences:
 Source, issues and the full research record:
 [github.com/lkdvos/paulistrings-rs](https://github.com/lkdvos/paulistrings-rs).
 The design source of truth is
-[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md).
+[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md);
+the site's [Design pages](design/index.md) are its public summary.
 Dual-licensed MIT OR Apache-2.0.

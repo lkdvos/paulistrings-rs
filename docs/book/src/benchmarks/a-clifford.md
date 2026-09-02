@@ -13,7 +13,7 @@ published weight-10 and weight-17 observables against `|0…0⟩`. One
 `pytest-benchmark` group per observable. `min_abs_coeff = 1e-8`, single-threaded,
 seeded fixtures built outside the timed region.
 
-**Why the cutoff is `1e-8` and not a dyadic.** This engine drops `|c| <= eps`
+The cutoff is `1e-8`, not a dyadic value. This engine drops `|c| <= eps`
 while `PauliPropagation.jl` keeps `|c| == eps` — a genuine, measured
 [cross-engine divergence](../comparisons.md#the-one-real-divergence). Clifford
 angles produce exact dyadic coefficients (`sin(π/2) == 1.0`, and `cos(π/2)` is
@@ -37,17 +37,17 @@ The timing numbers for this benchmark live in
 commits no timing table for A, so this page quotes none. What *is* committed, and
 what this benchmark actually establishes, is correctness and parity:
 
-- **The exact integers are reproduced bit-exactly.** Benchmark B scores the same
+- The exact integers are reproduced **bit-exactly**. Benchmark B scores the same
   Clifford endpoints across a full eight-point coefficient sweep and finds a
-  worst deviation of **0** for every observable at both endpoints: `+1` for
+  worst deviation of 0 for every observable at both endpoints: `+1` for
   weight-10 and `−1` for weight-17 at `θ_h = π/2`, matching A. See
-  [Benchmark B §3.2](b-theta-sweep.md#clifford-endpoints).
-- **Cross-engine parity is a precondition, not an afterthought.** Before either
-  engine's timed entry is allowed to run, both are run once, untimed, and every
-  one of the **1355 per-layer term counts** must be identical. The schema-v1 task
-  JSON handed to `PauliPropagation.jl` is built from the *same* recorded gate
-  list the `paulistrings` side runs, so neither engine gets a transcription of
-  the other's circuit.
+  [Benchmark B](b-theta-sweep.md#clifford-endpoints).
+- Cross-engine parity is required before either engine's timed entry runs:
+  both are run once, untimed, and every one of the **1355** per-layer term
+  counts must be identical. The schema-v1 task JSON handed to
+  `PauliPropagation.jl` is built from the *same* recorded gate list the
+  `paulistrings` side runs, so neither engine gets a transcription of the
+  other's circuit.
 
 Regenerate the timings with:
 
@@ -66,9 +66,8 @@ pytest python/paulistrings/tests/test_benchmark_a_clifford.py
 ```
 
 **Sources:**
-[`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md)
-§3, the driver's own module docstring in
+[`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md),
+the driver's own module docstring in
 [`benchmarks/python/bench_a_clifford.py`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/bench_a_clifford.py),
-and — for the reproduced integers — 
-[`benchmarks/python/theta_sweep/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/theta_sweep/README.md)
-§3.2.
+and, for the reproduced integers,
+[`benchmarks/python/theta_sweep/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/theta_sweep/README.md).

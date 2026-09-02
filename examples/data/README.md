@@ -2,11 +2,10 @@
 
 Every file here carries a provenance record, either in its own header (text
 formats) or in a `provenance` block (JSON). That is a hard rule of the suite:
-*"every numeric claim is computed by an oracle or loaded from a
-provenance-tagged reference file … no fabricated reference values"*
-(`research/plans/2026-08-31-examples-benchmarks-suite.md` §7, global rule 1).
-If a fact cannot be traced to a fetched source, it does not get a literal here —
-the consuming builder raises instead.
+every numeric claim is computed by an oracle or loaded from a provenance-tagged
+reference file, and no reference value is written down from recollection. If a
+fact cannot be traced to a fetched source, it does not get a literal here — the
+consuming builder raises instead.
 
 ## `heavy_hex_127.edges` — the 127-qubit Eagle coupling map
 
@@ -118,7 +117,7 @@ published by Begušić, Gray & Chan at
 [10.5281/zenodo.10223349](https://doi.org/10.5281/zenodo.10223349)). Neither has
 been fetched into this repo. Benchmark C's reference is to be loaded through
 `examples/common/oracles.py::load_published_reference` with its own provenance
-header, or self-converged per plan decision D5 — so nothing in
+header, or self-converged with documented convergence evidence — so nothing in
 `kim2023_observables.json` can be mistaken for a verified reference number.
 
 Also recorded in the file, from the same sources: θ_J = −π/2 ("such that the ZZ

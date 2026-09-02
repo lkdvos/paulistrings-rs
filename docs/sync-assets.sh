@@ -32,10 +32,12 @@ UP_TO_ROOT="../../../../.."
 # root>|<the figures the pages embed from it>.
 ASSET_GROUPS=(
     "ising-quench|crates/paulistrings/docs/examples/img|ising_quench.svg"
+    "design|docs/figures/design|bucket-cosets.svg"
     "b1|examples/b1_operator_scrambling|light_cone_1d.svg support_growth.svg otoc_1d.svg convergence_panel_1d.svg butterfly_velocity_1d.svg velocity_vs_kick_angle.svg quench_observables_2d.svg light_cone_2d.svg correlator_2d.svg convergence_panel_2d.svg"
     "b2|examples/b2_noisy_verification|terms-and-time-vs-noise.svg convergence-vs-cutoff.svg observable-decay-vs-noise.svg"
     "b5|examples/b5_operator_backpropagation|depth_vs_terms.svg convergence_panel.svg"
     "b6|examples/b6_resource_probes|theta_sweep.svg depth_sweep.svg convergence_panel.svg"
+    "b7|examples/b7_stabilizer_prep|theta_sweep.svg scaling.svg convergence_panel.svg"
     "theta-sweep|benchmarks/python/theta_sweep|error-vs-runtime.svg error-vs-min-abs-coeff.svg error-vs-max-weight.svg parity-per-layer-terms.svg term-count-vs-truncation.svg"
     "deep-trotter|benchmarks/python/deep_trotter|error-vs-runtime.svg convergence-vs-truncation.svg term-count-vs-truncation.svg parity-per-layer-terms.svg"
     "su4|benchmarks/python/su4_staircase|term_count_vs_depth.svg error_vs_runtime.svg time_memory_vs_n.svg"

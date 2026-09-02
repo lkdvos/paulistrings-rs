@@ -1,415 +1,308 @@
 # Against other tools
 
-<p class="lead">Two different questions. Against
-<code>PauliPropagation.jl</code> — the other mature Pauli-propagation engine —
-the question is "do these two compute the same thing, and which is faster
-where?", and it is answered term for term. Against state-vector and stabilizer
-simulators the question is "which tool is this?", and the answer is that they do
-not overlap.</p>
+<p class="lead">Against <code>PauliPropagation.jl</code>, the other mature
+Pauli-propagation engine, the comparison is term for term: same circuits, same
+truncation, parity-gated timing. Against state-vector, stabilizer and MPO
+methods the tools do not overlap, and this page records where each applies.</p>
 
 ## vs `PauliPropagation.jl`
 
 The comparison baseline is subprocess-driven and out of CI, pinned to
-**PauliPropagation.jl 0.8.2** on **julia 1.12.6** in a committed
-`Project.toml`/`Manifest.toml`. There is deliberately **no PyJulia or juliacall
-anywhere**: the only entry points are a Julia script that reads a task JSON and
-emits a result JSON, and a `subprocess` wrapper that skips cleanly when no
-`julia` is on `PATH`.
+**PauliPropagation.jl 0.8.2** on julia 1.12.6 in a committed
+`Project.toml`/`Manifest.toml`. There is no PyJulia or juliacall anywhere: the
+entry points are a Julia script that reads a task JSON and emits a result JSON,
+and a `subprocess` wrapper that skips cleanly when no `julia` is on `PATH`.
 
 ### Parity discipline
 
-The rule is stated once and enforced everywhere: **term-count parity blocks
-timing.** No cross-engine wall time may be reported for a configuration whose
-evolved Pauli sums diverge term-for-term at matched truncation, so every timed
-comparison in the suite runs the parity check first, untimed.
+Term-count parity blocks timing: no cross-engine wall time is reported for a
+configuration whose evolved Pauli sums diverge term-for-term at matched
+truncation, so every timed comparison runs the parity check first, untimed.
 
-Four things make that check strong rather than decorative:
+Four properties make the check strong:
 
-1. **One description, two engines.** Both sides are driven from the same
-   schema-v1 task JSON, built from the *same recorded gate list* the
-   `paulistrings` side runs — so neither engine gets a transcription of the
-   other's circuit. Unknown keys, unknown gate names, unknown gate fields and
-   missing required keys are hard errors on both sides; the schema is versioned
-   instead of tolerant.
-2. **Per applied layer, not just the final count.** A divergence that cancels by
-   the end is exactly the coefficient-boundary or truncation-schedule bug the
-   check exists to catch. Both engines report counts in application order, so for
-   Heisenberg runs both lists walk backwards through the task file and line up
-   index by index with no reversal.
-3. **Term by term, not just the contracted expectation.** Every single gate name
-   in the schema vocabulary — `h s x y z cnot cz swap rz rx ry pauli_rotation
-   depolarize dephase amplitude_damping pauli_channel depolarize2 unitary_1q
-   unitary_2q`, plus reversed-qubit variants of `cnot` and `unitary_2q` to catch a
-   transposed index — gets its own single-gate task compared coefficient by
-   coefficient to `1e-12`. All identical, no exceptions. The contracted
-   expectation alone is blind to a `Y` sign that cancels.
-4. **Along a sweep, not at one point.** "Identical counts at one cutoff" is a much
-   weaker statement than "identical counts along a sweep", so the parity legs use
-   three cutoffs.
+1. One description, two engines. Both sides are driven from the same schema-v1
+   task JSON, built from the same recorded gate list; unknown keys, gate names
+   and fields are hard errors on both sides.
+2. Per applied layer, not just the final count: a divergence that cancels by the
+   end is exactly the truncation-schedule bug the check exists to catch.
+3. Term by term, not just the contracted expectation. Every gate name in the
+   schema vocabulary (plus reversed-qubit variants of `cnot` and `unitary_2q`)
+   gets a single-gate task compared coefficient by coefficient to `1e-12`.
+4. Along a sweep, not at one point: the parity legs use three cutoffs.
 
 The results, all from committed benchmark READMEs:
 
 | where | configuration | compared | result |
 |---|---|---|---|
-| [Benchmark B](benchmarks/b-theta-sweep.md#cross-engine-parity) | 127 q, 5 steps, 3 observables × 3 cutoffs | 12 195 per-layer counts | **9/9 pass**, every count identical; 8 of 9 expectations agree to the last bit |
-| [Benchmark C](benchmarks/c-deep-trotter.md#cross-engine-parity-at-the-deepest-point) | 127 q, **20 steps**, 3 dyadic cutoffs | 16 260 per-layer counts | **3/3 pass**, final *and* peak counts exact, expectations ≤ 5.6e-17 |
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ chain, 4 configurations | 171–702 layers each | **4/4 pass**, expectations ≤ 1.7e-16 |
-| [Benchmark E](benchmarks/e-su4-brickwork.md#cross-engine-comparison) | Haar SU(4) brickwork, `unitary_2q` gates | all layers at two sizes | **exact**, and the expectation to 1e-12 |
-| parity gate itself | 6 q, 57 gates, both directions, with and without truncation | 57 layers per row, 5 rows | **all identical**, expectations ≤ 5.6e-17 |
+| [Benchmark B](benchmarks/b-theta-sweep.md#cross-engine-parity) | 127 q, 5 steps, 3 observables × 3 cutoffs | 12 195 per-layer counts | 9/9 pass, every count identical; 8 of 9 expectations agree to the last bit |
+| [Benchmark C](benchmarks/c-deep-trotter.md#cross-engine-parity-at-the-deepest-point) | 127 q, 20 steps, 3 dyadic cutoffs | 16 260 per-layer counts | 3/3 pass, final and peak counts exact, expectations ≤ 5.6e-17 |
+| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ chain, 4 configurations | 171–702 layers each | 4/4 pass, expectations ≤ 1.7e-16 |
+| [Benchmark E](benchmarks/e-su4-brickwork.md#cross-engine-comparison) | Haar SU(4) brickwork, `unitary_2q` gates | all layers at two sizes | exact, and the expectation to 1e-12 |
+| parity gate itself | 6 q, 57 gates, both directions, with and without truncation | 57 layers per row, 5 rows | all identical, expectations ≤ 5.6e-17 |
 
-That last row is worth a note: the truncated rows are checked to be
-**non-vacuous** — the same circuit with no policy keeps 3881 terms, so the
-`1e-4` row really is exercising coefficient truncation and the `max_weight=4`
-row really is exercising weight truncation.
+The truncated rows of the last entry are non-vacuous: the same circuit with no
+policy keeps 3 881 terms, so the `1e-4` row exercises coefficient truncation and
+the `max_weight=4` row exercises weight truncation.
 
 ### The conventions agree
 
-Both engines are **Hermitian-Y**: a real coefficient multiplies the literal Pauli
+Both engines are Hermitian-Y: a real coefficient multiplies the literal Pauli
 string, `Y` carries no phase of its own, and the coefficient type stays real
-under every gate in the vocabulary. That was verified by hand-derived probe, not
-assumed — `S X S† = +Y` and `S† X S = −Y` come out identically on both sides, and
-a cross-engine test encodes the sign so that a phase-carrying `Y`, or an `S` that
-mapped `X → +Y`, would flip it.
+under every gate in the vocabulary. This was verified by hand-derived probe:
+`S X S† = +Y` and `S† X S = −Y` come out identically on both sides, and a
+cross-engine test encodes the sign.
 
-Index conventions differ and map cleanly: jl uses 1-based qubit indices with the
-leftmost character of a Pauli string being qubit 1, this repository uses 0-based
-with the leftmost character qubit 0. Same left-to-right order, so **observable
-keys map verbatim** and gate qubit indices map with a `+1`. The internal 2-bit
-Pauli codes differ too, and never cross the boundary.
-
-Direction maps exactly: `"heisenberg"` ↔ `heisenberg=true` (jl's default),
-`"forward"` ↔ `heisenberg=false`. jl assumes gates are defined in the Heisenberg
-picture and reverses the circuit; this engine's `apply` is the Schrödinger
-conjugation and `"heisenberg"` reverses and calls `apply_adjoint`. Different
-implementations, same observable map.
+Index conventions map cleanly: jl is 1-based with the leftmost Pauli character
+qubit 1, this repository 0-based with the leftmost character qubit 0. Observable
+keys map verbatim and gate indices map with a `+1`. Direction maps exactly:
+`"heisenberg"` ↔ `heisenberg=true` (jl's default), `"forward"` ↔
+`heisenberg=false`.
 
 ### The semantic divergences, measured
 
-These were established by running probes whose expected values are hand-derived
-in comments, never read back from the library.
+Established by probes whose expected values are hand-derived in comments, never
+read back from the library.
 
 #### The one real divergence: the coefficient boundary {#the-one-real-divergence}
 
 jl truncates on `abs(coeff) < min_abs_coeff`, so it **keeps** a coefficient
-exactly equal to the threshold. This repository's `CoefficientThreshold` keeps
-`|c| > eps`, so it **drops** it. Measured on both sides with the same three
-coefficients:
+exactly equal to the threshold; this repository's `CoefficientThreshold` keeps
+`|c| > eps`, so it **drops** it. Measured on both sides:
 
 | coefficient | `== 0.25`? | jl at `min_abs_coeff = 0.25` | this engine |
 |---|---|---|---|
-| `0.25` | true | **1 term** | **0 terms** |
+| `0.25` | true | 1 term | 0 terms |
 | `0.24999999999999994` | false | 0 terms | 0 terms |
 | `0.25000000000000006` | false | 1 term | 1 term |
 
-So the divergence is exactly one boundary case. For generic angles it is a
-measure-zero event and every parity row above passes untouched. It is **not**
-measure-zero for dyadic cutoffs at Clifford angles, where coefficients are exact
-dyadics too and can land on the cutoff bit-exactly — which is why Benchmark B
-could use powers of ten and ignore it and
-[Benchmark C could not](benchmarks/c-deep-trotter.md#the-dyadic-cutoffs-and-the-one-ulp-mitigation).
-
-**The mitigation, when it bites:** perturb the *threshold* on one side by one ulp
-and report that you did — never adjust a coefficient. jl gets
-`nextafter(eps, ∞)`, and since there is no float strictly between `eps` and that,
-jl's `|c| < eps′` becomes exactly this engine's `|c| <= eps`, bit for bit, with no
-coefficient touched. Truncation is applied after every gate, so a boundary hit
-changes term counts for the whole rest of the run — this is not a cosmetic
-concern. A test pins the divergence so a version bump cannot change it silently.
+For generic angles the divergence is a measure-zero event and every parity row
+above passes untouched. It is not measure-zero for dyadic cutoffs at Clifford
+angles, where coefficients are exact dyadics and can land on the cutoff
+bit-exactly ([Benchmark C hits this](benchmarks/c-deep-trotter.md#the-dyadic-cutoffs-and-the-one-ulp-mitigation)).
+The mitigation, when it bites: perturb the *threshold* on one side by one ulp
+and report it, never a coefficient. jl gets `nextafter(eps, ∞)`; no float lies
+between, so jl's `|c| < eps′` becomes exactly this engine's `|c| <= eps`. A test
+pins the divergence so a version bump cannot change it silently.
 
 #### The second, narrower divergence: exact zeros
 
-With `min_abs_coeff = 0.0`, `abs(c) < 0` is never true, so jl **keeps** an
-exactly-zero coefficient. This engine's merge kernels drop exact zeros
-unconditionally, and the builder drops a zero coefficient at build time. So a
-circuit whose merge cancels *exactly* diverges by term count — pinned with
-`amplitude_damping(γ=1)`, whose `X → √(1−γ)·X = 0` is bit-exact: this engine keeps
-0 terms, jl keeps 1.
-
-Not measure-zero in practice, since Clifford-point angles produce exact
-cancellations. Mitigation for comparative runs: use a strictly positive
-`min_abs_coeff` (any `eps > 0` kills jl's zeros too) and say so in the results
+With `min_abs_coeff = 0.0`, `abs(c) < 0` is never true, so jl keeps an
+exactly-zero coefficient; this engine's merge kernels drop exact zeros
+unconditionally. Pinned with `amplitude_damping(γ=1)`, whose
+`X → √(1−γ)·X = 0` is bit-exact: this engine keeps 0 terms, jl keeps 1. Not
+measure-zero in practice, since Clifford-point angles produce exact
+cancellations. Mitigation for comparative runs: a strictly positive
+`min_abs_coeff` (any `eps > 0` kills jl's zeros too), stated in the results
 file.
 
-#### Where the engines agree, and it was worth checking
+#### Verified agreements
 
-- **The weight boundary.** jl truncates on `countweight > max_weight` and this
-  repository's `WeightCutoff` keeps `weight <= k`; both keep
-  `weight == max_weight`. No mitigation needed.
-- **When truncation is applied.** jl calls apply → merge → truncate once **per
-  gate**; there is no "layer" object in jl anywhere. This engine truncates after
-  every channel, so the two coincide **iff one gate object is one channel** —
-  which is why the suite's construction rule is one gate per `Circuit.push`, and
-  why the schema makes it structural. Measured: `rz(0.05)` on `X` with
-  `min_abs_coeff = 0.1` splits into `cos·X + sin·Y` with `sin < 0.1 < cos`, so the
-  `Y` branch dies immediately and the *second* gate sees 1 term, not 2. Deferring
-  truncation to the end of a two-gate "layer" would have given different counts.
-- **Noise-channel parameter scales.** jl's Pauli-noise channels damp by `1 − λ`
-  while this repository's take a probability `p`, so `depolarize(p)` maps to
-  `λ = 4p/3` and `dephase(p)` to `λ = 2p`; `amplitude_damping(γ)` is 1:1. jl has
-  no native general Pauli channel or two-qubit depolarizing gate, and composing
-  three single-Pauli noise channels would be *three* gates and therefore three
-  truncation points, breaking the parity rule — so the runner builds each as a
-  single diagonal-PTM gate with the exact dual, one gate, one truncation point.
-  Both verified term by term.
-- **Two-qubit matrix ordering** for `unitary_2q` is undocumented upstream, so it
-  was pinned against a known CNOT and confirmed in both qubit orderings.
+- The weight boundary: both engines keep `weight == max_weight`.
+- When truncation is applied: jl truncates once per gate; this engine once per
+  channel. The two coincide iff one gate object is one channel, which is the
+  suite's construction rule and structural in the schema. Measured: `rz(0.05)`
+  on `X` with `min_abs_coeff = 0.1` kills the `sin` branch immediately, so the
+  second gate sees 1 term, not 2.
+- Noise-channel parameter scales: jl damps by `1 − λ` where this repository
+  takes a probability `p`, so `depolarize(p)` maps to `λ = 4p/3` and
+  `dephase(p)` to `λ = 2p`; `amplitude_damping(γ)` is 1:1. jl has no native
+  general Pauli channel or two-qubit depolarizing gate, so the runner builds
+  each as a single diagonal-PTM gate with the exact dual — one gate, one
+  truncation point. Both verified term by term.
+- Two-qubit matrix ordering for `unitary_2q` is undocumented upstream; it was
+  pinned against a known CNOT in both qubit orderings.
 
-### Known gaps — named, not approximated
+#### Noise-channel parity {#noise-channel-parity}
 
-- **`direction="forward"` with `unitary_1q`, `unitary_2q`, `amplitude_damping`,
-  `pauli_channel`, `depolarize2`.** PauliPropagation.jl 0.8.2 defines no
-  Schrödinger transfer map for those, so it has no forward picture for them. The
-  runner rejects such a task **up front**, naming the gap, rather than dying
-  inside `propagate`. Every benchmark in the suite is Heisenberg, so nothing
-  currently needs it.
-- **Non-computational, non-uniform product states.** jl provides `|0…0⟩`,
-  `|+…+⟩`, `|1…1⟩` and computational basis states, and says outright that
-  evaluation against `|±i⟩` is not implemented. This repository's per-qubit label
-  alphabet is strictly larger, so such a state cannot be compared against jl at
-  all.
-- **Stim-sourced circuits** must be expanded into an inline gate list on the
-  Python side — jl has no Stim parser, and the runner makes that a hard error
-  rather than a silent path.
-- **`topn` truncation** is absent from the interchange schema on purpose: jl has
-  no equivalent, and it is banned from comparative runs. Likewise jl's own
-  `max_freq` / `max_sins` truncations are excluded.
-- **jl's experimental fused rotation kernel** has no parity established, because
-  it truncates *during* gate application.
+Noise-channel semantics agree between the engines term by term, including the
+orientation of `amplitude_damping` under `direction="heisenberg"`: the
+Heisenberg map is the unital dual `Φ†` (`Φ†(I) = I`), so `⟨Z⟩` for a qubit in
+`|0⟩` — the channel's fixed point — stays at `1`. The shared fixture gives 9
+terms on both engines with identical labels and bit-exact coefficients, a test
+pins the orientation from both sides, and
+[Showcase B2](showcases/b2-noisy-verification.md#the-same-collapse-three-other-channels)
+carries the physics.
 
-### A real bug the baseline caught {#a-real-bug-the-baseline-caught}
+### Known gaps
 
-Worth recording, because it is the argument for keeping a cross-engine baseline at
-all. Until it was fixed, `AmplitudeDamping::apply` and `::apply_adjoint` in the
-core were **swapped** relative to the convention every other channel follows, so
-`direction="heisenberg"` applied the Schrödinger channel `Φ` instead of its dual
-`Φ†`.
+- `direction="forward"` with `unitary_1q`, `unitary_2q`, `amplitude_damping`,
+  `pauli_channel`, `depolarize2`: PauliPropagation.jl 0.8.2 defines no
+  Schrödinger transfer map for those, and the runner rejects such a task up
+  front. Every benchmark in the suite is Heisenberg.
+- Non-computational, non-uniform product states: jl evaluates against
+  `|0…0⟩`-style states only; this repository's per-qubit label alphabet is
+  strictly larger, so such a state cannot be compared against jl.
+- Stim-sourced circuits must be expanded into an inline gate list on the Python
+  side; jl has no Stim parser, and the runner makes that a hard error.
+- `topn` truncation is absent from the interchange schema: jl has no
+  equivalent. Likewise jl's `max_freq` / `max_sins` truncations are excluded.
+- jl's experimental fused rotation kernel has no parity established, because it
+  truncates during gate application.
 
-That was an inconsistency, not a choice, and the argument is short: the Heisenberg
-dual of a trace-preserving channel is necessarily **unital** (`Φ†(I) = I`), so a
-Heisenberg map sending `I → I + γZ` cannot be a dual at all. Physically, `⟨Z⟩` for
-a qubit already in `|0⟩` — the fixed point of amplitude damping — decayed to
-`1−γ` instead of staying at `1`. The other four noise channels are self-adjoint,
-so the swap was invisible for them; `amplitude_damping` is the only built-in that
-exposes it.
+### Performance depends on the size of the tracked set
 
-After the fix, the same fixture gives 9 terms on both engines with identical
-labels and **bit-exact** coefficients. A test now pins the orientation from both
-sides, and [Showcase B2](showcases/b2-noisy-verification.md#the-same-collapse-three-other-channels)
-carries the physics that fix turned on.
+There is no single ratio: the ranking changes sign, and where it changes sign
+depends on the workload by an order of magnitude.
 
-### Performance: it depends on the size of the tracked set
-
-There is no single ratio, and reporting one would be misleading — the ranking
-changes sign, and *where* it changes sign depends on the workload by more than an
-order of magnitude.
-
-The authoritative source is a dedicated head-to-head study that asks only this
-question, sweeps the term count deliberately rather than incidentally, and uses
-the one protocol that can resolve differences near this host's noise floor:
-**five interleaved `abba` pairs per configuration, accepted on direction
-consistency, never on a difference of two independently-noisy means.** Every
-configuration passes a per-layer term-count parity gate before any timing is
-reported.
-
-The numbers below are the **post-optimization rerun** — the study's protocol
-re-run against the current engine, after the large-`m` campaign
-([`jl_performance/post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md)).
-The pre-campaign baseline they are measured against is
-[`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md).
+The source is a dedicated head-to-head study
+([`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)):
+single-threaded core versus core, five interleaved `abba` pairs per
+configuration, accepted on direction consistency, never on a difference of two
+independently-noisy means. Every configuration passes a per-layer term-count
+parity gate before any timing is reported. `ratio > 1` means this engine is
+faster.
 
 #### Where the ranking changes sign
 
-| workload | channels | crossover, before the campaign | **crossover now** |
-|---|---|---|---|
-| kicked-Ising 127 q, 5 steps | 1 355 | 3.79 · 10³ peak terms | **2.73 · 10³** |
-| XXZ chain, `n = 100` | 1 782 | 1.65 · 10⁴ | **2.00 · 10⁴** (moved by less than the bracketing points resolve) |
-| Haar SU(4) brickwork, `n = 36` | 105 | 8.01 · 10⁴ | **none on that sweep** — faster at every sign-consistent point |
+| workload | channels | crossover (peak terms) |
+|---|---|---|
+| kicked-Ising, 127 q, 5 Trotter steps | 1 355 | **2.73 × 10³** (1.88 × 10³ with `engine="auto"`) |
+| XXZ chain, n = 100, 6 Trotter steps | 1 782 | **2.00 × 10⁴** |
+| Haar SU(4) brickwork, n = 36, depth 6 | 105 | none on the swept range: faster at every sign-consistent point |
 
-> **The crossover is workload-specific, and that is the headline.** It spans 7× across
-> these three, and the SU(4) matrix-gate path no longer has one at all. Quoting a
-> single global crossover would be wrong by an order of magnitude for one workload
-> or the other.
+The crossover spans 7× across these three workloads and the SU(4) matrix-gate
+path has none at all, so no single global crossover is quoted anywhere on this
+site.
 
 #### Above the crossover
 
-| workload | tracked set | before | **now** |
+| workload | peak terms | ratio |
+|---|---|---|
+| kicked-Ising | 6.37 × 10⁵ | **2.146** |
+| kicked-Ising | 2.15 × 10⁶ | 1.610 |
+| XXZ | 2.66 × 10⁶ | **2.023**, still rising |
+| Haar SU(4) | 2.30 × 10⁶ | **2.921**, still rising |
+
+Memory, from the same study: process floors are 37.8 MB against Julia's
+0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
+0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
+479. Both engines sample their own `/proc/self/status`, never a driver-side
+`getrusage(RUSAGE_CHILDREN)`.
+
+#### Below the crossover
+
+Below the crossover jl's hash-map backend is faster, by up to 3.6× at 68 terms:
+a hash-map insert per term costs little at 10² terms, while the bucketed
+per-layer pipeline costs nearly the same whatever the term count.
+
+That fixed cost is avoidable. `propagate(engine="auto")` routes layers below
+2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
+configurations
+([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)),
+measured on the same binary against the default:
+
+| workload | tracked set | `engine="sorted"` (default) | `engine="auto"` |
 |---|---|---|---|
-| kicked-Ising | 6.4 · 10⁵ peak terms | 1.925× | **2.146×** |
-| kicked-Ising | 2.15 · 10⁶ | 1.389× | **1.610×** |
-| XXZ | 2.66 · 10⁶ | 1.798× | **2.023×**, still rising |
-| Haar SU(4) | 2.30 · 10⁶ | 1.974× | **2.921×** |
-
-Julia's own times were statistically unchanged between the two campaigns — a
-median of −0.7% across all 21 configurations, range −4.3% to +4.5% — so these are
-movements on this engine's side of the fraction, not drift on the other. The SU(4)
-figure is the largest and has a named mechanism: a gated radix sort for dense-PTM
-gather runs, whose strongest case is exactly this workload's `W = 1` 16-way fanout.
-
-#### Below the crossover, and the opt-in path that moves it
-
-Below the crossover jl's hash-map backend still wins, by up to **3.6×** at 68
-terms. The reason is structural: a hash-map insert per term costs little at 10²
-terms, while this engine pays a bucketed per-layer pipeline whose cost is nearly
-independent of the term count.
-
-That fixed cost is now avoidable. `propagate(engine="auto")` routes layers below
-2 048 terms through a direct-apply path instead, one-way, and it is worth
-**1.08–2.69×** on exactly those configurations
-([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)):
-
-| workload | tracked set | default engine | **`engine="auto"`** |
-|---|---|---|---|
-| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040× — a measured tie** |
-| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051× — a measured tie** |
+| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040×, a measured tie** |
+| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051×, a measured tie** |
 | Haar SU(4) | 1 416 terms | 1.097× | **1.660×** |
-| kicked-Ising | crossover | 2.73 · 10³ terms | **1.88 · 10³ terms** |
+| kicked-Ising crossover | — | 2.73 × 10³ terms | **1.88 × 10³ terms** |
 
-It is **not the default** — `engine` defaults to `"sorted"`, the bucketed engine at
-every term count — and above its threshold it is inert, which that run measures as
-its own control (SU(4) at 84 836 terms: 1.409× with the path on, 1.416× with it
-off). The nine configurations it was measured on all passed the per-layer parity
-gate *with the path enabled*: 9 618 per-layer counts, every one identical to
-PauliPropagation.jl's.
-
-#### The earlier, incidental numbers
-
-Benchmarks C, D and E each produced cross-engine timings as a side effect of asking
-a different question, and they disagreed about which engine is faster — which is
-what motivated the dedicated study. They are not contradictions; they are samples
-of a crossing curve taken at different points on it, with single-shot timings whose
-noise floor is comparable to some of the differences quoted.
-
-| source | configuration | tracked set | result |
-|---|---|---|---|
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ, `n = 40`, `Jz = 0`, 702 layers | 257 terms | **jl 4.2× faster** (ratio 0.24×) |
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ, `n = 20`, `Jz = 0.5`, 171 layers | 3 272 terms | **jl 3.2× faster** (ratio 0.31×) |
-| [Benchmark E](benchmarks/e-su4-brickwork.md#cross-engine-comparison) | Haar SU(4), `n = 10`, depth 5 | 381 654 terms | **within noise** (0.496 s vs 0.492 s) |
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ, `n = 40`, `Jz = 0.5`, 468 layers | 29 745 terms | **this engine 1.45× faster** |
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ, `n = 40`, `Jz = 0.5`, 702 layers | 206 035 terms | **this engine 1.59× faster** |
-| [Benchmark C](benchmarks/c-deep-trotter.md#wall-time-reported-not-claimed) | 127 q kicked Ising, 20 steps, 5 420 layers | 8·10³ → 2.4·10⁶ terms | this engine 1.4×, 2.3×, 2.3× faster |
-
-**Every row in that table predates the optimization campaign** and has not been
-re-measured; the ratios above it supersede them for the "which is faster" question.
-Their term counts, accuracy rows and parity outcomes are unaffected and remain
-current. Two caveats from their source READMEs:
-
-- The D ratios are far outside the ±5–8% single-thread noise floor, and the first
-  three rows were measured twice, reproducing as 0.24/0.28, 0.31/0.32 and
-  1.45/1.48 — same ranking, spread well under the sign changes being reported.
-  Those are the solid ones.
-- The C numbers are a **single warm repeat** per point on a shared workstation. A
-  ~2.3× gap is well outside the noise band and the direction is consistent across
-  three points spanning two orders of magnitude, so it is recorded — but the
-  numbers to quote from C are its term counts and accuracy rows.
-
-And one memory figure that **does not reproduce**: Benchmark B recorded jl's dict
-backend at 67.6 GiB on a 2.85·10⁶-term sum, but Benchmark C re-measured the same
-quantity with a per-process sampler and got 0.44–0.74 KiB/term plus ~0.7 GiB
-fixed — 30–50× lower. The likely cause is named
-([`getrusage(RUSAGE_CHILDREN)` conflating sibling children](benchmarks/c-deep-trotter.md#memory)),
-and the recommendation is to re-measure before quoting either.
+Above its threshold the path is inert, measured as its own control: SU(4) at
+84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
+configurations passed the per-layer parity gate with the path enabled — 9 618
+per-layer counts, every one identical to PauliPropagation.jl's.
 
 ## vs state-vector simulation
 
-Not a competitor — a **complementary oracle**, and this suite uses it as one
-everywhere it reaches. Every exact reference on this site is a dense statevector
-(usually qiskit Aer), and where two exact routes were affordable the reference is
-*both* of them, required to agree.
-
-The division of labour is a hard one:
+Not a competitor but a complementary oracle, and this suite uses it as one
+everywhere it reaches. Every exact reference on this site is a dense
+statevector (usually qiskit Aer); where two exact routes were affordable the
+reference is both of them, required to agree.
 
 | | state-vector | Pauli propagation |
 |---|---|---|
-| object carried | `2ⁿ` amplitudes | the number of Pauli strings the *observable* spreads over |
-| cost driver | qubit count, full stop | circuit depth and how fast the operator spreads; `n` enters only through the channel count |
+| object carried | `2ⁿ` amplitudes | the Pauli strings the *observable* spreads over |
+| cost driver | qubit count | circuit depth and operator spreading; `n` enters only through the channel count |
 | result | any observable, exactly | one observable, to a truncation error you must measure |
-| ceiling here | ~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB) | 127 qubits routinely; 2.3·10⁸ terms in a single sum measured |
+| ceiling here | ~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB) | 127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured |
 
-Two measured illustrations of why the boundary sits where it does:
+Two measured illustrations of where the boundary sits:
 
-- **The cone that broke the dense method.** Benchmark B needed an exact reference
-  for a weight-10 observable whose causal cone is 30 qubits. Untruncated Pauli
-  propagation over that cone was *aborted at a 26 GiB address-space cap* at 4.3·10⁸
-  terms; the statevector over the same cone was ~150 s and does not care about
-  depth. **The dense method won that one, decisively.**
-- **The cone that broke the statevector.** The same benchmark's weight-17
-  observable has a 59-qubit cone. `2^59` amplitudes rules out any dense method,
-  and untruncated Pauli propagation is far past the wall above. **Neither method
-  reaches it** — which is why those four references are self-converged and
-  reported as not converged.
+- Benchmark B needed an exact reference for a weight-10 observable whose causal
+  cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
+  26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
+  cone took ~150 s and does not care about depth.
+- The same benchmark's weight-17 observable has a 59-qubit cone: `2^59`
+  amplitudes rules out any dense method, and untruncated propagation is far
+  past the wall above. Neither method reaches it, which is why those references
+  are self-converged and reported as not converged.
 
-Also: **a state-vector simulator gives you the answer, and Pauli propagation
-gives you the answer plus a truncation error you have to bound yourself.** That
-asymmetry is why every page on this site carries a convergence panel, and why
-"not claimable" appears as often as it does.
+A state-vector simulator gives the answer; Pauli propagation gives the answer
+plus a truncation error to bound. That asymmetry is why every page on this site
+carries a convergence panel.
 
 ## vs stabilizer (`stim`) simulation
 
-Also not a competitor, and also used here as an oracle. At a Clifford point
-`stim` gives the exact ±1 integer in under 0.1 s, at any qubit count, and
-[Benchmark A](benchmarks/a-clifford.md) exists to be scored against it. Benchmark
-B reproduces those integers **bit-exactly at every one of eight cutoffs**, for
-three observables at both Clifford endpoints.
+Also an oracle, not a competitor. At a Clifford point `stim` gives the exact ±1
+integer in under 0.1 s at any qubit count, and
+[Benchmark A](benchmarks/a-clifford.md) exists to be scored against it.
+Benchmark B reproduces those integers bit-exactly at every one of eight
+cutoffs, for three observables at both Clifford endpoints.
 
-What each tool is for:
+- `stim`: Clifford circuits, exactly, at enormous scale. Where a circuit is
+  Clifford it is strictly the better tool.
+- Pauli propagation: non-Clifford circuits, where the tableau method has
+  nothing to say. The kicked-Ising kick angle separates the two: at
+  `θ_h ∈ {0, π/2}` the circuit is Clifford and `stim` answers; at the hard
+  interior angles the operator spreads over millions of Pauli strings.
 
-- **`stim`** — Clifford circuits, exactly, at enormous scale. Nothing here
-  competes with it in that regime, and where a circuit *is* Clifford it is
-  strictly the better tool.
-- **Pauli propagation** — non-Clifford circuits, where the tableau method has
-  nothing to say. The kicked-Ising kick angle is exactly the knob that separates
-  the two: at `θ_h ∈ {0, π/2}` the circuit is Clifford and `stim` answers; at the
-  hard interior angles it is not, and the operator spreads over millions of Pauli
-  strings.
-
-One limitation worth naming because the suite ran into it: **a stabilizer
-simulator cannot serve as a noisy oracle.** A tableau simulation samples one
-Pauli error rather than averaging over them, so it is not a reference for a noise
-channel — which is why [Showcase B2](showcases/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
-had to hand-roll a Kraus density-matrix reference instead of borrowing one.
+A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
+samples one Pauli error rather than averaging over them, which is why
+[Showcase B2](showcases/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
+carries a hand-rolled Kraus density-matrix reference instead.
 
 ## vs tensor-network / MPO methods
 
-No measured head-to-head, and this site does not claim one. What it does have is
-a *cost-model* comparison on the same operators:
-[Showcase B6](showcases/b6-resource-probes.md) computes the Pauli-spectrum entropy
-(the quantity governing truncation error for this engine) alongside the operator
-entanglement across a bipartition (the quantity governing MPO bond dimension),
-and finds them saying different things about the same operator — `S_2` grows
-steadily with depth while `S_op` **saturates** around 1.3 nats from depth 5 on.
-That is the Prosen–Pižorn observation in miniature, and it is the honest form of
-the comparison available without a tensor-network dependency.
-
-A TDVP baseline at large `n` is listed as
-[a named follow-up in Benchmark D](benchmarks/d-xxz-chain.md#what-is-not-here),
-not silently approximated.
+No measured head-to-head, and this site does not claim one. What it has is a
+cost-model comparison on the same operators:
+[Showcase B6](showcases/b6-resource-probes.md) computes the Pauli-spectrum
+entropy (the quantity governing truncation error for this engine) alongside the
+operator entanglement across a bipartition (the quantity governing MPO bond
+dimension), and finds them saying different things about the same operator:
+`S_2` grows steadily with depth while `S_op` saturates around 1.3 nats from
+depth 5 on. A TDVP baseline at large `n` is
+[a named limitation of Benchmark D](benchmarks/d-xxz-chain.md#limitations), not
+silently approximated.
 
 ## vs `qiskit.SparsePauliOp` / `openfermion.QubitOperator`
 
-Different scope: these are Pauli-operator *containers* with algebraic
-manipulation, not propagation engines with truncation. The repository benchmarks
-construction and Clifford conjugation against both in
-`benchmarks/python/bench_baseline.py` (parameterized over `n_terms ∈ {100, 1000,
-10 000}` at 16 qubits), which is a manual, out-of-CI suite; those numbers are
-regenerated by running it rather than committed.
+Different scope: these are Pauli-operator containers with algebraic
+manipulation, not propagation engines with truncation — no crossover concept
+applies. The committed comparison
+([`baseline_comparison/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md))
+benchmarks construction from string terms and one-layer Clifford conjugation,
+seeded inputs, `n_terms ∈ {100, 1000, 10 000}`; medians in µs, ratio =
+library / paulistrings:
 
-`PauliStrings.jl` — the library that inspired this one — is deliberately excluded
-from that comparison for the same reason `PauliPropagation.jl` is driven by
-subprocess: no PyJulia wiring anywhere.
+| construct | paulistrings | qiskit | openfermion | qiskit ratio | openfermion ratio |
+|---:|---:|---:|---:|---:|---:|
+| 100 terms | 99.9 | 1 053.7 | 982.4 | 10.5× | 9.8× |
+| 1 000 | 683.7 | 9 693.8 | 10 570.3 | 14.2× | 15.5× |
+| 10 000 | 3 070.0 | 96 566.8 | 106 078.9 | 31.5× | 34.6× |
+
+| conjugate by a Clifford layer | paulistrings | qiskit | ratio |
+|---:|---:|---:|---:|
+| 100 terms | 8.9 | 2 133.8 | 240× |
+| 1 000 | 71.0 | 4 978.4 | 70× |
+| 10 000 | 1 057.3 | 32 642.0 | 31× |
+
+`openfermion` has no equivalent conjugation operation and is not in the second
+group. `PauliStrings.jl`, the library that inspired this one, is excluded for
+the same reason `PauliPropagation.jl` is driven by subprocess: no PyJulia
+wiring anywhere.
 
 **Sources for this page:**
 [`benchmarks/julia/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md)
-(the probes, the divergences, the gaps, the bug record) and
+(the probes, the divergences, the gaps) and
 [`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md),
-plus the per-benchmark READMEs linked inline above. All performance numbers come
-from the head-to-head study and its reruns:
+plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
 [`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)
-(the protocol and the pre-campaign baseline),
+(protocol and headline tables, engine `81c568a`),
 [`post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md)
-(the current engine, default settings) and
-[`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)
-(the opt-in small-sum path). Two further sweeps under the same protocol are not
-quoted on this page and were **not** re-measured after the campaign:
-[`deep-kicked-ising/`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/deep-kicked-ising/README.md)
-(the saturation falsification test) and the baseline
-[`su4-curve/`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/su4-curve/README.md).
+and
+[`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md).
+qiskit/openfermion numbers:
+[`baseline_comparison/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md)
+and its committed `results.json`.

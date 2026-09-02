@@ -1,7 +1,7 @@
 # Getting started
 
 Two front ends over one core: a pure-Rust crate, and PyO3 bindings that
-monomorphize the word width `W ∈ {1, 2, 4, 8, 16}` — 64 to 1024 qubits — and
+monomorphize the word width `W ∈ {1, 2, 4, 8, 16}` (64 to 1024 qubits) and
 dispatch once, outside any hot loop.
 
 ## Install
@@ -164,16 +164,16 @@ Choosing one:
 - **`coeff` is the default choice**, and the only knob whose sweep gives a
   convergence statement that is comparable across engines. Every convergence
   panel on this site is a `coeff` sweep.
-- **`weight` is a blunt instrument.** It is genuinely useful when the causal
+- **`weight` is a blunt instrument.** It is useful when the causal
   cone is the constraint ([Showcase B5](showcases/b5-operator-backpropagation.md)
   uses `weight <= 6`), and measurably useless when it is not: on a degree-4 2D
   lattice at maximal entangling strength, a cap of 4 deletes 61% of the operator
   at the *second* Trotter step and buys no extra time at all
-  ([B1 §4.1](showcases/b1-operator-scrambling.md#why-2d-is-the-hard-case)).
+  ([B1, 2D is the hard case](showcases/b1-operator-scrambling.md#why-2d-is-the-hard-case)).
   Watch out at Clifford angles, where the operator passes through weight 30–40
   mid-circuit even when it lands on a single low-weight string, so
   `max_weight <= 8` can truncate the whole sum to zero terms
-  ([Benchmark B §3.2](benchmarks/b-theta-sweep.md#clifford-endpoints)).
+  ([Benchmark B, Clifford endpoints](benchmarks/b-theta-sweep.md#clifford-endpoints)).
 - **`topn` bounds memory, and changes what "converged" means.** With a fixed
   budget the error is set by the discarded tail rather than by a threshold, so a
   `topn` run cannot carry a `coeff`-sweep convergence panel. It is also banned
@@ -183,7 +183,7 @@ Choosing one:
   symmetric lattice a tie group is a symmetry orbit, and truncation should
   commute with the lattice symmetry. The alternative tie rules move the 2D Ising
   quench trajectory by up to 1.7% (4×4) and 0.37% (6×6) — treat that spread as
-  the honest error bar.
+  the error bar.
 - **Keep `min_abs_coeff` above ~1e-12 on deep circuits.** `cos(π/2)` is
   `6.123233995736766e-17`, not zero, so at a Clifford angle every rotation
   leaves a numerically dead residual branch, and an untruncated 127-qubit
@@ -209,11 +209,10 @@ as a point-to-point improvement.
 **Always pass it explicitly.** The Python binding accepts `direction=None` and
 treats it as `"forward"`, but the two pictures answer different questions and a
 default silently picks one. The repository's own cross-engine task-JSON schema
-refuses to default it at all — `PauliPropagation.jl`'s default is Heisenberg
-and this engine's is forward, so defaulting either way would silently choose a
-picture — and the Rust `propagate` takes the `Direction` as a required
-argument. Treat the Python default as a convenience for one-off exploration,
-not as an idiom.
+refuses to default it at all (`PauliPropagation.jl` defaults to Heisenberg and
+this engine to forward, so either default silently chooses a picture), and the
+Rust `propagate` takes the `Direction` as a required argument. Treat the Python
+default as a convenience for one-off exploration, not as an idiom.
 
 Which one you want:
 

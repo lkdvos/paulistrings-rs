@@ -1,16 +1,10 @@
 # B5 — Hybrid depth reduction
 
-<p class="lead">Split a circuit near the end, back-propagate the observable
-through the tail classically, and hand a QPU the shorter front circuit plus an
-evolved observable. The composed expectation is <em>exactly</em> the
-full-circuit one — so the trade is QPU depth against classical term count, and
-this page measures both sides of it.</p>
+<p class="lead">Split a circuit near the end, back-propagate the observable through the tail classically, and hand a QPU the shorter front circuit plus an evolved observable. The composed expectation is <em>exactly</em> the full-circuit one — so the trade is QPU depth against classical term count, and this page measures both sides of it.</p>
 
 ![Evolved-observable term count and residual front-circuit size against tail depth](../assets/b5/depth_vs_terms.svg)
 
-*The trade, measured: as the tail depth `k` grows the residual front circuit
-shrinks linearly in Trotter steps (186 → 0 gates) while the weight-capped
-evolved observable grows roughly exponentially (1 → 12 413 terms).*
+*As the tail depth `k` grows the residual front circuit shrinks linearly in Trotter steps (186 → 0 gates) while the weight-capped evolved observable grows roughly exponentially (1 → 12 413 terms).*
 
 ## The idea
 
@@ -20,46 +14,42 @@ Split a circuit at layer `k` from the end:
 |0...0> --[ front circuit, depth L-k ]--[ tail circuit, depth k ]--> measure O
 ```
 
-Instead of running the whole circuit on a QPU, back-propagate `O` through the
-*tail* classically — `direction="heisenberg"` on the last `k` layers, with the
-same engine this repository ships for everything else — to get
-`O' = U_tail† O U_tail`. Composing the halves,
+Back-propagate `O` through the *tail* classically — `direction="heisenberg"` on the last `k` layers, with the same engine this repository ships for everything else — to get `O' = U_tail† O U_tail`. Composing the halves, `⟨psi_front| O' |psi_front⟩` (with `|psi_front⟩ = U_front |0...0⟩`) equals `⟨ψ|O|ψ⟩` for the full circuit exactly, since Heisenberg conjugation composes. The QPU only runs the shorter front circuit; `O'` is computed once, off the QPU.
 
-```text
-<psi_front| O' |psi_front>   where   |psi_front> = U_front |0...0>
+The artifact is a **schema-v1 task file** — the residual front circuit plus the evolved observable, ready for a QPU-side runner. `task_exact.json` and `task_truncated.json` in the showcase directory are exactly that, and they are the same schema the [cross-engine comparison](../comparisons.md) drives both engines from.
+
+## Running it
+
+```bash
+source .venv/bin/activate
+python examples/b5_operator_backpropagation/run_b5.py
 ```
 
-is *exactly* `⟨ψ|O|ψ⟩` for the full circuit, because Heisenberg conjugation
-composes: `U_full† O U_full = U_front† (U_tail† O U_tail) U_front` for
-`U_full = U_tail · U_front`. The QPU only has to run the shorter front circuit;
-the observable it measures is `O'`, computed once, off the QPU.
+Key calls:
 
-The artifact this produces is a **schema-v1 task file** — the residual front
-circuit plus the evolved observable, ready for a QPU-side runner to consume.
-`task_exact.json` and `task_truncated.json` in the showcase directory are exactly
-that, and they are the same schema the
-[cross-engine comparison](../comparisons.md) drives both engines from.
+```python
+tail_evolved = observable.propagate(tail_circuit, policy, direction="heisenberg")
+psio.save(npz_path, tail_evolved)                 # round-trip through disk
+loaded = interop.load_task(task_path)
+composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
+                                        direction=loaded.direction)
+```
 
-## Validation: the round trip is exact
+This regenerates every artifact in the directory — both task JSONs, the `.npz`, the CSV, both SVG figures — and the whole sweep runs in about **3 seconds** on a laptop-class machine; this page is about depth reduction, not speed. The CI-visible correctness gate is numpy-only and runs well under a second: `pytest python/paulistrings/tests/test_showcase_b5.py`.
 
-8-qubit, 4-layer seeded `hardware_efficient_ansatz`, observable `Z_4`, tail
-depth `k = 1` (front: 3 layers / 69 gates; tail: 1 layer / 23 gates).
+## Validation
+
+8-qubit, 4-layer seeded `hardware_efficient_ansatz`, observable `Z_4`, tail depth `k = 1` (front: 3 layers / 69 gates; tail: 1 layer / 23 gates):
 
 | check | value | gap |
 |---|---|---|
 | full-circuit Heisenberg expectation | −0.175584682492551 | — |
-| composed value, from the task file read back off disk | −0.175584682492551 | **0.0** |
+| composed value, task file read back off disk | −0.175584682492551 | **0.0** |
 | qiskit-Aer statevector cross-check | −0.175584682492551 | 1.665e-16 |
 
-The round-trip gap is exactly `0.0`, well inside the `1e-12` bound. And it is
-genuinely a round trip through disk: the evolved observable is saved to `.npz`
-via `paulistrings.io` and read back *before* being embedded in the task file, so
-the file on disk — not the in-memory object — is what the check exercises.
+The round-trip gap is exactly `0.0`, well inside the `1e-12` bound, and it is a genuine round trip through disk: the evolved observable is saved to `.npz` via `paulistrings.io` and read back before being embedded in the task file.
 
-## Truncation: the gap is the truncation error, and nothing else
-
-Sweeping `min_abs_coeff` and comparing the *composed* (split) expectation against
-the exact reference above:
+Sweeping `min_abs_coeff` against the exact reference above:
 
 | `min_abs_coeff` | terms | value | \|gap\| |
 |---:|---:|---:|---:|
@@ -74,31 +64,11 @@ the exact reference above:
 
 ![Convergence panel against the exact reference](../assets/b5/convergence_panel.svg)
 
-> **A subtlety worth stating precisely.** Truncation is applied after every
-> *channel*, not after every Python call — so `tail_evolved.propagate(front,
-> policy, ...)` (two calls) and `observable.propagate(full_circuit, policy, ...)`
-> (one call) apply the exact same sequence of (apply-adjoint, truncate) steps and
-> therefore agree exactly, **for any split point.** A test pins it.
-
-So the table above is *independent of where `k` is chosen*: splitting a circuit
-for hybrid execution costs nothing in accuracy beyond whatever truncation error
-the whole circuit would already pay in one shot. Note also that the gap is **not
-monotone** in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms
-carry signs, and a truncated Pauli sum has no variational bound.
-
-What splitting *does* cost is the next section.
+Truncation is applied after every *channel*, not after every Python call, so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where `k` is chosen. The gap is **not monotone** in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.
 
 ## The actual trade-off: depth against term count
 
-16-qubit heavy-hex kicked-Ising sublattice, 6 Trotter steps, `θ_h = 0.6` (a
-generic, non-Clifford kick — no free stabilizer shortcut), observable `Z_8`,
-truncated at `weight <= 6` throughout. Unbounded backpropagation of a local
-operator through a brickwork circuit is bounded by the causal light cone in
-principle, but a fixed weight cap is what makes the *classical* half tractable in
-practice — which is the whole reason Pauli propagation with truncation, rather
-than exact backpropagation, is the tool for this job.
-
-Sweeping the tail depth `k` from 0 (nothing back-propagated) to 6 (front empty):
+16-qubit heavy-hex kicked-Ising sublattice, 6 Trotter steps, `θ_h = 0.6` (a generic, non-Clifford kick), observable `Z_8`, truncated at `weight <= 6` throughout — the weight cap is what makes the classical half tractable in practice. Sweeping the tail depth `k` from 0 (nothing back-propagated) to 6 (front empty):
 
 | `k` (tail steps) | front layers | front gates | evolved-observable terms |
 |---:|---:|---:|---:|
@@ -110,28 +80,6 @@ Sweeping the tail depth `k` from 0 (nothing back-propagated) to 6 (front empty):
 | 5 | 1 | 31 | 4608 |
 | 6 | 0 | 0 | 12413 |
 
-The residual circuit shrinks linearly in Trotter steps while the weight-capped
-evolved-observable term count grows roughly exponentially with tail depth before
-the cap starts to bite — the classic "operator spreading vs. causal light cone"
-shape, and exactly the cost that has to be paid classically for every layer
-moved off the QPU.
+The residual circuit shrinks linearly in Trotter steps while the weight-capped evolved-observable term count grows roughly exponentially before the cap bites — the classic operator-spreading-vs-light-cone shape, and exactly the cost paid classically for every layer moved off the QPU.
 
-## Reproducing
-
-```bash
-source .venv/bin/activate
-python examples/b5_operator_backpropagation/run_b5.py
-```
-
-Regenerates every artifact in the directory — both JSON task files, the `.npz`,
-the CSV and both SVG figures — in about 3 seconds on a laptop-class machine.
-Nothing here is a performance claim. The CI-visible correctness gate is
-numpy-only and runs well under a second:
-
-```bash
-pytest python/paulistrings/tests/test_showcase_b5.py
-```
-
-**Source for every number on this page:**
-[`examples/b5_operator_backpropagation/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b5_operator_backpropagation/README.md),
-with the raw sweep in `depth_vs_terms.csv` next to it.
+**Numbers:** every value on this page comes from [`examples/b5_operator_backpropagation/run_b5.py`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b5_operator_backpropagation/run_b5.py), committed alongside its outputs — `task_exact.json`, `task_truncated.json`, `evolved_observable_exact.npz`, `depth_vs_terms.csv`, `depth_vs_terms.svg`, and `convergence_panel.svg` — in the showcase directory.

@@ -2,9 +2,8 @@
 
 **This directory ships with no data files.** Nothing has been fetched into the
 repo, and no reference number in this suite may be written down from
-recollection: *"every numeric claim is computed by an oracle or loaded from a
-provenance-tagged reference file … no fabricated reference values"*
-(`research/plans/2026-08-31-examples-benchmarks-suite.md` §7, global rule 1).
+recollection: every numeric claim is computed by an oracle or loaded from a
+provenance-tagged reference file.
 
 Files here are read by
 `examples/common/oracles.py::load_published_reference(name)`, which **refuses
@@ -54,8 +53,7 @@ unchanged as `payload`.
 
 ## Upstream pointers (not fetched)
 
-For the 127-qubit kicked-Ising benchmarks (plan Part A, benchmarks A–C), two
-public sources exist. Both are recorded in `examples/data/README.md` as well;
+For the 127-qubit kicked-Ising benchmarks (A–C), two public sources exist. Both are recorded in `examples/data/README.md` as well;
 neither has been retrieved.
 
 | What | Where | Note |
@@ -63,9 +61,9 @@ neither has been retrieved.
 | Kim et al. (2023) experimental values with error bars | <https://doi.org/10.6084/m9.figshare.22500355> | Refuses automated fetch |
 | Begušić, Gray & Chan (arXiv:2308.05077) converged exact values, θ_h grid of π/32, all four observables | <https://github.com/tbegusic/arxiv-2308.05077-data> (`exact.csv`); Zenodo [10.5281/zenodo.10223349](https://doi.org/10.5281/zenodo.10223349) | Would drop in here as `begusic2023_exact.csv` with the header above |
 
-Benchmark C does not block on either: its reference is **self-converged with
-documented convergence evidence** (plan decision D5), and published values are
-used only if they can be obtained with clean provenance.
+Benchmark C does not block on either: its reference is self-converged with
+documented convergence evidence, and published values are used only if they can
+be obtained with clean provenance.
 
 ## Adding a file
 

@@ -87,15 +87,16 @@ truncation finishes in seconds to minutes.
 
 Full walkthrough: [`crates/paulistrings/docs/examples/ising_2d_quench.md`](crates/paulistrings/docs/examples/ising_2d_quench.md).
 
-A larger Python examples & benchmarks suite — a 127-qubit heavy-hex kicked-Ising cross-check
-against `PauliPropagation.jl` and `stim`, operator-scrambling/OTOC diagnostics, noisy utility
-verification, and operator-backpropagation depth reduction — lives under
-[`examples/`](examples/); start at [`examples/README.md`](examples/README.md).
+A larger Python examples & benchmarks suite lives under [`examples/`](examples/):
+a 127-qubit heavy-hex kicked-Ising cross-check against `PauliPropagation.jl` and
+`stim`, operator-scrambling/OTOC diagnostics, noisy utility verification, and
+operator-backpropagation depth reduction. Start at
+[`examples/README.md`](examples/README.md).
 
 ## Documentation
 
-- **Documentation site** — the gallery of showcases, benchmarks and cross-engine
-  comparisons, rebuilt on every push to `main`:
+- Documentation site — showcases, benchmarks and cross-engine comparisons,
+  rebuilt on every push to `main`:
   [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
   Source and local build instructions: [`docs/`](docs/README.md).
 - API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the

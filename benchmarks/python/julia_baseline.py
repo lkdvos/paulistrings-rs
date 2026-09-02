@@ -16,8 +16,8 @@ only.
 Interchange format
 ------------------
 
-The task JSON is schema v1, frozen in
-``research/notes/2026-09-01-python-api-extensions.md`` §A5. :func:`make_task`
+The task JSON is schema v1: a frozen, versioned key set and gate-name
+vocabulary with the Hermitian-Y convention. :func:`make_task`
 builds and validates one; :func:`run_task` executes it. The same dict drives
 both engines, which is what makes the parity gate in ``test_julia_parity.py``
 meaningful.

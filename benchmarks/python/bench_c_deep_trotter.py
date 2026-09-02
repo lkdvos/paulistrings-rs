@@ -1,4 +1,4 @@
-"""Benchmark C — deep Trotter, time-to-fixed-accuracy (adapted plan §6 Part A "C").
+"""Benchmark C — deep Trotter, time-to-fixed-accuracy.
 
 The headline entry of the suite. Heavy-hex kicked Ising, `n = 127`,
 `theta_zz = -pi/2`, up to **20 Trotter steps**, kick angles in the hard interior
@@ -8,18 +8,18 @@ Kim et al. (2023) Fig. 4b is `Z_62` at 20 steps. For each
 `(theta_h, trotter_steps)` the driver
 
 1. establishes a **self-converged reference** with documented convergence
-   evidence (plan decision D5) — reusing Benchmark B's *corrected* plateau test
-   verbatim (`_plateau_is_real`, imported, see §Reference strategy),
-2. sweeps the plan's **dyadic** `min_abs_coeff` grid loosest-to-tightest and
+   evidence, reusing Benchmark B's plateau test verbatim (`_plateau_is_real`,
+   imported, see §Reference strategy),
+2. sweeps a **dyadic** `min_abs_coeff` grid loosest-to-tightest and
    records one `report.RunRecord` per grid point (warm, single-threaded, quiet
    logging — all enforced by `harness.run_propagation`),
-3. checks the tracked-set size against the handoff's **sanity envelope**
-   (1.2e6-9.3e6 unique strings at the plan's cutoffs) *before* any timing is
-   reported,
+3. checks the tracked-set size against the sanity envelope of 1.2e6-9.3e6
+   unique strings at the sweep's cutoffs *before* any timing is reported,
 4. optionally runs the same task through PauliPropagation.jl — behind a
    **memory gate**, because jl's dict backend needed 67.6 GiB at 2.85e6 terms in
    Benchmark B — and checks **per-layer** term-count parity at matched
-   truncation before any cross-engine number is written (plan §7 rule 2), and
+   truncation before any cross-engine number is written: this is a blocking
+   gate, and
 5. writes the records as JSON and the figures as SVG.
 
 This module is a driver, not a pytest module: it defines no `test_*` function,
@@ -58,7 +58,7 @@ this module uses B's function object.
 Two things *are* retuned for C, and both are recorded in `summary.json`:
 
 `SELF_CONVERGENCE_TOL`
-    `1e-3`, against B's `1e-5`. The accuracy bar here is the plan's **0.01**, so
+    `1e-3`, against B's `1e-5`. The accuracy bar here is **0.01**, so
     a plateau resolved to 1e-3 leaves a 10x margin; B's 1e-5 is unreachable at
     20 steps at any affordable cutoff (the measured 2^-12 -> 2^-14 difference at
     `theta_h = 0.7`, 20 steps is 1.0e-2, and each further dyadic step costs
@@ -74,7 +74,7 @@ Two things *are* retuned for C, and both are recorded in `summary.json`:
 The dyadic cutoffs, and the one-ulp mitigation
 ----------------------------------------------
 
-The plan fixes `min_abs_coeff in {2**-14, 2**-16, 2**-18}`. Those are exact
+This benchmark fixes `min_abs_coeff in {2**-14, 2**-16, 2**-18}`. Those are exact
 dyadics, which is the one case where this engine and PauliPropagation.jl
 provably disagree: this repo drops `|c| <= eps`, jl keeps `|c| == eps`
 (`benchmarks/julia/README.md` §P3), and at a Clifford `theta_zz` the
@@ -180,14 +180,14 @@ OBSERVABLE_BUILDERS: dict[str, Callable[[], Any]] = {
     "z62": observables.canonical_z_127,
 }
 
-#: Kick angles, in the plan's "hard interior" `theta_h ~ 0.6-1.0`. Two values,
+#: Kick angles, in the hard interior `theta_h ~ 0.6-1.0`. Two values,
 #: not three: the third would have cost a full grid plus a reference (~40 min
 #: measured at these depths) and told the same story — see the README's cuts
 #: section.
 #:
 #: **Both sit on the published `pi/32` grid** (`7*pi/32 = 0.687223...` and
 #: `10*pi/32 = 5*pi/16 = 0.981748...`), which is a deliberate choice over the
-#: round 0.7 / 1.0 the plan suggests as examples. Begušić, Gray & Chan
+#: round 0.7 / 1.0 sometimes used as example angles. Begušić, Gray & Chan
 #: (arXiv:2308.05077) publish their exact kicked-Ising benchmarks on exactly that
 #: grid, so choosing grid points makes every number here directly comparable to
 #: the literature *by construction* — see `PUBLISHED_ANCHOR`. `7pi/32` sits just
@@ -198,7 +198,7 @@ THETA_POINTS: tuple[tuple[str, float], ...] = (
     ("5pi/16", 5 * math.pi / 16),
 )
 
-#: The depth ladder. 20 is the plan's headline; the shallower rungs are what
+#: The depth ladder. 20 is the headline depth; the shallower rungs are what
 #: make "deep" a measurement rather than an adjective — the same observable, the
 #: same angles, the same cutoffs, four depths.
 #:
@@ -207,12 +207,12 @@ THETA_POINTS: tuple[tuple[str, float], ...] = (
 #: here, so the rung is placed where an external anchor exists.
 STEP_POINTS: tuple[int, ...] = (5, 9, 15, 20)
 
-#: The plan's truncation grid, verbatim: `min_abs_coeff in {2^-14, 2^-16, 2^-18}`.
+#: The truncation grid for this benchmark: `min_abs_coeff in {2^-14, 2^-16, 2^-18}`.
 PLAN_COEFF_GRID: tuple[float, ...] = (2.0**-14, 2.0**-16, 2.0**-18)
 
 #: The grid the driver actually sweeps, **loosest first** — the ordering contract
 #: `harness.time_to_accuracy` documents for its `first` selection. Three looser
-#: dyadics are prepended to the plan's three: "time to fixed accuracy" asks for
+#: dyadics are prepended to `PLAN_COEFF_GRID`'s three: "time to fixed accuracy" asks for
 #: the *cheapest* truncation that reaches the bar, and at 20 steps that answer
 #: can be looser than `2^-14`, which a grid starting at `2^-14` could never
 #: report. Same dyadic family, so the one-ulp story below is unchanged.
@@ -220,7 +220,7 @@ COEFF_GRID: tuple[float, ...] = (
     2.0**-8, 2.0**-10, 2.0**-12, *PLAN_COEFF_GRID,
 )
 
-#: Accuracy bar for `harness.time_to_accuracy` — the plan's stated target for
+#: Accuracy bar for `harness.time_to_accuracy` — the stated target for
 #: this benchmark ("Reproduces reference within 0.01").
 ACCURACY_EPSILON = 0.01
 
@@ -244,7 +244,7 @@ ACCURACY_EPSILON = 0.01
 #: * `exact.csv` has a `5a` column and **no `5b` column**. So the paper that
 #:   introduced the "<0.01 absolute accuracy" bar this benchmark is scored
 #:   against publishes *no exact 20-step value either* — independent
-#:   corroboration of the plan's decision D5 that C's 20-step reference has to be
+#:   corroboration that C's 20-step reference has to be
 #:   self-converged, and of `CONE_SIZES` below.
 #: * A rendering of column `4b` reproduced this repo's own independent exact
 #:   weight-10 references (`benchmarks/python/theta_sweep/README.md` §3.1) to 12
@@ -295,7 +295,7 @@ PUBLISHED_ANCHOR = {
     ),
 }
 
-#: The handoff's sanity envelope on the tracked set: at the plan's cutoffs the
+#: The sanity envelope on the tracked set: at these cutoffs the
 #: number of unique Pauli strings should land in this range. A count *below* it
 #: is the semantics red flag the check exists for (a wrong direction, a
 #: commuting-seed no-op, an emptied sum); a count above it at a *tighter* cutoff
@@ -309,7 +309,7 @@ WARMUP_TIME_BUDGET_S = 3.0
 
 
 # --------------------------------------------------------------------------
-# Recorded cuts (plan §6, D15: pilot, project, then shrink and record)
+# Recorded cuts (pilot, project, then shrink and record)
 # --------------------------------------------------------------------------
 
 #: Measured pilot on ccqlin038, `Z_62`, `n = 127`, single-threaded unless marked,
@@ -341,14 +341,14 @@ theta_h  steps  cutoff   <Z_62>        final terms   peak terms   wall
 1.0      20     2^-14    +0.010388188       20 140   15 288 166     355 s
 
 At 5 steps the sum *saturates*: 2^-16 and 2^-18 give the same value to 1e-15,
-which is also the exact light-cone answer, so the plan's full grid is affordable
+which is also the exact light-cone answer, so the full grid is affordable
 there (2.5 s at the tightest point) and is kept.
 
 At 20 steps it does not. Dyad-to-dyad ratios at theta_h = 0.7, 20 steps: wall
 4x, 12x, 15.5x, 16.4x and peak terms 9.6x, 11x, 15x, 15x per factor of four in
 the cutoff. So 2^-18 projects to ~6.6e3 s at 32 threads (~7e4 s single-threaded)
-and ~7e8 resident terms (~37 GiB of columns) at that point -- out of the plan's
-whole time box for a single grid point, never mind eight.
+and ~7e8 resident terms (~37 GiB of columns) at that point -- out of budget
+for a single grid point, never mind eight.
 """
 
 #: Per-`(theta_h, steps)` **recorded cuts** to the coefficient grid: the tightest
@@ -356,9 +356,9 @@ whole time box for a single grid point, never mind eight.
 #: only at the tight, expensive end, so `--coeff-grid` still governs the loose
 #: end everywhere.
 #:
-#: The plan's full grid (through `2^-18`) is kept at **5 steps** for both angles —
+#: The full grid (through `2^-18`) is kept at **5 steps** for both angles —
 #: projected 230 s and 400 s for the `2^-18` point, which is affordable once and
-#: honors the plan's grid at one depth. At every deeper rung the timed grid stops
+#: honors the full grid at one depth. At every deeper rung the timed grid stops
 #: at `2^-14`: the `2^-16` point alone projects to ~3 800 s single-threaded at
 #: 10 steps and was *measured* at 404 s with 32 threads at 20 steps, i.e. ~1.1 h
 #: pinned. The `2^-16` value at 20 steps is still reported — the reference sweep
@@ -415,8 +415,8 @@ SELF_CONVERGENCE_MAX_TERMS: int | None = 400_000_000
 SELF_CONVERGENCE_MAX_SECONDS: float | None = 900.0
 
 #: Rayon workers the reference child is allowed. A reference is an *oracle*, not
-#: a timing measurement, so the single-thread rule (plan §7 rule 3, which exists
-#: to make cross-engine wall times comparable) does not bind it — nothing about
+#: a timing measurement, so the single-thread rule for timed runs, which exists
+#: to make cross-engine wall times comparable, does not bind it — nothing about
 #: the reference's wall time is reported as a benchmark number. What the threads
 #: buy is *reach*: a tighter cutoff, hence a better-converged reference.
 REFERENCE_THREADS = 16
@@ -660,13 +660,13 @@ def dyadic_label(eps: float) -> str:
 
 
 # --------------------------------------------------------------------------
-# The sanity envelope (plan §6: outside ⇒ semantics investigation, no timings)
+# The sanity envelope: outside it ⇒ semantics investigation, no timings
 # --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class EnvelopeCheck:
-    """Tracked-set size at the plan's cutoffs, against the handoff's envelope."""
+    """Tracked-set size at the sweep's cutoffs, against the sanity envelope."""
 
     theta_label: str
     steps: int
@@ -682,7 +682,7 @@ class EnvelopeCheck:
     inside: bool
     #: Does this reading demand a semantics investigation before its timings are
     #: reported? Only a count below the floor **at the headline depth** does. A
-    #: shallower rung is *expected* below the floor (the handoff's envelope is a
+    #: shallower rung is *expected* below the floor (the envelope is a
     #: 20-step statement), and any count above the ceiling is expected too.
     needs_investigation: bool
     verdict: str
@@ -707,11 +707,11 @@ def check_envelope(
 ) -> EnvelopeCheck | None:
     """Score one record against `TERM_COUNT_ENVELOPE`, or `None` if not applicable.
 
-    Only the plan's three cutoffs are scored: the envelope is a statement about
-    *those* cutoffs, and the three looser dyadics this driver prepends to the
-    grid are expected to sit below it by construction.
+    Only the three cutoffs in `PLAN_COEFF_GRID` are scored: the envelope is a
+    statement about *those* cutoffs, and the three looser dyadics this driver
+    prepends to the grid are expected to sit below it by construction.
 
-    **Depth matters.** The handoff's 1.2e6-9.3e6 figure is a statement about the
+    **Depth matters.** The 1.2e6-9.3e6 envelope is a statement about the
     *headline* depth, and the check says so rather than pretending otherwise:
 
     - below the floor at `headline_steps` — the failure the check exists for (an
@@ -746,7 +746,7 @@ def check_envelope(
             verdict = (
                 f"below the envelope floor {low:.1e}, expected at {steps} of "
                 f"{headline_steps} steps (a shallower circuit reaches fewer strings; "
-                "the handoff's envelope is a headline-depth statement)"
+                "the envelope is a headline-depth statement)"
             )
     else:
         verdict = (
@@ -856,7 +856,7 @@ def sweep_one_point(
 
 
 # --------------------------------------------------------------------------
-# Cross-engine parity (plan §7 rule 2) behind a memory gate
+# Cross-engine parity behind a memory gate
 # --------------------------------------------------------------------------
 
 #: Fraction of `MemAvailable` a projected jl leg may claim. jl's dict backend was
@@ -947,10 +947,10 @@ def julia_min_abs_coeff(eps: float) -> float:
     `eps` and `eps'`, so jl's `|c| < eps'` is exactly `|c| <= eps`: the two rules
     coincide, for every input, with no coefficient touched.
 
-    This is the plan's "perturbed-eps comparison, reported as a finding, never
-    fudged". It matters here and not in Benchmark B because B deliberately used
+    This is a perturbed-eps comparison, reported as a finding, never fudged.
+    It matters here and not in Benchmark B because B deliberately used
     powers of ten (non-dyadic, so an exact straddle is measure-zero) while C's
-    grid is the plan's dyadics, where coefficients really do land on the cutoff.
+    grid is dyadic, where coefficients really do land on the cutoff.
     """
     if eps <= 0.0:
         raise ValueError(f"min_abs_coeff must be positive, got {eps}")
@@ -1162,7 +1162,7 @@ def julia_parity(
     asymmetry.
 
     Never raises for a parity failure: the driver's contract is to *report* it
-    and withhold the cross-engine timing (plan §7 rule 2), not to abort.
+    and withhold the cross-engine timing, not to abort.
     """
     import julia_baseline
 
@@ -1437,9 +1437,9 @@ def plot_term_count_vs_truncation(
 ):
     """Peak resident terms vs `min_abs_coeff`, with the sanity envelope shaded.
 
-    The envelope band is the handoff's 1.2e6-9.3e6, and the plan's three cutoffs
+    The envelope band is 1.2e6-9.3e6, and `PLAN_COEFF_GRID`'s three cutoffs
     are marked: a curve that crosses the band inside those cutoffs is the setup
-    behaving as the handoff expected.
+    behaving as expected.
     """
     import matplotlib.pyplot as plt
 
@@ -1490,7 +1490,7 @@ def plot_convergence_panel(
     *,
     save_path: Path,
 ):
-    """Plan §7 rule 4's convergence panel: ⟨Z_62⟩ vs cutoff, reference dashed."""
+    """Convergence panel: ⟨Z_62⟩ vs cutoff, reference dashed."""
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(
@@ -1591,8 +1591,8 @@ def _library_versions() -> dict[str, str]:
 def _published_cross_check(log) -> dict[str, Any]:
     """Try `oracles.load_published_reference`; never fabricate on failure.
 
-    The plan allows a published cross-check "only if obtainable with clean
-    provenance" (D5). `examples/data/references/` ships with **no data files**.
+    A published cross-check is used only if obtainable with clean provenance.
+    `examples/data/references/` ships with **no data files**.
     `PUBLISHED_ANCHOR` records exactly where the relevant one lives, which of its
     columns is this benchmark's observable and depth, and why it was not checked
     in from this environment — so this call reports what it found (normally
@@ -1898,7 +1898,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             f"{model.slope_bytes_per_term / 1024:.2f} KiB/term "
                             f"({'fitted' if model.fitted else 'prior slope'})"
                         )
-                    # Plan §7 rule 2: the *engine* record is always kept (it is a
+                    # The *engine* record is always kept (it is a
                     # single-engine measurement), but the jl record — the only
                     # thing that turns the pair into a cross-engine claim — is
                     # written only when parity holds.
@@ -2020,7 +2020,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if failures:
         log(
             f"\n{len(failures)} parity case(s) FAILED — cross-engine timings for those "
-            "cases are withheld (plan §7 rule 2)"
+            "cases are withheld"
         )
         return 1
     return 0

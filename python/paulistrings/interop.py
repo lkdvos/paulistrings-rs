@@ -2,30 +2,25 @@
 
 Also ``stabilizers_from_stim``, which reads a Clifford circuit's *output state*
 rather than its gates, as the signed generator list
-``PauliSum.expectation_stabilizer`` contracts against (design source §A8-ii).
+``PauliSum.expectation_stabilizer`` contracts against.
 
-Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A5. This
-module is shipped API (consumed by the examples & benchmarks suite and by
+This module is shipped API (consumed by the examples & benchmarks suite and by
 ``benchmarks/julia/runner.jl``'s task-JSON counterpart), not example code, so
 its behavior — in particular the "never skip an unsupported instruction"
 rule and the frozen task-JSON schema below — is load-bearing.
 
 Conventions
 -----------
-Every Pauli string here follows the core's Hermitian convention (CLAUDE.md
-§Known gaps): a coefficient multiplies the literal Hermitian Pauli string,
-and ``Y`` is the symplectic key ``(x=1, z=1)`` with no phase factor. This
-happens to line up exactly with stim's own Pauli convention, which is also
-Hermitian (stim's ``Y = [[0, -i], [i, 0]]``, not a phased "canonical" Y).
-Concretely, ``S X S^-1 = +Y`` in stim's tableau formalism
+Every Pauli string here follows the core's Hermitian convention: a coefficient
+multiplies the literal Hermitian Pauli string, and ``Y`` is the symplectic key
+``(x=1, z=1)`` with no phase factor. This lines up exactly with stim's own
+Pauli convention, which is also Hermitian (stim's ``Y = [[0, -i], [i, 0]]``,
+not a phased "canonical" Y). Concretely, ``S X S^-1 = +Y`` in stim's tableau
+formalism
 (``stim.Tableau.from_named_gate("S")(stim.PauliString("+X")) == stim.PauliString("+Y")``),
 and propagating ``X`` through ``Circuit.s`` in this library forward gives the
 term at key ``(x=1, z=1)`` with coefficient ``+1`` — the same result, with no
-extra phase to reconcile. This is the resolved outcome of the phase-convention
-conflict recorded in
-``research/notes/2026-08-31-python-test-triage.md``: both sides now agree
-because the *parser's* Y-phase folding (not stim's convention, which was
-always Hermitian) was the thing that got fixed.
+extra phase to reconcile.
 
 ``circuit_from_stim``, ``stabilizers_from_stim`` and ``circuit_from_qiskit`` all
 lazily import their respective optional dependency inside the function body, so
@@ -67,7 +62,7 @@ _STIM_1Q_NAMED = {"H": "h", "S": "s", "S_DAG": "sdg", "X": "x", "Y": "y", "Z": "
 
 # Named two-qubit unitaries: stim canonical name -> Circuit method name.
 # stim canonicalizes "CNOT" to "CX" on parse, but both spellings are accepted
-# defensively (research note §A5's mapping table lists "CX/CNOT").
+# defensively.
 _STIM_2Q_NAMED = {"CX": "cnot", "CNOT": "cnot", "CZ": "cz", "SWAP": "swap"}
 
 # Annotations that carry no operational meaning for propagation.
@@ -519,11 +514,9 @@ def load_task(path) -> Task:
     """Load a task-JSON (schema v1) file, or an already-parsed dict, as a `Task`.
 
     This is the frozen interchange format shared with
-    ``benchmarks/julia/runner.jl`` — see the schema table and gate-object
-    vocabulary in ``research/notes/2026-09-01-python-api-extensions.md`` §A5.
-    Unknown top-level keys, unknown gate names, and missing required keys are
-    hard errors; ``run.direction`` is required with no default (the stale
-    README "Heisenberg by default" trap this schema deliberately avoids).
+    ``benchmarks/julia/runner.jl``. Unknown top-level keys, unknown gate
+    names, and missing required keys are hard errors; ``run.direction`` is
+    required with no default.
     """
     if isinstance(path, dict):
         raw = path

@@ -1,6 +1,5 @@
 """Pauli-sum file I/O: the ``paulistrings-npz-v1`` format.
 
-Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A3.
 Pure Python glue around ``PauliSum.x_array`` / ``z_array`` /
 ``coefficients_array`` (export) and ``PauliSum.from_arrays`` (import) — a
 small versioned ``.npz`` container, no pickle and no serde, so an evolved

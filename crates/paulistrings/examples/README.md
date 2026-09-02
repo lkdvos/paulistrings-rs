@@ -1,8 +1,8 @@
 # Examples
 
 Runnable end-to-end simulations. Each example has a companion narrative
-under `crates/paulistrings/docs/examples/` that's embedded into the
-rustdoc at [`paulistrings::examples`](../src/lib.rs).
+under `crates/paulistrings/docs/examples/`, embedded into the rustdoc at
+[`paulistrings::examples`](../src/lib.rs).
 
 | Example | Source | Narrative |
 |---|---|---|
@@ -32,10 +32,9 @@ python crates/paulistrings/examples/plot_ising_quench.py
 ```
 
 If you change the Rust example, regenerate **both** the CSV and the SVG
-in the same commit so the embedded plot matches the data — see
-"Regenerating the committed output" below.
+in the same commit so the embedded plot matches the data.
 
-## Why CSVs and SVGs are committed
+## Committed CSVs and SVGs
 
 docs.rs and the GitHub Pages preview render rustdoc without running any
 code; the plot is loaded from `raw.githubusercontent.com` and so must

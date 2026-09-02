@@ -13,9 +13,9 @@ assert-on-result rather than a bare timing). Not part of CI (CI runs
 
 Setup: heavy-hex kicked Ising, `n=127`, 5 Trotter steps, `theta_h=pi/2` (the
 utility-experiment Clifford point), timing the Heisenberg propagation of the
-published weight-10 and weight-17 observables. One group per observable
-(plan §6 Part A's own table lists them together, but grouping keeps a
-same-shape comparison in the HTML report). Each paulistrings entry
+published weight-10 and weight-17 observables. One group per observable,
+so the HTML report shows a same-shape comparison across engines. Each
+paulistrings entry
 asserts the Clifford invariant on its own result (single term, coefficient
 exactly `+-1.0`) so a correctness regression fails the *benchmark* run too,
 not only the dedicated test file.
@@ -25,9 +25,10 @@ not only the dedicated test file.
 Schema-v1 task JSON built from the *same* gate list the paulistrings side
 runs (`examples.common.oracles.record_gates` over the identical
 `circuits.heavy_hex_kicked_ising` call), so neither engine gets a
-transcription of the other's circuit. Per plan §7 rule 2 ("term-count parity
-blocks timing"), `_require_layer_parity` runs **both** engines once, untimed,
-and asserts every one of the 1355 per-layer term counts is identical (the
+transcription of the other's circuit. Term-count parity is a blocking gate:
+cross-engine timing is reported only after every per-layer count matches, so
+`_require_layer_parity` runs **both** engines once, untimed, and asserts
+every one of the 1355 per-layer term counts is identical (the
 same per-gate-application-order comparison `test_julia_parity.py` uses,
 reused here via `run_rust` rather than re-derived) before either engine's
 timed entry is allowed to run.
@@ -177,7 +178,8 @@ def _jl_task(gate_list, observable, *, expected_sign: float):
 
 
 def _require_layer_parity(task, *, label: str):
-    """Blocking gate (plan §7 rule 2): every per-layer term count must match.
+    """Blocking gate: every per-layer term count must match; cross-engine
+    timing is reported only after parity holds.
 
     Runs both engines once, untimed, mirroring `test_julia_parity.py::compare`
     (reusing its `run_rust`, rather than re-deriving the log-collector, since
@@ -205,7 +207,7 @@ def _require_layer_parity(task, *, label: str):
     assert not mismatches, (
         f"{label}: {len(mismatches)}/{len(rust_layers)} per-layer term counts differ "
         f"(first: layer {mismatches[0][0]}, rust={mismatches[0][1]} jl={mismatches[0][2]}); "
-        "cross-engine timing must not be reported until this is resolved (plan §7 rule 2)"
+        "cross-engine timing must not be reported until every layer count matches"
     )
     assert rust["final_terms"] == jl.final_terms == 1, (
         f"{label}: expected both engines to collapse to the single Clifford stabilizer "

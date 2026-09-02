@@ -32,13 +32,13 @@ Evolve to `t_max = 2.0 / J` over 40 steps.
 
 # Strategy
 
-We Heisenberg-evolve the **observable** `O(t) = U†(t) · O · U(t)` rather
+Heisenberg-evolve the **observable** `O(t) = U†(t) · O · U(t)` rather
 than the state, then read off `⟨+...+| O(t) |+...+⟩` from the resulting
 Pauli sum. This is the natural workload for Pauli propagation: the
 observable starts as `N` weight-1 terms and grows under the Trotter
 circuit; the wave function is never stored.
 
-The four ingredients we need are: (1) the per-step `Circuit`, (2) the
+The four ingredients are: (1) the per-step `Circuit`, (2) the
 initial observable as a `PauliSum`, (3) the propagation loop, and
 (4) the observable-to-scalar projection.
 
@@ -49,7 +49,7 @@ initial observable as a `PauliSum`, (3) the propagation loop, and
 and likewise `θ = 2 · h · dt` for an `X_i` site. The generator for a
 `Z_i Z_j` bond is built by multiplying single-qubit `Z`s — the engine
 returns the right `x` / `z` bitmasks plus an `i^k` phase (which is
-`+1` for two distinct Pauli `Z`s, but we go through `mul_assign` so the
+`+1` for two distinct Pauli `Z`s, going through `mul_assign` so the
 pattern generalises to mixed generators).
 
 ```rust,no_run
@@ -150,7 +150,7 @@ state that is itself a Pauli sum, use
 ## Putting it together
 
 The propagation entry point is [`propagate`](crate::propagate) with
-[`Direction::Heisenberg`](crate::Direction::Heisenberg). We build the
+[`Direction::Heisenberg`](crate::Direction::Heisenberg). Build the
 per-step circuit once, then call `propagate` 40 times, recording the
 expectation after each step.
 
@@ -196,10 +196,11 @@ see below). Loosening either preserves the curves at early times
 and only changes long-time behaviour (where the answer is already
 truncation-limited).
 
-### How sensitive is the answer to *which* terms `TopN` keeps?
+### Sensitivity to which terms TopN keeps
 
-More than one might expect, and worth knowing before reading precision into
-these curves. `TopN` has to cut through groups of terms with **exactly equal**
+The answer is sensitive to which terms `TopN` keeps — more than one might
+expect, and worth knowing before reading precision into these curves.
+`TopN` has to cut through groups of terms with **exactly equal**
 coefficient magnitude — unavoidable here, because lattice symmetry on a periodic
 lattice relates many Pauli strings and gives them identical weights.
 
@@ -243,9 +244,9 @@ show a nonzero, floating-point-tolerance-size shift instead.
 
 `⟨X_avg⟩` starts at `+1.0` (every spin in the `|+⟩` eigenstate of `X`)
 and decays as the `ZZ` coupling mixes `X` with `Y` and `Z` components.
-The two lattice sizes track each other closely — finite-size effects
-are visible but small in this time window — consistent with the
-short-time evolution being dominated by local dynamics.
+The two lattice sizes track each other closely, with finite-size effects
+visible but small in this time window — consistent with the short-time
+evolution being dominated by local dynamics.
 
 # Reproduce
 

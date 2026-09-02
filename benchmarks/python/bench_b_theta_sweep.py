@@ -1,4 +1,4 @@
-"""Benchmark B — the `theta_h` sweep at 5 Trotter steps (adapted plan §6 Part A "B").
+"""Benchmark B — the `theta_h` sweep at 5 Trotter steps.
 
 Heavy-hex kicked Ising, `n = 127`, 5 Trotter steps, `theta_zz = -pi/2`, six kick
 angles `theta_h in {0, 0.2, pi/8, pi/4, 3pi/8, pi/2}`, three observables: `Z_62`
@@ -10,8 +10,8 @@ of Kim et al. (2023). For each `(observable, theta_h)` the driver
    records one `report.RunRecord` per grid point (warm, single-threaded, quiet
    logging — all enforced by `harness.run_propagation`),
 3. optionally runs the same task through PauliPropagation.jl and checks
-   **per-layer** term-count parity at matched truncation before any
-   cross-engine number is written (plan §7 rule 2), and
+   **per-layer** term-count parity at matched truncation: cross-engine
+   timing is reported only after every per-layer count matches, and
 4. writes the records as JSON and the figures as SVG.
 
 This module is a driver, not a pytest module: it defines no `test_*` function,
@@ -23,9 +23,9 @@ sublattice where a dense statevector covers every point.
 Reference strategy
 ------------------
 
-The handoff asked for a light-cone exact reference at every point for all three
-observables. That is **not** feasible, and the adaptation is per observable —
-the deciding measurements are in `benchmarks/python/theta_sweep/README.md`:
+A light-cone exact reference at every point for all three observables is
+**not** feasible; the reference strategy is adapted per observable, using
+the deciding measurements in `benchmarks/python/theta_sweep/README.md`:
 
 `Z_62`
     Exact at every `theta_h`. The commutation-aware cone is 19 qubits, so
@@ -198,11 +198,11 @@ WEIGHT_GRID: tuple[int, ...] = (2, 4, 6, 8, 10, 12)
 #: | `weight_17` | 0.2   | 2.4 s | 16 s  | 98 s  | —     |
 #: | `weight_17` | pi/8  | 37 s  | —     | —     | —     |
 #:
-#: The plan's time-box policy is "pilot, project, then shrink the grid and
-#: record the cut" (§6, D15), and this table *is* that record: a cut entry is a
-#: deliberate, reviewable shortening, not an adaptive stop whose shape depends
-#: on machine load. `z62` is never cut — its whole grid is under 3 s at every
-#: angle, because a `Z` seed's reachable set saturates.
+#: The time-box policy is pilot, project, then shrink the grid and record the
+#: cut, and this table *is* that record: a cut entry is a deliberate,
+#: reviewable shortening, not an adaptive stop whose shape depends on machine
+#: load. `z62` is never cut: its whole grid is under 3 s at every angle,
+#: because a `Z` seed's reachable set saturates.
 COEFF_GRID_CUTS: dict[tuple[str, str], tuple[float, ...]] = {
     ("weight_10", "0.2"): (1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7),
     ("weight_10", "pi/8"): (1e-2, 1e-3, 1e-4, 1e-5, 1e-6),
@@ -671,8 +671,8 @@ _UNCERTAINTY_SLACK = 10.0
 _FP_NOISE_FLOOR = 1e-12
 
 #: Rayon workers the reference child is allowed. A reference is an *oracle*, not
-#: a timing measurement, so the single-thread rule (plan §7 rule 3, which exists
-#: to make cross-engine wall times comparable) does not apply to it: nothing
+#: a timing measurement, so the single-thread rule (which exists to make
+#: cross-engine wall times comparable) does not apply to it: nothing
 #: about the reference's wall time is ever reported as a benchmark number. What
 #: the threads buy is *reach* — a tighter cutoff in the weight-17
 #: self-convergence, hence a better-converged reference. The parent's own pool
@@ -907,7 +907,8 @@ def sweep_one_point(
 
 
 # --------------------------------------------------------------------------
-# Cross-engine parity (plan §7 rule 2)
+# Cross-engine parity: cross-engine timing is withheld until per-layer term
+# counts match.
 # --------------------------------------------------------------------------
 
 
@@ -973,7 +974,7 @@ def julia_parity(
 
     Returns a `ParityOutcome`; it never raises for a parity failure, because the
     driver's contract is to *report* the failure and withhold the cross-engine
-    timing (plan §7 rule 2), not to abort the whole sweep.
+    timing until parity holds, not to abort the whole sweep.
     """
     import julia_baseline
 
@@ -1177,9 +1178,9 @@ def plot_error_vs_truncation(
 ):
     """|error| vs a truncation knob, one panel per observable, one curve per `theta_h`.
 
-    This is the plan's "error trending to 0 as truncation tightens" panel (§7
-    rule 4): a curve that *rises* left to right on the `min_abs_coeff` panel is
-    the expected shape, since x increases with how much is thrown away.
+    This panel shows error trending to 0 as truncation tightens: a curve that
+    *rises* left to right on the `min_abs_coeff` panel is the expected shape,
+    since x increases with how much is thrown away.
     """
     import matplotlib.pyplot as plt
 
@@ -1621,10 +1622,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         min_abs_coeff=eps, log=log,
                     )
                     parity_outcomes.append(outcome)
-                    # Plan §7 rule 2: the *engine* record is always kept (it is
-                    # a single-engine measurement), but the jl record — the only
-                    # thing that turns the pair into a cross-engine claim — is
-                    # written only when parity holds.
+                    # The engine record is always kept (it is a single-engine
+                    # measurement); the jl record, the only thing that turns
+                    # the pair into a cross-engine claim, is written only when
+                    # parity holds.
                     if outcome.rust_record is not None:
                         records.append(outcome.rust_record)
                     if outcome.julia_record is not None and outcome.ok:
@@ -1721,7 +1722,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if failures:
         log(
             f"\n{len(failures)} parity case(s) FAILED — cross-engine timings for those "
-            "cases are withheld (plan §7 rule 2)"
+            "cases are withheld"
         )
         return 1
     return 0

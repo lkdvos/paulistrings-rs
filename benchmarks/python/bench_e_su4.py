@@ -1,7 +1,7 @@
 """Benchmark E -- random SU(4) brickwork, the generic stress test.
 
-`research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part A, row "E".
-A `manual-short` benchmark: run it while developing, not under pytest.
+Part A's row "E" benchmark in the suite. A `manual-short` benchmark: run it
+while developing, not under pytest.
 
     RAYON_NUM_THREADS=1 python benchmarks/python/bench_e_su4.py
 
@@ -19,8 +19,7 @@ What this script produces, each following the module's four pieces:
 1. `validate()` -- small `n` (8..24), shallow depth (3), **no truncation**:
    agreement against `oracles.statevector_expectation` to floating-point
    tolerance. This is the oracle-backed half of the benchmark; everything
-   past it is self-converged or cross-engine, never fabricated (plan §7
-   rule 1).
+   past it is self-converged or cross-engine, never fabricated.
 2. `term_growth()` -- the headline "term-count explosion vs depth" curve at
    `n=36`, for three `min_abs_coeff` truncations. No Clifford savings apply
    here, so peak term count grows ~exponentially with depth until the
@@ -36,9 +35,8 @@ What this script produces, each following the module's four pieces:
    `n=24` (Aer's practical ceiling for a same-process sweep here); larger `n`
    is reported unchecked and labeled as such in `extra["oracle_checked"]`.
 5. `check_determinism()` -- the same seed run twice must give byte-for-byte
-   identical term counts and an expectation matching to 1e-12 (plan §6 "E":
-   "same seed twice -> identical term counts and expectation to 1e-12"). This
-   is also asserted in CI, in
+   identical term counts and an expectation matching to 1e-12. This is
+   also asserted in CI, in
    `python/paulistrings/tests/test_benchmark_e_su4.py`; the check here is a
    smoke re-run at the driver's own working sizes, not a substitute.
 6. `julia_comparison()` -- cross-engine against PauliPropagation.jl 0.8.2.
@@ -46,14 +44,16 @@ What this script produces, each following the module's four pieces:
    built from, and jl 0.8.2 defines no `_toschrodinger` for `TransferMapGate`
    (`benchmarks/julia/README.md` "Known gaps"), so **only
    `direction="heisenberg"` is comparable** -- the forward direction is not
-   attempted here, by the same rule benchmark comparisons follow throughout
-   this suite (plan §2). `min_abs_coeff=1e-4` is deliberately non-dyadic: the
-   only known coefficient-boundary divergence between the engines
+   attempted here: this suite's cross-engine comparisons only ever compare a
+   direction both engines implement for the gate in question.
+   `min_abs_coeff=1e-4` is deliberately non-dyadic: the only known
+   coefficient-boundary divergence between the engines
    (`benchmarks/julia/README.md` §P3) is triggered by *exact* dyadic
    coefficients at Clifford points, and Haar samples are irrational floats, so
    the boundary case does not arise here, but a non-dyadic cutoff removes it
    as a possible objection. **Per-layer term-count parity is checked and
-   printed before any timing is reported or written** (plan §7 rule 2); on
+   printed before any timing is reported or written**: cross-engine timing is
+   a blocking gate on that parity check, and on
    this checkout it holds exactly at both a 6-qubit/depth-3 smoke case and the
    10-qubit/depth-5 case whose timing is recorded (`benchmarks/julia/README.md`
    already documents the general vocabulary parity -- this reconfirms it
@@ -65,9 +65,9 @@ Results land in the *committed* `benchmarks/python/su4_staircase/` directory
 (`results.json` + one SVG per plot), not the gitignored
 `benchmarks/results/<date>-<host>/` the rest of the suite's ad hoc campaigns
 use -- Benchmark E has no `examples/<slug>/` showcase directory of its own (it
-is a Part A benchmark, plan §4), so its committed artifacts live next to the
-driver script instead, following the same "regenerated in the same commit as
-the script" rule §4 states for showcases.
+is a Part A benchmark), so its committed artifacts live next to the driver
+script instead, following the same "regenerated in the same commit as the
+script" rule showcases follow.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ import julia_baseline as jb  # noqa: E402
 from test_julia_parity import compare as jl_compare  # noqa: E402
 
 #: Fixed seed for every `random_su4_staircase` draw in this benchmark. Record
-#: it wherever a number from this file is quoted (plan §6 "E").
+#: it wherever a number from this file is quoted.
 SEED = 20260831
 
 N_HEADLINE = 36
@@ -378,10 +378,10 @@ def _make_su4_task(n: int, depth: int, eps: float):
 def julia_comparison() -> list[report.RunRecord]:
     """Parity-gated cross-engine comparison. Returns `[]` (and prints why) if
     Julia is unavailable or if parity fails -- **never** a timing record for a
-    run that has not cleared the parity gate (plan §7 rule 2). A parity
-    failure is reported here as text (what mismatched, at which n/depth), not
-    swallowed: rerun this function's output into the benchmark's README by
-    hand if that ever happens.
+    run that has not cleared the parity gate. A parity failure is reported
+    here as text (what mismatched, at which n/depth), not swallowed: rerun
+    this function's output into the benchmark's README by hand if that ever
+    happens.
     """
     reason = jb.skip_reason()
     if reason is not None:

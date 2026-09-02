@@ -44,11 +44,12 @@ resolve it — use the A/B protocol.
 
 ## Interleaved A/B protocol
 
-This host's single-shot campaign noise is **~±5–8% at 1 thread and ~±10–26% at 8–32 threads** — untouched
-code moves that much between two otherwise-identical campaigns. A difference of two independent campaign
-means cannot resolve the ~5–10% effects most engine changes actually produce. What can: build *both* sides
-up front into separate binaries, alternate them adjacent in time for several pairs, and compare *pairs* —
-run *i* of A against run *i* of B — instead of two independently-noisy means.
+This host's single-shot campaign noise is **~±5–8% at 1 thread and ~±10–26% at 8–32 threads**, and
+untouched code moves that much between two otherwise-identical campaigns. A difference of two
+independent campaign means cannot resolve the ~5–10% effects most engine changes actually produce.
+What can: build *both* sides up front into separate binaries, alternate them adjacent in time for
+several pairs, and compare *pairs* (run *i* of A against run *i* of B), instead of two
+independently-noisy means.
 
 ```bash
 scripts/ab-compare.sh g1d-borrow \
@@ -144,8 +145,8 @@ key, so an appended re-run overwrites the earlier one in the rendered report.
 
 **(b) The probe's stdout `cell` line.** Every cell prints exactly one `cell layer=<name> threads=<n> n=<n>
 layers=<n> wall_ms=<f>` line, in every `--format`. `perf-stat.sh`'s awk greps this literal shape (`n=` and
-`layers=` field prefixes) to compute cycles/string — a coupling previously undocumented. Change the line's
-fields or order, fix `perf-stat.sh`'s awk in the same change.
+`layers=` field prefixes) to compute cycles/string — a coupling documented here and nowhere else in the
+code. Change the line's fields or order, fix `perf-stat.sh`'s awk in the same change.
 
 **(c) Criterion snapshot JSON.** `criterion-report.py snapshot` and `bench-campaign.sh`'s
 `criterion:`/`scaling:` items write `{full_id: {median_ns, mean_ns, stddev_ns, throughput_elems,
@@ -187,7 +188,7 @@ Two clock domains are deliberately mixed in one `PhaseStats`:
   they sum to approximately the layer's wall time.
 - **Worker busy-time phases** (`swap_ns` … `clear_ns`) — summed across every coset task on every Rayon
   worker. Under a `t`-thread pool they sum to `coset_loop_ns × t × efficiency`, not to `coset_loop_ns` itself.
-  `Σbusy / (coset_loop_ns × t)` **is** the coset loop's parallel efficiency — the gap between the two domains
+  `Σbusy / (coset_loop_ns × t)` is the coset loop's parallel efficiency — the gap between the two domains
   is the load-balance signal.
 
 The probe (`cargo run --release --features phase-timing --example phase_breakdown`) runs each `(layer,
@@ -207,13 +208,14 @@ Cargo profile), `bench` (profiles a criterion bench group via `--profile-time`, 
 --no-run` and located under `target/release/deps/`), and `bin` (profiles an arbitrary prebuilt binary, no
 build step).
 
-The `[profile.profiling]` build (`Cargo.toml`) inherits `release` (same `lto = "fat"`, same `codegen-units =
-1` — it profiles what ships) and adds `debug = "line-tables-only"` plus `strip = "none"` so
-`perf`/`addr2line` can expand LTO-inlined frames. `PROFILE_MODE` picks the stack-walking method: `dwarf`
-(default) — `perf record --call-graph dwarf,16384`, works against the normal profiling build; or `fp` —
-frame pointers, which forces `RUSTFLAGS="-Cforce-frame-pointers=yes"` and a full rebuild for `probe`/`bench`
-(codegen differs from cached artifacts), and for `bin` only changes the `perf record` flag — you're
-responsible for having built that binary with frame pointers yourself.
+The `[profile.profiling]` build (`Cargo.toml`) inherits `release` (same `lto = "fat"`, same
+`codegen-units = 1`, so it profiles what ships) and adds `debug = "line-tables-only"` plus
+`strip = "none"` so `perf`/`addr2line` can expand LTO-inlined frames. `PROFILE_MODE` picks the
+stack-walking method: `dwarf` (default, `perf record --call-graph dwarf,16384`, works against the
+normal profiling build) or `fp` (frame pointers, which forces
+`RUSTFLAGS="-Cforce-frame-pointers=yes"` and a full rebuild for `probe`/`bench` since codegen differs
+from cached artifacts, and for `bin` only changes the `perf record` flag — you are responsible for
+having built that binary with frame pointers yourself).
 
 Output: `benchmarks/results/<date>-<host>/flamegraph-<name>-<shortcommit>[-dirty].html` plus a sidecar
 `.meta.txt` (host, date, full commit, rustc version, mode, frequency, exact command line).
@@ -233,7 +235,7 @@ Caveats:
 
 - **Pass A** (per-process): `cycles`, `instructions`, `LLC-loads`, `LLC-load-misses`, `branches`,
   `branch-misses`. Derives IPC, LLC miss rate, and cycles/input-string. Cycles/string is frequency-robust
-  (matters on a powersave-governed host) but **whole-process** — it includes input generation and warm-up, so
+  (matters on a powersave-governed host) but whole-process — it includes input generation and warm-up, so
   with more than one cell in a run it's a blend (the script warns), converging from above as `--n`/`--reps`
   grow.
 - **Pass B** (system-wide uncore IMC): `uncore_imc/cas_count_read/` and `uncore_imc/cas_count_write/`,
@@ -256,8 +258,8 @@ gathered rows:
 - **sort** ≈ a few read+write passes over `n_out × 48`
 - **merge** ≈ read `n_out × 48` + `n_existing × 48`, write `n_merged × 48`
 
-Serial phases (rebucket, recount) compare against the **single-core** ceiling; the coset loop against the
-**all-core** ceiling for whatever placement was used to measure it.
+Serial phases (rebucket, recount) compare against the single-core ceiling; the coset loop against the
+all-core ceiling for whatever placement was used to measure it.
 
 `perf-viz.py` computes this automatically per probe cell ("DRAM: X GB/s = Y% of ceiling") from
 `rows_gathered`, `rows_sorted`, and `rows_id`: the identity-delta stream skips the sort and carries no tag
@@ -270,7 +272,7 @@ with `T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path
 `rows_gathered`/`rows_sorted` but no `rows_id` field is priced with `rows_id` treated as 0 (every gathered
 row at full `T`, no dense-identity discount); a line carrying neither `rows_id` nor `rows_sorted` falls back
 to the older `4×rows_gathered×(T+1)` model (every row priced as if tagged and passed through a sort read and
-write). This is divided by wall time and by the membench **triad** ceiling at a comparable core count (per
+write). This is divided by wall time and by the membench triad ceiling at a comparable core count (per
 the host's `# ceiling-map:` header — Machine contracts (d)). Read the result as a classification, not a
 gauge: **over 100% means the modeled traffic is mostly served from cache** (small per-coset working sets,
 not DRAM-bound); near 100% is genuinely at the wall; far below 100% with high wall time points at latency,
@@ -311,13 +313,14 @@ modeled coset loop is eating parallelism.
 
 ## Host caveats
 
-- This host's single-shot campaign noise floor is **~±5–8% at 1 thread and ~±10–26% at 8–32 threads** —
-  untouched code moves that much between otherwise-identical campaigns. Trust an absolute campaign-to-campaign
-  comparison only above that floor; below it, use the interleaved A/B protocol. `bench-campaign.sh` logs load
-  average at the start and end of every campaign — check it before trusting a close call.
-- The CPU governor is `powersave` and cannot be pinned to `performance` (no root on the reference host).
-  Prefer frequency-robust ratios — IPC, percent of the measured bandwidth ceiling, speedup ratios,
-  cycles/string — over absolute millisecond figures across days.
+- This host's single-shot campaign noise floor is **~±5–8% at 1 thread and ~±10–26% at 8–32 threads**,
+  and untouched code moves that much between otherwise-identical campaigns. Trust an absolute
+  campaign-to-campaign comparison only above that floor; below it, use the interleaved A/B protocol.
+  `bench-campaign.sh` logs load average at the start and end of every campaign — check it before
+  trusting a close call.
+- The CPU governor is `powersave` and cannot be pinned to `performance` (no root on the reference
+  host). Prefer frequency-robust ratios (IPC, percent of the measured bandwidth ceiling, speedup
+  ratios, cycles/string) over absolute millisecond figures across days.
 - Run every campaign (and every A/B run) with `RUST_LOG` **unset** (and no logger installed): with no logger
   the engine's per-layer progress logging is a single static level check and allocates nothing, whereas an
   enabled `debug` filter adds a formatted line and a clock read per layer.

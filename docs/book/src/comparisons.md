@@ -288,6 +288,8 @@ library / paulistrings:
 | 1 000 | 71.0 | 4 978.4 | 70× |
 | 10 000 | 1 057.3 | 32 642.0 | 31× |
 
+![Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings](assets/comparisons/baseline-ops.svg)
+
 `openfermion` has no equivalent conjugation operation and is not in the second
 group. `PauliStrings.jl`, the library that inspired this one, is excluded for
 the same reason `PauliPropagation.jl` is driven by subprocess: no PyJulia

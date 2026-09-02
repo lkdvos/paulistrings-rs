@@ -32,7 +32,8 @@ UP_TO_ROOT="../../../../.."
 # root>|<the figures the pages embed from it>.
 ASSET_GROUPS=(
     "ising-quench|crates/paulistrings/docs/examples/img|ising_quench.svg"
-    "design|docs/figures/design|bucket-cosets.svg"
+    "design|docs/figures/design|bucket-cosets.svg roofline-threads.svg phase-shares.svg"
+    "comparisons|docs/figures/comparisons|baseline-ops.svg"
     "b1|examples/b1_operator_scrambling|light_cone_1d.svg support_growth.svg otoc_1d.svg convergence_panel_1d.svg butterfly_velocity_1d.svg velocity_vs_kick_angle.svg quench_observables_2d.svg light_cone_2d.svg correlator_2d.svg convergence_panel_2d.svg"
     "b2|examples/b2_noisy_verification|terms-and-time-vs-noise.svg convergence-vs-cutoff.svg observable-decay-vs-noise.svg"
     "b5|examples/b5_operator_backpropagation|depth_vs_terms.svg convergence_panel.svg"

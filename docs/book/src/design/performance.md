@@ -32,6 +32,8 @@ Gather + merge dominate the sparse classes; the sort dominates only dense two-qu
 efficiency (busy time over coset-loop wall × threads) is 0.99 for `su4` at 16 threads: load balance
 is a solved problem, and the scaling limits below are memory-system effects, not imbalance.
 
+![Share of worker busy time in gather, sort and merge per layer class, one thread](../assets/design/phase-shares.svg)
+
 Per-term cost is flat in the sum size over the measured range: 30.5–30.6 ns/term for the ZZ
 rotation across m = 1.50e6 → 4.50e6, 138.5–141.3 for the sparse 2q unitary, 322–327 for `su4`
 (single thread).
@@ -95,6 +97,8 @@ By 16 threads the dense-PTM class sits at the machine's write ceiling — the fi
 against the STREAM nominal-store ceiling, which the engine's write-allocating stores share, so "at
 the ceiling" is the correct reading. 32 threads buy zero additional bandwidth (67.0 vs 67.0 GB/s
 attributable) and cost 12% of wall time.
+
+![su4 attributable DRAM traffic against thread count, with the measured read and write ceilings](../assets/design/roofline-threads.svg)
 
 The sparse classes at 32 threads stay latency-bound and keep scaling:
 

@@ -14,6 +14,7 @@
 use num_complex::Complex64;
 use proptest::prelude::*;
 
+use paulistrings::bucket::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{
     AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Depolarizing, Depolarizing2Q,
     GeneralUnitary2Q, PauliRotation,
@@ -39,6 +40,7 @@ fn auto(threshold: usize) -> PropagateOptions {
     PropagateOptions {
         engine: EngineSelection::Auto,
         small_sum_threshold: threshold,
+        ..PropagateOptions::default()
     }
 }
 
@@ -46,12 +48,15 @@ fn forced(threshold: usize) -> PropagateOptions {
     PropagateOptions {
         engine: EngineSelection::SmallSumDirect,
         small_sum_threshold: threshold,
+        ..PropagateOptions::default()
     }
 }
 
 const SORTED: PropagateOptions = PropagateOptions {
     engine: EngineSelection::SortedOnly,
     small_sum_threshold: DEFAULT_SMALL_SUM_THRESHOLD,
+    target_bucket_len: DEFAULT_TARGET_BUCKET_LEN,
+    min_buckets: DEFAULT_MIN_BUCKETS,
 };
 
 /// Size of the channel zoo — every built-in class the engine has a different

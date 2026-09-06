@@ -337,6 +337,7 @@ fn main() {
     let direct = PropagateOptions {
         engine: EngineSelection::Auto,
         small_sum_threshold: threshold,
+        ..PropagateOptions::default()
     };
 
     let mut jobs: Vec<(&'static str, Circuit<W>, PauliSum<W>, Vec<Config>)> = Vec::new();

@@ -19,7 +19,7 @@ pub(crate) mod merge;
 #[cfg(feature = "phase-timing")]
 pub mod stats;
 
-use crate::bucket::sum::DEFAULT_TARGET_BUCKET_LEN;
+use crate::bucket::sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
@@ -143,6 +143,38 @@ pub struct PropagateOptions {
     /// Ignored under [`EngineSelection::SortedOnly`]. Default
     /// [`DEFAULT_SMALL_SUM_THRESHOLD`].
     pub small_sum_threshold: usize,
+    /// Terms per bucket the per-layer partition targets. Default
+    /// [`DEFAULT_TARGET_BUCKET_LEN`](crate::bucket::DEFAULT_TARGET_BUCKET_LEN).
+    ///
+    /// A measurement lever, not a tuning parameter: the default is the measured
+    /// optimum (ARCHITECTURE.md §Bucket-Policy). At `W = 2` a term is 48 B, so
+    /// the default 1024 puts ~48 KB in a 1 MiB L2 — but what has to stay
+    /// resident is the *gather run*, not the bucket, so the headroom is not the
+    /// bucket size alone.
+    ///
+    /// Raising this alone does nothing above the `min_buckets` floor: with
+    /// `len >= min_buckets * MIN_TERMS_PER_TASK`,
+    /// [`desired_bits`](crate::bucket::desired_bits) clamps the bucket count
+    /// below at `min_buckets` whatever the target says. Both fields have to
+    /// move together to get *fewer* buckets, and
+    /// [`PauliSum::rebucket`](crate::PauliSum::rebucket) is grow-only, so
+    /// lowering either mid-run never coarsens a partition already grown.
+    pub target_bucket_len: usize,
+    /// Floor on the per-layer bucket count once the sum is worth splitting.
+    /// Default [`DEFAULT_MIN_BUCKETS`](crate::bucket::DEFAULT_MIN_BUCKETS).
+    ///
+    /// Must be `>= 16`: below that `desired_bits`'s "worth splitting" gate is
+    /// non-monotone (`crates/paulistrings/src/bucket/sum.rs:110-116`), and the
+    /// invariant "a sum of at most `target_bucket_len` terms gets one bucket"
+    /// stops holding. Lowering it also lowers the parallel task count — the
+    /// coset is the unit of work — so a coarse partition is a single-thread
+    /// measurement tool first.
+    ///
+    /// Applies to the sorting engine's per-layer `rebucket` only. The small-sum
+    /// direct path's materialize (`engine::direct`) still sizes its partition
+    /// from the defaults; it is a small-`n` path where the knob has nothing to
+    /// measure, and the asymmetry is deliberate.
+    pub min_buckets: usize,
 }
 
 impl Default for PropagateOptions {
@@ -150,6 +182,8 @@ impl Default for PropagateOptions {
         Self {
             engine: EngineSelection::SortedOnly,
             small_sum_threshold: DEFAULT_SMALL_SUM_THRESHOLD,
+            target_bucket_len: DEFAULT_TARGET_BUCKET_LEN,
+            min_buckets: DEFAULT_MIN_BUCKETS,
         }
     }
 }
@@ -392,7 +426,6 @@ where
     // Bitwise independence of the engine's output from `B` is tested, but
     // agreement is only required to floating-point tolerance
     // (ARCHITECTURE.md §Determinism).
-    let min_buckets = default_min_buckets();
 
     // Entry/exit INFO pair. One unconditional `Instant` pair per `propagate`
     // call is negligible next to a single layer; the *per-layer* clock reads
@@ -444,7 +477,7 @@ where
             scratch.stats.terms_in += sum.len() as u64;
         }
 
-        sum.rebucket(DEFAULT_TARGET_BUCKET_LEN, min_buckets);
+        sum.rebucket(options.target_bucket_len, options.min_buckets);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut scratch.stats.rebucket_ns);
 

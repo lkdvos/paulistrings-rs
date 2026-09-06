@@ -413,6 +413,7 @@ fn parse_engine(
     Ok(PropagateOptions {
         engine,
         small_sum_threshold: small_sum_threshold.unwrap_or(DEFAULT_SMALL_SUM_THRESHOLD),
+        ..PropagateOptions::default()
     })
 }
 

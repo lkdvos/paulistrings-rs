@@ -37,6 +37,35 @@ Items that genuinely need the user are collected under **Needs you** at the end.
    palette (only 8 slots, and the eps sweep is an ordered quantity, which a sequential colormap communicates
    better than categorical colors). Revisit: `presentation/plots/fig0_term_growth.py`.
 
+9. **Working point moved from 5 to 10 Trotter steps at ε = 2^-12** (2710 layers, 1.07 M peak terms, half the
+   layers above 10⁵ terms). At 5 steps only the last ~60 processed layers are heavy (backward light cone), so a
+   run measures mostly per-layer fixed cost and the parallel speedup is Amdahl-capped by ~1300 tiny serial
+   layers (32 threads: 8.5×). The 5-step results are kept in `data/alt-5steps/` for comparison. Revisit:
+   `bench/scripts/collect_all.sh` (`STEPS`, `EPS`), `data/calibration.jsonl`.
+10. **`-C target-cpu=native` is not a null result.** Paired abba A/B at 5 steps: bucketed −9.2 % (10/10 pairs
+    same sign), naive −2.7 % (10/10). Slide 9 was reframed from "does not matter" to "a real, consistent few
+    percent — two orders of magnitude short of what follows". Revisit: `data/alt-5steps/targetcpu_ab.md`,
+    `data/targetcpu_ab.md` (10-step rerun).
+11. **Single-thread bucket size does not move rotation layers** (5 steps: 65 536 and 262 144 terms per bucket
+    run within 1 % of the 1024 default). The L2 argument therefore rests on the multi-thread sweep and the
+    hardware counters, and slide 23 is worded to match whatever the 10-step sweep shows. Revisit:
+    `data/bucket_sweep.jsonl`, `data/bucket_sweep_perf.jsonl`.
+12. **Reconstructed baselines run with 2 repetitions and no warm-up** in the scaling stage (a single-thread
+    per-thread-map propagation takes ~140 s, mergesort ~55 s); bucketed cells keep 5 repetitions + warm-up.
+    The engine-ladder stage no longer re-measures them; F1 takes their best-of-threads from
+    `thread_scaling.jsonl`.
+13. **Contamination note.** The `threadmaps` 1-thread scaling cell (05:02–05:31) overlapped with a stray
+    single-thread A/B chain left over from the aborted 5-step campaign (killed at 05:31). Two single-thread
+    processes on a 32-core box: expected effect a few percent on that one cell. Not rerun unless time permits.
+14. **Engine knob LTO check** (`scripts/ab-compare.sh`, 3 pairs abba): 1-thread rotation −0.29 % (3/3 but far
+    inside the ±4–7 % layout band), 32-thread rotation and su4 cells null. Load was 5.8 at the start (sibling
+    agents building). Logs: `benchmarks/results/2026-09-06-ccqlin038/knob-*-ab.log` (gitignored).
+15. **Two delegated agents stalled without output** (bench crate, figure scripts) and were replaced: the bench
+    crate was written by the orchestrator; the figure scripts were adopted from the agent's uncommitted files
+    and patched (F1 reads the old-attempt rows from `thread_scaling.jsonl`).
+16. **Deck theme**: Carlito 18 pt body, Source Code Pro, New Computer Modern Math; navy section dividers;
+    palette from `examples/common/report.py`. Alternative (Libertinus Serif) not produced.
+
 ## Needs you
 
 (none yet)

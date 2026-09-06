@@ -50,17 +50,17 @@ if have calibration; then stage calibration
 fi
 if have ladder; then stage ladder
   f=$D/engine_ladder.jsonl; header "$f"
-  run naive      --threads 1        --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
-  run threadmaps --threads 1,8,32   --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
-  run mergesort  --threads 1,8,32   --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
+  # naive is ~50 s/run here; threadmaps/mergesort come from the scaling stage (fig1 reads both files).
+  [[ -n "${SKIP_NAIVE:-}" ]] || run naive --threads 1 --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
   run bucketed   --threads 1,32     --reps 5 --eps $EPS --json-out "$f" | grep '^cell'
   run bucketed   --threads 32       --reps 5 --eps $EPS $COARSE --json-out "$f" | grep '^cell'
 fi
 if have scaling; then stage scaling
   f=$D/thread_scaling.jsonl; header "$f"
   T=1,2,4,8,16,32
-  run threadmaps --threads $T --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
-  run mergesort  --threads $T --reps 3 --eps $EPS --json-out "$f" | grep '^cell'
+  # The reconstructed baselines run for minutes per propagation at one thread: two reps, no warm-up.
+  run threadmaps --threads $T --reps 2 --no-warmup --eps $EPS --json-out "$f" | grep '^cell'
+  run mergesort  --threads $T --reps 2 --no-warmup --eps $EPS --json-out "$f" | grep '^cell'
   run bucketed   --threads $T --reps 5 --eps $EPS --json-out "$f" | grep '^cell'
   run bucketed   --threads $T --reps 5 --eps $EPS $COARSE --json-out "$f" | grep '^cell'
 fi

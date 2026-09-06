@@ -109,10 +109,10 @@
   #two-col(ratio: (1.35fr, 1fr))[
     #fig(F + "fig0_term_growth.svg", caption: [127-qubit heavy-hex kicked Ising, $theta_(Z Z) = -pi\/2$, $theta_h = 5pi\/16$, observable $Z_62$, Heisenberg. Terms after each of the 1355 channels; grey bands are alternate Trotter steps.])
   ][
-    - 127 qubits, 144 couplings, 5 Trotter steps: 1355 rotations
-    - the operator's light cone grows step by step; the last step does the damage
-    - $epsilon = 2^(-13)$ holds the sum at *~$10^6$ terms* — the working point for every benchmark that follows
-    - $10^6$ terms × 1355 layers × fanout 2 ≈ *$3 dot 10^9$ term updates*
+    - 127 qubits, 144 couplings, 271 rotations per Trotter step
+    - the operator's light cone grows step by step: five steps are needed before the sum is large at all
+    - working point for every benchmark that follows: *10 steps, 2710 rotations, $epsilon = 2^(-12)$* — the sum sits near *$10^6$ terms* for half the circuit
+    - $10^6$ terms × ~1400 heavy layers × fanout 2 ≈ *$3 dot 10^9$ term updates*
     #v(0.3em)
     #punch[Strong means $10^9$–$10^(10)$ updates per second. Fine — a CPU does $10^(11)$ simple ops per second.]
   ]
@@ -146,7 +146,7 @@
     - let LLVM vectorize: `-C target-cpu=native` (AVX-512 on this box)
     - fat LTO, one codegen unit — already on
 
-    #punch[Paired A/B, default vs `target-cpu=native`, alternated back-to-back: the sign is not even consistent between pairs.]
+    #punch[Paired A/B, default vs `target-cpu=native`, alternated back-to-back: a real, consistent gain — of a few percent. The wall is a hundred times further away.]
   ][
     #placeholder([F1 · stage 2: + kernel flags (barely moves)], height: 5cm)
     #v(0.2em)
@@ -444,7 +444,7 @@
 #slide[Reproducing every number in this talk][
   #set text(size: 17pt)
   - *Host:* ccqlin038 — 2× Xeon Gold 6244 @ 3.6 GHz, 16 cores / 32 threads, 2 NUMA nodes, 1 MiB L2 per core, governor `powersave`. Bandwidth ceilings from `scripts/bandwidth.sh`.
-  - *Circuit:* `examples/common/circuits.py::heavy_hex_kicked_ising(127, 5, 5π/16, −π/2)`; Rust port in `presentation/bench/src/workload.rs`. Observable $Z_62$, Heisenberg, `CoefficientThreshold(2^-13)`.
+  - *Circuit:* `examples/common/circuits.py::heavy_hex_kicked_ising(127, 10, 5π/16, −π/2)`; Rust port in `presentation/bench/src/workload.rs`. Observable $Z_62$, Heisenberg, `CoefficientThreshold(2^-12)`.
   - *Baselines:* `presentation/bench` — `naive` (the shipped direct hash-map path), `threadmaps`, `mergesort`, `bucketed`; each gated against `propagate` to $10^(-9)$.
   - *Data:* `presentation/data/*.jsonl` with provenance headers (commit, rustc, host, date, load). One script per figure in `presentation/plots/`.
   - *Protocol:* `RUST_LOG` unset, dedicated Rayon pool per cell, one warm-up, medians of repeated runs; paired A/B with direction consistency for anything under 10 %.

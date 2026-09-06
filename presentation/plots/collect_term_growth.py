@@ -57,7 +57,9 @@ if str(_EXAMPLES_DIR) not in sys.path:
 from common import circuits, observables  # noqa: E402
 from paulistrings import truncation  # noqa: E402
 
-OUT_PATH = _REPO_ROOT / "presentation" / "data" / "term_growth.jsonl"
+OUT_PATH = _REPO_ROOT / "presentation" / "data" / (
+    "term_growth.jsonl" if os.environ.get("TROTTER_STEPS", "5") == "5" else f"term_growth_{os.environ['TROTTER_STEPS']}steps.jsonl"
+)
 
 #: `k` values of the `eps = 2**-k` truncation sweep (CLAUDE.md's coeff-cutoff
 #: knob, `truncation.coeff`).
@@ -76,7 +78,7 @@ UNTRUNCATED_TERM_CAP = 2_000_000
 UNTRUNCATED_TIME_BUDGET_S = 60.0
 
 N_QUBITS = 127
-TROTTER_STEPS = 5
+TROTTER_STEPS = int(os.environ.get("TROTTER_STEPS", "5"))
 THETA_H = 5 * math.pi / 16
 THETA_ZZ = -math.pi / 2
 OBSERVABLE_QUBIT = 62

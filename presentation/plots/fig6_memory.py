@@ -80,9 +80,9 @@ def plot_memory(values: dict[str, tuple[float, float, float]]) -> plt.Figure:
     ax.axvline(SOA_ROW_BYTES, color=common._MUTED_TEXT, linewidth=1.2, linestyle=":", zorder=1)
     ax.annotate(
         f"{SOA_ROW_BYTES} B (SoA row size)",
-        xy=(SOA_ROW_BYTES, 1.0), xycoords=("data", "axes fraction"),
-        xytext=(4, -10), textcoords="offset points",
-        fontsize=8, color=common._MUTED_TEXT, va="top",
+        xy=(SOA_ROW_BYTES, 0.0), xycoords=("data", "axes fraction"),
+        xytext=(4, 3), textcoords="offset points",
+        fontsize=8, color=common._MUTED_TEXT, va="bottom",
     )
 
     ax.set_yticks(y_positions)

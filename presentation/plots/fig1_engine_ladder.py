@@ -125,18 +125,18 @@ def plot_ladder(stages: list[tuple[str, float | None, str]], upto: int, hide_fut
         color = common.VARIANT_COLORS[color_key]
 
         if is_future:
-            ax.barh(y, wall, height=0.6, facecolor="none", edgecolor=color,
+            ax.barh(y, wall / 1e9, height=0.6, facecolor="none", edgecolor=color,
                     linewidth=1.2, linestyle="--", alpha=0.45, zorder=2)
             continue
 
-        ax.barh(y, wall, height=0.6, color=color, zorder=2)
+        ax.barh(y, wall / 1e9, height=0.6, color=color, zorder=2)
         seconds = wall / 1e9
         if idx == 0:
             value_str = f"{seconds:,.2f} s (baseline)"
         else:
             value_str = f"{seconds:,.2f} s ({naive_wall / wall:.1f}x)"
         ax.text(
-            wall * 1.08, y, value_str,
+            seconds * 1.08, y, value_str,
             ha="left", va="center", fontsize=8.5, color=common._MUTED_TEXT, zorder=3,
         )
 
@@ -154,8 +154,8 @@ def plot_ladder(stages: list[tuple[str, float | None, str]], upto: int, hide_fut
     ax.tick_params(axis="y", length=0)
     ax.set_ylim(-0.7, len(visible) - 0.3)
 
-    xmax = max(wall for _, wall, _ in stages)
-    ax.set_xlim(xmax * 3e-4, xmax * 40)
+    xmax = max(wall for _, wall, _ in stages) / 1e9
+    ax.set_xlim(xmax * 3e-3, xmax * 40)
 
     common._style_axes(ax)
     ax.grid(axis="y", visible=False)

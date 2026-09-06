@@ -35,7 +35,10 @@ import numpy as np
 
 import common
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "term_growth.jsonl"
+import os as _os
+_STEPS = _os.environ.get("TROTTER_STEPS", "5")
+_SUFFIX = "" if _STEPS == "5" else f"_{_STEPS}steps"
+DATA_PATH = Path(__file__).resolve().parents[1] / "data" / f"term_growth{_SUFFIX}.jsonl"
 
 CHANNELS_PER_TROTTER_STEP = 271  # 127 X-rotations + 144 ZZ-rotations
 WORKING_POINT_TERMS = 1_000_000
@@ -181,10 +184,10 @@ def main() -> None:
     eps_records, untruncated = _load()
 
     fig = plot_term_growth(eps_records, untruncated)
-    common.save(fig, "fig0_term_growth")
+    common.save(fig, f"fig0_term_growth{_SUFFIX}")
 
     fig_peak, alpha, c = plot_peak_terms_vs_eps(eps_records)
-    common.save(fig_peak, "fig0_term_growth_peak")
+    common.save(fig_peak, f"fig0_term_growth_peak{_SUFFIX}")
 
     print(f"fitted power law: peak_terms ~ {c:.3g} * eps^{alpha:.3f}")
     print("peak-term table:")

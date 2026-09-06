@@ -107,13 +107,12 @@
 
 #slide[The exponential wall, on the talk's circuit][
   #two-col(ratio: (1.35fr, 1fr))[
-    #fig(F + "fig0_term_growth.svg", caption: [127-qubit heavy-hex kicked Ising, $theta_(Z Z) = -pi\/2$, $theta_h = 5pi\/16$, observable $Z_62$, Heisenberg. Terms after each of the 1355 channels; grey bands are alternate Trotter steps.])
+    #fig(F + "fig0_term_growth_10steps.svg", height: 8.4cm, caption: [127-qubit heavy-hex kicked Ising, $theta_(Z Z) = -pi\/2$, $theta_h = 5pi\/16$, observable $Z_62$, Heisenberg, 10 Trotter steps. Terms after each channel; grey bands alternate steps.])
   ][
-    - 127 qubits, 144 couplings, 271 rotations per Trotter step
-    - the operator's light cone grows step by step: five steps are needed before the sum is large at all
-    - working point for every benchmark that follows: *10 steps, 2710 rotations, $epsilon = 2^(-12)$* — the sum sits near *$10^6$ terms* for half the circuit
-    - $10^6$ terms × ~1400 heavy layers × fanout 2 ≈ *$3 dot 10^9$ term updates*
-    #v(0.3em)
+    - 127 qubits, 144 couplings, 271 rotations per step; the light cone needs five steps to fill the lattice
+    - working point for everything that follows: *10 steps, 2710 rotations, $epsilon = 2^(-12)$*: peak $1.07 dot 10^6$ terms, half the layers above $10^5$
+    - ≈ *$3 dot 10^9$ term updates* per run
+    #v(0.2em)
     #punch[Strong means $10^9$–$10^(10)$ updates per second. Fine — a CPU does $10^(11)$ simple ops per second.]
   ]
 ]
@@ -133,24 +132,22 @@
 
     #small[This is the engine's shipped small-sum path: hashbrown + FxHash, `Channel::apply` per term.]
   ][
-    #placeholder([F1 · stage 1: naive hash map, 1 thread], height: 7cm)
-    #small[Time to propagate the 1355-channel circuit at ~$10^6$ terms. This chart returns after every idea.]
+    #fig(F + "fig1_stage1.svg", caption: [Time to propagate the 2710-channel circuit (peak $1.07 dot 10^6$ terms). This chart returns after every idea.])
   ]
 ]
 
 #slide[Being strong: make the kernel fast][
-  #two-col(ratio: (1fr, 1.1fr))[
+  #two-col(ratio: (0.85fr, 1.3fr))[
     What one would do first:
-    - a fast non-cryptographic hash (FxHash instead of SipHash)
-    - popcount and XOR are already single instructions
-    - let LLVM vectorize: `-C target-cpu=native` (AVX-512 on this box)
+    - a fast non-cryptographic hash (FxHash, not SipHash)
+    - popcount and XOR: already single instructions
+    - let LLVM vectorize: `-C target-cpu=native`
     - fat LTO, one codegen unit — already on
 
-    #punch[Paired A/B, default vs `target-cpu=native`, alternated back-to-back: a real, consistent gain — of a few percent. The wall is a hundred times further away.]
+    #punch[Paired, alternated A/B: a real, consistent gain — 3 % on the hash map, 8 % on the sorted engine. And a hundred times too small.]
   ][
-    #placeholder([F1 · stage 2: + kernel flags (barely moves)], height: 5cm)
-    #v(0.2em)
-    #placeholder([targetcpu A/B paired deltas], height: 3.2cm)
+    #fig(F + "fig1_stage2.svg", width: 88%)
+    #fig(F + "fig2_targetcpu.svg", width: 80%, caption: [Paired runs, alternated abba, one thread.])
   ]
 ]
 
@@ -240,14 +237,14 @@
 
 #slide[Strong, not smart: 32 cores, a factor two][
   #two-col(ratio: (1.3fr, 1fr))[
-    #placeholder([F2 · speedup vs threads: per-thread maps, parallel mergesort], height: 8.5cm)
+    #fig(F + "fig3_old_attempts.svg", height: 8.6cm, caption: [Reconstructed baselines on the talk's circuit, 1 → 32 threads (16 cores). Bands: min–max of repeated runs.])
   ][
-    - both saturate early
-    - the merge phase grows with the thread count's output, not shrinks
-    - memory traffic per layer goes *up* (extra copies), bandwidth does not
+    - mergesort: *1.9×* at 16 threads, then flat
+    - per-thread maps: *never faster than one thread* — the final merge re-inserts every term, which _is_ the naive algorithm, once more, serially
+    - memory per term goes *up* (copies): 280 and 830 B against 240 B for the plain map
 
-    #v(0.5em)
-    #punch[Amdahl: with a serial fraction $s$, $"speedup" <= 1\/s$. A merge that is 40 % of the layer caps you at 2.5×, whatever the core count.]
+    #v(0.3em)
+    #punch[Amdahl: a serial fraction $s$ caps the speedup at $1\/s$. A merge that is half the layer caps you at 2×, whatever the core count.]
   ]
 ]
 
@@ -320,43 +317,38 @@
 
 #slide[Results on the kicked-Ising circuit][
   #two-col(ratio: (1.25fr, 1fr))[
-    #placeholder([F3 · speedup vs threads: bucketed engine (with F2 curves greyed)], height: 8.5cm)
+    #fig(F + "fig3_all.svg", height: 8.6cm, caption: [Speedup vs own single-thread run; the two reconstructions greyed. 16 physical cores, 32 hyperthreads.])
   ][
-    #placeholder([F1 · stage 3: + bucketed 1T, + bucketed 32T], height: 5.5cm)
-    #v(0.3em)
-    - single-threaded it is already faster: no global structure to maintain
-    - 32 threads: 11–13× on rotation layers (fact sheet), against ≤2× before
+    #fig(F + "fig1_stage7.svg", height: 5.6cm)
+    #v(0.2em)
+    - single-threaded already *3×* faster than the map: no global structure to maintain
+    - 16 threads: *10.5×* on this circuit (11–13× on pure rotation layers), against ≤ 2× before; hyperthreads add nothing
   ]
 ]
 
-#slide[More than linear][
+#slide[The bucket size decides whether cores help at all][
   #two-col(ratio: (1.25fr, 1fr))[
-    #placeholder([F4 · speedup vs threads for coarse vs fine buckets, normalized to coarse 1T], height: 8cm)
+    #fig(F + "fig4b_bucket_speedup.svg", height: 8.6cm, caption: [Same code, same circuit, 16 threads. Top: speedup over one thread. Bottom: worker busy time / (loop wall × threads), from the engine's phase counters.])
   ][
-    With *enough* buckets, speedup beats the thread count. Not an artefact — this:
-    #v(0.2em)
-    #set text(size: 17pt)
-    #table(columns: 3, inset: 5pt, stroke: 0.5pt + c-grid, align: (left, right, right),
-      [*level*], [*per core*], [*×16 cores*],
-      [L1d], [32 KB], [0.5 MB],
-      [L2], [1 MiB], [16 MiB],
-      [L3 (shared)], [—], [2 × 24.75 MiB],
-      [DRAM], [—], [45 GB/s total])
-    #v(0.2em)
-    #punch[Cores bring *cache*, not just clocks: 16 cores are 16 MiB of private L2. A working set that lived in DRAM now lives in L2.]
+    Same 16 cores: *11× or 2×*, depending only on how many terms share a bucket.
+
+    Past ~10⁴ terms per bucket two things happen: the gather run stops fitting L2 (1 MiB per core), and there are fewer cosets than threads (32 buckets → 16 tasks). The efficiency panel shows how much is starvation; the rest is the memory system.
+    #v(0.3em)
+    #punch[Cores bring *cache*, not just clocks: 16 cores are 16 MiB of private L2. Buckets are what let the working set live there.]
   ]
 ]
 
 #slide[The mechanism: bucket size against L2][
   #two-col(ratio: (1.3fr, 1fr))[
-    #placeholder([F5 · ns per term-layer and L2/LLC miss rate vs terms per bucket, 1 thread], height: 8.5cm)
+    #fig(F + "fig5_bucket_sweep.svg", height: 8.8cm, caption: [Per-term cost at 1 and 16 threads, and single-thread L2 / LLC demand-miss rates (`perf stat`), vs bucket size.])
   ][
-    - 1024 terms × 48 B ≈ 48 KB per bucket; a rotation's gather run is twice that: comfortably in L2
-    - the *gather run*, not the bucket, must fit: fanout × bucket
-    - dense 2-qubit unitaries have fanout 16 → ~750 KB runs → the *write ceiling* at 16 threads (6.6×, then regression at 32)
+    - *one thread does not care*: 20 ns per term-layer from 2⁸ to 2¹⁸ terms per bucket — latency-bound either way
+    - *sixteen threads care a lot*: they share one memory system, and only cache-resident runs keep it out of the loop
+    - the *gather run*, fanout × bucket, is what must fit: 1024 × 48 B × 2 ≈ 100 KB against 1 MiB of L2
+    - dense 2-qubit unitaries have fanout 16 → ~750 KB runs → the *write ceiling* at 16 threads (fact sheet)
 
-    #v(0.3em)
-    #punch[Same algorithm, same bytes — only the *order* in which they are touched changed. Locality is the lever.]
+    #v(0.2em)
+    #punch[Same algorithm, same bytes — only the *order* in which they are touched changed.]
   ]
 ]
 
@@ -372,7 +364,7 @@
 
 #slide[Footprint, and where it stands][
   #two-col[
-    #placeholder([F7 · bytes per peak term: naive map, per-thread maps, mergesort, bucketed], height: 6.5cm)
+    #fig(F + "fig6_memory.svg", height: 6.3cm, caption: [Peak RSS above the process floor, per peak term, one process per variant.])
     #small[Structure-of-arrays, no pointers, capacity retained across layers: the steady state of a propagation allocates nothing.]
   ][
     #fig(D + "comparisons/baseline-ops.svg", height: 6.5cm, caption: [Construction and Clifford conjugation vs `qiskit.SparsePauliOp` and `openfermion.QubitOperator`.])
@@ -439,6 +431,15 @@
   - *LTO code-layout effects are real*: an `#[inline]` hint moves the merge kernel by 6–34 %. Every attribute in `engine/merge.rs` is A/B-verified in both directions.
   #v(0.3em)
   #small[`research/notes/` in the repository: one note per negative result, with the numbers.]
+]
+
+#slide[Appendix: coarse vs default buckets across thread counts][
+  #two-col[
+    #fig(F + "fig4_superlinear.svg", height: 7.6cm, caption: [$1.07 dot 10^6$ peak terms; coarse = 16 384 terms per bucket (64 buckets).])
+  ][
+    #fig(F + "fig4_superlinear_large.svg", height: 7.6cm, caption: [$3.9 dot 10^6$ peak terms (ε = 2⁻¹³); coarse = 16 384 terms per bucket (256 buckets).])
+  ]
+  #small[Normalised to the coarse single-thread run. With 64–256 buckets the coarse arm still has enough cosets; the collapse needs ≤ 32. No superlinear regime on this host and circuit: 9.5–10.5× on 16 cores either way.]
 ]
 
 #slide[Reproducing every number in this talk][

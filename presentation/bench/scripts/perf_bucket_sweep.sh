@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."
 unset RUST_LOG
 B=presentation/bench/target/release/presentation-bench
-D=presentation/data; f=$D/bucket_sweep_perf.jsonl; EPS=${EPS:-1.220703125e-4}; REPS=${REPS:-3}
+D=presentation/data; f=$D/bucket_sweep_perf.jsonl; EPS=${EPS:-2.44140625e-4}; STEPS=${STEPS:-10}; REPS=${REPS:-3}
 THREADS=${THREADS:-1}
 if perf list 2>/dev/null | grep -q 'l2_rqsts.references'; then
   EV="duration_time,cycles,instructions,l2_rqsts.references,l2_rqsts.miss,LLC-loads,LLC-load-misses"
@@ -17,7 +17,7 @@ fi
 [[ -s $f ]] || echo "# provenance: $(date -Is) host=$(hostname -s) commit=$(git rev-parse --short HEAD) events=$EV reps=$REPS threads=$THREADS" > "$f"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for cell in "256 128" "1024 128" "4096 128" "16384 64" "65536 16" "262144 16"; do set -- $cell
-  perf stat -x, -o "$tmp/c.csv" -e "$EV" -- $B bucketed --threads $THREADS --reps $REPS --eps $EPS --target-bucket-len $1 --min-buckets $2 > "$tmp/out.txt"
+  perf stat -x, -o "$tmp/c.csv" -e "$EV" -- $B bucketed --threads $THREADS --reps $REPS --steps $STEPS --eps $EPS --target-bucket-len $1 --min-buckets $2 > "$tmp/out.txt"
   grep '^cell' "$tmp/out.txt" | sed "s/^/target=$1 min=$2 /"
   python3 - "$tmp/c.csv" "$tmp/out.txt" "$f" <<'PY'
 import sys, json

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../../.."
 unset RUST_LOG
 A=presentation/bench/target/release/presentation-bench
 N=presentation/bench/target-native/release/presentation-bench
-D=presentation/data; PAIRS=${PAIRS:-5}; EPS=${EPS:-1.220703125e-4}
+D=presentation/data; PAIRS=${PAIRS:-5}; EPS=${EPS:-2.44140625e-4}; STEPS=${STEPS:-10}
 VARIANTS=${VARIANTS:-"bucketed naive"}
 [[ -x $A && -x $N ]] || { echo "build both binaries first (collect_all.sh build)"; exit 1; }
 for f in default native; do fa=$D/targetcpu_$f.jsonl; [[ -s $fa ]] || echo "# provenance: $(date -Is) host=$(hostname -s) commit=$(git rev-parse --short HEAD) pairs=$PAIRS order=abba" > "$fa"; done
@@ -17,7 +17,7 @@ for v in $VARIANTS; do
     if (( p % 2 == 0 )); then order="A N N A"; else order="N A A N"; fi
     for side in $order; do
       if [[ $side == A ]]; then bin=$A; tag=default; else bin=$N; tag=native; fi
-      $bin $v --threads 1 --reps 1 --eps $EPS --tag $tag --json-out $D/targetcpu_$tag.jsonl | grep '^cell' | sed "s/^/$tag pair=$p /"
+      $bin $v --threads 1 --reps 1 --steps $STEPS --eps $EPS --tag $tag --json-out $D/targetcpu_$tag.jsonl | grep '^cell' | sed "s/^/$tag pair=$p /"
     done
   done
 done

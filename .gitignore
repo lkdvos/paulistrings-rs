@@ -34,3 +34,7 @@ docs/book/site/
 .DS_Store
 .idea/
 .vscode/
+
+# presentation bench: RUSTFLAGS A/B build dir
+presentation/bench/target-native/
+presentation/bench/target/

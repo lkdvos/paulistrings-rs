@@ -1,0 +1,9 @@
+# provenance: 2026-09-06T04:34:52-04:00 host=ccqlin038 commit=17fc87d rustc=1.94.0 load=1.13 2.38 2.36 governor=powersave
+{"variant":"bucketed","eps":2.44140625e-4,"steps":5,"layers":1355,"peak_terms":637219,"final_terms":637219,"terms_out":null}
+{"variant":"bucketed","eps":1.220703125e-4,"steps":5,"layers":1355,"peak_terms":1155432,"final_terms":1155432,"terms_out":null}
+{"variant":"bucketed","eps":6.103515625e-5,"steps":5,"layers":1355,"peak_terms":1544083,"final_terms":1544083,"terms_out":null}
+{"variant":"bucketed","eps":3.0517578125e-5,"steps":5,"layers":1355,"peak_terms":1967420,"final_terms":1967420,"terms_out":null}
+{"variant":"bucketed","eps":1.52587890625e-5,"steps":5,"layers":1355,"peak_terms":2121774,"final_terms":2121774,"terms_out":null}
+{"variant":"bucketed","eps":2.44140625e-4,"steps":6,"layers":1626,"peak_terms":1029093,"final_terms":1029093,"terms_out":null}
+{"variant":"bucketed","eps":1.220703125e-4,"steps":6,"layers":1626,"peak_terms":3601652,"final_terms":3565852,"terms_out":null}
+{"variant":"bucketed","eps":6.103515625e-5,"steps":6,"layers":1626,"peak_terms":12498777,"final_terms":12498777,"terms_out":null}

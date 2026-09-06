@@ -66,6 +66,31 @@ Items that genuinely need the user are collected under **Needs you** at the end.
 16. **Deck theme**: Carlito 18 pt body, Source Code Pro, New Computer Modern Math; navy section dividers;
     palette from `examples/common/report.py`. Alternative (Libertinus Serif) not produced.
 
+17. **Slide 22 was rewritten from "more than linear" to "the bucket size decides whether cores help at all".**
+    The campaign found no superlinear speedup: 10.5× on 16 cores at the default bucket size, 9.5× at 3.9 M
+    terms, and every bucket size runs at the same single-thread speed (F5). What the data do show is that the
+    same 16 threads deliver 11× or 2× depending only on the bucket size (F4b), with the parallel-efficiency
+    panel separating task starvation from the memory system. The original superlinear observation may have
+    come from a different host, width (`W = 1`), or the Julia-era code; see **Needs you**.
+18. **Coarse arm of the thread-scaling stage** uses `--target-bucket-len 16384 --min-buckets 64` (64 buckets
+    at 1.07 M terms, 256 at 3.9 M). It tracks the default arm within 20 % — the collapse needs ≤ 32 buckets,
+    which the sweep stage provides. Both are shown (main text: sweep; appendix: thread curves).
+19. **F0 on the exponential-wall slide is the 10-step curve** (`term_growth_10steps.jsonl`); the 5-step
+    figure is kept (`fig0_term_growth.svg`) but not used. The untruncated curve is partial (stops at 2 M).
+20. **fig7 (per-layer profile) was not produced** — no run used `--layer-times`; the binary supports it
+    (`presentation-bench bucketed --layer-times`) if a per-layer slide is wanted.
+
 ## Needs you
 
-(none yet)
+- **Superlinear speedup.** Not reproduced here (DECISIONS #17). If you remember the setting where you saw it
+  (host, qubit count / `W`, term count, bucket count, Julia or Rust), the sweep is one command:
+  `presentation/bench/scripts/collect_all.sh` with `STEPS`/`EPS`, or `phase_breakdown --target-bucket-len`.
+  Until then the talk says "cores bring cache; buckets let the working set live there" without the word
+  superlinear.
+- **Working point.** 10 Trotter steps at 2⁻¹² instead of the 5-step utility-experiment depth (DECISIONS #9).
+  The 5-step numbers are in `data/alt-5steps/` if you prefer the shallower circuit for the story.
+- **target-cpu=native slide.** Reframed to "real but small" (DECISIONS #10). If you would rather drop the
+  kernel-flags slide, slides 9 and F1 stage 2 are self-contained.
+- **Speaker identity line** on the title slide ("Lukas Devos · CCQ, Flatiron Institute · 2026") and the venue
+  are placeholders.
+

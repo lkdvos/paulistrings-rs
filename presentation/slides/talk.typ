@@ -146,8 +146,8 @@
 
     #punch[Paired, alternated A/B: a real, consistent gain — 3 % on the hash map, 8 % on the sorted engine. And a hundred times too small.]
   ][
-    #fig(F + "fig1_stage2.svg", width: 88%)
-    #fig(F + "fig2_targetcpu.svg", width: 80%, caption: [Paired runs, alternated abba, one thread.])
+    #fig(F + "fig1_stage2.svg", height: 5.1cm)
+    #fig(F + "fig2_targetcpu.svg", height: 2.4cm, caption: [Paired runs, alternated abba, one thread.])
   ]
 ]
 

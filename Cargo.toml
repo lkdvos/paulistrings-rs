@@ -5,6 +5,10 @@ members = [
     "crates/paulistrings",
     "crates/paulistrings-py",
 ]
+# The presentation benchmarks are their own workspace: they enable the
+# measurement-only `phase-timing`/`test-utils` features, which must never unify
+# into the shipped build, and they need an isolated target dir for RUSTFLAGS A/Bs.
+exclude = ["presentation/bench"]
 
 [workspace.package]
 version = "0.1.0"

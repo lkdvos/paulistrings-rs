@@ -1,6 +1,6 @@
 //! Per-phase timing / memory probe for the bucketed propagation engine.
 //!
-//! Drives [`propagate_with_scratch`] over a small menu of single-channel
+//! Drives [`propagate_with_scratch_and_options`] over a small menu of single-channel
 //! circuits (plus a multi-channel Trotter step) at a matrix of thread
 //! counts, and prints the [`PhaseStats`] breakdown the `phase-timing`
 //! feature exposes: per-layer wall-clock phases, per-coset worker busy
@@ -77,14 +77,16 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 use paulistrings::bucket::hash::B_MAX_BITS;
-use paulistrings::bucket::sum::DEFAULT_HASH_SEED;
+use paulistrings::bucket::sum::{
+    DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+};
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PhaseStats,
-    TruncationPolicy,
+    propagate_with_scratch_and_options, Circuit, Direction, Gf2Hash, LayerScratch, PauliString,
+    PhaseStats, PropagateOptions, TruncationPolicy,
 };
 
 // ---------------------------------------------------------------------
@@ -94,7 +96,7 @@ use paulistrings::{
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
 
-Measures the phase-timing breakdown of propagate_with_scratch across a
+Measures the phase-timing breakdown of propagate_with_scratch_and_options across a
 menu of layers and thread counts.
 
 Options:
@@ -134,6 +136,17 @@ Options:
                             is the knob that measures what raising
                             `desired_bits`'s parallelism floor would buy,
                             without changing the policy.
+  --target-bucket-len <n>  Terms per bucket the engine's per-layer partition
+                            targets (default: 1024, the library default).
+  --min-buckets <n>        Floor on the per-layer bucket count once the sum is
+                            worth splitting (default: 128, the library
+                            default; must be >= 16).
+                            NOTE: --bucket-bits pre-refines the *input* sum
+                            and, `rebucket` being grow-only, can only ADD
+                            buckets. These two change the engine's own
+                            per-layer policy and are the only way to get
+                            FEWER. Both have to move together: above the
+                            floor, raising --target-bucket-len alone is inert.
   --truncation <spec>      Truncation policy for every cell, one of:
                               keep          no truncation (default)
                               coeff:<t>     CoefficientThreshold(t): a
@@ -273,6 +286,10 @@ struct Config {
     /// Bucket bits to pre-refine the input sum to; 0 = leave it to the
     /// engine's own `desired_bits` policy. See `--bucket-bits`.
     bucket_bits: u8,
+    /// Engine's per-layer target terms per bucket. See `--target-bucket-len`.
+    target_bucket_len: usize,
+    /// Engine's per-layer bucket-count floor. See `--min-buckets`.
+    min_buckets: usize,
     threads: Vec<usize>,
     layers: Vec<LayerKind>,
     reps: usize,
@@ -336,6 +353,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut seed: u64 = 0xC0FFEE;
     let mut hash_seed: u64 = DEFAULT_HASH_SEED;
     let mut bucket_bits: u8 = 0;
+    let mut target_bucket_len: usize = DEFAULT_TARGET_BUCKET_LEN;
+    let mut min_buckets: usize = DEFAULT_MIN_BUCKETS;
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
@@ -363,6 +382,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
                 bucket_bits = b as u8;
             }
+            "--target-bucket-len" => target_bucket_len = parse_usize(value, "--target-bucket-len")?,
+            "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
             "--truncation" => truncation = TruncSpec::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
@@ -386,12 +407,25 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     if reps == 0 {
         return Err("--reps must be at least 1".to_string());
     }
+    if target_bucket_len == 0 {
+        return Err("--target-bucket-len must be at least 1".to_string());
+    }
+    // `desired_bits`'s "worth splitting" gate is non-monotone below 16
+    // (crates/paulistrings/src/bucket/sum.rs), so the core documents the same
+    // bound on `PropagateOptions::min_buckets`.
+    if min_buckets < 16 {
+        return Err(format!(
+            "--min-buckets must be at least 16, got {min_buckets}"
+        ));
+    }
 
     Ok(Config {
         n,
         qubits,
         hash_seed,
         bucket_bits,
+        target_bucket_len,
+        min_buckets,
         threads,
         layers,
         reps,
@@ -563,6 +597,8 @@ struct CellResult {
     seed: u64,
     hash_seed: u64,
     bucket_bits: u8,
+    target_bucket_len: usize,
+    min_buckets: usize,
     wall_ns: u64,
     stats: PhaseStats,
     vmrss_kb: u64,
@@ -651,6 +687,15 @@ where
         .build()
         .expect("failed to build a rayon thread pool");
 
+    // The engine's per-layer bucket policy for both the warm-up and the timed
+    // call: `rebucket` is grow-only, so a coarse policy only means anything if
+    // the warm-up never grew the partition past it.
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+
     let (steady_n, wall_ns, stats) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
@@ -659,19 +704,26 @@ where
         // steady state that policy admits), so the timed call below measures
         // steady-state cost rather than first-layer growth; for
         // depolarizing/trotter it just warms scratch/buffer capacity.
-        let warmed = propagate_with_scratch(
+        let warmed = propagate_with_scratch_and_options(
             &circuit,
             base.clone(),
             policy,
             Direction::Forward,
             &mut scratch,
+            options,
         );
         let _ = scratch.take_stats(); // discard warm-up counters
 
         let steady_n = warmed.len();
         let start = Instant::now();
-        let output =
-            propagate_with_scratch(&circuit, warmed, policy, Direction::Forward, &mut scratch);
+        let output = propagate_with_scratch_and_options(
+            &circuit,
+            warmed,
+            policy,
+            Direction::Forward,
+            &mut scratch,
+            options,
+        );
         let wall_ns = start.elapsed().as_nanos() as u64;
         let stats = scratch.take_stats();
         std::hint::black_box(&output);
@@ -691,6 +743,8 @@ where
         seed: cfg.seed,
         hash_seed: cfg.hash_seed,
         bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
         wall_ns,
         stats,
         vmrss_kb,
@@ -817,6 +871,10 @@ fn print_table(cell: &CellResult) {
         "  VmRSS = {} kB   VmHWM = {} kB",
         cell.vmrss_kb, cell.vmhwm_kb
     );
+    println!(
+        "  target_bucket_len  = {}   min_buckets = {}",
+        cell.target_bucket_len, cell.min_buckets
+    );
     println!();
 }
 
@@ -836,7 +894,7 @@ fn json_line(cell: &CellResult) -> String {
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
-         \"vmhwm_kb\":{}}}",
+         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{}}}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -872,6 +930,8 @@ fn json_line(cell: &CellResult) -> String {
         s.terms_out,
         cell.vmrss_kb,
         cell.vmhwm_kb,
+        cell.target_bucket_len,
+        cell.min_buckets,
     )
 }
 
@@ -879,13 +939,13 @@ const TSV_HEADER: &str =
     "layer\ttruncation\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
 swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
-terms_in\tterms_out\tvmrss_kb\tvmhwm_kb";
+terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -919,6 +979,8 @@ fn print_tsv_row(cell: &CellResult) {
         s.terms_out,
         cell.vmrss_kb,
         cell.vmhwm_kb,
+        cell.target_bucket_len,
+        cell.min_buckets,
     );
 }
 

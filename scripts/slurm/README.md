@@ -11,7 +11,7 @@ design: allocating cluster resources is a user check-in point.
 
 ## Node choice
 
-Snapshot of `sinfo -p scc` on 2026-09-08: 45 idle **icelake** (2 × 32 cores, rocky9), 4 idle rome
+Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's). Snapshot of `sinfo -p ccq` on 2026-09-08: 43 idle **icelake** (2 × 32 cores, rocky9), 4 idle rome
 (2 × 64), 11 genoa (2 × 48, mostly allocated). The templates default to
 `--constraint=icelake&rocky9` for availability and because rocky9 matches the module stack the
 workstation uses; override with `sbatch --constraint='genoa&rocky9' ...` to get more NUMA domains per

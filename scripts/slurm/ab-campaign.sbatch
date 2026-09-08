@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=ps-ab
-#SBATCH --partition=scc
+#SBATCH --partition=ccq
 #SBATCH --constraint=icelake&rocky9
 #SBATCH --nodes=1
 #SBATCH --exclusive

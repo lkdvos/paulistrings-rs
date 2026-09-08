@@ -129,7 +129,7 @@ pub mod test_support;
 pub mod truncation;
 
 pub use accumulator::BuildAccumulator;
-pub use bucket::Gf2Hash;
+pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};

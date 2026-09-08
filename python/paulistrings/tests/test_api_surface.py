@@ -17,6 +17,17 @@ def test_top_level_names():
     assert hasattr(paulistrings, "noise")
     assert hasattr(paulistrings, "truncation")
     assert hasattr(paulistrings, "DEFAULT_SMALL_SUM_THRESHOLD")
+    assert hasattr(paulistrings, "PropagationStats")
+    assert hasattr(paulistrings, "PartitionStats")
+    assert hasattr(paulistrings, "numa_nodes")
+
+
+def test_numa_nodes_answers_without_a_partitioned_run():
+    """The placement `partitions="auto"` reads. One entry per NUMA node in the
+    affinity mask, each a non-empty CPU list — and on a host with no NUMA
+    information, one entry covering the whole mask."""
+    nodes = paulistrings.numa_nodes()
+    assert nodes and all(cpus for cpus in nodes)
 
 
 def test_factory_module_names():

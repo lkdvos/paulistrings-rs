@@ -9,10 +9,12 @@
 //! const-generic `W`.
 
 use num_complex::Complex64;
+use paulistrings::engine::partitioned::Collectives;
 use paulistrings::pauli_sum::PauliSum;
 use paulistrings::truncation::{
     And, ApproxTopN, CoefficientThreshold, Or, TopN, TruncationPolicy, WeightCutoff,
 };
+use paulistrings::PartitionedTruncation;
 use pyo3::prelude::*;
 
 #[derive(Clone, Debug, Default)]
@@ -70,6 +72,21 @@ impl<'a, const W: usize> TruncationPolicy<W> for SpecPolicy<'a, W> {
     }
 }
 
+/// The collective form of [`finalize_layer`](TruncationPolicy::finalize_layer),
+/// run on every partition on every layer in lock-step.
+///
+/// Without this impl the trait's default body would fire its assertion on the
+/// first layer of every partitioned run under a `topn`/`approx_topn` spec
+/// (`finalizes_layer()` is then `true`), so `SpecPolicy` has to answer for the
+/// whole spec tree. The one spec with no collective form — exact
+/// [`TopN`] — is rejected at the Python boundary before the run starts (see
+/// [`spec_has_exact_topn`]).
+impl<'a, const W: usize> PartitionedTruncation<W> for SpecPolicy<'a, W> {
+    fn finalize_layer_partitioned(&self, sum: &mut PauliSum<W>, coll: &dyn Collectives) {
+        finalize_spec_partitioned::<W>(self.0, sum, coll);
+    }
+}
+
 /// Each arm delegates to the matching `paulistrings::truncation` builtin
 /// rather than reimplementing its predicate — the delegation itself is free
 /// (the newtype construction inlines away), and it keeps this file from
@@ -100,6 +117,83 @@ fn finalize_spec<const W: usize>(spec: &PolicySpec, sum: &mut PauliSum<W>) {
         // Coeff/Weight/NoOp filter per term and have nothing to finalize.
         // Written out rather than `_` so a new variant has to answer here.
         PolicySpec::Coeff(_) | PolicySpec::Weight(_) | PolicySpec::Or(_, _) | PolicySpec::NoOp => {}
+    }
+}
+
+/// Why a spec containing an exact `topn` cannot run partitioned, worded for
+/// the Python `NotImplementedError` raised by `PauliSum.propagate` and reused
+/// verbatim by [`finalize_spec_partitioned`]'s unreachable arm.
+pub(crate) const TOPN_PARTITIONED_MSG: &str =
+    "exact truncation.topn is not supported in partitioned mode; use \
+     truncation.approx_topn or partitions=None";
+
+/// The collective twin of [`finalize_spec`], arm for arm.
+///
+/// Each arm delegates to the matching core `PartitionedTruncation` impl, as
+/// [`finalize_spec`] delegates to the core `TruncationPolicy` impls, so the
+/// partitioned and unpartitioned layer passes cannot drift apart —
+/// `spec_finalize_partitioned_matches_core_builtins` cross-checks the union
+/// over partitions against the single-partition answer.
+fn finalize_spec_partitioned<const W: usize>(
+    spec: &PolicySpec,
+    sum: &mut PauliSum<W>,
+    coll: &dyn Collectives,
+) {
+    match spec {
+        PolicySpec::ApproxTopN(n) => {
+            <ApproxTopN as PartitionedTruncation<W>>::finalize_layer_partitioned(
+                &ApproxTopN(*n),
+                sum,
+                coll,
+            )
+        }
+        // `And` runs both sides in order on every partition, which is what
+        // keeps the collectives in lock-step; recursing through `SpecPolicy`
+        // is the same shape `finalize_spec` uses.
+        PolicySpec::And(a, b) => {
+            <And<SpecPolicy<'_, W>, SpecPolicy<'_, W>> as PartitionedTruncation<W>>::
+                finalize_layer_partitioned(
+                    &And(SpecPolicy::<W>(a), SpecPolicy::<W>(b)),
+                    sum,
+                    coll,
+                )
+        }
+        // Unreachable: `PauliSum.propagate` rejects a spec containing an exact
+        // `topn` before the run starts (`spec_has_exact_topn`). Kept as a
+        // safety net so a future caller that skips the gate fails loudly
+        // rather than truncating per partition — which would keep `P * n`
+        // terms and a different set on every partition count.
+        PolicySpec::TopN(_) => panic!("{TOPN_PARTITIONED_MSG}"),
+        // Per-term filters have no layer pass, and `Or` forwards to neither
+        // side (matching `finalize_spec` and `builtin::Or`). Written out
+        // rather than `_` so a new variant has to answer here too.
+        PolicySpec::Coeff(_) | PolicySpec::Weight(_) | PolicySpec::Or(_, _) | PolicySpec::NoOp => {}
+    }
+}
+
+/// Whether the spec tree mentions an exact [`TopN`] anywhere — the gate
+/// `PauliSum.propagate` checks before entering partitioned mode.
+///
+/// Exhaustive, like [`finalizes_spec`]: exact top-n needs the `n`-th largest
+/// magnitude of the whole layer, a distributed *k*-th selection that has no
+/// one-reduction form (see `PartitionedTruncation`'s docs), so there is
+/// nothing to run and the call is refused rather than silently approximated.
+///
+/// `Or` votes too, even though its layer pass is a no-op and a
+/// `topn(n) | coeff(eps)` would therefore behave identically either way: the
+/// contract is the simple one — an exact `topn` anywhere in the tree means no
+/// partitioned run — and a spec that mentions `topn` while ignoring it is
+/// better rejected than silently honoured in one mode only.
+pub(crate) fn spec_has_exact_topn(spec: &PolicySpec) -> bool {
+    match spec {
+        PolicySpec::TopN(_) => true,
+        PolicySpec::And(a, b) | PolicySpec::Or(a, b) => {
+            spec_has_exact_topn(a) || spec_has_exact_topn(b)
+        }
+        PolicySpec::ApproxTopN(_)
+        | PolicySpec::Coeff(_)
+        | PolicySpec::Weight(_)
+        | PolicySpec::NoOp => false,
     }
 }
 
@@ -157,6 +251,11 @@ impl PyTruncation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use paulistrings::accumulator::BuildAccumulator;
+    use paulistrings::engine::partitioned::InProcessTransport;
+    use paulistrings::pauli_string::PauliString;
+    use paulistrings::phase::Phase;
+    use std::panic::resume_unwind;
 
     const TEST_W: usize = 1;
 
@@ -325,6 +424,194 @@ mod tests {
         // ... including inside an `And`, where only the non-`Or` side can vote.
         assert!(!finalizes(&PolicySpec::And(
             Box::new(ored),
+            Box::new(PolicySpec::Coeff(0.5)),
+        )));
+    }
+
+    // ---------------------------------------------------------------------
+    // The collective layer pass
+
+    /// A deterministic sum whose magnitudes span ~9 octaves, so an
+    /// `approx_topn` cut lands strictly inside the histogram rather than on
+    /// one of the two early exits.
+    ///
+    /// Only every `stride`-th term starting at `offset` is taken, which is how
+    /// the partitioned fixtures below build disjoint shares: the collective is
+    /// a sum over a disjoint split of the terms, and any split will do (the
+    /// engine's own split is by partition row, which is `pub(crate)`).
+    fn strided_sum(count: usize, offset: usize, stride: usize) -> PauliSum<TEST_W> {
+        let mut acc = BuildAccumulator::<TEST_W>::with_capacity(32, count / stride + 1);
+        for i in (offset..count).step_by(stride) {
+            let key = PauliString {
+                x: [i as u64],
+                z: [(i as u64) << 7],
+            };
+            let magnitude = 2f64.powi(-((i % 9) as i32)) * (1.0 + i as f64 * 1e-3);
+            acc.add_term(key, Phase::ONE, Complex64::new(magnitude, 0.0));
+        }
+        acc.finalize()
+    }
+
+    /// `{(x, z): coefficient}` over one or more sums, so a comparison does not
+    /// depend on bucket order or on which partition held a term.
+    fn terms_of(sums: &[PauliSum<TEST_W>]) -> Vec<([u64; TEST_W], [u64; TEST_W], Complex64)> {
+        let mut out: Vec<_> = sums
+            .iter()
+            .flat_map(|s| s.iter().map(|(x, z, c)| (*x, *z, c)))
+            .collect();
+        out.sort_by_key(|(x, z, _)| (x[0], z[0]));
+        out
+    }
+
+    /// Run `spec`'s collective layer pass on `parts`, one thread per part
+    /// wired to an in-process transport group — the blocking collectives need
+    /// every rank to make progress independently.
+    fn partitioned_finalize(
+        spec: &PolicySpec,
+        parts: Vec<PauliSum<TEST_W>>,
+    ) -> Vec<PauliSum<TEST_W>> {
+        let transports = InProcessTransport::group(parts.len() as u32);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = parts
+                .into_iter()
+                .zip(transports)
+                .map(|(mut part, transport)| {
+                    scope.spawn(move || {
+                        <SpecPolicy<'_, TEST_W> as PartitionedTruncation<TEST_W>>::
+                            finalize_layer_partitioned(
+                                &SpecPolicy::<TEST_W>(spec),
+                                &mut part,
+                                &transport,
+                            );
+                        part
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                // Re-raise a partition's panic with its own payload, so a
+                // `#[should_panic]` sees the message and not `Any { .. }`.
+                .map(|h| h.join().unwrap_or_else(|payload| resume_unwind(payload)))
+                .collect()
+        })
+    }
+
+    /// The union of the per-partition results of
+    /// `SpecPolicy::finalize_layer_partitioned` must be exactly what
+    /// `SpecPolicy::finalize_layer` — and therefore the core builtin it
+    /// delegates to — keeps on the whole sum.
+    ///
+    /// Bitwise equality is the right bar: a layer finalization only *retains*
+    /// terms, so no arithmetic happens and no summation order is involved.
+    #[test]
+    fn spec_finalize_partitioned_matches_core_builtins() {
+        const COUNT: usize = 400;
+        let cheap = PolicySpec::And(
+            Box::new(PolicySpec::Coeff(0.01)),
+            Box::new(PolicySpec::Weight(64)),
+        );
+        let specs = vec![
+            ("noop", PolicySpec::NoOp),
+            ("coeff", PolicySpec::Coeff(0.5)),
+            ("cheap and", cheap),
+            ("approx_topn(0)", PolicySpec::ApproxTopN(0)),
+            ("approx_topn(37)", PolicySpec::ApproxTopN(37)),
+            ("approx_topn(200)", PolicySpec::ApproxTopN(200)),
+            ("approx_topn(10_000)", PolicySpec::ApproxTopN(10_000)),
+            (
+                "coeff & approx_topn",
+                PolicySpec::And(
+                    Box::new(PolicySpec::Coeff(0.05)),
+                    Box::new(PolicySpec::ApproxTopN(120)),
+                ),
+            ),
+            (
+                "approx_topn & approx_topn",
+                PolicySpec::And(
+                    Box::new(PolicySpec::ApproxTopN(300)),
+                    Box::new(PolicySpec::ApproxTopN(80)),
+                ),
+            ),
+            (
+                // `Or` forwards to neither side, in both modes.
+                "approx_topn | coeff",
+                PolicySpec::Or(
+                    Box::new(PolicySpec::ApproxTopN(5)),
+                    Box::new(PolicySpec::Coeff(0.5)),
+                ),
+            ),
+        ];
+
+        for (name, spec) in &specs {
+            for partitions in [1usize, 2, 4] {
+                let parts: Vec<_> = (0..partitions)
+                    .map(|rank| strided_sum(COUNT, rank, partitions))
+                    .collect();
+                let mut whole = strided_sum(COUNT, 0, 1);
+                assert_eq!(
+                    parts.iter().map(PauliSum::len).sum::<usize>(),
+                    whole.len(),
+                    "{name}: the fixture split must be disjoint and complete",
+                );
+
+                let got = partitioned_finalize(spec, parts);
+                <SpecPolicy<'_, TEST_W> as TruncationPolicy<TEST_W>>::finalize_layer(
+                    &SpecPolicy::<TEST_W>(spec),
+                    &mut whole,
+                );
+                assert_eq!(
+                    terms_of(&got),
+                    terms_of(std::slice::from_ref(&whole)),
+                    "{name}: P={partitions} partitioned result differs from the \
+                     single-partition one",
+                );
+            }
+        }
+    }
+
+    /// The unreachable arm is a safety net, not dead code: reaching it panics
+    /// with the message the Python gate raises.
+    #[test]
+    #[should_panic(expected = "exact truncation.topn is not supported in partitioned mode")]
+    fn finalize_partitioned_panics_on_an_exact_topn() {
+        let spec = PolicySpec::And(
+            Box::new(PolicySpec::Coeff(0.5)),
+            Box::new(PolicySpec::TopN(4)),
+        );
+        partitioned_finalize(&spec, vec![strided_sum(16, 0, 1)]);
+    }
+
+    /// The gate `PauliSum.propagate` consults before entering partitioned
+    /// mode: exact `topn` anywhere in the tree, `Or` included.
+    #[test]
+    fn spec_has_exact_topn_finds_it_anywhere() {
+        assert!(spec_has_exact_topn(&PolicySpec::TopN(4)));
+        assert!(!spec_has_exact_topn(&PolicySpec::ApproxTopN(4)));
+        assert!(!spec_has_exact_topn(&PolicySpec::NoOp));
+        assert!(!spec_has_exact_topn(&PolicySpec::Coeff(0.5)));
+        assert!(!spec_has_exact_topn(&PolicySpec::Weight(2)));
+
+        // Either side of an `And`, nested arbitrarily deep.
+        assert!(spec_has_exact_topn(&PolicySpec::And(
+            Box::new(PolicySpec::Coeff(0.5)),
+            Box::new(PolicySpec::TopN(4)),
+        )));
+        assert!(spec_has_exact_topn(&PolicySpec::And(
+            Box::new(PolicySpec::And(
+                Box::new(PolicySpec::TopN(4)),
+                Box::new(PolicySpec::NoOp),
+            )),
+            Box::new(PolicySpec::ApproxTopN(9)),
+        )));
+        assert!(!spec_has_exact_topn(&PolicySpec::And(
+            Box::new(PolicySpec::ApproxTopN(4)),
+            Box::new(PolicySpec::Weight(2)),
+        )));
+
+        // `Or` votes as well, unlike in `finalizes_spec`: the contract is
+        // "no exact topn anywhere", not "no exact topn that would run".
+        assert!(spec_has_exact_topn(&PolicySpec::Or(
+            Box::new(PolicySpec::TopN(4)),
             Box::new(PolicySpec::Coeff(0.5)),
         )));
     }

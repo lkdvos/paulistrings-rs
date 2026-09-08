@@ -1,20 +1,26 @@
 //! Python `PauliSum` class with width-monomorphized backing storage. See
 //! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
 
-use crate::truncation_spec::{PolicySpec, PyTruncation, SpecPolicy};
+use crate::truncation_spec::{
+    spec_has_exact_topn, PolicySpec, PyTruncation, SpecPolicy, TOPN_PARTITIONED_MSG,
+};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::accumulator::BuildAccumulator;
+use paulistrings::engine::partitioned::{numa_nodes, CpuSet};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
     propagate_with_options, propagate_with_scratch_and_options, Direction, EngineSelection,
-    LayerScratch, PauliAxis, PauliSum as CorePauliSum, ProductBasis, ProductState,
-    PropagateOptions, StabilizerState, TermTrace, DEFAULT_SMALL_SUM_THRESHOLD,
+    LayerScratch, PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
+    PauliSum as CorePauliSum, Placement, ProductBasis, ProductState, PropagateOptions,
+    StabilizerState, TermTrace, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
 };
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyComplex, PyDict};
+use pyo3::types::{PyAny, PyBool, PyComplex, PyDict};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Width-dispatch enum. The Python boundary picks the smallest width that
 /// fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
@@ -417,6 +423,206 @@ fn parse_engine(
     })
 }
 
+/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`], where
+/// `None` means the classic unpartitioned path — bit for bit today's
+/// behaviour, so the kwargs stay additive.
+///
+/// Accepted spellings, and what each resolves to:
+///
+/// | `partitions` | placement |
+/// |---|---|
+/// | `None`, `1` | `None` — the classic path |
+/// | `"auto"` | one partition per NUMA node in the affinity mask, or the classic path on a single-node box |
+/// | an `int` power of two `>= 2` | the same, capped at that many partitions; rejected unless the box has that many nodes |
+/// | `list[list[int]]` | one partition per CPU list, exactly as given |
+///
+/// Anything else is a `TypeError`; a malformed value of an accepted shape (a
+/// count that is not a power of two, an empty or overlapping CPU list, a CPU
+/// outside the affinity mask) is a `ValueError`.
+///
+/// The placement is resolved against the machine **here**, at the boundary and
+/// before the GIL is released, so a bad CPU list is an exception rather than a
+/// failure inside the run. It is resolved a second time by
+/// [`PartitionRuntime::new`]; that costs one sysfs walk, once per distinct
+/// config per process (see [`runtime_for`]).
+fn parse_partitions(
+    partitions: Option<&Bound<'_, PyAny>>,
+    pin_memory: bool,
+) -> PyResult<Option<PartitionConfig>> {
+    let Some(obj) = partitions else {
+        return Ok(None);
+    };
+    if obj.is_none() {
+        return Ok(None);
+    }
+
+    let placement = if let Ok(name) = obj.extract::<String>() {
+        match name.as_str() {
+            "auto" => Placement::Auto {
+                max_partitions: None,
+            },
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "partitions must be 'auto', got {other:?}"
+                )))
+            }
+        }
+    } else if obj.is_instance_of::<PyBool>() {
+        // `bool` is an `int` subclass, so `partitions=True` would otherwise
+        // parse as `1` and silently mean "unpartitioned".
+        return Err(PyTypeError::new_err(
+            "partitions must be None, an int, a list of CPU lists, or 'auto', not a bool",
+        ));
+    } else if let Ok(count) = obj.extract::<usize>() {
+        match count {
+            0 => {
+                return Err(PyValueError::new_err(
+                    "partitions=0: a run needs at least one partition (pass None or 1 for the \
+                     unpartitioned path)",
+                ))
+            }
+            1 => return Ok(None),
+            k if !k.is_power_of_two() => {
+                return Err(PyValueError::new_err(format!(
+                    "partitions={k} is not a power of two; a partition index is a fixed set of \
+                     GF(2) hash rows, so the count must be 1, 2, 4, 8, ..."
+                )))
+            }
+            k => {
+                let nodes = numa_nodes().len();
+                if nodes < k {
+                    return Err(PyValueError::new_err(format!(
+                        "partitions={k} needs {k} NUMA nodes in this process's CPU affinity mask, \
+                         which has {nodes}; pass explicit CPU lists (e.g. \
+                         partitions=[[0, 1], [2, 3]]) to place more partitions than there are \
+                         nodes"
+                    )));
+                }
+                Placement::Auto {
+                    max_partitions: Some(k),
+                }
+            }
+        }
+    } else if let Ok(sets) = obj.extract::<Vec<Vec<usize>>>() {
+        if sets.is_empty() {
+            return Err(PyValueError::new_err(
+                "partitions=[]: pass at least one CPU list, or None for the unpartitioned path",
+            ));
+        }
+        let mut seen: HashSet<usize> = HashSet::new();
+        for (rank, cpus) in sets.iter().enumerate() {
+            if cpus.is_empty() {
+                return Err(PyValueError::new_err(format!(
+                    "partitions[{rank}] is empty; a partition needs at least one CPU"
+                )));
+            }
+            for &cpu in cpus {
+                if !seen.insert(cpu) {
+                    return Err(PyValueError::new_err(format!(
+                        "CPU {cpu} appears in more than one partition; the CPU lists must be \
+                         disjoint, so that no two partitions share a core"
+                    )));
+                }
+            }
+        }
+        Placement::Explicit(sets.into_iter().map(CpuSet).collect())
+    } else {
+        return Err(PyTypeError::new_err(
+            "partitions must be None, an int power of two, a list of CPU lists \
+             (e.g. [[0, 1], [2, 3]]), or 'auto'",
+        ));
+    };
+
+    let config = PartitionConfig {
+        placement,
+        bind_memory: pin_memory,
+        partition_row_seed: None,
+    };
+    let slots = config.resolve().map_err(topology_error)?;
+    if slots.len() == 1 && matches!(config.placement, Placement::Auto { .. }) {
+        // A single-node box (a laptop, a cgroup pinned inside one node): there
+        // is nothing to partition, so run the classic path rather than pay for
+        // a pool build and pin a thread nobody asked to pin. An explicit
+        // one-element CPU list is honoured — that caller *did* ask.
+        return Ok(None);
+    }
+    Ok(Some(config))
+}
+
+/// A core [`TopologyError`] as a Python exception: `OSError` for a failed
+/// syscall or sysfs read, `ValueError` for everything the caller spelled
+/// wrong.
+fn topology_error(err: TopologyError) -> PyErr {
+    match err {
+        TopologyError::Io(_) => PyOSError::new_err(err.to_string()),
+        _ => PyValueError::new_err(err.to_string()),
+    }
+}
+
+/// One [`PartitionRuntime`] per distinct [`PartitionConfig`], for the life of
+/// the process.
+///
+/// A runtime owns one pinned Rayon pool per partition, which is far too
+/// expensive to build per call: a Trotter driver stepping an observable
+/// through many short circuits would otherwise spawn and tear down every
+/// pinned pool on every step. Keyed by the config itself, so two different
+/// placements coexist and the same placement is built once.
+///
+/// The `Vec` is short by construction — a process uses one or two placements —
+/// so a linear scan under a mutex is the right shape, and the mutex is held
+/// across the build so two threads racing on a first call build one pool set
+/// rather than two.
+type RuntimeCache = Mutex<Vec<(PartitionConfig, Arc<PartitionRuntime>)>>;
+
+static PARTITION_RUNTIMES: OnceLock<RuntimeCache> = OnceLock::new();
+
+fn runtime_for(config: &PartitionConfig) -> Result<Arc<PartitionRuntime>, TopologyError> {
+    let cache = PARTITION_RUNTIMES.get_or_init(|| Mutex::new(Vec::new()));
+    // A poisoned lock means an earlier caller panicked; the cache is a plain
+    // append-only `Vec` that is never left half-updated, so recover rather
+    // than poison every later call.
+    let mut cache = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some((_, runtime)) = cache.iter().find(|(cached, _)| cached == config) {
+        return Ok(Arc::clone(runtime));
+    }
+    let runtime = PartitionRuntime::new(config)?;
+    cache.push((config.clone(), Arc::clone(&runtime)));
+    Ok(runtime)
+}
+
+/// What can go wrong inside the GIL-released region of a propagate call.
+///
+/// Both variants are turned into Python exceptions after the GIL is
+/// reacquired; neither can be raised from inside `allow_threads`.
+enum PropagateFailure {
+    /// The sum and the circuit monomorphized at different widths — impossible
+    /// (both width pickers map `num_qubits` to the same arm), but surfaced as
+    /// an error rather than a panic.
+    WidthMismatch,
+    /// The partitioned placement could not be realized on this machine.
+    Topology(TopologyError),
+}
+
+impl From<PropagateFailure> for PyErr {
+    fn from(err: PropagateFailure) -> Self {
+        match err {
+            PropagateFailure::WidthMismatch => {
+                PyValueError::new_err("internal: PauliSum and Circuit width mismatch")
+            }
+            PropagateFailure::Topology(err) => topology_error(err),
+        }
+    }
+}
+
+/// The `NotImplementedError` a partitioned run with an exact `topn` raises,
+/// naming the `partitions=` value that put the call in partitioned mode.
+fn topn_partitioned_error(partitions: Option<&Bound<'_, PyAny>>) -> PyErr {
+    let shown = partitions
+        .and_then(|obj| obj.repr().ok())
+        .map_or_else(|| "…".to_string(), |repr| repr.to_string());
+    PyNotImplementedError::new_err(format!("partitions={shown}: {TOPN_PARTITIONED_MSG}"))
+}
+
 /// Both propagation entry points require the sum and the circuit to agree on
 /// the qubit count (they would otherwise be monomorphized at different widths,
 /// which the width dispatch cannot pair up).
@@ -447,6 +653,7 @@ pub struct PropagationStats {
     terms_out: Vec<usize>,
     peak_terms: usize,
     final_terms: usize,
+    partition: Option<PartitionStats>,
 }
 
 #[pymethods]
@@ -489,10 +696,27 @@ impl PropagationStats {
         self.final_terms
     }
 
-    /// All five fields, in the order the getters are declared, so a stats
-    /// record printed from a REPL or a log line is readable without poking at
-    /// it attribute by attribute. The per-layer lists are printed in full —
-    /// they are one entry per layer, not per term.
+    /// The partitioned run's own record, or `None` for an unpartitioned call.
+    ///
+    /// `Some(PartitionStats)` exactly when `propagate_with_stats` was given a
+    /// `partitions=` that put the call in partitioned mode — note that
+    /// `partitions="auto"` on a single-NUMA-node box runs unpartitioned and so
+    /// reports `None` here. The per-layer lists it carries are indexed the same
+    /// way as `terms_in` / `terms_out`: one entry per layer, in application
+    /// order.
+    #[getter]
+    fn partition(&self) -> Option<PartitionStats> {
+        self.partition.clone()
+    }
+
+    /// The five term-count fields, in the order the getters are declared, so a
+    /// stats record printed from a REPL or a log line is readable without
+    /// poking at it attribute by attribute. The per-layer lists are printed in
+    /// full — they are one entry per layer, not per term.
+    ///
+    /// `partition` is deliberately **not** here: the format is pinned by
+    /// `test_propagation_stats.py`, and a partitioned record's per-partition
+    /// lists are `P` times longer again. Print `stats.partition` for those.
     fn __repr__(&self) -> String {
         format!(
             "PropagationStats(layers={}, terms_in={:?}, terms_out={:?}, \
@@ -514,6 +738,164 @@ impl PropagationStats {
             final_terms,
             terms_in: trace.terms_in,
             terms_out: trace.terms_out,
+            partition: None,
+        }
+    }
+
+    /// The same record from a partitioned run's [`PartitionTrace`], plus the
+    /// per-partition detail in `partition`.
+    ///
+    /// The layer-level counts are the per-partition ones summed over
+    /// partitions, which is what the unpartitioned engine would have recorded
+    /// for the same layer: partitions hold disjoint term sets, and a layer's
+    /// `terms_in`/`terms_out` are read at the same two points in the layer
+    /// loop. So the two `propagate_with_stats` paths report comparable
+    /// numbers, and a partitioned run can be checked against an unpartitioned
+    /// one field by field.
+    fn from_partition_trace(trace: &PartitionTrace, partitions: usize, final_terms: usize) -> Self {
+        let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
+        let term_trace = TermTrace {
+            terms_in: trace.layers.iter().map(|l| sum_of(&l.terms_in)).collect(),
+            terms_out: trace.layers.iter().map(|l| sum_of(&l.terms_out)).collect(),
+        };
+        Self {
+            partition: Some(PartitionStats::from_trace(trace, partitions)),
+            ..Self::from_trace(term_trace, final_terms)
+        }
+    }
+}
+
+/// Per-layer, per-partition record of a partitioned propagation — the
+/// `partition` attribute of a [`PropagationStats`] from a `partitions=` call.
+///
+/// A plain record with read-only attributes, like `PropagationStats`. Every
+/// list is one entry per layer applied, in application order (so *reverse*
+/// circuit order under `direction="heisenberg"`); the entries of `terms_in` /
+/// `terms_out` are themselves one entry per partition, in rank order.
+///
+/// This is the instrument for the two questions a partitioned run raises:
+/// how much of the sum crossed a partition boundary (`rows_exported`,
+/// `bytes_exported`, `local`), and how evenly the terms were spread
+/// (`imbalance`).
+#[pyclass(frozen, module = "paulistrings._paulistrings", name = "PartitionStats")]
+#[derive(Clone)]
+pub struct PartitionStats {
+    partitions: usize,
+    local: Vec<bool>,
+    rows_exported: Vec<u64>,
+    bytes_exported: Vec<u64>,
+    terms_in: Vec<Vec<usize>>,
+    terms_out: Vec<Vec<usize>>,
+    imbalance: Vec<f64>,
+}
+
+#[pymethods]
+impl PartitionStats {
+    /// Number of partitions the run was split across — always a power of two.
+    #[getter]
+    fn partitions(&self) -> usize {
+        self.partitions
+    }
+
+    /// Whether each layer was purely local, i.e. moved no row across a
+    /// partition boundary and made no transport call for the exchange.
+    ///
+    /// A layer is local when the channel's deltas all keep the partition rows
+    /// of a key fixed — every single-qubit channel on a qubit outside the
+    /// partition rows, and every diagonal one. `local[k]` is exactly
+    /// `rows_exported[k] == 0`.
+    #[getter]
+    fn local(&self) -> Vec<bool> {
+        self.local.clone()
+    }
+
+    /// Rows sent across partition boundaries in each layer, summed over every
+    /// sender/receiver pair.
+    ///
+    /// The traffic figure: one row is one key plus one coefficient, written by
+    /// the sender and read by the receiver's merge. Compare against
+    /// `PropagationStats.terms_in` for the fraction of the sum that moved.
+    #[getter]
+    fn rows_exported(&self) -> Vec<u64> {
+        self.rows_exported.clone()
+    }
+
+    /// Wire bytes behind `rows_exported`, per layer — the same rows counted in
+    /// their exchange-block encoding, including the per-block headers.
+    #[getter]
+    fn bytes_exported(&self) -> Vec<u64> {
+        self.bytes_exported.clone()
+    }
+
+    /// Terms each partition held before each layer: `terms_in[k][r]` for layer
+    /// `k`, rank `r`. The row sums are `PropagationStats.terms_in`.
+    #[getter]
+    fn terms_in(&self) -> Vec<Vec<usize>> {
+        self.terms_in.clone()
+    }
+
+    /// Terms each partition held after each layer, i.e. after that layer's
+    /// truncation. The row sums are `PropagationStats.terms_out`.
+    #[getter]
+    fn terms_out(&self) -> Vec<Vec<usize>> {
+        self.terms_out.clone()
+    }
+
+    /// Load imbalance of `terms_in` per layer: the maximum over partitions
+    /// divided by their mean.
+    ///
+    /// `1.0` is perfect balance (and the answer for a layer where every
+    /// partition was empty); `partitions` is the worst case, one partition
+    /// holding everything. Random partition rows on a large sum sit within a
+    /// percent or two of `1.0` — a persistent excursion is the signal that the
+    /// circuit drove the sum's support into one partition's rows.
+    #[getter]
+    fn imbalance(&self) -> Vec<f64> {
+        self.imbalance.clone()
+    }
+
+    /// All seven fields, in the order the getters are declared. The per-layer
+    /// lists are printed in full, `terms_in` / `terms_out` nested one level
+    /// deeper — one entry per layer per partition, never per term.
+    fn __repr__(&self) -> String {
+        // `local` is spelled with Python's `True`/`False` rather than Rust's
+        // `Debug`, so the line can be pasted back into a REPL.
+        let local = self
+            .local
+            .iter()
+            .map(|&local| if local { "True" } else { "False" })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "PartitionStats(partitions={}, local=[{}], rows_exported={:?}, \
+             bytes_exported={:?}, terms_in={:?}, terms_out={:?}, imbalance={:?})",
+            self.partitions,
+            local,
+            self.rows_exported,
+            self.bytes_exported,
+            self.terms_in,
+            self.terms_out,
+            self.imbalance,
+        )
+    }
+}
+
+impl PartitionStats {
+    /// Transpose a core [`PartitionTrace`] into the Python-facing record.
+    ///
+    /// `partitions` comes from the runtime rather than the trace, so a
+    /// zero-layer circuit — which records nothing — still reports the
+    /// placement it ran on.
+    fn from_trace(trace: &PartitionTrace, partitions: usize) -> Self {
+        let total = |matrix: &[Vec<u64>]| matrix.iter().flat_map(|row| row.iter()).sum::<u64>();
+        Self {
+            partitions,
+            local: trace.layers.iter().map(|l| l.remote_deltas == 0).collect(),
+            rows_exported: trace.layers.iter().map(|l| total(&l.rows_sent)).collect(),
+            bytes_exported: trace.layers.iter().map(|l| total(&l.bytes_sent)).collect(),
+            terms_in: trace.layers.iter().map(|l| l.terms_in.clone()).collect(),
+            terms_out: trace.layers.iter().map(|l| l.terms_out.clone()).collect(),
+            imbalance: trace.imbalance(),
         }
     }
 }
@@ -777,7 +1159,44 @@ impl PauliSum {
     /// The GIL is released for the duration of the propagation, so Python
     /// threads — including `logging` handlers draining the engine's per-layer
     /// progress records — run while a long simulation is in flight.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None))]
+    ///
+    /// # Partitioned mode
+    ///
+    /// `partitions` splits the sum across NUMA domains: each partition holds a
+    /// disjoint share of the terms, selected by designated rows of the GF(2)
+    /// hash, and runs on its own Rayon pool pinned to that domain's CPUs, with
+    /// only the rows a layer moves across a boundary exchanged between them.
+    /// It is off by default, and `partitions=None` is bit for bit today's
+    /// path.
+    ///
+    /// | `partitions` | placement |
+    /// |---|---|
+    /// | `None`, `1` (default) | unpartitioned — one pool, today's engine |
+    /// | `"auto"` | one partition per NUMA node in the affinity mask (unpartitioned on a single-node box) |
+    /// | an `int` power of two `>= 2` | the same, capped at that many partitions; a `ValueError` unless the box has that many nodes |
+    /// | `list[list[int]]` | one partition per CPU list, e.g. `[[0, 1], [2, 3]]`; the lists must be non-empty, disjoint, and inside the process's affinity mask |
+    ///
+    /// `pin_memory` (default `True`) binds each pool's allocations to its
+    /// partition's NUMA node, which is the point of the placement; pass
+    /// `False` to pin threads but not memory.
+    ///
+    /// Three things behave differently in partitioned mode:
+    ///
+    /// - **`RAYON_NUM_THREADS` is ignored.** Each partition builds its own
+    ///   pool sized from its CPU list, so the thread count is the placement's,
+    ///   not the environment's.
+    /// - **`engine` is ignored.** Every layer runs on the bucketed sorting
+    ///   engine; there is no partitioned small-sum direct path.
+    /// - **`truncation.topn` is unsupported** and raises
+    ///   `NotImplementedError`, anywhere in the policy tree. Exact top-n needs
+    ///   the n-th largest magnitude of the whole layer — a distributed k-th
+    ///   selection, not one reduction. Use `truncation.approx_topn`, whose
+    ///   octave histogram all-reduces exactly, or `partitions=None`.
+    ///
+    /// Results agree with the unpartitioned path to floating-point tolerance,
+    /// as the two engines do (ARCHITECTURE.md §Determinism).
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true))]
+    #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
         py: Python<'_>,
@@ -786,15 +1205,21 @@ impl PauliSum {
         direction: Option<&str>,
         engine: Option<&str>,
         small_sum_threshold: Option<usize>,
+        partitions: Option<&Bound<'_, PyAny>>,
+        pin_memory: bool,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
         let options = parse_engine(engine, small_sum_threshold)?;
+        let config = parse_partitions(partitions, pin_memory)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
             None => &no_op,
         };
+        if config.is_some() && spec_has_exact_topn(spec) {
+            return Err(topn_partitioned_error(partitions));
+        }
         // The whole simulation runs without the GIL: everything the engine
         // touches is plain Rust data (`PauliSumImpl`, `CircuitImpl` and
         // `PolicySpec` are all `Send + Sync`), so nothing here needs Python.
@@ -805,27 +1230,31 @@ impl PauliSum {
         // The closure returns a `Result` so the (unreachable) width-mismatch
         // arm can bail out of it; the error is turned into a Python exception
         // after the GIL is reacquired.
-        let inner = py
-            .allow_threads(|| -> Result<PauliSumImpl, &'static str> {
-                Ok(for_each_width_propagate!(
-                    &self.inner,
-                    &circuit.inner,
-                    |s, c, W| propagate_with_options(
-                        c,
-                        s.clone(),
-                        &SpecPolicy::<W>(spec),
-                        dir,
-                        options
-                    ),
-                    else {
-                        // Same num_qubits but different widths is impossible
-                        // because both width pickers map num_qubits to the
-                        // same arm.
-                        return Err("internal: PauliSum and Circuit width mismatch");
+        let inner = py.allow_threads(|| -> Result<PauliSumImpl, PropagateFailure> {
+            Ok(for_each_width_propagate!(
+                &self.inner,
+                &circuit.inner,
+                |s, c, W| match &config {
+                    None => propagate_with_options(c, s.clone(), &SpecPolicy::<W>(spec), dir, options),
+                    Some(config) => {
+                        // The runtime (and its pinned pools) is cached per
+                        // config, so a Trotter loop of many short calls builds
+                        // it once.
+                        let runtime =
+                            runtime_for(config).map_err(PropagateFailure::Topology)?;
+                        let mut split = PartitionedSum::<W>::scatter(s.clone(), runtime, config);
+                        split.propagate_with_options(c, &SpecPolicy::<W>(spec), dir, options);
+                        split.into_gathered()
                     }
-                ))
-            })
-            .map_err(PyValueError::new_err)?;
+                },
+                else {
+                    // Same num_qubits but different widths is impossible
+                    // because both width pickers map num_qubits to the
+                    // same arm.
+                    return Err(PropagateFailure::WidthMismatch);
+                }
+            ))
+        })?;
         Ok(Self { inner })
     }
 
@@ -846,7 +1275,15 @@ impl PauliSum {
     /// the recorded counts are the same records in the same order whichever
     /// engine ran the layer — which is what makes this the way to check the two
     /// engines against each other.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None))]
+    ///
+    /// `partitions` and `pin_memory` work exactly as in `propagate` too. A
+    /// partitioned call additionally fills `PropagationStats.partition` with a
+    /// `PartitionStats`: per layer, which partition held how many terms and how
+    /// many rows crossed a boundary. The layer-level `terms_in`/`terms_out`
+    /// are then the per-partition counts summed, so they stay comparable with
+    /// an unpartitioned run of the same circuit.
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true))]
+    #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
         py: Python<'_>,
@@ -855,26 +1292,36 @@ impl PauliSum {
         direction: Option<&str>,
         engine: Option<&str>,
         small_sum_threshold: Option<usize>,
+        partitions: Option<&Bound<'_, PyAny>>,
+        pin_memory: bool,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
         let options = parse_engine(engine, small_sum_threshold)?;
+        let config = parse_partitions(partitions, pin_memory)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
             None => &no_op,
         };
+        if config.is_some() && spec_has_exact_topn(spec) {
+            return Err(topn_partitioned_error(partitions));
+        }
         // GIL released for the propagation, as in `propagate` above. The
         // trace is moved out of the locally-created scratch inside the
         // closure — `LayerScratch` is not `Send`-shared with anything, it is
         // built and dropped within this call.
         let mut trace: Option<TermTrace> = None;
-        let inner = py
-            .allow_threads(|| -> Result<PauliSumImpl, &'static str> {
-                Ok(for_each_width_propagate!(
-                    &self.inner,
-                    &circuit.inner,
-                    |s, c, W| {
+        // The partitioned path records into a `PartitionTrace` instead, paired
+        // with the partition count (a zero-layer circuit records no layer, but
+        // the placement is still worth reporting).
+        let mut partition_trace: Option<(PartitionTrace, usize)> = None;
+        let inner = py.allow_threads(|| -> Result<PauliSumImpl, PropagateFailure> {
+            Ok(for_each_width_propagate!(
+                &self.inner,
+                &circuit.inner,
+                |s, c, W| match &config {
+                    None => {
                         let mut scratch = LayerScratch::<W>::new();
                         scratch.enable_term_trace();
                         let out = propagate_with_scratch_and_options(
@@ -887,16 +1334,35 @@ impl PauliSum {
                         );
                         trace = scratch.take_term_trace();
                         out
-                    },
-                    else {
-                        // Unreachable for the same reason as in `propagate`.
-                        return Err("internal: PauliSum and Circuit width mismatch");
                     }
-                ))
-            })
-            .map_err(PyValueError::new_err)?;
-        let trace = trace.expect("the trace is enabled before the layer loop runs");
-        let stats = PropagationStats::from_trace(trace, inner.len());
+                    Some(config) => {
+                        let runtime =
+                            runtime_for(config).map_err(PropagateFailure::Topology)?;
+                        let mut split = PartitionedSum::<W>::scatter(s.clone(), runtime, config);
+                        split.enable_trace();
+                        split.propagate_with_options(c, &SpecPolicy::<W>(spec), dir, options);
+                        let partitions = split.num_partitions();
+                        partition_trace = split
+                            .take_trace()
+                            .map(|recorded| (recorded, partitions));
+                        split.into_gathered()
+                    }
+                },
+                else {
+                    // Unreachable for the same reason as in `propagate`.
+                    return Err(PropagateFailure::WidthMismatch);
+                }
+            ))
+        })?;
+        let stats = match partition_trace {
+            Some((recorded, partitions)) => {
+                PropagationStats::from_partition_trace(&recorded, partitions, inner.len())
+            }
+            None => PropagationStats::from_trace(
+                trace.expect("the trace is enabled before the layer loop runs"),
+                inner.len(),
+            ),
+        };
         Ok((Self { inner }, stats))
     }
 }

@@ -1223,13 +1223,20 @@ where
             eprintln!("phase_breakdown: cannot resolve the partition placement: {err}");
             std::process::exit(2);
         });
-    assert_eq!(
-        runtime.num_partitions(),
-        partitions,
-        "the placement resolved to {} partitions, not the requested {partitions} \
-         (an Auto placement is capped by the machine's NUMA node count)",
-        runtime.num_partitions(),
-    );
+    // `Auto` reads the machine: it rounds the NUMA node count down to a power
+    // of two and caps it at `max_partitions`, so asking for more partitions
+    // than the host has nodes silently gets fewer. Fewer partitions than the
+    // cell claims would mislabel every row, so refuse instead.
+    if runtime.num_partitions() != partitions {
+        eprintln!(
+            "phase_breakdown: --partitions {partitions} resolved to {} partitions: an `auto` \
+             placement takes one partition per NUMA node in the affinity mask (rounded down to a \
+             power of two). Pass --partition-cpus with {partitions} cpulists, or \
+             --partition-cpus unpinned, to get {partitions} partitions on this host.",
+            runtime.num_partitions(),
+        );
+        std::process::exit(2);
+    }
 
     // The rows the scatter would derive on its own — built here so the
     // generator scan below sees exactly the split the run will use.

@@ -5,7 +5,7 @@ Paired A/B of the partitioned engine at P=2 against the same binary at P=1 (runt
 5 pairs, `abba`, `RUST_LOG` unset). `--threads` is the total; each partition gets half, pinned to its
 socket, with `MPOL_BIND`. Partition rows are the default random rows (seeded from the hash). Raw data:
 `benchmarks/results/2026-09-08-{ccqlin038,worker6140,worker6141,worker6142,worker7230}/` and the Slurm
-logs `benchmarks/results/slurm-70049{70,71,72,73}.out`, `slurm-700500{1,2}.out` (gitignored).
+logs `benchmarks/results/slurm-70049{70,71,72,73}.out`, `slurm-700500{1,2}.out` (worker6127 Icelake, worker7224 Genoa; gitignored).
 Decision log: `2026-09-08-partitioned-phase1-log.md`. Success criterion (user, 2026-09-08): only the
 intra-node NUMA effect must be a speedup; multi-node exists for memory capacity and may be slower.
 
@@ -29,9 +29,12 @@ intra-node NUMA effect must be a speedup; multi-node exists for memory capacity 
 | `gu2q` | — | **+282%** 5/5 | — | — | +597% 5/5 | +574% 5/5 |
 | `rotation_remote` (generator remote) | **+204%** 5/5 | **+217%** 5/5 | +310% 5/5 | +461% 5/5 | +730% 5/5 | +737% 5/5 |
 | `rotation_local` (no exchange) | −13.6% 4/5 | −4.9% 4/5 | +16% 4/5 | **+21%** 5/5 | **−12.0%** 5/5 | −29.9% 4/5 |
-| `su4_local` (no exchange) | **−4.1%** 5/5 | **−3.5%** 5/5 | (job 7005001) | | (job 7005002) | |
+| `su4_local` (no exchange) | **−4.1%** 5/5 | **−3.5%** 5/5 | **−6.6%** 5/5 | **−7.3%** 5/5 | **−8.7%** 5/5 | **−18.2%** 5/5 |
 
-Bold = direction-consistent per the protocol. Every cell that exports rows is 2–8× slower at P=2,
+Bold = direction-consistent per the protocol. **`su4_local` is the NUMA result**: the dense,
+bandwidth-heavy class with zero exchange is faster at P=2 on every host, 5/5 pairs everywhere, from
+−4% on the 8-core-per-socket workstation to −18% on Genoa at 96 threads — the gain grows with cores
+per socket, as a memory-system effect should. Every cell that exports rows is 2–8× slower at P=2,
 and the penalty grows with core count: the exchange (export pass + copy + the receiver's larger rest
 stream) costs more than the layer it feeds. `rotation_remote` at 3 ms/layer ships ~1e6 rows/layer.
 

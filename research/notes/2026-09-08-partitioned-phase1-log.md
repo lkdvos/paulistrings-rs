@@ -108,3 +108,32 @@ No campaign or A/B has been run against the partitioned path. The S7a verdict ab
 measurement in this log; the post-S9 `--partitions 1` re-check and the P=1 vs P=N runtime-knob A/B
 (`scripts/slurm/ab-campaign.sbatch`) are still open. Nothing on the docs site quotes a partitioned
 number.
+
+## 2026-09-08 — post-S9 A/B of the untouched path (`e7de227` vs phase-1 tip `c6b11e2`): accepted
+
+Same protocol as the S7a gate (`rotation_zz,cnot,su4` × threads 1,16, `--n 1e6`, 3 pairs abba, load 4–6).
+Wall: rotation_zz 1t **+4.4%** (3/3), cnot 1t **+3.4%** (3/3), every 16-thread cell and su4 1t mixed-sign.
+Work counters bit-identical on all six cells. Because the 1-thread rotation cell moved the same way in
+both A/Bs, a sharper discriminator was run on the archived binaries (`perf stat -e instructions,cycles`,
+`rotation_zz,cnot`, 1 thread, `--reps 8`, two runs each):
+
+| side | instructions | cycles |
+|---|---|---|
+| A `e7de227` | 16.48e9, 16.48e9 | 9.42e9, 9.24e9 |
+| B phase-1 tip | 16.55e9, 16.53e9 | 9.91e9, 9.96e9 |
+
+**+0.3% instructions, +5–7% cycles**: the same work at a lower IPC — code placement acting on the
+layout-sensitive kernels (CLAUDE.md §Performance discipline), not added work. The only hot-path source
+changes are the `NoExtra` generic (compiles away) and one loop-invariant `gen_local` test in the
+rotation arm. Accepted. Follow-up for the phase-4 cleanup: test the layout hypothesis directly with a
+function-alignment flag A/B (`-C llvm-args=-align-all-functions=6` or similar) rather than chasing it now.
+
+## 2026-09-08 — first end-to-end pinned run (smoke, not a measurement)
+
+`phase_breakdown --partitions 1,2 --partition-cpus "0-7,16-23;8-15,24-31" --threads 32 --n 200000
+--reps 2`, load ~5: `rotation_local` P=2 exports 0 rows and matches P=1 wall; `rotation_remote` P=2
+exports every anticommuting row (400 300 rows / 2 layers at m = 3.0e5) and its wall doubles (4.4 → 9.4 ms);
+`su4` at m = 2.8e6 exports 4.2e7 rows (2.0 GB) over 2 layers with random partition rows and runs 2.2×
+slower at P=2 (323 → 716 ms). Partition imbalance 1.001–1.004. This is the phase-1 cost model as
+predicted (roughly half of a dense 2Q gate's deltas are remote under random rows) — the input to the
+hash-tuning research, not a verdict on the design.

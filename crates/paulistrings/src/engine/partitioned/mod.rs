@@ -20,3 +20,8 @@ pub use topology::{
     allowed_cpus, bind_current_thread_memory, current_cpu, numa_nodes, pin_current_thread, CpuSet,
     PartitionConfig, PartitionSlot, Placement, TopologyError,
 };
+// The exchange wire format: what a layer's cross-partition traffic looks like
+// on the wire, and the trait an MPI transport implements to move it.
+pub use transport::{
+    BlockHeader, Collectives, ExchangeBlock, InProcessTransport, PartnerPayload, Payload, Transport,
+};

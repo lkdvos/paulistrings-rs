@@ -110,6 +110,16 @@ The sparse classes at 32 threads stay latency-bound and keep scaling:
 They stop at half the write ceiling with 70–90% of their modeled traffic cache-served: bandwidth is
 not what limits them, and they take the full thread count profitably.
 
+## Across NUMA nodes
+
+Both facts above — the second socket adding 15–25% rather than 2×, and the dense-PTM class
+pinned to the write ceiling — are the same effect: pages are placed by first touch and Rayon then
+steals work across sockets, so roughly half of the second socket's reads are remote. The engine
+can instead be run partitioned, one pinned pool and one share of the sum per NUMA domain, with
+only the rows a layer moves across a domain boundary exchanged.
+[Running across NUMA nodes](numa.md) covers when that is worth doing and how to ask for it. It
+carries no measured numbers yet.
+
 ## Thread-count guidance
 
 On a comparable two-socket host: run dense-PTM-heavy circuits (general two-qubit unitaries with

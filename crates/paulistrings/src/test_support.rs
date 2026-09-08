@@ -436,6 +436,27 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
+/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for
+/// [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
+///
+/// The canonical **sparse but wide** two-qubit fixture: its delta set spans
+/// more than one bucket bit, yet its PTM is far from dense (steady-state
+/// fanout 3.65 against a dense PTM's 14.94), so it exercises multi-delta
+/// behaviour without the all-sixteen-entries cost of
+/// [`haar_su4_matrix`].
+pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
+    let h = Complex64::new(0.5, 0.5);
+    let hc = Complex64::new(0.5, -0.5);
+    let one = Complex64::new(1.0, 0.0);
+    let zero = Complex64::new(0.0, 0.0);
+    [
+        [one, zero, zero, zero],
+        [zero, h, hc, zero],
+        [zero, hc, h, zero],
+        [zero, zero, zero, one],
+    ]
+}
+
 /// One draw of Haar-random SU(4), as a 4×4 unitary in the computational basis.
 ///
 /// The entries come from `examples/common/circuits.py::haar_su4` (Mezzadri

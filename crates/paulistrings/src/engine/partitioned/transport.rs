@@ -195,7 +195,7 @@ impl<const W: usize> ExchangeBlock<W> {
     }
 }
 
-/// Something a transport can move between partitions as bytes.
+/// Something a [`Transport`] can move between partitions as bytes.
 ///
 /// [`byte_parts`](Self::byte_parts) is zero-copy — borrowed views of the
 /// payload's own columns, one part per column — so a sending transport never
@@ -314,6 +314,355 @@ fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u6
         .chunks_exact(stride)
         .map(|row| std::array::from_fn(|i| bytemuck::pod_read_unaligned(&row[i * 8..i * 8 + 8])))
         .collect()
+}
+
+/// The collective operations a partition needs outside the exchange itself:
+/// its identity in the group, the two reductions a layer's truncation and
+/// bookkeeping need, and a barrier.
+///
+/// Both reductions must return **the identical value on every partition** —
+/// callers use them to agree on a global decision (a truncation threshold, a
+/// term-count total), and a partition that computed a different answer would
+/// diverge silently. Implementations therefore combine contributions in rank
+/// order rather than in arrival order.
+///
+/// Every method obeys the collective-order invariant in the module docs: all
+/// partitions call them in the same order, the same number of times.
+pub trait Collectives: Send + Sync {
+    /// This partition's index in the group, `0 <= rank < size`.
+    fn rank(&self) -> u32;
+    /// Number of partitions in the group.
+    fn size(&self) -> u32;
+    /// Maximum of `v` over the group. Same value on every partition.
+    fn allreduce_max_u8(&self, v: u8) -> u8;
+    /// Element-wise sum of `buf` over the group, in place. Every partition
+    /// passes the same length and gets the same values back. Sums wrap rather
+    /// than panic on overflow, so debug and release agree.
+    fn allreduce_sum_u64(&self, buf: &mut [u64]);
+    /// Block until every partition has arrived.
+    fn barrier(&self);
+}
+
+/// The per-layer all-to-all: each partition hands over what it exports and
+/// gets back what its partners exported to it.
+///
+/// Not object-safe ([`exchange`](Self::exchange) is generic over the payload),
+/// which is deliberate: the layer code is generic over the transport, so a
+/// call monomorphizes into the partition's driving thread with no virtual
+/// dispatch on a per-layer path.
+pub trait Transport: Collectives {
+    /// Send `send[q]` to partition `q` and return what each partition sent
+    /// here: `recv[q]` is `q`'s payload, `None` where `q` sent nothing.
+    ///
+    /// `send.len()` must be [`size`](Collectives::size) and
+    /// `send[self.rank()]` must be `None`; the returned vector has the same
+    /// length and `None` in the same self slot. A partner with nothing to send
+    /// still participates, with `None` — silence would desynchronize the group
+    /// (module docs).
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>>;
+}
+
+/// One message on an in-process channel: the payload, plus (debug builds) the
+/// sender's collective sequence number.
+struct Message {
+    /// The sender's collective counter at the time of the send. Debug only —
+    /// the check it feeds is a development tripwire, not a wire field.
+    #[cfg(debug_assertions)]
+    seq: u64,
+    /// `Option<P>` for an exchange, the contribution for a reduction, `()` for
+    /// a barrier. Typed on receive by [`downcast`].
+    body: Box<dyn std::any::Any + Send>,
+}
+
+impl Message {
+    fn new(seq: u64, body: Box<dyn std::any::Any + Send>) -> Self {
+        let _ = seq;
+        Self {
+            #[cfg(debug_assertions)]
+            seq,
+            body,
+        }
+    }
+}
+
+/// Take a received message's body as `T`.
+///
+/// A failure means two partitions ran different transport calls at the same
+/// step — the collective-order invariant (module docs) — so it is a panic, not
+/// an error return.
+fn downcast<T: 'static>(body: Box<dyn std::any::Any + Send>, from: usize, op: &str) -> T {
+    match body.downcast::<T>() {
+        Ok(value) => *value,
+        Err(_) => panic!(
+            "partition {from} sent a different kind of message during the {op}: the partitions \
+             issued different transport calls (every partition must issue the identical sequence \
+             of transport calls per layer)",
+        ),
+    }
+}
+
+/// In-process transport: `P` partitions wired as a `P × P` matrix of
+/// unbounded `std::sync::mpsc` channels, one per ordered pair.
+///
+/// Built as a group by [`group`](Self::group) and moved one per partition
+/// thread. Deliberately Rayon-free: it is called from the partition's driving
+/// thread between layers, never from inside a parallel region.
+///
+/// Channels are unbounded, so a send never blocks and the "send everything,
+/// then receive in rank order" shape every operation here uses cannot
+/// deadlock. Receives block; a partner that died is reported by name rather
+/// than waited on forever (its dropped sender disconnects the channel).
+///
+/// `size == 1` is a no-op path: no channels exist, [`Transport::exchange`]
+/// returns one `None`, and the reductions return their input.
+pub struct InProcessTransport {
+    /// This partition's index.
+    rank: u32,
+    /// Partitions in the group.
+    size: u32,
+    /// Sender to partition `q`, `None` in the self slot.
+    outbox: Vec<Option<std::sync::mpsc::Sender<Message>>>,
+    /// Receiver of what partition `q` sends here, `None` in the self slot.
+    /// `Mutex` only to make the transport `Sync` — `Receiver` is `Send` but
+    /// not `Sync`, and nothing here contends for it.
+    inbox: Vec<Option<std::sync::Mutex<std::sync::mpsc::Receiver<Message>>>>,
+    /// Collective counter: one increment per transport call, stamped on every
+    /// message and asserted on receive. Debug builds only.
+    #[cfg(debug_assertions)]
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl InProcessTransport {
+    /// Build a group of `size` transports wired to each other, one per
+    /// partition, in rank order.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is zero.
+    pub fn group(size: u32) -> Vec<InProcessTransport> {
+        assert!(size > 0, "a transport group needs at least one partition");
+        let n = size as usize;
+        let mut senders: Vec<Vec<Option<std::sync::mpsc::Sender<Message>>>> =
+            (0..n).map(|_| (0..n).map(|_| None).collect()).collect();
+        let mut receivers: Vec<Vec<Option<std::sync::mpsc::Receiver<Message>>>> =
+            (0..n).map(|_| (0..n).map(|_| None).collect()).collect();
+        for src in 0..n {
+            for dst in 0..n {
+                if src != dst {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    senders[src][dst] = Some(tx);
+                    receivers[src][dst] = Some(rx);
+                }
+            }
+        }
+
+        (0..n)
+            .map(|rank| InProcessTransport {
+                rank: rank as u32,
+                size,
+                outbox: std::mem::take(&mut senders[rank]),
+                inbox: (0..n)
+                    .map(|src| receivers[src][rank].take().map(std::sync::Mutex::new))
+                    .collect(),
+                #[cfg(debug_assertions)]
+                seq: std::sync::atomic::AtomicU64::new(0),
+            })
+            .collect()
+    }
+
+    /// The sequence number for the transport call starting now, and advance
+    /// the counter. Always zero in release builds, where messages carry no
+    /// sequence number.
+    fn next_seq(&self) -> u64 {
+        #[cfg(debug_assertions)]
+        {
+            self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            0
+        }
+    }
+
+    /// Pretend one extra collective was issued, to test the sequence check.
+    #[cfg(all(test, debug_assertions))]
+    fn skip_sequence_for_test(&self) {
+        self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Send one message to partition `dst`.
+    fn send_to(&self, dst: usize, seq: u64, body: Box<dyn std::any::Any + Send>, op: &str) {
+        let tx = self.outbox[dst]
+            .as_ref()
+            .expect("a partition has no channel to itself");
+        if tx.send(Message::new(seq, body)).is_err() {
+            panic!("partition {dst} terminated before completing the {op} (it panicked)");
+        }
+    }
+
+    /// Send one message to every partner, built fresh per partner.
+    fn broadcast(
+        &self,
+        seq: u64,
+        mut body: impl FnMut() -> Box<dyn std::any::Any + Send>,
+        op: &str,
+    ) {
+        for dst in 0..self.size as usize {
+            if dst != self.rank as usize {
+                self.send_to(dst, seq, body(), op);
+            }
+        }
+    }
+
+    /// Receive this call's message from partition `src`, checking the
+    /// sequence stamp in debug builds.
+    fn recv_from(&self, src: usize, seq: u64, op: &str) -> Box<dyn std::any::Any + Send> {
+        let rx = self.inbox[src]
+            .as_ref()
+            .expect("a partition has no channel to itself")
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match rx.recv() {
+            Ok(message) => {
+                #[cfg(debug_assertions)]
+                assert_eq!(
+                    message.seq, seq,
+                    "collective order mismatch: partition {} is at transport call {seq} but \
+                     partition {src} sent its call {} — every partition must issue the identical \
+                     sequence of transport calls per layer",
+                    self.rank, message.seq,
+                );
+                let _ = seq;
+                message.body
+            }
+            Err(_) => {
+                panic!("partition {src} terminated before completing the {op} (it panicked)")
+            }
+        }
+    }
+}
+
+impl Collectives for InProcessTransport {
+    fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    fn size(&self) -> u32 {
+        self.size
+    }
+
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        if self.size == 1 {
+            return v;
+        }
+        let seq = self.next_seq();
+        self.broadcast(seq, || Box::new(v), "allreduce_max_u8");
+
+        let mut acc = v;
+        for src in 0..self.size as usize {
+            if src == self.rank as usize {
+                continue;
+            }
+            let their = downcast::<u8>(
+                self.recv_from(src, seq, "allreduce_max_u8"),
+                src,
+                "allreduce_max_u8",
+            );
+            acc = acc.max(their);
+        }
+        acc
+    }
+
+    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+        if self.size == 1 {
+            return;
+        }
+        let seq = self.next_seq();
+        let mine = buf.to_vec();
+        self.broadcast(seq, || Box::new(mine.clone()), "allreduce_sum_u64");
+
+        // Received first, combined second, so the summation order is rank
+        // order on every partition and all of them get the same bits back.
+        let n = self.size as usize;
+        let mut contributions: Vec<Option<Vec<u64>>> = Vec::with_capacity(n);
+        for src in 0..n {
+            contributions.push((src != self.rank as usize).then(|| {
+                downcast::<Vec<u64>>(
+                    self.recv_from(src, seq, "allreduce_sum_u64"),
+                    src,
+                    "allreduce_sum_u64",
+                )
+            }));
+        }
+
+        let mut acc = vec![0u64; buf.len()];
+        for (src, contribution) in contributions.iter().enumerate() {
+            let values = contribution.as_ref().unwrap_or(&mine);
+            assert_eq!(
+                values.len(),
+                buf.len(),
+                "allreduce_sum_u64: partition {src} contributed {} values, this partition {}",
+                values.len(),
+                buf.len(),
+            );
+            for (a, v) in acc.iter_mut().zip(values) {
+                *a = a.wrapping_add(*v);
+            }
+        }
+        buf.copy_from_slice(&acc);
+    }
+
+    fn barrier(&self) {
+        if self.size == 1 {
+            return;
+        }
+        let seq = self.next_seq();
+        self.broadcast(seq, || Box::new(()), "barrier");
+        for src in 0..self.size as usize {
+            if src != self.rank as usize {
+                downcast::<()>(self.recv_from(src, seq, "barrier"), src, "barrier");
+            }
+        }
+    }
+}
+
+impl Transport for InProcessTransport {
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>> {
+        let n = self.size as usize;
+        assert_eq!(
+            send.len(),
+            n,
+            "exchange: send has {} entries, expected one entry per partition ({n})",
+            send.len(),
+        );
+        assert!(
+            send[self.rank as usize].is_none(),
+            "exchange: send[{}] is this partition's own slot and must be None",
+            self.rank,
+        );
+        if n == 1 {
+            return vec![None];
+        }
+
+        let seq = self.next_seq();
+        // Unbounded channels: every send completes before the first receive,
+        // so no pair of partitions can block on each other.
+        for (dst, payload) in send.into_iter().enumerate() {
+            if dst != self.rank as usize {
+                self.send_to(dst, seq, Box::new(payload), "exchange");
+            }
+        }
+
+        (0..n)
+            .map(|src| {
+                if src == self.rank as usize {
+                    None
+                } else {
+                    downcast::<Option<P>>(self.recv_from(src, seq, "exchange"), src, "exchange")
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -493,5 +842,182 @@ mod tests {
             };
             prop_assert_eq!(back, payload);
         }
+    }
+
+    // ---- transport ------------------------------------------------------
+
+    /// A minimal [`Payload`] for the transport tests: one column of `u64`.
+    impl Payload for Vec<u64> {
+        fn byte_parts(&self) -> Vec<&[u8]> {
+            vec![bytemuck::cast_slice(&self[..])]
+        }
+
+        fn from_byte_parts(parts: &[&[u8]]) -> Self {
+            assert_eq!(parts.len(), 1, "test payload: expected one part");
+            decode_column::<u64>(parts[0], parts[0].len() / size_of::<u64>(), "test payload")
+        }
+    }
+
+    /// What rank `from` sends to rank `to`: a `from`-long column of a code
+    /// unique to the ordered pair, so a crossed delivery cannot pass.
+    fn message(from: u32, to: u32) -> Vec<u64> {
+        vec![(u64::from(from) << 32) | u64::from(to); from as usize + 1]
+    }
+
+    /// Rank 0 sends nothing to rank 1, so a `None` slot is exercised too.
+    fn sends_nothing(from: u32, to: u32) -> bool {
+        from == 0 && to == 1
+    }
+
+    fn run_exchange(size: u32) {
+        let group = InProcessTransport::group(size);
+        assert_eq!(group.len(), size as usize);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        let rank = transport.rank();
+                        assert_eq!(transport.size(), size);
+                        let send: Vec<Option<Vec<u64>>> = (0..size)
+                            .map(|q| {
+                                (q != rank && !sends_nothing(rank, q)).then(|| message(rank, q))
+                            })
+                            .collect();
+                        (rank, transport.exchange(send))
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                let (rank, recv) = handle.join().expect("rank thread panicked");
+                assert_eq!(recv.len(), size as usize, "rank {rank}");
+                for q in 0..size {
+                    let expected = (q != rank && !sends_nothing(q, rank)).then(|| message(q, rank));
+                    assert_eq!(recv[q as usize], expected, "rank {rank} slot {q}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn exchange_delivers_each_payload_to_its_partner_at_p2() {
+        run_exchange(2);
+    }
+
+    #[test]
+    fn exchange_delivers_each_payload_to_its_partner_at_p4() {
+        run_exchange(4);
+    }
+
+    #[test]
+    fn reductions_and_barrier_agree_on_every_rank() {
+        let size = 4u32;
+        let group = InProcessTransport::group(size);
+
+        let mut results: Vec<(u32, u8, Vec<u64>)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        let rank = transport.rank();
+                        transport.barrier();
+                        // Contributions 0, 7, 14, 21 → max 21.
+                        let max = transport.allreduce_max_u8((rank * 7) as u8);
+                        // Columns (r+1, 10·(r+1)) → sums (10, 100).
+                        let mut buf = vec![u64::from(rank) + 1, 10 * (u64::from(rank) + 1)];
+                        transport.allreduce_sum_u64(&mut buf);
+                        transport.barrier();
+                        (rank, max, buf)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("rank thread panicked"))
+                .collect()
+        });
+
+        results.sort_by_key(|(rank, _, _)| *rank);
+        assert_eq!(results.len(), size as usize);
+        for (rank, max, sum) in results {
+            assert_eq!(max, 21, "rank {rank}");
+            assert_eq!(sum, vec![10, 100], "rank {rank}");
+        }
+    }
+
+    #[test]
+    fn a_group_of_one_is_a_no_op() {
+        let group = InProcessTransport::group(1);
+        assert_eq!(group.len(), 1);
+        let transport = &group[0];
+        assert_eq!(transport.rank(), 0);
+        assert_eq!(transport.size(), 1);
+
+        let recv: Vec<Option<Vec<u64>>> = transport.exchange(vec![None]);
+        assert_eq!(recv.len(), 1);
+        assert!(recv[0].is_none());
+
+        assert_eq!(transport.allreduce_max_u8(9), 9);
+        let mut buf = vec![3, 4];
+        transport.allreduce_sum_u64(&mut buf);
+        assert_eq!(buf, vec![3, 4]);
+        transport.barrier();
+    }
+
+    #[test]
+    #[should_panic(expected = "must be None")]
+    fn exchange_rejects_a_payload_addressed_to_this_partition() {
+        let group = InProcessTransport::group(1);
+        let _: Vec<Option<Vec<u64>>> = group[0].exchange(vec![Some(vec![1u64])]);
+    }
+
+    #[test]
+    #[should_panic(expected = "one entry per partition")]
+    fn exchange_rejects_a_wrongly_sized_send_vector() {
+        let group = InProcessTransport::group(2);
+        let _: Vec<Option<Vec<u64>>> = group[0].exchange(vec![None]);
+    }
+
+    /// A partition that issues one collective more than its partners is caught
+    /// on the next receive rather than crossing payloads. Debug builds only:
+    /// the sequence counter is `cfg(debug_assertions)`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "collective order mismatch")]
+    fn a_desynchronized_partition_is_caught_on_receive() {
+        let mut group = InProcessTransport::group(2);
+        let one = group.pop().expect("rank 1");
+        let zero = group.pop().expect("rank 0");
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // Rank 1 is in step with itself but not with rank 0, so it sees
+                // the mismatch too; swallow it so only rank 0's panic reaches
+                // the test harness.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| one.barrier()));
+            });
+            // Rank 0 behaves as if it had issued one extra collective.
+            zero.skip_sequence_for_test();
+            zero.barrier();
+        });
+    }
+
+    /// A partner that died mid-layer must be reported, not waited on forever.
+    #[test]
+    #[should_panic(expected = "terminated")]
+    fn a_partner_that_panicked_is_reported_rather_than_hanging() {
+        let mut group = InProcessTransport::group(2);
+        let one = group.pop().expect("rank 1");
+        let zero = group.pop().expect("rank 0");
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _ = std::panic::catch_unwind(|| panic!("rank 1 dies before its exchange"));
+                drop(one);
+            });
+            let _: Vec<Option<Vec<u64>>> = zero.exchange(vec![None, Some(vec![7u64])]);
+        });
     }
 }

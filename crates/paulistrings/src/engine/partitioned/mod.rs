@@ -18,4 +18,6 @@ pub(crate) mod transport;
 
 // The exchange wire format: what a layer's cross-partition traffic looks like
 // on the wire, and the trait an MPI transport implements to move it.
-pub use transport::{BlockHeader, ExchangeBlock, PartnerPayload, Payload};
+pub use transport::{
+    BlockHeader, Collectives, ExchangeBlock, InProcessTransport, PartnerPayload, Payload, Transport,
+};

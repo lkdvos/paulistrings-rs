@@ -138,7 +138,6 @@ impl<const W: usize> RowEmitter<'_, W> {
 /// no rows**: the receiver indexes blocks positionally, and both sides derive
 /// the same delta list from the same channel and hash, so a block is never
 /// dropped for being empty.
-#[allow(dead_code)] // consumed by the partitioned layer in a later step
 pub(crate) fn export_layer<const W: usize>(
     local: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -373,7 +372,6 @@ impl<'a, const W: usize> BlockCols<'a, W> {
 /// A failure means either the plan misclassified a delta or the caller's
 /// `local` sum was not the pure partition it claims to be.
 #[cfg(debug_assertions)]
-#[allow(dead_code)] // consumed by the partitioned layer in a later step
 pub(super) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],
     rows: &crate::bucket::hash::PartitionRows<W>,

@@ -356,7 +356,6 @@ pub struct PartitionSlot {
 /// # Errors
 ///
 /// [`TopologyError::Io`] wrapping the spawn or pool-build failure.
-#[allow(dead_code)] // consumed by the partitioned layer in a later step
 pub(crate) fn build_pool(
     slot: &PartitionSlot,
     bind_memory: bool,

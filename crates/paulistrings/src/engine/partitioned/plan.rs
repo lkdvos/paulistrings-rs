@@ -169,6 +169,9 @@ impl PartitionPlan {
     /// Recomputed on call rather than cached: there are at most
     /// `P_MAX_BITS`-many partitions and a handful of deltas, and this runs once
     /// per layer.
+    // The only consumers are `layer`'s debug-only export assertions and this
+    // module's tests, so it really is dead in a release build.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub(crate) fn partners(&self) -> impl Iterator<Item = u32> + '_ {
         let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
         v.sort_unstable();

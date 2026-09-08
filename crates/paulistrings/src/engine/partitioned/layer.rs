@@ -168,7 +168,6 @@ impl LayerExchangeCounts {
 ///
 /// Neither rebuckets nor calls `finalize_layer`: both are collective decisions
 /// the driver makes with the counts this returns.
-#[allow(dead_code)] // consumed by the partitioned driver in a later step
 pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prep: &Prepared<W>,
@@ -204,6 +203,22 @@ where
         }
     }
     let recv = transport.exchange(send);
+    #[cfg(debug_assertions)]
+    for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
+        // The bucket count is a *collective* decision the driver makes before
+        // the layer; a block indexed by a different one would be read at the
+        // wrong offsets. Without this the failure mode is a garbage segment
+        // length — a wild allocation or a silently wrong answer — rather than
+        // an assertion naming the cause.
+        debug_assert_eq!(
+            block.num_buckets() as usize,
+            local.num_buckets(),
+            "a partner sent a block indexed by {} buckets where this partition has {}: \
+             the partitions disagree about the bucket count",
+            block.num_buckets(),
+            local.num_buckets(),
+        );
+    }
     let rows_received = recv
         .iter()
         .flatten()

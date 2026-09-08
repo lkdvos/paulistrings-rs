@@ -837,7 +837,6 @@ impl<const W: usize> PauliSum<W> {
     /// Panics if `bits` exceeds the current bucket bits — growing is
     /// [`Self::refine`]'s job, and doing it here would silently mean "resort
     /// the whole sum".
-    #[allow(dead_code)] // consumed by the partitioned engine in a later step
     pub(crate) fn coarsen_to(&mut self, bits: u8) {
         assert!(
             bits <= self.hash.bits(),
@@ -861,7 +860,6 @@ impl<const W: usize> PauliSum<W> {
     /// Buckets are independent, so above the same "worth splitting" threshold
     /// [`Self::refine`] uses this is a parallel map over buckets and a serial
     /// one below it.
-    #[allow(dead_code)] // consumed by the partitioned engine in a later step
     pub(crate) fn filter_partition(&self, rows: &PartitionRows<W>, rank: u32) -> Self {
         debug_assert_eq!(
             self.num_qubits,
@@ -910,7 +908,6 @@ impl<const W: usize> PauliSum<W> {
     /// Panics if `parts` is empty (there would be no hash to give the result),
     /// or if the inputs disagree on their hash rows or bucket count. Align
     /// them with [`Self::coarsen_to`] or [`Self::align_to`] first.
-    #[allow(dead_code)] // consumed by the partitioned engine in a later step
     pub(crate) fn merge_partitions(parts: Vec<Self>) -> Self {
         let first = parts
             .first()
@@ -961,7 +958,6 @@ impl<const W: usize> PauliSum<W> {
     ///
     /// Debug and test predicate for "this sum is one partition's share"; it
     /// scans every term, so it is not for the propagation loop.
-    #[allow(dead_code)] // consumed by the partitioned engine in a later step
     pub(crate) fn partition_rank_of_all(&self, rows: &PartitionRows<W>) -> Option<u32> {
         let mut seen: Option<u32> = None;
         for (x, z, _) in self.iter() {

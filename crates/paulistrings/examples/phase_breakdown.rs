@@ -16,7 +16,9 @@
 //! cargo run --release --features phase-timing --example phase_breakdown -- \
 //!     [--n 1000000] [--qubits 128] [--threads 1,8,16,32] \
 //!     [--layers rotation_zz,cnot,gu2q,su4,depolarizing,trotter] [--reps 8] \
-//!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv]
+//!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
+//!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
+//!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -67,6 +69,58 @@
 //! `PhaseStats` are read via [`LayerScratch::take_stats`] and its
 //! `/proc/self/status` `VmRSS` / `VmHWM` are sampled right after.
 //!
+//! # Partitioned cells
+//!
+//! `--partitions <csv>` (default `1`) adds a partition axis to the matrix. A
+//! cell with `P > 1` runs the same circuit through
+//! [`PartitionedSum`] on a [`PartitionRuntime`] of `P` pinned pools instead of
+//! one Rayon pool: the sum is scattered once *outside* the timed region, the
+//! warm-up and the timed call are the same two calls as above, and the
+//! per-partition [`PartitionTrace`] and [`PhaseStats`] are drained after each.
+//!
+//! **`--threads` stays the TOTAL thread count**: each partition's pool gets
+//! `threads / P` workers (`PartitionRuntime::with_threads_per_partition`
+//! overrides the width the placement would derive, leaving the CPU sets
+//! alone), so `--threads 32 --partitions 1` and `--threads 32 --partitions 2`
+//! put the same number of workers on the machine. A `--threads` value not
+//! divisible by every `--partitions` value is an error, not a rounding.
+//!
+//! `P = 1` runs the *unpartitioned* path — today's `propagate_with_scratch_
+//! and_options`, byte for byte — unless `--p1-path partitioned` is given, in
+//! which case it goes through `PartitionedSum` with one partition. The pair
+//! `--partitions 1 --p1-path partitioned` against `--partitions 1` (default)
+//! is the machinery's own overhead: a pool build, a thread scope, a transport
+//! group and a per-layer all-reduce of one number, over a code path the
+//! driver's tests pin as bitwise identical.
+//!
+//! Placement comes from `--partition-cpus`:
+//!
+//! - absent (default) — `Placement::Auto { max_partitions: Some(P) }`: one
+//!   partition per NUMA node in the affinity mask, rounded down to `P`.
+//! - `'<list>;<list>;...'` — `Placement::Explicit`, one Linux cpulist per
+//!   partition (`scripts/host-topology.sh`'s `PARTITION_CPUS` writes exactly
+//!   this string). The list count must equal every `P > 1` in `--partitions`.
+//! - `unpinned` — `Placement::Unpinned`: the shape of a partitioned run with
+//!   no pinning at all, for a laptop or a shared box.
+//!
+//! `--bind-memory 0` drops the per-partition `set_mempolicy` binding (pinning
+//! stays); `--partition-seed <u64>` fixes the partition rows instead of
+//! letting the driver derive them from the sum's hash seed.
+//!
+//! The two partition-aware layers are `rotation_local` and `rotation_remote`:
+//! a `ZZ` rotation on `(0, q)` where `q` is the smallest qubit in
+//! `1..--qubits` whose layer has, respectively, no remote delta and at least
+//! one — decided once per cell by [`count_remote_deltas`] against the hash the
+//! sum carries and the partition rows the scatter will use (remoteness is a
+//! property of the delta's key mask and those rows alone, so the bucket bits
+//! the run later grows to do not enter). Both collapse to `rotation_zz`'s
+//! `(0, 1)` at `P = 1`, where nothing is remote. The chosen pair is echoed to
+//! stderr and recorded as `gen_qubits` in the JSON/TSV rows.
+//!
+//! `--truncation topn:<N>` is rejected for a partitioned cell: `TopN`'s exact
+//! selection has no [`PartitionedTruncation`] impl (the bound rejects it at
+//! compile time), and `atopn:<N>` is the collective form of the same policy.
+//!
 //! The input generators (`Xs64`, `rand_sum`, `low_weight_sum`) come from
 //! `paulistrings::test_support`, shared with `benches/pauli_ops.rs` and the
 //! crate's own tests. The per-layer channel recipes below are still duplicated
@@ -81,12 +135,16 @@ use paulistrings::bucket::sum::{
     DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
 };
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::engine::partitioned::{
+    count_remote_deltas, CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime,
+    PartitionTrace, PartitionedSum, PartitionedTruncation, Placement,
+};
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch_and_options, Circuit, Direction, Gf2Hash, LayerScratch, PauliString,
-    PhaseStats, PropagateOptions, TruncationPolicy,
+    propagate_with_scratch_and_options, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
+    PauliString, PauliSum, PhaseStats, PropagateOptions, TruncationPolicy,
 };
 
 // ---------------------------------------------------------------------
@@ -106,8 +164,8 @@ Options:
   --threads <csv>          Comma-separated thread counts (default: 1,8,16,32;
                             16 = the reference host's physical-core count)
   --layers <csv>           Comma-separated layers, from:
-                              rotation_zz, cnot, gu2q, su4, depolarizing,
-                              trotter
+                              rotation_zz, rotation_local, rotation_remote,
+                              cnot, gu2q, su4, depolarizing, trotter
                             (default: rotation_zz,cnot,gu2q,depolarizing,trotter
                             — su4 is opt-in, being the heaviest cell per --n:
                             a dense 16x16 PTM, so ~16x the fanout of gu2q's
@@ -157,11 +215,44 @@ Options:
                                             must be BELOW the cell's
                                             steady-state term count, else
                                             TopN returns immediately.
+                                            REJECTED for a partitioned cell:
+                                            no PartitionedTruncation impl.
                               atopn:<N>     ApproxTopN(N): the same, with a
                                             histogram threshold instead of a
                                             selection. Keeps <= N, so its
                                             steady-state m differs from
                                             topn:<N>'s -- compare per-term.
+  --partitions <csv>       Comma-separated partition counts, each a power of
+                            two (default: 1). P > 1 runs the cell through the
+                            partitioned engine; P = 1 runs the unpartitioned
+                            one unless --p1-path partitioned.
+                            NOTE: --threads is the TOTAL thread count, so each
+                            partition's pool gets threads/P workers. Every
+                            --threads value must be divisible by every
+                            --partitions value.
+  --partition-cpus <spec>  Placement for P > 1, one of:
+                              auto       (default) one partition per NUMA node
+                                         in the affinity mask, capped at P
+                              <l>;<l>    Placement::Explicit, one Linux cpulist
+                                         per partition '0-7,16-23;8-15,24-31';
+                                         the count must equal every P > 1
+                              unpinned   Placement::Unpinned: partition shape,
+                                         no pinning (laptops, shared boxes)
+                            A partitioned cell must run under NO external
+                            placement prefix (taskset/numactl) -- see the note
+                            at the top of scripts/host-topology.sh.
+  --bind-memory 0|1        Bind each partition's allocations to its NUMA node
+                            (default: 1). 0 keeps the CPU pinning and drops
+                            the memory policy.
+  --partition-seed <u64|0xHEX>
+                           Seed picking the GF(2) partition rows. Default: the
+                            driver's own choice (the sum's hash seed).
+  --p1-path classic|partitioned
+                           Which path a P = 1 cell takes (default: classic,
+                            i.e. today's propagate_with_scratch_and_options).
+                            `partitioned` sends it through PartitionedSum with
+                            one partition, which measures the machinery's
+                            overhead against an otherwise identical run.
   --format table|json|tsv  Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE,
                            regardless of --format (input for scripts/perf-viz.py)
@@ -171,6 +262,13 @@ Options:
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerKind {
     RotationZz,
+    /// A `ZZ` rotation chosen so the layer's deltas all stay inside their
+    /// partition: the partitioned engine's best case, and at `P = 1` the same
+    /// cell as [`LayerKind::RotationZz`].
+    RotationLocal,
+    /// A `ZZ` rotation chosen so at least one delta crosses partitions: the
+    /// cell that pays for an export + exchange every layer.
+    RotationRemote,
     Cnot,
     Gu2q,
     Su4,
@@ -182,6 +280,8 @@ impl LayerKind {
     fn name(self) -> &'static str {
         match self {
             LayerKind::RotationZz => "rotation_zz",
+            LayerKind::RotationLocal => "rotation_local",
+            LayerKind::RotationRemote => "rotation_remote",
             LayerKind::Cnot => "cnot",
             LayerKind::Gu2q => "gu2q",
             LayerKind::Su4 => "su4",
@@ -193,16 +293,24 @@ impl LayerKind {
     fn parse(s: &str) -> Result<Self, String> {
         match s {
             "rotation_zz" => Ok(LayerKind::RotationZz),
+            "rotation_local" => Ok(LayerKind::RotationLocal),
+            "rotation_remote" => Ok(LayerKind::RotationRemote),
             "cnot" => Ok(LayerKind::Cnot),
             "gu2q" => Ok(LayerKind::Gu2q),
             "su4" => Ok(LayerKind::Su4),
             "depolarizing" => Ok(LayerKind::Depolarizing),
             "trotter" => Ok(LayerKind::Trotter),
             other => Err(format!(
-                "unknown layer '{other}' (expected one of: rotation_zz, cnot, gu2q, su4, \
-                 depolarizing, trotter)"
+                "unknown layer '{other}' (expected one of: rotation_zz, rotation_local, \
+                 rotation_remote, cnot, gu2q, su4, depolarizing, trotter)"
             )),
         }
+    }
+
+    /// Whether the layer's generator qubits are chosen per cell from the
+    /// partition rows ([`choose_generator`]) rather than fixed at `(0, 1)`.
+    fn picks_generator(self) -> bool {
+        matches!(self, LayerKind::RotationLocal | LayerKind::RotationRemote)
     }
 }
 
@@ -278,6 +386,106 @@ impl TruncSpec {
     }
 }
 
+/// `--partition-cpus`, kept as the *spec* the command line carried so it can
+/// be echoed verbatim into the sidecar (`partition_cpus`, machine contract (a)
+/// in `benchmarks/PROFILING.md`) and turned into a [`Placement`] once per
+/// cell, where the partition count and the thread budget are known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PartitionCpus {
+    /// One partition per NUMA node in the mask, capped at the cell's `P`.
+    Auto,
+    /// No pinning at all — the partition shape without its placement.
+    Unpinned,
+    /// One Linux cpulist per partition, exactly as written.
+    Explicit(Vec<String>),
+}
+
+impl PartitionCpus {
+    /// The spec as written, echoed into every output format.
+    fn label(&self) -> String {
+        match self {
+            PartitionCpus::Auto => "auto".to_string(),
+            PartitionCpus::Unpinned => "unpinned".to_string(),
+            PartitionCpus::Explicit(lists) => lists.join(";"),
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        let t = s.trim();
+        if t == "auto" {
+            return Ok(PartitionCpus::Auto);
+        }
+        if t == "unpinned" {
+            return Ok(PartitionCpus::Unpinned);
+        }
+        let lists: Vec<String> = t
+            .split(';')
+            .map(str::trim)
+            .filter(|tok| !tok.is_empty())
+            .map(str::to_string)
+            .collect();
+        if lists.is_empty() {
+            return Err(
+                "--partition-cpus expects auto | unpinned | '<cpulist>;<cpulist>;...', got an \
+                 empty list"
+                    .to_string(),
+            );
+        }
+        for list in &lists {
+            CpuSet::parse(list).map_err(|err| format!("--partition-cpus '{list}': {err}"))?;
+        }
+        Ok(PartitionCpus::Explicit(lists))
+    }
+
+    /// The [`Placement`] for one cell: `partitions` partitions sharing
+    /// `threads` workers in total.
+    ///
+    /// The caller has already checked the list count against `partitions`
+    /// (see [`parse_args`]), so the `Explicit` arm cannot mismatch here.
+    fn placement(&self, partitions: usize, threads: usize) -> Placement {
+        match self {
+            PartitionCpus::Auto => Placement::Auto {
+                max_partitions: Some(partitions),
+            },
+            PartitionCpus::Unpinned => Placement::Unpinned {
+                partitions,
+                threads_per_partition: Some((threads / partitions).max(1)),
+            },
+            PartitionCpus::Explicit(lists) => Placement::Explicit(
+                lists
+                    .iter()
+                    .map(|list| CpuSet::parse(list).expect("validated at parse time"))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// What a `P = 1` cell measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P1Path {
+    /// Today's `propagate_with_scratch_and_options` on one Rayon pool — the
+    /// default, and the reference point every partitioned number is read
+    /// against.
+    Classic,
+    /// `PartitionedSum` with one partition: the same layer code with the
+    /// driver's machinery (pool build, thread scope, transport group, the
+    /// per-layer all-reduce) around it.
+    Partitioned,
+}
+
+impl P1Path {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "classic" => Ok(P1Path::Classic),
+            "partitioned" => Ok(P1Path::Partitioned),
+            other => Err(format!(
+                "--p1-path expects classic | partitioned, got '{other}'"
+            )),
+        }
+    }
+}
+
 struct Config {
     n: usize,
     qubits: usize,
@@ -290,7 +498,19 @@ struct Config {
     target_bucket_len: usize,
     /// Engine's per-layer bucket-count floor. See `--min-buckets`.
     min_buckets: usize,
+    /// TOTAL thread counts; a partitioned cell splits one of these over its
+    /// partitions. See `--threads` / `--partitions`.
     threads: Vec<usize>,
+    /// Partition counts to sweep. See `--partitions`.
+    partitions: Vec<usize>,
+    /// Placement spec for the partitioned cells. See `--partition-cpus`.
+    partition_cpus: PartitionCpus,
+    /// Whether each partition binds its allocations to its NUMA node.
+    bind_memory: bool,
+    /// Seed for the partition rows, or `None` for the driver's own choice.
+    partition_seed: Option<u64>,
+    /// Which path a `P = 1` cell takes. See `--p1-path`.
+    p1_path: P1Path,
     layers: Vec<LayerKind>,
     reps: usize,
     seed: u64,
@@ -358,6 +578,11 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
+    let mut partitions: Vec<usize> = vec![1];
+    let mut partition_cpus = PartitionCpus::Auto;
+    let mut bind_memory = true;
+    let mut partition_seed: Option<u64> = None;
+    let mut p1_path = P1Path::Classic;
 
     let mut i = 0;
     while i < args.len() {
@@ -385,6 +610,17 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--target-bucket-len" => target_bucket_len = parse_usize(value, "--target-bucket-len")?,
             "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
             "--truncation" => truncation = TruncSpec::parse(value)?,
+            "--partitions" => partitions = parse_csv_usize(value, "--partitions")?,
+            "--partition-cpus" => partition_cpus = PartitionCpus::parse(value)?,
+            "--bind-memory" => {
+                bind_memory = match value.trim() {
+                    "0" => false,
+                    "1" => true,
+                    other => return Err(format!("--bind-memory expects 0 or 1, got '{other}'")),
+                }
+            }
+            "--partition-seed" => partition_seed = Some(parse_seed(value)?),
+            "--p1-path" => p1_path = P1Path::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -418,6 +654,80 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--min-buckets must be at least 16, got {min_buckets}"
         ));
     }
+    if partitions.is_empty() {
+        return Err("--partitions must list at least one partition count".to_string());
+    }
+
+    // The partition axis, checked against everything it interacts with before
+    // a single cell runs: a campaign that dies on its fourth cell wastes the
+    // three that ran.
+    let explicit = match &partition_cpus {
+        PartitionCpus::Explicit(lists) => Some(lists.len()),
+        _ => None,
+    };
+    for &p in &partitions {
+        if p == 0 {
+            return Err("--partitions entries must be positive".to_string());
+        }
+        if !p.is_power_of_two() {
+            return Err(format!(
+                "--partitions entries must be powers of two (a partition index is log2(P) GF(2) \
+                 hash rows), got {p}"
+            ));
+        }
+        for &t in &threads {
+            if p > t {
+                return Err(format!(
+                    "--partitions {p} needs at least {p} threads, but --threads lists {t}: \
+                     --threads is the TOTAL thread count, split threads/P per partition"
+                ));
+            }
+            if t % p != 0 {
+                return Err(format!(
+                    "--threads {t} is not divisible by --partitions {p}: --threads is the TOTAL \
+                     thread count, so each partition's pool gets threads/P workers"
+                ));
+            }
+        }
+        if p > 1 {
+            if let Some(sets) = explicit {
+                if sets != p {
+                    return Err(format!(
+                        "--partition-cpus lists {sets} CPU set(s) but --partitions includes {p}: \
+                         an explicit placement needs exactly one cpulist per partition"
+                    ));
+                }
+            }
+        }
+    }
+    if p1_path == P1Path::Partitioned && partitions.contains(&1) {
+        if let Some(sets) = explicit {
+            if sets != 1 {
+                return Err(format!(
+                    "--p1-path partitioned runs the P = 1 cell through the partitioned engine, \
+                     but --partition-cpus lists {sets} CPU sets: give one set, or drop \
+                     --partition-cpus for the P = 1 cell"
+                ));
+            }
+        }
+    }
+    // `TopN`'s exact selection needs a global view of the coefficients and has
+    // no `PartitionedTruncation` impl — the bound rejects it at compile time,
+    // so the probe has to reject it here rather than dispatch into a
+    // partitioned cell that cannot exist.
+    let any_partitioned = partitions
+        .iter()
+        .any(|&p| p > 1 || p1_path == P1Path::Partitioned);
+    if any_partitioned {
+        if let TruncSpec::TopN(topn) = truncation {
+            return Err(format!(
+                "--truncation topn:{topn} cannot run a partitioned cell: TopN's exact selection \
+                 has no PartitionedTruncation impl (the trait bound rejects it statically). Use \
+                 --truncation atopn:{topn} — its collective octave histogram is the partitioned \
+                 form of the same policy — or drop --partitions"
+            ));
+        }
+    }
 
     Ok(Config {
         n,
@@ -427,6 +737,11 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         target_bucket_len,
         min_buckets,
         threads,
+        partitions,
+        partition_cpus,
+        bind_memory,
+        partition_seed,
+        p1_path,
         layers,
         reps,
         seed,
@@ -538,13 +853,39 @@ fn trotter_circuit<const W: usize>() -> Circuit<W> {
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-fn build_circuit<const W: usize>(layer: LayerKind, qubits: usize, reps: usize) -> Circuit<W> {
+/// [`AlwaysKeep`] for a partitioned cell.
+///
+/// A separate type rather than an impl on `AlwaysKeep`, because
+/// [`PartitionedTruncation`]'s default body rejects a policy whose
+/// `finalizes_layer()` is the trait's conservative `true`, and flipping that
+/// on `AlwaysKeep` would change what the *unpartitioned* cell measures: the
+/// engine reads `finalizes_layer` when it decides between the bucketed and the
+/// small-sum direct path (`PropagateOptions::starts_direct`). The two policies
+/// mean the same thing — keep every term, do nothing per layer.
+struct AlwaysKeepPartitioned;
+impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
+    fn finalizes_layer(&self) -> bool {
+        false
+    }
+}
+impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
+
+/// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the
+/// `rotation_*` layers rotate about — `(0, 1)` for `rotation_zz`, and whatever
+/// [`choose_generator`] picked for `rotation_local` / `rotation_remote`.
+fn build_circuit<const W: usize>(
+    layer: LayerKind,
+    qubits: usize,
+    reps: usize,
+    gen_qubits: (u32, u32),
+) -> Circuit<W> {
     let theta = 0.1;
     match layer {
-        LayerKind::RotationZz => {
+        LayerKind::RotationZz | LayerKind::RotationLocal | LayerKind::RotationRemote => {
+            let (q0, q1) = gen_qubits;
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
-                c.push(zz_rotation::<W>(0, 1, theta));
+                c.push(zz_rotation::<W>(q0, q1, theta));
             }
             c
         }
@@ -600,9 +941,42 @@ struct CellResult {
     target_bucket_len: usize,
     min_buckets: usize,
     wall_ns: u64,
+    /// The cell's phase breakdown. For a partitioned cell this is
+    /// [`fold_partition_stats`]'s cell-level view of the per-partition
+    /// counters, not any one partition's.
     stats: PhaseStats,
     vmrss_kb: u64,
     vmhwm_kb: u64,
+    /// Partitions the cell ran on: `1` for an unpartitioned cell.
+    partitions: usize,
+    /// `--partition-cpus` echoed back (`"auto"`, `"unpinned"`, or the list).
+    partition_cpus: String,
+    /// `--bind-memory`, as the `pin_memory` field of the sidecar.
+    pin_memory: bool,
+    /// The `(q0, q1)` the `rotation_*` layers rotated about.
+    gen_qubits: (u32, u32),
+    /// Everything only a partitioned cell has, `None` at `P = 1` classic.
+    partitioned: Option<PartitionCellStats>,
+}
+
+/// The partition-axis numbers of one cell, from the timed call's
+/// [`PartitionTrace`] and its per-partition [`PhaseStats`].
+struct PartitionCellStats {
+    /// Layers with no remote delta, so no export and no transport call.
+    local_layers: usize,
+    /// Layers with at least one remote delta.
+    remote_layers: usize,
+    /// Rows moved across partitions, summed over layers and senders.
+    rows_exported: u64,
+    /// Wire bytes for those rows.
+    bytes_exported: u64,
+    /// Σ over layers of each partition's input term count, by rank.
+    terms_in: Vec<usize>,
+    /// `max / mean` of [`Self::terms_in`]: 1.0 is a perfectly even split.
+    imbalance: f64,
+    /// Each partition's `coset_loop_ns`, by rank — the spread that says
+    /// whether the exchange waits are imbalance or traffic.
+    coset_loop_ns: Vec<u64>,
 }
 
 /// Read `VmRSS`/`VmHWM` (kB) from `/proc/self/status`. Linux-only, like the
@@ -630,15 +1004,13 @@ fn parse_kb_field(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn run_cell<const W: usize, P>(
-    layer: LayerKind,
-    threads: usize,
-    cfg: &Config,
-    policy: &P,
-) -> CellResult
-where
-    P: TruncationPolicy<W>,
-{
+/// The cell's input sum, before any propagation: the seeded generator the
+/// layer asks for, re-hashed and pre-refined per `--hash-seed` /
+/// `--bucket-bits`.
+///
+/// Shared by the unpartitioned and the partitioned path, so a `P = 1` and a
+/// `P = 2` cell of the same `(layer, --n, --seed)` propagate the same terms.
+fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W> {
     // `trotter` is 64 *distinct* generators applied once each, not one
     // generator repeated — the latter provably closes to a bounded key set,
     // which is what keeps rotation_zz/cnot/gu2q/su4 bounded here. A dense input
@@ -679,8 +1051,24 @@ where
     while base.hash().bits() < cfg.bucket_bits {
         base.refine();
     }
-    let base = base;
-    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps);
+    base
+}
+
+fn run_cell<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: TruncationPolicy<W>,
+{
+    let base = build_base_sum::<W>(layer, cfg);
+    // Nothing is remote without partitions, so `rotation_local` and
+    // `rotation_remote` are both `rotation_zz` here (documented at the top of
+    // the file, and echoed in the cell's `gen_qubits`).
+    let gen_qubits = (0u32, 1u32);
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -749,6 +1137,273 @@ where
         stats,
         vmrss_kb,
         vmhwm_kb,
+        partitions: 1,
+        partition_cpus: cfg.partition_cpus.label(),
+        pin_memory: cfg.bind_memory,
+        gen_qubits,
+        // No split, so no partition numbers: the sidecar's partition fields
+        // stay zero/empty on this row (machine contract (a)).
+        partitioned: None,
+    }
+}
+
+/// The `(q0, q1)` a `rotation_local` / `rotation_remote` cell rotates about:
+/// the smallest `q1 > 0` whose one-channel `ZZ(0, q1)` layer has no remote
+/// delta (`local`), respectively at least one (`remote`), under `rows`.
+///
+/// [`count_remote_deltas`] does the deciding, on a one-channel circuit and the
+/// hash the sum currently carries. The verdict does not depend on the bucket
+/// count: a delta is remote when the *partition rows* map its key mask off
+/// zero, and those rows are fixed before the scatter, so a hash that later
+/// grows bucket bits reclassifies nothing. The scan is `O(qubits)` prepares of
+/// a single channel, once per cell, entirely outside the timed region.
+///
+/// # Panics
+///
+/// If no qubit in `1..qubits` gives the requested class — impossible for
+/// `local` (the rows have `log2(P)` rows over `qubits` coordinates, so most
+/// pairs are local) and possible in principle for `remote` on a pathological
+/// row draw, in which case the message names `--partition-seed` as the knob.
+fn choose_generator<const W: usize>(
+    layer: LayerKind,
+    qubits: usize,
+    base: &PauliSum<W>,
+    rows: &PartitionRows<W>,
+) -> (u32, u32) {
+    if !layer.picks_generator() {
+        return (0, 1);
+    }
+    let want_remote = layer == LayerKind::RotationRemote;
+    for q in 1..qubits as u32 {
+        let mut probe = Circuit::<W>::new(qubits);
+        probe.push(zz_rotation::<W>(0, q, 0.1));
+        let (_, remote) = count_remote_deltas(&probe, base.hash(), rows, false)[0];
+        if (remote > 0) == want_remote {
+            return (0, q);
+        }
+    }
+    panic!(
+        "phase_breakdown: no ZZ(0, q) layer with q in 1..{qubits} is {} under these partition \
+         rows — try another --partition-seed or more --qubits",
+        if want_remote { "remote" } else { "local" },
+    );
+}
+
+/// One partitioned cell: scatter (untimed), warm up, drain, time one
+/// `propagate`, and read the trace and the per-partition counters.
+///
+/// The shape mirrors [`run_cell`] exactly — same input sum, same warm-up
+/// rationale, same `PropagateOptions` — so the two differ only in the engine
+/// underneath. Everything outside the timed call (building the runtime and its
+/// `P` pinned pools, deriving the partition rows, choosing the generator,
+/// scattering) happens before the clock starts.
+fn run_cell_partitioned<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    partitions: usize,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    let base = build_base_sum::<W>(layer, cfg);
+    let num_qubits = base.num_qubits();
+
+    let config = PartitionConfig {
+        placement: cfg.partition_cpus.placement(partitions, threads),
+        bind_memory: cfg.bind_memory,
+        partition_row_seed: cfg.partition_seed,
+    };
+    // `--threads` is the TOTAL: the placement decides *where* each partition
+    // runs, this decides how many workers it gets, so P pools of threads/P
+    // compare against one pool of threads on the same machine.
+    let runtime = PartitionRuntime::with_threads_per_partition(&config, Some(threads / partitions))
+        .unwrap_or_else(|err| {
+            eprintln!("phase_breakdown: cannot resolve the partition placement: {err}");
+            std::process::exit(2);
+        });
+    // `Auto` reads the machine: it rounds the NUMA node count down to a power
+    // of two and caps it at `max_partitions`, so asking for more partitions
+    // than the host has nodes silently gets fewer. Fewer partitions than the
+    // cell claims would mislabel every row, so refuse instead.
+    if runtime.num_partitions() != partitions {
+        eprintln!(
+            "phase_breakdown: --partitions {partitions} resolved to {} partitions: an `auto` \
+             placement takes one partition per NUMA node in the affinity mask (rounded down to a \
+             power of two). Pass --partition-cpus with {partitions} cpulists, or \
+             --partition-cpus unpinned, to get {partitions} partitions on this host.",
+            runtime.num_partitions(),
+        );
+        std::process::exit(2);
+    }
+
+    // The rows the scatter would derive on its own — built here so the
+    // generator scan below sees exactly the split the run will use.
+    let rows = PartitionRows::<W>::from_seed(
+        num_qubits,
+        partitions.trailing_zeros() as u8,
+        cfg.partition_seed.unwrap_or_else(|| base.hash().seed()),
+    );
+    let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
+    if layer.picks_generator() {
+        eprintln!(
+            "phase_breakdown: note: {} at P={partitions} rotates about ZZ({}, {}) — the smallest \
+             pair whose deltas are {} under these partition rows.",
+            layer.name(),
+            gen_qubits.0,
+            gen_qubits.1,
+            if layer == LayerKind::RotationRemote {
+                "remote"
+            } else {
+                "local"
+            },
+        );
+    }
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+
+    let mut split = PartitionedSum::scatter_with_rows(base, rows, runtime);
+    split.enable_trace();
+
+    // Untimed warm-up, then its counters discarded — same contract as the
+    // unpartitioned cell.
+    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    let _ = split.take_trace();
+    let _ = split.take_stats();
+
+    let steady_n = split.len();
+    let started = Instant::now();
+    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let trace = split.take_trace().expect("tracing was enabled");
+    let per_partition = split.take_stats();
+    std::hint::black_box(&split);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+    let stats = fold_partition_stats(&per_partition);
+    let summary = summarize_partitions(partitions, &trace, &per_partition, &stats);
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: cfg.hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions,
+        partition_cpus: cfg.partition_cpus.label(),
+        pin_memory: cfg.bind_memory,
+        gen_qubits,
+        partitioned: Some(summary),
+    }
+}
+
+/// The cell-level [`PhaseStats`] of a partitioned run: **wall-clock fields are
+/// the maximum over partitions** (the critical path — the group is only as
+/// fast as its slowest partition, and a partition's own wall phases already
+/// sum to about its layer time), **busy-time and counter fields are sums**
+/// (they are per-worker or per-term totals, and the cell's total work is the
+/// group's).
+///
+/// `layers` is the *driver's* layer count, not a sum: every partition drove
+/// the same layers, so summing would report `P × n` and break the per-layer
+/// figures (and the `layers=` field of the `cell` line, which
+/// `scripts/perf-stat.sh` reads).
+fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
+    let mut out = PhaseStats::default();
+    for s in &stats.per_partition {
+        // Wall-clock phases: max over partitions.
+        out.rebucket_ns = out.rebucket_ns.max(s.rebucket_ns);
+        out.prepare_ns = out.prepare_ns.max(s.prepare_ns);
+        out.rescale_ns = out.rescale_ns.max(s.rescale_ns);
+        out.span_plan_ns = out.span_plan_ns.max(s.span_plan_ns);
+        out.permute_ns = out.permute_ns.max(s.permute_ns);
+        out.coset_loop_ns = out.coset_loop_ns.max(s.coset_loop_ns);
+        out.unpermute_ns = out.unpermute_ns.max(s.unpermute_ns);
+        out.recount_ns = out.recount_ns.max(s.recount_ns);
+        out.finalize_ns = out.finalize_ns.max(s.finalize_ns);
+        out.collective_ns = out.collective_ns.max(s.collective_ns);
+        out.export_ns = out.export_ns.max(s.export_ns);
+        out.exchange_ns = out.exchange_ns.max(s.exchange_ns);
+        // Worker busy time and counters: sums over the group.
+        out.swap_ns += s.swap_ns;
+        out.size_ns += s.size_ns;
+        out.gather_ns += s.gather_ns;
+        out.sort_ns += s.sort_ns;
+        out.merge_ns += s.merge_ns;
+        out.clear_ns += s.clear_ns;
+        out.cosets += s.cosets;
+        out.runs += s.runs;
+        out.rows_gathered += s.rows_gathered;
+        out.rows_sorted += s.rows_sorted;
+        out.rows_id += s.rows_id;
+        out.terms_in += s.terms_in;
+        out.terms_out += s.terms_out;
+        out.rows_exported += s.rows_exported;
+        out.recv_rows += s.recv_rows;
+    }
+    out.layers = stats.layers;
+    out
+}
+
+/// The partition-axis summary of one timed call.
+///
+/// `rows_exported` comes from the folded counters and `bytes_exported` from
+/// the trace's `bytes_sent`; the two are the send side of the same traffic
+/// counted in rows and in wire bytes, by the export pass and the trace
+/// respectively.
+fn summarize_partitions(
+    partitions: usize,
+    trace: &PartitionTrace,
+    per_partition: &PartitionPhaseStats,
+    folded: &PhaseStats,
+) -> PartitionCellStats {
+    let mut terms_in = vec![0usize; partitions];
+    for layer in &trace.layers {
+        for (rank, &t) in layer.terms_in.iter().enumerate() {
+            terms_in[rank] += t;
+        }
+    }
+    let total: usize = terms_in.iter().sum();
+    let imbalance = if total == 0 {
+        1.0
+    } else {
+        let mean = total as f64 / partitions as f64;
+        terms_in.iter().copied().max().unwrap_or(0) as f64 / mean
+    };
+
+    PartitionCellStats {
+        local_layers: trace.local_layers(),
+        remote_layers: trace.remote_layers(),
+        rows_exported: folded.rows_exported,
+        bytes_exported: trace
+            .layers
+            .iter()
+            .flat_map(|layer| layer.bytes_sent.iter())
+            .flat_map(|row| row.iter())
+            .sum(),
+        terms_in,
+        imbalance,
+        coset_loop_ns: per_partition
+            .per_partition
+            .iter()
+            .map(|s| s.coset_loop_ns)
+            .collect(),
     }
 }
 
@@ -757,17 +1412,19 @@ where
 // ---------------------------------------------------------------------
 
 /// Always printed first for every cell, in every format: `n=` and
-/// `layers=` are a contract other scripts grep for. `trunc=` is appended
-/// last so those greps keep matching unchanged.
+/// `layers=` are a contract other scripts grep for (`scripts/perf-stat.sh`'s
+/// awk; machine contract (b) in `benchmarks/PROFILING.md`). `trunc=` and then
+/// `partitions=` are appended last so those greps keep matching unchanged.
 fn print_cell_line(cell: &CellResult) {
     println!(
-        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={}",
+        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}",
         cell.layer,
         cell.threads,
         cell.n,
         cell.stats.layers,
         cell.wall_ns as f64 / 1e6,
         cell.truncation,
+        cell.partitions,
     );
 }
 
@@ -875,18 +1532,116 @@ fn print_table(cell: &CellResult) {
         "  target_bucket_len  = {}   min_buckets = {}",
         cell.target_bucket_len, cell.min_buckets
     );
+    print_partition_block(cell);
     println!();
+}
+
+/// The partition block of the table format, printed only for a cell that ran
+/// through the partitioned engine — an unpartitioned cell's table is exactly
+/// what it was before the partition axis existed.
+fn print_partition_block(cell: &CellResult) {
+    let Some(p) = cell.partitioned.as_ref() else {
+        return;
+    };
+    let s = &cell.stats;
+    println!(
+        "  partitions         = {} on {} (pin_memory = {}, gen_qubits = {},{})",
+        cell.partitions,
+        cell.partition_cpus,
+        u8::from(cell.pin_memory),
+        cell.gen_qubits.0,
+        cell.gen_qubits.1,
+    );
+    println!(
+        "    layers: {} local / {} remote   rows exported = {} ({:.3} MiB on the wire)",
+        p.local_layers,
+        p.remote_layers,
+        p.rows_exported,
+        p.bytes_exported as f64 / (1024.0 * 1024.0),
+    );
+    println!(
+        "    export = {:.3} ms   exchange = {:.3} ms   barrier (bucket-count all-reduce) = \
+         {:.3} ms   [max over partitions]",
+        s.export_ns as f64 / 1e6,
+        s.exchange_ns as f64 / 1e6,
+        s.collective_ns as f64 / 1e6,
+    );
+    println!(
+        "    terms in per partition = {:?}   imbalance (max/mean) = {:.3}",
+        p.terms_in, p.imbalance,
+    );
+    let coset_ms: Vec<String> = p
+        .coset_loop_ns
+        .iter()
+        .map(|ns| format!("{:.3}", *ns as f64 / 1e6))
+        .collect();
+    println!(
+        "    coset_loop ms per partition = [{}]",
+        coset_ms.join(", ")
+    );
 }
 
 fn print_json(cell: &CellResult) {
     println!("{}", json_line(cell));
 }
 
+/// `[a, b, c]` for a JSON array of integers, `[]` when empty.
+fn json_u64_array<T: std::fmt::Display>(values: &[T]) -> String {
+    let items: Vec<String> = values.iter().map(T::to_string).collect();
+    format!("[{}]", items.join(","))
+}
+
+/// `a|b|c` — the TSV spelling of the same array, `` (empty) when empty.
+fn tsv_array<T: std::fmt::Display>(values: &[T]) -> String {
+    let items: Vec<String> = values.iter().map(T::to_string).collect();
+    items.join("|")
+}
+
 /// One cell as a single JSON line — shared by `--format json` (stdout) and
 /// `--json-out` (sidecar file for `scripts/perf-viz.py`).
+///
+/// The partition fields are written on **every** row, `partitions` included, so
+/// a campaign mixing partitioned and unpartitioned cells has one schema; an
+/// unpartitioned row carries `partitions: 1`, zero counters and empty arrays.
+/// `barrier_ns` is the sidecar's name for the engine's `collective_ns` — the
+/// driver's per-layer bucket-count all-reduce, the one unconditional collective
+/// a layer makes. See machine contract (a) in `benchmarks/PROFILING.md`.
 fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
-    format!(
+    let empty = Vec::new();
+    let terms_in = cell
+        .partitioned
+        .as_ref()
+        .map_or(&empty, |p| &p.terms_in)
+        .as_slice();
+    let empty_ns = Vec::new();
+    let coset_loop_ns = cell
+        .partitioned
+        .as_ref()
+        .map_or(&empty_ns, |p| &p.coset_loop_ns)
+        .as_slice();
+    let partition_fields = format!(
+        ",\"partitions\":{},\"partition_cpus\":\"{}\",\"pin_memory\":{},\"gen_qubits\":[{},{}],\
+         \"local_layers\":{},\"remote_layers\":{},\"rows_exported\":{},\"bytes_exported\":{},\
+         \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
+         \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{}",
+        cell.partitions,
+        cell.partition_cpus,
+        u8::from(cell.pin_memory),
+        cell.gen_qubits.0,
+        cell.gen_qubits.1,
+        cell.partitioned.as_ref().map_or(0, |p| p.local_layers),
+        cell.partitioned.as_ref().map_or(0, |p| p.remote_layers),
+        cell.partitioned.as_ref().map_or(0, |p| p.rows_exported),
+        cell.partitioned.as_ref().map_or(0, |p| p.bytes_exported),
+        json_u64_array(terms_in),
+        cell.partitioned.as_ref().map_or(1.0, |p| p.imbalance),
+        s.export_ns,
+        s.exchange_ns,
+        s.collective_ns,
+        json_u64_array(coset_loop_ns),
+    );
+    let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
          \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
@@ -894,7 +1649,7 @@ fn json_line(cell: &CellResult) -> String {
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
-         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{}}}",
+         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -932,20 +1687,28 @@ fn json_line(cell: &CellResult) -> String {
         cell.vmhwm_kb,
         cell.target_bucket_len,
         cell.min_buckets,
-    )
+    );
+    format!("{core}{partition_fields}}}")
 }
 
 const TSV_HEADER: &str =
     "layer\ttruncation\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
 swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
-terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets";
+terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartitions\t\
+partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
+bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
+partition_coset_loop_ns";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
+    let p = cell.partitioned.as_ref();
+    let empty: Vec<usize> = Vec::new();
+    let empty_ns: Vec<u64> = Vec::new();
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
+         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -981,6 +1744,22 @@ fn print_tsv_row(cell: &CellResult) {
         cell.vmhwm_kb,
         cell.target_bucket_len,
         cell.min_buckets,
+        cell.partitions,
+        cell.partition_cpus,
+        u8::from(cell.pin_memory),
+        cell.gen_qubits.0,
+        cell.gen_qubits.1,
+        p.map_or(0, |p| p.local_layers),
+        p.map_or(0, |p| p.remote_layers),
+        p.map_or(0, |p| p.rows_exported),
+        p.map_or(0, |p| p.bytes_exported),
+        tsv_array(p.map_or(&empty, |p| &p.terms_in)),
+        p.map_or(1.0, |p| p.imbalance),
+        s.export_ns,
+        s.exchange_ns,
+        // `barrier_ns` in every output format is the engine's `collective_ns`.
+        s.collective_ns,
+        tsv_array(p.map_or(&empty_ns, |p| &p.coset_loop_ns)),
     );
 }
 
@@ -988,18 +1767,30 @@ fn print_tsv_row(cell: &CellResult) {
 /// [`run_cells`], so the policy's `keep_term` inlines into the merge the way a
 /// real caller's does. A `&dyn TruncationPolicy` would be one line shorter and
 /// would change the thing being measured.
+///
+/// Each spec supplies two policy values: the one an unpartitioned cell runs
+/// under, and its [`PartitionedTruncation`] form for a partitioned cell. They
+/// are the same value for every spec that has both — only `keep` needs a
+/// separate type (see [`AlwaysKeepPartitioned`]) — and `topn` has no
+/// partitioned form at all, which [`parse_args`] has already rejected by the
+/// time this runs.
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
-        TruncSpec::Keep => run_cells::<W, _>(cfg, &AlwaysKeep),
-        TruncSpec::Coeff(t) => run_cells::<W, _>(cfg, &CoefficientThreshold(t)),
-        TruncSpec::TopN(n) => run_cells::<W, _>(cfg, &TopN(n)),
-        TruncSpec::ApproxTopN(n) => run_cells::<W, _>(cfg, &ApproxTopN(n)),
+        TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
+        TruncSpec::Coeff(t) => run_cells::<W, _, _>(
+            cfg,
+            &CoefficientThreshold(t),
+            Some(&CoefficientThreshold(t)),
+        ),
+        TruncSpec::TopN(n) => run_cells::<W, _, ApproxTopN>(cfg, &TopN(n), None),
+        TruncSpec::ApproxTopN(n) => run_cells::<W, _, _>(cfg, &ApproxTopN(n), Some(&ApproxTopN(n))),
     }
 }
 
-fn run_cells<const W: usize, P>(cfg: &Config, policy: &P)
+fn run_cells<const W: usize, P, PP>(cfg: &Config, policy: &P, partitioned_policy: Option<&PP>)
 where
     P: TruncationPolicy<W>,
+    PP: PartitionedTruncation<W>,
 {
     if cfg.format == Format::Tsv {
         println!("{TSV_HEADER}");
@@ -1017,21 +1808,31 @@ where
     });
 
     for &layer in &cfg.layers {
-        for &threads in &cfg.threads {
-            let cell = run_cell::<W, P>(layer, threads, cfg, policy);
+        for &partitions in &cfg.partitions {
+            for &threads in &cfg.threads {
+                let cell = if partitions > 1 || cfg.p1_path == P1Path::Partitioned {
+                    let policy = partitioned_policy.expect(
+                        "a partitioned cell without a partitioned policy — parse_args rejects \
+                         the one spec (topn) that has none",
+                    );
+                    run_cell_partitioned::<W, PP>(layer, threads, partitions, cfg, policy)
+                } else {
+                    run_cell::<W, P>(layer, threads, cfg, policy)
+                };
 
-            print_cell_line(&cell);
-            match cfg.format {
-                Format::Table => print_table(&cell),
-                Format::Json => print_json(&cell),
-                Format::Tsv => print_tsv_row(&cell),
-            }
-            if let Some(f) = sidecar.as_mut() {
-                use std::io::Write;
-                writeln!(f, "{}", json_line(&cell)).unwrap_or_else(|e| {
-                    eprintln!("phase_breakdown: writing --json-out failed: {e}");
-                    std::process::exit(2);
-                });
+                print_cell_line(&cell);
+                match cfg.format {
+                    Format::Table => print_table(&cell),
+                    Format::Json => print_json(&cell),
+                    Format::Tsv => print_tsv_row(&cell),
+                }
+                if let Some(f) = sidecar.as_mut() {
+                    use std::io::Write;
+                    writeln!(f, "{}", json_line(&cell)).unwrap_or_else(|e| {
+                        eprintln!("phase_breakdown: writing --json-out failed: {e}");
+                        std::process::exit(2);
+                    });
+                }
             }
         }
     }

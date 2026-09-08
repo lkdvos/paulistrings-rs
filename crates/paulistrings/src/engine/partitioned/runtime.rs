@@ -71,7 +71,41 @@ impl PartitionRuntime {
     /// is not a power of two, an empty or out-of-mask explicit CPU set), or
     /// [`TopologyError::Io`] if a pool cannot be built.
     pub fn new(config: &PartitionConfig) -> Result<Arc<Self>, TopologyError> {
-        let slots = config.resolve()?;
+        Self::with_threads_per_partition(config, None)
+    }
+
+    /// [`new`](Self::new) with the pool width chosen by the caller instead of
+    /// by the placement.
+    ///
+    /// `Some(t)` gives **every** partition a `t`-worker pool (at least one),
+    /// leaving the CPU set each pool is pinned to exactly as
+    /// [`PartitionConfig::resolve`] derived it; `None` keeps the resolved
+    /// widths ([`Placement::Auto`](super::Placement::Auto) and
+    /// [`Explicit`](super::Placement::Explicit) size a pool by the number of
+    /// CPUs in its set).
+    ///
+    /// This is the knob a measurement harness needs to hold the *total* thread
+    /// count fixed across partition counts — `T` threads unpartitioned against
+    /// `P` pools of `T / P` on the same CPUs — without shrinking the CPU masks
+    /// and changing what is being compared. In production, prefer
+    /// [`new`](Self::new): a pool narrower than its CPU set leaves cores idle,
+    /// and a wider one oversubscribes them.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`PartitionConfig::resolve`] reports (a partition count that
+    /// is not a power of two, an empty or out-of-mask explicit CPU set), or
+    /// [`TopologyError::Io`] if a pool cannot be built.
+    pub fn with_threads_per_partition(
+        config: &PartitionConfig,
+        threads_per_partition: Option<usize>,
+    ) -> Result<Arc<Self>, TopologyError> {
+        let mut slots = config.resolve()?;
+        if let Some(threads) = threads_per_partition {
+            for slot in &mut slots {
+                slot.threads = threads.max(1);
+            }
+        }
         let mut pools = Vec::with_capacity(slots.len());
         for (rank, slot) in slots.iter().enumerate() {
             pools.push(build_pool(
@@ -216,7 +250,7 @@ fn place_current_thread(slot: &PartitionSlot, bind_memory: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::partitioned::topology::Placement;
+    use crate::engine::partitioned::topology::{allowed_cpus, Placement};
     use crate::engine::partitioned::transport::Collectives;
 
     fn config(partitions: usize) -> PartitionConfig {
@@ -236,6 +270,32 @@ mod tests {
             let runtime = PartitionRuntime::new(&config(p)).expect("resolve");
             assert_eq!(runtime.num_partitions(), p);
             assert_eq!(runtime.partition_bits(), bits);
+        }
+    }
+
+    /// The pool-width override replaces the resolved worker count on every
+    /// slot and leaves the CPU sets alone — the probe's "total threads split
+    /// over P partitions" knob.
+    #[test]
+    fn with_threads_per_partition_overrides_the_resolved_width() {
+        let cpus = allowed_cpus();
+        let placement = Placement::Explicit(vec![cpus.clone(), cpus.clone()]);
+        let config = PartitionConfig {
+            placement,
+            bind_memory: false,
+            partition_row_seed: None,
+        };
+
+        let resolved = PartitionRuntime::new(&config).expect("resolve");
+        for slot in resolved.slots() {
+            assert_eq!(slot.threads, cpus.len());
+        }
+
+        let narrowed = PartitionRuntime::with_threads_per_partition(&config, Some(1))
+            .expect("resolve with an explicit width");
+        for slot in narrowed.slots() {
+            assert_eq!(slot.threads, 1);
+            assert_eq!(slot.cpus.as_ref(), Some(&cpus), "the CPU set is untouched");
         }
     }
 

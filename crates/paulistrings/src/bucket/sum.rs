@@ -10,7 +10,7 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::hash::Gf2Hash;
+use super::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_string::PauliString;
 #[cfg(test)]
 use crate::pauli_sum::PauliAxis;
@@ -301,6 +301,66 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
     runs.pop().expect("non-empty by the check above")
 }
 
+/// Copy the terms of one bucket whose partition rank is `rank`.
+///
+/// Shared by `PauliSum::filter_partition`'s serial and parallel branches, so
+/// there is exactly one implementation of the filter. A subsequence of a
+/// strictly ascending run is strictly ascending, so the output needs no sort.
+///
+/// Plain pushes, no `reserve`: the surviving count is not known without a
+/// second pass, and a speculative reservation would inflate peak RSS across
+/// all `P` parts for no measured gain
+/// (`research/notes/2026-09-01-mem-growth.md`).
+fn filter_bucket<const W: usize>(
+    cols: &BucketCols<W>,
+    rows: &PartitionRows<W>,
+    rank: u32,
+) -> BucketCols<W> {
+    let mut out = BucketCols::<W>::new();
+    for i in 0..cols.len() {
+        if rows.partition_of(&cols.x[i], &cols.z[i]) == rank {
+            out.push(cols.x[i], cols.z[i], cols.coeff[i]);
+        }
+    }
+    out
+}
+
+/// Merge `k` **disjoint** sorted runs into one, in `ceil(log2 k)` pairwise
+/// rounds — the gather half of the partition scatter/gather.
+///
+/// The same tree and the same `O(n log k)` comparison count as [`merge_runs`],
+/// but serial and clone-free: the caller (`PauliSum::merge_partitions`) is
+/// already parallel over buckets and `k = P <= 16`, so a nested Rayon split
+/// would be pure overhead, and an odd run is *moved* into the next round
+/// rather than copied. A single run is returned untouched, capacity included.
+///
+/// Runs come from distinct partitions of one sum, so no key can appear twice;
+/// debug builds check that by re-verifying the strict ascent of the result.
+fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
+    while runs.len() > 1 {
+        let mut next: Vec<BucketCols<W>> = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut it = runs.into_iter();
+        while let Some(a) = it.next() {
+            match it.next() {
+                Some(b) => next.push(merge_two(&a, &b)),
+                None => next.push(a),
+            }
+        }
+        runs = next;
+    }
+    let out = runs.pop().unwrap_or_default();
+    #[cfg(debug_assertions)]
+    {
+        for i in 1..out.len() {
+            debug_assert!(
+                (&out.x[i - 1], &out.z[i - 1]) < (&out.x[i], &out.z[i]),
+                "PauliSum::merge_partitions: duplicate key across partitions",
+            );
+        }
+    }
+    out
+}
+
 /// Weighted sum of Pauli operators, stored as structure-of-arrays columns
 /// partitioned by a GF(2)-linear hash.
 ///
@@ -322,6 +382,20 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
 /// global dedup, and no global sort is ever needed. The engine
 /// ([`propagate`]) operates on the buckets directly; there is no separate
 /// "flat" representation and nothing to convert in or out of.
+///
+/// # Partition scatter/gather
+///
+/// The crate-internal `filter_partition` / `merge_partitions` pair are the
+/// scatter and gather primitives of the partitioned engine (ARCHITECTURE.md
+/// §Partitioning): `filter_partition` extracts the terms a `PartitionRows`
+/// assigns to one rank as a sum under the *same* hash and bucket count, and
+/// `merge_partitions` puts partition-disjoint sums back together. A partition
+/// is a subset of the terms, so each local bucket is a subsequence of the
+/// corresponding global one — still strictly ascending, still duplicate-free.
+/// Neither direction sorts, neither combines coefficients, and a round trip is
+/// therefore bitwise. `coarsen_to` brings a sum's bucket count down to an
+/// agreed value before a gather, and `partition_rank_of_all` is the
+/// debug/test predicate for "this sum lives in one partition".
 ///
 /// [`propagate`]: crate::propagate
 #[derive(Clone, Debug)]
@@ -750,6 +824,157 @@ impl<const W: usize> PauliSum<W> {
         self.buckets = merged;
     }
 
+    /// Coarsen until the bucket count is `1 << bits`; a no-op if it is already
+    /// at or below that.
+    ///
+    /// The bulk form of [`Self::coarsen`], used to bring the partitions of a
+    /// partitioned run onto one agreed bucket count before they are gathered
+    /// (ARCHITECTURE.md §Partitioning). The hash rows are untouched, so the
+    /// result is still the same partition family, just a shorter prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bits` exceeds the current bucket bits — growing is
+    /// [`Self::refine`]'s job, and doing it here would silently mean "resort
+    /// the whole sum".
+    #[allow(dead_code)] // consumed by the partitioned engine in a later step
+    pub(crate) fn coarsen_to(&mut self, bits: u8) {
+        assert!(
+            bits <= self.hash.bits(),
+            "PauliSum::coarsen_to: {bits} exceeds the current {} bucket bits (use refine to grow)",
+            self.hash.bits(),
+        );
+        while self.hash.bits() > bits {
+            self.coarsen();
+        }
+    }
+
+    /// The terms `rows` assigns to partition `rank`, as a sum under the same
+    /// hash (cloned) and the same bucket count.
+    ///
+    /// The scatter half of the partition scatter/gather (ARCHITECTURE.md
+    /// §Partitioning). Each output bucket is the subsequence of the
+    /// corresponding input bucket that survives the rank test, so it inherits
+    /// both the sort and the uniqueness — one `part(v)` evaluation per term,
+    /// no sort, no coefficient arithmetic.
+    ///
+    /// Buckets are independent, so above the same "worth splitting" threshold
+    /// [`Self::refine`] uses this is a parallel map over buckets and a serial
+    /// one below it.
+    #[allow(dead_code)] // consumed by the partitioned engine in a later step
+    pub(crate) fn filter_partition(&self, rows: &PartitionRows<W>, rank: u32) -> Self {
+        debug_assert_eq!(
+            self.num_qubits,
+            rows.num_qubits(),
+            "PauliSum::filter_partition: num_qubits mismatch",
+        );
+        debug_assert!(
+            (rank as usize) < rows.num_partitions(),
+            "PauliSum::filter_partition: rank {rank} out of range",
+        );
+        let buckets: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+            self.buckets
+                .iter()
+                .map(|cols| filter_bucket(cols, rows, rank))
+                .collect()
+        } else {
+            self.buckets
+                .par_iter()
+                .map(|cols| filter_bucket(cols, rows, rank))
+                .collect()
+        };
+        let len = buckets.iter().map(|c| c.len()).sum();
+        Self {
+            buckets,
+            hash: self.hash.clone(),
+            num_qubits: self.num_qubits,
+            len,
+        }
+    }
+
+    /// Gather partition-disjoint sums that share a partition back into one.
+    ///
+    /// The inverse of [`Self::filter_partition`] (ARCHITECTURE.md
+    /// §Partitioning). Since equal keys agree on their partition rank, the
+    /// inputs' key sets are disjoint, and since they share the hash, bucket
+    /// `b` of the result is exactly a `P`-way merge of bucket `b` of each
+    /// input — sorted runs in, one sorted run out, no coefficient arithmetic,
+    /// so a `filter_partition`/`merge_partitions` round trip is bitwise.
+    /// Debug builds assert the disjointness.
+    ///
+    /// Buckets are independent; same threshold and rationale as
+    /// [`Self::refine`]. A single input is returned unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `parts` is empty (there would be no hash to give the result),
+    /// or if the inputs disagree on their hash rows or bucket count. Align
+    /// them with [`Self::coarsen_to`] or [`Self::align_to`] first.
+    #[allow(dead_code)] // consumed by the partitioned engine in a later step
+    pub(crate) fn merge_partitions(parts: Vec<Self>) -> Self {
+        let first = parts
+            .first()
+            .expect("PauliSum::merge_partitions: no inputs to merge");
+        let hash = first.hash.clone();
+        let num_qubits = first.num_qubits;
+        for p in parts.iter().skip(1) {
+            assert!(
+                p.hash.same_rows_as(&hash),
+                "PauliSum::merge_partitions: hash mismatch (seed or num_qubits differs)",
+            );
+            assert_eq!(
+                p.hash.bits(),
+                hash.bits(),
+                "PauliSum::merge_partitions: bucket count mismatch",
+            );
+        }
+
+        let nb = hash.num_buckets();
+        let k = parts.len();
+        let len: usize = parts.iter().map(|p| p.len).sum();
+
+        // Transpose parts×buckets into buckets×parts, moving the columns so
+        // the merge below never copies a run it does not have to.
+        let mut runs: Vec<Vec<BucketCols<W>>> = (0..nb).map(|_| Vec::with_capacity(k)).collect();
+        for p in parts {
+            for (b, cols) in p.buckets.into_iter().enumerate() {
+                runs[b].push(cols);
+            }
+        }
+
+        let buckets: Vec<BucketCols<W>> = if len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+            runs.into_iter().map(merge_disjoint_runs).collect()
+        } else {
+            runs.into_par_iter().map(merge_disjoint_runs).collect()
+        };
+
+        Self {
+            buckets,
+            hash,
+            num_qubits,
+            len,
+        }
+    }
+
+    /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a
+    /// mixed sum.
+    ///
+    /// Debug and test predicate for "this sum is one partition's share"; it
+    /// scans every term, so it is not for the propagation loop.
+    #[allow(dead_code)] // consumed by the partitioned engine in a later step
+    pub(crate) fn partition_rank_of_all(&self, rows: &PartitionRows<W>) -> Option<u32> {
+        let mut seen: Option<u32> = None;
+        for (x, z, _) in self.iter() {
+            let r = rows.partition_of(x, z);
+            match seen {
+                None => seen = Some(r),
+                Some(s) if s == r => {}
+                Some(_) => return None,
+            }
+        }
+        seen
+    }
+
     /// Bring the bucket count up to what [`desired_bits`] would choose for the
     /// current length — but never down.
     ///
@@ -1106,7 +1331,7 @@ mod tests {
     use crate::phase::Phase;
     // `Xs64` and `rand_sum` are the canonical fixtures from
     // `crate::test_support` — this module's copies were byte-identical.
-    use crate::test_support::{low_weight_sum, rand_sum, Xs64};
+    use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
     /// Low-weight keys — the physically relevant regime, and the one where a
     /// badly chosen hash would collapse into one bucket.
@@ -2981,6 +3206,233 @@ mod tests {
         ]);
     }
 
+    // ---- partition scatter / gather ----
+
+    /// Bitwise, order-included comparison of two sums' canonical columns.
+    fn assert_same_columns<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
+        let (gx, gz, gc) = got.to_arrays();
+        let (wx, wz, wc) = want.to_arrays();
+        assert_eq!(gx.len(), wx.len(), "{what}: term count");
+        for i in 0..wx.len() {
+            assert_eq!(
+                (gx[i], gz[i], gc[i]),
+                (wx[i], wz[i], wc[i]),
+                "{what}: term {i} differs",
+            );
+        }
+    }
+
+    /// Scatter `sum` (rehashed to `bits`) into `1 << pbits` partitions, check
+    /// each part is a well-formed single-rank sum on the same partition, and
+    /// gather it back — which must reproduce the input bit for bit, in the
+    /// same canonical order.
+    fn check_split_merge<const W: usize>(
+        sum: &PauliSum<W>,
+        num_qubits: usize,
+        bits: u8,
+        pbits: u8,
+        what: &str,
+    ) {
+        let s = sum
+            .clone()
+            .with_hash(Gf2Hash::<W>::new(num_qubits, bits, 0xBEEF));
+        let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, 0x5EED);
+        let p = rows.num_partitions();
+
+        let mut parts: Vec<PauliSum<W>> = Vec::with_capacity(p);
+        let mut total = 0usize;
+        for r in 0..p as u32 {
+            let part = s.filter_partition(&rows, r);
+            part.assert_invariants();
+            assert_eq!(
+                part.num_buckets(),
+                s.num_buckets(),
+                "{what}: part {r} bucket count",
+            );
+            assert!(
+                part.hash().same_rows_as(s.hash()),
+                "{what}: part {r} hash rows",
+            );
+            assert_eq!(
+                part.hash().bits(),
+                s.hash().bits(),
+                "{what}: part {r} hash bits",
+            );
+            assert_eq!(
+                part.num_qubits(),
+                s.num_qubits(),
+                "{what}: part {r} num_qubits",
+            );
+            if !part.is_empty() {
+                assert_eq!(
+                    part.partition_rank_of_all(&rows),
+                    Some(r),
+                    "{what}: part {r} is not single-rank",
+                );
+            }
+            total += part.len();
+            parts.push(part);
+        }
+        assert_eq!(total, s.len(), "{what}: partition lengths must add up");
+
+        let back = PauliSum::<W>::merge_partitions(parts);
+        back.assert_invariants();
+        assert_eq!(
+            back.num_buckets(),
+            s.num_buckets(),
+            "{what}: merged bucket count",
+        );
+        assert_same_columns(&back, &s, what);
+    }
+
+    #[test]
+    fn split_merge_round_trip_w1() {
+        let dense = rand_sum_real::<1>(9000, 64, 0xD1);
+        let sparse = low_weight_sum::<1>(3000, 64, 4, 0xD2);
+        for pbits in [0u8, 1, 2] {
+            for bits in [0u8, 3, 7] {
+                check_split_merge(&dense, 64, bits, pbits, "w1 dense");
+                check_split_merge(&sparse, 64, bits, pbits, "w1 low-weight");
+            }
+        }
+    }
+
+    #[test]
+    fn split_merge_round_trip_w2() {
+        let dense = rand_sum_real::<2>(9000, 128, 0xD3);
+        let sparse = low_weight_sum::<2>(3000, 100, 4, 0xD4);
+        for pbits in [0u8, 1, 2] {
+            for bits in [0u8, 3, 7] {
+                check_split_merge(&dense, 128, bits, pbits, "w2 dense");
+                check_split_merge(&sparse, 100, bits, pbits, "w2 low-weight");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_partition_is_a_valid_empty_sum() {
+        let s = PauliSum::<1>::from_strings(&[
+            ("XII", Complex64::new(1.0, 0.0)),
+            ("IYI", Complex64::new(2.0, 0.0)),
+            ("IIZ", Complex64::new(3.0, 0.0)),
+        ]);
+        let rows = PartitionRows::<1>::from_seed(3, 2, 0x5EED);
+        assert_eq!(rows.num_partitions(), 4);
+
+        let parts: Vec<PauliSum<1>> = (0..4u32).map(|r| s.filter_partition(&rows, r)).collect();
+        // Three terms across four partitions: at least one part is empty.
+        let empties = parts.iter().filter(|p| p.is_empty()).count();
+        assert!(empties >= 1, "expected at least one empty partition");
+
+        for (r, part) in parts.iter().enumerate() {
+            part.assert_invariants();
+            assert_eq!(part.num_buckets(), s.num_buckets(), "part {r} bucket count");
+            assert!(part.hash().same_rows_as(s.hash()), "part {r} hash rows");
+            assert_eq!(part.num_qubits(), 3, "part {r} num_qubits");
+            if part.is_empty() {
+                assert_eq!(part.len(), 0, "part {r} len");
+                assert_eq!(part.partition_rank_of_all(&rows), None, "part {r} rank");
+            }
+        }
+
+        let back = PauliSum::<1>::merge_partitions(parts);
+        back.assert_invariants();
+        assert_same_columns(&back, &s, "3-term round trip through 4 partitions");
+    }
+
+    #[test]
+    fn merge_partitions_of_a_single_input_returns_it_unchanged() {
+        let s = rand_sum_real::<2>(500, 128, 0xD6).with_hash(Gf2Hash::<2>::new(128, 3, 0xBEEF));
+        let back = PauliSum::<2>::merge_partitions(vec![s.clone()]);
+        back.assert_invariants();
+        assert_eq!(back.num_buckets(), s.num_buckets());
+        assert_same_columns(&back, &s, "single-input merge");
+    }
+
+    #[test]
+    #[should_panic(expected = "bucket count mismatch")]
+    fn merge_partitions_panics_on_mismatched_bits() {
+        let s = rand_sum_real::<1>(200, 64, 0xD7);
+        let a = s.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0xBEEF));
+        let b = s.with_hash(Gf2Hash::<1>::new(64, 4, 0xBEEF));
+        let _ = PauliSum::<1>::merge_partitions(vec![a, b]);
+    }
+
+    #[test]
+    #[should_panic(expected = "hash mismatch")]
+    fn merge_partitions_panics_on_mismatched_hash_rows() {
+        let s = rand_sum_real::<1>(200, 64, 0xD8);
+        let a = s.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0xBEEF));
+        let b = s.with_hash(Gf2Hash::<1>::new(64, 3, 0xBEEE));
+        let _ = PauliSum::<1>::merge_partitions(vec![a, b]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "duplicate key")]
+    fn merge_partitions_debug_asserts_on_a_key_shared_across_inputs() {
+        let s = PauliSum::<1>::from_strings(&[
+            ("XII", Complex64::new(1.0, 0.0)),
+            ("IIZ", Complex64::new(2.0, 0.0)),
+        ]);
+        let _ = PauliSum::<1>::merge_partitions(vec![s.clone(), s]);
+    }
+
+    #[test]
+    fn coarsen_to_matches_repeated_coarsen() {
+        let sum = rand_sum_real::<2>(4000, 128, 0xD9);
+        let base = sum.with_hash(Gf2Hash::<2>::new(128, 5, 0xC0DE));
+        let mut a = base.clone();
+        a.coarsen_to(2);
+        let mut b = base.clone();
+        b.coarsen();
+        b.coarsen();
+        b.coarsen();
+
+        assert_eq!(a.hash().bits(), 2);
+        assert_eq!(a.num_buckets(), 4);
+        a.assert_invariants();
+        for i in 0..a.num_buckets() {
+            assert_eq!(a.bucket_len(i), b.bucket_len(i), "bucket {i} length");
+        }
+        assert_same_columns(&a, &b, "coarsen_to(2) vs three coarsen()");
+    }
+
+    #[test]
+    fn coarsen_to_the_current_bits_is_a_no_op() {
+        let base = rand_sum_real::<1>(2000, 64, 0xDA).with_hash(Gf2Hash::<1>::new(64, 4, 0xC0DE));
+        let mut a = base.clone();
+        a.coarsen_to(4);
+        assert_eq!(a.hash().bits(), 4);
+        assert_eq!(a.num_buckets(), 16);
+        a.assert_invariants();
+        assert_same_columns(&a, &base, "coarsen_to(current)");
+    }
+
+    #[test]
+    #[should_panic(expected = "coarsen_to")]
+    fn coarsen_to_above_the_current_bits_panics() {
+        let mut a = rand_sum_real::<1>(2000, 64, 0xDB).with_hash(Gf2Hash::<1>::new(64, 4, 0xC0DE));
+        a.coarsen_to(5);
+    }
+
+    #[test]
+    fn partition_rank_of_all_distinguishes_empty_mixed_and_filtered() {
+        let rows = PartitionRows::<1>::from_seed(64, 2, 0x5EED);
+
+        let empty = PauliSum::<1>::empty(64);
+        assert_eq!(empty.partition_rank_of_all(&rows), None, "empty sum");
+
+        let mixed = rand_sum_real::<1>(2000, 64, 0xDC);
+        assert_eq!(mixed.partition_rank_of_all(&rows), None, "mixed sum");
+
+        for r in 0..rows.num_partitions() as u32 {
+            let part = mixed.filter_partition(&rows, r);
+            assert!(!part.is_empty(), "part {r} unexpectedly empty");
+            assert_eq!(part.partition_rank_of_all(&rows), Some(r), "part {r}");
+        }
+    }
+
     mod props {
         use super::*;
         use proptest::prelude::*;
@@ -2998,6 +3450,32 @@ mod tests {
                 );
             }
             acc.finalize()
+        }
+
+        proptest! {
+            /// Scatter is a *tiling*: the parts have disjoint ranks, every
+            /// term of part `r` really hashes to partition `r`, and their
+            /// lengths add back up to the whole.
+            #[test]
+            fn filter_partition_tiles_the_sum(
+                terms in prop::collection::vec((0u64..64, 0u64..64, -4i32..4, -4i32..4), 0..16),
+                pbits in 0u8..=2,
+                bits in 0u8..=3,
+                seed in any::<u64>(),
+            ) {
+                let s = build(&terms).with_hash(Gf2Hash::<1>::new(NQ, bits, 0xB0));
+                let rows = PartitionRows::<1>::from_seed(NQ, pbits, seed);
+                let mut total = 0usize;
+                for r in 0..rows.num_partitions() as u32 {
+                    let part = s.filter_partition(&rows, r);
+                    part.assert_invariants();
+                    total += part.len();
+                    for (x, z, _) in part.iter() {
+                        prop_assert_eq!(rows.partition_of(x, z), r);
+                    }
+                }
+                prop_assert_eq!(total, s.len());
+            }
         }
 
         proptest! {

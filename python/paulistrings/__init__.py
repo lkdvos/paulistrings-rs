@@ -11,8 +11,10 @@ from . import _paulistrings
 from ._paulistrings import (
     DEFAULT_SMALL_SUM_THRESHOLD,
     Circuit,
+    PartitionStats,
     PauliSum,
     PropagationStats,
+    numa_nodes,
     reset_log_cache,
 )
 from . import gates, noise, truncation
@@ -23,11 +25,13 @@ __all__ = [
     "Circuit",
     "PauliSum",
     "PropagationStats",
+    "PartitionStats",
     "DEFAULT_SMALL_SUM_THRESHOLD",
     "gates",
     "noise",
     "truncation",
     "interop",
     "io",
+    "numa_nodes",
     "reset_log_cache",
 ]

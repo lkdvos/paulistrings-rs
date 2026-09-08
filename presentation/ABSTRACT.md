@@ -1,10 +1,22 @@
 # Title
 
-**Wie niet sterk is, moet slim zijn: Pauli propagation at ten million terms**
+**Pauli propagation at scale: "Wie niet sterk is, moet slim zijn"**
 
-Alternative: *Strong and smart: how a GF(2)-linear hash turned a memory-bound quantum simulator around*
+# Abstract (announcement version)
 
-# Abstract
+Pauli propagation simulates quantum circuits by evolving an observable in the Pauli basis and truncating the
+sum, trading exactness for sparsity. It can reach wide and deep circuits where state vectors and tensor
+networks give up, but only by leveraging efficient bitwise operations and pushing billions of term updates
+per run. In this talk I present an approach that outperforms existing implementations, using the 127-qubit
+heavy-hex kicked Ising circuit as the running example through every attempt to make it fast.
+
+I will start with the general concepts and the algorithmic approaches currently in use. Then I will take you
+through my attempts at improving on them, and why naive optimizations make little headway once memory, not
+arithmetic, is the bottleneck. Finally, I will explain a new approach that sidesteps these limits: a
+GF(2)-linear hash that partitions the problem so that every layer becomes embarrassingly parallel, while also
+speeding up the single-threaded case, and that extends naturally towards distributed memory.
+
+# Abstract (results-forward alternative)
 
 Pauli propagation simulates quantum circuits by evolving an observable in the Pauli basis and truncating the
 sum, trading exactness for sparsity. It reaches 127-qubit, deep circuits where state vectors and tensor networks
@@ -22,4 +34,3 @@ tasks with no locks, no atomics and no global sort. The same engine runs three t
 scales to more than ten times on sixteen cores, with the bucket size deciding whether the cores help at all:
 buckets that fit the private L2 caches give 11×, buckets that do not give 2×. The structure keeps giving:
 smaller footprint, GPU-ready buffers, and a statically known communication plan for distributed memory.
-All numbers are measured on the same host and reproducible from the repository.

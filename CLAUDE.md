@@ -12,7 +12,9 @@ columns partitioned by a GF(2)-linear hash `h(v) = H·v`, which makes a channel'
 deduplication bucket-local, so no global sort exists in the propagation loop. The engine's unit of parallel work is a coset
 of `span(h(D))`, write-disjoint by construction — no atomics, no locks, no synchronization inside a layer. The pure-Rust
 core takes `W` as a const generic; the PyO3 bindings monomorphize widths `{1, 2, 4, 8, 16}` (64–1024 qubits), dispatching
-once outside any hot loop.
+once outside any hot loop. Above that sits an optional **partitioned** engine (`ARCHITECTURE.md §Partitioning`): the sum
+split across `P ≤ 16` NUMA domains by designated GF(2) partition rows, one pinned Rayon pool each, with a push-model
+exchange of the rows a layer moves across domains and a `Transport` trait as the seam for a later MPI phase.
 
 `ARCHITECTURE.md` is the design source of truth; code comments cite its named sections as `ARCHITECTURE.md §Engine`. Do
 not rename its `##` headings without sweeping those citations.
@@ -47,6 +49,19 @@ pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py
 release profile uses `lto = "fat"` and `codegen-units = 1` — debug builds are dramatically slower for this workload, so
 always benchmark `--release`, and prefer it whenever reproducing performance behavior.
 
+The probe takes the partitioned engine through the same flags as everything else — `--partitions` is a comma list, and
+`--partition-cpus` one CPU list per partition, semicolon-separated (`scripts/host-topology.sh` exports a `PARTITION_CPUS`
+map per known host):
+
+```bash
+cargo run --release --features phase-timing --example phase_breakdown -- \
+  --partitions 2 --partition-cpus "0-7,16-23;8-15,24-31" --threads 32 --n 1000000 --layers su4
+```
+
+Quiet-box campaigns run on an exclusive Slurm node from the templates in `scripts/slurm/` (`ab-campaign.sbatch`,
+`mpi-ranks.sbatch`). **Submitting is the user's step, never an agent's** — write or adjust the template and hand over the
+`sbatch` line.
+
 ## Progress logging
 
 The library logs through the `log` facade under the target `paulistrings::propagate`: INFO on entry and exit of each
@@ -70,6 +85,12 @@ speculative), **refactor** (only after green).
   of the bucketed path. It and the other shared helpers (seeded random-sum fixtures, comparison asserts) live in
   `crates/paulistrings/src/test_support.rs`, compiled by the `test-utils` feature via the crate's self-dev-dependency —
   add helpers there rather than copy-pasting fixtures between test files.
+- The partitioned engine has its own differential nets: `tests/propagate_partitioned.rs` (gathered output against
+  `propagate`, over the built-in channel set × direction × partition count) and the per-layer matrices in
+  `engine/partitioned/layer.rs`. Every test configuration uses `Placement::Unpinned`, so the suite runs on a one-node
+  box or a `taskset`ed CI container; placement itself is covered by `topology.rs`'s own tests. A policy used in a
+  partitioned test must answer `finalizes_layer() == false` or implement `PartitionedTruncation` — the trait default
+  panics on a policy that finalizes layers with no collective form.
 - No `#[ignore]`d tests. `cargo test --workspace` must be green at every commit; `cargo test --workspace --release` runs the
   same suite against the shipping codegen. Benchmarks follow tests, never the reverse.
 - Commit logical units, and check in with the user at feature boundaries rather than rolling several features into one commit.
@@ -82,7 +103,8 @@ configurations and optimizations. Tests that pin exact output bits — the finge
 (`engine/bucketed.rs::layer_fingerprints_are_stable`), the thread-count and bucket-count byte-identity tests — are
 convenience tripwires for *unintended* perturbation: when one trips under a change that is correct to tolerance, regenerate
 its literals or demote it to `assert_terms_close` in the same commit, with a one-line note. Never design, constrain, or
-reject an optimization to keep output bits stable.
+reject an optimization to keep output bits stable. The partitioned engine adds one tripwire of the same kind:
+`propagate_partitioned` at `P = 1` is byte-identical to `propagate`, and across partition counts the bar is tolerance.
 
 ## Performance discipline
 
@@ -98,6 +120,12 @@ reject an optimization to keep output bits stable.
   moves that much between campaigns. Smaller effects need `scripts/ab-compare.sh` (two prebuilt binaries alternated
   adjacent in time, paired per-run deltas); its acceptance criterion is **direction consistency across every pair**, with
   the median Δ% as the effect size. Pairs disagreeing in sign mean "no consistent change" — not a small win, not a trend.
+- **A partitioned cell (`P > 1`) runs under no placement prefix at all** — `numactl --membind` forces every page onto one
+  node and `taskset`/`--cpunodebind` shrink the mask the engine's own `Auto` placement reads, both defeating the split.
+  The engine's pinning is the only pinning in effect; take the CPU lists from `scripts/host-topology.sh`'s
+  `PARTITION_CPUS`. `P = 1` under the existing `node0`/`phys8` placements is the one-socket reference.
+- P=1 vs P=2 is a **runtime-knob** A/B, not a code A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'`
+  runs one binary both ways and pairs on `(layer, threads)`.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
 - LTO code-layout effects are real: the `#[inline]` set in `engine/merge.rs` is A/B-verified load-bearing in both directions
@@ -114,14 +142,25 @@ reject an optimization to keep output bits stable.
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits (other than `PauliRotation`, which overrides
   `prepare` at any generator weight) makes `propagate` **panic** — there is no fallback path. Generalization design in
   `research/notes/2026-08-31-local-ptm-generalization.md`.
+- Partitioned mode rejects exact `TopN` at compile time (a distributed `k`-th selection has no collective form yet);
+  `ApproxTopN` is partition-exact and is the partitioned default. Thread and memory pinning are Linux-only — elsewhere
+  the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
+- Partition rows are drawn at random by default, so export volume is a property of the draw: roughly half of a dense
+  two-qubit gate's deltas cross at `P = 2`. Tuning the rows (cut-like rows, conserved quantities) is open research.
+- The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under
+  full parallelism — pre-existing, reproduced before any partitioned code, never with a 16 MiB stack. `.cargo/config.toml`
+  sets `RUST_MIN_STACK = "16777216"` as the workaround; root cause is still open.
 
 ## Repo layout
 
 - `crates/paulistrings/` — pure Rust core, no Python deps. Modules: `pauli_string`, `phase`, `pauli_sum`,
   `bucket/{hash,sum}`, `accumulator`, `circuit`, `channel/{clifford,rotation,unitary,noise,identity,prepared}`,
-  `truncation/{builtin}`, `engine/{bucketed,coset,merge,stats}`, `stabilizer`, `test_support`, `examples`; re-exports in
-  `lib.rs`. Also
-  `benches/pauli_ops.rs` (criterion), runnable `examples/`, and walkthroughs in `docs/examples/`.
+  `truncation/{builtin}`, `engine/{bucketed,coset,merge,stats}`,
+  `engine/partitioned/{topology,transport,plan,export,layer,truncation,runtime,driver,trace}`, `stabilizer`,
+  `test_support`, `examples`; re-exports in `lib.rs`. Also
+  `benches/pauli_ops.rs` (criterion), runnable `examples/`, and walkthroughs in `docs/examples/`. Dependencies worth
+  knowing: `libc` is a `cfg(target_os = "linux")` target dependency (pinning and `set_mempolicy` only), and num-complex
+  carries the `bytemuck` feature so exchange blocks cast coefficient columns to bytes without a copy.
 - `crates/paulistrings-py/` — PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22. Modules: `sum`, `circuit`,
   `gates`, `noise`, `truncation`, `channel_spec`, `truncation_spec`, `macros`.
 - `crates/membench/` — STREAM-style memory-bandwidth probe behind `scripts/bandwidth.sh`. `python/paulistrings/` — the
@@ -131,7 +170,8 @@ reject an optimization to keep output bits stable.
   `openfermion.QubitOperator`, `stim.PauliString`, plus the suite's Part A benchmarks A/B/C/E — Benchmark D lives in
   `examples/xxz_chain/`), `julia/` (subprocess-driven baseline against `PauliPropagation.jl`, pinned version, schema-v1
   task JSON, out of CI), `PROFILING.md`, gitignored `results/`. `scripts/` — setup, campaign, A/B, profiling,
-  perf-counter, bandwidth, topology and reporting tooling.
+  perf-counter, bandwidth, topology and reporting tooling, plus `slurm/` (user-submitted `sbatch` templates for the
+  partitioned-engine campaigns on an exclusive node).
 - `examples/` — the Python examples & benchmarks suite's showcases (Part B): `common/` (circuit builders, oracles,
   timing harness, report plots), `data/` (checked-in, provenance-tagged inputs), one directory per showcase. See
   `examples/README.md`.

@@ -25,6 +25,9 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 - **GF(2)-bucketed, write-disjoint parallel engine** — layers are
   partitioned by a GF(2)-linear hash, so output buckets are statically
   predictable and never collide across threads. No global sort.
+- **Partitioned across NUMA domains** — split the sum by GF(2) partition
+  rows, one pinned thread pool per domain, with only the rows a layer
+  moves across a boundary exchanged.
 - **Open extension traits for research** — plug in a custom `Channel`
   (gate or noise model) or `TruncationPolicy` without touching the engine.
 - **One core, two front ends** — the pure-Rust crate, or Python bindings

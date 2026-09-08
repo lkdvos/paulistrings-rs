@@ -137,3 +137,24 @@ exports every anticommuting row (400 300 rows / 2 layers at m = 3.0e5) and its w
 slower at P=2 (323 → 716 ms). Partition imbalance 1.001–1.004. This is the phase-1 cost model as
 predicted (roughly half of a dense 2Q gate's deltas are remote under random rows) — the input to the
 hash-tuning research, not a verdict on the design.
+
+## 2026-09-08 (evening) — priorities revised by the user
+
+The primary goal is a **multi-node engine with bounded overhead**, so that sums that do not fit one
+node become reachable; gains from aggregate bandwidth on the local kernels are a bonus; the intra-node
+NUMA speedup measured in phase 2 (`2026-09-08-numa-partitioning-results.md`: −4 to −18% on
+exchange-free dense layers) is secondary. The regime of interest is very large `m`.
+
+Consequences for the plan:
+- Phase 3 (MPI via rsmpi) is next. Preference: **one rank per NUMA domain (D = 1)** — process placement
+  gives NUMA locality for free; the hybrid in-process-domains-per-rank router is deferred unless a
+  measurement asks for it. Partition 0 on the calling thread stays (harmless).
+- The pull-model in-process exchange is dropped from the near-term list (the inter-node copy is
+  inevitable; the in-process path is now mainly the CI stand-in). The spin-wait collective (already
+  in progress, small) lands if it is clean.
+- Phase-3 measurement targets the large-`m` regime: weak scaling (fixed terms per rank, 1→2→4→8 ranks
+  on Rusty) for local and remote layers; a capacity run past one node's RAM; and **peak RSS per rank
+  including exchange transients** as a first-class metric — with random partition rows a dense gate
+  exports ~7.5 m rows per layer (2 GB per layer at m = 2.8e6 in the smoke run), which at large `m`
+  can exceed the resident sum. Mitigations in scope: chunked export/exchange (bounded transient) and
+  the phase-5 locality rows.

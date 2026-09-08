@@ -21,6 +21,10 @@
 #   REPS    --reps (default 8; rotation cells at m ~ 1e6 want >= 40, see PROFILING.md)
 #   PAIRS   --pairs (default 5), ORDER --order (default abba)
 #   MEMBENCH=1  also run crates/membench (1 core node-local, all cores) for this node's ceilings
+#   PS_REV  commit to build (default: HEAD when the job starts). Builds go through a git worktree
+#           of that commit, never the live working tree, so editing the checkout while jobs are
+#           queued cannot break them (job 7004970 died mid-campaign that way). Pass
+#           PS_REV=$(git rev-parse HEAD) at submit time to pin it there.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 
@@ -66,6 +70,8 @@ if [ "${MEMBENCH:-0}" = 1 ]; then
     "$CARGO_TARGET_DIR/release/membench" --threads "$phys" || true
 fi
 
+PS_REV=${PS_REV:-$(git rev-parse HEAD)}
+echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 date_tag=$(date +%Y-%m-%d)
 for layer in $LAYERS; do
   for n in $NS; do
@@ -74,12 +80,12 @@ for layer in $LAYERS; do
       probe="--n $n --qubits 128 --layers $layer --threads $t --reps $REPS"
       if [ -n "${A_REV:-}" ]; then
         echo "== code A/B $A_REV vs . : $probe"
-        scripts/ab-compare.sh "$name" --a "$A_REV" --b . --probe "$probe" \
+        scripts/ab-compare.sh "$name" --a "$A_REV" --b "$PS_REV" --probe "$probe" \
             --pairs "$PAIRS" --order "$ORDER"
       else
         if (( t % P != 0 )); then echo "skip threads=$t: not divisible by P=$P"; continue; fi
         echo "== knob A/B P=1 vs P=$P : $probe"
-        scripts/ab-compare.sh "$name" --a . --b . --probe "$probe" \
+        scripts/ab-compare.sh "$name" --a "$PS_REV" --b "$PS_REV" --probe "$probe" \
             --probe-b "$probe --partitions $P --partition-cpus '$PART_CPUS'" \
             --pairs "$PAIRS" --order "$ORDER"
       fi

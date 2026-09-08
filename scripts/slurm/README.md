@@ -51,6 +51,10 @@ A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sba
 sbatch --constraint='genoa&rocky9' scripts/slurm/ab-campaign.sbatch
 ```
 
+Jobs build the commit `PS_REV` (default: `HEAD` when the job starts) in a git worktree, never the
+live checkout, so editing the tree while jobs are queued is safe; pin with
+`PS_REV=$(git rev-parse HEAD) sbatch ...` when the branch may move before the job starts.
+
 Output lands where `ab-compare.sh` always puts it, `benchmarks/results/<date>-<nodename>/`
 (gitignored, on the shared home filesystem), plus `benchmarks/results/slurm-<jobid>.out` with the
 node's topology dump (`lscpu`, `numactl -H`) as provenance. Results are **per host**: a node's numbers

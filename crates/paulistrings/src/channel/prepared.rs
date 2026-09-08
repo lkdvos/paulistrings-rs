@@ -68,7 +68,6 @@ impl<const W: usize> DeltaEntry<W> {
     /// (ARCHITECTURE.md §Engine) produces bitwise the rows a local gather
     /// would have.
     #[inline]
-    #[allow(dead_code)] // consumed by the partitioned export pass in a later step
     pub(crate) fn emit(
         &self,
         s: usize,
@@ -95,7 +94,6 @@ impl<const W: usize> DeltaEntry<W> {
     /// is the partition delta and `h(mask)` the (already stored)
     /// [`bucket_delta`](Self::bucket_delta).
     #[inline]
-    #[allow(dead_code)] // consumed by the partitioned export pass in a later step
     pub(crate) fn mask(&self) -> ([u64; W], [u64; W]) {
         (self.mask_x, self.mask_z)
     }
@@ -266,7 +264,6 @@ impl<const W: usize> RotationPrep<W> {
     /// row unconditionally (full coefficient when it commutes, `cos`-scaled
     /// when it does not), so there is nothing to decide per row.
     #[inline]
-    #[allow(dead_code)] // consumed by the partitioned export pass in a later step
     pub(crate) fn emit_gen(
         &self,
         x: &[u64; W],
@@ -285,7 +282,6 @@ impl<const W: usize> RotationPrep<W> {
 
     /// The generator-pass key delta as a full-width XOR mask pair — i.e. the
     /// generator itself, since the delta set is `{0, P}`.
-    #[allow(dead_code)] // consumed by the partitioned export pass in a later step
     pub(crate) fn gen_mask(&self) -> ([u64; W], [u64; W]) {
         (self.gen.x, self.gen.z)
     }

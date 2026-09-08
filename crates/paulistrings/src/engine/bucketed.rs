@@ -1229,112 +1229,9 @@ mod tests {
         // (both `v` and `v ^ gen` are usually present) and the merge phase has
         // real duplicate runs to combine. This is the case that matters.
         let input = rand_sum::<1>(2000, 8, 0xC0FFEE);
-        let channels: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("identity", Box::new(IdentityChannel::new())),
-            ("h", Box::new(Clifford1Q::h(3))),
-            ("s", Box::new(Clifford1Q::s(3))),
-            ("x", Box::new(Clifford1Q::x(3))),
-            ("y", Box::new(Clifford1Q::y(3))),
-            ("z", Box::new(Clifford1Q::z(3))),
-            ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-            ("cz", Box::new(Clifford2Q::cz(1, 5))),
-            ("swap", Box::new(Clifford2Q::swap(1, 5))),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "dephasing",
-                Box::new(Dephasing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "amp_damping",
-                Box::new(AmplitudeDamping {
-                    support: [2],
-                    gamma: 0.3,
-                }),
-            ),
-            (
-                "rot_z",
-                Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
-            ),
-            (
-                "rot_zz",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(1);
-                        g.mul_assign(&PauliString::<1>::z(6));
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-            (
-                // General unitaries: a non-Clifford T gate (fanout 2) and a
-                // dense 2Q unitary (fanout up to 16), both as local PTMs.
-                "t_gate",
-                Box::new(crate::channel::GeneralUnitary1Q::from_matrix(
-                    2,
-                    [
-                        [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-                        [
-                            Complex64::new(0.0, 0.0),
-                            Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-                        ],
-                    ],
-                )),
-            ),
-            (
-                "general_2q",
-                Box::new({
-                    // sqrt(SWAP): dense enough to exercise a wide delta set.
-                    let h = Complex64::new(0.5, 0.5);
-                    let hc = Complex64::new(0.5, -0.5);
-                    let one = Complex64::new(1.0, 0.0);
-                    let zero = Complex64::new(0.0, 0.0);
-                    crate::channel::GeneralUnitary2Q::from_matrix(
-                        1,
-                        5,
-                        [
-                            [one, zero, zero, zero],
-                            [zero, h, hc, zero],
-                            [zero, hc, h, zero],
-                            [zero, zero, zero, one],
-                        ],
-                    )
-                }),
-            ),
-            (
-                // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
-                // deltas are realized (fanout ~15). `general_2q` above is
-                // sqrt(SWAP), whose PTM is sparse (measured fanout 3.65), so
-                // without this cell nothing in the net exercises the
-                // dense-PTM gather run — the shape the per-run sort kernel is
-                // selected on (see `merge::sort_rows_radix_with_scratch`).
-                "haar_su4",
-                Box::new(haar_su4(1, 5)),
-            ),
-            (
-                // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
-                "rot_wide",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(0);
-                        for q in [2u32, 4, 6] {
-                            g.mul_assign(&PauliString::<1>::x(q));
-                        }
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-        ];
+        // The shared channel net (`test_support::differential_channels_w1`),
+        // so the bucketed and partitioned engines cover the same list.
+        let channels = crate::test_support::differential_channels_w1();
 
         for (name, ch) in &channels {
             let cr: &dyn Channel<1> = ch.as_ref();
@@ -1357,37 +1254,7 @@ mod tests {
     fn differential_against_the_naive_oracle_w2_sparse() {
         // The other regime: wide keys, few collisions, word-boundary supports.
         let input = rand_sum::<2>(3000, 128, 0xBEEF);
-        let channels: Vec<(&str, Box<dyn Channel<2>>)> = vec![
-            ("h@70", Box::new(Clifford1Q::h(70))),
-            ("s@64", Box::new(Clifford1Q::s(64))),
-            ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
-            ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
-            (
-                "amp_damping@70",
-                Box::new(AmplitudeDamping {
-                    support: [70],
-                    gamma: 0.25,
-                }),
-            ),
-            (
-                "rot_y@70",
-                Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
-            ),
-            (
-                "rot_zz_cross_word",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<2>::z(9);
-                        g.mul_assign(&PauliString::<2>::z(70));
-                        g
-                    },
-                    0.33,
-                )),
-            ),
-            // Dense SU(4), support straddling the word boundary — the
-            // dense-PTM run shape at `W = 2`.
-            ("haar_su4_cross_word", Box::new(haar_su4(60, 70))),
-        ];
+        let channels = crate::test_support::differential_channels_w2();
         for (name, ch) in &channels {
             let cr: &dyn Channel<2> = ch.as_ref();
             for &adjoint in &[false, true] {

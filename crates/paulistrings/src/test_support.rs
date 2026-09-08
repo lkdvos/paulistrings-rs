@@ -549,3 +549,158 @@ pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits:
     }
     gf2_rank(&imgs)
 }
+
+/// The engine's differential channel net at `W = 1`: every built-in channel
+/// class, on an 8-qubit key space.
+///
+/// One list, shared by `engine::bucketed`'s differential net and the
+/// partitioned engine's, so the two cover exactly the same channels and a
+/// channel added here is exercised by both. Supports are chosen to spread over
+/// the key space (`h` at 3, two-qubit gates at 1 and 5, noise at 2) and the
+/// list ends with the three shapes that are structurally distinct for the
+/// gather: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and
+/// a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
+pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::identity::IdentityChannel;
+    use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::{GeneralUnitary1Q, GeneralUnitary2Q};
+
+    vec![
+        ("identity", Box::new(IdentityChannel::new())),
+        ("h", Box::new(Clifford1Q::h(3))),
+        ("s", Box::new(Clifford1Q::s(3))),
+        ("x", Box::new(Clifford1Q::x(3))),
+        ("y", Box::new(Clifford1Q::y(3))),
+        ("z", Box::new(Clifford1Q::z(3))),
+        ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
+        ("cz", Box::new(Clifford2Q::cz(1, 5))),
+        ("swap", Box::new(Clifford2Q::swap(1, 5))),
+        (
+            "depolarizing",
+            Box::new(Depolarizing {
+                support: [2],
+                p: 0.07,
+            }),
+        ),
+        (
+            "dephasing",
+            Box::new(Dephasing {
+                support: [2],
+                p: 0.07,
+            }),
+        ),
+        (
+            "amp_damping",
+            Box::new(AmplitudeDamping {
+                support: [2],
+                gamma: 0.3,
+            }),
+        ),
+        (
+            "rot_z",
+            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
+        ),
+        (
+            "rot_zz",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<1>::z(1);
+                    g.mul_assign(&PauliString::<1>::z(6));
+                    g
+                },
+                0.41,
+            )),
+        ),
+        (
+            // General unitaries: a non-Clifford T gate (fanout 2) and a
+            // dense 2Q unitary (fanout up to 16), both as local PTMs.
+            "t_gate",
+            Box::new(GeneralUnitary1Q::from_matrix(
+                2,
+                [
+                    [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                    [
+                        Complex64::new(0.0, 0.0),
+                        Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
+                    ],
+                ],
+            )),
+        ),
+        (
+            // sqrt(SWAP): a wide delta set with a sparse PTM.
+            "general_2q",
+            Box::new(GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix())),
+        ),
+        (
+            // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
+            // deltas are realized (fanout ~15) — the shape the per-run sort
+            // kernel is selected on (see `merge::sort_rows_radix_with_scratch`).
+            "haar_su4",
+            Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
+        ),
+        (
+            // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
+            "rot_wide",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<1>::z(0);
+                    for q in [2u32, 4, 6] {
+                        g.mul_assign(&PauliString::<1>::x(q));
+                    }
+                    g
+                },
+                0.41,
+            )),
+        ),
+    ]
+}
+
+/// The engine's differential channel net at `W = 2`: the other occupancy
+/// regime — 128 qubits, wide keys, supports straddling the 64-bit word
+/// boundary.
+///
+/// Shared by `engine::bucketed`'s differential net and the partitioned
+/// engine's, as [`differential_channels_w1`] is.
+pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::noise::AmplitudeDamping;
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::GeneralUnitary2Q;
+
+    vec![
+        ("h@70", Box::new(Clifford1Q::h(70))),
+        ("s@64", Box::new(Clifford1Q::s(64))),
+        ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
+        ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
+        (
+            "amp_damping@70",
+            Box::new(AmplitudeDamping {
+                support: [70],
+                gamma: 0.25,
+            }),
+        ),
+        (
+            "rot_y@70",
+            Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
+        ),
+        (
+            "rot_zz_cross_word",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<2>::z(9);
+                    g.mul_assign(&PauliString::<2>::z(70));
+                    g
+                },
+                0.33,
+            )),
+        ),
+        // Dense SU(4), support straddling the word boundary — the dense-PTM
+        // run shape at `W = 2`.
+        (
+            "haar_su4_cross_word",
+            Box::new(GeneralUnitary2Q::from_matrix(60, 70, haar_su4_matrix())),
+        ),
+    ]
+}

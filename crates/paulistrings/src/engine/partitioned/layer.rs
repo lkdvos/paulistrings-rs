@@ -191,7 +191,14 @@ where
         return LayerExchangeCounts::none(size);
     }
 
+    #[cfg(feature = "phase-timing")]
+    let mut st = crate::engine::stats::Stamp::now();
     let (send, export) = export_layer(local, prep, &plan, size, &mut state.export);
+    #[cfg(feature = "phase-timing")]
+    {
+        st.lap(&mut state.layer.stats.export_ns);
+        state.layer.stats.rows_exported += export.rows_to.iter().sum::<u64>();
+    }
     #[cfg(debug_assertions)]
     {
         super::export::debug_assert_exported_partitions(&send, rows);
@@ -203,6 +210,8 @@ where
         }
     }
     let recv = transport.exchange(send);
+    #[cfg(feature = "phase-timing")]
+    st.lap(&mut state.layer.stats.exchange_ns);
     #[cfg(debug_assertions)]
     for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
         // The bucket count is a *collective* decision the driver makes before
@@ -225,6 +234,10 @@ where
         .flat_map(|payload| &payload.blocks)
         .map(|block| block.rows() as u64)
         .sum();
+    #[cfg(feature = "phase-timing")]
+    {
+        state.layer.stats.recv_rows += rows_received;
+    }
     let recv_rows = RecvRows::new(&plan, &recv);
 
     // The layer as this partition sees it: the local delta table (a tabulated

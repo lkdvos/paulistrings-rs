@@ -14,7 +14,13 @@
 //! Read the counters through
 //! [`LayerScratch::take_stats`](crate::engine::bucketed::LayerScratch::take_stats)
 //! after driving layers with
-//! [`propagate_with_scratch`](crate::engine::propagate_with_scratch).
+//! [`propagate_with_scratch`](crate::engine::propagate_with_scratch), or —
+//! per partition, plus the driver's own scatter/gather — through
+//! `PartitionedSum::take_stats`.
+//!
+//! The three `*_ns` fields the partitioned engine adds (`collective_ns`,
+//! `export_ns`, `exchange_ns`) and its two row counters are zero in the
+//! unpartitioned engine, which has no exchange.
 
 use std::time::Instant;
 
@@ -28,9 +34,10 @@ pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 /// All `*_ns` fields are nanoseconds, summed over every layer since the
 /// counters were last drained. **Two clock domains are deliberately mixed**:
 ///
-/// - **Wall-clock phases** (`rebucket_ns` through `finalize_ns`) are measured
-///   once per layer on the calling thread; per layer they sum to approximately
-///   the layer's wall time.
+/// - **Wall-clock phases** (`rebucket_ns` through `exchange_ns`) are measured
+///   once per layer on the calling thread — in partitioned mode, on the
+///   partition's own driving thread, one `PhaseStats` per partition; per layer
+///   they sum to approximately the layer's wall time.
 /// - **Worker busy-time phases** (`swap_ns` through `clear_ns`) are summed
 ///   across every coset task on every Rayon worker. Under a `t`-thread pool
 ///   they sum to `coset_loop_ns × t × efficiency`, **not** to
@@ -59,8 +66,22 @@ pub struct PhaseStats {
     pub unpermute_ns: u64,
     /// `PauliSum::recount` at the end of the bucketed layer (serial).
     pub recount_ns: u64,
-    /// `TruncationPolicy::finalize_layer` after each layer.
+    /// `TruncationPolicy::finalize_layer` after each layer — in partitioned
+    /// mode `PartitionedTruncation::finalize_layer_partitioned`, including the
+    /// collectives it issues.
     pub finalize_ns: u64,
+    /// **Partitioned only.** The driver's own per-layer collective: the
+    /// bucket-count all-reduce, on the partition's driving thread. Zero in the
+    /// unpartitioned engine, which computes the count locally.
+    pub collective_ns: u64,
+    /// **Partitioned only.** The export pass building this layer's per-partner
+    /// exchange blocks. Zero on a layer with no remote delta, which exports
+    /// nothing and issues no transport call.
+    pub export_ns: u64,
+    /// **Partitioned only.** `Transport::exchange` itself — the all-to-all,
+    /// *including* the wait for a partner, so this absorbs the group's load
+    /// imbalance as well as the copies.
+    pub exchange_ns: u64,
     // -- worker busy time, summed over all coset tasks (see type docs) --
     /// Scratch resize + column swap-out at the top of each coset task.
     pub swap_ns: u64,
@@ -106,6 +127,13 @@ pub struct PhaseStats {
     pub terms_in: u64,
     /// Σ over layers of the term count *after* the layer (post-truncation).
     pub terms_out: u64,
+    /// **Partitioned only.** Rows this partition exported to its partners,
+    /// summed over layers — the send side of the exchange traffic.
+    pub rows_exported: u64,
+    /// **Partitioned only.** Rows this partition received, summed over layers.
+    /// Each becomes one row of a gather run's rest stream, so this is the
+    /// exchange's contribution to `rows_sorted`.
+    pub recv_rows: u64,
 }
 
 impl PhaseStats {
@@ -121,6 +149,9 @@ impl PhaseStats {
         self.unpermute_ns += o.unpermute_ns;
         self.recount_ns += o.recount_ns;
         self.finalize_ns += o.finalize_ns;
+        self.collective_ns += o.collective_ns;
+        self.export_ns += o.export_ns;
+        self.exchange_ns += o.exchange_ns;
         self.swap_ns += o.swap_ns;
         self.size_ns += o.size_ns;
         self.gather_ns += o.gather_ns;
@@ -135,6 +166,8 @@ impl PhaseStats {
         self.rows_id += o.rows_id;
         self.terms_in += o.terms_in;
         self.terms_out += o.terms_out;
+        self.rows_exported += o.rows_exported;
+        self.recv_rows += o.recv_rows;
     }
 
     /// Fold one coset task's busy-time counters into the totals.
@@ -164,6 +197,9 @@ impl PhaseStats {
             + self.unpermute_ns
             + self.recount_ns
             + self.finalize_ns
+            + self.collective_ns
+            + self.export_ns
+            + self.exchange_ns
     }
 
     /// Sum of the worker busy-time phase fields (see the type docs for how

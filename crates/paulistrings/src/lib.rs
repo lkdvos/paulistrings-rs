@@ -133,9 +133,12 @@ pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};
+#[cfg(feature = "phase-timing")]
+pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    propagate_partitioned, propagate_partitioned_with_options, PartitionConfig, PartitionRuntime,
-    PartitionedSum, PartitionedTruncation, Placement, TopologyError,
+    propagate_partitioned, propagate_partitioned_with_options, PartitionConfig,
+    PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
+    Placement, TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

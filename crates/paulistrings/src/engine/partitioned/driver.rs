@@ -40,6 +40,7 @@ use num_complex::Complex64;
 use super::layer::{apply_layer_partitioned, PartitionState};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
+use super::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
 use super::transport::{Collectives, InProcessTransport};
 use super::truncation::PartitionedTruncation;
 use crate::bucket::hash::PartitionRows;
@@ -47,6 +48,8 @@ use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKE
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
+#[cfg(feature = "phase-timing")]
+use crate::engine::stats::{PhaseStats, Stamp};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::{PauliSum, ProductState};
 
@@ -62,6 +65,10 @@ struct PartitionWork<const W: usize> {
     local: PauliSum<W>,
     /// Its layer and export scratch, retained across calls.
     state: PartitionState<W>,
+    /// One row per layer, empty unless tracing is on. Written on this
+    /// partition's driving thread only, and transposed into the shared
+    /// [`PartitionTrace`] after the join.
+    rows: Vec<PartitionLayerRow>,
 }
 
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`].
@@ -127,6 +134,20 @@ pub struct PartitionedSum<const W: usize> {
     runtime: Arc<PartitionRuntime>,
     /// Per-partition layer/export scratch, retained across calls.
     states: Vec<PartitionState<W>>,
+    /// The opt-in per-layer trace, `None` unless
+    /// [`enable_trace`](Self::enable_trace) was called.
+    trace: Option<PartitionTrace>,
+    /// Driver-level scatter time (the layer phases live in each partition's
+    /// own `LayerScratch`).
+    #[cfg(feature = "phase-timing")]
+    scatter_ns: u64,
+    /// Driver-level gather time. An atomic because [`gather`](Self::gather)
+    /// takes `&self`; nothing contends for it.
+    #[cfg(feature = "phase-timing")]
+    gather_ns: std::sync::atomic::AtomicU64,
+    /// Layers driven, summed over calls since the counters were drained.
+    #[cfg(feature = "phase-timing")]
+    layers: u64,
 }
 
 impl<const W: usize> PartitionedSum<W> {
@@ -232,6 +253,13 @@ impl<const W: usize> PartitionedSum<W> {
             rows,
             runtime,
             states,
+            trace: None,
+            #[cfg(feature = "phase-timing")]
+            scatter_ns: started.elapsed().as_nanos() as u64,
+            #[cfg(feature = "phase-timing")]
+            gather_ns: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "phase-timing")]
+            layers: 0,
         }
     }
 
@@ -300,6 +328,9 @@ impl<const W: usize> PartitionedSum<W> {
         );
 
         if n > 0 {
+            // Hoisted out of every partition's layer loop: nothing inside one
+            // can turn tracing on or off.
+            let tracing = self.trace.is_some();
             let num_qubits = self.num_qubits();
             let items: Vec<PartitionWork<W>> = (0..size)
                 .map(|rank| {
@@ -313,6 +344,11 @@ impl<const W: usize> PartitionedSum<W> {
                             PauliSum::empty_with_hash(num_qubits, hash),
                         ),
                         state: std::mem::take(&mut self.states[rank]),
+                        rows: if tracing {
+                            Vec::with_capacity(n)
+                        } else {
+                            Vec::new()
+                        },
                     }
                 })
                 .collect();
@@ -321,13 +357,25 @@ impl<const W: usize> PartitionedSum<W> {
             let rows = &self.rows;
             let done = runtime.map_partitions(items, |rank, mut work, transport| {
                 run_layers(
-                    circuit, policy, direction, options, rows, rank, size, &mut work, transport,
+                    circuit, policy, direction, options, rows, rank, size, tracing, &mut work,
+                    transport,
                 );
                 work
             });
+            let mut traced = Vec::with_capacity(if tracing { size } else { 0 });
             for (rank, work) in done.into_iter().enumerate() {
                 self.locals[rank] = work.local;
                 self.states[rank] = work.state;
+                if tracing {
+                    traced.push(work.rows);
+                }
+            }
+            if let Some(trace) = self.trace.as_mut() {
+                assemble(trace, traced);
+            }
+            #[cfg(feature = "phase-timing")]
+            {
+                self.layers += n as u64;
             }
         }
 
@@ -340,8 +388,22 @@ impl<const W: usize> PartitionedSum<W> {
     }
 
     /// Merges the partitions back into one sum, leaving `self` intact.
+    ///
+    /// Runs on the calling thread. Merging is `log2(P)` passes over the
+    /// payload; a caller that only needs a scalar should prefer
+    /// [`len`](Self::len) or
+    /// [`expectation_product_state`](Self::expectation_product_state), which
+    /// read the partitions in place.
     pub fn gather(&self) -> PauliSum<W> {
-        PauliSum::merge_partitions(self.locals.clone())
+        #[cfg(feature = "phase-timing")]
+        let started = Instant::now();
+        let out = PauliSum::merge_partitions(self.locals.clone());
+        #[cfg(feature = "phase-timing")]
+        self.gather_ns.fetch_add(
+            started.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        out
     }
 
     /// [`gather`](Self::gather) by value — no clone of the parts.
@@ -410,6 +472,49 @@ impl<const W: usize> PartitionedSum<W> {
             .sum()
     }
 
+    /// Start recording a [`PartitionTrace`] on every subsequent
+    /// [`propagate`](Self::propagate) call. Idempotent, and it never discards
+    /// records already taken.
+    ///
+    /// Always compiled, unlike the `phase-timing` counters: everything recorded
+    /// is already computed by the layer — the exchange counts the export pass
+    /// fills as it builds the blocks, plus two `len()` reads — so a traced
+    /// layer costs a `Vec` push on the partition's driving thread and an
+    /// untraced one costs a register test.
+    pub fn enable_trace(&mut self) {
+        self.trace.get_or_insert_with(PartitionTrace::default);
+    }
+
+    /// Drain and return the per-layer records, or `None` if tracing was never
+    /// enabled (`Some` iff tracing is on).
+    ///
+    /// Draining leaves tracing *enabled* with no records, so a sum reused
+    /// across calls reports each call separately without re-enabling; records
+    /// accumulate across layers and calls until drained.
+    pub fn take_trace(&mut self) -> Option<PartitionTrace> {
+        self.trace.as_mut().map(std::mem::take)
+    }
+
+    /// Drain and return the per-phase timing counters: one [`PhaseStats`] per
+    /// partition, plus the driver's own scatter/gather time and layer count.
+    ///
+    /// Every counter is zeroed afterwards, so a probe can read one measured
+    /// region at a time. `gather_ns` covers [`Self::gather`] calls only —
+    /// [`Self::into_gathered`] consumes the sum, and with it the counters.
+    #[cfg(feature = "phase-timing")]
+    pub fn take_stats(&mut self) -> PartitionPhaseStats {
+        PartitionPhaseStats {
+            per_partition: self
+                .states
+                .iter_mut()
+                .map(|state| state.layer.take_stats())
+                .collect(),
+            scatter_ns: std::mem::take(&mut self.scatter_ns),
+            gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
+            layers: std::mem::take(&mut self.layers),
+        }
+    }
+
     /// Debug helper: checks every invariant a partitioned sum is supposed to
     /// hold between calls.
     ///
@@ -461,6 +566,29 @@ impl<const W: usize> PartitionedSum<W> {
     }
 }
 
+/// The partitioned engine's phase breakdown: one [`PhaseStats`] per partition
+/// plus the driver's own counters.
+///
+/// Drained by [`PartitionedSum::take_stats`]. Each partition's `PhaseStats`
+/// was measured on that partition's own driving thread and its own pool, so
+/// the wall-clock fields are **concurrent**, not additive: the partitions ran
+/// at the same time, and the spread between them is the group's load
+/// imbalance. `exchange_ns` in particular absorbs the wait for a partner, so a
+/// partition that finishes its own share early pays for the imbalance there.
+#[cfg(feature = "phase-timing")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartitionPhaseStats {
+    /// One breakdown per partition, in rank order.
+    pub per_partition: Vec<PhaseStats>,
+    /// Wall time of the scatter that built this sum (filter + coarsen, on the
+    /// partitions' own pools).
+    pub scatter_ns: u64,
+    /// Wall time summed over [`PartitionedSum::gather`] calls.
+    pub gather_ns: u64,
+    /// Layers driven since the counters were last drained.
+    pub layers: u64,
+}
+
 /// The bucket bits a partition takes on at scatter: at most `pbits` shed from
 /// the count the unpartitioned sum arrived with, and never below what this
 /// partition's own share wants.
@@ -490,6 +618,7 @@ fn run_layers<const W: usize, T>(
     rows: &PartitionRows<W>,
     rank: usize,
     size: usize,
+    tracing: bool,
     work: &mut PartitionWork<W>,
     transport: &InProcessTransport,
 ) where
@@ -509,6 +638,14 @@ fn run_layers<const W: usize, T>(
         let layer_t0 = log::log_enabled!(target: LOG_TARGET, log::Level::Debug).then(Instant::now);
         let terms_before = local.len();
 
+        #[cfg(feature = "phase-timing")]
+        let mut st = Stamp::now();
+        #[cfg(feature = "phase-timing")]
+        {
+            work.state.layer.stats.layers += 1;
+            work.state.layer.stats.terms_in += terms_before as u64;
+        }
+
         // The one unconditional collective per layer: the bucket count. Each
         // partition proposes what its own share wants, clamped below by what it
         // already has (`refine` is grow-only), and the group takes the maximum
@@ -516,9 +653,13 @@ fn run_layers<const W: usize, T>(
         let want = desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
             .max(local.hash().bits());
         let want = transport.allreduce_max_u8(want);
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut work.state.layer.stats.collective_ns);
         while local.hash().bits() < want {
             local.refine();
         }
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut work.state.layer.stats.rebucket_ns);
 
         let Some(prep) = ch.prepare(local.hash(), adjoint) else {
             // Same hard error as the unpartitioned engine: no whole-sum
@@ -533,18 +674,48 @@ fn run_layers<const W: usize, T>(
             );
         };
 
-        let _counts =
+        #[cfg(feature = "phase-timing")]
+        st.lap(&mut work.state.layer.stats.prepare_ns);
+
+        // The layer times its own export, exchange and coset loop into the
+        // same `LayerScratch`.
+        let counts =
             apply_layer_partitioned(local, &prep, rows, policy, &mut work.state, transport);
+        #[cfg(feature = "phase-timing")]
+        st.rearm();
 
         // Unconditional and collective, whatever `finalizes_layer` says: a
         // partition that skipped it would desynchronize the group (see
         // `PartitionedTruncation`).
         policy.finalize_layer_partitioned(local, transport);
+        #[cfg(feature = "phase-timing")]
+        {
+            st.lap(&mut work.state.layer.stats.finalize_ns);
+            work.state.layer.stats.terms_out += local.len() as u64;
+        }
+
+        // Opt-in trace, behind a hoisted flag and a `#[cold]` callee for the
+        // same reason as the unpartitioned engine's term trace: this loop
+        // inlines the bucketed layer, whose merge kernels move under a few
+        // bytes of code motion (CLAUDE.md §Performance discipline). The
+        // counts are moved, not copied — the exchange already allocated them.
+        let remote_deltas = counts.remote_deltas;
+        let rows_received = counts.rows_received;
+        if tracing {
+            record_layer_row(
+                &mut work.rows,
+                local.hash().bits(),
+                terms_before,
+                local.len(),
+                counts,
+            );
+        }
 
         if let Some(t0) = layer_t0 {
             log::debug!(
                 target: LOG_TARGET,
-                "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
+                "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \
+                 {} rows in, {:.1} ms",
                 rank,
                 size,
                 k + 1,
@@ -552,6 +723,8 @@ fn run_layers<const W: usize, T>(
                 ch.debug_name(),
                 terms_before,
                 local.len(),
+                remote_deltas,
+                rows_received,
                 t0.elapsed().as_secs_f64() * 1e3,
             );
         }

@@ -16,6 +16,7 @@
 pub(crate) mod plan;
 pub(crate) mod topology;
 pub(crate) mod transport;
+pub(crate) mod truncation;
 
 pub use plan::count_remote_deltas;
 pub use topology::{
@@ -27,3 +28,6 @@ pub use topology::{
 pub use transport::{
     BlockHeader, Collectives, ExchangeBlock, InProcessTransport, PartnerPayload, Payload, Transport,
 };
+// The collective form of a layer finalization: what a truncation policy has
+// to provide before it can run with the sum split across partitions.
+pub use truncation::PartitionedTruncation;

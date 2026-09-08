@@ -320,7 +320,7 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
 /// finer threshold would leave L1 (3 bits → 64 KB) and turn that increment
 /// into an L2 access — the resolution/cost trade-off is documented on
 /// [`ApproxTopN`] and deliberately settled in favour of the cache.
-const APPROX_BINS: usize = 2048;
+pub(crate) const APPROX_BINS: usize = 2048;
 
 /// Retain **approximately** `n` terms: at most `n`, and more than `n - p`
 /// where `p` is the population of the coarsest octave that did not fit. The
@@ -516,15 +516,16 @@ pub(crate) fn retain_at_or_above<const W: usize>(sum: &mut PauliSum<W>, edge: Ed
 
 impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
     /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²`
-    /// ([`octave_histogram`]), walk the 2048 bins down to the last edge that
-    /// still fits in `n` ([`octave_edge`]), then [`PauliSum::retain`] against
-    /// that edge ([`retain_at_or_above`]).
+    /// (`octave_histogram`), walk the 2048 bins down to the last edge that
+    /// still fits in `n` (`octave_edge`), then [`PauliSum::retain`] against
+    /// that edge (`retain_at_or_above`).
     ///
     /// The two early exits are taken before the histogram rather than left to
-    /// [`octave_edge`], which decides them too: there is no point walking the
+    /// `octave_edge`, which decides them too: there is no point walking the
     /// terms to answer a question their count already settles. The partitioned
     /// sibling, whose global length is not known locally, does go through the
-    /// histogram — see `PartitionedTruncation`.
+    /// histogram — see
+    /// [`PartitionedTruncation`](crate::PartitionedTruncation).
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
         let total = sum.len();

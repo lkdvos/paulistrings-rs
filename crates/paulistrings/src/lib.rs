@@ -133,6 +133,7 @@ pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};
+pub use engine::partitioned::PartitionedTruncation;
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
 pub use engine::{

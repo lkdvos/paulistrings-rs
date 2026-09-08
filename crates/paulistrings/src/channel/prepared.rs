@@ -189,7 +189,6 @@ impl<const W: usize> LocalPtm<W> {
     /// # Panics
     ///
     /// Panics in debug builds if `keep` is not one flag per entry.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub(crate) fn retain_entries(&self, keep: &[bool]) -> LocalPtm<W> {
         debug_assert_eq!(
             keep.len(),

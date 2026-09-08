@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Hardware-counter capture for the phase_breakdown probe: cycles/string, IPC,
-# LLC behavior (per-process), and DRAM bandwidth (system-wide uncore IMC).
+# LLC behavior (per-process, pass A), DRAM bandwidth (system-wide uncore IMC,
+# per-socket, pass B), and per-process remote/local retired-load counts
+# (pass C, when the host's perf lists the NUMA retired-load events).
 #
 # Usage: scripts/perf-stat.sh [probe args...]
 #   e.g. scripts/perf-stat.sh --n 1000000 --threads 32 --layers rotation_zz
+#   Any probe flag (--n, --threads, --layers, --partitions, ...) passes
+#   through unchanged to every `perf stat -- "$PROBE" "$@"` invocation below.
 #
 # PROBE=/path/to/binary skips the `cargo build` step and uses that prebuilt
 # executable instead (must already exist and be executable) -- e.g. for an
@@ -15,9 +19,11 @@
 # this powersave-governed host.
 #
 # Caveats printed into the output: the uncore pass is unavoidably system-wide
-# (-a) on a shared box; an idle baseline taken immediately before is
-# subtracted, but treat the GB/s figure as approximate when the load average
-# is non-trivial.
+# (-a) on a shared box; a --per-socket idle baseline taken immediately before
+# is subtracted per socket, but treat the GB/s figures as approximate when
+# the load average is non-trivial. Pass C counts retired loads only -- the
+# write stream's NUMA locality is visible only in pass B's per-socket IMC
+# breakdown, never per-process.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -87,12 +93,14 @@ else
     echo "cycles/string unavailable (no 'cell ... n= layers=' lines found in probe output)"
 fi
 
-# ---- pass B: system-wide DRAM traffic (uncore IMC) -------------------------
+# ---- pass B: system-wide DRAM traffic (uncore IMC), per socket ------------
 # perf pre-scales cas_count_* to MiB (the CSV unit column says so) — do NOT
-# multiply by 64 again. Idle baseline first, subtracted as a rate.
+# multiply by 64 again. Idle baseline is now --per-socket too (previously it
+# was whole-box only), so it can be subtracted per socket below instead of
+# as one blended whole-box rate.
 echo
 echo "--- pass B: DRAM bandwidth (system-wide; approximate on a shared box) ---"
-perf stat -a -x, -o "$tmp/idle.csv" \
+perf stat -a -x, -o "$tmp/idle.csv" --per-socket \
     -e duration_time,uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ \
     -- sleep "$IDLE_SECS" 2>/dev/null
 perf stat -a -x, -o "$tmp/imc.csv" --per-socket \
@@ -104,10 +112,11 @@ echo
 
 awk -F, '
     function num(x) { return x + 0 }
-    # idle file: value,unit,event,... ; imc file (--per-socket): socket,ncpus,value,unit,event,...
+    # both files are --per-socket: socket,ncpus,value,unit,event,...
     FNR == NR {
-        if ($3 == "duration_time") idle_ns = num($1)
-        if ($2 == "MiB" && $3 ~ /cas_count/) idle_mib += num($1)
+        if ($5 == "duration_time") idle_ns = num($3)
+        if ($4 == "MiB" && $5 ~ /cas_count_read/)  { idle_rd[$1] += num($3); idle_mib += num($3) }
+        if ($4 == "MiB" && $5 ~ /cas_count_write/) { idle_wr[$1] += num($3); idle_mib += num($3) }
         next
     }
     $5 == "duration_time" { run_ns = num($3) }
@@ -116,10 +125,29 @@ awk -F, '
     END {
         if (run_ns == 0 || idle_ns == 0) { print "bandwidth: duration_time missing, skipping"; exit }
         run_s = run_ns / 1e9
-        idle_rate = idle_mib / (idle_ns / 1e9)          # MiB/s, whole box, both dirs
+        idle_s = idle_ns / 1e9
+        idle_rate = idle_mib / idle_s                   # MiB/s, whole box, both dirs
+
+        # ccqlin038-specific one-socket ceilings (best measured GB/s), from
+        # research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md -- update
+        # these two constants (or move them behind a host check) before
+        # trusting the "% of per-socket ceiling" figures on another host.
+        RD_CEIL_1S = 39.0
+        WR_CEIL_1S = 18.6
+
         for (s in rd) {
-            printf "%s: read %.2f GB/s  write %.2f GB/s\n",
-                s, rd[s] * 1.048576e-3 / run_s, wr[s] * 1.048576e-3 / run_s
+            run_rd = rd[s] * 1.048576e-3 / run_s
+            run_wr = wr[s] * 1.048576e-3 / run_s
+            base_rd = (s in idle_rd) ? idle_rd[s] * 1.048576e-3 / idle_s : 0
+            base_wr = (s in idle_wr) ? idle_wr[s] * 1.048576e-3 / idle_s : 0
+            attr_rd = run_rd - base_rd
+            attr_wr = run_wr - base_wr
+            printf "socket %s: read %.2f GB/s  write %.2f GB/s  (raw, idle not subtracted)\n",
+                s, run_rd, run_wr
+            printf "socket %s: attributable read %.2f GB/s = %.1f%% of %.1f GB/s per-socket ceiling;" \
+                   " write %.2f GB/s = %.1f%% of %.1f GB/s per-socket ceiling\n",
+                s, attr_rd, attr_rd / RD_CEIL_1S * 100, RD_CEIL_1S,
+                attr_wr, attr_wr / WR_CEIL_1S * 100, WR_CEIL_1S
         }
         printf "total DRAM traffic: %.2f GB/s  (idle baseline %.2f GB/s, already excluded below)\n",
             total * 1.048576e-3 / run_s, idle_rate * 1.048576e-3
@@ -127,6 +155,36 @@ awk -F, '
             (total / run_s - idle_rate) * 1.048576e-3, run_s
     }
 ' "$tmp/idle.csv" "$tmp/imc.csv"
+
+# ---- pass C: per-process retired remote/local DRAM loads -------------------
+# Retired loads only -- the write stream's NUMA locality only shows up in
+# pass B's per-socket IMC breakdown above, never per-process. Guarded: older
+# kernels/perf builds, or non-Intel uncore, may not expose these events.
+echo
+echo "--- pass C: per-process NUMA retired loads (local/remote DRAM) ---"
+if perf list 2>/dev/null | grep -q 'mem_load_l3_miss_retired.remote_dram'; then
+    perf stat -x, -o "$tmp/numa.csv" \
+        -e mem_load_l3_miss_retired.local_dram,mem_load_l3_miss_retired.remote_dram,mem_load_l3_miss_retired.remote_hitm \
+        -- "$PROBE" "$@" >/dev/null
+    grep -v '^#' "$tmp/numa.csv" | grep -v '^$' || true
+    echo "note: retired-load counts only; write-stream locality is pass B's job."
+    awk -F, '
+        function num(x) { return x + 0 }
+        $3 == "mem_load_l3_miss_retired.local_dram"  { local = num($1) }
+        $3 == "mem_load_l3_miss_retired.remote_dram"  { remote = num($1) }
+        $3 == "mem_load_l3_miss_retired.remote_hitm"  { remote_hitm = num($1) }
+        END {
+            printf "local_dram=%.0f  remote_dram=%.0f  remote_hitm=%.0f\n", local, remote, remote_hitm
+            if (local + remote > 0) {
+                printf "remote load share = remote/(local+remote) = %.2f%%\n", 100 * remote / (local + remote)
+            } else {
+                print "remote load share unavailable (zero local_dram + remote_dram)"
+            }
+        }
+    ' "$tmp/numa.csv"
+else
+    echo "skip: perf list has no mem_load_l3_miss_retired.remote_dram on this host"
+fi
 
 echo
 echo "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"

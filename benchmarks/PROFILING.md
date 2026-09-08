@@ -99,9 +99,16 @@ that configuration measures this host's own noise floor, not a code change.
   uncalibrated default (1 and `nproc` threads, no NUMA placement) plus a stderr warning; add a new `case` arm
   rather than editing an existing one.
 - `scripts/ab-compare.sh <name> --a <rev|.> --b <rev|.> --probe '<args>' [options]` — the interleaved A/B
-  harness; see the section above for the full flag list and an example.
-- `python3 scripts/ab-report.py A.jsonl B.jsonl [--field wall_ns] [--all-phases]` — its paired-delta
-  reporter, re-invocable on archived sidecars; see above.
+  harness; see the section above for the full flag list and an example. `--probe-b '<args>'` gives side B
+  its own probe args (default: same as `--probe`) for a runtime-knob A/B — e.g. `--partitions` — on one
+  binary rather than a code change; see the P=1-vs-P=2 recipe under Threading below. When `--probe-b` is
+  given, both sides sharing a tree/commit gets a note instead of the usual smoke-mode warning, and the
+  report is run with `--pair-on layer,threads`.
+- `python3 scripts/ab-report.py A.jsonl B.jsonl [--field wall_ns] [--all-phases]
+  [--pair-on layer,threads[,partitions]]` — its paired-delta reporter, re-invocable on archived sidecars;
+  see above. `--pair-on` (default `layer,threads,partitions`) sets which fields identify a cell; drop
+  `partitions` to pair a P=1 run against a P=2 run of the same `(layer, threads)` — the report then prints
+  both sides' partitions value(s) in the cell header instead of listing them as "only in A"/"only in B".
 - `scripts/profile.sh probe --n 1000000 --threads 32 --layers rotation_zz` — flamegraph the
   `phase_breakdown` probe.
 - `scripts/profile.sh bench apply_layer_bucketed 10` — flamegraph a criterion bench group via
@@ -140,13 +147,28 @@ phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-rep
 busy-time phases `swap_ns`, `size_ns`, `gather_ns`, `sort_ns`, `merge_ns`, `clear_ns`; and the counters
 `layers`, `cosets`, `runs`, `rows_gathered`, `rows_sorted`, `rows_id`, `terms_in`, `terms_out`, `vmrss_kb`,
 `vmhwm_kb`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
-requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* line per `(layer, threads)`
-key, so an appended re-run overwrites the earlier one in the rendered report.
+requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* line per
+`(layer, threads, partitions)` key, so an appended re-run overwrites the earlier one in the rendered
+report.
+
+The partitioned engine (`--partitions <csv>`, default `1`) adds: `partitions` (int), `partition_cpus`
+(string, the `--partition-cpus "<list>;<list>"` argument echoed back), `pin_memory` (0/1),
+`local_layers`, `remote_layers`, `rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry
+per partition), `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and
+`partition_coset_loop_ns` (list, one entry per partition). **Every consumer of this sidecar must read
+every one of these — old and new alike — with `row.get(key, default)`, never a bare index/key lookup**: a
+sidecar written before the partitioned engine landed has none of them, and `partitions` defaults to `1`
+in that case (an unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both
+follow this rule; match it in any new consumer.
 
 **(b) The probe's stdout `cell` line.** Every cell prints exactly one `cell layer=<name> threads=<n> n=<n>
-layers=<n> wall_ms=<f>` line, in every `--format`. `perf-stat.sh`'s awk greps this literal shape (`n=` and
-`layers=` field prefixes) to compute cycles/string — a coupling documented here and nowhere else in the
-code. Change the line's fields or order, fix `perf-stat.sh`'s awk in the same change.
+layers=<n> wall_ms=<f> trunc=<spec>` line, in every `--format`; the partitioned engine appends
+` partitions=<P>` after `trunc=` (so a P=1 line from an old probe binary and a `partitions=1` line from a
+new one both parse the same way for any field before it). `perf-stat.sh`'s awk greps this literal shape
+(`n=` and `layers=` field prefixes) to compute cycles/string — a coupling documented here and nowhere
+else in the code, and it scans every field for those two prefixes rather than assuming a fixed field
+count, so appending `partitions=` does not break it. Change the line's fields or order, fix
+`perf-stat.sh`'s awk in the same change.
 
 **(c) Criterion snapshot JSON.** `criterion-report.py snapshot` and `bench-campaign.sh`'s
 `criterion:`/`scaling:` items write `{full_id: {median_ns, mean_ns, stddev_ns, throughput_elems,
@@ -239,9 +261,18 @@ Caveats:
   with more than one cell in a run it's a blend (the script warns), converging from above as `--n`/`--reps`
   grow.
 - **Pass B** (system-wide uncore IMC): `uncore_imc/cas_count_read/` and `uncore_imc/cas_count_write/`,
-  `--per-socket`, unavoidably `-a` (whole box) on a shared host. An idle baseline (`IDLE_SECS`, default 3s) is
-  measured immediately before and subtracted as a rate — still approximate under nontrivial load average.
-  Units come pre-scaled to MiB by `perf` itself; don't multiply by 64 again.
+  `--per-socket`, unavoidably `-a` (whole box) on a shared host. An idle baseline (`IDLE_SECS`, default 3s)
+  is measured immediately before, **also `--per-socket`**, and subtracted per socket (not as one blended
+  whole-box rate) — still approximate under nontrivial load average. Units come pre-scaled to MiB by `perf`
+  itself; don't multiply by 64 again. Per-socket attributable read/write GB/s is reported alongside
+  `% of per-socket ceiling` against the ccqlin038 one-socket ceilings (read 39.0 GB/s, write 18.6 GB/s —
+  see `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`; these two constants are ccqlin038-specific,
+  stated as such in the script, and need updating before trusting the percentage on another host).
+- **Pass C** (per-process retired NUMA loads): `mem_load_l3_miss_retired.local_dram`,
+  `.remote_dram`, `.remote_hitm` — printed as raw counts plus `remote load share = remote/(local+remote)`.
+  These are **retired loads only**; the write stream's NUMA locality is visible only in pass B's per-socket
+  IMC breakdown, never per-process. Guarded by `perf list | grep -q mem_load_l3_miss_retired.remote_dram`;
+  a host/kernel/perf build without these events prints a one-line skip instead of failing.
 
 ## Roofline model
 
@@ -266,17 +297,21 @@ all-core ceiling for whatever placement was used to measure it.
 byte, and a *dense* identity row (rotations, general unitaries) materializes only its 16-byte coefficient —
 keys borrowed in place from the source bucket, modeled as coset-cache-resident:
 
-`bytes/layer = terms_in×T + 2×(rows_gathered−rows_id)×T + 2×rows_id×16 + 2×rows_sorted×T + terms_out×T`
+`bytes/layer = terms_in×T + 2×(rows_gathered−rows_id)×T + 2×rows_id×16 + 2×rows_sorted×T + terms_out×T
+              + 2×bytes_exported`
 
 with `T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path. A probe line carrying
 `rows_gathered`/`rows_sorted` but no `rows_id` field is priced with `rows_id` treated as 0 (every gathered
 row at full `T`, no dense-identity discount); a line carrying neither `rows_id` nor `rows_sorted` falls back
 to the older `4×rows_gathered×(T+1)` model (every row priced as if tagged and passed through a sort read and
-write). This is divided by wall time and by the membench triad ceiling at a comparable core count (per
-the host's `# ceiling-map:` header — Machine contracts (d)). Read the result as a classification, not a
-gauge: **over 100% means the modeled traffic is mostly served from cache** (small per-coset working sets,
-not DRAM-bound); near 100% is genuinely at the wall; far below 100% with high wall time points at latency,
-serial phases, or imbalance instead.
+write). The `2×bytes_exported` term (partitioned engine, P > 1; the field is absent, and this term zero, on
+a pre-partitioning probe line or any P=1 line) prices a partition's exported rows the same way as any other
+row that's written once and read once elsewhere: the exporting partition writes them once, the importing
+partition(s) read them once. This is divided by wall time and by the membench triad ceiling at a comparable
+core count (per the host's `# ceiling-map:` header — Machine contracts (d)). Read the result as a
+classification, not a gauge: **over 100% means the modeled traffic is mostly served from cache** (small
+per-coset working sets, not DRAM-bound); near 100% is genuinely at the wall; far below 100% with high wall
+time points at latency, serial phases, or imbalance instead.
 
 Rule of thumb: at or above ~70% of the measured ceiling, the phase is bandwidth-bound — stop optimizing
 arithmetic. Far below the ceiling with a high LLC miss rate points at a latency/working-set problem instead.
@@ -299,6 +334,28 @@ calibrated as:
 An unrecognized host gets only the no-op `default` placement plus an uncalibrated
 `BANDWIDTH_RUNS`/`CEILING_MAP` and a stderr warning; add a case arm in `host-topology.sh` to calibrate a new
 host rather than editing an existing one.
+
+**Partitioned cells run under no placement prefix.** The partitioned engine pins its own worker threads
+via `--partition-cpus "<list>;<list>"` (`host-topology.sh`'s `PARTITION_CPUS` map, ccqlin038:
+`node2x8="0-7;8-15"`, `node2x16="0-7,16-23;8-15,24-31"`), so wrapping a P>1 run in a `PLACEMENT_PREFIX`
+entry fights that pinning instead of composing with it: `numactl --membind` forces every page onto one
+node regardless of which partition touches it, defeating the split, and `--cpunodebind`/`taskset` shrink
+the CPU mask the engine's own `Auto` placement reads. The one legitimate combination is **P=1 under the
+existing `node0`/`phys8` placements**, used as the one-socket reference point for a partitioned-vs-
+unpartitioned comparison.
+
+**P=1 vs P=2, same binary (a runtime-knob A/B):**
+```bash
+scripts/ab-compare.sh partitions-1v2 --a . --b . \
+  --probe '--n 1000000 --threads 16 --layers rotation_zz --partitions 1' \
+  --probe-b '--n 1000000 --threads 16 --layers rotation_zz --partitions 2' \
+  --pairs 5 --order abba
+```
+One `(layer, threads)` cell per invocation keeps the report's cell-by-cell pairing unambiguous. Because
+`--a`/`--b` are the same tree, `ab-compare.sh` recognizes `--probe-b` and swaps the usual smoke-mode
+warning for a note that this measures the probe-arg (partition-count) difference, not a code change; it
+also passes `--pair-on layer,threads` to `ab-report.py` so the P=1 and P=2 rows pair instead of showing up
+as "only in A" / "only in B".
 
 `node0` vs a spread/default placement isolates NUMA cost; `phys16` (16 physical, both sockets) vs `smt16` (8
 physical + 8 HT, one socket) isolates hyperthread yield against cross-socket cost; `node0` scaled 1→8

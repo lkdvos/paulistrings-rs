@@ -144,7 +144,7 @@ pub struct PropagateOptions {
     /// [`DEFAULT_SMALL_SUM_THRESHOLD`].
     pub small_sum_threshold: usize,
     /// Terms per bucket the per-layer partition targets. Default
-    /// [`DEFAULT_TARGET_BUCKET_LEN`](crate::bucket::DEFAULT_TARGET_BUCKET_LEN).
+    /// [`DEFAULT_TARGET_BUCKET_LEN`].
     ///
     /// A measurement lever, not a tuning parameter: the default is the measured
     /// optimum (ARCHITECTURE.md §Bucket-Policy). At `W = 2` a term is 48 B, so
@@ -161,7 +161,7 @@ pub struct PropagateOptions {
     /// lowering either mid-run never coarsens a partition already grown.
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
-    /// Default [`DEFAULT_MIN_BUCKETS`](crate::bucket::DEFAULT_MIN_BUCKETS).
+    /// Default [`DEFAULT_MIN_BUCKETS`].
     ///
     /// Must be `>= 16`: below that `desired_bits`'s "worth splitting" gate is
     /// non-monotone (`crates/paulistrings/src/bucket/sum.rs:110-116`), and the

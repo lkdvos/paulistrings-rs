@@ -272,6 +272,9 @@ enum LayerKind {
     Cnot,
     Gu2q,
     Su4,
+    /// Haar SU(4) on a pair whose 15 non-identity deltas are all local under the
+    /// partition rows: the dense, bandwidth-bound class with zero exchange.
+    Su4Local,
     Depolarizing,
     Trotter,
 }
@@ -285,6 +288,7 @@ impl LayerKind {
             LayerKind::Cnot => "cnot",
             LayerKind::Gu2q => "gu2q",
             LayerKind::Su4 => "su4",
+            LayerKind::Su4Local => "su4_local",
             LayerKind::Depolarizing => "depolarizing",
             LayerKind::Trotter => "trotter",
         }
@@ -298,11 +302,12 @@ impl LayerKind {
             "cnot" => Ok(LayerKind::Cnot),
             "gu2q" => Ok(LayerKind::Gu2q),
             "su4" => Ok(LayerKind::Su4),
+            "su4_local" => Ok(LayerKind::Su4Local),
             "depolarizing" => Ok(LayerKind::Depolarizing),
             "trotter" => Ok(LayerKind::Trotter),
             other => Err(format!(
                 "unknown layer '{other}' (expected one of: rotation_zz, rotation_local, \
-                 rotation_remote, cnot, gu2q, su4, depolarizing, trotter)"
+                 rotation_remote, cnot, gu2q, su4, su4_local, depolarizing, trotter)"
             )),
         }
     }
@@ -310,7 +315,10 @@ impl LayerKind {
     /// Whether the layer's generator qubits are chosen per cell from the
     /// partition rows ([`choose_generator`]) rather than fixed at `(0, 1)`.
     fn picks_generator(self) -> bool {
-        matches!(self, LayerKind::RotationLocal | LayerKind::RotationRemote)
+        matches!(
+            self,
+            LayerKind::RotationLocal | LayerKind::RotationRemote | LayerKind::Su4Local
+        )
     }
 }
 
@@ -903,10 +911,14 @@ fn build_circuit<const W: usize>(
             }
             c
         }
-        LayerKind::Su4 => {
+        LayerKind::Su4 | LayerKind::Su4Local => {
+            // `su4` acts on (0, 1); `su4_local` on the pair `choose_generator`
+            // picked so that all 15 non-identity deltas are local — the dense,
+            // bandwidth-bound class with zero exchange, i.e. the pure NUMA cell.
+            let (q0, q1) = gen_qubits;
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
-                c.push(haar_su4_block(0, 1));
+                c.push(haar_su4_block(q0, q1));
             }
             c
         }
@@ -1174,17 +1186,37 @@ fn choose_generator<const W: usize>(
         return (0, 1);
     }
     let want_remote = layer == LayerKind::RotationRemote;
-    for q in 1..qubits as u32 {
+    // A rotation's single non-identity delta is local for most pairs, so `(0, q)`
+    // suffices. A dense SU(4) needs all 15 deltas on the pair local, i.e. the
+    // partition rows zero on both qubits' x and z columns (1 in 16 pairs under
+    // one random row), so it scans every pair — including ones not touching 0.
+    let pairs: Vec<(u32, u32)> = if layer == LayerKind::Su4Local {
+        (0..qubits as u32)
+            .flat_map(|q0| ((q0 + 1)..qubits as u32).map(move |q1| (q0, q1)))
+            .collect()
+    } else {
+        (1..qubits as u32).map(|q| (0, q)).collect()
+    };
+    for (q0, q1) in pairs {
         let mut probe = Circuit::<W>::new(qubits);
-        probe.push(zz_rotation::<W>(0, q, 0.1));
+        if layer == LayerKind::Su4Local {
+            probe.push(haar_su4_block(q0, q1));
+        } else {
+            probe.push(zz_rotation::<W>(q0, q1, 0.1));
+        }
         let (_, remote) = count_remote_deltas(&probe, base.hash(), rows, false)[0];
         if (remote > 0) == want_remote {
-            return (0, q);
+            return (q0, q1);
         }
     }
     panic!(
-        "phase_breakdown: no ZZ(0, q) layer with q in 1..{qubits} is {} under these partition \
+        "phase_breakdown: no {}(q0, q1) layer on {qubits} qubits is {} under these partition \
          rows — try another --partition-seed or more --qubits",
+        if layer == LayerKind::Su4Local {
+            "SU4"
+        } else {
+            "ZZ"
+        },
         if want_remote { "remote" } else { "local" },
     );
 }
@@ -1248,9 +1280,14 @@ where
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() {
         eprintln!(
-            "phase_breakdown: note: {} at P={partitions} rotates about ZZ({}, {}) — the smallest \
+            "phase_breakdown: note: {} at P={partitions} acts on {}({}, {}) — the smallest \
              pair whose deltas are {} under these partition rows.",
             layer.name(),
+            if layer == LayerKind::Su4Local {
+                "SU4"
+            } else {
+                "ZZ"
+            },
             gen_qubits.0,
             gen_qubits.1,
             if layer == LayerKind::RotationRemote {

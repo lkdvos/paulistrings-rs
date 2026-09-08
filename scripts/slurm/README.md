@@ -21,9 +21,14 @@ so a node with N NUMA domains runs P = N.
 
 ## Usage
 
+The workstation environment exports `SBATCH_RESERVATION=rocky9` (a leftover of the rocky9 migration;
+that reservation no longer exists), which makes every `sbatch` fail with "Requested reservation is
+invalid". Unset it for the submission (`env -u SBATCH_RESERVATION sbatch ...`, or `unset
+SBATCH_RESERVATION` once in the shell).
+
 ```bash
+env -u SBATCH_RESERVATION sbatch scripts/slurm/ab-campaign.sbatch
 # P=1 vs P=<numa> runtime-knob campaign on one binary (the phase-2 headline):
-sbatch scripts/slurm/ab-campaign.sbatch
 # same, choosing layers / sizes / pairs:
 LAYERS="su4 rotation_local rotation_remote gu2q" NS="1000000 3000000" PAIRS=5 sbatch scripts/slurm/ab-campaign.sbatch
 # code A/B of the untouched path (P=1 both sides): baseline sha vs the working tree

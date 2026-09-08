@@ -13,9 +13,11 @@
 //! - `layer` — `apply_layer_partitioned`: export → exchange → coset loop.
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 
+pub(crate) mod plan;
 pub(crate) mod topology;
 pub(crate) mod transport;
 
+pub use plan::count_remote_deltas;
 pub use topology::{
     allowed_cpus, bind_current_thread_memory, current_cpu, numa_nodes, pin_current_thread, CpuSet,
     PartitionConfig, PartitionSlot, Placement, TopologyError,

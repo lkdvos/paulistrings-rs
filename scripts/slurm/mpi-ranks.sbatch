@@ -20,7 +20,15 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 module purge
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"   # bindgen (rsmpi) at build time
-export PATH="$HOME/.cargo/bin:$PATH"
+# Rust from the shared filesystem: ~/.cargo and ~/.rustup are symlinks into the workstation's
+# local /home, absent on cluster nodes. scripts/slurm/setup-shared-toolchain.sh populates this.
+SHARED_RUST=${SHARED_RUST:-$HOME/.local/rust-shared}
+export RUSTUP_HOME="$SHARED_RUST/rustup" CARGO_HOME="$SHARED_RUST/cargo"
+export PATH="$CARGO_HOME/bin:$PATH"
+command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
+    echo "cargo not usable on this node (SHARED_RUST=$SHARED_RUST); run scripts/slurm/setup-shared-toolchain.sh on a networked host first" >&2
+    exit 3
+}
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
 unset RUST_LOG
 

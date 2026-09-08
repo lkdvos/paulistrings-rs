@@ -19,6 +19,20 @@ socket (P = 4 or 8 if the BIOS exposes NPS4). The scripts never hard-code CPU li
 `/sys/devices/system/node/node*/cpulist` on the node and build the `--partition-cpus` string from it,
 so a node with N NUMA domains runs P = N.
 
+## One-time setup: a toolchain on the shared filesystem
+
+`~/.cargo` and `~/.rustup` on the CCQ workstations are symlinks into the local NVMe `/home`, which
+cluster nodes do not mount — rustup's `cargo` proxy dangles there and the first jobs died with
+`cargo: command not found`. Run once, on a host with network access:
+
+```bash
+scripts/slurm/setup-shared-toolchain.sh     # ~750 MB under $HOME/.local/rust-shared
+```
+
+It installs the `rust-toolchain.toml` channel and pre-fetches the crate registry there; the templates
+export `RUSTUP_HOME`/`CARGO_HOME` accordingly and fail fast (exit 3) if `cargo` is still unusable.
+Re-run it after changing the toolchain pin or the dependency set.
+
 ## Usage
 
 The workstation environment exports `SBATCH_RESERVATION=rocky9` (a leftover of the rocky9 migration;

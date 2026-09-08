@@ -16,6 +16,7 @@ pub mod bucketed;
 pub(crate) mod coset;
 pub(crate) mod direct;
 pub(crate) mod merge;
+pub mod partitioned;
 #[cfg(feature = "phase-timing")]
 pub mod stats;
 

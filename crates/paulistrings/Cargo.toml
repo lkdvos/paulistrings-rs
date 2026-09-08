@@ -11,7 +11,10 @@ keywords = ["pauli", "quantum", "simulation", "physics", "operator"]
 categories = ["science", "simulation"]
 
 [package.metadata.docs.rs]
-all-features = true
+# Not `all-features = true`: the `mpi` feature builds `rsmpi`, whose build
+# script probes an `mpicc` and runs `bindgen` against the site's MPI headers.
+# Neither exists on docs.rs, so the whole build would fail there.
+features = ["phase-timing", "test-utils"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -24,6 +27,12 @@ phase-timing = []
 # examples can use it. Enabled for the crate's own dev builds by the
 # self-dev-dependency below; never part of a published build's default set.
 test-utils = []
+# Compile the MPI transport (`engine::partitioned::mpi`), one partition per
+# rank. Off by default, like `phase-timing`: the default build must stay
+# byte-identical, and the feature needs an MPI installation plus `libclang`
+# for `rsmpi`'s bindgen (`module load openmpi/5.0.6 llvm/19.1.7`,
+# `LIBCLANG_PATH=$(llvm-config --libdir)`).
+mpi = ["dep:mpi"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -38,6 +47,10 @@ rayon = "1"
 # per-layer sites cost one relaxed atomic load and allocate nothing, so there
 # is nothing for a feature flag to buy. See `engine::propagate_with_scratch`.
 log = "0.4"
+# MPI bindings for the distributed transport, behind the `mpi` feature.
+# `default-features = false` drops the `user-operations` feature (libffi), which
+# nothing here needs — the two reductions are `MPI_MAX`/`MPI_SUM`.
+mpi = { version = "0.8.2", optional = true, default-features = false }
 
 # NUMA topology and thread/memory pinning (engine::partitioned::topology). Linux
 # only; on other targets the topology module reports one node and pins nothing.

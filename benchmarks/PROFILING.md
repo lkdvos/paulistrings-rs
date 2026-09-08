@@ -152,14 +152,32 @@ requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* 
 report.
 
 The partitioned engine (`--partitions <csv>`, default `1`) adds: `partitions` (int), `partition_cpus`
-(string, the `--partition-cpus "<list>;<list>"` argument echoed back), `pin_memory` (0/1),
-`local_layers`, `remote_layers`, `rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry
-per partition), `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and
-`partition_coset_loop_ns` (list, one entry per partition). **Every consumer of this sidecar must read
-every one of these — old and new alike — with `row.get(key, default)`, never a bare index/key lookup**: a
-sidecar written before the partitioned engine landed has none of them, and `partitions` defaults to `1`
-in that case (an unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both
-follow this rule; match it in any new consumer.
+(string, the `--partition-cpus` argument echoed back — `"auto"`, `"unpinned"`, or the `"<list>;<list>"`
+lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, the `(q0, q1)` a
+`rotation_*` layer rotated about — `[0, 1]` for every other layer), `local_layers`, `remote_layers`,
+`rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
+`partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
+(list, one entry per partition). **Every consumer of this sidecar must read every one of these — old and
+new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the
+partitioned engine landed has none of them, and `partitions` defaults to `1` in that case (an
+unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both follow this rule;
+match it in any new consumer.
+
+Two details of how the probe fills those fields:
+
+- **Every row carries all of them, partitioned or not** — one schema per campaign. An unpartitioned
+  (P=1, `--p1-path classic`) row has `partitions: 1`, zero counters, empty `partition_terms_in` /
+  `partition_coset_loop_ns` lists and `partition_imbalance: 1.0`, and its `partition_cpus`/`pin_memory`
+  echo the flags even though no placement was applied. A consequence for `ab-report.py`: in a P=1-vs-P=2
+  knob A/B, `export_ns`/`exchange_ns`/`barrier_ns` are 0 on side A, so `--all-phases` reports them as
+  "not present in these runs" (a Δ% against zero is undefined) — read side B's absolute values from the
+  sidecar or the table format instead.
+- `barrier_ns` is the sidecar's name for the engine's `PhaseStats::collective_ns`: the driver's per-layer
+  bucket-count all-reduce, which is the one collective every layer makes (an all-local layer issues no
+  other transport call). There is no barrier in the engine.
+- The wall-clock phases of a partitioned row are the **maximum over partitions** (the group's critical
+  path), the busy-time phases and every counter are **sums** over partitions, and `layers` is the
+  driver's layer count rather than a sum — the fold lives in `phase_breakdown.rs::fold_partition_stats`.
 
 **(b) The probe's stdout `cell` line.** Every cell prints exactly one `cell layer=<name> threads=<n> n=<n>
 layers=<n> wall_ms=<f> trunc=<spec>` line, in every `--format`; the partitioned engine appends
@@ -222,6 +240,37 @@ regardless of `--n` (64 distinct generators under no truncation grow combinatori
 see that constant's doc comment). The probe also prints its own timer-overhead estimate
 (`PhaseStats::timer_reads() × stats::TIMER_READ_OVERHEAD_NS`) next to the breakdown, so you can see when the
 measurement pollutes itself (tiny cosets, many runs inflate the read count).
+
+### The partition axis
+
+`--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`. A `P > 1`
+cell scatters the input across a `PartitionRuntime` of `P` pinned pools *outside* the timed region, then
+runs the same warm-up + timed pair as above through `PartitionedSum::propagate_with_options`.
+
+- **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers
+  (`PartitionRuntime::with_threads_per_partition`, which overrides the width a placement derives from its
+  CPU-set size while leaving the set itself alone). A `--threads` value not divisible by a `--partitions`
+  value is a startup error, and so is `P > threads`.
+- `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask,
+  capped at `P`), `unpinned` (`Placement::Unpinned`, the partition shape with no pinning at all, for a
+  laptop or a shared box), or the `'<list>;<list>'` cpulists of `Placement::Explicit` — exactly the string
+  `host-topology.sh`'s `PARTITION_CPUS` holds. An explicit spec must name one list per partition for every
+  `P > 1` swept.
+- `--bind-memory 0|1` (default 1) is `PartitionConfig::bind_memory`; `--partition-seed <u64>` fixes the
+  GF(2) partition rows instead of letting the driver derive them from the sum's hash seed.
+- `P = 1` runs the **unpartitioned** engine — the same code path, policy value and output as before the
+  partition axis existed — unless `--p1-path partitioned` sends it through `PartitionedSum` with one
+  partition. That pair (`--partitions 1` against `--partitions 1 --p1-path partitioned`) is how to price
+  the driver's own machinery: a pool build, a thread scope, a transport group and one all-reduce per layer
+  over a path the driver's tests pin as bitwise identical to `propagate`.
+- Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest
+  qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows
+  (`count_remote_deltas` decides, once per cell, outside the timed region). They are the best and worst
+  case of the exchange on otherwise identical work, and both collapse to `rotation_zz` at `P = 1`. The
+  chosen pair goes to stderr and into the sidecar's `gen_qubits`.
+- `--truncation topn:<N>` is refused for a partitioned cell: `TopN`'s exact selection has no
+  `PartitionedTruncation` impl (the bound rejects it at compile time). `atopn:<N>`, `coeff:<t>` and `keep`
+  all run.
 
 ## Flamegraphs
 
@@ -304,8 +353,8 @@ with `T = 16·W + 16` on the coset path, or `2×terms_in×T` on the rescale path
 `rows_gathered`/`rows_sorted` but no `rows_id` field is priced with `rows_id` treated as 0 (every gathered
 row at full `T`, no dense-identity discount); a line carrying neither `rows_id` nor `rows_sorted` falls back
 to the older `4×rows_gathered×(T+1)` model (every row priced as if tagged and passed through a sort read and
-write). The `2×bytes_exported` term (partitioned engine, P > 1; the field is absent, and this term zero, on
-a pre-partitioning probe line or any P=1 line) prices a partition's exported rows the same way as any other
+write). The `2×bytes_exported` term (partitioned engine, P > 1; the field is zero on a P=1 line and absent
+altogether on a pre-partitioning probe line, so this term vanishes either way) prices a partition's exported rows the same way as any other
 row that's written once and read once elsewhere: the exporting partition writes them once, the importing
 partition(s) read them once. This is divided by wall time and by the membench triad ceiling at a comparable
 core count (per the host's `# ceiling-map:` header — Machine contracts (d)). Read the result as a
@@ -356,6 +405,14 @@ One `(layer, threads)` cell per invocation keeps the report's cell-by-cell pairi
 warning for a note that this measures the probe-arg (partition-count) difference, not a code change; it
 also passes `--pair-on layer,threads` to `ab-report.py` so the P=1 and P=2 rows pair instead of showing up
 as "only in A" / "only in B".
+
+Both sides carry the same `--threads` because that flag is the *total* thread count on either side (16
+threads at P=1 against two 8-worker pools at P=2), which is what makes the comparison a partitioning
+comparison rather than a thread-count one; it must be divisible by `P`. Add
+`--partition-cpus '<list>;<list>'` to side B — `PARTITION_CPUS[node2x16]` for this host — to pin the split
+to sockets instead of taking `Auto`'s NUMA-node reading of the mask, and remember that a P>1 side takes no
+placement prefix (above). `scripts/slurm/ab-campaign.sbatch` runs exactly this shape on an exclusive node,
+deriving `P` and the lists from the node's sysfs.
 
 `node0` vs a spread/default placement isolates NUMA cost; `phys16` (16 physical, both sockets) vs `smt16` (8
 physical + 8 HT, one socket) isolates hyperthread yield against cross-socket cost; `node0` scaled 1→8

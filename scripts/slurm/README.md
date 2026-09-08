@@ -63,6 +63,8 @@ Hardware counters (`scripts/perf-stat.sh`, uncore IMC bandwidth, remote-load sha
 the templates: they need `perf_event_paranoid` low enough on the node, which is typically not the
 case on the cluster. Run the counter pass on the workstation for the cells that matter.
 
+The repo's `target` is likewise a symlink into the workstation's local `/home` (dangling on the
+nodes), which is why `ab-compare.sh` honours `CARGO_TARGET_DIR` for its worktrees and binaries.
 Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's local scratch
 (`$TMPDIR`), with `cargo --offline` against the shared `~/.cargo` registry cache — so run any
 `cargo fetch`/build once on a login host first if dependencies changed.

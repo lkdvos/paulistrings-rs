@@ -208,7 +208,10 @@ mkdir -p "$out_dir"
 log_file="$out_dir/${name}-ab.log"
 sidecar_a="$out_dir/${name}-a.probe.jsonl"
 sidecar_b="$out_dir/${name}-b.probe.jsonl"
-wt_root="target/ab-worktrees"
+# Honour CARGO_TARGET_DIR (cluster jobs build into a job-private dir; on the
+# CCQ workstations `target` is a symlink into the local NVMe /home).
+target_dir="${CARGO_TARGET_DIR:-target}"
+wt_root="${target_dir}/ab-worktrees"
 
 log() {
   printf '%s\n' "$*" | tee -a "$log_file"
@@ -357,13 +360,13 @@ build_side() {
   dest="$out_dir/${name}-${side}-${tag}"
 
   if [[ "$rev" == "." ]]; then
-    log "build[${side}]: current working tree (${sha}, dirty=${dirty}) in ./target"
+    log "build[${side}]: current working tree (${sha}, dirty=${dirty}) in ${target_dir}"
     if ! (cargo build --offline --release --features "$features" \
       -p paulistrings --example phase_breakdown) 2>&1 | tee -a "$log_file"; then
       log "error: build of side ${side} (working tree) failed — aborting"
       exit 1
     fi
-    src="target/release/examples/phase_breakdown"
+    src="${target_dir}/release/examples/phase_breakdown"
   else
     wt="${wt_root}/${name}-${side}-$$"
     mkdir -p "$wt_root"
@@ -385,7 +388,8 @@ build_side() {
       log "error: build of side ${side} (${rev} @ ${sha}) failed — aborting"
       exit 1
     fi
-    src="$wt/target/release/examples/phase_breakdown"
+    # With CARGO_TARGET_DIR set cargo ignores the worktree's own target dir.
+    src="${CARGO_TARGET_DIR:-$wt/target}/release/examples/phase_breakdown"
   fi
 
   if [[ ! -x "$src" ]]; then

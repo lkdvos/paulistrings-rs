@@ -159,7 +159,9 @@ result bit `i` to `parity(x & rows_x[i]) ^ parity(z & rows_z[i])`;
 `row_parity` evaluates a single row for the refinement pass, making refine
 `O(n)` rather than `O(n·b)`. Columns beyond `2·num_qubits` are masked to zero
 at construction. The hash is stored with the sum; two sums combine only if
-they share it.
+they share it. `PartitionRows<W>` holds additional rows of the same kind,
+drawn from a salted seed so they are independent of this prefix at every
+bucket count (§Partitioning).
 
 **Why dense and random.** A coordinate projection (bucket = chosen key bits)
 is also GF(2)-linear, but weight-based truncation keeps sums low-weight, so
@@ -187,7 +189,9 @@ the sum alone, not of the machine; 128 gives Rayon slack to load-balance at
 any realistic core count. A sum only leaves the single-bucket regime above
 `DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK` (= 8192) terms: below that,
 parallelism has nothing to win, and one bucket keeps the plain lex order
-(§Data-Model).
+(§Data-Model). Under partitioning the floor applies per partition, so `P`
+partitions carry `P × DEFAULT_MIN_BUCKETS` buckets between them
+(§Partitioning).
 
 That floor has a **cost the sweep above does not see, because the sweep is a
 rotation layer**: the bucket count also fixes the engine's coset dimension
@@ -402,6 +406,146 @@ with no stealing cost far more than page locality recovers. See the
 static-coset-placement negative-result note in `research/notes/` before
 re-attempting placement work.
 
+Partitions (§Partitioning) are the outer level of the same decomposition: the
+split across NUMA domains is static, and stealing runs unchanged inside one.
+
+## Partitioning
+
+A partitioned run splits the sum across `P = 2^p` independent partitions — one
+NUMA domain today, one MPI rank later — by widening the bucket index. A global
+bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` designated
+**partition rows** (`PartitionRows<W>`, `P_MAX_BITS = 4`, so `P ≤ 16`), and
+`loc(v) = H·v` from an unchanged `Gf2Hash`. **A partition holds the terms with
+`part(v) = rank` and nothing else**, so a key lives on exactly one partition
+and duplicates can no more straddle partitions than they can straddle buckets
+(§Bucketing).
+
+The partition rows are a separate matrix, not a prefix of `H`. `H`'s active
+rows grow and shrink with the term count (§Bucketing), and a row that moved
+would change a term's owner mid-run. `from_seed` draws them from a salted seed
+so they are independent of the refinement stream at every bucket count;
+`from_rows` is the hook for choosing them deliberately.
+`is_independent_of(hash)` checks that the joint row set has full rank — the
+global bucket then carries `p + b` bits of entropy rather than `max(p, b)`. Its
+known limitation: the check runs at scatter, against the rows `H` has *then*,
+and a sum that later refines gains rows the check never saw. Dependence costs
+load balance, not correctness.
+
+**The classification is per layer, not per term.** Both maps are GF(2)-linear,
+so a prepared channel's key delta `d` moves every term by the same partition
+delta `pd = part(d)` and bucket delta `bd = h(d)`. A delta with `pd = 0` is
+**local** — the ordinary coset loop handles it with no communication. A delta
+with `pd ≠ 0` is **remote**: every row it produces from local bucket `β`
+belongs to partition `R ⊕ pd`, bucket `β ⊕ bd`, one partner and one offset
+known before a term is touched. The identity delta has mask `0`, so it is
+always local: a partition never ships to itself. Remoteness is a property of
+the mask alone, so every partition reaches the same verdict without a vote —
+which is what lets the transport pair calls positionally.
+
+**The wire unit is one CSR block per remote delta, indexed by source bucket.**
+`offsets[β]..offsets[β+1]` addresses the rows generated from the sender's
+bucket `β`; the sender never permutes, and the receiver filling output bucket
+`β′` reads `segment(β′ ⊕ bd)`. A `PartnerPayload` is that partner's blocks in
+ascending remote-delta index, walked in lockstep with the receiver's own plan,
+so a delta with no rows still ships its empty block. Both sides index by the
+same bucket count, which is why the count is agreed collectively below.
+
+A layer is **export → exchange → local coset loop**, a push model:
+
+1. Two passes over the local buckets build one block per remote delta — count
+   rows per (delta, source bucket), then fill each block's CSR segments. The
+   row arithmetic is the engine's own gather at row granularity
+   (`DeltaEntry::emit`, `RotationPrep::emit_gen`), so an exported row is
+   bitwise the row a local gather would have produced.
+2. One all-to-all `Transport::exchange`.
+3. The bucketed coset loop (§Engine) over the *local* deltas only, with the
+   received rows entering each output bucket's gather run through `ExtraRows`.
+
+**Received rows join the rest stream, never the id stream.** The rest stream is
+sorted anyway, so a received row may duplicate a local key and `merge2_into`
+still sees the key's complete sum before `keep_term` runs (§Truncation).
+Nothing else in the merge moves: the dense-identity borrowing and the
+signed-zero contract are exactly as §Engine describes them.
+
+The coset loop runs against a **retained delta table** — `retain_entries`
+rebuilds `LocalPtm` with the remote entries dropped — plus `LayerKnobs`
+carrying the local bucket deltas and the rest-stream count. That retention has
+one sharp edge, and the engine guards it: a channel whose every non-identity
+delta is remote (a Hadamard under a partition row that sees its mask, say)
+leaves an **identity-only table, for which `is_key_preserving` is true**.
+Taking the key-preserving `rescale_in_place` fast path there would silently
+drop every received row, so the fast path is gated on the absence of extra
+rows. A rotation with a remote generator keeps its `Prepared` and switches the
+generator pass off instead, exporting its anticommuting rows.
+
+**One collective per layer is unconditional: the bucket count.** Each partition
+proposes `desired_bits` for its own share, the group takes the maximum, and
+each refines to it. Per-partition rather than global, so `P` partitions of
+`n/P` terms carry the same *total* bucket count as one partition of `n`; the
+grow-only rule (§Bucket-Policy) survives the reduction because a maximum of
+grow-only proposals is itself monotone, so the count never falls mid-run and
+the two sides of an exchange always agree. Everything else is conditional: **a
+layer with no remote delta makes no transport call at all**, so a transport
+implementation must not assume a fixed number of calls per layer.
+
+Layer finalization is collective, so the policy bound is
+`PartitionedTruncation` and its `finalize_layer_partitioned` runs on every
+layer on every partition, whatever `finalizes_layer` reports — a collective is
+well defined only if nobody skips it. `ApproxTopN` is **partition-exact**: the
+global octave histogram is the sum of the per-partition histograms, so one
+all-reduce has every partition choose the same edge and the union of the
+retained sets is the single-partition answer (§Truncation). `And` runs both
+sides; `Or` runs neither, because its unpartitioned `finalize_layer` is the
+trait's no-op default rather than either child's, and the two must agree. Exact
+`TopN` is a distributed `k`-th selection, not a sum, and is **rejected at
+compile time** by the trait bound rather than approximated.
+
+**The runtime is one pinned Rayon pool per partition, with work-stealing inside
+a partition only.** That is the shape the static-placement negative result
+points at (§Parallelism): stealing is what beats a static assignment, and a
+stable domain-level split is what first touch needs, so the split is static at
+the outer level and stealing is untouched at the inner one. Partition 0 drives
+on the calling thread — the future MPI funnel, where the calling thread owns
+the communicator — and partitions `1..P` get scoped threads that pin themselves
+to their slot and enter their pool. The transport group is built **per call**
+and moved into the partitions, so a partition that panics drops its endpoints
+and its partners fail naming its rank instead of blocking forever.
+
+Scatter and gather bracket a run, not a layer. `filter_partition` runs on the
+owning partition's own pool, so every column is first-touched in the domain
+that will read it, and `merge_partitions` merges the disjoint runs back. The
+**scatter bits rule** is `want.max(bits − pbits).min(bits)`: a partition sheds
+at most `log2 P` of the bits the whole sum arrived with, never going below what
+its own share wants, so the bucket count summed over partitions equals the
+unpartitioned one. At `P = 1` it is the identity, and the round trip is
+bitwise.
+
+`PartitionTrace` is the opt-in per-layer record: bucket bits, remote-delta
+count, terms in and out per rank, rows and bytes sent `[from][to]`, rows
+received, and an imbalance figure per layer. Under `phase-timing` the same run
+also reports `export_ns`, `exchange_ns` (which includes the wait for a partner,
+so it is the imbalance signal and the traffic cost at once), `collective_ns`,
+`rows_exported` and `recv_rows`.
+
+What the split guarantees: **at `P = 1` the partitioned engine is `propagate`,
+bit for bit** — the scatter is the identity, the all-reduce is the identity,
+and the layer takes its unpartitioned branch. Across partition counts the bar
+is floating-point tolerance, exactly as it is across bucket counts
+(§Determinism); within a partition output stays byte-identical across pool
+sizes, because received rows are appended in the plan's fixed order.
+
+The cost model, qualitatively: a random partition row set sends a nonzero delta
+across a boundary with probability `1 − 2^{-p}`, so **roughly half of a dense
+two-qubit gate's deltas are remote at `P = 2`**, and a rotation whose generator
+crosses exports one row per anticommuting term. Export volume is therefore a
+property of the row *draw*, not of the circuit alone — which is what makes the
+rows worth tuning rather than merely drawing. The extreme case names the
+target: a row that annihilates every delta a circuit uses is a conserved
+quantity of that circuit and produces no traffic at all, so the rows that
+minimize traffic are cut-like, reading the qubits on the boundary of a spatial
+cut. `Transport` is the seam for that work and for the distributed phase: MPI
+is the same exchange over ranks, with the same collective-order invariant.
+
 ## Determinism
 
 The correctness bar for engine changes is **agreement to floating-point
@@ -413,7 +557,10 @@ bucket count or hash seed may legitimately change output bits.
 What *is* reproducible, as a property of the current implementation rather
 than a promise: at a fixed bucket count and hash seed, output is bitwise
 identical across thread counts and repeat runs — cosets are write-disjoint
-and work within one is sequential. Tests that pin exact output bits (the
+and work within one is sequential. The same holds per partition, across
+pool sizes, and a `P = 1` partitioned run is bitwise `propagate`; across
+partition counts the bar is tolerance, as it is across bucket counts
+(§Partitioning). Tests that pin exact output bits (the
 fingerprint net, thread-count byte-identity tests) are **convenience
 tripwires** for unintended perturbation: when one trips under a change that is
 correct to tolerance, regenerate its literals or demote it to
@@ -476,6 +623,11 @@ a multiplet is always kept or dropped whole — at the price of a wider
 degenerate case, since a sum confined to a single octave of `|c|²` is wiped
 exactly as an all-tied sum is under `TopN`. `TopN` remains the default and the
 choice whenever the retained count itself matters.
+
+Under partitioning the two swap places: `ApproxTopN` is **partition-exact** —
+its histogram all-reduces, so the retained set is the single-partition one —
+while exact `TopN` has no collective form and is rejected at compile time
+(§Partitioning).
 
 ## Channels
 
@@ -542,10 +694,8 @@ The design decisions a GPU backend needs are already in place: `PauliString`
 is `Pod` with a defined layout; bucket columns are SoA and flatten to
 device buffers in one pass; the coset decomposition maps to one block per
 coset with gather/sort/merge in shared memory — a better CUB fit than any
-global sort. The same structure extends to distributed memory: partition on
-`h`, and a layer becomes a sparse, statically-known, small-fan-in exchange in
-which no key is ever split across ranks (§Bucketing — duplicates cannot
-straddle buckets).
+global sort. The extension to distributed memory is no longer forward-looking:
+§Partitioning is that exchange, and MPI is the same exchange over ranks.
 
 ## Performance-Model
 
@@ -575,8 +725,8 @@ The memory wall is real and measured: the reference host's usable bandwidth is
 populated — see `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`,
 the denominator for every roofline claim). Trotter-style workloads at 32
 threads move ~36 GB/s of attributable DRAM traffic — near the wall — so
-further wins there come from traffic reduction or genuine NUMA partitioning,
-not scheduling. Hyperthreads add no bandwidth; the second socket adds only
+further wins there come from traffic reduction or genuine NUMA partitioning
+(§Partitioning; measured results pending), not scheduling. Hyperthreads add no bandwidth; the second socket adds only
 15–25% under first-touch placement with work-stealing.
 
 Negative results are recorded in `research/notes/` and should be read before

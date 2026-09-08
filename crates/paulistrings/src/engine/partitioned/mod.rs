@@ -15,3 +15,8 @@
 
 pub(crate) mod topology;
 pub(crate) mod transport;
+
+pub use topology::{
+    allowed_cpus, bind_current_thread_memory, current_cpu, numa_nodes, pin_current_thread, CpuSet,
+    PartitionConfig, PartitionSlot, Placement, TopologyError,
+};

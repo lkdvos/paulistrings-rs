@@ -13,6 +13,8 @@
 //! - `layer` — `apply_layer_partitioned`: export → exchange → coset loop.
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 
+pub(crate) mod export;
+pub(crate) mod layer;
 pub(crate) mod plan;
 pub(crate) mod topology;
 pub(crate) mod transport;

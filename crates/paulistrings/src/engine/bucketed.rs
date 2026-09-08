@@ -329,11 +329,53 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
         prep: &'p RotationPrep<W>,
         coord_identity: u32,
         coord_gen: u32,
+        /// Whether the generator pass emits *here*. False only under a
+        /// partitioning whose partition rows see the generator, where every
+        /// generator row belongs to a partner and this partition ships it
+        /// instead ([`LayerKnobs::gen_local`]); the identity pass still runs.
+        /// `coord_gen` is then meaningless (the generator's bucket delta is
+        /// not in this layer's span) and set to 0.
+        gen_local: bool,
     },
 }
 
+/// Per-layer overrides the partitioned engine hands the coset loop.
+///
+/// [`Default`] is the non-partitioned answer to all three, so
+/// `apply_layer_bucketed` passes it and nothing about the single-partition
+/// path changes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerKnobs<'k> {
+    /// Bucket deltas to build the coset span from. `None` — the default —
+    /// means the prepared channel's own [`Prepared::bucket_deltas`]. The
+    /// partitioned layer passes its plan's *local* bucket deltas: the deltas
+    /// that stay inside this partition are the only ones its coset loop
+    /// gathers.
+    pub bucket_deltas: Option<&'k [u32]>,
+    /// Rest-stream count driving the sort-kernel choice. `None` — the
+    /// default — derives it from the plan, which is the same thing whenever
+    /// the plan is the whole channel. The partitioned layer passes the
+    /// channel's *total* stream count (local + remote): how wide a fanout is
+    /// is a property of the channel, not of how one partition happens to see
+    /// it, so every partition picks the same kernel as the unpartitioned run.
+    pub rest_streams: Option<usize>,
+    /// Whether a wide rotation's generator pass emits here (see
+    /// [`DeltaPlan::Rotation::gen_local`]). `true` by default.
+    pub gen_local: bool,
+}
+
+impl Default for LayerKnobs<'_> {
+    fn default() -> Self {
+        Self {
+            bucket_deltas: None,
+            rest_streams: None,
+            gen_local: true,
+        }
+    }
+}
+
 impl<'p, const W: usize> DeltaPlan<'p, W> {
-    pub(super) fn new(prep: &'p Prepared<W>, span: &Gf2Span) -> Self {
+    pub(super) fn new(prep: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
         match prep {
             Prepared::Local(ptm) => {
                 let coords: Vec<u32> = ptm
@@ -354,7 +396,9 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 // length minus the identity entry is exactly the number of
                 // streams the gather concatenates into a run's rest columns —
                 // the quantity the two sort kernels' crossover turns on.
-                let rest_streams = ptm.deltas().len() - has_identity as usize;
+                let rest_streams = knobs
+                    .rest_streams
+                    .unwrap_or(ptm.deltas().len() - has_identity as usize);
                 DeltaPlan::Local {
                     ptm,
                     coords,
@@ -366,7 +410,14 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
             Prepared::Rotation(r) => DeltaPlan::Rotation {
                 prep: r,
                 coord_identity: span.coord_of(r.bucket_delta_identity),
-                coord_gen: span.coord_of(r.bucket_delta_gen),
+                // `coord_of` demands its argument be in the span, and a
+                // remote generator's bucket delta is not.
+                coord_gen: if knobs.gen_local {
+                    span.coord_of(r.bucket_delta_gen)
+                } else {
+                    0
+                },
+                gen_local: knobs.gen_local,
             },
         }
     }
@@ -443,21 +494,24 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
-    apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra)
+    apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra, LayerKnobs::default())
 }
 
 /// [`apply_layer_bucketed`] with an [`ExtraRows`] source feeding each output
-/// bucket's rest stream — the entry point the partitioned engine drives.
+/// bucket's rest stream and the partitioned engine's per-layer
+/// [`LayerKnobs`] — the entry point the partitioned engine drives.
 ///
 /// Identical to [`apply_layer_bucketed`] in every other respect; under
-/// [`NoExtra`] it *is* [`apply_layer_bucketed`], with the hook's two call
-/// sites and the inverse-permutation pass behind a `const false`.
+/// [`NoExtra`] and default knobs it *is* [`apply_layer_bucketed`], with the
+/// hook's two call sites and the inverse-permutation pass behind a `const
+/// false`.
 pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     sum: &mut PauliSum<W>,
     prep: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
     extra: &X,
+    knobs: LayerKnobs<'_>,
 ) where
     T: TruncationPolicy<W> + ?Sized,
     X: ExtraRows<W> + Sync,
@@ -469,8 +523,13 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     // leave every key bitwise unchanged, so the output is already sorted and
     // duplicate-free: multiplying each coefficient by a scalar is an
     // in-place filter, with no sort needed.
+    // `!X::NEEDS_BETA` is a `const true` on the unpartitioned path, so the
+    // condition is unchanged there. It has to be asked: a partitioned layer
+    // hands this function the *local* delta table, and a channel whose every
+    // non-identity delta is remote leaves a table that looks key-preserving
+    // while received rows still have to be merged in.
     if let Prepared::Local(ptm) = prep {
-        if ptm.is_key_preserving() {
+        if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
             #[cfg(feature = "phase-timing")]
             st.lap(&mut scratch.stats.rescale_ns);
@@ -481,8 +540,16 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     // The coset structure of this layer's bucket-delta set. `span(h(D))`
     // rather than `h(D)` itself: an open-trait channel's delta set need not be
     // XOR-closed, and only the span's cosets are guaranteed to partition.
-    let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
-    let plan = DeltaPlan::new(prep, &span);
+    let own_deltas;
+    let deltas: &[u32] = match knobs.bucket_deltas {
+        Some(d) => d,
+        None => {
+            own_deltas = prep.bucket_deltas();
+            &own_deltas
+        }
+    };
+    let span = Gf2Span::new(deltas, sum.hash().bits());
+    let plan = DeltaPlan::new(prep, &span, knobs);
     let m = span.coset_size();
     let num_cosets = span.num_cosets();
     #[cfg(feature = "phase-timing")]
@@ -707,11 +774,18 @@ pub(super) fn fill_coset<const W: usize, T, X>(
             DeltaPlan::Rotation {
                 coord_identity,
                 coord_gen,
+                gen_local,
                 ..
             } => (
                 0,
                 old[j ^ *coord_identity as usize].len(),
-                old[j ^ *coord_gen as usize].len(),
+                // A remote generator emits nothing here, so the rest stream
+                // is whatever `extra` adds below and nothing else.
+                if *gen_local {
+                    old[j ^ *coord_gen as usize].len()
+                } else {
+                    0
+                },
             ),
         };
         // Received rows land in the rest stream, so they belong to its exact
@@ -753,6 +827,7 @@ pub(super) fn fill_coset<const W: usize, T, X>(
             prep,
             coord_identity,
             coord_gen,
+            gen_local,
         } => {
             // The identity pass and the generator pass. `cos`/`sin` stay
             // hoisted; the `i^k` phase depends on 2w support bits and is
@@ -778,14 +853,21 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                         runs[i ^ *coord_identity as usize]
                             .id_coeff
                             .push(src.coeff[t] * prep.cos);
-                        let mut prod = v;
-                        let phase = prod.mul_assign(&prep.gen);
-                        let total = Phase::I + phase;
-                        runs[i ^ *coord_gen as usize].push(
-                            prod.x,
-                            prod.z,
-                            total.apply(src.coeff[t]) * prep.sin,
-                        );
+                        // Loop-invariant, `true` on every unpartitioned
+                        // layer, and asked before any of the generator
+                        // arithmetic: under a partitioning that sees the
+                        // generator, these rows belong to a partner and the
+                        // export pass has already shipped them.
+                        if *gen_local {
+                            let mut prod = v;
+                            let phase = prod.mul_assign(&prep.gen);
+                            let total = Phase::I + phase;
+                            runs[i ^ *coord_gen as usize].push(
+                                prod.x,
+                                prod.z,
+                                total.apply(src.coeff[t]) * prep.sin,
+                            );
+                        }
                     }
                 }
             }
@@ -1229,112 +1311,9 @@ mod tests {
         // (both `v` and `v ^ gen` are usually present) and the merge phase has
         // real duplicate runs to combine. This is the case that matters.
         let input = rand_sum::<1>(2000, 8, 0xC0FFEE);
-        let channels: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("identity", Box::new(IdentityChannel::new())),
-            ("h", Box::new(Clifford1Q::h(3))),
-            ("s", Box::new(Clifford1Q::s(3))),
-            ("x", Box::new(Clifford1Q::x(3))),
-            ("y", Box::new(Clifford1Q::y(3))),
-            ("z", Box::new(Clifford1Q::z(3))),
-            ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-            ("cz", Box::new(Clifford2Q::cz(1, 5))),
-            ("swap", Box::new(Clifford2Q::swap(1, 5))),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "dephasing",
-                Box::new(Dephasing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "amp_damping",
-                Box::new(AmplitudeDamping {
-                    support: [2],
-                    gamma: 0.3,
-                }),
-            ),
-            (
-                "rot_z",
-                Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
-            ),
-            (
-                "rot_zz",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(1);
-                        g.mul_assign(&PauliString::<1>::z(6));
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-            (
-                // General unitaries: a non-Clifford T gate (fanout 2) and a
-                // dense 2Q unitary (fanout up to 16), both as local PTMs.
-                "t_gate",
-                Box::new(crate::channel::GeneralUnitary1Q::from_matrix(
-                    2,
-                    [
-                        [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-                        [
-                            Complex64::new(0.0, 0.0),
-                            Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-                        ],
-                    ],
-                )),
-            ),
-            (
-                "general_2q",
-                Box::new({
-                    // sqrt(SWAP): dense enough to exercise a wide delta set.
-                    let h = Complex64::new(0.5, 0.5);
-                    let hc = Complex64::new(0.5, -0.5);
-                    let one = Complex64::new(1.0, 0.0);
-                    let zero = Complex64::new(0.0, 0.0);
-                    crate::channel::GeneralUnitary2Q::from_matrix(
-                        1,
-                        5,
-                        [
-                            [one, zero, zero, zero],
-                            [zero, h, hc, zero],
-                            [zero, hc, h, zero],
-                            [zero, zero, zero, one],
-                        ],
-                    )
-                }),
-            ),
-            (
-                // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
-                // deltas are realized (fanout ~15). `general_2q` above is
-                // sqrt(SWAP), whose PTM is sparse (measured fanout 3.65), so
-                // without this cell nothing in the net exercises the
-                // dense-PTM gather run — the shape the per-run sort kernel is
-                // selected on (see `merge::sort_rows_radix_with_scratch`).
-                "haar_su4",
-                Box::new(haar_su4(1, 5)),
-            ),
-            (
-                // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
-                "rot_wide",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(0);
-                        for q in [2u32, 4, 6] {
-                            g.mul_assign(&PauliString::<1>::x(q));
-                        }
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-        ];
+        // The shared channel net (`test_support::differential_channels_w1`),
+        // so the bucketed and partitioned engines cover the same list.
+        let channels = crate::test_support::differential_channels_w1();
 
         for (name, ch) in &channels {
             let cr: &dyn Channel<1> = ch.as_ref();
@@ -1357,37 +1336,7 @@ mod tests {
     fn differential_against_the_naive_oracle_w2_sparse() {
         // The other regime: wide keys, few collisions, word-boundary supports.
         let input = rand_sum::<2>(3000, 128, 0xBEEF);
-        let channels: Vec<(&str, Box<dyn Channel<2>>)> = vec![
-            ("h@70", Box::new(Clifford1Q::h(70))),
-            ("s@64", Box::new(Clifford1Q::s(64))),
-            ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
-            ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
-            (
-                "amp_damping@70",
-                Box::new(AmplitudeDamping {
-                    support: [70],
-                    gamma: 0.25,
-                }),
-            ),
-            (
-                "rot_y@70",
-                Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
-            ),
-            (
-                "rot_zz_cross_word",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<2>::z(9);
-                        g.mul_assign(&PauliString::<2>::z(70));
-                        g
-                    },
-                    0.33,
-                )),
-            ),
-            // Dense SU(4), support straddling the word boundary — the
-            // dense-PTM run shape at `W = 2`.
-            ("haar_su4_cross_word", Box::new(haar_su4(60, 70))),
-        ];
+        let channels = crate::test_support::differential_channels_w2();
         for (name, ch) in &channels {
             let cr: &dyn Channel<2> = ch.as_ref();
             for &adjoint in &[false, true] {
@@ -1718,7 +1667,7 @@ mod tests {
         let check = |ch: &dyn Channel<1>, want: bool, label: &str| {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 6);
-            match DeltaPlan::new(&prep, &span) {
+            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
                 DeltaPlan::Local { dense_identity, .. } => {
                     assert_eq!(dense_identity, want, "{label}")
                 }
@@ -1761,7 +1710,7 @@ mod tests {
         let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool) {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 8);
-            match DeltaPlan::new(&prep, &span) {
+            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
                 DeltaPlan::Local {
                     ptm,
                     has_identity,
@@ -2406,7 +2355,14 @@ mod extra_rows_tests {
             .prepare(b.hash(), false)
             .expect("channel could not be prepared");
         let mut scratch = LayerScratch::<W>::new();
-        apply_layer_bucketed_with(&mut b, &prep, policy, &mut scratch, extra);
+        apply_layer_bucketed_with(
+            &mut b,
+            &prep,
+            policy,
+            &mut scratch,
+            extra,
+            LayerKnobs::default(),
+        );
         b
     }
 

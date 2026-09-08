@@ -53,7 +53,6 @@ pub(crate) struct PartitionPlan {
     /// Always contains `0`: the identity delta is local, and `0` is in every
     /// span regardless, so including it unconditionally cannot change the
     /// span it generates.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub local_bucket_deltas: Vec<u32>,
     /// The remote deltas, ascending by [`RemoteDelta::entry`].
     pub remote: Vec<RemoteDelta>,
@@ -63,7 +62,6 @@ pub(crate) struct PartitionPlan {
     /// on how wide a channel's fanout is, which is a property of the channel,
     /// not of how this partition happens to see it — so the gate reads the
     /// total, not the local count.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub rest_streams_total: usize,
 }
 
@@ -77,7 +75,6 @@ impl PartitionPlan {
     ///
     /// Panics in debug builds if `rank` is not a partition of `rows`, or if the
     /// identity delta somehow classifies as remote (it cannot: `part(0) = 0`).
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub(crate) fn new<const W: usize>(
         prep: &Prepared<W>,
         rows: &PartitionRows<W>,
@@ -163,7 +160,6 @@ impl PartitionPlan {
     }
 
     /// `true` if this layer moves anything across a partition boundary.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub(crate) fn has_remote(&self) -> bool {
         !self.remote.is_empty()
     }
@@ -173,7 +169,6 @@ impl PartitionPlan {
     /// Recomputed on call rather than cached: there are at most
     /// `P_MAX_BITS`-many partitions and a handful of deltas, and this runs once
     /// per layer.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub(crate) fn partners(&self) -> impl Iterator<Item = u32> + '_ {
         let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
         v.sort_unstable();
@@ -182,7 +177,6 @@ impl PartitionPlan {
     }
 
     /// The remote deltas destined for partition `q`, ascending by entry.
-    #[allow(dead_code)] // consumed by the partitioned layer in a later step
     pub(crate) fn remote_for_partner(&self, q: u32) -> impl Iterator<Item = &RemoteDelta> {
         self.remote.iter().filter(move |r| r.partner == q)
     }

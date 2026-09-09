@@ -1477,6 +1477,16 @@ struct PartitionCellStats {
     terms_in: Vec<usize>,
     /// `max / mean` of [`Self::terms_in`]: 1.0 is a perfectly even split.
     imbalance: f64,
+    /// The same ratio **per layer**, in application order
+    /// ([`PartitionTrace::imbalance`]). The cell-level [`Self::imbalance`]
+    /// above sums the layers first and so hides the dynamics; this is the
+    /// series that says how fast terms mix between partitions, which for
+    /// cut-like rows is the quantity in tension with the exchange volume they
+    /// save.
+    imbalance_by_layer: Vec<f64>,
+    /// Total terms in, per layer, over the whole group — the growth curve the
+    /// imbalance series has to be read against.
+    terms_by_layer: Vec<usize>,
     /// Each partition's `coset_loop_ns`, by rank — the spread that says
     /// whether the exchange waits are imbalance or traffic.
     coset_loop_ns: Vec<u64>,
@@ -2294,6 +2304,12 @@ fn summarize_partitions(
             .sum(),
         terms_in,
         imbalance,
+        imbalance_by_layer: trace.imbalance(),
+        terms_by_layer: trace
+            .layers
+            .iter()
+            .map(|layer| layer.terms_in.iter().sum())
+            .collect(),
         coset_loop_ns: per_partition
             .per_partition
             .iter()
@@ -2499,6 +2515,25 @@ fn print_partition_block(cell: &CellResult) {
         "    coset_loop ms per partition = [{}]",
         coset_ms.join(", ")
     );
+    // The per-layer series are long (a heavy-hex step alone is 271 layers), so
+    // the human format prints their shape rather than their contents — the
+    // full arrays are in the JSON/TSV row.
+    if let (Some(first), Some(last)) = (p.imbalance_by_layer.first(), p.imbalance_by_layer.last()) {
+        let worst = p
+            .imbalance_by_layer
+            .iter()
+            .copied()
+            .fold(f64::MIN, f64::max);
+        println!(
+            "    imbalance per layer over {} layers: first {:.3}, worst {:.3}, last {:.3}   \
+             (rows = {})",
+            p.imbalance_by_layer.len(),
+            first,
+            worst,
+            last,
+            cell.partition_rows,
+        );
+    }
 }
 
 fn print_json(cell: &CellResult) {
@@ -2509,6 +2544,18 @@ fn print_json(cell: &CellResult) {
 fn json_u64_array<T: std::fmt::Display>(values: &[T]) -> String {
     let items: Vec<String> = values.iter().map(T::to_string).collect();
     format!("[{}]", items.join(","))
+}
+
+/// `[a, b, c]` for a JSON array of floats at six decimals, `[]` when empty.
+fn json_f64_array(values: &[f64]) -> String {
+    let items: Vec<String> = values.iter().map(|v| format!("{v:.6}")).collect();
+    format!("[{}]", items.join(","))
+}
+
+/// `a|b|c` for the TSV spelling of the same array of floats.
+fn tsv_f64_array(values: &[f64]) -> String {
+    let items: Vec<String> = values.iter().map(|v| format!("{v:.6}")).collect();
+    items.join("|")
 }
 
 /// `a|b|c` — the TSV spelling of the same array, `` (empty) when empty.
@@ -2540,14 +2587,16 @@ fn json_line(cell: &CellResult) -> String {
         .as_ref()
         .map_or(&empty_ns, |p| &p.coset_loop_ns)
         .as_slice();
-    let partition_fields = format!(
+    let partition_fields =
+        format!(
         ",\"partitions\":{},\"partition_cpus\":\"{}\",\"pin_memory\":{},\"gen_qubits\":[{},{}],\
          \"local_layers\":{},\"remote_layers\":{},\"rows_exported\":{},\"bytes_exported\":{},\
          \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
          \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"append_ns\":{},\
-         \"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\"",
+         \"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\",\
+         \"partition_imbalance_by_layer\":{},\"terms_by_layer\":{}",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -2573,6 +2622,12 @@ fn json_line(cell: &CellResult) -> String {
         s.chunk_wait_ns,
         cell.initial,
         cell.partition_rows,
+        json_f64_array(cell.partitioned.as_ref().map_or(&[][..], |p| &p.imbalance_by_layer)),
+        json_u64_array(
+            cell.partitioned
+                .as_ref()
+                .map_or(&[][..], |p| &p.terms_by_layer)
+        ),
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -2636,7 +2691,8 @@ terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartiti
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
-recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows";
+recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
+partition_imbalance_by_layer\tterms_by_layer";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2647,7 +2703,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2709,6 +2765,8 @@ fn print_tsv_row(cell: &CellResult) {
         s.chunk_wait_ns,
         cell.initial,
         cell.partition_rows,
+        tsv_f64_array(p.map_or(&[][..], |p| &p.imbalance_by_layer)),
+        tsv_array(p.map_or(&[][..], |p| &p.terms_by_layer)),
     );
 }
 

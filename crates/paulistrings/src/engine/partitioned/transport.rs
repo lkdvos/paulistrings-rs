@@ -75,13 +75,11 @@
 //!
 //! [`Payload::byte_parts`] hands out one borrowed, zero-copy `&[u8]` view per
 //! column (`bytemuck::cast_slice`, no packing, no allocation). The receive side
-//! is its mirror: [`Payload::recv_into`] sizes the payload's *own* typed
+//! is its exact mirror: [`Payload::recv_into`] sizes the payload's *own* typed
 //! columns from the part lengths the wire declared and hands out mutable byte
 //! views of them, so a transport receives straight into the storage the engine
-//! reads and there is no decode pass at all —
-//! [`Payload::from_byte_parts`] is the copying inverse, kept for a transport
-//! that cannot place the bytes itself, and for the round-trip tests that pin
-//! the wire format.
+//! reads and there is no decode pass at all. That pair is the **only** wire
+//! path — there is no copying inverse to keep in step with it.
 //!
 //! Both sides are **pooled**: an [`ExchangeBlock`]'s columns are grow-only and
 //! a payload the layer is finished with goes back into the caller's pool
@@ -226,9 +224,6 @@ impl ChunkMap {
     }
 
     /// Chunks the bulk transfer is cut into.
-    // Read by the transport that pipelines the receive, and by this module's
-    // own layout tests; a build with neither still wants the map's order.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn chunks(&self) -> usize {
         self.chunks as usize
     }
@@ -241,7 +236,6 @@ impl ChunkMap {
     /// # Panics
     ///
     /// If `k > chunks()`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bound(&self, k: usize) -> u32 {
         assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
         let c = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
@@ -252,7 +246,6 @@ impl ChunkMap {
     ///
     /// The inverse of [`bound`](Self::bound): `bound(k) <= p < bound(k + 1)`.
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn chunk_of_position(&self, p: u32) -> usize {
         let c = u64::from(p >> self.r);
         ((c * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
@@ -265,7 +258,7 @@ impl ChunkMap {
 /// bytes with no copy and reads back from an unaligned buffer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct BlockHeader {
+pub(crate) struct BlockHeader {
     /// Number of destination positions the block is indexed by — the group's
     /// agreed bucket count. `offsets` has `num_buckets + 1` entries.
     pub num_buckets: u32,
@@ -302,7 +295,7 @@ pub struct BlockHeader {
 /// [`segment`](Self::segment)`(map.position_of(β′))` and merges those rows into
 /// that bucket. See the module docs for the ordering.
 #[derive(Clone, Debug, Default)]
-pub struct ExchangeBlock<const W: usize> {
+pub(crate) struct ExchangeBlock<const W: usize> {
     /// Wire prefix: source-bucket count, row count, width, remote-delta index.
     pub header: BlockHeader,
     /// CSR offsets by destination position, `num_buckets + 1` entries.
@@ -333,7 +326,7 @@ impl<const W: usize> PartialEq for ExchangeBlock<W> {
 /// payload (see the collective-order invariant in the module docs); an empty
 /// `blocks` is legal and encodes to zero parts.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct PartnerPayload<const W: usize> {
+pub(crate) struct PartnerPayload<const W: usize> {
     /// One block per remote delta, ascending by [`BlockHeader::entry`].
     pub blocks: Vec<ExchangeBlock<W>>,
 }
@@ -345,9 +338,13 @@ impl<const W: usize> ExchangeBlock<W> {
     /// [`set_counts`](Self::set_counts) on a fresh block: the columns come back
     /// `rows` long, ready for the export pass to write by index.
     ///
+    /// The engine always re-aims a pooled block instead, so this is the tests'
+    /// constructor.
+    ///
     /// # Panics
     ///
     /// If the counts sum past `u32::MAX` rows.
+    #[cfg(test)]
     pub fn with_counts(entry: u32, counts: &[u32]) -> Self {
         let mut block = Self::default();
         block.set_counts(entry, counts);
@@ -457,28 +454,18 @@ impl<const W: usize> ExchangeBlock<W> {
 ///
 /// [`byte_parts`](Self::byte_parts) is zero-copy — borrowed views of the
 /// payload's own columns, one part per column — so a sending transport never
-/// packs or allocates. The receive side has two forms:
-///
-/// - [`recv_into`](Self::recv_into) + [`finish_recv`](Self::finish_recv) is the
-///   **zero-copy** one: the payload sizes its own typed columns from the part
-///   lengths the wire declared and hands out mutable byte views *of those
-///   columns*, so a transport receives straight into the storage the engine
-///   will read, with no decode pass and no second buffer. This is what the MPI
-///   transport uses, and it is why a payload is `Default` — a transport pools
-///   them across layers so the steady state allocates nothing.
-/// - [`from_byte_parts`](Self::from_byte_parts) is the copying inverse of
-///   `byte_parts`, for a transport that cannot place the bytes itself. It must
-///   accept unaligned input (bytes off a network buffer carry no alignment
-///   guarantee).
+/// packs or allocates. [`recv_into`](Self::recv_into) +
+/// [`finish_recv`](Self::finish_recv) is its mirror: the payload sizes its own
+/// typed columns from the part lengths the wire declared and hands out mutable
+/// byte views *of those columns*, so a transport receives straight into the
+/// storage the engine will read, with no decode pass and no second buffer.
+/// That is why a payload is `Default` — a transport pools them across layers,
+/// so the steady state allocates nothing.
 ///
 /// The in-process transport moves the typed value and calls none of them.
 pub trait Payload: Default + Send + 'static {
-    /// Borrowed byte views of this payload's columns, in decode order.
+    /// Borrowed byte views of this payload's columns, in wire order.
     fn byte_parts(&self) -> Vec<&[u8]>;
-
-    /// Rebuild a payload from the parts [`byte_parts`](Self::byte_parts)
-    /// produced, in the same order. Copies.
-    fn from_byte_parts(parts: &[&[u8]]) -> Self;
 
     /// Reshape this payload for an incoming message whose parts have byte
     /// lengths `lens`, and hand out one mutable byte view per part to receive
@@ -581,7 +568,7 @@ pub trait ChunkWait: Sync {
 }
 
 /// The [`ChunkWait`] of a transport whose exchange already completed.
-pub struct AlreadyHere;
+pub(crate) struct AlreadyHere;
 
 impl ChunkWait for AlreadyHere {
     fn wait_chunk(&self, _k: usize) {}
@@ -642,26 +629,6 @@ fn check_stride(len: usize, stride: usize, what: &str) {
         0,
         "exchange block {what}: {len} bytes is not a whole number of {stride}-byte entries",
     );
-}
-
-/// Copy `len` values of `T` out of a possibly unaligned byte view.
-///
-/// `bytemuck::cast_slice` would be free but requires the input to be aligned
-/// for `T`, which a received buffer need not be; the per-element
-/// `pod_read_unaligned` costs one copy on a path that is already copying.
-pub(crate) fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
-    let stride = size_of::<T>();
-    assert_eq!(
-        bytes.len(),
-        len * stride,
-        "exchange block {what}: expected {} bytes for {len} entries, got {}",
-        len * stride,
-        bytes.len(),
-    );
-    bytes
-        .chunks_exact(stride)
-        .map(bytemuck::pod_read_unaligned)
-        .collect()
 }
 
 impl<const W: usize> Payload for PartnerPayload<W> {
@@ -855,75 +822,9 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         }
         parts
     }
-
-    fn from_byte_parts(parts: &[&[u8]]) -> Self {
-        assert_eq!(
-            parts.len() % PARTS_PER_BLOCK,
-            0,
-            "partner payload: {} parts is not a whole number of {PARTS_PER_BLOCK}-part blocks",
-            parts.len(),
-        );
-        let mut blocks = Vec::with_capacity(parts.len() / PARTS_PER_BLOCK);
-        for chunk in parts.chunks_exact(PARTS_PER_BLOCK) {
-            assert_eq!(
-                chunk[0].len(),
-                size_of::<BlockHeader>(),
-                "partner payload: block header is {} bytes, expected {}",
-                chunk[0].len(),
-                size_of::<BlockHeader>(),
-            );
-            let header: BlockHeader = bytemuck::pod_read_unaligned(chunk[0]);
-            assert_eq!(
-                header.w as usize, W,
-                "partner payload: block encoded at width W={} decoded at W={W}",
-                header.w,
-            );
-            let rows = header.rows as usize;
-            let offsets =
-                decode_column::<u32>(chunk[1], header.num_buckets as usize + 1, "offsets");
-            assert_eq!(
-                offsets.last().copied().unwrap_or(0),
-                header.rows,
-                "partner payload: offsets end at {:?}, header says {} rows",
-                offsets.last(),
-                header.rows,
-            );
-            let x = decode_rows::<W>(chunk[2], rows, "x column");
-            let z = decode_rows::<W>(chunk[3], rows, "z column");
-            let coeff = decode_column::<Complex64>(chunk[4], rows, "coeff column");
-            blocks.push(ExchangeBlock {
-                header,
-                offsets,
-                x,
-                z,
-                coeff,
-            });
-        }
-        Self { blocks }
-    }
 }
 
-/// Copy `rows` key words of width `W` out of a possibly unaligned byte view.
-///
-/// Separate from [`decode_column`] because `[u64; W]` for a generic `W` is not
-/// `Pod` under the feature set this crate builds `bytemuck` with; the words are
-/// read individually and assembled.
-pub(crate) fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
-    let stride = W * size_of::<u64>();
-    assert_eq!(
-        bytes.len(),
-        rows * stride,
-        "exchange block {what}: expected {} bytes for {rows} rows, got {}",
-        rows * stride,
-        bytes.len(),
-    );
-    bytes
-        .chunks_exact(stride)
-        .map(|row| std::array::from_fn(|i| bytemuck::pod_read_unaligned(&row[i * 8..i * 8 + 8])))
-        .collect()
-}
-
-/// The laps a [`Transport::exchange`] takes inside itself, for
+/// The laps a [`Transport::exchange_layer`] takes inside itself, for
 /// [`Transport::drain_timings`] to hand the engine's [`PhaseStats`] (feature
 /// `phase-timing`).
 ///
@@ -1182,10 +1083,6 @@ pub(crate) struct ByteParts(pub(crate) Vec<Vec<u8>>);
 impl Payload for ByteParts {
     fn byte_parts(&self) -> Vec<&[u8]> {
         self.0.iter().map(Vec::as_slice).collect()
-    }
-
-    fn from_byte_parts(parts: &[&[u8]]) -> Self {
-        Self(parts.iter().map(|p| p.to_vec()).collect())
     }
 
     /// Already bytes, so "receiving into the typed columns" is receiving into
@@ -2215,12 +2112,32 @@ mod tests {
         assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 92);
     }
 
+    /// Move `payload` over the wire and back: [`Payload::byte_parts`] on the
+    /// sender, [`Payload::recv_into`] + [`Payload::finish_recv`] on a fresh
+    /// receiver, with the bytes copied across the way a transport moves them.
+    ///
+    /// That pair is the only encode/decode path the engine has, so it is what
+    /// the wire-format tests exercise.
+    fn wire_round_trip<const W: usize>(payload: &PartnerPayload<W>) -> PartnerPayload<W> {
+        let sent: Vec<Vec<u8>> = payload
+            .byte_parts()
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect();
+        let lens: Vec<usize> = sent.iter().map(Vec::len).collect();
+        let mut back = PartnerPayload::<W>::default();
+        for (view, bytes) in back.recv_into(&lens).into_iter().zip(&sent) {
+            view.copy_from_slice(bytes);
+        }
+        back.finish_recv();
+        back
+    }
+
     #[test]
     fn an_empty_payload_round_trips_as_zero_parts() {
         let payload = PartnerPayload::<2>::default();
-        let parts = payload.byte_parts();
-        assert!(parts.is_empty());
-        assert_eq!(PartnerPayload::<2>::from_byte_parts(&parts), payload);
+        assert!(payload.byte_parts().is_empty());
+        assert_eq!(wire_round_trip(&payload), payload);
     }
 
     #[test]
@@ -2232,25 +2149,22 @@ mod tests {
             payload.blocks.push(block);
         }
 
-        let back = {
-            let parts = payload.byte_parts();
-            PartnerPayload::<2>::from_byte_parts(&parts)
-        };
+        let back = wire_round_trip(&payload);
         assert_eq!(back, payload);
         // And the CSR indexing survives byte-for-byte.
         assert_eq!(back.blocks[1].segment(1).0, payload.blocks[1].segment(1).0);
     }
 
+    /// A block whose header says it was built at another width is rejected
+    /// rather than reinterpreted. The declared part lengths cannot catch it —
+    /// they are a whole number of rows either way — so
+    /// [`Payload::finish_recv`] is what does.
     #[test]
     #[should_panic(expected = "width")]
-    fn decoding_at_the_wrong_width_panics() {
-        let mut payload = PartnerPayload::<1>::default();
-        let mut block = ExchangeBlock::<1>::with_counts(0, &[1]);
-        fill(&mut block, 5);
-        payload.blocks.push(block);
-
-        let parts = payload.byte_parts();
-        let _ = PartnerPayload::<2>::from_byte_parts(&parts);
+    fn a_block_encoded_at_another_width_is_rejected() {
+        let mut payload = payload_of::<2>(2, 1, 0x5);
+        payload.blocks[0].header.w = 1;
+        let _ = wire_round_trip(&payload);
     }
 
     /// Small random payloads: 0–2 blocks, 1–4 source buckets, 0–3 rows each.
@@ -2271,20 +2185,12 @@ mod tests {
     proptest! {
         #[test]
         fn arbitrary_payloads_round_trip_at_w1(payload in arb_payload::<1>()) {
-            let back = {
-                let parts = payload.byte_parts();
-                PartnerPayload::<1>::from_byte_parts(&parts)
-            };
-            prop_assert_eq!(back, payload);
+            prop_assert_eq!(wire_round_trip(&payload), payload);
         }
 
         #[test]
         fn arbitrary_payloads_round_trip_at_w2(payload in arb_payload::<2>()) {
-            let back = {
-                let parts = payload.byte_parts();
-                PartnerPayload::<2>::from_byte_parts(&parts)
-            };
-            prop_assert_eq!(back, payload);
+            prop_assert_eq!(wire_round_trip(&payload), payload);
         }
     }
 
@@ -2294,11 +2200,6 @@ mod tests {
     impl Payload for Vec<u64> {
         fn byte_parts(&self) -> Vec<&[u8]> {
             vec![bytemuck::cast_slice(&self[..])]
-        }
-
-        fn from_byte_parts(parts: &[&[u8]]) -> Self {
-            assert_eq!(parts.len(), 1, "test payload: expected one part");
-            decode_column::<u64>(parts[0], parts[0].len() / size_of::<u64>(), "test payload")
         }
 
         fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {

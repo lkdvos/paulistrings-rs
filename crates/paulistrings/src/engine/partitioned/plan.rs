@@ -164,21 +164,6 @@ impl PartitionPlan {
         !self.remote.is_empty()
     }
 
-    /// The partitions this layer exports to, distinct and ascending.
-    ///
-    /// Recomputed on call rather than cached: there are at most
-    /// `P_MAX_BITS`-many partitions and a handful of deltas, and this runs once
-    /// per layer.
-    // The only consumers are `layer`'s debug-only export assertions and this
-    // module's tests, so it really is dead in a release build.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    pub(crate) fn partners(&self) -> impl Iterator<Item = u32> + '_ {
-        let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
-        v.sort_unstable();
-        v.dedup();
-        v.into_iter()
-    }
-
     /// The remote deltas destined for partition `q`, ascending by entry.
     pub(crate) fn remote_for_partner(&self, q: u32) -> impl Iterator<Item = &RemoteDelta> {
         self.remote.iter().filter(move |r| r.partner == q)
@@ -220,6 +205,20 @@ pub fn count_remote_deltas<const W: usize>(
             (local, plan.remote.len())
         })
         .collect()
+}
+
+#[cfg(test)]
+impl PartitionPlan {
+    /// The partitions this layer exports to, distinct and ascending.
+    ///
+    /// The engine routes by [`Self::remote`] directly; this is the tests' way
+    /// of asking the same question as a set.
+    fn partners(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter()
+    }
 }
 
 #[cfg(test)]

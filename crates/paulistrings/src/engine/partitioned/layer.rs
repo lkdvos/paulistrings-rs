@@ -297,10 +297,11 @@ where
     #[cfg(debug_assertions)]
     {
         super::export::debug_assert_exported_partitions(&send, rows);
-        for q in plan.partners() {
+        for r in &plan.remote {
             debug_assert!(
-                send[q as usize].is_some(),
-                "no payload for partner {q}, which the plan names",
+                send[r.partner as usize].is_some(),
+                "no payload for partner {}, which the plan names",
+                r.partner,
             );
         }
     }

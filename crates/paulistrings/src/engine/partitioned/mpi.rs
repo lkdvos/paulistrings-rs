@@ -203,8 +203,9 @@ impl Tags {
 ///
 /// MPI counts are `i32`, so the hard ceiling is just under 2 GiB; 1 GiB leaves
 /// room and is large enough that a chunked part is the exception. See the
-/// module docs on chunking.
-pub const DEFAULT_CHUNK_BYTES: usize = 1 << 30;
+/// module docs on chunking; [`MpiTransport::with_chunk_bytes`] overrides it
+/// for the tests that need the chunked path to fire.
+const DEFAULT_CHUNK_BYTES: usize = 1 << 30;
 
 /// What can go wrong building an [`MpiTransport`]. Everything after
 /// construction is a panic, as everywhere else in the engine.
@@ -314,23 +315,11 @@ impl MpiTransport {
     /// # Panics
     ///
     /// If the communicator's size is not a power of two (see
-    /// [`MpiError::SizeNotPowerOfTwo`]); use
-    /// [`try_from_communicator`](Self::try_from_communicator) for the fallible
-    /// form.
+    /// [`MpiError::SizeNotPowerOfTwo`]). A caller that would rather handle
+    /// that goes through [`from_raw_handle`](Self::from_raw_handle), the
+    /// fallible entry point the Python bindings use.
     pub fn from_communicator(comm: &impl Communicator) -> Self {
-        Self::try_from_communicator(comm).unwrap_or_else(|err| panic!("{err}"))
-    }
-
-    /// [`from_communicator`](Self::from_communicator), reporting a
-    /// non-power-of-two size instead of panicking.
-    ///
-    /// **Collective** over `comm`.
-    ///
-    /// # Errors
-    ///
-    /// [`MpiError::SizeNotPowerOfTwo`].
-    pub fn try_from_communicator(comm: &impl Communicator) -> Result<Self, MpiError> {
-        Self::adopt(comm.duplicate())
+        Self::adopt(comm.duplicate()).unwrap_or_else(|err| panic!("{err}"))
     }
 
     /// Duplicate a raw `MPI_Comm` handle and wrap it.
@@ -432,11 +421,6 @@ impl MpiTransport {
         assert!(bytes > 0, "the chunk size must be positive");
         self.chunk = bytes;
         self
-    }
-
-    /// The communicator this transport owns (the duplicate, not the original).
-    pub fn communicator(&self) -> &SimpleCommunicator {
-        &self.comm
     }
 
     /// The MPI library version string this build probed through `mpicc`.

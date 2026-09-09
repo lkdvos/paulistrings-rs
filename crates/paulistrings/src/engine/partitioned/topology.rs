@@ -152,7 +152,7 @@ impl fmt::Display for CpuSet {
 /// Falls back to `0..available_parallelism` when the mask cannot be read and
 /// on non-Linux targets.
 #[must_use]
-pub fn allowed_cpus() -> CpuSet {
+pub(crate) fn allowed_cpus() -> CpuSet {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: `set` is a valid, correctly sized `cpu_set_t`; pid 0 is the
@@ -232,7 +232,7 @@ fn sysfs_numa_nodes(_allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
 ///
 /// [`io::ErrorKind::InvalidInput`] if the set is empty or names a CPU at or
 /// beyond the kernel's `CPU_SETSIZE`; otherwise the `sched_setaffinity` error.
-pub fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
+pub(crate) fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         if set.is_empty() {
@@ -275,7 +275,7 @@ pub fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
 ///
 /// The `set_mempolicy` error — notably [`io::ErrorKind::Unsupported`] on a
 /// kernel built without NUMA support.
-pub fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> {
+pub(crate) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         // `libc` exposes no `set_mempolicy` wrapper, so go through `syscall`.
@@ -317,8 +317,11 @@ pub fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> {
 
 /// The CPU the calling thread is running on right now, if the platform can
 /// say. `None` on non-Linux targets.
-#[must_use]
-pub fn current_cpu() -> Option<usize> {
+///
+/// Only [`build_pool`]'s own test asks — the engine pins and then trusts the
+/// kernel — so it is compiled for tests alone.
+#[cfg(test)]
+fn current_cpu() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: `sched_getcpu` takes no arguments and cannot fail beyond

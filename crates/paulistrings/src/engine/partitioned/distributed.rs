@@ -52,7 +52,7 @@ use super::layer::PartitionState;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
-use super::transport::{decode_column, decode_rows, Transport};
+use super::transport::Transport;
 use super::truncation::PartitionedTruncation;
 use crate::bucket::hash::PartitionRows;
 use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
@@ -627,6 +627,45 @@ fn run_fingerprint(
     h
 }
 
+/// Copy `len` values of `T` out of a possibly unaligned byte view.
+///
+/// `bytemuck::cast_slice` would be free but requires the input to be aligned
+/// for `T`, which a received buffer need not be. The layer's exchange avoids
+/// the copy entirely (`Payload::recv_into` receives into the typed columns);
+/// the gather runs once per run and does not bother.
+fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
+    let stride = std::mem::size_of::<T>();
+    assert_eq!(
+        bytes.len(),
+        len * stride,
+        "gather {what}: expected {} bytes for {len} entries, got {}",
+        len * stride,
+        bytes.len(),
+    );
+    bytes
+        .chunks_exact(stride)
+        .map(bytemuck::pod_read_unaligned)
+        .collect()
+}
+
+/// [`decode_column`] for key words: `[u64; W]` at a generic `W` is not `Pod`
+/// under the feature set this crate builds `bytemuck` with, so the words are
+/// read individually and assembled.
+fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
+    let stride = W * std::mem::size_of::<u64>();
+    assert_eq!(
+        bytes.len(),
+        rows * stride,
+        "gather {what}: expected {} bytes for {rows} rows, got {}",
+        rows * stride,
+        bytes.len(),
+    );
+    bytes
+        .chunks_exact(stride)
+        .map(|row| std::array::from_fn(|i| bytemuck::pod_read_unaligned(&row[i * 8..i * 8 + 8])))
+        .collect()
+}
+
 /// Rebuild one rank's share from the [`GATHER_PARTS`] parts it shipped.
 ///
 /// # Panics
@@ -647,12 +686,12 @@ fn decode_rank<const W: usize>(
         parts.len(),
     );
     let num_buckets = hash.num_buckets();
-    let lens: Vec<u64> = decode_column(&parts[0], num_buckets, "gather bucket lengths");
+    let lens: Vec<u64> = decode_column(&parts[0], num_buckets, "bucket lengths");
     let lens: Vec<usize> = lens.iter().map(|&l| l as usize).collect();
     let terms: usize = lens.iter().sum();
-    let x = decode_rows::<W>(&parts[1], terms, "gather x column");
-    let z = decode_rows::<W>(&parts[2], terms, "gather z column");
-    let coeff = decode_column::<Complex64>(&parts[3], terms, "gather coeff column");
+    let x = decode_rows::<W>(&parts[1], terms, "x column");
+    let z = decode_rows::<W>(&parts[2], terms, "z column");
+    let coeff = decode_column::<Complex64>(&parts[3], terms, "coeff column");
     PauliSum::from_bucket_columns(&lens, x, z, coeff, hash, num_qubits)
 }
 

@@ -42,19 +42,16 @@ pub use driver::PartitionPhaseStats;
 pub use driver::{propagate_partitioned, propagate_partitioned_with_options, PartitionedSum};
 pub use plan::count_remote_deltas;
 pub use runtime::PartitionRuntime;
+// Where the partitions run: the machine's CPU sets and NUMA nodes, and the
+// placement a caller asks for.
+pub use topology::{numa_nodes, CpuSet, PartitionConfig, PartitionSlot, Placement, TopologyError};
 // What a partitioned run did, layer by layer: term counts per partition,
 // bucket bits, and who sent how many rows to whom.
-pub use topology::{
-    allowed_cpus, bind_current_thread_memory, current_cpu, numa_nodes, pin_current_thread, CpuSet,
-    PartitionConfig, PartitionSlot, Placement, TopologyError,
-};
 pub use trace::{PartitionLayerRecord, PartitionTrace};
-// The exchange wire format: what a layer's cross-partition traffic looks like
-// on the wire, and the trait an MPI transport implements to move it.
-pub use transport::{
-    AlreadyHere, BlockHeader, ChunkMap, ChunkWait, Collectives, ExchangeBlock, InProcessTransport,
-    PartnerPayload, Payload, Transport,
-};
+// The seam a transport is written against. The concrete wire types
+// (`ExchangeBlock`, `PartnerPayload`, `BlockHeader`) are deliberately not here:
+// a transport moves an opaque `P: Payload` and never names them.
+pub use transport::{ChunkMap, ChunkWait, Collectives, InProcessTransport, Payload, Transport};
 // The collective form of a layer finalization: what a truncation policy has
 // to provide before it can run with the sum split across partitions.
 pub use truncation::PartitionedTruncation;

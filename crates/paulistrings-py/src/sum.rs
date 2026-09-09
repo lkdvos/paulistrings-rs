@@ -901,11 +901,11 @@ impl PropagationStats {
     /// The partitioned run's own record, or `None` for an unpartitioned call.
     ///
     /// `Some(PartitionStats)` exactly when `propagate_with_stats` was given a
-    /// `partitions=` that put the call in partitioned mode — note that
-    /// `partitions="auto"` on a single-NUMA-node box runs unpartitioned and so
-    /// reports `None` here. The per-layer lists it carries are indexed the same
-    /// way as `terms_in` / `terms_out`: one entry per layer, in application
-    /// order.
+    /// `partitions=` or a `comm=` that put the call in partitioned mode — note
+    /// that `partitions="auto"` on a single-NUMA-node box runs unpartitioned
+    /// and so reports `None` here. The per-layer lists it carries are indexed
+    /// the same way as `terms_in` / `terms_out`: one entry per layer, in
+    /// application order.
     #[getter]
     fn partition(&self) -> Option<PartitionStats> {
         self.partition.clone()
@@ -990,7 +990,8 @@ impl PropagationStats {
 }
 
 /// Per-layer, per-partition record of a partitioned propagation — the
-/// `partition` attribute of a [`PropagationStats`] from a `partitions=` call.
+/// `partition` attribute of a [`PropagationStats`] from a `partitions=` or
+/// `comm=` call.
 ///
 /// A plain record with read-only attributes, like `PropagationStats`. Every
 /// list is one entry per layer applied, in application order (so *reverse*
@@ -1445,6 +1446,14 @@ impl PauliSum {
     /// partition's NUMA node, which is the point of the placement; pass
     /// `False` to pin threads but not memory.
     ///
+    /// ```python
+    /// evolved = observable.propagate(
+    ///     circuit, policy, direction="heisenberg", partitions="auto"
+    /// )
+    /// ```
+    ///
+    /// `paulistrings.numa_nodes()` reports what `"auto"` has to place against.
+    ///
     /// Three things behave differently in partitioned mode:
     ///
     /// - **`RAYON_NUM_THREADS` is ignored.** Each partition builds its own
@@ -1491,7 +1500,7 @@ impl PauliSum {
     /// | `"gather"` (default) | rank 0 the whole evolved sum; every other rank an **empty** `PauliSum` of the same `num_qubits`, so downstream code still type-checks |
     /// | `"local"` | this rank's own share. The shares are disjoint, so a global reduction is `comm.allreduce(local.expectation(...))` and the term count is `comm.allreduce(len(local))` |
     ///
-    /// Four requirements, none of them checkable from inside a single rank:
+    /// Four requirements on the group:
     ///
     /// - **Thread level at least `MPI_THREAD_SERIALIZED`.** The layer loop
     ///   runs inside a pinned Rayon pool, so MPI is called from a pool worker

@@ -208,3 +208,27 @@ collective `MPI_Comm_dup`, so a rank that raises never enters a collective its p
 The handoff flagged `MpiTransport::adopt` returning `SizeNotPowerOfTwo` after the dup as a leak: it is
 not — rsmpi's `SimpleCommunicator::from_raw` owns the handle and `Drop` calls `MPI_Comm_free`
 (`mpi-0.8.2/src/topology/sealed.rs:152`), and `adopt` takes the communicator by value.
+
+## 2026-09-09 — first large-`m` MPI numbers (Slurm 7008424: Icelake node, 2 ranks × 32 threads, UCX shm)
+
+`phase_breakdown --mpi --n 8000000` (replicated input, 6.0e6 terms per rank for rotations), per layer:
+
+| layer | wall | export | exchange | coset loop | rows exported/layer | peak RSS/rank |
+|---|---|---|---|---|---|---|
+| rotation_local | **7.4 ms** | 0 | 0 | 6.6 ms | 0 | 2.2 GB |
+| rotation_remote | **140 ms** | 35–39 ms | 95 ms | 6.9 ms | 4.0e6 (192 MB) | 2.3 GB |
+| rotation_zz (random rows: remote) | 143 ms | 39 ms | 95 ms | 7.1 ms | 4.0e6 | 1.6 GB |
+| cnot | 70 ms | 19 ms | 43 ms | 6 ms | 2.0e6 | 2.4 GB |
+
+A remote rotation layer costs **19× a local one**, and the interconnect is not the reason (192 MB over
+UCX shared memory is ~10 ms). The exchange path allocates fresh send and receive buffers every layer
+(page faults + zeroing of ~400 MB), decodes received bytes word by word (`pod_read_unaligned` loop),
+copies received rows a second time into the gather runs, and the export pass (two passes over 6e6
+terms) takes 5× the whole coset loop. Under the revised priorities this is the overhead to bound;
+target: remote layer ≤ 3× local. Optimization pass launched (buffer reuse across layers, zero-copy
+encode/decode into typed columns, unzeroed fills, sub-phase laps inside `exchange`).
+
+Also: peak RSS is ~370 B/term per rank here, of which the probe's *replicated input* (all 1.2e7 terms
+built on every rank before filtering) is a large share — a probe artefact for capacity runs; real
+drivers should ingest distributed. Multi-node jobs 7008425/26 failed because the build dir was on
+node-local `/tmp`; the template now builds on the shared filesystem.

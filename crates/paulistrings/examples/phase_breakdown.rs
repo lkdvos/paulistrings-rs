@@ -19,7 +19,7 @@
 //!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
 //!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
 //!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic] \
-//!     [--initial random|z0] [--mpi]
+//!     [--partition-rows random|cut|select] [--initial random|z0] [--mpi]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -147,6 +147,31 @@
 //! `--bind-memory 0` drops the per-partition `set_mempolicy` binding (pinning
 //! stays); `--partition-seed <u64>` fixes the partition rows instead of
 //! letting the driver derive them from the sum's hash seed.
+//!
+//! ## Choosing the partition rows
+//!
+//! `--partition-rows` decides the `log2(P)` GF(2) rows the split is named by.
+//! A generator `g` is local exactly when `R·g = 0`, so the rows decide how
+//! many layers pay an export and an exchange at all:
+//!
+//! - `random` (default) — [`PartitionRows::from_seed`], the draw the driver
+//!   makes on its own. Roughly half of a two-qubit generator's deltas cross at
+//!   `P = 2`, and *which* half is a property of the draw.
+//! - `cut` — `log2(P)` **z-only** rows labelling `P` contiguous qubit blocks
+//!   (see [`cut_rows`]). No x-bits means every single-qubit rotation is local;
+//!   a `ZZ(i, j)` is remote exactly when the edge `(i, j)` crosses the cut, so
+//!   a chain at `P = 2` has one remote layer per step and the heavy-hex
+//!   lattice four. The blocks come from an exact DP ([`cut_blocks`]) over the
+//!   layer's own graph — a chain for `tfim_step`, the heavy-hex map for
+//!   `heavyhex_step`, and no edges at all (hence an even index split) for
+//!   every other layer — minimising crossed edges subject to ±25% block-size
+//!   balance. The blocks and the crossing count go to stderr.
+//! - `select` — the weighted XOR-SAT selector of the row-tuning plan's
+//!   deliverable A. **Not yet available**; rejected at parse time.
+//!
+//! The rows are built from the layer, the qubit count, the partition count and
+//! the seed alone, by the one function [`build_partition_rows`], so an `--mpi`
+//! run derives identical rows on every rank with nothing agreed at run time.
 //!
 //! # Distributed cells (`--mpi`, needs the `mpi` feature)
 //!
@@ -318,7 +343,25 @@ Options:
                             the memory policy.
   --partition-seed <u64|0xHEX>
                            Seed picking the GF(2) partition rows. Default: the
-                            driver's own choice (the sum's hash seed).
+                            driver's own choice (the sum's hash seed). Only
+                            --partition-rows random reads it.
+  --partition-rows <spec>  How the log2(P) partition rows are chosen:
+                              random  (default) PartitionRows::from_seed, i.e.
+                                      the driver's own draw -- roughly half of
+                                      a two-qubit generator's deltas cross
+                              cut     log2(P) z-only rows labelling P
+                                      contiguous qubit blocks: every
+                                      single-qubit rotation is local, and a
+                                      ZZ(i,j) is remote iff the edge crosses
+                                      the cut. The blocks minimise crossed
+                                      edges (of the layer's own lattice: a
+                                      chain for tfim_step, the heavy-hex map
+                                      for heavyhex_step, none -- so an even
+                                      index split -- otherwise) subject to
+                                      +-25% size balance; the cut and its
+                                      crossing count are echoed to stderr
+                              select  the weighted XOR-SAT selector: NOT YET
+                                      AVAILABLE, rejected at parse time
   --initial random|z0      The cell's input sum before the warm-up call:
                               random  rand_sum(--n, --qubits, --seed), the
                                       dense steady-state input; the default
@@ -412,9 +455,22 @@ impl LayerKind {
     }
 
     /// The two rotation-only Trotter workloads, whose default input is a
-    /// single-site `Z` observable rather than a random dense sum.
+    /// single-site `Z` observable rather than a random dense sum, and whose
+    /// two-qubit generators define the qubit graph `--partition-rows cut`
+    /// bisects.
     fn is_trotter_step(self) -> bool {
         matches!(self, LayerKind::TfimStep | LayerKind::HeavyHexStep)
+    }
+
+    /// The layer's two-qubit generator graph, i.e. the edges a
+    /// `--partition-rows cut` should avoid crossing. Empty for a layer with no
+    /// lattice of its own, where a cut is just an even index split.
+    fn cut_edges(self, num_qubits: usize) -> Vec<(u32, u32)> {
+        match self {
+            LayerKind::TfimStep => chain_edges(num_qubits),
+            LayerKind::HeavyHexStep => heavy_hex_127_edges(),
+            _ => Vec::new(),
+        }
     }
 
     /// Whether the layer's generator qubits are chosen per cell from the
@@ -648,6 +704,50 @@ impl Initial {
     }
 }
 
+/// `--partition-rows`: how the `log2(P)` GF(2) partition rows are chosen.
+///
+/// The rows are a free parameter of the split — `part(v) = R·v` for any `R` —
+/// and a channel's generator `g` is *local* exactly when `R·g = 0`, so the
+/// choice decides how many layers pay an export and an exchange
+/// (`ARCHITECTURE.md §Partitioning`, and
+/// `research/plans/2026-09-09-partition-row-tuning.md` for why it is a
+/// max-weighted XOR-SAT problem).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PartitionRowSpec {
+    /// `PartitionRows::from_seed` — the driver's own default, and what every
+    /// measurement before this flag existed used. Roughly half of a
+    /// two-qubit generator's deltas cross at `P = 2`.
+    Random,
+    /// `log2(P)` z-only rows labelling `P` contiguous qubit blocks, so every
+    /// single-qubit `X` rotation is local and a `ZZ(i, j)` rotation is remote
+    /// exactly when the edge `(i, j)` crosses the cut. See [`cut_rows`].
+    Cut,
+    /// The greedy weighted XOR-SAT selector over the cell's circuit —
+    /// deliverable A of the plan, **not yet available**.
+    Select,
+}
+
+impl PartitionRowSpec {
+    fn label(self) -> &'static str {
+        match self {
+            PartitionRowSpec::Random => "random",
+            PartitionRowSpec::Cut => "cut",
+            PartitionRowSpec::Select => "select",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "random" => Ok(PartitionRowSpec::Random),
+            "cut" => Ok(PartitionRowSpec::Cut),
+            "select" => Ok(PartitionRowSpec::Select),
+            other => Err(format!(
+                "--partition-rows expects random | cut | select, got '{other}'"
+            )),
+        }
+    }
+}
+
 struct Config {
     n: usize,
     qubits: usize,
@@ -677,6 +777,8 @@ struct Config {
     bind_memory: bool,
     /// Seed for the partition rows, or `None` for the driver's own choice.
     partition_seed: Option<u64>,
+    /// How the partition rows are chosen. See `--partition-rows`.
+    partition_rows: PartitionRowSpec,
     /// `--initial`, or `None` for each layer's own default
     /// ([`Initial::default_for`]).
     initial: Option<Initial>,
@@ -753,6 +855,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut partition_cpus = PartitionCpus::Auto;
     let mut bind_memory = true;
     let mut partition_seed: Option<u64> = None;
+    let mut partition_rows = PartitionRowSpec::Random;
     let mut initial: Option<Initial> = None;
     let mut p1_path = P1Path::Classic;
     let mut mpi = false;
@@ -806,6 +909,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
             }
             "--partition-seed" => partition_seed = Some(parse_seed(value)?),
+            "--partition-rows" => partition_rows = PartitionRowSpec::parse(value)?,
             "--initial" => initial = Some(Initial::parse(value)?),
             "--p1-path" => p1_path = P1Path::parse(value)?,
             "--format" => format = parse_format(value)?,
@@ -920,6 +1024,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let any_partitioned = partitions
         .iter()
         .any(|&p| p > 1 || p1_path == P1Path::Partitioned);
+    // === SELECT ARM (deliverable A of the row-tuning plan) ===============
+    // `partition_rows::select` does not exist yet. Rejected here so a campaign
+    // fails before its first cell rather than after it; the second half of the
+    // wiring is the `PartitionRowSpec::Select` arm of `build_partition_rows`.
+    if partition_rows == PartitionRowSpec::Select {
+        return Err(
+            "--partition-rows select is not yet available: the greedy weighted XOR-SAT row \
+             selector (deliverable A of research/plans/2026-09-09-partition-row-tuning.md) has \
+             not landed. Use --partition-rows random or --partition-rows cut"
+                .to_string(),
+        );
+    }
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
@@ -962,6 +1078,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         partition_cpus,
         bind_memory,
         partition_seed,
+        partition_rows,
         initial,
         p1_path,
         layers,
@@ -1333,6 +1450,9 @@ struct CellResult {
     /// `--initial` as it applied to *this* layer (each layer has its own
     /// default, so the effective value is per cell, not per run).
     initial: &'static str,
+    /// `--partition-rows` echoed back. Meaningless for an unpartitioned cell,
+    /// written on every row anyway so a campaign has one schema.
+    partition_rows: &'static str,
     /// Everything only a partitioned cell has, `None` at `P = 1` classic.
     partitioned: Option<PartitionCellStats>,
     /// `(rank, ranks)` for a `--mpi` cell, `None` otherwise. Every field above
@@ -1544,6 +1664,7 @@ where
             .initial
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
+        partition_rows: cfg.partition_rows.label(),
         // No split, so no partition numbers: the sidecar's partition fields
         // stay zero/empty on this row (machine contract (a)).
         partitioned: None,
@@ -1613,6 +1734,199 @@ fn choose_generator<const W: usize>(
     );
 }
 
+// ---------------------------------------------------------------------
+// Partition rows (`--partition-rows`)
+// ---------------------------------------------------------------------
+
+/// `P` contiguous qubit blocks cutting as few of `edges` as possible.
+///
+/// Returns the blocks' **end** positions, `partitions` of them, the last being
+/// `num_qubits`. Blocks are contiguous index ranges because that is what the
+/// two workloads' numbering makes meaningful: a chain's index *is* its
+/// position, and the heavy-hex edge list numbers the lattice row by row, so an
+/// index range is a band of rows.
+///
+/// Exact, by the obvious dynamic program: an edge is cut exactly when its two
+/// endpoints fall in different blocks, so *cut* edges are the complement of
+/// the edges internal to some block, and internal edges decompose over blocks.
+/// The objective is lexicographic — fewest cut edges first, then the most even
+/// block sizes — implemented as one scalar with the edge term weighted above
+/// the largest possible size term. Block sizes are additionally held inside
+/// ±25% of `num_qubits / partitions`, without which the minimum for the
+/// heavy-hex lattice is a 4/123 split (2 cut edges) whose smaller half holds
+/// almost nothing.
+///
+/// `O(num_qubits² · partitions)` on a table of `(num_qubits + 1)²` counts,
+/// once per cell, outside the timed region.
+fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec<usize> {
+    let n = num_qubits;
+    assert!(partitions >= 1 && partitions <= n);
+
+    // internal[l * (n + 1) + r] = edges with l <= a and b < r, i.e. edges with
+    // both endpoints inside the block [l, r).
+    let mut internal = vec![0i64; (n + 1) * (n + 1)];
+    let mut row = vec![0i64; n + 1];
+    for l in (0..n).rev() {
+        row.iter_mut().for_each(|v| *v = 0);
+        for &(a, b) in edges {
+            if a as usize == l && (b as usize) < n {
+                row[b as usize + 1] += 1;
+            }
+        }
+        let mut running = 0i64;
+        for r in 0..=n {
+            running += row[r];
+            internal[l * (n + 1) + r] = internal[(l + 1) * (n + 1) + r] + running;
+        }
+    }
+
+    // Fewest cut edges dominates; evenness breaks the ties. A block's size term
+    // is |size · P - n| (the deviation from the ideal, scaled to stay integral),
+    // which sums to at most n · P over the whole partition.
+    let weight = 4 * (n as i64) * (partitions as i64) + 1;
+    let target = n as f64 / partitions as f64;
+    let lo = ((target * 0.75).floor() as usize).max(1);
+    let hi = ((target * 1.25).ceil() as usize).max(lo);
+
+    const UNSET: i64 = i64::MAX;
+    let mut cost = vec![UNSET; (partitions + 1) * (n + 1)];
+    let mut from = vec![usize::MAX; (partitions + 1) * (n + 1)];
+    cost[0] = 0;
+    for k in 1..=partitions {
+        for pos in 1..=n {
+            let first = pos.saturating_sub(hi);
+            let last = pos.saturating_sub(lo);
+            for prev in first..=last {
+                let before = cost[(k - 1) * (n + 1) + prev];
+                if before == UNSET {
+                    continue;
+                }
+                let size = (pos - prev) as i64;
+                let deviation = (size * partitions as i64 - n as i64).abs();
+                let c = before - internal[prev * (n + 1) + pos] * weight + deviation;
+                let slot = k * (n + 1) + pos;
+                if cost[slot] == UNSET || c < cost[slot] {
+                    cost[slot] = c;
+                    from[slot] = prev;
+                }
+            }
+        }
+    }
+    assert!(
+        cost[partitions * (n + 1) + n] != UNSET,
+        "cut_blocks: no {partitions}-block split of {n} qubits fits the ±25% size window",
+    );
+
+    let mut ends = vec![0usize; partitions];
+    let mut pos = n;
+    for k in (1..=partitions).rev() {
+        ends[k - 1] = pos;
+        pos = from[k * (n + 1) + pos];
+    }
+    ends
+}
+
+/// The `log2(P)` z-only "cut" rows labelling the blocks [`cut_blocks`] found,
+/// plus the number of `edges` the cut crosses.
+///
+/// Block `b` gets partition label `b`, so row `i` carries z-bits on the qubits
+/// of every block whose label has bit `i` set. With no x-bits at all,
+/// `R·g = 0` for every single-qubit `X` rotation — every transverse-field
+/// channel is local — and a `ZZ(i, j)` rotation is remote exactly when
+/// `label(block(i)) != label(block(j))`, i.e. when the edge crosses the cut.
+///
+/// (Deliverable A of the row-tuning plan gives this a home in the core as
+/// `PartitionRows::cut`; this is the probe-local stand-in, built through the
+/// general `from_rows` hook, and is a one-line swap once that lands.)
+fn cut_rows<const W: usize>(
+    num_qubits: usize,
+    partitions: usize,
+    edges: &[(u32, u32)],
+) -> (PartitionRows<W>, Vec<usize>, usize) {
+    let bits = partitions.trailing_zeros() as usize;
+    if bits == 0 {
+        return (PartitionRows::none(num_qubits), vec![num_qubits], 0);
+    }
+    let ends = cut_blocks(num_qubits, partitions, edges);
+
+    // label[q] = the block q lives in, which is also its partition label.
+    let mut label = vec![0u32; num_qubits];
+    let mut start = 0usize;
+    for (block, &end) in ends.iter().enumerate() {
+        label[start..end].iter_mut().for_each(|l| *l = block as u32);
+        start = end;
+    }
+
+    let mut rows_z = vec![[0u64; W]; bits];
+    for (q, &b) in label.iter().enumerate() {
+        for (i, row) in rows_z.iter_mut().enumerate() {
+            if (b >> i) & 1 == 1 {
+                row[q / 64] |= 1u64 << (q % 64);
+            }
+        }
+    }
+    let crossed = edges
+        .iter()
+        .filter(|&&(a, b)| {
+            (a as usize) < num_qubits
+                && (b as usize) < num_qubits
+                && label[a as usize] != label[b as usize]
+        })
+        .count();
+    (
+        PartitionRows::from_rows(num_qubits, vec![[0u64; W]; bits], rows_z),
+        ends,
+        crossed,
+    )
+}
+
+/// The partition rows one cell runs under — the single place `--partition-rows`
+/// is interpreted, called identically by the in-process and the distributed
+/// cell so every rank of an `--mpi` run derives the same rows from the same
+/// inputs (`layer`, `num_qubits`, `partitions`, and the seed) with nothing
+/// agreed at run time.
+fn build_partition_rows<const W: usize>(
+    layer: LayerKind,
+    cfg: &Config,
+    num_qubits: usize,
+    partitions: usize,
+    default_seed: u64,
+) -> PartitionRows<W> {
+    let bits = partitions.trailing_zeros() as u8;
+    match cfg.partition_rows {
+        PartitionRowSpec::Random => PartitionRows::<W>::from_seed(
+            num_qubits,
+            bits,
+            cfg.partition_seed.unwrap_or(default_seed),
+        ),
+        PartitionRowSpec::Cut => {
+            let edges = layer.cut_edges(num_qubits);
+            let (rows, ends, crossed) = cut_rows::<W>(num_qubits, partitions, &edges);
+            if partitions > 1 {
+                eprintln!(
+                    "phase_breakdown: note: --partition-rows cut on {} at P={partitions}: blocks \
+                     ending at {ends:?}, crossing {crossed} of {} two-qubit generators (every \
+                     single-qubit rotation is local by construction).",
+                    layer.name(),
+                    edges.len(),
+                );
+            }
+            rows
+        }
+        // === SELECT ARM (deliverable A of the row-tuning plan) ===========
+        // Wire `partition_rows::select(&circuit, bits, weights)` in here when
+        // it lands; `parse_args` rejects the spec until then, so this is
+        // unreachable in a shipped run.
+        PartitionRowSpec::Select => {
+            eprintln!(
+                "phase_breakdown: --partition-rows select is not yet available (the weighted \
+                 XOR-SAT row selector has not landed)."
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 /// One partitioned cell: scatter (untimed), warm up, drain, time one
 /// `propagate`, and read the trace and the per-partition counters.
 ///
@@ -1662,13 +1976,10 @@ where
         std::process::exit(2);
     }
 
-    // The rows the scatter would derive on its own — built here so the
-    // generator scan below sees exactly the split the run will use.
-    let rows = PartitionRows::<W>::from_seed(
-        num_qubits,
-        partitions.trailing_zeros() as u8,
-        cfg.partition_seed.unwrap_or_else(|| base.hash().seed()),
-    );
+    // The rows the run will use — `--partition-rows random` reproduces the
+    // draw the scatter would have made on its own. Built here so the generator
+    // scan below sees exactly the split the run will use.
+    let rows = build_partition_rows::<W>(layer, cfg, num_qubits, partitions, base.hash().seed());
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() {
         eprintln!(
@@ -1742,6 +2053,7 @@ where
             .initial
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
+        partition_rows: cfg.partition_rows.label(),
         partitioned: Some(summary),
         mpi: None,
     }
@@ -1808,12 +2120,11 @@ where
         });
 
     // The rows every rank derives, built here so the generator scan below sees
-    // the split the run will use. Same seed on every rank, so same rows.
-    let rows = PartitionRows::<W>::from_seed(
-        num_qubits,
-        ranks.trailing_zeros() as u8,
-        cfg.partition_seed.unwrap_or_else(|| base.hash().seed()),
-    );
+    // the split the run will use. Same inputs on every rank — the same layer,
+    // qubit count, rank count and seed — so the same rows, whatever
+    // `--partition-rows` says; nothing is agreed at run time.
+    let rows =
+        build_partition_rows::<W>(layer, cfg, num_qubits, ranks as usize, base.hash().seed());
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() && rank == 0 {
         eprintln!(
@@ -1881,6 +2192,7 @@ where
             .initial
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
+        partition_rows: cfg.partition_rows.label(),
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
     }
@@ -2235,7 +2547,7 @@ fn json_line(cell: &CellResult) -> String {
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
          \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"append_ns\":{},\
-         \"chunk_wait_ns\":{},\"initial\":\"{}\"",
+         \"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\"",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -2260,6 +2572,7 @@ fn json_line(cell: &CellResult) -> String {
         s.append_ns,
         s.chunk_wait_ns,
         cell.initial,
+        cell.partition_rows,
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -2323,7 +2636,7 @@ terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartiti
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
-recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial";
+recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2334,7 +2647,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2395,6 +2708,7 @@ fn print_tsv_row(cell: &CellResult) {
         s.append_ns,
         s.chunk_wait_ns,
         cell.initial,
+        cell.partition_rows,
     );
 }
 

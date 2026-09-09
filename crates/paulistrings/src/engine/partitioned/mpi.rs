@@ -125,7 +125,7 @@ use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
 #[cfg(feature = "phase-timing")]
 use super::transport::ExchangeTimings;
-use super::transport::{Collectives, Payload, Transport, ROOT};
+use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Collectives, Payload, Transport, ROOT};
 use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
 use crate::engine::{Direction, PropagateOptions};
@@ -164,6 +164,10 @@ const KIND_EXCHANGE_HEADER: i32 = 0;
 const KIND_EXCHANGE_PART: i32 = 1;
 const KIND_GATHER_HEADER: i32 = 2;
 const KIND_GATHER_PART: i32 = 3;
+/// The two-phase exchange's *early* stream: block headers and CSR offsets.
+/// A stream of its own so the bulk parts, posted later and waited on chunk by
+/// chunk, cannot be matched against it however the two are interleaved.
+const KIND_EXCHANGE_EARLY: i32 = 4;
 
 /// The tag pair one call's framing uses: one for the headers, one for every
 /// part chunk. Carried together so a call cannot mix an exchange's header tag
@@ -172,6 +176,7 @@ const KIND_GATHER_PART: i32 = 3;
 struct Tags {
     header: Rank,
     part: Rank,
+    early: Rank,
 }
 
 impl Tags {
@@ -180,6 +185,7 @@ impl Tags {
         Self {
             header: MpiTransport::tag(KIND_EXCHANGE_HEADER, epoch),
             part: MpiTransport::tag(KIND_EXCHANGE_PART, epoch),
+            early: MpiTransport::tag(KIND_EXCHANGE_EARLY, epoch),
         }
     }
 
@@ -188,6 +194,7 @@ impl Tags {
         Self {
             header: MpiTransport::tag(KIND_GATHER_HEADER, epoch),
             part: MpiTransport::tag(KIND_GATHER_PART, epoch),
+            early: MpiTransport::tag(KIND_GATHER_HEADER, epoch),
         }
     }
 }
@@ -473,6 +480,60 @@ impl MpiTransport {
         }
     }
 
+    /// Post one partner's two-phase framing: the header, then the early parts,
+    /// then the bulk parts **chunk-major**.
+    ///
+    /// Chunk-major is the whole point of the layout: MPI's non-overtaking
+    /// guarantee for a `(source, tag, communicator)` triple means the receiver
+    /// sees chunk `k`'s messages before chunk `k + 1`'s, so a receiver that
+    /// waits chunk by chunk is waiting on a prefix of the transfer rather than
+    /// on all of it.
+    #[allow(clippy::too_many_arguments)]
+    fn post_layer_send<'a, Sc>(
+        &self,
+        dst: usize,
+        header: &'a [u8],
+        early: &[&'a [u8]],
+        bulk: &[Vec<&'a [u8]>],
+        chunks: usize,
+        tags: Tags,
+        scope: Sc,
+        coll: &mut RequestCollection<'a, [u8]>,
+        slot_of: &mut Vec<usize>,
+    ) where
+        Sc: Scope<'a> + Copy,
+    {
+        let peer = self.comm.process_at_rank(dst as Rank);
+        let mut add = |req, slot_of: &mut Vec<usize>| {
+            let i = coll.add(req);
+            if slot_of.len() <= i {
+                slot_of.resize(i + 1, SLOT_SEND);
+            }
+        };
+        add(
+            peer.immediate_send_with_tag(scope, header, tags.header),
+            slot_of,
+        );
+        for part in early {
+            for piece in part.chunks(self.chunk) {
+                add(
+                    peer.immediate_send_with_tag(scope, piece, tags.early),
+                    slot_of,
+                );
+            }
+        }
+        for k in 0..chunks {
+            for part in bulk {
+                for piece in part[k].chunks(self.chunk) {
+                    add(
+                        peer.immediate_send_with_tag(scope, piece, tags.part),
+                        slot_of,
+                    );
+                }
+            }
+        }
+    }
+
     /// Blocking receive of one framing header from `src`, returning the part
     /// lengths it declares.
     ///
@@ -617,6 +678,179 @@ fn decode_header(bytes: &[u8], expected_src: u32, me: u32) -> Vec<usize> {
 /// zero for an empty part.
 fn chunk_count(len: usize, chunk: usize) -> usize {
     len.div_ceil(chunk)
+}
+
+/// Slot number a send request carries: not a chunk, and never waited on by
+/// name — the closing [`ChunkPipeline::finish`] waits it out with the rest.
+const SLOT_SEND: usize = usize::MAX;
+
+/// Slot number an early receive carries: waited out by the driving thread
+/// before the body starts, so the pipeline never counts it.
+const SLOT_EARLY: usize = usize::MAX - 1;
+
+/// Spin iterations a waiting Rayon worker burns before it starts yielding.
+///
+/// Only one thread may be inside MPI at a time
+/// (`MPI_THREAD_SERIALIZED`), so the worker that wins the pipeline's mutex
+/// drives the transfer for everybody and the rest wait on its published
+/// counters. A chunk is milliseconds of copying, so this tier exists only for
+/// the case where the chunk landed while this worker was on its way in.
+const PIPELINE_SPINS: u32 = 256;
+
+/// `yield_now` calls after the spin tier before a waiter starts sleeping.
+const PIPELINE_YIELDS: u32 = 64;
+
+/// How long a waiter sleeps per iteration once yielding has not helped.
+///
+/// A yield loop is not free to the rest of the machine: it takes its share of
+/// the very CPUs the driving worker's copy is running on. Past this point the
+/// chunk is not close, so paying a step of latency to stay off those cores is
+/// the right trade — the same argument as the in-process collectives' three
+/// wait tiers in [`transport`](super::transport).
+const PIPELINE_SLEEP: std::time::Duration = std::time::Duration::from_micros(20);
+
+/// The in-flight half of a two-phase exchange: the posted bulk receives, this
+/// rank's sends, and which chunk each receive belongs to.
+///
+/// Handed to the coset loop as a [`ChunkWait`]. A task that reaches
+/// `append_into` for a bucket in chunk `k` calls `wait_chunk(k)`; whichever
+/// worker takes the mutex drives MPI until something completes, credits it to
+/// its chunk and releases, and the waiters see the counter fall.
+///
+/// # One thread at a time is enough
+///
+/// The application requested `MPI_THREAD_SERIALIZED`, so exactly one thread may
+/// be inside the library at once — which the mutex enforces. Nothing is lost by
+/// serializing: MPI's progress engine moves every outstanding request of this
+/// rank, receives and sends alike, so one thread inside `MPI_Waitsome` is
+/// driving the whole layer's transfer.
+///
+/// # It cannot deadlock
+///
+/// Every send of the call is posted before the call's first receive, on every
+/// rank, so a partner's rendezvous always has a matching posted receive to land
+/// in. A rank blocked in `wait_chunk` is inside `MPI_Waitsome` over *all* of its
+/// requests, so it services its partner's transfer as well as its own. A rank
+/// whose coset loop never asks for a chunk still reaches
+/// [`finish`](Self::finish), which waits everything out. And a coset task waits
+/// for exactly one chunk (`ChunkMap` puts a whole coset in one), so no task
+/// holds a wait on a chunk behind a wait on another.
+struct ChunkPipeline<'a, 'c> {
+    /// The request collection and its bookkeeping. `try_lock`ed, never blocked
+    /// on: a worker that cannot get in must not queue behind the driver, which
+    /// is itself blocked inside MPI.
+    inner: Mutex<PipelineInner<'a, 'c>>,
+    /// Outstanding receives per chunk. Sends are not counted.
+    remaining: Vec<std::sync::atomic::AtomicUsize>,
+}
+
+struct PipelineInner<'a, 'c> {
+    coll: &'c mut RequestCollection<'a, [u8]>,
+    /// Chunk per request index, [`SLOT_SEND`] for a send or an early part.
+    slot_of: Vec<usize>,
+    /// Reused `wait_some` result buffer.
+    done: Vec<(usize, ::mpi::point_to_point::Status, &'a [u8])>,
+}
+
+// SAFETY: `RequestCollection` is neither `Send` nor `Sync`, because `MPI_Request`
+// is a raw handle. It is reachable here from any worker of the partition's Rayon
+// pool, but only through `inner`'s mutex, so at most one thread is ever inside
+// MPI — exactly what `MPI_THREAD_SERIALIZED` allows and what this module's docs
+// require of the application. Same argument as the `unsafe impl`s on
+// `MpiTransport`.
+unsafe impl Send for ChunkPipeline<'_, '_> {}
+unsafe impl Sync for ChunkPipeline<'_, '_> {}
+
+impl<'a, 'c> ChunkPipeline<'a, 'c> {
+    /// Wrap `coll`, whose request `i` belongs to chunk `slot_of[i]`, with
+    /// `chunks` chunk counters.
+    fn new(coll: &'c mut RequestCollection<'a, [u8]>, slot_of: Vec<usize>, chunks: usize) -> Self {
+        let remaining: Vec<_> = (0..chunks)
+            .map(|_| std::sync::atomic::AtomicUsize::new(0))
+            .collect();
+        for &slot in &slot_of {
+            if slot < chunks {
+                remaining[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Self {
+            inner: Mutex::new(PipelineInner {
+                coll,
+                slot_of,
+                done: Vec::new(),
+            }),
+            remaining,
+        }
+    }
+
+    /// Drive MPI once from this thread if nobody else is inside it.
+    ///
+    /// `None` when another thread holds the pipeline, `Some(false)` when
+    /// nothing is outstanding at all.
+    fn try_drive(&self) -> Option<bool> {
+        let mut inner = match self.inner.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        let PipelineInner {
+            coll,
+            slot_of,
+            done,
+        } = &mut *inner;
+        if coll.incomplete() == 0 {
+            return Some(false);
+        }
+        coll.wait_some(done);
+        for &(index, _, _) in done.iter() {
+            let slot = slot_of[index];
+            if slot < self.remaining.len() {
+                self.remaining[slot].fetch_sub(1, std::sync::atomic::Ordering::Release);
+            }
+        }
+        Some(true)
+    }
+
+    /// Block until every receive of chunk `k` has completed.
+    fn wait_slot(&self, k: usize) {
+        let mut spins: u32 = 0;
+        loop {
+            if self.remaining[k].load(std::sync::atomic::Ordering::Acquire) == 0 {
+                return;
+            }
+            match self.try_drive() {
+                // Nothing outstanding: this chunk arrived (or never existed).
+                Some(false) => return,
+                Some(true) => spins = 0,
+                None => {
+                    spins = spins.saturating_add(1);
+                    if spins <= PIPELINE_SPINS {
+                        std::hint::spin_loop();
+                    } else if spins <= PIPELINE_SPINS + PIPELINE_YIELDS {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(PIPELINE_SLEEP);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wait every outstanding request out: the receives the coset loop never
+    /// reached, and this rank's own sends.
+    fn finish(&mut self) {
+        let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
+        inner.coll.wait_all(&mut inner.done);
+        for slot in &self.remaining {
+            slot.store(0, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+impl ChunkWait for ChunkPipeline<'_, '_> {
+    fn wait_chunk(&self, k: usize) {
+        self.wait_slot(k);
+    }
 }
 
 impl Collectives for MpiTransport {
@@ -766,6 +1000,233 @@ impl Transport for MpiTransport {
         // go, so the next layer's export reuses them.
         spare.extend(send.into_iter().flatten());
         recv
+    }
+
+    /// The two-phase exchange (see [`ChunkPipeline`]): the framing header, the
+    /// block headers and the CSR offsets arrive before `body` starts, the
+    /// columns arrive under it, chunk by chunk.
+    ///
+    /// ```text
+    /// header : u64[2 + n_parts]         the length of every part, as before
+    /// early  : block headers + CSR offsets, tag `early`   (waited here)
+    /// bulk   : the columns, chunk-major, tag `part`       (waited in `body`)
+    /// ```
+    ///
+    /// Nothing about the deadlock argument changes: every send is posted before
+    /// the first receive, and a rank waiting on a chunk is inside
+    /// `MPI_Waitsome` over all of its requests, so it drives its partner's
+    /// rendezvous too.
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+        map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
+        let n = self.size as usize;
+        assert_eq!(
+            send.len(),
+            n,
+            "exchange: send has {} entries, expected one entry per rank ({n})",
+            send.len(),
+        );
+        assert!(
+            send[self.rank as usize].is_none(),
+            "exchange: send[{}] is this rank's own slot and must be None",
+            self.rank,
+        );
+        let recv: Vec<Option<P>> = (0..n).map(|_| None).collect();
+        if n == 1 {
+            let out = body(&recv, &AlreadyHere);
+            return (recv, out);
+        }
+
+        let tags = Tags::exchange(self.next_epoch());
+        let partners: Vec<usize> = (0..n).filter(|&q| send[q].is_some()).collect();
+        if partners.is_empty() {
+            let out = body(&recv, &AlreadyHere);
+            return (recv, out);
+        }
+
+        #[cfg(feature = "phase-timing")]
+        let mut lap = std::time::Instant::now();
+
+        // Everything the sends borrow must outlive the request scope.
+        let all_parts: Vec<Vec<&[u8]>> = partners
+            .iter()
+            .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
+            .collect();
+        let headers: Vec<Vec<u64>> = all_parts
+            .iter()
+            .map(|p| encode_header(self.rank, p))
+            .collect();
+        let early: Vec<Vec<&[u8]>> = partners
+            .iter()
+            .map(|&q| send[q].as_ref().expect("a partner's payload").early_parts())
+            .collect();
+        let bulk: Vec<Vec<Vec<&[u8]>>> = partners
+            .iter()
+            .map(|&q| {
+                send[q]
+                    .as_ref()
+                    .expect("a partner's payload")
+                    .bulk_parts(map)
+            })
+            .collect();
+        let chunks = map.chunks();
+
+        // SAFETY (the `UnsafeCell` below). Two aliases exist while `body` runs:
+        // the `&mut` byte views MPI is filling, held by the request collection,
+        // and the `&[Option<P>]` the body reads through. They never touch the
+        // same bytes at the same time — the early parts are complete before the
+        // body starts, and a chunk's columns are read only after
+        // `wait_chunk` has seen its receives complete. The cell is what lets
+        // the two coexist without the borrow checker having to see the
+        // argument; it is the same situation as any posted `MPI_Irecv`, made
+        // explicit.
+        let recv_cell = std::cell::UnsafeCell::new(recv);
+
+        let out =
+            ::mpi::request::multiple_scope(partners.len() * (2 + 3 * chunks), |scope, coll| {
+                let mut slot_of: Vec<usize> = Vec::new();
+                for (i, &dst) in partners.iter().enumerate() {
+                    self.post_layer_send(
+                        dst,
+                        bytemuck::cast_slice(&headers[i]),
+                        &early[i],
+                        &bulk[i],
+                        chunks,
+                        tags,
+                        scope,
+                        coll,
+                        &mut slot_of,
+                    );
+                }
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.send_post_ns, &mut lap);
+
+                // Every send is in flight, so no blocking receive below can
+                // wait on a partner that has not spoken yet.
+                let mut lens: Vec<Vec<usize>> = Vec::with_capacity(partners.len());
+                for &src in &partners {
+                    lens.push(self.recv_header(src, tags));
+                }
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
+
+                // Phase 1: the payloads come from the caller's pool, are sized
+                // from the declared part lengths, and hand out byte views of
+                // their own columns — the receive *is* the decode.
+                // SAFETY: no other alias exists yet; the request collection is
+                // holding only this rank's sends.
+                let recv_mut = unsafe { &mut *recv_cell.get() };
+                for &src in &partners {
+                    recv_mut[src] = Some(spare.pop().unwrap_or_default());
+                }
+                let mut early_left = 0usize;
+                let mut lens = lens.into_iter();
+                for (q, slot) in recv_mut.iter_mut().enumerate() {
+                    let Some(payload) = slot.as_mut() else {
+                        continue;
+                    };
+                    let lens = lens.next().expect("one header per partner");
+                    let peer = self.comm.process_at_rank(q as Rank);
+                    for view in payload.early_recv_into(&lens) {
+                        for piece in view.chunks_mut(self.chunk) {
+                            let i = coll.add(
+                                peer.immediate_receive_into_with_tag(scope, piece, tags.early),
+                            );
+                            if slot_of.len() <= i {
+                                slot_of.resize(i + 1, SLOT_SEND);
+                            }
+                            slot_of[i] = SLOT_EARLY;
+                            early_left += 1;
+                        }
+                    }
+                }
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
+
+                // The early parts are kilobytes; wait them out here so the CSR
+                // offsets are in place before anything reads a block.
+                let mut done = Vec::new();
+                while early_left > 0 {
+                    coll.wait_some(&mut done);
+                    // `wait_some` completes this rank's sends too; only the
+                    // early receives are what this phase is waiting for.
+                    for &(i, _, _) in &done {
+                        if slot_of[i] == SLOT_EARLY {
+                            early_left -= 1;
+                        }
+                    }
+                }
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
+
+                // Nothing borrows the payloads now, so the arrived headers and
+                // offsets can be checked against the shape the lengths implied.
+                // SAFETY: as above; the collection holds only completed
+                // requests and this rank's sends.
+                let recv_mut = unsafe { &mut *recv_cell.get() };
+                for payload in recv_mut.iter_mut().flatten() {
+                    payload.finish_recv();
+                }
+
+                // Phase 2: the columns, cut at the same chunk boundaries the
+                // sender used, posted chunk-major so they complete in order.
+                for (q, slot) in recv_mut.iter_mut().enumerate() {
+                    let Some(payload) = slot.as_mut() else {
+                        continue;
+                    };
+                    let peer = self.comm.process_at_rank(q as Rank);
+                    let mut parts: Vec<Vec<Option<&mut [u8]>>> = payload
+                        .bulk_recv_into(map)
+                        .into_iter()
+                        .map(|pieces| pieces.into_iter().map(Some).collect())
+                        .collect();
+                    for k in 0..chunks {
+                        for part in parts.iter_mut() {
+                            let piece = part[k].take().expect("one view per chunk");
+                            for piece in piece.chunks_mut(self.chunk) {
+                                let i = coll.add(
+                                    peer.immediate_receive_into_with_tag(scope, piece, tags.part),
+                                );
+                                if slot_of.len() <= i {
+                                    slot_of.resize(i + 1, SLOT_SEND);
+                                }
+                                slot_of[i] = k;
+                            }
+                        }
+                    }
+                }
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
+
+                let mut pipeline = ChunkPipeline::new(coll, slot_of, chunks.max(1));
+                // SAFETY: the body reads a chunk's rows only after
+                // `wait_chunk` reports its receives complete (see the cell's
+                // comment above).
+                let out = body(unsafe { &*recv_cell.get() }, &pipeline);
+                // The body is the layer's own work, not the exchange's; only
+                // the transfer left over after it counts as a data wait.
+                #[cfg(feature = "phase-timing")]
+                {
+                    lap = std::time::Instant::now();
+                }
+                pipeline.finish();
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.data_wait_ns, &mut lap);
+                out
+            });
+
+        // This rank's own blocks are off the wire now; back into the pool they
+        // go, so the next layer's export reuses them.
+        spare.extend(send.into_iter().flatten());
+        (recv_cell.into_inner(), out)
     }
 
     #[cfg(feature = "phase-timing")]

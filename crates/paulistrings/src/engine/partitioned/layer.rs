@@ -24,7 +24,7 @@
 
 use super::export::{export_layer, ExportScratch};
 use super::plan::PartitionPlan;
-use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload, Transport};
+use super::transport::{ChunkMap, ChunkWait, ExchangeBlock, PartnerPayload, Transport};
 use crate::bucket::hash::PartitionRows;
 use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::Prepared;
@@ -49,14 +49,23 @@ use num_complex::Complex64;
 /// pools.
 pub(crate) const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
-/// The chunk count in effect, overridable by
-/// [`set_exchange_chunks`](set_exchange_chunks).
-static EXCHANGE_CHUNKS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(DEFAULT_EXCHANGE_CHUNKS);
-
 /// The chunk count every partition cuts this layer's transfer into.
+///
+/// [`DEFAULT_EXCHANGE_CHUNKS`], unless the environment names another:
+/// `PAULISTRINGS_EXCHANGE_CHUNKS` is the knob the pipeline was tuned with and
+/// the one a test turns to force many small batches (or exactly one, the
+/// un-pipelined layout). Read once per process, so a group launched by one
+/// `mpirun -x PAULISTRINGS_EXCHANGE_CHUNKS=...` agrees — which it must, both
+/// sides cutting the same block the same way.
 pub(crate) fn exchange_chunks() -> usize {
-    EXCHANGE_CHUNKS.load(std::sync::atomic::Ordering::Relaxed)
+    static CHUNKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CHUNKS.get_or_init(|| {
+        std::env::var("PAULISTRINGS_EXCHANGE_CHUNKS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&k| k > 0)
+            .unwrap_or(DEFAULT_EXCHANGE_CHUNKS)
+    })
 }
 
 /// The rows this partition received, as an [`ExtraRows`] source for the coset
@@ -76,12 +85,20 @@ pub(crate) struct RecvRows<'a, const W: usize> {
     blocks: Vec<Option<&'a ExchangeBlock<W>>>,
     /// The destination-coset order the blocks are laid out in.
     map: &'a ChunkMap,
+    /// What a coset task blocks on before it reads a chunk's rows. A blocking
+    /// transport's is a no-op; a pipelined one's completes the receive.
+    wait: &'a dyn ChunkWait,
     /// Nanoseconds spent in [`append_into`](ExtraRows::append_into), summed
     /// over every coset task that ran one. Measurement only; the coset loop is
     /// parallel, so the counter is an atomic, and it is read once after the
     /// loop has joined.
     #[cfg(feature = "phase-timing")]
     append_ns: std::sync::atomic::AtomicU64,
+    /// The part of [`append_ns`](Self::append_ns) spent blocked in
+    /// [`ChunkWait::wait_chunk`] — how much of the transfer the coset loop
+    /// failed to hide. Measurement only.
+    #[cfg(feature = "phase-timing")]
+    chunk_wait_ns: std::sync::atomic::AtomicU64,
 }
 
 impl<'a, const W: usize> RecvRows<'a, W> {
@@ -91,7 +108,12 @@ impl<'a, const W: usize> RecvRows<'a, W> {
     /// so partner `q`'s remote deltas addressed here are the same entries, in
     /// the same order, as this partition's remote deltas addressed to `q`: the
     /// `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`.
-    fn new(plan: &PartitionPlan, recv: &'a [Option<PartnerPayload<W>>], map: &'a ChunkMap) -> Self {
+    fn new(
+        plan: &PartitionPlan,
+        recv: &'a [Option<PartnerPayload<W>>],
+        map: &'a ChunkMap,
+        wait: &'a dyn ChunkWait,
+    ) -> Self {
         let mut blocks = Vec::with_capacity(plan.remote.len());
         for r in &plan.remote {
             let j = plan
@@ -121,8 +143,11 @@ impl<'a, const W: usize> RecvRows<'a, W> {
         Self {
             blocks,
             map,
+            wait,
             #[cfg(feature = "phase-timing")]
             append_ns: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "phase-timing")]
+            chunk_wait_ns: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -149,6 +174,16 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         #[cfg(feature = "phase-timing")]
         let t0 = std::time::Instant::now();
         let p = self.map.position_of(beta);
+        // The rows for this coset may still be on the wire. Every member of a
+        // coset is in one chunk (`ChunkMap`), so this is one wait per task, not
+        // one per member — and under a blocking transport it is a no-op call
+        // the optimizer keeps but the branch predictor never notices.
+        self.wait.wait_chunk(self.map.chunk_of_position(p));
+        #[cfg(feature = "phase-timing")]
+        self.chunk_wait_ns.fetch_add(
+            t0.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         for block in &self.blocks {
             let Some(block) = block else { continue };
             let (sx, sz, sc) = block.segment(p);
@@ -269,40 +304,6 @@ where
             );
         }
     }
-    let recv = transport.exchange(send, &mut state.export.pool);
-    #[cfg(feature = "phase-timing")]
-    {
-        st.lap(&mut state.layer.stats.exchange_ns);
-        transport.drain_timings(&mut state.layer.stats);
-    }
-    #[cfg(debug_assertions)]
-    for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
-        // The bucket count is a *collective* decision the driver makes before
-        // the layer; a block indexed by a different one would be read at the
-        // wrong offsets. Without this the failure mode is a garbage segment
-        // length — a wild allocation or a silently wrong answer — rather than
-        // an assertion naming the cause.
-        debug_assert_eq!(
-            block.num_buckets() as usize,
-            local.num_buckets(),
-            "a partner sent a block indexed by {} buckets where this partition has {}: \
-             the partitions disagree about the bucket count",
-            block.num_buckets(),
-            local.num_buckets(),
-        );
-    }
-    let rows_received = recv
-        .iter()
-        .flatten()
-        .flat_map(|payload| &payload.blocks)
-        .map(|block| block.rows() as u64)
-        .sum();
-    #[cfg(feature = "phase-timing")]
-    {
-        state.layer.stats.recv_rows += rows_received;
-    }
-    let recv_rows = RecvRows::new(&plan, &recv, &state.chunks);
-
     // The layer as this partition sees it: the local delta table (a tabulated
     // channel keeps only its local entries, so the gather loops stay a plain
     // `deltas()` walk with no per-entry predicate), the local bucket deltas
@@ -331,26 +332,79 @@ where
             Prepared::Local(_) => true,
         },
     };
-    apply_layer_bucketed_with(
-        local,
-        local_prep,
-        policy,
-        &mut state.layer,
-        &recv_rows,
-        knobs,
-    );
+
+    // Split the scratch so the exchange can borrow the payload pool while the
+    // coset loop inside it borrows the layer scratch and the chunk map.
+    let PartitionState {
+        layer: layer_scratch,
+        export: export_scratch,
+        chunks: map,
+    } = state;
+    #[cfg(feature = "phase-timing")]
+    let body_ns = std::cell::Cell::new(0u64);
+    #[cfg(feature = "phase-timing")]
+    let exchange_start = std::time::Instant::now();
+
+    // Two phases. `exchange_layer` returns once the block headers and CSR
+    // offsets are here — everything `RecvRows::count` needs to size a run —
+    // and the rows themselves may still be in flight; each coset task waits for
+    // its own chunk at the top of `append_into`.
+    let (recv, rows_received) =
+        transport.exchange_layer(send, &mut export_scratch.pool, map, |recv, wait| {
+            #[cfg(feature = "phase-timing")]
+            let body_start = std::time::Instant::now();
+            #[cfg(debug_assertions)]
+            for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
+                // The bucket count is a *collective* decision the driver makes
+                // before the layer; a block indexed by a different one would be
+                // read at the wrong offsets. Without this the failure mode is a
+                // garbage segment length — a wild allocation or a silently
+                // wrong answer — rather than an assertion naming the cause.
+                debug_assert_eq!(
+                    block.num_buckets() as usize,
+                    local.num_buckets(),
+                    "a partner sent a block indexed by {} buckets where this partition has {}: \
+                     the partitions disagree about the bucket count",
+                    block.num_buckets(),
+                    local.num_buckets(),
+                );
+            }
+            let rows_received: u64 = recv
+                .iter()
+                .flatten()
+                .flat_map(|payload| &payload.blocks)
+                .map(|block| block.rows() as u64)
+                .sum();
+            let recv_rows = RecvRows::new(&plan, recv, map, wait);
+            apply_layer_bucketed_with(local, local_prep, policy, layer_scratch, &recv_rows, knobs);
+            #[cfg(feature = "phase-timing")]
+            {
+                // The coset loop has joined, so the counters are quiescent.
+                layer_scratch.stats.recv_rows += rows_received;
+                layer_scratch.stats.append_ns += recv_rows
+                    .append_ns
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                layer_scratch.stats.chunk_wait_ns += recv_rows
+                    .chunk_wait_ns
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                body_ns.set(body_start.elapsed().as_nanos() as u64);
+            }
+            rows_received
+        });
     #[cfg(feature = "phase-timing")]
     {
-        // The coset loop has joined, so the counter is quiescent.
-        state.layer.stats.append_ns += recv_rows
-            .append_ns
-            .load(std::sync::atomic::Ordering::Relaxed);
+        // `exchange_ns` is the exchange minus the layer work it now wraps: the
+        // send posting, the early receives, and whatever transfer the coset
+        // loop did not manage to hide before the closing wait.
+        layer_scratch.stats.exchange_ns +=
+            exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
+        transport.drain_timings(&mut layer_scratch.stats);
+        st.rearm();
     }
     // The received rows are merged; the payloads that carried them go back into
     // the pool with their columns intact, and the next layer's export — or the
     // next receive — takes them from there rather than from the allocator.
-    drop(recv_rows);
-    state.export.pool.extend(recv.into_iter().flatten());
+    export_scratch.pool.extend(recv.into_iter().flatten());
 
     LayerExchangeCounts {
         remote_deltas: plan.remote.len(),
@@ -384,6 +438,83 @@ mod tests {
 
     struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
+
+    /// A [`ChunkWait`] that records what it was asked for.
+    struct WaitSpy(std::sync::Mutex<Vec<usize>>);
+
+    impl super::ChunkWait for WaitSpy {
+        fn wait_chunk(&self, k: usize) {
+            self.0.lock().expect("spy").push(k);
+        }
+    }
+
+    /// `count` and `append_into` read the block at the *destination position*,
+    /// and each waits for exactly the chunk that position falls in.
+    ///
+    /// This is the whole receive-side contract of the pipelined exchange: get
+    /// the position wrong and rows land in the wrong bucket; get the chunk
+    /// wrong and a task reads a column MPI is still writing. The oracle is
+    /// hand-built — one row per position, carrying that position's index — so a
+    /// misread is visible as a wrong number rather than as a wrong sum.
+    #[test]
+    fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
+        const BITS: u8 = 5;
+        let n = 1u32 << BITS;
+        for deltas in [vec![0u32], vec![0, 4], vec![0, 1, 2, 3]] {
+            let span = crate::engine::coset::Gf2Span::new(&deltas, BITS);
+            for chunks in [1usize, 2, 4, 8, 64] {
+                let mut map = ChunkMap::default();
+                map.rebuild(&span, n as usize, chunks);
+
+                // One row per position, coefficient = the position index.
+                let counts: Vec<u32> = vec![1; n as usize];
+                let mut block = ExchangeBlock::<1>::with_counts(1, &counts);
+                block.x = (0..n).map(|p| [u64::from(p)]).collect();
+                block.z = (0..n).map(|_| [0u64]).collect();
+                block.coeff = (0..n).map(|p| Complex64::new(f64::from(p), 0.0)).collect();
+
+                let payload = PartnerPayload::<1> {
+                    blocks: vec![block],
+                };
+                let recv = vec![None, Some(payload)];
+                let mut plan_deltas = deltas.clone();
+                plan_deltas.sort_unstable();
+                let plan = PartitionPlan {
+                    local_entries: vec![true, false],
+                    local_bucket_deltas: plan_deltas,
+                    remote: vec![super::super::plan::RemoteDelta {
+                        entry: 1,
+                        partner: 1,
+                        bucket_delta: 0,
+                        partition_delta: 1,
+                    }],
+                    rest_streams_total: 1,
+                };
+
+                let spy = WaitSpy(std::sync::Mutex::new(Vec::new()));
+                let rows = RecvRows::new(&plan, &recv, &map, &spy);
+                for beta in 0..n {
+                    let p = map.position_of(beta);
+                    assert_eq!(rows.count(beta), 1, "one row per bucket");
+                    let (mut x, mut z, mut c) = (Vec::new(), Vec::new(), Vec::new());
+                    rows.append_into(beta, &mut x, &mut z, &mut c);
+                    assert_eq!(x, vec![[u64::from(p)]], "bucket {beta} read position {p}");
+                    assert_eq!(z, vec![[0u64]]);
+                    assert_eq!(c, vec![Complex64::new(f64::from(p), 0.0)]);
+                }
+                let waited = spy.0.into_inner().expect("spy");
+                assert_eq!(waited.len(), n as usize, "one wait per append_into");
+                for (beta, &k) in waited.iter().enumerate() {
+                    assert_eq!(
+                        k,
+                        map.chunk_of_position(map.position_of(beta as u32)),
+                        "bucket {beta} waited for the wrong chunk at {chunks} chunks",
+                    );
+                    assert!(k < map.chunks(), "chunk {k} is outside the map");
+                }
+            }
+        }
+    }
 
     /// Run one layer on every partition of `rows`, each on its own thread with
     /// its own transport, and give back the parts in rank order with their

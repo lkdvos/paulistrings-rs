@@ -139,7 +139,7 @@ use crate::engine::coset::Gf2Span;
 /// A chunk count above the coset count would produce empty chunks, so it is
 /// clamped; `chunks == 1` is the un-pipelined layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ChunkMap {
+pub struct ChunkMap {
     /// `perm[β]` is bucket `β`'s destination position. Empty when the
     /// permutation is the identity (`r == 0`), which is what a layer whose
     /// local deltas are all zero — a rotation with a remote generator, the
@@ -201,7 +201,7 @@ impl ChunkMap {
 
     /// Bucket `beta`'s destination position.
     #[inline]
-    pub(crate) fn position_of(&self, beta: u32) -> u32 {
+    pub fn position_of(&self, beta: u32) -> u32 {
         if self.perm.is_empty() {
             beta
         } else {
@@ -212,7 +212,7 @@ impl ChunkMap {
     /// The bucket at destination position `p` — the inverse of
     /// [`position_of`](Self::position_of).
     #[inline]
-    pub(crate) fn bucket_at(&self, p: u32) -> u32 {
+    pub fn bucket_at(&self, p: u32) -> u32 {
         if self.inv.is_empty() {
             p
         } else {
@@ -221,7 +221,7 @@ impl ChunkMap {
     }
 
     /// Positions, i.e. buckets.
-    pub(crate) fn positions(&self) -> usize {
+    pub fn positions(&self) -> usize {
         self.positions as usize
     }
 
@@ -229,7 +229,7 @@ impl ChunkMap {
     // Read by the transport that pipelines the receive, and by this module's
     // own layout tests; a build with neither still wants the map's order.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn chunks(&self) -> usize {
+    pub fn chunks(&self) -> usize {
         self.chunks as usize
     }
 
@@ -242,7 +242,7 @@ impl ChunkMap {
     ///
     /// If `k > chunks()`.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn bound(&self, k: usize) -> u32 {
+    pub fn bound(&self, k: usize) -> u32 {
         assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
         let c = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
         c << self.r
@@ -253,7 +253,7 @@ impl ChunkMap {
     /// The inverse of [`bound`](Self::bound): `bound(k) <= p < bound(k + 1)`.
     #[inline]
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
+    pub fn chunk_of_position(&self, p: u32) -> usize {
         let c = u64::from(p >> self.r);
         ((c * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
     }
@@ -421,6 +421,15 @@ impl<const W: usize> ExchangeBlock<W> {
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
     }
 
+    /// The row index each of `map`'s chunk boundaries falls at.
+    ///
+    /// `chunks + 1` ascending entries starting at 0 and ending at
+    /// [`rows`](Self::rows): chunk `k` carries rows `out[k]..out[k + 1]` of
+    /// every column.
+    pub fn chunk_rows(&self, map: &ChunkMap) -> Vec<usize> {
+        chunk_rows_of(&self.offsets, map)
+    }
+
     /// Rows the block carries: `offsets[num_buckets]`, and the length of each
     /// column once the export pass has filled it.
     pub fn rows(&self) -> usize {
@@ -497,11 +506,132 @@ pub trait Payload: Default + Send + 'static {
     /// If the received payload is inconsistent — a block encoded at another
     /// width, offsets that disagree with the row count.
     fn finish_recv(&mut self);
+
+    /// The parts the engine reads **before** it reads a single row, so a
+    /// two-phase transport must have them in hand before it hands the payload
+    /// over: for a [`PartnerPayload`] the block headers and the CSR offsets, a
+    /// few tens of kilobytes against a layer's hundreds of megabytes, and all
+    /// the engine needs to size a gather run (`ExtraRows::count`).
+    ///
+    /// A prefix of [`byte_parts`](Self::byte_parts) in the same order — the
+    /// framing still declares every part's length, so the receiver can size the
+    /// bulk columns from the header alone. The default is *every* part, which
+    /// is what a payload with no interesting internal structure wants: a
+    /// transport then behaves exactly as a blocking one.
+    ///
+    fn early_parts(&self) -> Vec<&[u8]> {
+        self.byte_parts()
+    }
+
+    /// The rest of [`byte_parts`](Self::byte_parts), each split into `map`'s
+    /// chunks: `bulk_parts()[i][k]` is part `i`'s slice for chunk `k`.
+    ///
+    /// A chunk is a contiguous range of the receiver's destination positions
+    /// ([`ChunkMap`]), so a column's chunk is the byte range of the rows in
+    /// those positions, which the CSR offsets give exactly. Both sides compute
+    /// it from the same offsets, so the sender's pieces and the receiver's
+    /// posted receives line up with no further exchange.
+    ///
+    /// The default is no bulk parts at all, the counterpart of
+    /// [`early_parts`](Self::early_parts)'s default.
+    fn bulk_parts(&self, map: &ChunkMap) -> Vec<Vec<&[u8]>> {
+        let _ = map;
+        Vec::new()
+    }
+
+    /// [`recv_into`](Self::recv_into), returning only the
+    /// [`early_parts`](Self::early_parts) views.
+    ///
+    /// It still sizes *every* column from `lens` — that is what lets
+    /// [`bulk_recv_into`](Self::bulk_recv_into) slice them afterwards — but the
+    /// bulk views are not handed out yet, so the payload can be inspected
+    /// ([`finish_recv`](Self::finish_recv)) between the two phases with no
+    /// outstanding borrow.
+    fn early_recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        self.recv_into(lens)
+    }
+
+    /// The receive-side mirror of [`bulk_parts`](Self::bulk_parts): the same
+    /// parts, in the same order, split into the same chunks.
+    ///
+    /// Called after the early parts have arrived, so the CSR offsets the split
+    /// reads are the ones the sender used.
+    fn bulk_recv_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
+        let _ = map;
+        Vec::new()
+    }
+}
+
+/// What a coset task waits on before it reads a received row.
+///
+/// The partitioned layer hands one of these to its `RecvRows`, which calls
+/// [`wait_chunk`](Self::wait_chunk) at the top of `append_into` with the chunk
+/// its output bucket belongs to. A blocking transport's implementation is
+/// empty: everything arrived before the body ever ran.
+///
+/// `Sync` because the coset loop calls it from every Rayon worker at once. An
+/// implementation that talks to MPI must therefore serialize itself — one
+/// thread in the library at a time is exactly `MPI_THREAD_SERIALIZED`.
+pub trait ChunkWait: Sync {
+    /// Block until every row of chunk `k` has arrived.
+    ///
+    /// Must be safe to call concurrently, repeatedly, and out of order — a
+    /// coset task knows only its own chunk, and Rayon decides who runs when.
+    fn wait_chunk(&self, k: usize);
+}
+
+/// The [`ChunkWait`] of a transport whose exchange already completed.
+pub struct AlreadyHere;
+
+impl ChunkWait for AlreadyHere {
+    fn wait_chunk(&self, _k: usize) {}
 }
 
 /// Parts per block in the [`PartnerPayload`] encoding: header, offsets, x, z,
 /// coeff.
 const PARTS_PER_BLOCK: usize = 5;
+
+/// The row index each of `map`'s chunk boundaries falls at, `chunks + 1`
+/// ascending entries — the CSR offsets read at the chunks' destination
+/// positions.
+fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
+    debug_assert_eq!(
+        offsets.len(),
+        map.positions() + 1,
+        "the chunk map is built for a different bucket count than the block",
+    );
+    (0..=map.chunks())
+        .map(|k| offsets[map.bound(k) as usize] as usize)
+        .collect()
+}
+
+/// Cut `col` at `bounds` (row indices) and view each piece as bytes.
+fn chunk_slices<'s, T, F>(col: &'s [T], bounds: &[usize], as_bytes: F) -> Vec<&'s [u8]>
+where
+    F: Fn(&'s [T]) -> &'s [u8],
+{
+    bounds
+        .windows(2)
+        .map(|w| as_bytes(&col[w[0]..w[1]]))
+        .collect()
+}
+
+/// [`chunk_slices`] for the receive side: disjoint mutable pieces, in order.
+fn chunk_slices_mut<'s, T, F>(col: &'s mut [T], bounds: &[usize], as_bytes: F) -> Vec<&'s mut [u8]>
+where
+    F: Fn(&'s mut [T]) -> &'s mut [u8],
+{
+    let mut rest = col;
+    let mut out = Vec::with_capacity(bounds.len().saturating_sub(1));
+    let mut at = bounds[0];
+    for &edge in &bounds[1..] {
+        let (head, tail) = rest.split_at_mut(edge - at);
+        out.push(as_bytes(head));
+        rest = tail;
+        at = edge;
+    }
+    out
+}
 
 /// Panic unless a declared part length is a whole number of `stride`-byte
 /// elements — the one thing a receiver can check about a part before its bytes
@@ -658,6 +788,72 @@ impl<const W: usize> Payload for PartnerPayload<W> {
                 block.header.rows,
             );
         }
+    }
+
+    /// Parts 0 and 1 of every block — the header and the CSR offsets. Those
+    /// are what `RecvRows::count` reads to size a gather run; the three columns
+    /// after them are read only inside `append_into`.
+    fn early_parts(&self) -> Vec<&[u8]> {
+        let mut parts = Vec::with_capacity(2 * self.blocks.len());
+        for block in &self.blocks {
+            parts.push(bytemuck::bytes_of(&block.header));
+            parts.push(bytemuck::cast_slice(&block.offsets));
+        }
+        parts
+    }
+
+    /// The three columns of each block, in block order, each cut at the chunks'
+    /// destination-position boundaries.
+    fn bulk_parts(&self, map: &ChunkMap) -> Vec<Vec<&[u8]>> {
+        let mut parts = Vec::with_capacity(3 * self.blocks.len());
+        for block in &self.blocks {
+            let rows = block.rows();
+            let (x, z, coeff) = (&block.x[..rows], &block.z[..rows], &block.coeff[..rows]);
+            let bounds = block.chunk_rows(map);
+            parts.push(chunk_slices(x, &bounds, |s| {
+                bytemuck::cast_slice(s.as_flattened())
+            }));
+            parts.push(chunk_slices(z, &bounds, |s| {
+                bytemuck::cast_slice(s.as_flattened())
+            }));
+            parts.push(chunk_slices(coeff, &bounds, bytemuck::cast_slice));
+        }
+        parts
+    }
+
+    fn early_recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        let mut parts = self.recv_into(lens);
+        // `recv_into` sized every column and handed out all five views per
+        // block; keep the header and the offsets and drop the columns, which
+        // `bulk_recv_into` hands out once their shape is known.
+        let mut early = Vec::with_capacity(2 * parts.len() / PARTS_PER_BLOCK);
+        for (i, view) in parts.drain(..).enumerate() {
+            if i % PARTS_PER_BLOCK < 2 {
+                early.push(view);
+            }
+        }
+        early
+    }
+
+    fn bulk_recv_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
+        let mut parts = Vec::with_capacity(3 * self.blocks.len());
+        for block in &mut self.blocks {
+            let rows = block.header.rows as usize;
+            let bounds = chunk_rows_of(&block.offsets, map);
+            let ExchangeBlock { x, z, coeff, .. } = block;
+            parts.push(chunk_slices_mut(&mut x[..rows], &bounds, |s| {
+                bytemuck::cast_slice_mut(s.as_flattened_mut())
+            }));
+            parts.push(chunk_slices_mut(&mut z[..rows], &bounds, |s| {
+                bytemuck::cast_slice_mut(s.as_flattened_mut())
+            }));
+            parts.push(chunk_slices_mut(
+                &mut coeff[..rows],
+                &bounds,
+                bytemuck::cast_slice_mut,
+            ));
+        }
+        parts
     }
 
     fn from_byte_parts(parts: &[&[u8]]) -> Self {
@@ -873,6 +1069,39 @@ pub trait Transport: Collectives {
     /// neither direction: it *moves* the sender's payload to the receiver, so
     /// the pool circulates through the partners instead.
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>>;
+
+    /// The layer's exchange, **two-phase**: everything the coset loop needs to
+    /// size its gather runs arrives before `body` starts, and the rows
+    /// themselves may still be in flight while it runs.
+    ///
+    /// `body` is handed the receive slots — shaped, with their CSR offsets in
+    /// place — and a [`ChunkWait`] to block on before it reads a chunk's rows.
+    /// It returns whatever the caller needs out of the layer; the received
+    /// payloads come back with it, for the caller to return to `spare`.
+    ///
+    /// `map` is the destination-coset order both sides laid the blocks out in
+    /// and the chunks the bulk transfer is cut into. Every partition passes the
+    /// same one, for the same reason both sides agree on the bucket count.
+    ///
+    /// The default is the blocking exchange followed by the body — correct,
+    /// with no overlap — and it is what [`InProcessTransport`] uses, whose
+    /// "transfer" is a moved pointer.
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+        map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
+        let _ = map;
+        let recv = self.exchange(send, spare);
+        let out = body(&recv, &AlreadyHere);
+        (recv, out)
+    }
 
     /// Fold the sub-phase laps this transport took inside
     /// [`exchange`](Self::exchange) into `stats`, and reset them.
@@ -1639,6 +1868,92 @@ mod tests {
         let mut map = ChunkMap::default();
         map.rebuild(&Gf2Span::new(deltas, bits), 1usize << bits, chunks);
         map
+    }
+
+    /// A payload of `blocks` blocks over `2^bits` positions, with a few rows
+    /// per position, filled deterministically.
+    fn payload_of<const W: usize>(bits: u8, blocks: usize, seed: u64) -> PartnerPayload<W> {
+        let n = 1usize << bits;
+        let mut s = seed | 1;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut payload = PartnerPayload::<W>::default();
+        for e in 0..blocks {
+            let counts: Vec<u32> = (0..n).map(|_| (next() % 4) as u32).collect();
+            let mut block = ExchangeBlock::<W>::with_counts(e as u32, &counts);
+            let rows = block.rows();
+            block.x = (0..rows).map(|_| std::array::from_fn(|_| next())).collect();
+            block.z = (0..rows).map(|_| std::array::from_fn(|_| next())).collect();
+            block.coeff = (0..rows)
+                .map(|_| Complex64::new(next() as f64 * 1e-18, next() as f64 * 1e-18))
+                .collect();
+            payload.blocks.push(block);
+        }
+        payload
+    }
+
+    /// The two-phase framing is a partition of the one-phase one: the early
+    /// parts are the block headers and offsets, and each bulk part's chunks
+    /// concatenate to exactly the column that part carries.
+    ///
+    /// That is the whole contract between the sender's `bulk_parts` and the
+    /// receiver's `bulk_recv_into` — get it wrong and the two sides post
+    /// different message sizes, which MPI reports as a truncated message rather
+    /// than as wrong rows.
+    #[test]
+    fn the_early_and_bulk_parts_partition_the_wire() {
+        for bits in [0u8, 1, 4, 5] {
+            for blocks in [1usize, 3] {
+                let mut payload = payload_of::<2>(bits, blocks, 0xB1A5 + u64::from(bits));
+                let all: Vec<Vec<u8>> = payload
+                    .byte_parts()
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .collect();
+                for chunks in [1usize, 2, 3, 8, 64] {
+                    let map = map_of(bits, &[0], chunks);
+                    let early: Vec<Vec<u8>> = payload
+                        .early_parts()
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect();
+                    assert_eq!(early.len(), 2 * blocks);
+                    for b in 0..blocks {
+                        assert_eq!(early[2 * b], all[PARTS_PER_BLOCK * b], "block {b} header");
+                        assert_eq!(
+                            early[2 * b + 1],
+                            all[PARTS_PER_BLOCK * b + 1],
+                            "block {b} offsets",
+                        );
+                    }
+
+                    let bulk = payload.bulk_parts(&map);
+                    assert_eq!(bulk.len(), 3 * blocks);
+                    for (i, pieces) in bulk.iter().enumerate() {
+                        assert_eq!(pieces.len(), map.chunks(), "part {i} chunk count");
+                        let joined: Vec<u8> =
+                            pieces.iter().flat_map(|p| p.iter().copied()).collect();
+                        let want = &all[PARTS_PER_BLOCK * (i / 3) + 2 + i % 3];
+                        assert_eq!(&joined, want, "part {i} at {chunks} chunks");
+                    }
+                    // The receive side cuts the same column the same way.
+                    let want_lens: Vec<Vec<usize>> = bulk
+                        .iter()
+                        .map(|p| p.iter().map(|c| c.len()).collect())
+                        .collect();
+                    let got_lens: Vec<Vec<usize>> = payload
+                        .bulk_recv_into(&map)
+                        .iter()
+                        .map(|p| p.iter().map(|c| c.len()).collect())
+                        .collect();
+                    assert_eq!(got_lens, want_lens, "receive side at {chunks} chunks");
+                }
+            }
+        }
     }
 
     /// Both directions of the layout are one permutation: every bucket has one

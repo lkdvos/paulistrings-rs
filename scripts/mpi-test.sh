@@ -3,6 +3,10 @@
 # differential net (`tests/mpi_ranks.rs`) and, with --python, the bindings'
 # (`python/paulistrings/tests/test_mpi.py`).
 #
+# The Rust net runs twice per rank count: at the default exchange chunk count
+# and with `PAULISTRINGS_EXCHANGE_CHUNKS=64`, which forces the pipelined receive
+# into as many batches as the layer has cosets.
+#
 #   scripts/mpi-test.sh                        # 2 and 4 ranks, debug profile
 #   scripts/mpi-test.sh --ranks 2,4,8          # more
 #   scripts/mpi-test.sh --oversubscribe        # more ranks than cores (CI, a busy box)
@@ -130,13 +134,26 @@ flags=""
 status=0
 for n in ${ranks//,/ }; do
     if [ "$rust_net" -eq 1 ]; then
-        echo "== mpirun -n $n $flags (mpi_ranks)"
-        if mpirun -n "$n" $flags "$bin"; then
-            echo "== $n ranks, mpi_ranks: ok"
-        else
-            echo "== $n ranks, mpi_ranks: FAILED" >&2
-            status=1
-        fi
+        # Twice: at the default exchange chunk count, and forced high so the
+        # pipelined receive runs many small batches (the count is clamped to
+        # the coset count, so "64" is "as many batches as the layer has").
+        # Both sides of an exchange must agree on it, hence `-x`.
+        for chunks in default 64; do
+            unset PAULISTRINGS_EXCHANGE_CHUNKS
+            xflag=""
+            if [ "$chunks" != default ]; then
+                export PAULISTRINGS_EXCHANGE_CHUNKS="$chunks"
+                xflag="-x PAULISTRINGS_EXCHANGE_CHUNKS"
+            fi
+            echo "== mpirun -n $n $flags (mpi_ranks, chunks=$chunks)"
+            if mpirun -n "$n" $flags $xflag "$bin"; then
+                echo "== $n ranks, mpi_ranks chunks=$chunks: ok"
+            else
+                echo "== $n ranks, mpi_ranks chunks=$chunks: FAILED" >&2
+                status=1
+            fi
+        done
+        unset PAULISTRINGS_EXCHANGE_CHUNKS
     fi
     if [ "$python_net" -eq 1 ]; then
         # `-p no:randomly` because the cases are collective: a plugin that

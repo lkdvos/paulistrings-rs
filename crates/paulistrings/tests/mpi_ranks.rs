@@ -266,7 +266,9 @@ fn main() {
 
     if rank == 0 {
         println!(
-            "mpi_ranks: {size} rank(s), thread support {threading:?}, library built against {}",
+            "mpi_ranks: {size} rank(s), thread support {threading:?}, exchange chunks {}, \
+             library built against {}",
+            std::env::var("PAULISTRINGS_EXCHANGE_CHUNKS").unwrap_or_else(|_| "default".to_string()),
             MpiTransport::build_library_version(),
         );
         if threading < Threading::Serialized {

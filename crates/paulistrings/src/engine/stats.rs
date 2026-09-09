@@ -21,7 +21,7 @@
 //! The three `*_ns` fields the partitioned engine adds (`collective_ns`,
 //! `export_ns`, `exchange_ns`), its two row counters, and the sub-phase laps
 //! that break the export and the exchange down (`export_count_ns` …
-//! `append_ns`) are all zero in the unpartitioned engine, which has no
+//! `chunk_wait_ns`) are all zero in the unpartitioned engine, which has no
 //! exchange.
 
 use std::time::Instant;
@@ -40,7 +40,7 @@ pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 ///   once per layer on the calling thread — in partitioned mode, on the
 ///   partition's own driving thread, one `PhaseStats` per partition; per layer
 ///   they sum to approximately the layer's wall time.
-/// - **Sub-phases** (`export_count_ns` through `append_ns`) break a phase
+/// - **Sub-phases** (`export_count_ns` through `chunk_wait_ns`) break a phase
 ///   above down further and are *contained in* it — `export_count_ns +
 ///   export_fill_ns ≈ export_ns`, the five exchange laps sum to
 ///   `exchange_ns`, and `append_ns` is part of `gather_ns`. They are excluded
@@ -171,6 +171,12 @@ pub struct PhaseStats {
     /// each output bucket's rest stream (`RecvRows::append_into`), summed over
     /// every coset task. A part of `gather_ns`.
     pub append_ns: u64,
+    /// **Distributed only, worker busy time.** Blocking inside
+    /// `ChunkWait::wait_chunk` for a chunk of the layer's rows to land, summed
+    /// over every coset task that waited. A part of `append_ns`, and the
+    /// measure of how much of the transfer the coset loop did *not* hide: zero
+    /// means the rows were always there when a task reached them.
+    pub chunk_wait_ns: u64,
 }
 
 impl PhaseStats {
@@ -213,6 +219,7 @@ impl PhaseStats {
         self.data_wait_ns += o.data_wait_ns;
         self.decode_ns += o.decode_ns;
         self.append_ns += o.append_ns;
+        self.chunk_wait_ns += o.chunk_wait_ns;
     }
 
     /// Fold one coset task's busy-time counters into the totals.

@@ -52,7 +52,8 @@ pub use trace::{PartitionLayerRecord, PartitionTrace};
 // The exchange wire format: what a layer's cross-partition traffic looks like
 // on the wire, and the trait an MPI transport implements to move it.
 pub use transport::{
-    BlockHeader, Collectives, ExchangeBlock, InProcessTransport, PartnerPayload, Payload, Transport,
+    AlreadyHere, BlockHeader, ChunkMap, ChunkWait, Collectives, ExchangeBlock, InProcessTransport,
+    PartnerPayload, Payload, Transport,
 };
 // The collective form of a layer finalization: what a truncation policy has
 // to provide before it can run with the sum split across partitions.

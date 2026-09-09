@@ -1613,6 +1613,7 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.rows_exported += s.rows_exported;
         out.recv_rows += s.recv_rows;
         out.append_ns += s.append_ns;
+        out.chunk_wait_ns += s.chunk_wait_ns;
     }
     out.layers = stats.layers;
     out
@@ -1844,9 +1845,10 @@ fn print_partition_block(cell: &CellResult) {
         s.decode_ns as f64 / 1e6,
     );
     println!(
-        "      received rows appended into the rest streams = {:.3} ms [worker busy time, part \
-         of gather]",
+        "      received rows appended into the rest streams = {:.3} ms (of which {:.3} ms waiting \
+         for a chunk to land) [worker busy time, part of gather]",
         s.append_ns as f64 / 1e6,
+        s.chunk_wait_ns as f64 / 1e6,
     );
     println!(
         "    terms in per partition = {:?}   imbalance (max/mean) = {:.3}",
@@ -1908,7 +1910,8 @@ fn json_line(cell: &CellResult) -> String {
          \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
-         \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"decode_ns\":{},\"append_ns\":{}",
+         \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"decode_ns\":{},\"append_ns\":{},\
+         \"chunk_wait_ns\":{}",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -1932,6 +1935,7 @@ fn json_line(cell: &CellResult) -> String {
         s.data_wait_ns,
         s.decode_ns,
         s.append_ns,
+        s.chunk_wait_ns,
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -1995,7 +1999,7 @@ terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartiti
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
-recv_alloc_ns\tdata_wait_ns\tdecode_ns\tappend_ns";
+recv_alloc_ns\tdata_wait_ns\tdecode_ns\tappend_ns\tchunk_wait_ns";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2006,7 +2010,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2066,6 +2070,7 @@ fn print_tsv_row(cell: &CellResult) {
         s.data_wait_ns,
         s.decode_ns,
         s.append_ns,
+        s.chunk_wait_ns,
     );
 }
 

@@ -166,12 +166,29 @@
 //!   `heavyhex_step`, and no edges at all (hence an even index split) for
 //!   every other layer — minimising crossed edges subject to ±25% block-size
 //!   balance. The blocks and the crossing count go to stderr.
-//! - `select` — the weighted XOR-SAT selector of the row-tuning plan's
-//!   deliverable A. **Not yet available**; rejected at parse time.
+//! - `select` — [`select_rows`] over the cell's own circuit
+//!   ([`circuit_generators`] for the masks): the greedy weighted MAX-XOR-SAT
+//!   selector, which recovers the cut by itself on a chain or a heavy-hex step
+//!   and is the answer when the geometry is not known. The masks it leaves
+//!   remote, their weight, and how many constraints it refused in order to keep
+//!   a row from being a conserved quantity all go to stderr.
+//!
+//! `cut` and `select` rows are **low weight** by construction, which makes them
+//! far likelier than a random draw to lie inside the span of `H`'s own active
+//! rows — dependence costs load balance exactly where a cut row is already at
+//! risk. Both are therefore checked with
+//! [`PartitionRows::is_independent_of`] against the first
+//! [`INDEPENDENCE_PROBE_BITS`] rows `H` will grow into (all of `H`'s rows are
+//! drawn from the seed up front, so the look-ahead is exact), and the hash is
+//! re-seeded until they pass. That moves the coset dimension as well, so the
+//! cell says so on stderr and its row reports the seed it ended up with.
 //!
 //! The rows are built from the layer, the qubit count, the partition count and
-//! the seed alone, by the one function [`build_partition_rows`], so an `--mpi`
+//! the seed alone, by the one function [`choose_partition_rows`], so an `--mpi`
 //! run derives identical rows on every rank with nothing agreed at run time.
+//! Every partitioned cell also reports what its rows cost the circuit —
+//! `rows_remote_gens` and `rows_remote_weight` in the sidecar — on the same
+//! scale for all three policies.
 //!
 //! # Distributed cells (`--mpi`, needs the `mpi` feature)
 //!
@@ -230,8 +247,9 @@ use paulistrings::bucket::sum::{
 };
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::partitioned::{
-    count_remote_deltas, CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime,
-    PartitionTrace, PartitionedSum, PartitionedTruncation, Placement,
+    circuit_generators, count_remote_deltas, select_rows, CpuSet, GeneratorWeight, PartitionConfig,
+    PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
+    Placement,
 };
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
@@ -360,8 +378,19 @@ Options:
                                       index split -- otherwise) subject to
                                       +-25% size balance; the cut and its
                                       crossing count are echoed to stderr
-                              select  the weighted XOR-SAT selector: NOT YET
-                                      AVAILABLE, rejected at parse time
+                              select  select_rows() over the cell's own
+                                      circuit: the greedy weighted MAX-XOR-SAT
+                                      selector, which finds the cut itself on
+                                      a chain or a heavy-hex step. The
+                                      generators it leaves remote, the weights
+                                      and the conserved-row rejections go to
+                                      stderr
+                            cut and select rows are low weight, so they collide
+                            with H's own rows far more often than a random draw:
+                            both are checked with is_independent_of against the
+                            first 10 rows H will grow into, and the hash is
+                            re-seeded until they pass (said so on stderr, since
+                            it moves the coset dimension too).
   --initial random|z0      The cell's input sum before the warm-up call:
                               random  rand_sum(--n, --qubits, --seed), the
                                       dense steady-state input; the default
@@ -722,8 +751,9 @@ enum PartitionRowSpec {
     /// single-qubit `X` rotation is local and a `ZZ(i, j)` rotation is remote
     /// exactly when the edge `(i, j)` crosses the cut. See [`cut_rows`].
     Cut,
-    /// The greedy weighted XOR-SAT selector over the cell's circuit —
-    /// deliverable A of the plan, **not yet available**.
+    /// [`select_rows`] over the cell's own circuit: the greedy weighted
+    /// MAX-XOR-SAT selector, which finds the cut itself when the circuit has
+    /// one and something useful when it does not.
     Select,
 }
 
@@ -1024,18 +1054,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let any_partitioned = partitions
         .iter()
         .any(|&p| p > 1 || p1_path == P1Path::Partitioned);
-    // === SELECT ARM (deliverable A of the row-tuning plan) ===============
-    // `partition_rows::select` does not exist yet. Rejected here so a campaign
-    // fails before its first cell rather than after it; the second half of the
-    // wiring is the `PartitionRowSpec::Select` arm of `build_partition_rows`.
-    if partition_rows == PartitionRowSpec::Select {
-        return Err(
-            "--partition-rows select is not yet available: the greedy weighted XOR-SAT row \
-             selector (deliverable A of research/plans/2026-09-09-partition-row-tuning.md) has \
-             not landed. Use --partition-rows random or --partition-rows cut"
-                .to_string(),
-        );
-    }
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
@@ -1453,6 +1471,9 @@ struct CellResult {
     /// `--partition-rows` echoed back. Meaningless for an unpartitioned cell,
     /// written on every row anyway so a campaign has one schema.
     partition_rows: &'static str,
+    /// What those rows cost this cell's circuit ([`RowChoiceStats`]); all-zero
+    /// on an unpartitioned row, where there are no rows to cost.
+    row_stats: RowChoiceStats,
     /// Everything only a partitioned cell has, `None` at `P = 1` classic.
     partitioned: Option<PartitionCellStats>,
     /// `(rank, ranks)` for a `--mpi` cell, `None` otherwise. Every field above
@@ -1675,6 +1696,7 @@ where
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
         partition_rows: cfg.partition_rows.label(),
+        row_stats: RowChoiceStats::default(),
         // No split, so no partition numbers: the sidecar's partition fields
         // stay zero/empty on this row (machine contract (a)).
         partitioned: None,
@@ -1845,36 +1867,25 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
 /// channel is local — and a `ZZ(i, j)` rotation is remote exactly when
 /// `label(block(i)) != label(block(j))`, i.e. when the edge crosses the cut.
 ///
-/// (Deliverable A of the row-tuning plan gives this a home in the core as
-/// `PartitionRows::cut`; this is the probe-local stand-in, built through the
-/// general `from_rows` hook, and is a one-line swap once that lands.)
+/// The cut construction itself is [`PartitionRows::cut`]; this wraps it with
+/// the block choice and the crossing count.
 fn cut_rows<const W: usize>(
     num_qubits: usize,
     partitions: usize,
     edges: &[(u32, u32)],
 ) -> (PartitionRows<W>, Vec<usize>, usize) {
-    let bits = partitions.trailing_zeros() as usize;
-    if bits == 0 {
-        return (PartitionRows::none(num_qubits), vec![num_qubits], 0);
-    }
     let ends = cut_blocks(num_qubits, partitions, edges);
 
     // label[q] = the block q lives in, which is also its partition label.
     let mut label = vec![0u32; num_qubits];
+    let mut blocks: Vec<Vec<u32>> = Vec::with_capacity(partitions);
     let mut start = 0usize;
     for (block, &end) in ends.iter().enumerate() {
         label[start..end].iter_mut().for_each(|l| *l = block as u32);
+        blocks.push((start as u32..end as u32).collect());
         start = end;
     }
 
-    let mut rows_z = vec![[0u64; W]; bits];
-    for (q, &b) in label.iter().enumerate() {
-        for (i, row) in rows_z.iter_mut().enumerate() {
-            if (b >> i) & 1 == 1 {
-                row[q / 64] |= 1u64 << (q % 64);
-            }
-        }
-    }
     let crossed = edges
         .iter()
         .filter(|&&(a, b)| {
@@ -1883,31 +1894,78 @@ fn cut_rows<const W: usize>(
                 && label[a as usize] != label[b as usize]
         })
         .count();
-    (
-        PartitionRows::from_rows(num_qubits, vec![[0u64; W]; bits], rows_z),
-        ends,
-        crossed,
-    )
+    (PartitionRows::cut(num_qubits, &blocks), ends, crossed)
 }
 
-/// The partition rows one cell runs under — the single place `--partition-rows`
-/// is interpreted, called identically by the in-process and the distributed
-/// cell so every rank of an `--mpi` run derives the same rows from the same
-/// inputs (`layer`, `num_qubits`, `partitions`, and the seed) with nothing
-/// agreed at run time.
-fn build_partition_rows<const W: usize>(
+/// What the chosen rows cost the circuit, for the sidecar.
+///
+/// Computed for every partitioned cell, whatever `--partition-rows` says, so a
+/// `random` row and a `cut` row are read on the same scale: one
+/// [`circuit_generators`] pass (one `prepare` per layer, outside the timed
+/// region) and a `part(mask)` test per distinct mask.
+#[derive(Clone, Copy, Debug, Default)]
+struct RowChoiceStats {
+    /// Distinct key-delta masks the rows leave remote.
+    remote_gens: usize,
+    /// Their total weight, i.e. the number of *layers* carrying a remote mask
+    /// — the export-and-exchange count a run of this circuit will pay.
+    remote_weight: f64,
+}
+
+/// How many bucket bits [`choose_partition_rows`] checks row independence at.
+///
+/// The driver checks `is_independent_of` against the rows `H` has *at scatter*
+/// (ARCHITECTURE.md §Partitioning), which for this probe is `--bucket-bits`,
+/// zero by default — a vacuous check, since a sum with no active hash rows
+/// makes any independent row set independent. `Gf2Hash` pre-draws all
+/// `B_MAX_BITS` rows from the seed and `refine` only activates more of them, so
+/// the rows the run will *grow into* are known in advance: this is the count to
+/// look ahead by. Ten bits is 1024 buckets, roughly where the target of 1024
+/// terms per bucket puts a million-term sum.
+const INDEPENDENCE_PROBE_BITS: u8 = 10;
+
+/// Fresh hash seeds tried when the chosen rows are dependent on `H`'s.
+const INDEPENDENCE_RETRIES: usize = 16;
+
+/// The partition rows one cell runs under, the sum they will be scattered from,
+/// and what they cost the circuit.
+///
+/// The single place `--partition-rows` is interpreted, called identically by
+/// the in-process and the distributed cell so every rank of an `--mpi` run
+/// derives the same rows — and, when the check below re-draws it, the same hash
+/// — from the same inputs, with nothing agreed at run time.
+///
+/// Takes the base sum by value and gives it back because of that re-draw:
+/// `cut` and `select` rows are *low weight* by construction (a cut row is one
+/// contiguous run of z-bits), and a low-weight row is far likelier than a
+/// random one to fall inside the span of `H`'s active rows. Dependence costs
+/// load balance rather than correctness, but it costs it exactly where a cut
+/// row is already at risk, so a non-random row set that fails
+/// [`PartitionRows::is_independent_of`] at [`INDEPENDENCE_PROBE_BITS`] gets the
+/// hash re-seeded until it passes. That is not free: `--hash-seed` changes the
+/// rank of the layer's bucket-delta span and therefore the coset dimension
+/// (`research/notes/2026-09-01-bucket-cliff.md`), so the cell says so on
+/// stderr and reports the seed it ended up with.
+fn choose_partition_rows<const W: usize>(
     layer: LayerKind,
     cfg: &Config,
-    num_qubits: usize,
+    base: PauliSum<W>,
     partitions: usize,
-    default_seed: u64,
-) -> PartitionRows<W> {
+) -> (PauliSum<W>, PartitionRows<W>, RowChoiceStats) {
+    let num_qubits = base.num_qubits();
     let bits = partitions.trailing_zeros() as u8;
-    match cfg.partition_rows {
+    // The rows and the generator scan both need the circuit. A layer whose
+    // generator qubits come from the rows themselves (`rotation_local` and
+    // friends) is circular, so the selector sees that layer's `(0, 1)` variant
+    // — harmless, since those layers exist to probe a *given* row set.
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, (0, 1));
+    let gens = circuit_generators(&circuit, base.hash(), false);
+
+    let rows = match cfg.partition_rows {
         PartitionRowSpec::Random => PartitionRows::<W>::from_seed(
             num_qubits,
             bits,
-            cfg.partition_seed.unwrap_or(default_seed),
+            cfg.partition_seed.unwrap_or_else(|| base.hash().seed()),
         ),
         PartitionRowSpec::Cut => {
             let edges = layer.cut_edges(num_qubits);
@@ -1924,17 +1982,106 @@ fn build_partition_rows<const W: usize>(
             rows
         }
         // === SELECT ARM (deliverable A of the row-tuning plan) ===========
-        // Wire `partition_rows::select(&circuit, bits, weights)` in here when
-        // it lands; `parse_args` rejects the spec until then, so this is
-        // unreachable in a shipped run.
         PartitionRowSpec::Select => {
-            eprintln!(
-                "phase_breakdown: --partition-rows select is not yet available (the weighted \
-                 XOR-SAT row selector has not landed)."
-            );
-            std::process::exit(2);
+            let selection = select_rows(&gens, num_qubits, bits, Some(&base));
+            if partitions > 1 {
+                eprintln!(
+                    "phase_breakdown: note: --partition-rows select on {} at P={partitions}: {} \
+                     of {} generator masks left remote (weight {:.0} remote / {:.0} local, i.e. \
+                     layers), {} generator(s) rejected to keep a row from being conserved.",
+                    layer.name(),
+                    selection.remote.len(),
+                    gens.len(),
+                    selection.remote_weight,
+                    selection.local_weight,
+                    selection.conserved_rejected,
+                );
+            }
+            selection.rows
         }
+    };
+
+    // Independence against the rows `H` will grow into, and the re-seed that
+    // buys it. `random` rows are dense and effectively never dependent, and
+    // re-seeding them would only perturb a measurement, so they skip it.
+    let base = if cfg.partition_rows == PartitionRowSpec::Random || bits == 0 {
+        base
+    } else {
+        reseed_hash_until_independent(cfg, base, &rows, layer, partitions)
+    };
+
+    let remote: Vec<&GeneratorWeight<W>> = gens
+        .iter()
+        .filter(|g| rows.partition_of(&g.mask_x, &g.mask_z) != 0)
+        .collect();
+    let stats = RowChoiceStats {
+        remote_gens: remote.len(),
+        remote_weight: remote.iter().map(|g| g.weight).sum(),
+    };
+    (base, rows, stats)
+}
+
+/// Re-seed the sum's hash until `rows` is independent of the rows `H` will have
+/// at [`INDEPENDENCE_PROBE_BITS`], or until the tries run out.
+///
+/// `Gf2Hash::new` draws every row from the seed and `refine` only activates
+/// more of them, so the look-ahead hash is exact rather than a guess. Re-hashing
+/// rescatters the sum at zero bucket bits, so `--bucket-bits`'s pre-refinement
+/// is re-applied afterwards.
+fn reseed_hash_until_independent<const W: usize>(
+    cfg: &Config,
+    base: PauliSum<W>,
+    rows: &PartitionRows<W>,
+    layer: LayerKind,
+    partitions: usize,
+) -> PauliSum<W> {
+    let num_qubits = base.num_qubits();
+    // `p + b` rows can only be independent while they fit in the `2n` key
+    // columns, so a small qubit count caps the look-ahead — without which a
+    // handful of qubits would report a dependence no seed could ever fix.
+    let headroom = (2 * num_qubits).saturating_sub(rows.bits() as usize);
+    let probe_bits = INDEPENDENCE_PROBE_BITS
+        .min(B_MAX_BITS)
+        .min(headroom.min(u8::MAX as usize) as u8);
+    let independent_at =
+        |seed: u64| rows.is_independent_of(&Gf2Hash::<W>::new(num_qubits, probe_bits, seed));
+    let seed = base.hash().seed();
+    if independent_at(seed) {
+        return base;
     }
+
+    // Splitmix64's increment: any full-period walk over the seed space does,
+    // and this one is deterministic and identical on every rank.
+    let mut candidate = seed;
+    for attempt in 1..=INDEPENDENCE_RETRIES {
+        candidate = candidate.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        if !independent_at(candidate) {
+            continue;
+        }
+        eprintln!(
+            "phase_breakdown: note: the {} rows for {} at P={partitions} are NOT independent of \
+             H's first {probe_bits} rows under hash seed {seed:#x} — the joint bucket would carry \
+             fewer bits than it claims and the split would be unbalanced. Re-seeded the hash to \
+             {candidate:#x} (attempt {attempt}). This changes the coset dimension too, so do not \
+             compare this cell's phase timings against a differently seeded one \
+             (research/notes/2026-09-01-bucket-cliff.md).",
+            cfg.partition_rows.label(),
+            layer.name(),
+        );
+        let mut base = base.with_hash(Gf2Hash::<W>::new(num_qubits, 0, candidate));
+        while base.hash().bits() < cfg.bucket_bits {
+            base.refine();
+        }
+        return base;
+    }
+    eprintln!(
+        "phase_breakdown: warning: the {} rows for {} at P={partitions} are dependent on H's \
+         first {probe_bits} rows, and {INDEPENDENCE_RETRIES} re-seeds did not fix it. Running \
+         anyway: dependence costs load balance, not correctness.",
+        cfg.partition_rows.label(),
+        layer.name(),
+    );
+    base
 }
 
 /// One partitioned cell: scatter (untimed), warm up, drain, time one
@@ -1956,7 +2103,6 @@ where
     P: PartitionedTruncation<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
-    let num_qubits = base.num_qubits();
 
     let config = PartitionConfig {
         placement: cfg.partition_cpus.placement(partitions, threads),
@@ -1988,8 +2134,9 @@ where
 
     // The rows the run will use — `--partition-rows random` reproduces the
     // draw the scatter would have made on its own. Built here so the generator
-    // scan below sees exactly the split the run will use.
-    let rows = build_partition_rows::<W>(layer, cfg, num_qubits, partitions, base.hash().seed());
+    // scan below sees exactly the split the run will use; the sum comes back
+    // because a non-random row set may have needed a re-seeded hash.
+    let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() {
         eprintln!(
@@ -2018,6 +2165,7 @@ where
         ..PropagateOptions::default()
     };
 
+    let split_hash_seed = base.hash().seed();
     let mut split = PartitionedSum::scatter_with_rows(base, rows, runtime);
     split.enable_trace();
 
@@ -2047,7 +2195,9 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        hash_seed: cfg.hash_seed,
+        // The seed actually used, which `choose_partition_rows` may have
+        // re-drawn to keep the rows independent of `H`'s.
+        hash_seed: split_hash_seed,
         bucket_bits: cfg.bucket_bits,
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
@@ -2064,6 +2214,7 @@ where
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
         partition_rows: cfg.partition_rows.label(),
+        row_stats,
         partitioned: Some(summary),
         mpi: None,
     }
@@ -2114,7 +2265,6 @@ where
     }
 
     let base = build_base_sum::<W>(layer, cfg);
-    let num_qubits = base.num_qubits();
 
     // D = 1: one partition over whatever CPUs the launcher left us. `Auto`
     // reads that mask, so `--bind-to numa` is what places this rank.
@@ -2133,8 +2283,7 @@ where
     // the split the run will use. Same inputs on every rank — the same layer,
     // qubit count, rank count and seed — so the same rows, whatever
     // `--partition-rows` says; nothing is agreed at run time.
-    let rows =
-        build_partition_rows::<W>(layer, cfg, num_qubits, ranks as usize, base.hash().seed());
+    let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, ranks as usize);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() && rank == 0 {
         eprintln!(
@@ -2153,6 +2302,7 @@ where
     };
 
     let transport = MpiTransport::from_communicator(&world);
+    let split_hash_seed = base.hash().seed();
     let mut split = DistributedSum::scatter_with_rows(base, transport, runtime, rows);
     split.enable_trace();
 
@@ -2186,7 +2336,9 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        hash_seed: cfg.hash_seed,
+        // The seed actually used, which `choose_partition_rows` may have
+        // re-drawn to keep the rows independent of `H`'s.
+        hash_seed: split_hash_seed,
         bucket_bits: cfg.bucket_bits,
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
@@ -2203,6 +2355,7 @@ where
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
         partition_rows: cfg.partition_rows.label(),
+        row_stats,
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
     }
@@ -2596,7 +2749,8 @@ fn json_line(cell: &CellResult) -> String {
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
          \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"append_ns\":{},\
          \"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\",\
-         \"partition_imbalance_by_layer\":{},\"terms_by_layer\":{}",
+         \"partition_imbalance_by_layer\":{},\"terms_by_layer\":{},\
+         \"rows_remote_gens\":{},\"rows_remote_weight\":{:.1}",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -2628,6 +2782,8 @@ fn json_line(cell: &CellResult) -> String {
                 .as_ref()
                 .map_or(&[][..], |p| &p.terms_by_layer)
         ),
+        cell.row_stats.remote_gens,
+        cell.row_stats.remote_weight,
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -2692,7 +2848,7 @@ partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_export
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
 recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
-partition_imbalance_by_layer\tterms_by_layer";
+partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2703,7 +2859,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2767,6 +2923,8 @@ fn print_tsv_row(cell: &CellResult) {
         cell.partition_rows,
         tsv_f64_array(p.map_or(&[][..], |p| &p.imbalance_by_layer)),
         tsv_array(p.map_or(&[][..], |p| &p.terms_by_layer)),
+        cell.row_stats.remote_gens,
+        cell.row_stats.remote_weight,
     );
 }
 

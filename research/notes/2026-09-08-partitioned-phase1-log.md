@@ -172,3 +172,28 @@ rotations); dense two-qubit unitaries are secondary. Consequences:
   exchange. This is the phase-5 hypothesis to test first, on the presentation workload.
 - Phase-3 measurement uses the `trotter` layer / kicked-Ising circuits at large `m` as the headline,
   `su4` as a secondary stress case.
+
+## 2026-09-09 — phase 3 (MPI transport) landed
+
+Commits `6c7082e`..`a9a545f` (feature `mpi` + `build.rs` rpath; `engine/partitioned/mpi.rs`
+`MpiTransport` over rsmpi 0.8.2; `distributed.rs` `DistributedSum<W, X: Transport>` — one partition
+per process, `run_layers` shared with the in-process driver; `tests/mpi_ranks.rs` (`harness = false`,
+16 cases, singleton under `cargo test`, 2/4 ranks under `scripts/mpi-test.sh`); CI job `mpi`;
+`ARCHITECTURE.md §Partitioning → ### Transport composition`; probe `--mpi` with per-rank sidecars and
+`vmhwm_kb`). Verified on the merged tree: default workspace 699 tests, `--features mpi` singleton 705,
+`mpirun -n 2` and `-n 4` all 16 cases ok; `lto = "fat"` builds with rsmpi.
+
+Decisions/deviations worth remembering:
+- **Thread level is `MPI_THREAD_SERIALIZED`, not FUNNELED**: the layer loop runs inside
+  `rayon::ThreadPool::install`, so MPI calls are issued from a pool worker. mpi4py users need
+  `mpi4py.rc.thread_level = 'serialized'` or `'multiple'` (its default) before `from mpi4py import MPI`.
+- Wire parts travel as bytes chunked at 1 GiB (`with_chunk_bytes`), not as a `u64` view: the header
+  and CSR offsets are 4-byte aligned.
+- `check_consistency` (fingerprint all-reduce, once per propagate) and `gather_to_root` are defaulted
+  trait methods; `MpiTransport` overrides the gather. A rank with a different circuit fails with a
+  named error instead of hanging (tested).
+- Pre-existing flaky test `runtime::tests::a_panicking_partition_does_not_hang_the_group` asserted
+  *which* partner's death surfaces first; now asserts termination only.
+- Slurm: `scripts/slurm/mpi-ranks.sbatch` now builds a pinned commit (`PS_REV`) in a private worktree,
+  runs the rank matrix (`ranks = 2^k ≤ nodes × numa`, one per NUMA domain, `--cpu-bind=ldoms`), then
+  the probe with `--mpi` (env `LAYERS`, `N`).

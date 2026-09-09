@@ -342,12 +342,16 @@ mod tests {
     /// surface as a panic, not a deadlock. (The test itself would hang on
     /// failure; that is the assertion.)
     ///
-    /// *Which* panic surfaces is the first one the joins reach in rank order,
-    /// so it is usually a partner's "partition 2 terminated" from the transport
-    /// rather than partition 2's own message — both name the dead partition,
-    /// and termination is the property under test.
+    /// *Which* panic surfaces is a race, so the assertion is bare
+    /// `should_panic` with no expected text. The first `Err` the joins reach in
+    /// rank order is usually a partner's "partition 2 terminated" from the
+    /// transport, but a partner that noticed rank 2's death first can itself
+    /// die before rank 0 reads rank 2's channel, and rank 0 then reports *that*
+    /// partner instead — observed as roughly one `cargo test --workspace` run
+    /// in five under full parallelism. Every one of those outcomes is the
+    /// behaviour under test: the group terminates instead of blocking forever.
     #[test]
-    #[should_panic(expected = "partition 2")]
+    #[should_panic]
     fn a_panicking_partition_does_not_hang_the_group() {
         let runtime = PartitionRuntime::new(&config(4)).expect("resolve");
         runtime.map_partitions(vec![0usize; 4], |rank, _, transport| {

@@ -74,3 +74,14 @@ harness = false
 [[example]]
 name = "phase_breakdown"
 required-features = ["phase-timing"]
+
+# The multi-rank differential net. `harness = false`: the cases are collective,
+# so they must run in the same order on every rank, one at a time — none of
+# which the libtest harness (which may run cases in parallel, in an unspecified
+# order) allows. `main` drives the matrix, all-reduces each verdict and exits
+# with the same status on every rank. Driven by `scripts/mpi-test.sh`; a plain
+# `cargo test --features mpi` runs it as a singleton world of one rank.
+[[test]]
+name = "mpi_ranks"
+harness = false
+required-features = ["mpi", "test-utils"]

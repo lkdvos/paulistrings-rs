@@ -46,11 +46,16 @@ stream) costs more than the layer it feeds. `rotation_remote` at 3 ms/layer ship
 | Genoa, 48 | 1.10 ms | 0.97 ms | 0.04 ms | 1.02 → 0.88 ms (**−14%**) |
 | Icelake, 32 | 1.62 ms | 2.14 ms | 0.30 ms | 1.54 → 1.77 ms (+15%) |
 
-The NUMA effect on the layer work is real on two of three hosts. The per-layer collective — one
-bucket-bits all-reduce over `std::sync::mpsc` channels with blocking `recv`, i.e. futex sleep/wake on
-otherwise dedicated threads — costs 0.04–0.30 ms per layer, up to 14% of a rotation layer. Follow-up:
-spin-waiting atomics for the in-process collectives (in progress). Icelake's slower coset loop at P=2 is
-unexplained (no counters on the node); 16 threads per socket there vs 8 here.
+The NUMA effect on the layer work is real on two of three hosts. The `barrier_ns` column is the
+engine's `collective_ns`, stamped from the top of the layer through the bucket-bits all-reduce — so
+it is almost entirely **arrival skew** between the two partitions (the faster one waiting for the
+slower), not transport: it scales with the layer (80 µs on a 3.1 ms layer, 3.4 µs on a 43 µs layer)
+while the all-reduce mechanism is fixed. Rewriting the in-process collectives on spin-waiting atomics
+(commit `4dda4ad`) took the mechanism from 2.9 µs to 0.25 µs per call and left this column unchanged,
+as it should. Follow-up: split `collective_ns` into a publish lap and a wait lap so imbalance and
+transport are separate columns. Icelake's slower coset loop at P=2 (+15%) is unexplained — no counters
+on the node; 16 threads per socket there vs 8 here — and is not on the critical path now that the
+priority is multi-node capacity.
 
 ## Table C — counters on ccqlin038, dense layers at 16 threads (8 per socket at P=2)
 
@@ -87,8 +92,8 @@ copies, not bandwidth — a design cost, fixable (pull model), not a hardware wa
    push exchange; a fully local layer gains 4–22%. Phase 5 (partition rows as cuts of the gate graph)
    is therefore the lever for real circuits, and the `su4_local`/`rotation_local` cells are its
    upper bound on this hardware.
-2. **Remove the collective's wake-up latency** (spin-wait; ≤ 0.01 ms/layer target) — it is up to
-   14% of a rotation layer today and masks the NUMA gain in the wall time.
+2. ~~Remove the collective's wake-up latency~~ — done (`4dda4ad`); the column was arrival skew, see
+   Table B. Remaining: instrument skew separately from the mechanism.
 3. **Pull-based in-process exchange** (receiver reads the partner's input buckets directly, one
    interconnect crossing, no export pass, no copy) to bound the residual remote-layer cost;
    MPI keeps push. Under the success criterion this is a bound, not a target.

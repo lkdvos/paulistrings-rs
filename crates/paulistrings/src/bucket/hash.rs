@@ -24,9 +24,21 @@ pub const P_MAX_BITS: u8 = 4;
 /// would draw from the same stream and the partition rows would *be* the
 /// hash's first `p` rows — dependent by construction, and the global bucket
 /// `(part(v), loc(v))` would only have `max(p, b)` bits of entropy instead of
-/// `p + b`. The value is the golden-ratio constant, chosen only for having a
-/// well-mixed bit pattern.
-const PARTITION_ROW_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
+/// `p + b`. The seed is mixed through a splitmix64 finalizer *before* the salt
+/// so no particular seed value can cancel it: the first constant chosen here
+/// equalled `DEFAULT_HASH_SEED`, and `seed ^ salt == 0` handed the default
+/// seed a degenerate generator state (`Xs64::new(0)` → 1) whose first rows were
+/// nearly empty — `--partition-rows random` at the default seed measured "half
+/// as remote" as a real random draw for that reason.
+const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
+
+/// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
+#[inline]
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 /// Xorshift64 — deterministic row generation without pulling in an RNG crate.
 ///
@@ -364,7 +376,7 @@ impl<const W: usize> PartitionRows<W> {
         );
         debug_assert!(num_qubits <= 64 * W);
 
-        let mut rng = Xs64::new(seed ^ PARTITION_ROW_SALT);
+        let mut rng = Xs64::new(mix64(seed) ^ PARTITION_ROW_SALT);
         let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
         let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
 

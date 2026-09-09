@@ -1983,7 +1983,24 @@ fn choose_partition_rows<const W: usize>(
         }
         // === SELECT ARM (deliverable A of the row-tuning plan) ===========
         PartitionRowSpec::Select => {
-            let selection = select_rows(&gens, num_qubits, bits, Some(&base));
+            // Balance is judged on a *spread* operator, not the one-term `z0`
+            // initial sum: from a single site the selector would otherwise
+            // pick a `{site}`-vs-rest cut and leave one partition empty for the
+            // whole run. A coarse untimed warm-up through the cell's own
+            // circuit gives it a representative sample; the run itself still
+            // starts from `base`.
+            let warm = paulistrings::propagate(
+                &circuit,
+                base.clone(),
+                &CoefficientThreshold(1e-2),
+                Direction::Forward,
+            );
+            let probe = if warm.len() > base.len() {
+                &warm
+            } else {
+                &base
+            };
+            let selection = select_rows(&gens, num_qubits, bits, Some(probe));
             if partitions > 1 {
                 eprintln!(
                     "phase_breakdown: note: --partition-rows select on {} at P={partitions}: {} \

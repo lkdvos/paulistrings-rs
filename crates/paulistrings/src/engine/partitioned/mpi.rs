@@ -1,0 +1,895 @@
+//! The MPI transport: one partition per rank.
+//!
+//! [`MpiTransport`] is the distributed implementation of the two traits in
+//! `engine::partitioned::transport` — nothing else in the partitioned engine
+//! changes, because the exchange's wire unit, its receive rule and the
+//! collective-order invariant were designed against those traits and not
+//! against the in-process channel matrix (ARCHITECTURE.md §Partitioning,
+//! *Transport composition*).
+//!
+//! # The library never initializes MPI
+//!
+//! There is no `Universe` in here and no `MPI_Init`. The application owns
+//! initialization and finalization: it creates the universe, hands the
+//! communicator to [`MpiTransport::from_communicator`] (or a raw handle to
+//! [`MpiTransport::from_raw_handle`], for a Python or C caller whose MPI is
+//! already up), and drops the universe last. That is the only arrangement that
+//! composes — a library that called `MPI_Init` would fight `mpi4py`, a host
+//! application, or a second Rust crate for the same one-shot global.
+//!
+//! Two consequences worth spelling out:
+//!
+//! - **[`rsmpi`] is re-exported.** `Universe`, `Threading` and the
+//!   `Communicator` trait are types of the `mpi` crate, so a caller must build
+//!   its universe with the *same* version this crate links. Use
+//!   `paulistrings::mpi::rsmpi` rather than a separate `mpi` dependency.
+//! - **Request at least `rsmpi::Threading::Serialized`.** The partition's
+//!   layer loop runs inside a pinned Rayon pool (`ThreadPool::install`), so
+//!   the thread making MPI calls
+//!   is a pool worker rather than the process's main thread, and it need not be
+//!   the same worker on every layer. Only ever *one* thread calls MPI at a time,
+//!   which is exactly `MPI_THREAD_SERIALIZED`; `Funneled` would be a false
+//!   claim.
+//!
+//! # What crosses the wire
+//!
+//! [`Transport::exchange`] is **point-to-point, not an all-to-all-v**. The
+//! partner set is symmetric by construction: a remote delta moves rank `R`'s
+//! rows to `R ⊕ pd`, and the same delta on rank `R ⊕ pd` moves its rows back
+//! to `R`, so "who sends to me" is exactly "who I send to" — the `Some`
+//! positions of the caller's `send` vector. No exchange of counts is needed to
+//! learn the partner set, and no rank has to participate in a collective sized
+//! by the whole group.
+//!
+//! Per partner the framing is one **header** message followed by the payload's
+//! [`Payload::byte_parts`], in order:
+//!
+//! ```text
+//! header  : u64[2 + n_parts]  = [ (src << 32) | WIRE_VERSION, n_parts, len[0], …, len[n_parts-1] ]
+//! parts   : the bytes of part 0, then part 1, … each split into ≤ CHUNK-byte messages
+//! ```
+//!
+//! The header is the only message whose size the receiver cannot predict, so it
+//! is received with a matched probe (`receive_vec_with_tag`); everything after
+//! it is a posted [`immediate_receive_into`](mpi::point_to_point::Source::immediate_receive_into)
+//! of a known length. Parts share one tag and MPI's non-overtaking guarantee
+//! for a `(source, tag, communicator)` triple matches them up in posting order,
+//! which is why both sides walk partners, parts and chunks in the same
+//! ascending order.
+//!
+//! **Chunking.** MPI counts are `i32`, so one message carries under 2 GiB; a
+//! coefficient column at large `m` can exceed that. Every part is therefore
+//! split into chunks of at most [`DEFAULT_CHUNK_BYTES`] (1 GiB) under the same
+//! tag. An empty part is zero chunks — `slice::chunks` and `slice::chunks_mut`
+//! agree on that, which is what keeps the two sides' message counts equal
+//! without a second rule.
+//!
+//! *Deviation from the phase-3 brief:* the brief proposed viewing the parts as
+//! `u64` (raising the per-message ceiling to 16 GiB). That is not sound —
+//! `BlockHeader` is four `u32`s and the CSR `offsets` column is `Vec<u32>`, both
+//! 4-aligned, so `bytemuck::cast_slice::<u8, u64>` on their bytes would panic.
+//! Bytes plus chunking has the same effect and no alignment precondition.
+//!
+//! **Endianness and padding.** The parts are raw host bytes (that is what
+//! `byte_parts` is), sent as `MPI_UINT8_T`, so a run must be homogeneous — the
+//! same architecture and the same `W` on every rank. The header is a
+//! `Vec<u64>` viewed as bytes for the same reason: one datatype for the whole
+//! framing keeps sends and receives in a single `RequestCollection`.
+//!
+//! # Tags
+//!
+//! `tag = epoch:11 | kind:4`, so at most 32767 — inside the `MPI_TAG_UB ≥
+//! 32767` the standard guarantees. `kind` separates the exchange's header and
+//! part streams from the gather's; `epoch` increments on every
+//! [`Transport::exchange`] and `Transport::gather_to_root` and wraps at 2048,
+//! so a straggling message from one layer cannot be mistaken for the next
+//! layer's. It is a tripwire, not a protocol: the layer loop is lock-step, so
+//! consecutive epochs are never in flight at once.
+//!
+//! # Deadlock freedom
+//!
+//! Every send for a call is posted (non-blocking) before the call's first
+//! receive. The blocking header receive can therefore always complete: the
+//! matching send is already in flight, and `MPI_Mrecv` drives the rendezvous
+//! itself if the message is large. The part receives are all posted at once and
+//! waited on together, so a partner's rendezvous has somewhere to land.
+//!
+//! What *is* a hang: an asymmetric partner set. If rank `q` sends here and this
+//! rank does not send to `q`, the message is never received. That cannot happen
+//! for a layer's exchange (the partner set is a function of the delta mask, and
+//! every rank computes it identically), and [`Collectives::check_consistency`]
+//! catches the wider version of the same mistake — ranks driven through
+//! different circuits — once per propagation.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+use ::mpi::collective::{CommunicatorCollectives, SystemOperation};
+use ::mpi::point_to_point::{Destination, Source};
+use ::mpi::raw::FromRaw;
+use ::mpi::request::{RequestCollection, Scope};
+use ::mpi::topology::{Communicator, Rank, SimpleCommunicator};
+
+use super::transport::{Collectives, Payload, Transport, ROOT};
+
+/// The `rsmpi` crate this transport is built against.
+///
+/// Re-exported so a caller creates its `Universe` from the same version:
+/// `paulistrings::mpi::rsmpi::initialize_with_threading(...)`. Two copies of
+/// `mpi` in one binary would each have their own datatype and operation
+/// statics.
+pub use ::mpi as rsmpi;
+
+/// `log` target for the transport's construction diagnostics, shared with
+/// [`topology`](super::topology) and [`runtime`](super::runtime).
+const LOG_TARGET: &str = "paulistrings::partitioned";
+
+/// Version of the header framing, in the low 32 bits of the header's first
+/// word. Bumped when the framing changes; a mismatch is an error naming both
+/// versions rather than a garbage length vector.
+const WIRE_VERSION: u32 = 1;
+
+/// Bits of the tag reserved for the message kind.
+const KIND_BITS: i32 = 4;
+/// Epochs before the counter wraps: 11 bits, so `tag < 2^15`.
+const EPOCHS: u32 = 1 << 11;
+
+/// Tag kinds. The exchange and the gather have separate streams so a bug in one
+/// cannot consume the other's messages.
+const KIND_EXCHANGE_HEADER: i32 = 0;
+const KIND_EXCHANGE_PART: i32 = 1;
+const KIND_GATHER_HEADER: i32 = 2;
+const KIND_GATHER_PART: i32 = 3;
+
+/// The tag pair one call's framing uses: one for the headers, one for every
+/// part chunk. Carried together so a call cannot mix an exchange's header tag
+/// with a gather's part tag.
+#[derive(Clone, Copy)]
+struct Tags {
+    header: Rank,
+    part: Rank,
+}
+
+impl Tags {
+    /// The exchange's tags for `epoch`.
+    fn exchange(epoch: u32) -> Self {
+        Self {
+            header: MpiTransport::tag(KIND_EXCHANGE_HEADER, epoch),
+            part: MpiTransport::tag(KIND_EXCHANGE_PART, epoch),
+        }
+    }
+
+    /// The gather's tags for `epoch`.
+    fn gather(epoch: u32) -> Self {
+        Self {
+            header: MpiTransport::tag(KIND_GATHER_HEADER, epoch),
+            part: MpiTransport::tag(KIND_GATHER_PART, epoch),
+        }
+    }
+}
+
+/// Largest single message the transport sends, in bytes.
+///
+/// MPI counts are `i32`, so the hard ceiling is just under 2 GiB; 1 GiB leaves
+/// room and is large enough that a chunked part is the exception. See the
+/// module docs on chunking.
+pub const DEFAULT_CHUNK_BYTES: usize = 1 << 30;
+
+/// What can go wrong building an [`MpiTransport`]. Everything after
+/// construction is a panic, as everywhere else in the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MpiError {
+    /// `MPI_Init` has not been called (or `MPI_Finalize` already has). The
+    /// library never initializes MPI itself — see the module docs.
+    NotInitialized,
+    /// `MPI_Comm_dup` failed, with the error code it returned.
+    DuplicateFailed(i32),
+    /// The handle passed to [`MpiTransport::from_raw_handle`] was
+    /// `MPI_COMM_NULL`.
+    NullCommunicator,
+    /// The communicator's size is not a power of two. The partition rows name
+    /// a partition with `log2(P)` GF(2) rows, so `P` must be a power of two
+    /// (ARCHITECTURE.md §Partitioning).
+    SizeNotPowerOfTwo(u32),
+}
+
+impl std::fmt::Display for MpiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotInitialized => write!(
+                f,
+                "MPI is not initialized: paulistrings never calls MPI_Init, so the application \
+                 must create the universe (paulistrings::mpi::rsmpi::initialize_with_threading) \
+                 and keep it alive for the transport's lifetime",
+            ),
+            Self::DuplicateFailed(code) => {
+                write!(f, "MPI_Comm_dup failed with error code {code}")
+            }
+            Self::NullCommunicator => write!(f, "the communicator handle is MPI_COMM_NULL"),
+            Self::SizeNotPowerOfTwo(size) => write!(
+                f,
+                "an MPI group of {size} ranks cannot be a partitioning: a partition is named by \
+                 log2(P) GF(2) rows, so the rank count must be a power of two",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MpiError {}
+
+/// One MPI rank's endpoint: the [`Transport`] the partitioned engine drives a
+/// distributed run through.
+///
+/// Holds a **duplicate** of the communicator it was built from, freed when the
+/// transport drops, so the engine's tags can never collide with the
+/// application's traffic on the original. That duplicate must not outlive the
+/// `Universe`; hold the transport (and the `DistributedSum` built on it)
+/// inside the universe's scope.
+///
+/// # Examples
+///
+/// ```no_run
+/// use paulistrings::mpi::{rsmpi, MpiTransport};
+/// use paulistrings::engine::partitioned::Collectives;
+///
+/// let (universe, _threading) =
+///     rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).expect("MPI initializes");
+/// let world = universe.world();
+/// let transport = MpiTransport::from_communicator(&world);
+/// println!("rank {} of {}", transport.rank(), transport.size());
+/// // `universe` drops last, calling MPI_Finalize.
+/// ```
+pub struct MpiTransport {
+    /// The duplicated communicator this transport owns.
+    comm: SimpleCommunicator,
+    /// This rank, cached: `Collectives::rank` is called per layer.
+    rank: u32,
+    /// The group size, cached.
+    size: u32,
+    /// Tag epoch, incremented per exchange and per gather.
+    epoch: AtomicU32,
+    /// Send-side scratch for [`Collectives::allreduce_sum_u64`] — rsmpi's safe
+    /// `all_reduce_into` has no `MPI_IN_PLACE`, so the input needs a copy, and
+    /// the buffer is the same length every layer.
+    scratch: Mutex<Vec<u64>>,
+    /// Largest message the transport sends, in bytes. A test knob (see
+    /// [`with_chunk_bytes`](Self::with_chunk_bytes)); production uses
+    /// [`DEFAULT_CHUNK_BYTES`].
+    chunk: usize,
+}
+
+// SAFETY: `SimpleCommunicator` is not `Send`/`Sync` because `MPI_Comm` is a raw
+// pointer on Open MPI. `Collectives: Send + Sync` needs both, because the
+// driving thread hands `&self` down into code that a Rayon pool has borrowed —
+// but no MPI call is ever made from a pool worker other than the one driving,
+// and never from two threads at once (see the `Threading::Serialized`
+// requirement in the module docs). The handle itself is a plain value; MPI's
+// own thread-safety, at the level the application requested, is what makes the
+// calls safe.
+unsafe impl Send for MpiTransport {}
+unsafe impl Sync for MpiTransport {}
+
+impl MpiTransport {
+    /// Duplicate `comm` and wrap it.
+    ///
+    /// **Collective** over `comm`: every rank must call it, `MPI_Comm_dup`
+    /// being collective. Pass the world communicator, or any sub-communicator
+    /// whose size is a power of two.
+    ///
+    /// # Panics
+    ///
+    /// If the communicator's size is not a power of two (see
+    /// [`MpiError::SizeNotPowerOfTwo`]); use
+    /// [`try_from_communicator`](Self::try_from_communicator) for the fallible
+    /// form.
+    pub fn from_communicator(comm: &impl Communicator) -> Self {
+        Self::try_from_communicator(comm).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// [`from_communicator`](Self::from_communicator), reporting a
+    /// non-power-of-two size instead of panicking.
+    ///
+    /// **Collective** over `comm`.
+    ///
+    /// # Errors
+    ///
+    /// [`MpiError::SizeNotPowerOfTwo`].
+    pub fn try_from_communicator(comm: &impl Communicator) -> Result<Self, MpiError> {
+        Self::adopt(comm.duplicate())
+    }
+
+    /// Duplicate a raw `MPI_Comm` handle and wrap it.
+    ///
+    /// The entry point for a caller whose MPI is already up and whose
+    /// communicator does not come from this crate's `rsmpi` — a Python host
+    /// passing `MPI._addressof(comm)`, say. The handle is duplicated, so
+    /// passing `MPI_COMM_WORLD` is fine here (unlike
+    /// `SimpleCommunicator::from_raw`, which takes ownership and would free
+    /// it); ownership of `handle` itself stays with the caller.
+    ///
+    /// **Collective** over the communicator `handle` names.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be a live `MPI_Comm` of the process's MPI library —
+    /// bit-for-bit what C would pass, an `int` on MPICH-derived libraries and a
+    /// pointer on Open MPI — and must be an intra-communicator. It stays valid
+    /// for the caller after the call.
+    ///
+    /// # Errors
+    ///
+    /// [`MpiError::NotInitialized`] if MPI is not up,
+    /// [`MpiError::NullCommunicator`] for a null handle,
+    /// [`MpiError::DuplicateFailed`] if `MPI_Comm_dup` reports an error, and
+    /// [`MpiError::SizeNotPowerOfTwo`] for a group that cannot be a
+    /// partitioning.
+    pub unsafe fn from_raw_handle(handle: usize) -> Result<Self, MpiError> {
+        if !::mpi::environment::is_initialized() {
+            return Err(MpiError::NotInitialized);
+        }
+        let raw = comm_from_usize(handle);
+        if raw == ::mpi::ffi::RSMPI_COMM_NULL {
+            return Err(MpiError::NullCommunicator);
+        }
+        let mut dup: ::mpi::ffi::MPI_Comm = ::mpi::ffi::RSMPI_COMM_NULL;
+        // MPI_SUCCESS is 0 in every implementation (the standard fixes it), so
+        // this needs no generated constant.
+        let code = ::mpi::ffi::MPI_Comm_dup(raw, &mut dup);
+        if code != 0 {
+            return Err(MpiError::DuplicateFailed(code));
+        }
+        Self::adopt(SimpleCommunicator::from_raw(dup))
+    }
+
+    /// Take ownership of an already-duplicated communicator.
+    fn adopt(comm: SimpleCommunicator) -> Result<Self, MpiError> {
+        let rank = comm.rank() as u32;
+        let size = comm.size() as u32;
+        if !size.is_power_of_two() {
+            return Err(MpiError::SizeNotPowerOfTwo(size));
+        }
+
+        let built = env!("PAULISTRINGS_MPI_BUILD_VERSION");
+        let running = ::mpi::environment::library_version().unwrap_or_default();
+        let running = running.trim();
+        if rank == 0 {
+            log::info!(
+                target: LOG_TARGET,
+                "MPI transport: rank {rank}/{size}, thread support {:?}, library {running:?} \
+                 (built against {built:?})",
+                ::mpi::environment::threading_support(),
+            );
+        }
+        if !running.is_empty() && !version_matches(built, running) {
+            // Open MPI 4.1 and 5.0 share the soname `libmpi.so.40`, so a
+            // module swap between build and run links cleanly and then
+            // misbehaves. Not fatal: the strings are free-form and a false
+            // alarm must not stop a run.
+            log::warn!(
+                target: LOG_TARGET,
+                "MPI library version {running:?} differs from the one this build probed \
+                 ({built:?}); Open MPI 4.1 and 5.0 share a soname, so a stale module load links \
+                 but may misbehave",
+            );
+        }
+
+        Ok(Self {
+            comm,
+            rank,
+            size,
+            epoch: AtomicU32::new(0),
+            scratch: Mutex::new(Vec::new()),
+            chunk: DEFAULT_CHUNK_BYTES,
+        })
+    }
+
+    /// Override the largest message the transport sends, in bytes.
+    ///
+    /// The chunking path is otherwise unreachable in a test (a part would have
+    /// to exceed 1 GiB), so the multi-chunk net sets this to a few kilobytes.
+    ///
+    /// # Panics
+    ///
+    /// If `bytes` is zero.
+    pub fn with_chunk_bytes(mut self, bytes: usize) -> Self {
+        assert!(bytes > 0, "the chunk size must be positive");
+        self.chunk = bytes;
+        self
+    }
+
+    /// The communicator this transport owns (the duplicate, not the original).
+    pub fn communicator(&self) -> &SimpleCommunicator {
+        &self.comm
+    }
+
+    /// The MPI library version string this build probed through `mpicc`.
+    pub fn build_library_version() -> &'static str {
+        env!("PAULISTRINGS_MPI_BUILD_VERSION")
+    }
+
+    /// The next tag epoch, wrapping at [`EPOCHS`].
+    fn next_epoch(&self) -> u32 {
+        self.epoch.fetch_add(1, Ordering::Relaxed) % EPOCHS
+    }
+
+    /// One rank's tag for message `kind` in `epoch`.
+    fn tag(kind: i32, epoch: u32) -> Rank {
+        ((epoch % EPOCHS) as i32) << KIND_BITS | kind
+    }
+
+    /// Send `parts` to `dst` as a header plus chunked part messages, and hand
+    /// the requests to `coll`.
+    ///
+    /// The borrow gymnastics are why this is a free function on `self` rather
+    /// than a closure: `header` is the caller's storage and must outlive the
+    /// request scope.
+    fn post_send<'a, Sc>(
+        &self,
+        dst: usize,
+        header: &'a [u8],
+        parts: &[&'a [u8]],
+        tags: Tags,
+        scope: Sc,
+        coll: &mut RequestCollection<'a, [u8]>,
+    ) where
+        Sc: Scope<'a> + Copy,
+    {
+        let peer = self.comm.process_at_rank(dst as Rank);
+        coll.add(peer.immediate_send_with_tag(scope, header, tags.header));
+        for part in parts {
+            for chunk in part.chunks(self.chunk) {
+                coll.add(peer.immediate_send_with_tag(scope, chunk, tags.part));
+            }
+        }
+    }
+
+    /// Blocking receive of one framing header from `src`, returning the part
+    /// lengths it declares.
+    ///
+    /// # Panics
+    ///
+    /// If the header's wire version or source rank is not what this rank
+    /// expects — a crossed message or a version-skewed peer, either of which
+    /// would otherwise produce a garbage length vector and a wild allocation.
+    fn recv_header(&self, src: usize, tags: Tags) -> Vec<usize> {
+        let peer = self.comm.process_at_rank(src as Rank);
+        let (bytes, _status) = peer.receive_vec_with_tag::<u8>(tags.header);
+        decode_header(&bytes, src as u32, self.rank)
+    }
+
+    /// Receive every part of every partner in one `wait_all`.
+    ///
+    /// `buffers[i]` are the parts expected from `partners[i]`, already sized;
+    /// the chunk order — partner, then part, then chunk, all ascending —
+    /// mirrors [`post_send`](Self::post_send), which is what pairs the messages
+    /// up under a shared tag.
+    fn recv_parts(&self, partners: &[usize], buffers: &mut [Vec<Vec<u8>>], tags: Tags) {
+        let mut chunks: Vec<(usize, &mut [u8])> = Vec::new();
+        for (i, parts) in buffers.iter_mut().enumerate() {
+            let src = partners[i];
+            for part in parts.iter_mut() {
+                for chunk in part.chunks_mut(self.chunk) {
+                    chunks.push((src, chunk));
+                }
+            }
+        }
+
+        let n = chunks.len();
+        ::mpi::request::multiple_scope(n, |scope, coll| {
+            for (src, chunk) in chunks {
+                coll.add(
+                    self.comm
+                        .process_at_rank(src as Rank)
+                        .immediate_receive_into_with_tag(scope, chunk, tags.part),
+                );
+            }
+            let mut done = Vec::with_capacity(n);
+            coll.wait_all(&mut done);
+        });
+    }
+}
+
+/// Rebuild an `MPI_Comm` from the `usize` a foreign caller passed.
+///
+/// `MPI_Comm` is not one type across implementations — Open MPI's bindings make
+/// it a pointer newtype, MPICH's a plain `int` — so `as` cannot name its
+/// primitive form. Both are scalars the C ABI passes by value and `usize` is at
+/// least as wide as either, so the conversion is a width-checked
+/// reinterpretation of the value instead.
+///
+/// # Safety
+///
+/// `handle` must be what C would pass as an `MPI_Comm` on this platform.
+unsafe fn comm_from_usize(handle: usize) -> ::mpi::ffi::MPI_Comm {
+    match size_of::<::mpi::ffi::MPI_Comm>() {
+        n if n == size_of::<usize>() => std::mem::transmute_copy(&handle),
+        4 => std::mem::transmute_copy(&(handle as u32)),
+        n => panic!("unsupported MPI_Comm width: {n} bytes"),
+    }
+}
+
+/// Whether the run-time library version string is the one the build probed.
+///
+/// Both are free-form (`"Open MPI 5.0.6 (Language: C)"` from `mpicc
+/// --showme:version`, a multi-line banner from `MPI_Get_library_version`), so
+/// the test is "does the running banner mention the build's version number" —
+/// the first dotted number in the build string.
+fn version_matches(built: &str, running: &str) -> bool {
+    let number = built
+        .split_whitespace()
+        .find(|tok| tok.contains('.') && tok.starts_with(|c: char| c.is_ascii_digit()));
+    match number {
+        Some(number) => running.contains(number),
+        // Nothing to compare against (the build script could not probe): stay
+        // quiet rather than warn on every run.
+        None => true,
+    }
+}
+
+/// The framing header for `parts`, as `u64` words: version and source, the part
+/// count, then one byte length per part.
+fn encode_header(src: u32, parts: &[&[u8]]) -> Vec<u64> {
+    let mut words = Vec::with_capacity(parts.len() + 2);
+    words.push((u64::from(src) << 32) | u64::from(WIRE_VERSION));
+    words.push(parts.len() as u64);
+    words.extend(parts.iter().map(|p| p.len() as u64));
+    words
+}
+
+/// The inverse of [`encode_header`]: the declared part lengths.
+///
+/// # Panics
+///
+/// If the header is malformed, carries another wire version, or names a source
+/// other than `expected_src`. All three mean the group is not running the same
+/// code, and the alternative is a garbage length vector.
+fn decode_header(bytes: &[u8], expected_src: u32, me: u32) -> Vec<usize> {
+    assert!(
+        bytes.len() >= 2 * size_of::<u64>() && bytes.len().is_multiple_of(size_of::<u64>()),
+        "rank {me}: framing header from rank {expected_src} is {} bytes, expected a whole number \
+         of u64 words, at least two",
+        bytes.len(),
+    );
+    let words: Vec<u64> = bytes
+        .chunks_exact(size_of::<u64>())
+        .map(bytemuck::pod_read_unaligned)
+        .collect();
+
+    let version = (words[0] & 0xffff_ffff) as u32;
+    assert_eq!(
+        version, WIRE_VERSION,
+        "rank {me}: rank {expected_src} speaks exchange wire version {version}, this rank speaks \
+         {WIRE_VERSION} — the ranks are not running the same build",
+    );
+    let src = (words[0] >> 32) as u32;
+    assert_eq!(
+        src, expected_src,
+        "rank {me}: a framing header tagged for this layer came from rank {src}, not the expected \
+         rank {expected_src}",
+    );
+    let n_parts = words[1] as usize;
+    assert_eq!(
+        words.len(),
+        n_parts + 2,
+        "rank {me}: rank {expected_src} declared {n_parts} parts in a {}-word header",
+        words.len(),
+    );
+    words[2..].iter().map(|&len| len as usize).collect()
+}
+
+/// Messages a part of `len` bytes is sent in at chunk size `chunk`.
+///
+/// Exactly `slice::chunks(chunk).count()` — the same rule both sides use — and
+/// zero for an empty part.
+fn chunk_count(len: usize, chunk: usize) -> usize {
+    len.div_ceil(chunk)
+}
+
+impl Collectives for MpiTransport {
+    fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    fn size(&self) -> u32 {
+        self.size
+    }
+
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        if self.size == 1 {
+            return v;
+        }
+        let send = [v];
+        let mut recv = [0u8];
+        self.comm
+            .all_reduce_into(&send[..], &mut recv[..], SystemOperation::max());
+        recv[0]
+    }
+
+    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+        if self.size == 1 {
+            return;
+        }
+        let mut scratch = self
+            .scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scratch.clear();
+        scratch.extend_from_slice(buf);
+        self.comm
+            .all_reduce_into(&scratch[..], buf, SystemOperation::sum());
+    }
+
+    fn barrier(&self) {
+        if self.size == 1 {
+            return;
+        }
+        self.comm.barrier();
+    }
+}
+
+impl Transport for MpiTransport {
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>> {
+        let n = self.size as usize;
+        assert_eq!(
+            send.len(),
+            n,
+            "exchange: send has {} entries, expected one entry per rank ({n})",
+            send.len(),
+        );
+        assert!(
+            send[self.rank as usize].is_none(),
+            "exchange: send[{}] is this rank's own slot and must be None",
+            self.rank,
+        );
+        let mut recv: Vec<Option<P>> = (0..n).map(|_| None).collect();
+        if n == 1 {
+            return recv;
+        }
+
+        let tags = Tags::exchange(self.next_epoch());
+
+        // The partner set, and it is the receive set too: the exchange is
+        // symmetric by construction (module docs).
+        let partners: Vec<usize> = (0..n).filter(|&q| send[q].is_some()).collect();
+        if partners.is_empty() {
+            return recv;
+        }
+        let parts: Vec<Vec<&[u8]>> = partners
+            .iter()
+            .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
+            .collect();
+        let headers: Vec<Vec<u64>> = parts.iter().map(|p| encode_header(self.rank, p)).collect();
+
+        let sends: usize = partners.len()
+            + parts
+                .iter()
+                .flatten()
+                .map(|p| chunk_count(p.len(), self.chunk))
+                .sum::<usize>();
+
+        ::mpi::request::multiple_scope(sends, |scope, coll| {
+            for (i, &dst) in partners.iter().enumerate() {
+                self.post_send(
+                    dst,
+                    bytemuck::cast_slice(&headers[i]),
+                    &parts[i],
+                    tags,
+                    scope,
+                    coll,
+                );
+            }
+
+            // Every send is in flight, so no blocking receive below can wait on
+            // a partner that has not spoken yet.
+            let mut buffers: Vec<Vec<Vec<u8>>> = partners
+                .iter()
+                .map(|&src| {
+                    self.recv_header(src, tags)
+                        .into_iter()
+                        .map(|len| vec![0u8; len])
+                        .collect()
+                })
+                .collect();
+            self.recv_parts(&partners, &mut buffers, tags);
+
+            let mut done = Vec::with_capacity(sends);
+            coll.wait_all(&mut done);
+
+            for (i, &src) in partners.iter().enumerate() {
+                let refs: Vec<&[u8]> = buffers[i].iter().map(Vec::as_slice).collect();
+                recv[src] = Some(P::from_byte_parts(&refs));
+            }
+        });
+
+        recv
+    }
+
+    /// Root-centric, not an exchange: the default body in
+    /// [`Transport`](super::transport::Transport) infers its partner set from
+    /// the `Some` positions, which a gather does not populate symmetrically.
+    fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
+        let n = self.size as usize;
+        let me = self.rank as usize;
+        if n == 1 {
+            return Some(vec![parts.iter().map(|p| p.to_vec()).collect()]);
+        }
+
+        let tags = Tags::gather(self.next_epoch());
+
+        if me != ROOT {
+            let header = encode_header(self.rank, &parts);
+            let sends = 1 + parts
+                .iter()
+                .map(|p| chunk_count(p.len(), self.chunk))
+                .sum::<usize>();
+            ::mpi::request::multiple_scope(sends, |scope, coll| {
+                self.post_send(
+                    ROOT,
+                    bytemuck::cast_slice(&header),
+                    &parts,
+                    tags,
+                    scope,
+                    coll,
+                );
+                let mut done = Vec::with_capacity(sends);
+                coll.wait_all(&mut done);
+            });
+            return None;
+        }
+
+        let senders: Vec<usize> = (1..n).collect();
+        let mut buffers: Vec<Vec<Vec<u8>>> = senders
+            .iter()
+            .map(|&src| {
+                self.recv_header(src, tags)
+                    .into_iter()
+                    .map(|len| vec![0u8; len])
+                    .collect()
+            })
+            .collect();
+        self.recv_parts(&senders, &mut buffers, tags);
+
+        let mut out = Vec::with_capacity(n);
+        out.push(parts.iter().map(|p| p.to_vec()).collect());
+        out.extend(buffers);
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tag layout: kind in the low four bits, epoch above, and never past
+    /// the `MPI_TAG_UB` the standard guarantees.
+    #[test]
+    fn tags_pack_kind_and_epoch_below_the_guaranteed_tag_bound() {
+        assert_eq!(MpiTransport::tag(KIND_EXCHANGE_HEADER, 0), 0);
+        assert_eq!(MpiTransport::tag(KIND_EXCHANGE_PART, 0), 1);
+        assert_eq!(MpiTransport::tag(KIND_GATHER_PART, 0), 3);
+        assert_eq!(MpiTransport::tag(KIND_EXCHANGE_HEADER, 1), 16);
+        assert_eq!(MpiTransport::tag(KIND_EXCHANGE_PART, 1), 17);
+        // The last epoch before the wrap sits exactly on 32767.
+        assert_eq!(MpiTransport::tag(KIND_GATHER_PART + 12, EPOCHS - 1), 32767);
+        for epoch in 0..EPOCHS {
+            for kind in [
+                KIND_EXCHANGE_HEADER,
+                KIND_EXCHANGE_PART,
+                KIND_GATHER_HEADER,
+                KIND_GATHER_PART,
+            ] {
+                let tag = MpiTransport::tag(kind, epoch);
+                assert!((0..=32767).contains(&tag), "epoch {epoch} kind {kind}");
+                assert_eq!(tag & 0xf, kind);
+            }
+        }
+        // Epochs wrap rather than overflowing the tag space.
+        assert_eq!(
+            MpiTransport::tag(KIND_EXCHANGE_PART, EPOCHS),
+            MpiTransport::tag(KIND_EXCHANGE_PART, 0),
+        );
+    }
+
+    #[test]
+    fn header_round_trips_through_its_byte_form() {
+        let a = [1u8, 2, 3];
+        let b: [u8; 0] = [];
+        let c = [7u8; 40];
+        let parts: Vec<&[u8]> = vec![&a, &b, &c];
+
+        let words = encode_header(3, &parts);
+        assert_eq!(words[0] & 0xffff_ffff, u64::from(WIRE_VERSION));
+        assert_eq!(words[0] >> 32, 3);
+        assert_eq!(words[1], 3);
+        assert_eq!(&words[2..], &[3, 0, 40]);
+
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
+        assert_eq!(decode_header(bytes, 3, 0), vec![3, 0, 40]);
+    }
+
+    #[test]
+    fn an_empty_payload_encodes_as_a_two_word_header() {
+        let words = encode_header(0, &[]);
+        assert_eq!(words.len(), 2);
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
+        assert_eq!(decode_header(bytes, 0, 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "wire version")]
+    fn a_header_from_another_wire_version_is_rejected() {
+        let mut words = encode_header(1, &[]);
+        words[0] = (words[0] & !0xffff_ffff) | 99;
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
+        let _ = decode_header(bytes, 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not the expected rank")]
+    fn a_header_from_the_wrong_rank_is_rejected() {
+        let words = encode_header(2, &[]);
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
+        let _ = decode_header(bytes, 5, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "declared")]
+    fn a_header_whose_part_count_disagrees_with_its_length_is_rejected() {
+        let a = [1u8, 2];
+        let mut words = encode_header(0, &[&a]);
+        words[1] = 4;
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
+        let _ = decode_header(bytes, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least two")]
+    fn a_truncated_header_is_rejected() {
+        let _ = decode_header(&[0u8; 8], 0, 0);
+    }
+
+    /// The chunk count must agree with `slice::chunks` at every boundary — that
+    /// agreement is what makes the sender's and receiver's message counts equal
+    /// with no negotiation.
+    #[test]
+    fn chunk_counts_agree_with_slice_chunks_at_the_boundaries() {
+        let buf = vec![0u8; 4096];
+        for chunk in [1usize, 2, 3, 1024, 4095, 4096, 4097] {
+            for len in [
+                0,
+                1,
+                chunk.saturating_sub(1),
+                chunk,
+                chunk + 1,
+                2 * chunk,
+                2 * chunk + 1,
+            ] {
+                if len > buf.len() {
+                    continue;
+                }
+                assert_eq!(
+                    chunk_count(len, chunk),
+                    buf[..len].chunks(chunk).count(),
+                    "len {len} chunk {chunk}",
+                );
+            }
+        }
+        assert_eq!(chunk_count(0, 1 << 30), 0);
+        assert_eq!(chunk_count(1 << 30, 1 << 30), 1);
+        assert_eq!(chunk_count((1 << 30) + 1, 1 << 30), 2);
+    }
+
+    #[test]
+    fn version_matching_finds_the_build_version_in_the_runtime_banner() {
+        assert!(version_matches(
+            "Open MPI 5.0.6 (Language: C)",
+            "Open MPI v5.0.6, package: Open MPI build, ident: 5.0.6",
+        ));
+        assert!(!version_matches(
+            "Open MPI 5.0.6 (Language: C)",
+            "Open MPI v4.1.6, package: Open MPI build, ident: 4.1.6",
+        ));
+        // No number to compare: stay quiet.
+        assert!(version_matches("unknown", "Open MPI v5.0.6"));
+    }
+}

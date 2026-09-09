@@ -11,6 +11,7 @@
 //!   local and remote (partner) deltas.
 //! - `export` — the export pass building per-partner exchange blocks.
 //! - `layer` — `apply_layer_partitioned`: export → exchange → coset loop.
+//! - `mpi` — the distributed transport, one partition per rank (`mpi` feature).
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 //! - `runtime` — `PartitionRuntime`: the resolved placement, its pools, and the
 //!   scoped fan-out a partitioned call runs inside.
@@ -22,6 +23,8 @@
 pub(crate) mod driver;
 pub(crate) mod export;
 pub(crate) mod layer;
+#[cfg(feature = "mpi")]
+pub mod mpi;
 pub(crate) mod plan;
 pub(crate) mod runtime;
 pub(crate) mod topology;

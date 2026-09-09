@@ -406,3 +406,11 @@ per node over IB with two ranks sharing the NIC), compute fully hidden. Full tab
 `2026-09-08-numa-partitioning-results.md`. Decision: proceed to phase 4 (cleanup) per the plan; the
 intra-node zero-copy handoff (in-process domains per rank) stays a scoped follow-up — it would take the
 2-rank case from 3.5× to ~1.6× but does nothing for the inter-node share.
+
+## 2026-09-09 — phase 5 (partition-row tuning) first results
+
+`2026-09-09-partition-row-tuning-results.md`: cut rows make the heavy-hex kicked-Ising step **15–21%
+faster at P=2 than the single-process engine** (4 of 271 layers remote instead of 139; exported rows
+10× fewer; imbalance ≤ 1.09); the chain is a wash. Two fixes on the way: the partition-row salt equalled
+the default hash seed (`f39341a`), and the selector's tie order picks the cut location (balance-scored
+restarts in progress).

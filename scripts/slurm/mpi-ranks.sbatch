@@ -90,5 +90,5 @@ if [ "${PROBE:-1}" = "1" ]; then
     srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
          --cpu-bind=ldoms --mpi=pmix "$probe" --mpi --threads "$cpus_per_numa" \
          --layers "${LAYERS:-cnot,su4,trotter}" --n "${N:-3000000}" --format json \
-         --json-out "$out"
+         --json-out "$out" ${PROBE_ARGS:-}
 fi

@@ -107,8 +107,9 @@ pub use driver::PartitionPhaseStats;
 pub use driver::{propagate_partitioned, propagate_partitioned_with_options, PartitionedSum};
 pub use plan::count_remote_deltas;
 // Choosing the partition rows instead of drawing them: the circuit's generator
-// masks and the weighted MAX-XOR-SAT selector over them.
-pub use rows::{circuit_generators, select_rows, GeneratorWeight, RowSelection};
+// masks, the weighted MAX-XOR-SAT selector over them, and the per-layer
+// locality the chosen rows produce.
+pub use rows::{circuit_generators, layer_locality, select_rows, GeneratorWeight, RowSelection};
 pub use runtime::PartitionRuntime;
 // Where the partitions run: the machine's CPU sets and NUMA nodes, and the
 // placement a caller asks for.

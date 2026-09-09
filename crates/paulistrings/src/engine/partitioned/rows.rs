@@ -43,6 +43,8 @@ use crate::channel::prepared::Prepared;
 use crate::circuit::Circuit;
 use crate::pauli_sum::PauliSum;
 
+use super::plan::count_remote_deltas;
+
 /// Seed for the fallback rows [`select_rows`] returns when the circuit
 /// constrains nothing (no generators at all).
 ///
@@ -368,6 +370,30 @@ pub fn select_rows<const W: usize>(
         gens,
         conserved_rejected,
     )
+}
+
+/// Per layer, `true` if the layer moves nothing across a partition boundary
+/// under `rows`.
+///
+/// The boolean form of [`count_remote_deltas`]: layers in application order
+/// (circuit order forward, reverse order adjoint), one flag each, `true` when
+/// the layer's every delta has `part(mask) == 0` and the layer therefore runs
+/// with no exchange at all.
+///
+/// # Panics
+///
+/// Panics if any channel declines
+/// [`Channel::prepare`](crate::Channel::prepare).
+pub fn layer_locality<const W: usize>(
+    circuit: &Circuit<W>,
+    rows: &PartitionRows<W>,
+    hash: &Gf2Hash<W>,
+    adjoint: bool,
+) -> Vec<bool> {
+    count_remote_deltas(circuit, hash, rows, adjoint)
+        .into_iter()
+        .map(|(_, remote)| remote == 0)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +887,39 @@ mod tests {
         let a = select_rows(&gens, 8, 1, Some(&probe));
         let b = select_rows(&gens, 8, 1, Some(&probe));
         assert_eq!(a.rows, b.rows);
+    }
+
+    // ---- layer_locality ----
+
+    #[test]
+    fn layer_locality_is_count_remote_deltas_as_a_predicate() {
+        const N: usize = 8;
+        let c = tfim_open_chain(N);
+        let h = hash(N);
+        let gens = circuit_generators(&c, &h, false);
+        let probe = low_weight_sum::<1>(400, N, 2, 0xC0FFEE);
+        let rows = select_rows(&gens, N, 1, Some(&probe)).rows;
+
+        for adjoint in [false, true] {
+            let want: Vec<bool> = count_remote_deltas(&c, &h, &rows, adjoint)
+                .into_iter()
+                .map(|(_, remote)| remote == 0)
+                .collect();
+            let got = layer_locality(&c, &rows, &h, adjoint);
+            assert_eq!(got, want, "adjoint {adjoint}");
+            assert_eq!(got.len(), c.channels.len());
+            // Exactly one layer — the bond crossing the cut — is remote.
+            assert_eq!(got.iter().filter(|b| !**b).count(), 1, "adjoint {adjoint}");
+        }
+    }
+
+    #[test]
+    fn layer_locality_without_rows_is_all_local() {
+        let c = tfim_open_chain(6);
+        let rows = PartitionRows::<1>::none(6);
+        assert!(layer_locality(&c, &rows, &hash(6), false)
+            .into_iter()
+            .all(|b| b));
     }
 
     // ---- property: the reported split is the rows' own verdict ----

@@ -407,18 +407,19 @@ static-coset-placement negative-result note in `research/notes/` before
 re-attempting placement work.
 
 Partitions (§Partitioning) are the outer level of the same decomposition: the
-split across NUMA domains is static, and stealing runs unchanged inside one.
+split across NUMA domains or MPI ranks is static, and stealing runs unchanged
+inside one.
 
 ## Partitioning
 
 A partitioned run splits the sum across `P = 2^p` independent partitions — one
-NUMA domain today, one MPI rank later — by widening the bucket index. A global
-bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` designated
-**partition rows** (`PartitionRows<W>`, `P_MAX_BITS = 4`, so `P ≤ 16`), and
-`loc(v) = H·v` from an unchanged `Gf2Hash`. **A partition holds the terms with
-`part(v) = rank` and nothing else**, so a key lives on exactly one partition
-and duplicates can no more straddle partitions than they can straddle buckets
-(§Bucketing).
+NUMA domain in-process, one MPI rank distributed — by widening the bucket
+index. A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p`
+designated **partition rows** (`PartitionRows<W>`, `P_MAX_BITS = 4`, so
+`P ≤ 16`), and `loc(v) = H·v` from an unchanged `Gf2Hash`. **A partition holds
+the terms with `part(v) = rank` and nothing else**, so a key lives on exactly
+one partition and duplicates can no more straddle partitions than they can
+straddle buckets (§Bucketing).
 
 The partition rows are a separate matrix, not a prefix of `H`. `H`'s active
 rows grow and shrink with the term count (§Bucketing), and a row that moved
@@ -470,15 +471,22 @@ two overlap:
    exported row is bitwise the row a local gather would have produced.
 2. One all-to-all `Transport::exchange_layer`, which is **two-phase**. The
    *early* parts — the block headers and the CSR offsets, tens of kilobytes —
-   are waited out before the call returns; the *bulk* parts, the key and
-   coefficient columns, are posted in `K` chunks and are still in flight while
-   the coset loop runs inside the call. `ExtraRows::count` needs only the
-   offsets, so a gather run can be sized before a row has landed.
+   are waited out before the caller's body runs; the *bulk* parts, the key and
+   coefficient columns, are cut at the chunk edges, posted chunk-major, and are
+   still in flight while the coset loop runs inside the call.
+   `ExtraRows::count` needs only the offsets, so a gather run can be sized
+   before a row has landed.
 3. The bucketed coset loop (§Engine) over the *local* deltas only, with the
    received rows entering each output bucket's gather run through `ExtraRows`.
    A task calls `ChunkWait::wait_chunk` at the top of `append_into` — once per
    task, a whole coset being inside one chunk — and blocks only if its own
    chunk has not landed.
+
+`exchange_layer` is the transport trait's one **required** method. A transport
+with nothing to overlap completes the transfer first and hands the body a no-op
+`ChunkWait`, which is what `InProcessTransport`, whose transfer is a moved
+pointer, does; the blocking `Transport::exchange` is the provided method of
+that shape with an empty body, and the gather is its only caller.
 
 **The pipeline's mutual exclusion is the MPI thread level, not a lock on the
 data.** Rayon workers reach `wait_chunk` together; whichever takes the
@@ -487,15 +495,19 @@ the rank, driving its own receives and its partner's rendezvous at once, and
 the others back off on the per-chunk counters it publishes — spin, then yield,
 then short sleeps, for the same reason the in-process collectives do (a yield
 loop steals the cores the copy is running on). One thread inside MPI at a time
-is exactly the `MPI_THREAD_SERIALIZED` the transport already required. It
+is exactly the `MPI_THREAD_SERIALIZED` the transport already requires. It
 cannot deadlock: every send of a call is posted before the call's first
 receive, a waiting rank services its partner, and a rank whose coset loop never
-asks for a chunk still reaches the closing wait. `exchange_layer` is the
-transport trait's one required method; a transport with nothing to overlap
-completes the transfer first and hands the body a no-op `ChunkWait`, which is
-what `InProcessTransport`, whose transfer is a moved pointer, does. The
-blocking `Transport::exchange` is that shape with an empty body, and the gather
-is its only caller.
+asks for a chunk still reaches the closing wait.
+
+**The exchange's memory is one layer's traffic, reused across layers.** A
+partition holds one export volume of send blocks plus one of receive payloads,
+both drawn from a per-partition pool and both grow-only (`header.rows`, never
+`x.len()`, says how much of a column is live), so a steady-state layer neither
+allocates nor zeroes its megabytes again. Chunking bounds nothing further — the
+chunks cut a buffer that is already sized — so the transient is a layer's
+exported rows: at most one per anticommuting term for a rotation, and several
+times the resident sum for a dense two-qubit gate under random rows.
 
 **Received rows join the rest stream, never the id stream.** The rest stream is
 sorted anyway, so a received row may duplicate a local key and `merge2_into`
@@ -541,24 +553,13 @@ a partition only.** That is the shape the static-placement negative result
 points at (§Parallelism): stealing is what beats a static assignment, and a
 stable domain-level split is what first touch needs, so the split is static at
 the outer level and stealing is untouched at the inner one. Partition 0 drives
-on the calling thread — the future MPI funnel, where the calling thread owns
-the communicator — and partitions `1..P` get scoped threads that pin themselves
-to their slot and enter their pool. The transport group is built **per call**
-and moved into the partitions, so a partition that panics drops its endpoints
-and its partners fail naming its rank instead of blocking forever.
-
-In-process, the exchange moves its payload through a `P × P` matrix of `mpsc`
-channels, but the **collectives are shared atomics with a spin wait**: each
-rank numbers its own transport calls and publishes `(generation, kind)` plus
-its contribution into its own cache-line-padded slot, and a waiter spins on its
-partners' slots — `spin_loop`, then `yield_now`, then short sleeps, so a
-waiter never takes CPU from the partner's own workers, with a dropped endpoint
-as the fail-fast signal. The partition threads are pinned and dedicated for the whole
-call, so a per-layer futex sleep/wake — tens of microseconds on the critical
-path, against a bucket-count reduction of a few hundred nanoseconds' work — was
-the entire cost of the unconditional collective. The published
-`(generation, kind)` pair is also what makes a collective-order violation a
-panic naming both partitions, in every build, rather than a hang.
+on the calling thread and partitions `1..P` get scoped threads that pin
+themselves to their slot and enter their pool. The transport group is built
+**per call** and moved into the partitions, so a partition that panics drops
+its endpoints and its partners fail naming its rank instead of blocking
+forever. A layer runs inside `ThreadPool::install`, so the thread issuing a
+transport call is a pool worker — which is what fixes the MPI thread level at
+`SERIALIZED` rather than `FUNNELED`.
 
 Scatter and gather bracket a run, not a layer. `filter_partition` runs on the
 owning partition's own pool, so every column is first-touched in the domain
@@ -572,9 +573,11 @@ bitwise.
 `PartitionTrace` is the opt-in per-layer record: bucket bits, remote-delta
 count, terms in and out per rank, rows and bytes sent `[from][to]`, rows
 received, and an imbalance figure per layer. Under `phase-timing` the same run
-also reports `export_ns`, `exchange_ns` (which includes the wait for a partner,
-so it is the imbalance signal and the traffic cost at once), `collective_ns`,
-`rows_exported` and `recv_rows`.
+also reports `export_ns`, `exchange_ns`, `collective_ns`, `rows_exported`,
+`recv_rows`, and the laps that break the export and the exchange down —
+including `chunk_wait_ns`, the part of the transfer the coset loop failed to
+hide. The transfer runs under the coset loop, so `exchange_ns` is small by
+construction and the two are read together.
 
 What the split guarantees: **at `P = 1` the partitioned engine is `propagate`,
 bit for bit** — the scatter is the identity, the all-reduce is the identity,
@@ -583,26 +586,70 @@ is floating-point tolerance, exactly as it is across bucket counts
 (§Determinism); within a partition output stays byte-identical across pool
 sizes, because received rows are appended in the plan's fixed order.
 
-The cost model, qualitatively: a random partition row set sends a nonzero delta
-across a boundary with probability `1 − 2^{-p}`, so **roughly half of a dense
-two-qubit gate's deltas are remote at `P = 2`**, and a rotation whose generator
-crosses exports one row per anticommuting term. Export volume is therefore a
-property of the row *draw*, not of the circuit alone — which is what makes the
-rows worth tuning rather than merely drawing. The extreme case names the
-target: a row that annihilates every delta a circuit uses is a conserved
-quantity of that circuit and produces no traffic at all, so the rows that
-minimize traffic are cut-like, reading the qubits on the boundary of a spatial
-cut. `Transport` is the seam for that work and for the distributed phase: MPI
-is the same exchange over ranks, with the same collective-order invariant.
+**The cost model is locality.** A random partition row set sends a nonzero
+delta across a boundary with probability `1 − 2^{-p}`, so roughly half of a
+dense two-qubit gate's deltas are remote at `P = 2`, and a rotation whose
+generator crosses exports one row per anticommuting term (`bytes ≈ rows × 48`).
+Export volume is a property of the row *draw*, not of the circuit alone. What
+that costs, measured on two-socket hosts from 8 to 48 cores per socket:
+
+- **An exchange-free layer gains.** At `P = 2` the dense bandwidth-heavy class
+  with no remote delta runs 4–18% faster than at `P = 1`, direction-consistent
+  on every host, the gain growing with cores per socket; the rotation coset
+  loop gains 12–22% where it gains at all. Load imbalance is 1.000–1.004.
+- **An exporting layer pays 2–8× in-process**, and the penalty grows with core
+  count: the export pass, the copy and the receiver's larger rest stream cost
+  more than the layer they feed.
+- **Distributed, the overhead is bounded and flat in the rank count.** At 6e6
+  terms per rank, local layers cost ~10.5 ms whatever the rank count, and a
+  remote rotation layer costs 3.5× a local one intra-node (shared memory) and
+  4.4–4.7× inter-node (InfiniBand), unchanged from 4 to 8 ranks. That layer is
+  **transfer-bound**: the pipeline hides the compute, and what is left is the
+  export pass plus the bytes on the wire.
+
+So the rows that minimize traffic are cut-like, reading the qubits on the
+boundary of a spatial cut; the extreme case names the target, since a row that
+annihilates every delta a circuit uses is a conserved quantity of that circuit
+and produces no traffic at all. Row tuning is open research. The tables behind
+the numbers above are
+`research/notes/2026-09-08-numa-partitioning-results.md`, and the decisions
+behind them `research/notes/2026-09-08-partitioned-phase1-log.md`.
 
 ### Transport composition
 
 The engine's *partition* is deliberately not a thread and not a process: it is
 whatever a `Transport` says a peer is. Two implementations exist, and the layer
 code cannot tell them apart — `run_layers` is one function, generic over the
-transport, driven both by `PartitionedSum` (`P` partitions inside one process,
-`InProcessTransport`) and by `DistributedSum` (**one partition per process**,
-`MpiTransport`, behind the off-by-default `mpi` feature).
+transport, and `scatter_local`, `PartitionWork` and `apply_layer_partitioned`
+are shared below it.
+
+**Two drivers, because three things above the layer loop do not reconcile.**
+`PartitionedSum` holds `P` partitions inside one process and fans out to them
+per call; `DistributedSum` *is* one partition, and its peers are other
+processes (`MpiTransport`, behind the off-by-default `mpi` feature — or the
+in-process transport, which is how the distributed shape is tested with no MPI
+in the picture). They differ in the transport group's lifetime (per call, so a
+panicking partition's partners fail by name, against one endpoint for the
+process's whole life, because an `MPI_Comm` is not something to duplicate per
+layer), in scatter and gather (one sum split locally and merged back bitwise,
+against a replicated input and a byte-framed gather to rank 0), and in the
+consistency check (one process cannot hand its own partitions different
+circuits, so only the distributed driver pays for it).
+
+**In-process: a moved payload, shared-memory collectives.**
+`InProcessTransport` moves its payload through a `P × P` matrix of `mpsc`
+channels — there is nothing to encode and nothing to overlap — but the
+**collectives are shared atomics with a spin wait**: each rank numbers its own
+transport calls and publishes `(generation, kind)` plus its contribution into
+its own cache-line-padded slot, and a waiter spins on its partners' slots —
+`spin_loop`, then `yield_now`, then short sleeps, so a waiter never takes CPU
+from the partner's own workers, with a dropped endpoint as the fail-fast
+signal. The partition threads are pinned and dedicated for the whole call, so a
+per-layer futex sleep/wake — tens of microseconds on the critical path, against
+a bucket-count reduction of a few hundred nanoseconds' work — was the entire
+cost of the unconditional collective. The published `(generation, kind)` pair
+is also what makes a collective-order violation a panic naming both partitions,
+in every build, rather than a hang.
 
 **`D = 1`: one rank per NUMA domain, no hybrid.** A distributed rank's runtime
 holds exactly one partition, and its placement comes from the launcher rather
@@ -621,9 +668,7 @@ foreign `MPI_Comm` (a Python host's, through `mpi4py`). The duplicate is the
 engine's own, so its tags cannot collide with the application's traffic. The
 `mpi` crate is re-exported as `paulistrings::mpi::rsmpi` for the same reason a
 duplicate is taken: the caller must build its `Universe` from the version the
-library links. The engine's MPI calls come off a Rayon pool worker (the layer
-loop runs inside `ThreadPool::install`), one at a time, so the level to request
-is `MPI_THREAD_SERIALIZED` — never `FUNNELED`.
+library links.
 
 **Point-to-point, not all-to-all-v.** The partner set of a layer's exchange is
 symmetric by construction: a remote delta moves rank `R`'s rows to `R ⊕ pd`,
@@ -634,63 +679,43 @@ count-exchange or group-sized collective is needed to discover it.
 **The per-layer collective schedule** is unchanged from the in-process case,
 and it is what an MPI implementation must not second-guess: one unconditional
 `allreduce_max_u8` for the bucket count, then the layer's exchange **only if
-the plan has a remote delta** (a key-preserving channel issues no transport
-call at all), then whatever the policy's collective finalization runs. On top
-of that a distributed propagation calls `check_consistency` exactly once,
-before its first layer: an all-reduce of a fingerprint of the run's shape
-(channel count, direction, bucket-policy knobs, qubit count, `W`), exact
-because it reduces the 64 per-bit counts and every count must be 0 or `size`.
-Ranks handed different circuits then get a message instead of a deadlock two
-layers in.
+the plan has a remote delta**, then whatever the policy's collective
+finalization runs. On top of that a distributed propagation calls
+`check_consistency` exactly once, before its first layer: an all-reduce of a
+fingerprint of the run's shape (channel count, direction, bucket-policy knobs,
+qubit count, `W`), exact because it reduces the 64 per-bit counts and every
+count must be 0 or `size`. Ranks handed different circuits then get a message
+instead of a deadlock two layers in.
 
-**Wire framing.** Per partner, one self-describing header — `u64[2 +
-n_parts]`, carrying the wire version, the source rank and one byte length per
-part — followed by the payload's `byte_parts` in order. The header is the only
-message whose size the receiver cannot predict, so it arrives through a matched
-probe; the parts are posted receives of known length, matched to their sends by
-MPI's non-overtaking guarantee for a `(source, tag, communicator)` triple,
-which is why both sides walk partners, parts and chunks in the same ascending
-order. Tags pack `epoch:11 | kind:4`, at most 32767 and so inside the
-guaranteed `MPI_TAG_UB`. Everything is sent as bytes and chunked at 1 GiB:
-MPI's counts are `i32`, and a `u64` view of the parts — which would raise the
-per-message ceiling — is not available, the block header being four `u32`s and
-the CSR `offsets` column a `Vec<u32>`, neither 8-aligned. All sends are posted
-before the call's first receive, so the rendezvous cannot deadlock. Raw host
-bytes on the wire means a run is homogeneous: same architecture, same `W`,
-every rank.
+**Wire framing, per partner, in three streams.** A self-describing header —
+`u64[2 + n_parts]`, carrying the wire version, the source rank and one byte
+length per part — then the `Payload::early_parts` under their own tag, then
+`Payload::bulk_parts`, each column cut at the chunks' destination-position
+boundaries and posted **chunk-major**. The header declares *every* part's
+length, early and bulk alike, which is what sizes the receiving columns; it is
+also the only message whose size the receiver cannot predict, so it arrives
+through a matched probe, and everything after it is a posted receive of known
+length. MPI's non-overtaking guarantee for a `(source, tag, communicator)`
+triple then matches sends to receives in posting order — which is why both
+sides walk partners, parts and chunks in the same ascending order, and why
+chunk `k` is delivered before chunk `k + 1`. Both sides derive the chunk edges
+from the same CSR offsets, so no negotiation is needed; the chunk count is a
+constant rather than a thread count, because two ranks may run different pool
+widths and both must cut the same block the same way. Tags pack
+`epoch:11 | kind:4`, at most 32767 and so inside the guaranteed `MPI_TAG_UB`.
+Everything is sent as bytes and chunked again at 1 GiB: MPI's counts are `i32`,
+and a `u64` view of the parts — which would raise the per-message ceiling — is
+not available, the block header being four `u32`s and the CSR `offsets` column
+a `Vec<u32>`, neither 8-aligned. Raw host bytes on the wire means a run is
+homogeneous: same architecture, same `W`, every rank.
 
-**Nothing on either side of the wire is copied twice, and a steady-state layer
-allocates nothing.** The declared part lengths are enough to size the receiving
-payload — five parts per block, each block's shape readable from the lengths —
-so `Payload::recv_into` hands MPI mutable byte views of the very columns the
-coset loop will read, and the decode pass disappears; `finish_recv` then checks
-the header against the shape the lengths implied. Both directions are pooled:
-an `ExchangeBlock`'s columns are **grow-only** (`header.rows` is the one
-authority on how much of a column is live, never `x.len()`), and a payload the
-layer is done with goes back to a per-partition pool that the next layer's
-export and receive draw from. Together these are most of the cost of a remote
-layer: measured at 2 ranks × 8 threads with 48 MB crossing per layer, faulting
-in and zeroing the send and receive buffers cost 14 ms per layer and the
-word-by-word decode 8.5 ms, against 13.7 ms of transfer — a remote rotation
-layer went from 10× a local one to 4.9×.
-
-**The two-phase framing is that split made explicit on the wire.** Per partner:
-the framing header as before (it still declares *every* part's length, which is
-what sizes the columns), then the `Payload::early_parts` under their own tag,
-then `Payload::bulk_parts` — each column cut at the chunks' destination-position
-boundaries — in **chunk-major** order under the part tag. MPI's non-overtaking
-guarantee for a `(source, tag, communicator)` triple then delivers chunk `k`
-before chunk `k + 1`, so a receiver waiting chunk by chunk is waiting on a
-prefix of the transfer rather than on all of it. Both sides derive the chunk
-edges from the same CSR offsets, so no further negotiation is needed; the chunk
-count is a constant (`PAULISTRINGS_EXCHANGE_CHUNKS` overrides it for a sweep or
-a test) rather than a thread count, because two ranks may run different pool
-widths and both must cut the same block the same way. The transfer itself is
-unchanged and unchangeable — 384 MB per rank per layer at 8e6 terms, ~7.5 GB/s,
-a single-threaded cross-socket copy at the hardware limit — so what the
-pipeline buys is the part of it that the coset loop covers: a remote rotation
-layer went from 4.5× a local one to 3.8×, with `chunk_wait_ns` reporting what
-was not hidden.
+**Nothing on either side of the wire is copied twice.** The declared part
+lengths are enough to size the receiving payload — five parts per block, each
+block's shape readable from the lengths — so `Payload::recv_into` hands MPI
+mutable byte views of the very columns the coset loop will read, and there is
+no decode pass; `finish_recv` then checks the header against the shape the
+lengths implied. With the payload pool above, a steady-state remote layer's
+send and receive are allocation-free.
 
 **Scatter and gather bracket a distributed run too, with a different
 contract.** The input is *replicated* — every rank calls `scatter` with the
@@ -882,9 +907,12 @@ The memory wall is real and measured: the reference host's usable bandwidth is
 populated — see `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`,
 the denominator for every roofline claim). Trotter-style workloads at 32
 threads move ~36 GB/s of attributable DRAM traffic — near the wall — so
-further wins there come from traffic reduction or genuine NUMA partitioning
-(§Partitioning; measured results pending), not scheduling. Hyperthreads add no bandwidth; the second socket adds only
-15–25% under first-touch placement with work-stealing.
+further wins there come from traffic reduction or genuine NUMA partitioning,
+not scheduling. Hyperthreads add no bandwidth; the second socket adds only
+15–25% under first-touch placement with work-stealing. Partitioning
+(§Partitioning) is what recovers part of that: an exchange-free dense layer is
+4–18% faster at `P = 2`, and a layer that exports rows pays 2–8× — locality of
+the partition rows, not the placement, is the lever.
 
 Negative results are recorded in `research/notes/` and should be read before
 re-attempting the corresponding ideas: static coset→worker placement (slower

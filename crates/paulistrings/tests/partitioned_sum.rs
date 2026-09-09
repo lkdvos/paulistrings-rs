@@ -2,39 +2,20 @@
 //! accessors, and the runtime shared between sums.
 
 use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
-use paulistrings::engine::partitioned::{
-    PartitionConfig, PartitionRuntime, PartitionedSum, Placement,
+use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::test_support::{
+    approx_eq, assert_terms_close, low_weight_sum, rand_sum, unpinned_partitions, KeepAll,
 };
-use paulistrings::test_support::{approx_eq, assert_terms_close, low_weight_sum, rand_sum};
 use paulistrings::truncation::{ApproxTopN, CoefficientThreshold};
 use paulistrings::{
-    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliString, PauliSum,
-    ProductState, TruncationPolicy,
+    propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
 };
 
 const TOL: f64 = 1e-11;
 const NQ: usize = 16;
 
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    // `finalizes_layer`'s default is the conservative `true`, which the
-    // `PartitionedTruncation` default body rejects — a policy with no layer
-    // pass has to say so.
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
-
 fn config(partitions: usize) -> PartitionConfig {
-    PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions,
-            threads_per_partition: Some(2),
-        },
-        bind_memory: false,
-        partition_row_seed: Some(0x0BAD_F00D),
-    }
+    unpinned_partitions(partitions, 2, 0x0BAD_F00D)
 }
 
 /// A short mixed circuit: a Clifford, a weight-2 rotation and a weight-4 one,
@@ -63,14 +44,14 @@ fn a_held_sum_propagates_across_calls() {
     let circuit = circuit();
     let sum = rand_sum::<1>(400, NQ, 0xD00D);
 
-    let once = propagate(&circuit, sum.clone(), &AlwaysKeep, Direction::Forward);
-    let twice = propagate(&circuit, once.clone(), &AlwaysKeep, Direction::Forward);
+    let once = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    let twice = propagate(&circuit, once.clone(), &KeepAll, Direction::Forward);
 
     let mut ps = PartitionedSum::scatter(sum, runtime.clone(), &config(4));
     assert_eq!(ps.num_partitions(), 4);
     ps.assert_invariants();
 
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
     ps.assert_invariants();
     assert_eq!(ps.len(), once.len(), "after one call");
     assert_terms_close(&ps.gather(), &once, TOL, "one call");
@@ -80,7 +61,7 @@ fn a_held_sum_propagates_across_calls() {
         1e-9,
     ));
 
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
     ps.assert_invariants();
     assert_eq!(ps.len(), twice.len(), "after two calls");
     let gathered = ps.gather();
@@ -163,7 +144,7 @@ fn an_empty_sum_is_a_valid_partitioned_sum() {
     assert!(ps.is_empty());
     assert_eq!(ps.len(), 0);
     ps.assert_invariants();
-    ps.propagate(&circuit(), &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     ps.assert_invariants();
     assert!(ps.gather().is_empty());
 }

@@ -13,75 +13,25 @@
 //! transport's own net is `tests/mpi_ranks.rs`, run under `mpirun`.
 
 use num_complex::Complex64;
-use paulistrings::channel::{
-    Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
+use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
+use paulistrings::engine::partitioned::{DistributedSum, InProcessTransport, PartitionConfig};
+use paulistrings::test_support::{
+    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
+    unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionConfig, Placement,
-};
-use paulistrings::test_support::{assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real};
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
-use paulistrings::{
-    propagate, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum, TruncationPolicy,
-};
+use paulistrings::{propagate, Circuit, Direction, PartitionedTruncation, PauliSum};
 
 const TOL: f64 = 1e-11;
-
-/// Keep everything, with the trait's default (no-op) collective layer pass.
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
+/// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
+/// enough a circuit that the bucket count grows mid-run, so the per-layer bits
+/// all-reduce actually changes value.
+const THETA: f64 = 0.1;
 
 /// One unpinned partition of two threads: what a rank's runtime looks like when
 /// the launcher, not the engine, did the placement.
 fn config() -> PartitionConfig {
-    PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions: 1,
-            threads_per_partition: Some(2),
-        },
-        bind_memory: false,
-        partition_row_seed: Some(0x5EED_C0FF_EE00_4321),
-    }
-}
-
-fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.z[q as usize / 64] |= 1u64 << (q % 64);
-}
-
-/// A weight-2 `ZZ` rotation, the TFIM bond term.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    set_z(&mut gen, q0);
-    set_z(&mut gen, q1);
-    PauliRotation::new(gen, theta)
-}
-
-/// The TFIM Trotter step: `num_qubits` periodic `ZZ` bonds, then that many
-/// transverse-field `X` rotations. Long enough that the bucket count grows
-/// mid-run, so the per-layer bits all-reduce actually changes value.
-fn trotter_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
-    let theta = 0.1;
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q0, q1, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        circuit.push(PauliRotation::new(
-            PauliString::<W>::x(q as u32),
-            2.0 * theta,
-        ));
-    }
-    circuit
+    unpinned_partitions(1, 2, 0x5EED_C0FF_EE00_4321)
 }
 
 /// A short circuit mixing the layer shapes that matter: a local-ish Clifford, a
@@ -171,7 +121,7 @@ where
 
 #[test]
 fn trotter_matches_propagate_w1() {
-    let circuit = trotter_circuit::<1>(24);
+    let circuit = trotter_circuit::<1>(24, THETA);
     let sum = rand_sum_real::<1>(1_200, 24, 0x0D15);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter approx w1");
     check(
@@ -184,7 +134,7 @@ fn trotter_matches_propagate_w1() {
 
 #[test]
 fn trotter_matches_propagate_w2() {
-    let circuit = trotter_circuit::<2>(24);
+    let circuit = trotter_circuit::<2>(24, THETA);
     let sum = rand_sum_real::<2>(900, 24, 0x0D16);
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
 }
@@ -196,14 +146,14 @@ fn trotter_matches_propagate_w2() {
 fn mixed_channels_match_propagate() {
     let circuit = mixed_circuit::<1>(6);
     let sum = rand_sum::<1>(200, 6, 0x0D17);
-    check(&circuit, &sum, &AlwaysKeep, "mixed keep w1");
+    check(&circuit, &sum, &KeepAll, "mixed keep w1");
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "mixed eps w1");
     check(&circuit, &sum, &WeightCutoff(4), "mixed weight w1");
     check(&circuit, &sum, &ApproxTopN(300), "mixed approx w1");
 
     let circuit = mixed_circuit::<2>(6);
     let sum = rand_sum::<2>(200, 6, 0x0D18);
-    check(&circuit, &sum, &AlwaysKeep, "mixed keep w2");
+    check(&circuit, &sum, &KeepAll, "mixed keep w2");
     check(&circuit, &sum, &ApproxTopN(300), "mixed approx w2");
 }
 
@@ -216,7 +166,7 @@ fn a_two_term_sum_survives_four_ranks() {
     circuit.push(Clifford2Q::cnot(0, 1));
 
     let sum = rand_sum::<1>(2, 4, 0x0D19);
-    check(&circuit, &sum, &AlwaysKeep, "two terms");
+    check(&circuit, &sum, &KeepAll, "two terms");
 }
 
 /// An empty circuit still has to run its one consistency collective and gather
@@ -225,7 +175,7 @@ fn a_two_term_sum_survives_four_ranks() {
 fn an_empty_circuit_round_trips_the_input() {
     let circuit = Circuit::<1>::new(6);
     let sum = rand_sum::<1>(150, 6, 0x0D1A);
-    let got = distributed(&circuit, &sum, &AlwaysKeep, Direction::Forward, 4);
+    let got = distributed(&circuit, &sum, &KeepAll, Direction::Forward, 4);
     assert_terms_close(&got, &sum, TOL, "empty circuit");
     assert_eq!(got.len(), sum.len());
 }
@@ -237,8 +187,8 @@ fn gather_is_repeatable_and_non_destructive() {
     let circuit = mixed_circuit::<1>(6);
     let sum = rand_sum::<1>(200, 6, 0x0D1B);
 
-    let want_once = propagate(&circuit, sum.clone(), &AlwaysKeep, Direction::Forward);
-    let want_twice = propagate(&circuit, want_once.clone(), &AlwaysKeep, Direction::Forward);
+    let want_once = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    let want_twice = propagate(&circuit, want_once.clone(), &KeepAll, Direction::Forward);
 
     let (first, second) = std::thread::scope(|scope| {
         let circuit = &circuit;
@@ -249,9 +199,9 @@ fn gather_is_repeatable_and_non_destructive() {
                 scope.spawn(move || {
                     let mut split = DistributedSum::scatter(sum.clone(), transport, &config())
                         .expect("topology resolves");
-                    split.propagate(circuit, &AlwaysKeep, Direction::Forward);
+                    split.propagate(circuit, &KeepAll, Direction::Forward);
                     let first = split.gather();
-                    split.propagate(circuit, &AlwaysKeep, Direction::Forward);
+                    split.propagate(circuit, &KeepAll, Direction::Forward);
                     (first, split.gather())
                 })
             })
@@ -285,7 +235,7 @@ fn the_trace_is_this_ranks_view_of_every_layer() {
                     let mut split = DistributedSum::scatter(sum.clone(), transport, &config())
                         .expect("topology resolves");
                     split.enable_trace();
-                    split.propagate(circuit, &AlwaysKeep, Direction::Forward);
+                    split.propagate(circuit, &KeepAll, Direction::Forward);
                     (split.rank(), split.take_trace().expect("tracing is on"))
                 })
             })
@@ -342,11 +292,11 @@ fn ranks_driven_through_different_circuits_are_caught() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut split =
                     DistributedSum::scatter(sum.clone(), one, &config()).expect("topology");
-                split.propagate(long, &AlwaysKeep, Direction::Forward);
+                split.propagate(long, &KeepAll, Direction::Forward);
             }));
         });
         let mut split = DistributedSum::scatter(sum.clone(), zero, &config()).expect("topology");
-        split.propagate(&short, &AlwaysKeep, Direction::Forward);
+        split.propagate(&short, &KeepAll, Direction::Forward);
     });
 }
 
@@ -368,15 +318,7 @@ fn a_multi_partition_runtime_is_rejected() {
     let sum = rand_sum::<1>(10, 4, 0x0D1F);
     let mut group = InProcessTransport::group(1);
     let zero = group.remove(0);
-    let config = PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions: 2,
-            threads_per_partition: Some(1),
-        },
-        bind_memory: false,
-        partition_row_seed: Some(3),
-    };
-    let _ = DistributedSum::scatter(sum, zero, &config);
+    let _ = DistributedSum::scatter(sum, zero, &unpinned_partitions(2, 1, 3));
 }
 
 /// Every rank's `len()` is the whole sum's, and the local shares add up to it.

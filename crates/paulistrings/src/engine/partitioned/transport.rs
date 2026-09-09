@@ -2239,7 +2239,7 @@ mod tests {
         from == 0 && to == 1
     }
 
-    fn run_exchange(size: u32) {
+    fn exchange_round(size: u32) {
         let group = InProcessTransport::group(size);
         assert_eq!(group.len(), size as usize);
 
@@ -2272,13 +2272,10 @@ mod tests {
     }
 
     #[test]
-    fn exchange_delivers_each_payload_to_its_partner_at_p2() {
-        run_exchange(2);
-    }
-
-    #[test]
-    fn exchange_delivers_each_payload_to_its_partner_at_p4() {
-        run_exchange(4);
+    fn exchange_delivers_each_payload_to_its_partner() {
+        for size in [2u32, 4] {
+            exchange_round(size);
+        }
     }
 
     #[test]
@@ -2570,38 +2567,6 @@ mod tests {
                 handle.join().expect("rank thread panicked");
             }
         });
-    }
-
-    /// Measurement, not assertion: the per-call latency of the cheapest
-    /// collective on two ranks, printed under `--nocapture`. It asserts
-    /// nothing about time — the box is shared — but it keeps the number one
-    /// command away when the collective path is touched again.
-    #[test]
-    fn allreduce_max_u8_latency_on_two_ranks_is_reported() {
-        const CALLS: u32 = 20_000;
-        let mut group = InProcessTransport::group(2);
-        let one = group.pop().expect("rank 1");
-        let zero = group.pop().expect("rank 0");
-
-        let elapsed = std::thread::scope(|scope| {
-            let handle = scope.spawn(move || {
-                for i in 0..CALLS {
-                    one.allreduce_max_u8((i % 251) as u8);
-                }
-            });
-            let started = Instant::now();
-            for i in 0..CALLS {
-                zero.allreduce_max_u8((i % 251) as u8);
-            }
-            let elapsed = started.elapsed();
-            handle.join().expect("rank thread panicked");
-            elapsed
-        });
-
-        println!(
-            "allreduce_max_u8 P=2 (unpinned): {:.0} ns/call over {CALLS} calls",
-            elapsed.as_nanos() as f64 / f64::from(CALLS),
-        );
     }
 
     // ---- the two collectives every transport inherits ------------------

@@ -5,9 +5,9 @@
 //! unpartitioned engine to floating-point tolerance (ARCHITECTURE.md
 //! §Determinism), and at `P = 1` it is the unpartitioned engine, bit for bit.
 //!
-//! Every configuration here uses `Placement::Unpinned`, so the tests run on
-//! any box (one node, no NUMA, a `taskset`ed CI container) — placement itself
-//! is covered by `engine::partitioned::topology`'s own tests.
+//! Every configuration here is `test_support::unpinned_partitions`, so the
+//! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
+//! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use num_complex::Complex64;
 use paulistrings::channel::{
@@ -18,7 +18,8 @@ use paulistrings::engine::partitioned::{
     propagate_partitioned, propagate_partitioned_with_options, PartitionConfig, Placement,
 };
 use paulistrings::test_support::{
-    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, sqrt_swap_matrix, Xs64,
+    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, sqrt_swap_matrix,
+    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll, Xs64,
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
@@ -27,31 +28,13 @@ use paulistrings::{
 };
 
 const TOL: f64 = 1e-11;
-
-/// The "keep everything" policy, with the trait's default (no-op) collective
-/// layer pass — the case the `PartitionedTruncation` default body exists for.
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    // `finalizes_layer`'s default is the conservative `true`, which the
-    // `PartitionedTruncation` default body rejects — a policy with no layer
-    // pass has to say so.
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
+/// The Trotter angle every `trotter_circuit` fixture here rotates by.
+const THETA: f64 = 0.1;
 
 /// `P` unpinned partitions of two threads each: the shape of a partitioned run
 /// without its placement.
 fn config(partitions: usize) -> PartitionConfig {
-    PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions,
-            threads_per_partition: Some(2),
-        },
-        bind_memory: false,
-        partition_row_seed: Some(0x5EED_C0FF_EE00_1234),
-    }
+    unpinned_partitions(partitions, 2, 0x5EED_C0FF_EE00_1234)
 }
 
 fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
@@ -60,37 +43,6 @@ fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
 
 fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
     p.z[q as usize / 64] |= 1u64 << (q % 64);
-}
-
-/// A weight-2 `ZZ` rotation, the TFIM bond term.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    set_z(&mut gen, q0);
-    set_z(&mut gen, q1);
-    PauliRotation::new(gen, theta)
-}
-
-/// The TFIM Trotter step from `examples/phase_breakdown.rs`: `num_qubits` `ZZ`
-/// bond rotations (periodic) followed by that many transverse-field `X`
-/// rotations.
-fn trotter_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
-    let theta = 0.1;
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q0, q1, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        circuit.push(PauliRotation::new(
-            PauliString::<W>::x(q as u32),
-            2.0 * theta,
-        ));
-    }
-    circuit
 }
 
 /// A seeded circuit drawing from every built-in channel class.
@@ -201,7 +153,7 @@ const PS: [usize; 3] = [1, 2, 4];
 /// layer pass is collective.
 #[test]
 fn trotter_matches_propagate_w1() {
-    let circuit = trotter_circuit::<1>(32);
+    let circuit = trotter_circuit::<1>(32, THETA);
     let sum = rand_sum_real::<1>(2_000, 32, 0x71A0);
     check(&circuit, &sum, &ApproxTopN(3_000), "trotter approx", &PS);
     check(
@@ -216,7 +168,7 @@ fn trotter_matches_propagate_w1() {
 /// The same recipe at `W = 2`: two-word keys, one word live.
 #[test]
 fn trotter_matches_propagate_w2() {
-    let circuit = trotter_circuit::<2>(32);
+    let circuit = trotter_circuit::<2>(32, THETA);
     let sum = rand_sum_real::<2>(1_500, 32, 0x71A1);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter w2", &PS);
 }
@@ -224,13 +176,13 @@ fn trotter_matches_propagate_w2() {
 /// A 30-layer random circuit over every channel class at `W = 1`.
 ///
 /// Six qubits, so the whole Pauli group is 4⁶ = 4096 keys and an untruncated
-/// run is bounded by construction — which is what makes the `AlwaysKeep` cell
+/// run is bounded by construction — which is what makes the `KeepAll` cell
 /// affordable.
 #[test]
 fn random_circuit_matches_propagate_w1() {
     let circuit = random_circuit::<1>(6, 30, 0x9AA1, true);
     let sum = rand_sum::<1>(300, 6, 0x9AA2);
-    check(&circuit, &sum, &AlwaysKeep, "w1 keep", &PS);
+    check(&circuit, &sum, &KeepAll, "w1 keep", &PS);
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "w1 eps", &PS);
     check(&circuit, &sum, &WeightCutoff(4), "w1 weight", &PS);
     check(&circuit, &sum, &ApproxTopN(500), "w1 approx", &PS);
@@ -264,7 +216,7 @@ fn random_circuit_matches_propagate_w2() {
 /// layer, same finalization, same bits out — not merely tolerance-equal.
 #[test]
 fn one_partition_matches_propagate_bitwise() {
-    let circuit = trotter_circuit::<1>(32);
+    let circuit = trotter_circuit::<1>(32, THETA);
     let sum = rand_sum_real::<1>(2_000, 32, 0x71A0);
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_000), direction);
@@ -289,8 +241,8 @@ fn one_partition_matches_propagate_bitwise() {
         short.push(zz_rotation::<1>(q, (q + 1) % 8, 0.2));
     }
     let small = rand_sum::<1>(500, 8, 0x71A3);
-    let want = propagate(&short, small.clone(), &AlwaysKeep, Direction::Forward);
-    let got = propagate_partitioned(&short, small, &AlwaysKeep, Direction::Forward, &config(1))
+    let want = propagate(&short, small.clone(), &KeepAll, Direction::Forward);
+    let got = propagate_partitioned(&short, small, &KeepAll, Direction::Forward, &config(1))
         .expect("topology resolves");
     assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 keep-all");
 }
@@ -306,12 +258,12 @@ fn options_are_honoured() {
         min_buckets: 16,
         ..PropagateOptions::default()
     };
-    let want = propagate(&circuit, sum.clone(), &AlwaysKeep, Direction::Forward);
+    let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for &p in &PS {
         let got = propagate_partitioned_with_options(
             &circuit,
             sum.clone(),
-            &AlwaysKeep,
+            &KeepAll,
             Direction::Forward,
             &config(p),
             options,
@@ -327,15 +279,14 @@ fn edge_cases() {
     let circuit = random_circuit::<1>(6, 8, 0x9AA1, true);
     for &p in &PS {
         let empty = PauliSum::<1>::empty(6);
-        let out =
-            propagate_partitioned(&circuit, empty, &AlwaysKeep, Direction::Forward, &config(p))
-                .expect("topology resolves");
+        let out = propagate_partitioned(&circuit, empty, &KeepAll, Direction::Forward, &config(p))
+            .expect("topology resolves");
         assert!(out.is_empty(), "P={p}: an empty sum stays empty");
 
         let one = rand_sum::<1>(1, 6, 0x1);
         assert_eq!(one.len(), 1);
-        let want = propagate(&circuit, one.clone(), &AlwaysKeep, Direction::Forward);
-        let got = propagate_partitioned(&circuit, one, &AlwaysKeep, Direction::Forward, &config(p))
+        let want = propagate(&circuit, one.clone(), &KeepAll, Direction::Forward);
+        let got = propagate_partitioned(&circuit, one, &KeepAll, Direction::Forward, &config(p))
             .expect("topology resolves");
         assert_terms_close(&got, &want, TOL, &format!("single term P={p}"));
 
@@ -345,7 +296,7 @@ fn edge_cases() {
         let got = propagate_partitioned(
             &empty_circuit,
             sum.clone(),
-            &AlwaysKeep,
+            &KeepAll,
             Direction::Heisenberg,
             &config(p),
         )

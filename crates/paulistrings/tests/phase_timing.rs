@@ -5,35 +5,15 @@
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::channel::{Depolarizing, PauliRotation};
-use paulistrings::engine::partitioned::{
-    PartitionConfig, PartitionRuntime, PartitionedSum, Placement,
-};
+use paulistrings::engine::partitioned::{PartitionRuntime, PartitionedSum};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
-use paulistrings::test_support::rand_sum_real;
+use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PartitionedTruncation,
-    PauliString, PhaseStats, TruncationPolicy,
+    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PauliString,
+    PhaseStats,
 };
-
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    // The partitioned driver's collective finalization rejects a policy that
-    // claims a layer pass it has not implemented; this one has none.
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
-
-fn zz_rotation(q0: u32, q1: u32, theta: f64) -> PauliRotation<1> {
-    let gen = PauliString::<1> {
-        x: [0],
-        z: [(1 << q0) | (1 << q1)],
-    };
-    PauliRotation::new(gen, theta)
-}
 
 #[test]
 fn stats_sum_approximates_total() {
@@ -42,7 +22,7 @@ fn stats_sum_approximates_total() {
     // and coset-loop wall time are the same clock domain.
     let mut circuit = Circuit::<1>::new(32);
     for q in 0..4 {
-        circuit.push(zz_rotation(q, q + 1, 0.13 + q as f64 * 0.05));
+        circuit.push(zz_rotation::<1>(q, q + 1, 0.13 + q as f64 * 0.05));
     }
     let sum = rand_sum_real::<1>(20_000, 32, 0x51A75);
 
@@ -52,13 +32,7 @@ fn stats_sum_approximates_total() {
         .expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
-        propagate_with_scratch(
-            &circuit,
-            sum,
-            &AlwaysKeep,
-            Direction::Heisenberg,
-            &mut scratch,
-        )
+        propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Heisenberg, &mut scratch)
     });
     assert!(!out.is_empty());
 
@@ -96,11 +70,11 @@ fn stats_sum_approximates_total() {
 #[test]
 fn take_stats_drains() {
     let mut circuit = Circuit::<1>::new(16);
-    circuit.push(zz_rotation(0, 1, 0.4));
+    circuit.push(zz_rotation::<1>(0, 1, 0.4));
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
 
     let first = scratch.take_stats();
     assert!(first.layers == 1 && first.coset_loop_ns > 0);
@@ -118,7 +92,7 @@ fn rescale_path_is_attributed() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
 
     let stats = scratch.take_stats();
     assert!(stats.rescale_ns > 0, "{stats:?}");
@@ -158,20 +132,13 @@ fn partitioned_stats_are_attributed() {
     }
     let sum = rand_sum_real::<1>(20_000, 16, 0x9A17);
 
-    let config = PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions: 2,
-            threads_per_partition: Some(1),
-        },
-        bind_memory: false,
-        partition_row_seed: None,
-    };
+    let config = unpinned_partitions(2, 1, 0x51A75);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
     let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
     let mut split = PartitionedSum::scatter_with_rows(sum, rows, runtime);
 
     let started = std::time::Instant::now();
-    split.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    split.propagate(&circuit, &KeepAll, Direction::Forward);
     let wall = started.elapsed().as_nanos() as u64;
 
     let stats = split.take_stats();
@@ -218,11 +185,11 @@ fn partitioned_stats_are_attributed() {
 #[test]
 fn the_unpartitioned_engine_reports_no_exchange() {
     let mut circuit = Circuit::<1>::new(16);
-    circuit.push(zz_rotation(0, 1, 0.4));
+    circuit.push(zz_rotation::<1>(0, 1, 0.4));
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
 
     let stats = scratch.take_stats();
     assert_eq!(stats.collective_ns, 0, "{stats:?}");

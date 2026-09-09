@@ -704,3 +704,87 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
         ),
     ]
 }
+
+// ---- partitioned-engine fixtures -------------------------------------------
+//
+// The partitioned nets (`tests/propagate_partitioned.rs`,
+// `tests/propagate_distributed.rs`, `tests/mpi_ranks.rs`,
+// `tests/partitioned_*.rs`, `tests/phase_timing.rs`) all need the same three
+// things: a policy with no layer pass, a `ZZ` rotation, and a placement with no
+// placement. They live here so a change to any of them is one edit.
+
+/// Keep every term, with no layer finalization at all.
+///
+/// [`TruncationPolicy::finalizes_layer`]'s default is the conservative `true`,
+/// which [`PartitionedTruncation`]'s default body rejects — a policy with no
+/// layer pass has to say so, since the trait cannot know that skipping a
+/// collective is safe.
+///
+/// [`PartitionedTruncation`]: crate::PartitionedTruncation
+pub struct KeepAll;
+
+impl<const W: usize> TruncationPolicy<W> for KeepAll {
+    fn finalizes_layer(&self) -> bool {
+        false
+    }
+}
+
+impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
+
+/// A weight-2 `ZZ` rotation — the TFIM bond term, and the smallest layer whose
+/// generator can cross a partition boundary.
+pub fn zz_rotation<const W: usize>(
+    q0: u32,
+    q1: u32,
+    theta: f64,
+) -> crate::channel::rotation::PauliRotation<W> {
+    let mut gen = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    for q in [q0, q1] {
+        gen.z[q as usize / 64] |= 1u64 << (q % 64);
+    }
+    crate::channel::rotation::PauliRotation::new(gen, theta)
+}
+
+/// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that
+/// many transverse-field `X` rotations, all at angle `2 · theta`.
+///
+/// `2 · num_qubits` layers, enough that the term count — and with it the bucket
+/// count the group agrees on every layer — grows across the run.
+pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::Circuit<W> {
+    let mut circuit = crate::Circuit::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        let q1 = ((q + 1) % num_qubits) as u32;
+        circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+    }
+    for q in 0..num_qubits {
+        circuit.push(crate::channel::rotation::PauliRotation::new(
+            PauliString::<W>::x(q as u32),
+            2.0 * theta,
+        ));
+    }
+    circuit
+}
+
+/// A partitioned placement with no placement: `partitions` unpinned pools of
+/// `threads` workers each, drawing partition rows from `row_seed`.
+///
+/// Every partitioned test uses this rather than `Placement::Auto`, so the suite
+/// runs on a one-node box or a `taskset`ed CI container; placement itself is
+/// covered by `engine::partitioned::topology`'s own tests.
+pub fn unpinned_partitions(
+    partitions: usize,
+    threads: usize,
+    row_seed: u64,
+) -> crate::engine::partitioned::PartitionConfig {
+    crate::engine::partitioned::PartitionConfig {
+        placement: crate::engine::partitioned::Placement::Unpinned {
+            partitions,
+            threads_per_partition: Some(threads),
+        },
+        bind_memory: false,
+        partition_row_seed: Some(row_seed),
+    }
+}

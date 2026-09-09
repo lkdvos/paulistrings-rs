@@ -2,34 +2,14 @@
 
 use paulistrings::bucket::desired_bits;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
-use paulistrings::engine::partitioned::{
-    PartitionConfig, PartitionRuntime, PartitionedSum, Placement,
-};
-use paulistrings::test_support::{low_weight_sum, rand_sum};
-use paulistrings::{
-    Circuit, Direction, PartitionRows, PartitionedTruncation, PauliString, PropagateOptions,
-    TruncationPolicy,
-};
+use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::test_support::{low_weight_sum, rand_sum, unpinned_partitions, KeepAll};
+use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
 
 const NQ: usize = 16;
 
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
-
 fn config(partitions: usize) -> PartitionConfig {
-    PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions,
-            threads_per_partition: Some(2),
-        },
-        bind_memory: false,
-        partition_row_seed: Some(0x7_ACED_7ACE),
-    }
+    unpinned_partitions(partitions, 2, 0x7_ACED_7ACE)
 }
 
 /// A mixed circuit: two Cliffords (whose non-identity delta may or may not
@@ -67,7 +47,7 @@ fn rows_seeing_qubit_0_x() -> PartitionRows<1> {
 fn tracing_is_off_by_default() {
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x1), runtime, &config(2));
-    ps.propagate(&circuit(), &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     assert!(ps.take_trace().is_none(), "no trace unless asked for");
 }
 
@@ -80,7 +60,7 @@ fn a_trace_records_every_layer() {
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x2), runtime, &config(4));
     ps.enable_trace();
     ps.enable_trace(); // idempotent
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
 
     let trace = ps.take_trace().expect("tracing is on");
     assert_eq!(trace.layers.len(), circuit.channels.len());
@@ -121,7 +101,7 @@ fn a_trace_records_every_layer() {
         ps.take_trace(),
         Some(paulistrings::PartitionTrace::default()),
     );
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
     assert_eq!(
         ps.take_trace().expect("still tracing").layers.len(),
         circuit.channels.len(),
@@ -146,7 +126,7 @@ fn total_rows_exchanged_counts_the_anticommuting_terms() {
 
     let mut ps = PartitionedSum::scatter_with_rows(sum, rows_seeing_qubit_0_x(), runtime);
     ps.enable_trace();
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
 
     assert_eq!(trace.layers.len(), 1);
@@ -168,7 +148,7 @@ fn a_key_preserving_layer_is_local() {
     });
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x4), runtime, &config(2));
     ps.enable_trace();
-    ps.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
     assert_eq!(trace.local_layers(), 1);
     assert_eq!(trace.remote_layers(), 0);
@@ -181,7 +161,7 @@ fn imbalance_is_near_one_for_random_rows() {
     let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(20_000, NQ, 0x5), runtime, &config(4));
     ps.enable_trace();
-    ps.propagate(&circuit(), &AlwaysKeep, Direction::Forward);
+    ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
     for (k, imbalance) in trace.imbalance().iter().enumerate() {
         assert!(
@@ -217,7 +197,7 @@ fn bits_are_uniform_and_grow_only() {
     };
     let before = ps.bits();
     ps.enable_trace();
-    ps.propagate_with_options(&circuit(), &AlwaysKeep, Direction::Forward, options);
+    ps.propagate_with_options(&circuit(), &KeepAll, Direction::Forward, options);
     let trace = ps.take_trace().expect("tracing is on");
 
     let mut prev = before;

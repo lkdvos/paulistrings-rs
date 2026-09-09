@@ -27,49 +27,24 @@
 use std::panic::AssertUnwindSafe;
 
 use num_complex::Complex64;
-use paulistrings::channel::{
-    Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
-use paulistrings::engine::partitioned::{
-    count_remote_deltas, DistributedSum, PartitionConfig, Placement,
-};
+use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
+use paulistrings::engine::partitioned::{count_remote_deltas, DistributedSum, PartitionConfig};
 use paulistrings::mpi::{rsmpi, MpiTransport};
-use paulistrings::test_support::{assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real};
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
-use paulistrings::{
-    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliString, PauliSum,
-    TruncationPolicy,
+use paulistrings::test_support::{
+    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
+    unpinned_partitions, zz_rotation, KeepAll,
 };
+use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::{propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliSum};
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
 use rsmpi::Threading;
 
 const TOL: f64 = 1e-11;
-
-/// Keep everything, with the trait's default (no-op) collective layer pass.
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeep {}
+/// The Trotter angle every `trotter_circuit` fixture here rotates by.
+const THETA: f64 = 0.1;
 
 // ---- circuits -----------------------------------------------------------
-
-fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.z[q as usize / 64] |= 1u64 << (q % 64);
-}
-
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    set_z(&mut gen, q0);
-    set_z(&mut gen, q1);
-    PauliRotation::new(gen, theta)
-}
 
 /// One weight-2 `ZZ` rotation: the smallest layer that can cross a boundary.
 fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
@@ -110,27 +85,6 @@ fn depolarizing_only<const W: usize>(nq: usize) -> Circuit<W> {
     circuit
 }
 
-/// The TFIM Trotter step: `2 · nq` layers, so the term count — and with it the
-/// bucket count the group agrees on every layer — grows across the run.
-fn trotter<const W: usize>(nq: usize) -> Circuit<W> {
-    let theta = 0.1;
-    let mut circuit = Circuit::<W>::new(nq);
-    for q in 0..nq {
-        circuit.push(zz_rotation::<W>(
-            q as u32,
-            ((q + 1) % nq) as u32,
-            2.0 * theta,
-        ));
-    }
-    for q in 0..nq {
-        circuit.push(PauliRotation::new(
-            PauliString::<W>::x(q as u32),
-            2.0 * theta,
-        ));
-    }
-    circuit
-}
-
 // ---- the harness --------------------------------------------------------
 
 /// A rank's view of the run: its endpoint, and the group it is in.
@@ -148,14 +102,7 @@ impl Runner<'_> {
     /// hand several ranks the same CPUs, and pinning them all to it would
     /// serialize the run. Placement itself is covered by `topology`'s tests.
     fn config(&self, seed: u64) -> PartitionConfig {
-        PartitionConfig {
-            placement: Placement::Unpinned {
-                partitions: 1,
-                threads_per_partition: Some(2),
-            },
-            bind_memory: false,
-            partition_row_seed: Some(seed),
-        }
+        unpinned_partitions(1, 2, seed)
     }
 
     /// Run one collective case, all-reduce its verdict, and report it on rank
@@ -314,23 +261,23 @@ fn run_matrix(r: &mut Runner) {
     r.case("w1 single zz rotation", |r| {
         let circuit = single_rotation::<1>(16);
         let sum = rand_sum_real::<1>(400, 16, 0xA001);
-        r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "w1 rotation");
+        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 rotation");
     });
 
     r.case("w1 cnot ring", |r| {
         let circuit = cnot_ring::<1>(12);
         let sum = rand_sum::<1>(400, 12, 0xA002);
-        r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "w1 cnot");
+        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 cnot");
     });
 
     r.case("w1 haar su(4)", |r| {
         let circuit = haar_su4::<1>(8);
         let sum = rand_sum::<1>(300, 8, 0xA003);
-        r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "w1 su4");
+        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 su4");
     });
 
     r.case("w1 trotter, 32 layers", |r| {
-        let circuit = trotter::<1>(16);
+        let circuit = trotter_circuit::<1>(16, THETA);
         assert!(
             circuit.channels.len() >= 20,
             "the bits collective must move"
@@ -343,11 +290,11 @@ fn run_matrix(r: &mut Runner) {
     r.case("w2 haar su(4)", |r| {
         let circuit = haar_su4::<2>(8);
         let sum = rand_sum::<2>(300, 8, 0xA005);
-        r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "w2 su4");
+        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w2 su4");
     });
 
     r.case("w2 trotter, 32 layers", |r| {
-        let circuit = trotter::<2>(16);
+        let circuit = trotter_circuit::<2>(16, THETA);
         let sum = rand_sum_real::<2>(600, 16, 0xA006);
         r.both_directions(&circuit, &sum, &ApproxTopN(1_200), SEED, "w2 trotter");
     });
@@ -360,7 +307,7 @@ fn run_matrix(r: &mut Runner) {
         circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
         let sum = rand_sum::<1>(250, 8, 0xA007);
 
-        r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "policy none");
+        r.both_directions(&circuit, &sum, &KeepAll, SEED, "policy none");
         r.both_directions(
             &circuit,
             &sum,
@@ -385,7 +332,7 @@ fn run_matrix(r: &mut Runner) {
     const TIGHT: usize = 200;
 
     r.case("approx-topn firing every layer", |r| {
-        let circuit = trotter::<1>(14);
+        let circuit = trotter_circuit::<1>(14, THETA);
         let sum = rand_sum_real::<1>(600, 14, 0xA008);
         let want = propagate(
             &circuit,
@@ -410,7 +357,7 @@ fn run_matrix(r: &mut Runner) {
         circuit.push(Clifford2Q::cnot(0, 1));
         for n in 1..=3 {
             let sum = rand_sum::<1>(n, 8, 0xA009 + n as u64);
-            r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "tiny sum");
+            r.both_directions(&circuit, &sum, &KeepAll, SEED, "tiny sum");
         }
     });
 
@@ -420,7 +367,7 @@ fn run_matrix(r: &mut Runner) {
         r.differential(
             &circuit,
             &sum,
-            &AlwaysKeep,
+            &KeepAll,
             Direction::Forward,
             SEED,
             None,
@@ -438,7 +385,7 @@ fn run_matrix(r: &mut Runner) {
         let mut split =
             DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
         split.enable_trace();
-        split.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
         let trace = split.take_trace().expect("tracing is on");
 
         assert_eq!(trace.layers.len(), circuit.channels.len());
@@ -455,7 +402,7 @@ fn run_matrix(r: &mut Runner) {
         }
 
         if let Some(got) = split.gather() {
-            let want = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
+            let want = propagate(&circuit, sum, &KeepAll, Direction::Forward);
             assert_terms_close(&got, &want, TOL, "depolarizing");
             assert_eq!(got.len(), want.len());
         }
@@ -470,7 +417,7 @@ fn run_matrix(r: &mut Runner) {
         if r.size == 1 {
             // A group of one has no boundary to cross; the case degenerates to
             // the plain differential, which is still worth running.
-            r.both_directions(&circuit, &sum, &AlwaysKeep, SEED, "all-remote (P=1)");
+            r.both_directions(&circuit, &sum, &KeepAll, SEED, "all-remote (P=1)");
             return;
         }
 
@@ -494,7 +441,7 @@ fn run_matrix(r: &mut Runner) {
         assert_eq!(counts.len(), 1);
         assert!(counts[0].1 > 0, "the layer must be remote: {counts:?}");
 
-        r.both_directions(&circuit, &sum, &AlwaysKeep, seed, "all-remote");
+        r.both_directions(&circuit, &sum, &KeepAll, seed, "all-remote");
     });
 
     // ---- the chunked send path ------------------------------------------
@@ -507,7 +454,7 @@ fn run_matrix(r: &mut Runner) {
             r.differential(
                 &circuit,
                 &sum,
-                &AlwaysKeep,
+                &KeepAll,
                 direction,
                 SEED,
                 Some(1024),
@@ -525,7 +472,7 @@ fn run_matrix(r: &mut Runner) {
         r.differential(
             &circuit,
             &sum,
-            &AlwaysKeep,
+            &KeepAll,
             Direction::Forward,
             SEED,
             Some(1),
@@ -554,7 +501,7 @@ fn run_matrix(r: &mut Runner) {
         let mut split =
             DistributedSum::scatter(sum, transport, &config).expect("topology resolves");
         let out = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            split.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+            split.propagate(&circuit, &KeepAll, Direction::Forward);
         }));
         assert!(
             out.is_err(),
@@ -573,7 +520,7 @@ fn run_matrix(r: &mut Runner) {
         let config = r.config(SEED);
         let mut split =
             DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
-        split.propagate(&circuit, &AlwaysKeep, Direction::Forward);
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
 
         let mine = split.local_expectation_product_state(ProductState::ZPlus);
         // `Collectives` reduces integers only, so the scalar goes through the
@@ -585,7 +532,7 @@ fn run_matrix(r: &mut Runner) {
             .all_reduce_into(&send[..], &mut total[..], SystemOperation::sum());
         let got = Complex64::new(total[0], total[1]);
 
-        let oracle = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
+        let oracle = propagate(&circuit, sum, &KeepAll, Direction::Forward);
         let want = oracle.expectation_product_state(ProductState::ZPlus);
         assert!(
             (got - want).norm() < 1e-9,

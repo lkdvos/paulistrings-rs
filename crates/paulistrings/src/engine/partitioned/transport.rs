@@ -932,7 +932,9 @@ pub(crate) fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str)
 /// the phases they measure. Every field is a *part of* `exchange_ns`.
 ///
 /// [`PhaseStats`]: crate::engine::stats::PhaseStats
-#[cfg(feature = "phase-timing")]
+// Only the MPI transport takes these laps (the in-process one moves payloads),
+// so without the `mpi` feature the type has no constructor and would be dead code.
+#[cfg(all(feature = "phase-timing", feature = "mpi"))]
 #[derive(Debug, Default)]
 pub(crate) struct ExchangeTimings {
     /// Encoding the framing headers and posting every send.
@@ -947,7 +949,7 @@ pub(crate) struct ExchangeTimings {
     pub(crate) decode_ns: AtomicU64,
 }
 
-#[cfg(feature = "phase-timing")]
+#[cfg(all(feature = "phase-timing", feature = "mpi"))]
 impl ExchangeTimings {
     /// Add `since.elapsed()` to `slot` and re-arm the stamp.
     pub(crate) fn lap(slot: &AtomicU64, since: &mut Instant) {

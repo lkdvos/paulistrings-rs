@@ -44,6 +44,26 @@ jobs:
       - run: cargo test -p paulistrings --features phase-timing
       - run: cargo build -p paulistrings --features phase-timing --example phase_breakdown
 
+  mpi:
+    name: mpi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rsmpi needs an MPI to probe (`mpicc`) and a libclang for its bindgen.
+      - run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libclang-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p paulistrings --all-targets --features mpi -- -D warnings
+      # A singleton world: Open MPI initializes fine outside mpirun, so the
+      # whole matrix runs at one rank without a launcher.
+      - run: cargo test -p paulistrings --features mpi
+      # And the real thing, at 2 and 4 ranks. The runner has two cores, hence
+      # --oversubscribe.
+      - run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features mpi
+
   doc:
     name: doc
     runs-on: ubuntu-latest

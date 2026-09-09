@@ -953,6 +953,71 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
+    /// Rebuild a sum from the columns [`Self::to_arrays`] produced, cut back
+    /// into buckets by `lens`.
+    ///
+    /// The inverse of `to_arrays` given the bucket lengths, and the receive
+    /// side of the distributed gather (`engine::partitioned`): a rank ships its
+    /// bucket lengths and its three concatenated columns, and the root
+    /// reassembles the rank's `PauliSum` under the hash the group agrees on
+    /// before handing the lot to [`Self::merge_partitions`]. Nothing is sorted
+    /// or deduplicated — the columns already satisfy `PauliSum`'s invariants,
+    /// bucket by bucket, and the transfer preserved their order.
+    ///
+    /// # Panics
+    ///
+    /// If `lens` is not one entry per bucket of `hash`, if the columns are not
+    /// parallel, or if the lengths do not sum to the column length.
+    pub(crate) fn from_bucket_columns(
+        lens: &[usize],
+        x: Vec<[u64; W]>,
+        z: Vec<[u64; W]>,
+        coeff: Vec<Complex64>,
+        hash: Gf2Hash<W>,
+        num_qubits: usize,
+    ) -> Self {
+        assert_eq!(
+            lens.len(),
+            hash.num_buckets(),
+            "PauliSum::from_bucket_columns: {} bucket lengths for a hash with {} buckets",
+            lens.len(),
+            hash.num_buckets(),
+        );
+        assert!(
+            x.len() == coeff.len() && z.len() == coeff.len(),
+            "PauliSum::from_bucket_columns: columns are not parallel ({}, {}, {})",
+            x.len(),
+            z.len(),
+            coeff.len(),
+        );
+        let len: usize = lens.iter().sum();
+        assert_eq!(
+            len,
+            coeff.len(),
+            "PauliSum::from_bucket_columns: bucket lengths sum to {len}, columns hold {}",
+            coeff.len(),
+        );
+
+        let mut x = x.into_iter();
+        let mut z = z.into_iter();
+        let mut coeff = coeff.into_iter();
+        let buckets = lens
+            .iter()
+            .map(|&n| BucketCols {
+                x: x.by_ref().take(n).collect(),
+                z: z.by_ref().take(n).collect(),
+                coeff: coeff.by_ref().take(n).collect(),
+            })
+            .collect();
+
+        Self {
+            buckets,
+            hash,
+            num_qubits,
+            len,
+        }
+    }
+
     /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a
     /// mixed sum.
     ///

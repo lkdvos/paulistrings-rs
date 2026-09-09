@@ -7,13 +7,16 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# Phase-3 template: multi-rank differential test + the domains-vs-ranks probe comparison.
-# Requires the `mpi` cargo feature (rsmpi) and `scripts/mpi-test.sh` from phase 3 of the plan;
-# until they land this script only prints the topology and exits 2.
+# The MPI transport's multi-rank differential net (`crates/paulistrings/tests/mpi_ranks.rs`,
+# behind the `mpi` cargo feature) on a real multi-node allocation.
 #
-# Layouts it exercises (one rank per NUMA domain, threads pinned inside the domain by the engine):
-#   ranks-per-node = <numa domains>, domains-per-rank D = 1      (pure MPI)
-#   ranks-per-node = 1,              domains-per-rank D = <numa>  (hybrid: in-process domains + MPI across nodes)
+# One rank per NUMA domain, D = 1: the engine holds exactly one partition per process and takes
+# its placement from the launcher's affinity mask, so `--cpu-bind=ldoms` is what pins the run
+# (`Placement::Auto` then resolves to a single slot covering the domain). There is no
+# domains-per-rank hybrid; `PAULISTRINGS_DOMAINS` no longer exists.
+#
+# The rank count must be a power of two — a partition is named by log2(P) GF(2) rows — so the
+# script rounds `nodes × domains` down and says what it picked.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 
@@ -36,23 +39,41 @@ echo "== job ${SLURM_JOB_ID:-?} on $SLURM_JOB_NODELIST, $(date -Is)"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
 numa=$(ls -d /sys/devices/system/node/node* | wc -l)
 cpus_per_numa=$(( SLURM_CPUS_ON_NODE / numa ))
-echo "numa domains per node: $numa, cpus per domain: $cpus_per_numa"
+nodes=${SLURM_JOB_NUM_NODES:-1}
+echo "numa domains per node: $numa, cpus per domain: $cpus_per_numa, nodes: $nodes"
 
-if [ ! -f scripts/mpi-test.sh ]; then
-    echo "phase 3 has not landed (scripts/mpi-test.sh missing); nothing to run" >&2
-    exit 2
-fi
+# Round the total rank count down to a power of two, then spread it evenly over the nodes.
+total=$(( nodes * numa ))
+ranks=1
+while [ $(( ranks * 2 )) -le "$total" ]; do ranks=$(( ranks * 2 )); done
+per_node=$(( ranks / nodes ))
+[ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
+echo "== running $ranks ranks ($per_node per node, D=1), from $total available domains"
 
-cargo build --offline --release --features mpi -p paulistrings --tests >/dev/null
 bin=$(cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run \
       --message-format=json 2>/dev/null \
       | python3 -c 'import json,sys
 for l in sys.stdin:
-    r=json.loads(l)
+    try: r=json.loads(l)
+    except ValueError: continue
     if r.get("reason")=="compiler-artifact" and r["target"]["name"]=="mpi_ranks" and r.get("executable"): print(r["executable"])')
+[ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
+echo "== binary: $bin"
 
-echo "== pure MPI: $numa ranks/node, D=1"
-srun --ntasks-per-node="$numa" --cpus-per-task="$cpus_per_numa" --cpu-bind=ldoms --mpi=pmix "$bin"
-echo "== hybrid: 1 rank/node, D=$numa"
-PAULISTRINGS_DOMAINS="$numa" srun --ntasks-per-node=1 --cpus-per-task="$SLURM_CPUS_ON_NODE" \
-    --cpu-bind=none --mpi=pmix "$bin"
+srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
+     --cpu-bind=ldoms --mpi=pmix "$bin"
+
+# The capacity probe, same placement: per-rank phase breakdown and peak RSS including the
+# exchange transients (the metric phase 3 exists for). Each rank writes its own
+# `<path>.rank<N>` sidecar. Set PROBE=0 to run the differential net alone.
+if [ "${PROBE:-1}" = "1" ]; then
+    cargo build --offline --release --features phase-timing,mpi -p paulistrings \
+        --example phase_breakdown >/dev/null
+    probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
+    out="benchmarks/results/mpi-${SLURM_JOB_ID:-local}.jsonl"
+    echo "== probe: $ranks ranks, D=1, $cpus_per_numa threads each -> $out.rank*"
+    srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
+         --cpu-bind=ldoms --mpi=pmix "$probe" --mpi --threads "$cpus_per_numa" \
+         --layers "${LAYERS:-cnot,su4,trotter}" --n "${N:-3000000}" --format json \
+         --json-out "$out"
+fi

@@ -41,7 +41,7 @@ use super::layer::{apply_layer_partitioned, PartitionState};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
-use super::transport::{Collectives, InProcessTransport};
+use super::transport::{Collectives, Transport};
 use super::truncation::PartitionedTruncation;
 use crate::bucket::hash::PartitionRows;
 use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
@@ -60,15 +60,15 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 
 /// One partition's payload, moved into its thread for the duration of a call
 /// and handed back.
-struct PartitionWork<const W: usize> {
+pub(super) struct PartitionWork<const W: usize> {
     /// This partition's share of the sum.
-    local: PauliSum<W>,
+    pub(super) local: PauliSum<W>,
     /// Its layer and export scratch, retained across calls.
-    state: PartitionState<W>,
+    pub(super) state: PartitionState<W>,
     /// One row per layer, empty unless tracing is on. Written on this
     /// partition's driving thread only, and transposed into the shared
     /// [`PartitionTrace`] after the join.
-    rows: Vec<PartitionLayerRow>,
+    pub(super) rows: Vec<PartitionLayerRow>,
 }
 
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`].
@@ -600,17 +600,22 @@ pub struct PartitionPhaseStats {
 /// (and the layer loop grows it from there). At `P = 1`, `pbits = 0`, so this
 /// is `bits` — the scatter is the identity and the partitioned run is the
 /// unpartitioned one.
-fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
+pub(super) fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
     want.max(bits.saturating_sub(pbits)).min(bits)
 }
 
-/// One partition's whole layer loop.
+/// One partition's whole layer loop — **the** layer loop, shared by the
+/// in-process driver ([`PartitionedSum`]) and the distributed one
+/// ([`DistributedSum`](super::DistributedSum)).
 ///
 /// Runs on the partition's driving thread inside its own pool, in lock-step
 /// with its peers: the same channels in the same order, the same collectives
-/// per layer.
+/// per layer. The two drivers differ only in *what a partition is* — a NUMA
+/// domain and an in-process endpoint, or a whole process and an MPI rank —
+/// which is entirely the transport's business, so the body below is generic
+/// over it and there is exactly one copy of the per-layer sequence.
 #[allow(clippy::too_many_arguments)]
-fn run_layers<const W: usize, T>(
+pub(super) fn run_layers<const W: usize, T, X>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
@@ -620,9 +625,10 @@ fn run_layers<const W: usize, T>(
     size: usize,
     tracing: bool,
     work: &mut PartitionWork<W>,
-    transport: &InProcessTransport,
+    transport: &X,
 ) where
     T: PartitionedTruncation<W> + ?Sized,
+    X: Transport,
 {
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);

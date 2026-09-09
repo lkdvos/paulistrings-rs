@@ -133,10 +133,14 @@ pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};
+// The MPI transport and its distributed driver, behind the `mpi` feature:
+// `paulistrings::mpi::{MpiTransport, propagate_mpi, rsmpi, ...}`.
+#[cfg(feature = "mpi")]
+pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    propagate_partitioned, propagate_partitioned_with_options, PartitionConfig,
+    propagate_partitioned, propagate_partitioned_with_options, DistributedSum, PartitionConfig,
     PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
     Placement, TopologyError,
 };

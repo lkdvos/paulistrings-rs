@@ -11,17 +11,23 @@
 //!   local and remote (partner) deltas.
 //! - `export` — the export pass building per-partner exchange blocks.
 //! - `layer` — `apply_layer_partitioned`: export → exchange → coset loop.
+//! - `mpi` — the distributed transport, one partition per rank (`mpi` feature).
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 //! - `runtime` — `PartitionRuntime`: the resolved placement, its pools, and the
 //!   scoped fan-out a partitioned call runs inside.
 //! - `driver` — `PartitionedSum` and `propagate_partitioned`: the layer loop,
 //!   the collective bucket-count agreement, scatter and gather.
+//! - `distributed` — `DistributedSum`: the same layer loop with one partition
+//!   per process, over any `Transport`.
 //! - `trace` — `PartitionTrace`, the opt-in per-layer record of term counts,
 //!   bucket bits and exchange volume.
 
+pub(crate) mod distributed;
 pub(crate) mod driver;
 pub(crate) mod export;
 pub(crate) mod layer;
+#[cfg(feature = "mpi")]
+pub mod mpi;
 pub(crate) mod plan;
 pub(crate) mod runtime;
 pub(crate) mod topology;
@@ -30,6 +36,7 @@ pub(crate) mod transport;
 pub(crate) mod truncation;
 
 // The front door: a sum split across partitions, and the one-shot entry points.
+pub use distributed::DistributedSum;
 #[cfg(feature = "phase-timing")]
 pub use driver::PartitionPhaseStats;
 pub use driver::{propagate_partitioned, propagate_partitioned_with_options, PartitionedSum};

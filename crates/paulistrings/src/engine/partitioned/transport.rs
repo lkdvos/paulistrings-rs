@@ -246,7 +246,7 @@ const PARTS_PER_BLOCK: usize = 5;
 /// `bytemuck::cast_slice` would be free but requires the input to be aligned
 /// for `T`, which a received buffer need not be; the per-element
 /// `pod_read_unaligned` costs one copy on a path that is already copying.
-fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
+pub(crate) fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
     let stride = size_of::<T>();
     assert_eq!(
         bytes.len(),
@@ -326,7 +326,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
 /// Separate from [`decode_column`] because `[u64; W]` for a generic `W` is not
 /// `Pod` under the feature set this crate builds `bytemuck` with; the words are
 /// read individually and assembled.
-fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
+pub(crate) fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
     let stride = W * size_of::<u64>();
     assert_eq!(
         bytes.len(),
@@ -368,6 +368,49 @@ pub trait Collectives: Send + Sync {
     fn allreduce_sum_u64(&self, buf: &mut [u64]);
     /// Block until every partition has arrived.
     fn barrier(&self);
+
+    /// Panic unless every partition passed the same `fingerprint`.
+    ///
+    /// The intended fingerprint is whatever a run's partitions *must* agree on
+    /// before they can be driven in lock-step — the channel count, the
+    /// direction, the qubit count, the truncation policy's identity. Disagree
+    /// on any of those and the group deadlocks on the first layer whose
+    /// collectives no longer pair up; this turns that hang into a message. The
+    /// driver calls it exactly once per propagation, before the first layer.
+    ///
+    /// One collective, and it obeys the collective-order invariant like the
+    /// rest: every partition calls it, with its own fingerprint.
+    ///
+    /// # Panics
+    ///
+    /// If the fingerprints differ, naming a bit the group disagrees on and how
+    /// many partitions set it.
+    fn check_consistency(&self, fingerprint: u64) {
+        // 64 counters, one per bit of the fingerprint: "how many partitions
+        // have this bit set". A group that agrees answers 0 or `size` for
+        // every bit; a group that disagrees cannot, because the counts pin
+        // every partition's value bit by bit — so the test is exact, with no
+        // false positives and no false negatives, and it needs nothing from
+        // `Collectives` beyond the sum that is already there. 512 bytes once
+        // per propagation.
+        let mut counts = [0u64; 64];
+        for (i, c) in counts.iter_mut().enumerate() {
+            *c = (fingerprint >> i) & 1;
+        }
+        self.allreduce_sum_u64(&mut counts);
+        let size = u64::from(self.size());
+        for (bit, &count) in counts.iter().enumerate() {
+            assert!(
+                count == 0 || count == size,
+                "the partitions disagree about the run: partition {} offered fingerprint \
+                 {fingerprint:#018x}, and {count} of {size} partitions set bit {bit} of theirs. \
+                 Every partition must be driven through the same circuit, in the same direction, \
+                 under the same policy and options — a group that is not stays in step only by \
+                 luck.",
+                self.rank(),
+            );
+        }
+    }
 }
 
 /// The per-layer all-to-all: each partition hands over what it exports and
@@ -387,6 +430,73 @@ pub trait Transport: Collectives {
     /// still participates, with `None` — silence would desynchronize the group
     /// (module docs).
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>>;
+
+    /// Collect every partition's `parts` on partition 0.
+    ///
+    /// `Some(v)` on rank 0, where `v[q]` is partition `q`'s parts in the order
+    /// it passed them (`v[0]` being the caller's own); `None` everywhere else.
+    /// This is the gather that ends a distributed run: each partition hands
+    /// over its share of the sum as bytes and rank 0 reassembles.
+    ///
+    /// One collective. Unlike [`exchange`](Self::exchange) it is deliberately
+    /// *not* symmetric — every partition talks to rank 0 and to nobody else —
+    /// so a transport whose `exchange` infers its partner set from the `Some`
+    /// positions (as the MPI one does) overrides this rather than inheriting
+    /// it. The default body is the honest all-to-all: rank 0 sends nothing and
+    /// receives from everyone.
+    fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
+        let n = self.size() as usize;
+        let me = self.rank() as usize;
+        let mine = ByteParts(parts.iter().map(|p| p.to_vec()).collect());
+
+        if me != ROOT {
+            let mut send: Vec<Option<ByteParts>> = (0..n).map(|_| None).collect();
+            send[ROOT] = Some(mine);
+            self.exchange(send);
+            return None;
+        }
+
+        let mut recv = self.exchange((0..n).map(|_| None).collect::<Vec<Option<ByteParts>>>());
+        let mut mine = Some(mine);
+        Some(
+            (0..n)
+                .map(|q| {
+                    let got = if q == ROOT {
+                        mine.take()
+                    } else {
+                        recv[q].take()
+                    };
+                    got.unwrap_or_else(|| {
+                        panic!(
+                            "gather_to_root: partition {q} sent nothing (it must send its \
+                                parts, empty or not)"
+                        )
+                    })
+                    .0
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The partition every gather lands on.
+pub(crate) const ROOT: usize = 0;
+
+/// A [`Payload`] that is already bytes: the gather's wire form.
+///
+/// [`Transport::gather_to_root`]'s default body moves one of these per
+/// partition through [`Transport::exchange`], so a transport gets a gather for
+/// free from the exchange it already implements.
+pub(crate) struct ByteParts(pub(crate) Vec<Vec<u8>>);
+
+impl Payload for ByteParts {
+    fn byte_parts(&self) -> Vec<&[u8]> {
+        self.0.iter().map(Vec::as_slice).collect()
+    }
+
+    fn from_byte_parts(parts: &[&[u8]]) -> Self {
+        Self(parts.iter().map(|p| p.to_vec()).collect())
+    }
 }
 
 // ---- the shared-memory collective state ------------------------------------
@@ -1607,6 +1717,96 @@ mod tests {
             "allreduce_max_u8 P=2 (unpinned): {:.0} ns/call over {CALLS} calls",
             elapsed.as_nanos() as f64 / f64::from(CALLS),
         );
+    }
+
+    // ---- the two collectives every transport inherits ------------------
+
+    /// Run `f` on every rank of a fresh group of `size`, joining in rank order.
+    fn on_every_rank<O: Send>(
+        size: u32,
+        f: impl Fn(&InProcessTransport) -> O + Send + Sync,
+    ) -> Vec<O> {
+        let group = InProcessTransport::group(size);
+        let f = &f;
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| scope.spawn(move || f(&transport)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("rank thread panicked"))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn check_consistency_passes_when_every_rank_agrees() {
+        for size in [1u32, 2, 4] {
+            on_every_rank(size, |transport| {
+                transport.check_consistency(0xdead_beef_0000_0001);
+            });
+        }
+    }
+
+    /// One rank out of step is named, rather than left to deadlock two layers
+    /// later. Every rank sees the mismatch (the reduction is symmetric), so
+    /// rank 1 swallows its own panic and only rank 0's reaches the harness.
+    #[test]
+    #[should_panic(expected = "disagree about the run")]
+    fn check_consistency_names_a_rank_that_disagrees() {
+        let mut group = InProcessTransport::group(2);
+        let one = group.pop().expect("rank 1");
+        let zero = group.pop().expect("rank 0");
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    one.check_consistency(5)
+                }));
+            });
+            zero.check_consistency(4);
+        });
+    }
+
+    #[test]
+    fn gather_to_root_collects_every_ranks_parts_in_rank_order() {
+        for size in [1u32, 2, 4] {
+            let got = on_every_rank(size, |transport| {
+                let rank = transport.rank();
+                // Rank `r` contributes `r + 1` parts, part `j` being `r + 1`
+                // copies of the byte `10 · r + j`, so a crossed or reordered
+                // delivery cannot pass.
+                let owned: Vec<Vec<u8>> = (0..=rank)
+                    .map(|j| vec![(10 * rank + j) as u8; rank as usize + 1])
+                    .collect();
+                let parts: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
+                transport.gather_to_root(parts)
+            });
+
+            for (rank, out) in got.iter().enumerate() {
+                if rank != 0 {
+                    assert!(out.is_none(), "rank {rank} must not gather");
+                    continue;
+                }
+                let all = out.as_ref().expect("rank 0 gathers");
+                assert_eq!(all.len(), size as usize);
+                for (r, parts) in all.iter().enumerate() {
+                    let r = r as u32;
+                    assert_eq!(parts.len(), r as usize + 1, "rank {r} part count");
+                    for (j, part) in parts.iter().enumerate() {
+                        assert_eq!(part, &vec![(10 * r + j as u32) as u8; r as usize + 1]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gather_to_root_of_no_parts_is_an_empty_vector_per_rank() {
+        let got = on_every_rank(2, |transport| transport.gather_to_root(Vec::new()));
+        assert_eq!(got[0], Some(vec![Vec::<Vec<u8>>::new(); 2]));
+        assert_eq!(got[1], None);
     }
 
     /// A partner that died mid-layer must be reported, not waited on forever.

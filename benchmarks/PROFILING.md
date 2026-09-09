@@ -159,15 +159,22 @@ lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, 
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
 (list, one entry per partition).
 
-Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
+Nine further keys break the export and the exchange down — they are **sub-phases, contained in the
 phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
 `export_fill_ns` ≈ `export_ns` (the count pass and the fill pass); `send_post_ns` + `hdr_wait_ns` +
 `recv_alloc_ns` + `data_wait_ns` + `decode_ns` ≈ `exchange_ns` (encoding and posting the sends, the
-blocking framing-header receive — where a partner's skew lands — sizing the receive buffers, the part
-receives and the `wait_all`, and turning the bytes into typed columns, which is zero for a transport
-that receives straight into them); and `append_ns`, worker busy time inside `gather_ns`, for merging
-received rows into the output buckets' rest streams. Only a distributed cell fills the five exchange
-laps: the in-process transport moves a typed payload and has no encode, wait or decode to attribute.
+blocking framing-header and early-part receives — where a partner's skew lands — sizing the receive
+buffers and posting the bulk ones, whatever transfer is left over after the coset loop, and turning
+the bytes into typed columns, which is zero for a transport that receives straight into them); and
+`append_ns`, worker busy time inside `gather_ns`, for merging received rows into the output buckets'
+rest streams, of which `chunk_wait_ns` is the part spent blocked waiting for a chunk of those rows to
+land. Only a distributed cell fills the five exchange laps: the in-process transport moves a typed
+payload and has no encode, wait or decode to attribute.
+
+**The exchange is two-phase, so `exchange_ns` is small and the transfer shows up inside the coset
+loop** (ARCHITECTURE.md §Partitioning): the rows arrive while the layer runs, and `chunk_wait_ns` is
+what the loop failed to hide. Read the pair together — a remote layer whose `chunk_wait_ns / threads`
+is close to the old `data_wait_ns` hid nothing, and one where it is near zero is compute-bound.
 
 **Every consumer of this sidecar must read every one of these — old and
 new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the

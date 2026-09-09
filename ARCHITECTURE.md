@@ -442,24 +442,58 @@ always local: a partition never ships to itself. Remoteness is a property of
 the mask alone, so every partition reaches the same verdict without a vote —
 which is what lets the transport pair calls positionally.
 
-**The wire unit is one CSR block per remote delta, indexed by source bucket.**
-`offsets[β]..offsets[β+1]` addresses the rows generated from the sender's
-bucket `β`; the sender never permutes, and the receiver filling output bucket
-`β′` reads `segment(β′ ⊕ bd)`. A `PartnerPayload` is that partner's blocks in
-ascending remote-delta index, walked in lockstep with the receiver's own plan,
-so a delta with no rows still ships its empty block. Both sides index by the
-same bucket count, which is why the count is agreed collectively below.
+**The wire unit is one CSR block per remote delta, indexed by the receiver's
+destination position.** The receiver's unit of work is a coset of
+`span(h(D_local))`, and `Gf2Span::perm_index` renumbers the bucket index so a
+coset occupies a contiguous run of *positions* (§Engine). Both sides can
+compute that renumbering — the local bucket deltas are a function of the
+channel and the hash, not of the rank, and the bucket count is agreed
+collectively below — so the **sender** lays the block out in it: segment `p`
+holds the rows for the receiver's position `p`, generated from the sender's own
+bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads
+`segment(position_of(β′))` through a table with no arithmetic of its own. It
+costs the export one permutation of its count and offset arrays. What it buys
+is that a coset's rows are **contiguous**, so a contiguous range of positions
+is a whole number of cosets and a prefix of the transfer is a whole unit of the
+receiver's work — which is what the pipelined receive below waits on
+(`ChunkMap` carries both the order and the chunk edges). A `PartnerPayload` is
+that partner's blocks in ascending remote-delta index, walked in lockstep with
+the receiver's own plan, so a delta with no rows still ships its empty block.
 
-A layer is **export → exchange → local coset loop**, a push model:
+A layer is **export → exchange → local coset loop**, a push model, and the last
+two overlap:
 
 1. Two passes over the local buckets build one block per remote delta — count
-   rows per (delta, source bucket), then fill each block's CSR segments. The
-   row arithmetic is the engine's own gather at row granularity
-   (`DeltaEntry::emit`, `RotationPrep::emit_gen`), so an exported row is
-   bitwise the row a local gather would have produced.
-2. One all-to-all `Transport::exchange`.
+   rows per (delta, source bucket), then fill each block's CSR segments in
+   destination-position order. The row arithmetic is the engine's own gather at
+   row granularity (`DeltaEntry::emit`, `RotationPrep::emit_gen`), so an
+   exported row is bitwise the row a local gather would have produced.
+2. One all-to-all `Transport::exchange_layer`, which is **two-phase**. The
+   *early* parts — the block headers and the CSR offsets, tens of kilobytes —
+   are waited out before the call returns; the *bulk* parts, the key and
+   coefficient columns, are posted in `K` chunks and are still in flight while
+   the coset loop runs inside the call. `ExtraRows::count` needs only the
+   offsets, so a gather run can be sized before a row has landed.
 3. The bucketed coset loop (§Engine) over the *local* deltas only, with the
    received rows entering each output bucket's gather run through `ExtraRows`.
+   A task calls `ChunkWait::wait_chunk` at the top of `append_into` — once per
+   task, a whole coset being inside one chunk — and blocks only if its own
+   chunk has not landed.
+
+**The pipeline's mutual exclusion is the MPI thread level, not a lock on the
+data.** Rayon workers reach `wait_chunk` together; whichever takes the
+pipeline's mutex is inside `MPI_Waitsome` over *every* outstanding request of
+the rank, driving its own receives and its partner's rendezvous at once, and
+the others back off on the per-chunk counters it publishes — spin, then yield,
+then short sleeps, for the same reason the in-process collectives do (a yield
+loop steals the cores the copy is running on). One thread inside MPI at a time
+is exactly the `MPI_THREAD_SERIALIZED` the transport already required. It
+cannot deadlock: every send of a call is posted before the call's first
+receive, a waiting rank services its partner, and a rank whose coset loop never
+asks for a chunk still reaches the closing wait. A transport that does not
+implement `exchange_layer` gets the blocking default — exchange, then body,
+with a no-op `ChunkWait` — which is what `InProcessTransport`, whose transfer
+is a moved pointer, wants.
 
 **Received rows join the rest stream, never the id stream.** The rest stream is
 sorted anyway, so a received row may duplicate a local key and `merge2_into`
@@ -637,6 +671,24 @@ layer: measured at 2 ranks × 8 threads with 48 MB crossing per layer, faulting
 in and zeroing the send and receive buffers cost 14 ms per layer and the
 word-by-word decode 8.5 ms, against 13.7 ms of transfer — a remote rotation
 layer went from 10× a local one to 4.9×.
+
+**The two-phase framing is that split made explicit on the wire.** Per partner:
+the framing header as before (it still declares *every* part's length, which is
+what sizes the columns), then the `Payload::early_parts` under their own tag,
+then `Payload::bulk_parts` — each column cut at the chunks' destination-position
+boundaries — in **chunk-major** order under the part tag. MPI's non-overtaking
+guarantee for a `(source, tag, communicator)` triple then delivers chunk `k`
+before chunk `k + 1`, so a receiver waiting chunk by chunk is waiting on a
+prefix of the transfer rather than on all of it. Both sides derive the chunk
+edges from the same CSR offsets, so no further negotiation is needed; the chunk
+count is a constant (`PAULISTRINGS_EXCHANGE_CHUNKS` overrides it for a sweep or
+a test) rather than a thread count, because two ranks may run different pool
+widths and both must cut the same block the same way. The transfer itself is
+unchanged and unchangeable — 384 MB per rank per layer at 8e6 terms, ~7.5 GB/s,
+a single-threaded cross-socket copy at the hardware limit — so what the
+pipeline buys is the part of it that the coset loop covers: a remote rotation
+layer went from 4.5× a local one to 3.8×, with `chunk_wait_ns` reporting what
+was not hidden.
 
 **Scatter and gather bracket a distributed run too, with a different
 contract.** The input is *replicated* — every rank calls `scatter` with the

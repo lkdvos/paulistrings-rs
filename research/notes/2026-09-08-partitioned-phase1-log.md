@@ -306,3 +306,94 @@ if a driver ever needs the memory back between circuits.
   addresses are computable before the receive — but the runs are per-coset-task scratch that does not
   exist until the coset loop is running, so it needs the same deferred-receive shape as the overlap
   idea. Design them together.
+
+## 2026-09-09 — the transfer hidden under the coset loop: remote rotation layer 4.5× → 3.8× a local one
+
+Same box and protocol as the entry above: **ccqlin038**, `mpirun -n 2 --map-by ppr:1:numa --bind-to
+numa`, 8 threads per rank, `--layers rotation_local,rotation_remote --reps 6`, medians of 3 runs, ms
+**per layer**, load 1.4–3.5 (noted per run; the *local* layer is the load control and did not move).
+Two commits: `4260cde` (the destination-coset order) and `58bf6d7` (the two-phase exchange).
+
+### The idea
+
+After the previous pass the remote layer was export 27.8 + exchange 51.4 + coset loop 35.3. The 51 ms
+is 384 MB per rank per layer over the socket at ~7.5 GB/s — a single-threaded copy at the hardware
+limit, and nothing makes it cheaper. The only lever is to run the coset loop while it happens.
+
+Two pieces:
+
+1. **The block is laid out in the receiver's coset order.** `Gf2Span::perm_index` is a pure function
+   of the local bucket deltas and the (collectively agreed) bucket count, so both ranks compute it;
+   the sender permutes its count and offset arrays and writes segment `p` for the receiver's position
+   `p`, and the receiver reads `segment(position_of(β′))`. A coset is then contiguous in the block, so
+   a contiguous range of positions is a whole number of cosets.
+2. **`Transport::exchange_layer(send, spare, map, body)`.** The framing splits: the *early* parts
+   (block headers + CSR offsets, tens of kilobytes — all `ExtraRows::count` needs) are waited out
+   before `body` runs; the *bulk* parts (x/z/coeff) are cut at the chunk edges, posted chunk-major, and
+   completed under it. `ChunkWait::wait_chunk` is called once per coset task at the top of
+   `append_into`. On the MPI side `ChunkPipeline` holds the request collection behind a `try_lock`ed
+   mutex: whichever worker gets in is inside `MPI_Waitsome` over *all* requests (driving its partner's
+   rendezvous too), the rest back off on per-chunk atomics. One thread in MPI at a time is the
+   `MPI_THREAD_SERIALIZED` already required. Deadlock argument: all sends posted before the first
+   receive, a waiter services its partner, and the closing `finish` waits out anything the loop never
+   asked for.
+
+### Before/after
+
+| n | phase | before | after |
+|---|---|---|---|
+| 8e6 | rotation_local wall | 26.2 | 25.9 |
+| | **rotation_remote wall** | **116.9** | **99.6** |
+| | export | 27.6 (count 8.1 + fill 19.5) | 30.2 (count 10.8 + fill 19.3) |
+| | exchange | 51.6 (data wait 50.9) | **1.2** (header+early 1.0, residual data wait 0.02) |
+| | coset loop | 37.2 | 66.7 (of which `chunk_wait` 274 ms busy ≈ 34 ms wall on 8 workers) |
+| | **remote / local** | **4.46×** | **3.84×** |
+| | peak RSS/rank | 1654 / 1711 MB | 1648 / 1696 MB |
+| 2e6 | rotation_local wall | 6.7 | 6.4 |
+| | **rotation_remote wall** | **32.5** | **25.1** |
+| | **remote / local** | **5.0×** | **3.90×** |
+
+`exchange_ns` is small now *by construction* — the transfer moved inside the coset loop. The new
+counter `chunk_wait_ns` (worker busy time, a part of `append_ns`) is what the loop failed to hide;
+read the two together, and see `benchmarks/PROFILING.md`.
+
+### What the chunk sweep says
+
+`PAULISTRINGS_EXCHANGE_CHUNKS` overrides the chunk count (read once per process, so `mpirun -x`).
+At 8e6, wall per remote layer: **121.3 at K=1**, 99.0 at K=8, 100.2 at K=32, 102.7 at K=128. K=1 is
+the two-phase shape with no pipeline and it is *worse* than the blocking exchange it replaced — so
+the win is the pipelining, not the reshaping, and 8 is the default.
+
+### Rejected, measured
+
+- **Lanes (aligning the chunks with Rayon's contiguous split).** The model was: `par_chunks_mut`
+  gives worker `j` the range `[jN/T, (j+1)N/T)`, so with `K` contiguous chunks worker `j` starts in
+  chunk `j` and worker `T−1` blocks for the whole transfer. The fix would be to cut the range into
+  `L` lanes first and make chunk `k` the `k`-th slice of *every* lane, so the whole pool walks the
+  chunks together. Implemented (`ChunkMap::piece`, chunk-major piece order on the wire) and measured
+  at 8e6: `L=1` 100.5, `L=2` 96.4, `L=4 K=4` 101.7, `L=8` 105.3 — and **`chunk_wait_ns` was
+  269–282 ms in every one of them**, i.e. the lane structure changed the waiting not at all. The
+  model is wrong; reverted.
+- **A sleep-first waiter** (`PIPELINE_SPINS`/`YIELDS` to 0, sleep 50 µs), on the theory that seven
+  spinning workers slow the driving worker's copy: 101.8 ms, no change. Reverted.
+
+### What remains
+
+- **~15 ms per layer of the transfer is still not hidden at 8e6.** Real coset-loop work is ~243
+  worker-ms (30 ms wall on 8 workers) against a 51 ms transfer, so the floor for this shape is
+  `export + transfer + one chunk's work` ≈ 30 + 51 + 4 = 85 ms (3.3×), and we are at 99.6. The gap is
+  a combination of the coset scheduling (which lanes did *not* explain) and the transfer running
+  slower with seven workers churning beside it. Worth a `perf` look before another guess.
+- **The coordinator's gather/merge split** — run each batch's local gather *before* waiting on its
+  chunk, then append/sort/merge after — is not reachable without either editing
+  `engine/bucketed.rs` or duplicating `fill_coset` (≈250 lines over four private types) in
+  `layer.rs`, because it presupposes a *batched* coset loop and the batching itself is what
+  `par_chunks_mut` does not let a caller control. Design it together with a `LayerKnobs`-level
+  batching hook if it is worth the diff.
+- **The real ceiling is the copy, and intra-node it need not exist.** Both ranks are on one node, so
+  an `MPI_Win_allocate_shared` window the export filled directly would let the receiver's
+  `append_into` read the sender's buffer — deleting the 51 ms outright rather than hiding it. It does
+  not generalize off-node and it moves the export's allocation into MPI's hands, so it is a separate
+  design, not an increment on this one.
+- **`export_count_ns` drifted 8.1 → 10.8 ms** across the pass. Nothing in the count path changed;
+  it tracked the box's load. Worth re-measuring on a quiet node before reading anything into it.

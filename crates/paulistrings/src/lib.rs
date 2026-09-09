@@ -140,9 +140,10 @@ pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    propagate_partitioned, propagate_partitioned_with_options, DistributedSum, PartitionConfig,
-    PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Placement, TopologyError,
+    circuit_generators, count_remote_deltas, layer_locality, propagate_partitioned,
+    propagate_partitioned_with_options, select_rows, DistributedSum, GeneratorWeight,
+    PartitionConfig, PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum,
+    PartitionedTruncation, Placement, RowSelection, TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

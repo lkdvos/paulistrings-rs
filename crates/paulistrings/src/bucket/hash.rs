@@ -451,6 +451,101 @@ impl<const W: usize> PartitionRows<W> {
         }
     }
 
+    /// Rows that label a **qubit cut**: `log2(blocks.len())` z-only rows
+    /// giving block `b` the label `b`.
+    ///
+    /// Row `i` has its z-bits set on exactly the qubits of the blocks whose
+    /// index has bit `i` set, and no x-bits at all. Since `part` is GF(2)
+    /// linear and reads the z-half only,
+    ///
+    /// > a term's partition label is the **XOR of the labels of the blocks it
+    /// > has odd z-weight in**.
+    ///
+    /// So a term whose z-support lies inside one block is labelled by that
+    /// block when its z-weight there is odd, and by block 0 when it is even —
+    /// these rows label *blocks*, not terms, and only the per-block z-weight
+    /// parities decide. Qubits in no block contribute nothing, i.e. they behave
+    /// as if they were in block 0. Blocks need not cover every qubit, but they
+    /// must be disjoint.
+    ///
+    /// # Why this shape
+    ///
+    /// This is the geometric row set for 1- and 2-local Pauli generators
+    /// (ARCHITECTURE.md §Partitioning): a generator with no z-bits — every
+    /// single-qubit `X` rotation — has `part = 0` and is local under *any* cut,
+    /// and a `ZZ(i, j)` bond is remote exactly when the edge `(i, j)` crosses
+    /// between blocks with different labels. `p` rows are `p` simultaneous
+    /// cuts labelling `2^p` blocks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::bucket::PartitionRows;
+    /// use paulistrings::PauliString;
+    ///
+    /// // A chain of four qubits bisected: {0,1} | {2,3}.
+    /// let rows = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![2, 3]]);
+    /// assert_eq!(rows.num_partitions(), 2);
+    ///
+    /// // The transverse-field generator is x-only: local.
+    /// assert_eq!(rows.partition_of_pauli(&PauliString::<1>::x(2)), 0);
+    /// // The bond ZZ(1,2) crosses the cut; ZZ(0,1) does not.
+    /// assert_eq!(rows.partition_of(&[0], &[0b0110]), 1);
+    /// assert_eq!(rows.partition_of(&[0], &[0b0011]), 0);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `blocks.len()` is not a power of two, if it exceeds
+    /// `2^P_MAX_BITS`, if a qubit is `>= num_qubits` or appears in two blocks,
+    /// or if some row would be all-zero — that is, if no qubit lies in any
+    /// block whose label has that bit set (such a row would waste half the
+    /// partitions, the same condition [`Self::from_rows`] rejects).
+    pub fn cut(num_qubits: usize, blocks: &[Vec<u32>]) -> Self {
+        assert!(
+            blocks.len().is_power_of_two(),
+            "PartitionRows::cut: block count {} is not a power of two",
+            blocks.len(),
+        );
+        let bits = blocks.len().trailing_zeros() as u8;
+        assert!(
+            bits <= P_MAX_BITS,
+            "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
+        );
+        debug_assert!(num_qubits <= 64 * W);
+
+        let mut seen = vec![false; num_qubits];
+        let mut rows_z = vec![[0u64; W]; bits as usize];
+        for (b, qubits) in blocks.iter().enumerate() {
+            for &q in qubits {
+                let qi = q as usize;
+                assert!(
+                    qi < num_qubits,
+                    "PartitionRows::cut: qubit {q} in block {b} is outside 0..{num_qubits}",
+                );
+                assert!(
+                    !seen[qi],
+                    "PartitionRows::cut: blocks must be disjoint, qubit {q} appears twice",
+                );
+                seen[qi] = true;
+                for (i, row) in rows_z.iter_mut().enumerate() {
+                    if (b >> i) & 1 == 1 {
+                        row[qi / 64] |= 1u64 << (qi % 64);
+                    }
+                }
+            }
+        }
+        for (i, row) in rows_z.iter().enumerate() {
+            assert!(
+                row.iter().any(|w| *w != 0),
+                "PartitionRows::cut: row {i} is empty — no qubit lies in a block \
+                 whose label has bit {i} set",
+            );
+        }
+
+        Self::from_rows(num_qubits, vec![[0u64; W]; bits as usize], rows_z)
+    }
+
     /// The trivial partitioning: one partition, no rows.
     #[inline]
     pub fn none(num_qubits: usize) -> Self {
@@ -1265,6 +1360,113 @@ mod tests {
         // Degenerate but legal: with no live columns every row is zero.
         let p = PartitionRows::<1>::from_rows(0, vec![[0x0]], vec![[0x0]]);
         assert_eq!(p.partition_of(&[0], &[0]), 0);
+    }
+
+    // ---- `cut`: z-only rows labelling blocks of qubits ----
+
+    #[test]
+    fn cut_two_blocks_is_one_z_row_over_the_second_block() {
+        // 4 qubits, blocks {0,1} | {2,3}. One row, z-only, set on block 1.
+        let p = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![2, 3]]);
+        assert_eq!(p.bits(), 1);
+        assert_eq!(p.num_partitions(), 2);
+        let (rx, rz) = p.rows();
+        assert_eq!(rx, [[0u64]]);
+        assert_eq!(rz, [[0b1100u64]]);
+
+        // A term's label is the XOR of the labels of the blocks it has odd
+        // z-weight in. Z0 sits in block 0, label 0; Z2 in block 1, label 1.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(0)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 1);
+        // X rotation generators are x-only, so a cut row never reads them.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::x(2)), 0);
+        // Bond generators: ZZ(0,1) is inside block 0, ZZ(1,2) crosses the cut,
+        // ZZ(2,3) is inside block 1 and so has even z-weight there.
+        assert_eq!(p.partition_of(&[0], &[0b0011]), 0);
+        assert_eq!(p.partition_of(&[0], &[0b0110]), 1);
+        assert_eq!(p.partition_of(&[0], &[0b1100]), 0);
+    }
+
+    #[test]
+    fn cut_four_blocks_labels_each_block_by_its_index() {
+        // 8 qubits in four pairs; row `i` is set on the blocks whose index has
+        // bit `i` set, so a single-Z term lands on its own block's label.
+        let p = PartitionRows::<1>::cut(8, &[vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]);
+        assert_eq!(p.bits(), 2);
+        let (rx, rz) = p.rows();
+        assert_eq!(rx, [[0u64], [0u64]]);
+        assert_eq!(rz, [[0b1100_1100u64], [0b1111_0000u64]]);
+        for (q, want) in [
+            (0u32, 0u32),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 3),
+            (7, 3),
+        ] {
+            assert_eq!(
+                p.partition_of_pauli(&PauliString::<1>::z(q)),
+                want,
+                "qubit {q}",
+            );
+        }
+        // Two odd blocks XOR their labels: Z2·Z4 -> 1 ^ 2 = 3.
+        assert_eq!(p.partition_of(&[0], &[0b0001_0100]), 3);
+        // Even z-weight inside one block contributes nothing.
+        assert_eq!(p.partition_of(&[0], &[0b0000_1100]), 0);
+    }
+
+    #[test]
+    fn cut_leaves_uncovered_qubits_in_the_zero_label() {
+        let p = PartitionRows::<1>::cut(4, &[vec![0], vec![1]]);
+        assert_eq!(p.rows().1, [[0b0010u64]]);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(3)), 0);
+    }
+
+    #[test]
+    fn cut_of_one_block_is_the_trivial_partitioning() {
+        assert_eq!(
+            PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]),
+            PartitionRows::<1>::none(4),
+        );
+    }
+
+    #[test]
+    fn cut_rows_round_trip_across_the_word_boundary() {
+        let lo: Vec<u32> = (0..64).collect();
+        let hi: Vec<u32> = (64..70).collect();
+        let p = PartitionRows::<2>::cut(70, &[lo, hi]);
+        assert_eq!(p.rows().0, [[0u64, 0]]);
+        assert_eq!(p.rows().1, [[0u64, 0b11_1111]]);
+        assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(63)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(64)), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two")]
+    fn cut_with_three_blocks_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0], vec![1], vec![2]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "blocks must be disjoint")]
+    fn cut_with_overlapping_blocks_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![1, 2]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 0..4")]
+    fn cut_with_an_out_of_range_qubit_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0], vec![9]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "no qubit")]
+    fn cut_with_an_empty_labelled_block_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3], vec![]]);
     }
 
     // ---- occupancy ----

@@ -490,10 +490,12 @@ loop steals the cores the copy is running on). One thread inside MPI at a time
 is exactly the `MPI_THREAD_SERIALIZED` the transport already required. It
 cannot deadlock: every send of a call is posted before the call's first
 receive, a waiting rank services its partner, and a rank whose coset loop never
-asks for a chunk still reaches the closing wait. A transport that does not
-implement `exchange_layer` gets the blocking default — exchange, then body,
-with a no-op `ChunkWait` — which is what `InProcessTransport`, whose transfer
-is a moved pointer, wants.
+asks for a chunk still reaches the closing wait. `exchange_layer` is the
+transport trait's one required method; a transport with nothing to overlap
+completes the transfer first and hands the body a no-op `ChunkWait`, which is
+what `InProcessTransport`, whose transfer is a moved pointer, does. The
+blocking `Transport::exchange` is that shape with an empty body, and the gather
+is its only caller.
 
 **Received rows join the rest stream, never the id stream.** The rest stream is
 sorted anyway, so a received row may duplicate a local key and `merge2_into`

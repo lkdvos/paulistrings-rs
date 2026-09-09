@@ -72,7 +72,8 @@ pub(crate) struct ExportScratch<const W: usize> {
     src_of: Vec<u32>,
     /// Payloads not currently in flight, with their block columns intact.
     ///
-    /// The layer's own pool ([`Transport::exchange`](super::transport::Transport::exchange)):
+    /// The layer's own pool
+    /// ([`Transport::exchange_layer`](super::transport::Transport::exchange_layer)):
     /// the export takes this layer's outgoing payloads from here, a transport
     /// that materializes the incoming ones takes those from here too, and both
     /// come back when the layer is done with them. It is what makes a

@@ -33,52 +33,65 @@
 //!
 //! # What crosses the wire
 //!
-//! [`Transport::exchange`] is **point-to-point, not an all-to-all-v**. The
-//! partner set is symmetric by construction: a remote delta moves rank `R`'s
-//! rows to `R ⊕ pd`, and the same delta on rank `R ⊕ pd` moves its rows back
-//! to `R`, so "who sends to me" is exactly "who I send to" — the `Some`
+//! [`Transport::exchange_layer`] is **point-to-point, not an all-to-all-v**.
+//! The partner set is symmetric by construction: a remote delta moves rank
+//! `R`'s rows to `R ⊕ pd`, and the same delta on rank `R ⊕ pd` moves its rows
+//! back to `R`, so "who sends to me" is exactly "who I send to" — the `Some`
 //! positions of the caller's `send` vector. No exchange of counts is needed to
 //! learn the partner set, and no rank has to participate in a collective sized
 //! by the whole group.
 //!
-//! Per partner the framing is one **header** message followed by the payload's
-//! [`Payload::byte_parts`], in order:
+//! The framing is **two-phase**, one stream per phase, per partner:
 //!
 //! ```text
-//! header  : u64[2 + n_parts]  = [ (src << 32) | WIRE_VERSION, n_parts, len[0], …, len[n_parts-1] ]
-//! parts   : the bytes of part 0, then part 1, … each split into ≤ CHUNK-byte messages
+//! header : u64[2 + n_parts] = [(src << 32) | WIRE_VERSION, n_parts, len[0], …]   tag `header`
+//! early  : the block headers and CSR offsets, in order                           tag `early`
+//! bulk   : the x/z/coeff columns, cut at the chunk edges, chunk-major            tag `part`
 //! ```
 //!
-//! The header is the only message whose size the receiver cannot predict, so it
-//! is received with a matched probe (`receive_vec_with_tag`); everything after
-//! it is a posted [`immediate_receive_into`](mpi::point_to_point::Source::immediate_receive_into)
-//! of a known length. Parts share one tag and MPI's non-overtaking guarantee
-//! for a `(source, tag, communicator)` triple matches them up in posting order,
-//! which is why both sides walk partners, parts and chunks in the same
-//! ascending order.
+//! The header declares *every* part's length, early and bulk alike, which is
+//! what lets the receiver size all its columns from the first message. It is
+//! also the only message whose size the receiver cannot predict, so it arrives
+//! through a matched probe (`receive_vec_with_tag`); everything after it is a
+//! posted [`immediate_receive_into`](mpi::point_to_point::Source::immediate_receive_into)
+//! of a known length.
 //!
-//! **The parts are received into the receiving payload's own columns.** Those
+//! Within a stream MPI's non-overtaking guarantee for a `(source, tag,
+//! communicator)` triple matches sends to receives in posting order, which is
+//! why both sides walk partners, parts and chunks in the same ascending order —
+//! and why the bulk parts go out **chunk-major**: chunk `k` completes before
+//! chunk `k + 1`, so a receiver waiting chunk by chunk waits on a prefix of the
+//! transfer rather than on all of it. The early parts get a tag of their own so
+//! they cannot be matched against the bulk however the two interleave.
+//!
+//! The two phases are what the `ChunkPipeline` below overlaps with the coset
+//! loop: the early parts are waited out before the caller's body runs, the bulk
+//! under it.
+//!
+//! **The parts are received into the receiving payload's own columns.** The
 //! declared lengths are all the receiver needs to size the layer's exchange
 //! blocks — five parts per block, and each block's shape follows from the
-//! lengths — so
-//! [`Payload::recv_into`] hands back mutable byte views of the very `Vec<[u64;
-//! W]>` and `Vec<Complex64>` the coset loop will read, and MPI writes into
-//! them. There is no staging buffer and no decode pass; what is left afterwards
-//! is [`Payload::finish_recv`], which checks the header against the shape the
-//! lengths implied. The payloads themselves come from the caller's pool and go
-//! back into it (`spare`), so a steady-state layer's receive allocates nothing.
+//! lengths — so [`Payload::recv_into`] hands back mutable byte views of the very
+//! `Vec<[u64; W]>` and `Vec<Complex64>` the coset loop will read, and MPI writes
+//! into them. There is no staging buffer and no decode pass; what is left
+//! afterwards is [`Payload::finish_recv`], which checks the header against the
+//! shape the lengths implied. The payloads themselves come from the caller's
+//! pool and go back into it (`spare`), so a steady-state layer's receive
+//! allocates nothing.
 //!
-//! **Chunking.** MPI counts are `i32`, so one message carries under 2 GiB; a
-//! coefficient column at large `m` can exceed that. Every part is therefore
-//! split into chunks of at most 1 GiB under the same tag. An empty part is zero chunks — `slice::chunks` and `slice::chunks_mut`
-//! agree on that, which is what keeps the two sides' message counts equal
-//! without a second rule.
+//! **Chunking is twice over, for two different reasons.** The `ChunkMap`'s
+//! chunks are the pipeline's, cut on coset boundaries so the receiver can
+//! consume a prefix. On top of that MPI counts are `i32`, so one *message*
+//! carries under 2 GiB and a coefficient column at large `m` can exceed that;
+//! every piece is therefore split again at 1 GiB. An empty piece is zero
+//! messages — `slice::chunks` and `slice::chunks_mut` agree on that, which is
+//! what keeps the two sides' message counts equal without a second rule.
 //!
-//! *Deviation from the phase-3 brief:* the brief proposed viewing the parts as
-//! `u64` (raising the per-message ceiling to 16 GiB). That is not sound —
-//! `BlockHeader` is four `u32`s and the CSR `offsets` column is `Vec<u32>`, both
-//! 4-aligned, so `bytemuck::cast_slice::<u8, u64>` on their bytes would panic.
-//! Bytes plus chunking has the same effect and no alignment precondition.
+//! A `u64` view of the parts would raise the per-message ceiling to 16 GiB and
+//! is not available: `BlockHeader` is four `u32`s and the CSR `offsets` column
+//! is a `Vec<u32>`, both 4-aligned, so `bytemuck::cast_slice::<u8, u64>` on
+//! their bytes would panic. Bytes plus chunking has the same effect and no
+//! alignment precondition.
 //!
 //! **Endianness and padding.** The parts are raw host bytes (that is what
 //! `byte_parts` is), sent as `MPI_UINT8_T`, so a run must be homogeneous — the
@@ -89,12 +102,12 @@
 //! # Tags
 //!
 //! `tag = epoch:11 | kind:4`, so at most 32767 — inside the `MPI_TAG_UB ≥
-//! 32767` the standard guarantees. `kind` separates the exchange's header and
-//! part streams from the gather's; `epoch` increments on every
-//! [`Transport::exchange`] and `Transport::gather_to_root` and wraps at 2048,
-//! so a straggling message from one layer cannot be mistaken for the next
-//! layer's. It is a tripwire, not a protocol: the layer loop is lock-step, so
-//! consecutive epochs are never in flight at once.
+//! 32767` the standard guarantees. `kind` separates the exchange's three
+//! streams from the gather's two; `epoch` increments on every exchange and
+//! every gather and wraps at 2048, so a straggling message from one layer
+//! cannot be mistaken for the next layer's. It is a tripwire, not a protocol:
+//! the layer loop is lock-step, so consecutive epochs are never in flight at
+//! once.
 //!
 //! # Deadlock freedom
 //!
@@ -278,7 +291,7 @@ pub struct MpiTransport {
     /// [`with_chunk_bytes`](Self::with_chunk_bytes)); production uses
     /// [`DEFAULT_CHUNK_BYTES`].
     chunk: usize,
-    /// Sub-phase laps of [`Transport::exchange`], drained by
+    /// Sub-phase laps of [`Transport::exchange_layer`], drained by
     /// [`Transport::drain_timings`]. Measurement only.
     #[cfg(feature = "phase-timing")]
     timings: super::transport::ExchangeTimings,
@@ -462,6 +475,10 @@ impl MpiTransport {
     /// sees chunk `k`'s messages before chunk `k + 1`'s, so a receiver that
     /// waits chunk by chunk is waiting on a prefix of the transfer rather than
     /// on all of it.
+    // Nine knobs, and most of them are borrows the request scope has to
+    // outlive. Bundling them would move the lifetimes into a struct declaration
+    // and the caller — `exchange_layer`, which hands `coll` and `slot_of` on to
+    // the pipeline afterwards — would have to take them apart again.
     #[allow(clippy::too_many_arguments)]
     fn post_layer_send<'a, Sc>(
         &self,
@@ -478,19 +495,17 @@ impl MpiTransport {
         Sc: Scope<'a> + Copy,
     {
         let peer = self.comm.process_at_rank(dst as Rank);
-        let mut add = |req, slot_of: &mut Vec<usize>| {
+        let mut post = |req, slot_of: &mut Vec<usize>| {
             let i = coll.add(req);
-            if slot_of.len() <= i {
-                slot_of.resize(i + 1, SLOT_SEND);
-            }
+            note_slot(slot_of, i, SLOT_SEND);
         };
-        add(
+        post(
             peer.immediate_send_with_tag(scope, header, tags.header),
             slot_of,
         );
         for part in early {
             for piece in part.chunks(self.chunk) {
-                add(
+                post(
                     peer.immediate_send_with_tag(scope, piece, tags.early),
                     slot_of,
                 );
@@ -499,7 +514,7 @@ impl MpiTransport {
         for k in 0..chunks {
             for part in bulk {
                 for piece in part[k].chunks(self.chunk) {
-                    add(
+                    post(
                         peer.immediate_send_with_tag(scope, piece, tags.part),
                         slot_of,
                     );
@@ -658,6 +673,19 @@ const SLOT_SEND: usize = usize::MAX;
 /// Slot number an early receive carries: waited out by the driving thread
 /// before the body starts, so the pipeline never counts it.
 const SLOT_EARLY: usize = usize::MAX - 1;
+
+/// Record that request `i` belongs to `slot` — a chunk index, [`SLOT_SEND`] or
+/// [`SLOT_EARLY`] — growing the table as the request collection grows.
+///
+/// `RequestCollection::add` hands out consecutive indices, so the resize is a
+/// push; it is written as one anyway, because nothing in the collection's
+/// contract promises that.
+fn note_slot(slot_of: &mut Vec<usize>, i: usize, slot: usize) {
+    if slot_of.len() <= i {
+        slot_of.resize(i + 1, SLOT_SEND);
+    }
+    slot_of[i] = slot;
+}
 
 /// Spin iterations a waiting Rayon worker burns before it starts yielding.
 ///
@@ -1005,10 +1033,7 @@ impl Transport for MpiTransport {
                             let i = coll.add(
                                 peer.immediate_receive_into_with_tag(scope, piece, tags.early),
                             );
-                            if slot_of.len() <= i {
-                                slot_of.resize(i + 1, SLOT_SEND);
-                            }
-                            slot_of[i] = SLOT_EARLY;
+                            note_slot(&mut slot_of, i, SLOT_EARLY);
                             early_left += 1;
                         }
                     }
@@ -1060,10 +1085,7 @@ impl Transport for MpiTransport {
                                 let i = coll.add(
                                     peer.immediate_receive_into_with_tag(scope, piece, tags.part),
                                 );
-                                if slot_of.len() <= i {
-                                    slot_of.resize(i + 1, SLOT_SEND);
-                                }
-                                slot_of[i] = k;
+                                note_slot(&mut slot_of, i, k);
                             }
                         }
                     }

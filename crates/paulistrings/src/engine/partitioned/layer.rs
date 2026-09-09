@@ -6,8 +6,8 @@
 //! ([`PartitionPlan`]). So a layer is:
 //!
 //! 1. [`export_layer`] — build one exchange block per remote delta.
-//! 2. [`Transport::exchange`] — one all-to-all; every partition issues it, or
-//!    none does (see below).
+//! 2. [`Transport::exchange_layer`] — one all-to-all; every partition issues
+//!    it, or none does (see below).
 //! 3. The ordinary bucketed coset loop over the *local* deltas only, with the
 //!    received rows fed into each output bucket's **rest** stream through
 //!    [`ExtraRows`] — so the merge sees a key's complete sum, local plus
@@ -51,12 +51,14 @@ pub(crate) const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
 /// The chunk count every partition cuts this layer's transfer into.
 ///
-/// [`DEFAULT_EXCHANGE_CHUNKS`], unless the environment names another:
-/// `PAULISTRINGS_EXCHANGE_CHUNKS` is the knob the pipeline was tuned with and
-/// the one a test turns to force many small batches (or exactly one, the
-/// un-pipelined layout). Read once per process, so a group launched by one
-/// `mpirun -x PAULISTRINGS_EXCHANGE_CHUNKS=...` agrees — which it must, both
-/// sides cutting the same block the same way.
+/// [`DEFAULT_EXCHANGE_CHUNKS`], unless the environment names another.
+///
+/// `PAULISTRINGS_EXCHANGE_CHUNKS` is **the** knob, and this is the only place
+/// that reads it: the sweep that chose the default turned it, and
+/// `scripts/mpi-test.sh` runs the whole MPI net a second time at 64 to force
+/// many small batches. `1` is the un-pipelined layout. Read once per process,
+/// so a group launched by one `mpirun -x PAULISTRINGS_EXCHANGE_CHUNKS=...`
+/// agrees — which it must, both sides cutting the same block the same way.
 pub(crate) fn exchange_chunks() -> usize {
     static CHUNKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CHUNKS.get_or_init(|| {

@@ -47,7 +47,7 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::driver::{run_layers, scatter_local, PartitionWork};
+use super::driver::{run_layers, scatter_local, PartitionCtx, PartitionWork};
 use super::layer::PartitionState;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
@@ -364,11 +364,14 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
                 let rows = &self.rows;
                 let transport = &self.transport;
                 let work = &mut work;
+                let ctx = PartitionCtx {
+                    rows,
+                    rank,
+                    size,
+                    tracing,
+                };
                 runtime.install(move || {
-                    run_layers(
-                        circuit, policy, direction, options, rows, rank, size, tracing, work,
-                        transport,
-                    );
+                    run_layers(circuit, policy, direction, options, ctx, work, transport);
                 });
             }
 

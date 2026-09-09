@@ -2,10 +2,10 @@
 //!
 //! The sum is split across `P = 2^p` partitions by designated *partition rows*
 //! of the GF(2) hash (ARCHITECTURE.md §Bucketing gives the hash; the split is
-//! §Partitioning). A partition is one NUMA domain in-process today and one MPI
-//! rank later; both talk to the rest of the world only through the two traits
+//! §Partitioning). A partition is one NUMA domain in-process and one MPI rank
+//! distributed; both talk to the rest of the world only through the two traits
 //! here — [`Collectives`] (rank/size, the two reductions, the barrier) and
-//! [`Transport`] (the per-layer all-to-all [`Transport::exchange`]).
+//! [`Transport`] (the per-layer all-to-all [`Transport::exchange_layer`]).
 //!
 //! # The collective-order invariant
 //!
@@ -28,7 +28,7 @@
 //!
 //! # The in-process collectives are shared memory, not messages
 //!
-//! [`InProcessTransport`] keeps the [`Transport::exchange`] all-to-all on a
+//! [`InProcessTransport`] keeps the [`Transport::exchange_layer`] all-to-all on a
 //! `P × P` matrix of `mpsc` channels — it moves a payload, and it runs only on
 //! the layers that have something to move — but the three [`Collectives`]
 //! operations run on **shared atomics with a spin wait**
@@ -83,7 +83,7 @@
 //!
 //! Both sides are **pooled**: an [`ExchangeBlock`]'s columns are grow-only and
 //! a payload the layer is finished with goes back into the caller's pool
-//! ([`Transport::exchange`]'s `spare`), so a steady-state layer neither
+//! ([`Transport::exchange_layer`]'s `spare`), so a steady-state layer neither
 //! allocates nor zeroes its megabytes again. That is worth more than it sounds:
 //! measured at 2 ranks x 8 threads with 48 MB crossing per layer, faulting in
 //! and zeroing the send and receive buffers cost 14 ms a layer and the word-by-
@@ -946,7 +946,8 @@ pub trait Collectives: Send + Sync {
 /// The per-layer all-to-all: each partition hands over what it exports and
 /// gets back what its partners exported to it.
 ///
-/// Not object-safe ([`exchange`](Self::exchange) is generic over the payload),
+/// Not object-safe ([`exchange_layer`](Self::exchange_layer) is generic over
+/// the payload),
 /// which is deliberate: the layer code is generic over the transport, so a
 /// call monomorphizes into the partition's driving thread with no virtual
 /// dispatch on a per-layer path.
@@ -1299,7 +1300,7 @@ struct RankSlot {
 /// # Why two value buffers are enough
 ///
 /// A rank may only overwrite `values[p]` when no partner can still be reading
-/// it. Every call — including [`Transport::exchange`], which receives from
+/// it. Every call — including the exchange, which receives from
 /// every partner — completes only after its rank has observed *all* partners
 /// publish that generation. So:
 ///
@@ -1492,7 +1493,7 @@ fn downcast<T: 'static>(body: Box<dyn std::any::Any + Send>, from: usize, op: &s
 /// channel).
 ///
 /// `size == 1` is a no-op path: no channels exist, no generation is consumed,
-/// [`Transport::exchange`] returns one `None`, and the reductions return their
+/// the exchange returns one `None`, and the reductions return their
 /// input.
 pub struct InProcessTransport {
     /// This partition's index.

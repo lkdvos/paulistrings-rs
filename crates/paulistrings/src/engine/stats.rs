@@ -85,9 +85,11 @@ pub struct PhaseStats {
     /// exchange blocks. Zero on a layer with no remote delta, which exports
     /// nothing and issues no transport call.
     pub export_ns: u64,
-    /// **Partitioned only.** `Transport::exchange` itself — the all-to-all,
-    /// *including* the wait for a partner, so this absorbs the group's load
-    /// imbalance as well as the copies.
+    /// **Partitioned only.** The exchange itself, minus the coset loop it now
+    /// wraps: posting the sends and waiting out the framing headers and early
+    /// parts, plus whatever transfer the loop failed to hide. *Including* the
+    /// wait for a partner, so it absorbs the group's load imbalance — and read
+    /// it with `chunk_wait_ns`, which is where the hidden transfer shows up.
     pub exchange_ns: u64,
     // -- worker busy time, summed over all coset tasks (see type docs) --
     /// Scratch resize + column swap-out at the top of each coset task.

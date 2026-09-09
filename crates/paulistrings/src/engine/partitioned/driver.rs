@@ -356,9 +356,14 @@ impl<const W: usize> PartitionedSum<W> {
             let runtime = Arc::clone(&self.runtime);
             let rows = &self.rows;
             let done = runtime.map_partitions(items, |rank, mut work, transport| {
+                let ctx = PartitionCtx {
+                    rows,
+                    rank,
+                    size,
+                    tracing,
+                };
                 run_layers(
-                    circuit, policy, direction, options, rows, rank, size, tracing, &mut work,
-                    transport,
+                    circuit, policy, direction, options, ctx, &mut work, transport,
                 );
                 work
             });
@@ -624,6 +629,24 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
     want.max(bits.saturating_sub(pbits)).min(bits)
 }
 
+/// What a partition knows about itself while it walks the layers: which keys
+/// are its own, where it sits in the group, and whether it is recording.
+///
+/// The two drivers fill this differently — `rank` and `size` come from
+/// `map_partitions` in one and from the transport in the other — and nothing
+/// in the loop below cares which.
+pub(super) struct PartitionCtx<'a, const W: usize> {
+    /// The rows deciding which partition a key belongs to.
+    pub(super) rows: &'a PartitionRows<W>,
+    /// This partition's index, for the per-layer log line.
+    pub(super) rank: usize,
+    /// Partitions in the group, likewise.
+    pub(super) size: usize,
+    /// Whether to append a [`PartitionLayerRow`] per layer. Hoisted out of the
+    /// loop: nothing inside one can turn tracing on or off.
+    pub(super) tracing: bool,
+}
+
 /// One partition's whole layer loop — **the** layer loop, shared by the
 /// in-process driver ([`PartitionedSum`]) and the distributed one
 /// ([`DistributedSum`](super::DistributedSum)).
@@ -634,22 +657,24 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 /// domain and an in-process endpoint, or a whole process and an MPI rank —
 /// which is entirely the transport's business, so the body below is generic
 /// over it and there is exactly one copy of the per-layer sequence.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn run_layers<const W: usize, T, X>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
-    rows: &PartitionRows<W>,
-    rank: usize,
-    size: usize,
-    tracing: bool,
+    ctx: PartitionCtx<'_, W>,
     work: &mut PartitionWork<W>,
     transport: &X,
 ) where
     T: PartitionedTruncation<W> + ?Sized,
     X: Transport,
 {
+    let PartitionCtx {
+        rows,
+        rank,
+        size,
+        tracing,
+    } = ctx;
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
     let local = &mut work.local;

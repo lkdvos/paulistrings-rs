@@ -32,14 +32,17 @@ command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
     echo "cargo not usable on this node (SHARED_RUST=$SHARED_RUST); run scripts/slurm/setup-shared-toolchain.sh on a networked host first" >&2
     exit 3
 }
-export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
+# Multi-node: every rank execs the binary from its cwd, so the build dir (and the worktree it runs
+# in) must be on the shared filesystem, not node-local /tmp (jobs 7008425/26 failed that way).
+export CARGO_TARGET_DIR="${PAULISTRINGS_BUILD_ROOT:-$HOME/.cache/paulistrings-build}/job-${SLURM_JOB_ID:-local}"
+mkdir -p "$CARGO_TARGET_DIR"
 unset RUST_LOG
 # Build a pinned commit in a private worktree, never the live checkout (see ab-campaign.sbatch).
 PS_REV=${PS_REV:-$(git rev-parse HEAD)}
 repo=$PWD
 src="$CARGO_TARGET_DIR/src"
 git worktree add --detach "$src" "$PS_REV" >/dev/null
-trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null || true' EXIT
+trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null; rm -rf "$CARGO_TARGET_DIR"' EXIT
 # The lock file is untracked; reuse the checkout's so the offline build resolves to the cached versions.
 [ -f "$repo/Cargo.lock" ] && cp "$repo/Cargo.lock" "$src/Cargo.lock"
 cd "$src"

@@ -142,8 +142,8 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
 pub(crate) struct PartitionState<const W: usize> {
     /// The bucketed engine's layer scratch.
     pub layer: LayerScratch<W>,
-    /// The export pass's count buffers.
-    pub export: ExportScratch,
+    /// The export pass's count buffers and its pool of exchange payloads.
+    pub export: ExportScratch<W>,
 }
 
 /// What one layer's exchange moved, from this partition's point of view.
@@ -228,7 +228,7 @@ where
             );
         }
     }
-    let recv = transport.exchange(send);
+    let recv = transport.exchange(send, &mut state.export.pool);
     #[cfg(feature = "phase-timing")]
     {
         st.lap(&mut state.layer.stats.exchange_ns);
@@ -305,6 +305,11 @@ where
             .append_ns
             .load(std::sync::atomic::Ordering::Relaxed);
     }
+    // The received rows are merged; the payloads that carried them go back into
+    // the pool with their columns intact, and the next layer's export — or the
+    // next receive — takes them from there rather than from the allocator.
+    drop(recv_rows);
+    state.export.pool.extend(recv.into_iter().flatten());
 
     LayerExchangeCounts {
         remote_deltas: plan.remote.len(),
@@ -533,9 +538,9 @@ mod tests {
     }
 
     impl Transport for CountingTransport {
-        fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>> {
+        fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
             self.exchanges.fetch_add(1, Ordering::Relaxed);
-            self.inner.exchange(send)
+            self.inner.exchange(send, spare)
         }
     }
 

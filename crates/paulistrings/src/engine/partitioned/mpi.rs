@@ -57,6 +57,17 @@
 //! which is why both sides walk partners, parts and chunks in the same
 //! ascending order.
 //!
+//! **The parts are received into the receiving payload's own columns.** Those
+//! declared lengths are all the receiver needs to size a
+//! [`PartnerPayload`](super::transport::PartnerPayload) — five parts per block,
+//! and each block's shape follows from the lengths — so
+//! [`Payload::recv_into`] hands back mutable byte views of the very `Vec<[u64;
+//! W]>` and `Vec<Complex64>` the coset loop will read, and MPI writes into
+//! them. There is no staging buffer and no decode pass; what is left afterwards
+//! is [`Payload::finish_recv`], which checks the header against the shape the
+//! lengths implied. The payloads themselves come from the caller's pool and go
+//! back into it (`spare`), so a steady-state layer's receive allocates nothing.
+//!
 //! **Chunking.** MPI counts are `i32`, so one message carries under 2 GiB; a
 //! coefficient column at large `m` can exceed that. Every part is therefore
 //! split into chunks of at most [`DEFAULT_CHUNK_BYTES`] (1 GiB) under the same
@@ -478,14 +489,18 @@ impl MpiTransport {
 
     /// Receive every part of every partner in one `wait_all`.
     ///
-    /// `buffers[i]` are the parts expected from `partners[i]`, already sized;
-    /// the chunk order — partner, then part, then chunk, all ascending —
-    /// mirrors [`post_send`](Self::post_send), which is what pairs the messages
-    /// up under a shared tag.
-    fn recv_parts(&self, partners: &[usize], buffers: &mut [Vec<Vec<u8>>], tags: Tags) {
+    /// `buffers[i]` is `(source rank, the parts expected from it)`, each part
+    /// already sized — for an exchange these are views straight into the
+    /// receiving payload's own typed columns
+    /// ([`Payload::recv_into`](super::transport::Payload::recv_into)), so the
+    /// bytes land where the engine reads them and there is no decode pass. The
+    /// chunk order — partner, then part, then chunk, all ascending — mirrors
+    /// [`post_send`](Self::post_send), which is what pairs the messages up
+    /// under a shared tag.
+    fn recv_parts(&self, buffers: &mut [(usize, Vec<&mut [u8]>)], tags: Tags) {
         let mut chunks: Vec<(usize, &mut [u8])> = Vec::new();
-        for (i, parts) in buffers.iter_mut().enumerate() {
-            let src = partners[i];
+        for (src, parts) in buffers.iter_mut() {
+            let src = *src;
             for part in parts.iter_mut() {
                 for chunk in part.chunks_mut(self.chunk) {
                     chunks.push((src, chunk));
@@ -647,7 +662,7 @@ impl Collectives for MpiTransport {
 }
 
 impl Transport for MpiTransport {
-    fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>> {
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
         let n = self.size as usize;
         assert_eq!(
             send.len(),
@@ -704,30 +719,52 @@ impl Transport for MpiTransport {
 
             // Every send is in flight, so no blocking receive below can wait on
             // a partner that has not spoken yet.
-            let mut buffers: Vec<Vec<Vec<u8>>> = Vec::with_capacity(partners.len());
+            let mut lens: Vec<Vec<usize>> = Vec::with_capacity(partners.len());
             for &src in &partners {
-                let lens = self.recv_header(src, tags);
+                lens.push(self.recv_header(src, tags));
                 #[cfg(feature = "phase-timing")]
                 ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
-                buffers.push(lens.into_iter().map(|len| vec![0u8; len]).collect());
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
             }
-            self.recv_parts(&partners, &mut buffers, tags);
+
+            // The payloads the bytes land in come from the caller's pool, so a
+            // steady-state layer reuses last layer's columns instead of
+            // faulting in fresh ones; each hands out byte views of its own
+            // typed columns, which is what makes the receive the decode.
+            for &src in &partners {
+                recv[src] = Some(spare.pop().unwrap_or_default());
+            }
+            let mut buffers: Vec<(usize, Vec<&mut [u8]>)> = Vec::with_capacity(partners.len());
+            let mut lens = lens.into_iter();
+            for (q, slot) in recv.iter_mut().enumerate() {
+                if let Some(payload) = slot.as_mut() {
+                    let lens = lens.next().expect("one header per partner");
+                    buffers.push((q, payload.recv_into(&lens)));
+                }
+            }
+            #[cfg(feature = "phase-timing")]
+            ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
+
+            self.recv_parts(&mut buffers, tags);
+            drop(buffers);
 
             let mut done = Vec::with_capacity(sends);
             coll.wait_all(&mut done);
             #[cfg(feature = "phase-timing")]
             ExchangeTimings::lap(&self.timings.data_wait_ns, &mut lap);
 
-            for (i, &src) in partners.iter().enumerate() {
-                let refs: Vec<&[u8]> = buffers[i].iter().map(Vec::as_slice).collect();
-                recv[src] = Some(P::from_byte_parts(&refs));
+            // No decode: the bytes are already the columns. All that is left is
+            // the consistency the header could not be checked for until it
+            // arrived.
+            for payload in recv.iter_mut().flatten() {
+                payload.finish_recv();
             }
             #[cfg(feature = "phase-timing")]
             ExchangeTimings::lap(&self.timings.decode_ns, &mut lap);
         });
 
+        // This rank's own blocks are off the wire now; back into the pool they
+        // go, so the next layer's export reuses them.
+        spare.extend(send.into_iter().flatten());
         recv
     }
 
@@ -769,17 +806,23 @@ impl Transport for MpiTransport {
             return None;
         }
 
-        let senders: Vec<usize> = (1..n).collect();
-        let mut buffers: Vec<Vec<Vec<u8>>> = senders
-            .iter()
-            .map(|&src| {
+        let mut buffers: Vec<Vec<Vec<u8>>> = (1..n)
+            .map(|src| {
                 self.recv_header(src, tags)
                     .into_iter()
                     .map(|len| vec![0u8; len])
                     .collect()
             })
             .collect();
-        self.recv_parts(&senders, &mut buffers, tags);
+        // One gather per run, so the copy-free receive the exchange uses would
+        // buy nothing here: these are plain byte parts either way.
+        let mut views: Vec<(usize, Vec<&mut [u8]>)> = buffers
+            .iter_mut()
+            .enumerate()
+            .map(|(i, parts)| (i + 1, parts.iter_mut().map(Vec::as_mut_slice).collect()))
+            .collect();
+        self.recv_parts(&mut views, tags);
+        drop(views);
 
         let mut out = Vec::with_capacity(n);
         out.push(parts.iter().map(|p| p.to_vec()).collect());

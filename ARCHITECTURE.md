@@ -623,6 +623,21 @@ before the call's first receive, so the rendezvous cannot deadlock. Raw host
 bytes on the wire means a run is homogeneous: same architecture, same `W`,
 every rank.
 
+**Nothing on either side of the wire is copied twice, and a steady-state layer
+allocates nothing.** The declared part lengths are enough to size the receiving
+payload — five parts per block, each block's shape readable from the lengths —
+so `Payload::recv_into` hands MPI mutable byte views of the very columns the
+coset loop will read, and the decode pass disappears; `finish_recv` then checks
+the header against the shape the lengths implied. Both directions are pooled:
+an `ExchangeBlock`'s columns are **grow-only** (`header.rows` is the one
+authority on how much of a column is live, never `x.len()`), and a payload the
+layer is done with goes back to a per-partition pool that the next layer's
+export and receive draw from. Together these are most of the cost of a remote
+layer: measured at 2 ranks × 8 threads with 48 MB crossing per layer, faulting
+in and zeroing the send and receive buffers cost 14 ms per layer and the
+word-by-word decode 8.5 ms, against 13.7 ms of transfer — a remote rotation
+layer went from 10× a local one to 4.9×.
+
 **Scatter and gather bracket a distributed run too, with a different
 contract.** The input is *replicated* — every rank calls `scatter` with the
 same sum and keeps `filter_partition(rows, rank)`, the rows drawn from one seed

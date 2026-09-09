@@ -52,13 +52,23 @@ const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 /// row count from source bucket `β`), which is the layout that lets pass 1 run
 /// as one disjoint `par_chunks_mut(K)` over buckets, and
 /// [`Self::block_counts`] is the per-block column that layout is transposed
-/// into for [`ExchangeBlock::with_counts`].
-#[derive(Debug, Default)]
-pub(crate) struct ExportScratch {
+/// into for [`ExchangeBlock::set_counts`].
+#[derive(Debug)]
+pub(crate) struct ExportScratch<const W: usize> {
     /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
     counts: Vec<u32>,
     /// One block's counts by source bucket, gathered out of [`Self::counts`].
     block_counts: Vec<u32>,
+    /// Payloads not currently in flight, with their block columns intact.
+    ///
+    /// The layer's own pool ([`Transport::exchange`](super::transport::Transport::exchange)):
+    /// the export takes this layer's outgoing payloads from here, a transport
+    /// that materializes the incoming ones takes those from here too, and both
+    /// come back when the layer is done with them. It is what makes a
+    /// steady-state remote layer allocate nothing at all — the alternative is
+    /// faulting in and zeroing the layer's whole export volume, twice, every
+    /// layer.
+    pub(crate) pool: Vec<PartnerPayload<W>>,
     /// Sub-phase laps of the two passes, drained by the layer into
     /// [`PhaseStats`](crate::engine::stats::PhaseStats). Measurement only.
     #[cfg(feature = "phase-timing")]
@@ -66,6 +76,21 @@ pub(crate) struct ExportScratch {
     /// Pass 2's lap. Measurement only.
     #[cfg(feature = "phase-timing")]
     pub(crate) fill_ns: u64,
+}
+
+// Hand-written because `#[derive(Default)]` would demand `W: Default`.
+impl<const W: usize> Default for ExportScratch<W> {
+    fn default() -> Self {
+        Self {
+            counts: Vec::new(),
+            block_counts: Vec::new(),
+            pool: Vec::new(),
+            #[cfg(feature = "phase-timing")]
+            count_ns: 0,
+            #[cfg(feature = "phase-timing")]
+            fill_ns: 0,
+        }
+    }
 }
 
 /// What one layer's export costs, by partner rank (length is the group size).
@@ -150,7 +175,7 @@ pub(crate) fn export_layer<const W: usize>(
     prep: &Prepared<W>,
     plan: &PartitionPlan,
     size: u32,
-    scratch: &mut ExportScratch,
+    scratch: &mut ExportScratch<W>,
 ) -> (Vec<Option<PartnerPayload<W>>>, ExportCounts) {
     let k = plan.remote.len();
     let nb = local.num_buckets();
@@ -197,21 +222,26 @@ pub(crate) fn export_layer<const W: usize>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.count_ns);
 
-    // Pass 2, one block per remote delta.
+    // Pass 2, one block per remote delta, written into payloads taken from the
+    // pool: their blocks already have the columns this layer needs, so the fill
+    // writes by index into storage that is neither allocated nor zeroed here.
     scratch.block_counts.clear();
     scratch.block_counts.resize(nb, 0);
+    let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
         for b in 0..nb {
             scratch.block_counts[b] = scratch.counts[b * k + i];
         }
-        let mut block = ExchangeBlock::<W>::with_counts(r.entry as u32, &scratch.block_counts);
+        let q = r.partner as usize;
+        let payload = send[q].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
+        let j = blocks_used[q];
+        blocks_used[q] += 1;
+        if payload.blocks.len() <= j {
+            payload.blocks.resize_with(j + 1, ExchangeBlock::<W>::default);
+        }
+        let block = &mut payload.blocks[j];
+        block.set_counts(r.entry as u32, &scratch.block_counts);
         let rows = block.rows();
-        // `with_counts` leaves the columns empty-with-capacity; the fill
-        // writes by index into the segments the offsets already describe, so
-        // they are grown to their final length up front.
-        block.x.resize(rows, [0u64; W]);
-        block.z.resize(rows, [0u64; W]);
-        block.coeff.resize(rows, ZERO);
         {
             let ExchangeBlock {
                 ref offsets,
@@ -219,20 +249,24 @@ pub(crate) fn export_layer<const W: usize>(
                 ref mut z,
                 ref mut coeff,
                 ..
-            } = block;
+            } = *block;
             let cols = BlockCols {
-                x,
-                z,
-                c: coeff.as_mut_slice(),
+                x: &mut x[..rows],
+                z: &mut z[..rows],
+                c: &mut coeff[..rows],
             };
             fill_range(local, &emitters[i], offsets, 0, nb, cols);
         }
-        counts.rows_to[r.partner as usize] += rows as u64;
-        counts.bytes_to[r.partner as usize] += block.bytes() as u64;
-        send[r.partner as usize]
-            .get_or_insert_with(PartnerPayload::default)
-            .blocks
-            .push(block);
+        counts.rows_to[q] += rows as u64;
+        counts.bytes_to[q] += block.bytes() as u64;
+    }
+    // A payload out of the pool may have carried more blocks than this layer
+    // has remote deltas for it; the receiver indexes blocks positionally, so
+    // the extras must not travel.
+    for (q, payload) in send.iter_mut().enumerate() {
+        if let Some(payload) = payload {
+            payload.blocks.truncate(blocks_used[q]);
+        }
     }
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.fill_ns);
@@ -393,7 +427,7 @@ pub(super) fn debug_assert_exported_partitions<const W: usize>(
     for (q, payload) in send.iter().enumerate() {
         let Some(payload) = payload else { continue };
         for block in &payload.blocks {
-            for i in 0..block.coeff.len() {
+            for i in 0..block.rows() {
                 let part = rows.partition_of(&block.x[i], &block.z[i]);
                 debug_assert_eq!(
                     part, q as u32,
@@ -466,7 +500,7 @@ mod tests {
         for e in exports {
             for payload in e.send.iter().flatten() {
                 for block in &payload.blocks {
-                    for i in 0..block.coeff.len() {
+                    for i in 0..block.rows() {
                         out.push((block.x[i], block.z[i], block.coeff[i]));
                     }
                 }
@@ -624,10 +658,12 @@ mod tests {
     /// Pass 1 sized every block exactly: the counted row total is what pass 2
     /// wrote, in every block, for every channel class.
     ///
-    /// `ExchangeBlock::rows()` is the *plan* (`header.rows`, from the counts)
-    /// while `coeff.len()` is what the fill produced, so their equality is the
-    /// two passes agreeing — and `segment()` panics on a half-filled block, so
-    /// nothing downstream would work without it.
+    /// The two passes agreeing is `fill_range`'s own `debug_assert` (this suite
+    /// runs in debug), which fires unless pass 2 emitted exactly the rows pass 1
+    /// counted for its range. What is checked here is the shape around it: the
+    /// CSR offsets end at `header.rows`, the grow-only columns hold at least
+    /// that many rows — `segment()` would panic on a block that did not — and
+    /// the reported per-partner totals are the blocks' own.
     #[test]
     fn the_counted_rows_are_the_filled_rows() {
         let input = rand_sum::<1>(700, 8, 0x9C0);
@@ -647,9 +683,12 @@ mod tests {
                                          rank={} entry={}",
                                         e.rank, block.header.entry,
                                     );
-                                    assert_eq!(block.rows(), block.coeff.len(), "{what}: rows");
-                                    assert_eq!(block.rows(), block.x.len(), "{what}: x");
-                                    assert_eq!(block.rows(), block.z.len(), "{what}: z");
+                                    // Grow-only columns: at least the rows the
+                                    // counts sized, and the CSR offsets end
+                                    // exactly there.
+                                    assert!(block.coeff.len() >= block.rows(), "{what}: rows");
+                                    assert!(block.x.len() >= block.rows(), "{what}: x");
+                                    assert!(block.z.len() >= block.rows(), "{what}: z");
                                     assert_eq!(
                                         block.offsets.last().copied(),
                                         Some(block.header.rows),
@@ -739,7 +778,7 @@ mod tests {
                 for (q, payload) in exported.send.iter().enumerate() {
                     let Some(payload) = payload else { continue };
                     for block in &payload.blocks {
-                        for i in 0..block.coeff.len() {
+                        for i in 0..block.rows() {
                             assert_eq!(
                                 rows.partition_of(&block.x[i], &block.z[i]),
                                 q as u32,

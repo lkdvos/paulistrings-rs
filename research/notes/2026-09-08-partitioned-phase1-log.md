@@ -397,3 +397,12 @@ the win is the pipelining, not the reshaping, and 8 is the default.
   design, not an increment on this one.
 - **`export_count_ns` drifted 8.1 → 10.8 ms** across the pass. Nothing in the count path changed;
   it tracked the box's load. Worth re-measuring on a quiet node before reading anything into it.
+
+## 2026-09-09 — phase-3 weak-scaling numbers in; cleanup phase starts
+
+Slurm 7010761–63 (1/2/4 Icelake nodes, 2/4/8 ranks, 6e6 terms per rank): remote rotation layer 3.5×
+local intra-node, 4.4–4.7× inter-node, flat from 4 to 8 ranks; the layer is transfer-bound (~13 GB/s
+per node over IB with two ranks sharing the NIC), compute fully hidden. Full table in
+`2026-09-08-numa-partitioning-results.md`. Decision: proceed to phase 4 (cleanup) per the plan; the
+intra-node zero-copy handoff (in-process domains per rank) stays a scoped follow-up — it would take the
+2-rank case from 3.5× to ~1.6× but does nothing for the inter-node share.

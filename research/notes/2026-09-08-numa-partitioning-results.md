@@ -99,3 +99,38 @@ copies, not bandwidth — a design cost, fixable (pull model), not a hardware wa
    MPI keeps push. Under the success criterion this is a bound, not a target.
 4. The untouched path (`--partitions 1`) shows no regression on a quiet node (Slurm 7004973: all four
    cells within ±1.3%, mixed sign); the ±4% seen on the workstation is placement/layout noise.
+
+## Phase 3 — MPI weak scaling on Rusty (2026-09-09, head `4bb32b6`)
+
+Icelake `ccq` nodes (2× Xeon 8362, 32 cores/socket), one rank per NUMA domain, 32 threads per rank,
+InfiniBand between nodes, UCX shared memory within a node. `phase_breakdown --mpi`, replicated input
+`--n 4e6 × ranks` → **6.0e6 terms per rank** for the rotation layers (4.0e6 for `cnot`), `--reps 8`.
+Slurm 7010761/62/63; sidecars `benchmarks/results/mpi-70107{61,62,63}.jsonl.rank*`. The 16-case
+differential matrix passed at 2, 4 and 8 ranks before each probe run. Medians over ranks, ms per layer:
+
+| ranks (nodes) | layer | wall | export | hidden transfer (chunk wait, busy/32) | coset loop | remote/local | peak RSS/rank |
+|---|---|---|---|---|---|---|---|
+| 2 (1) | rotation_local | 10.6 | 0 | 0 | 8.6 | 1 | 2.3 GB |
+| 2 (1) | rotation_remote | 37.5 | 8.0 | ~20 | 26.1 | **3.5×** | 2.3 GB |
+| 2 (1) | cnot | 29.5 | 10.0 | ~9 | 14.6 | — | 2.4 GB |
+| 4 (2) | rotation_local | 11.1 | 0 | 0 | 6.9 | 1 | 3.3 GB |
+| 4 (2) | rotation_remote | 48.3 | 7.2 | ~27 | 32.7 | **4.4×** | 3.3 GB |
+| 4 (2) | cnot | 28.7 | 8.8 | ~11 | 16.3 | — | 3.3 GB |
+| 8 (4) | rotation_local | 10.3 | 0 | 0 | 6.8 | 1 | 6.3 GB |
+| 8 (4) | rotation_remote | 48.6 | 7.3 | ~28 | 33.3 | **4.7×** | 6.3 GB |
+| 8 (4) | cnot | 42.8 | — | — | — | — | 6.3 GB |
+
+Reading:
+- **Weak scaling is flat once the exchange crosses nodes**: the remote rotation layer costs 48.3 ms at
+  4 ranks and 48.6 ms at 8 — per-rank cost does not grow with rank count. Local layers are flat at
+  ~10.5 ms everywhere. The step from 2 to 4 ranks (37 → 48 ms) is shared memory → InfiniBand.
+- The remote layer is **transfer-bound**: subtracting the pipeline's wait time from the coset loop leaves
+  ~6–8 ms of compute (= the local layer's), so the layer is export (7–8 ms) + transfer (~30 ms for
+  192 MB per rank; two ranks share a NIC → ~13 GB/s per node) + what the pipeline could not overlap.
+  Fewer bytes (locality rows, key compression) is the only remaining inter-node lever; the pipeline
+  already hides the compute under the transfer.
+- The `vmhwm` growth with rank count (2.3 → 6.3 GB per rank at a constant 6e6 terms per rank) is the
+  probe's **replicated input** (`N = 4e6 × ranks` terms built on every rank before filtering), not the
+  engine: real capacity runs must ingest distributed. Engine-side peak per rank is flat.
+- Against the revised goal (bounded overhead, capacity): local layers 1×, remote rotation layers
+  3.5× (intra-node) to 4.7× (inter-node) at 6e6 terms per rank, unchanged from 4 to 8 ranks.

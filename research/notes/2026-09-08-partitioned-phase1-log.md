@@ -232,3 +232,77 @@ Also: peak RSS is ~370 B/term per rank here, of which the probe's *replicated in
 built on every rank before filtering) is a large share — a probe artefact for capacity runs; real
 drivers should ingest distributed. Multi-node jobs 7008425/26 failed because the build dir was on
 node-local `/tmp`; the template now builds on the shared filesystem.
+
+## 2026-09-09 — the exchange path optimized: remote rotation layer 10× → 4.6× a local one
+
+Measured and fixed on **ccqlin038** (2 sockets × 16 cores, Xeon Gold 6244), `mpirun -n 2 --map-by
+ppr:1:numa --bind-to numa`, 8 threads per rank, `--layers rotation_local,rotation_remote --reps 6`,
+medians of 3 runs, ms **per layer**. Two commits: `33194aa` (sub-phase laps) and `a2a7633` (the fix).
+
+### Where the time went (the laps, before any fix)
+
+`--n 2000000` (1.5e6 terms/rank, 1e6 rows = 48 MB exported per layer):
+
+| phase | local | remote |
+|---|---|---|
+| wall | 6.7 | 68.2 |
+| export | — | 18.7 = count 4.7 + **fill 13.6** |
+| exchange | — | 29.8 = post 0.03 + header 0.4 + **alloc 7.2** + data 13.7 + **decode 8.5** |
+| coset loop | 6.5 | 15.0 (append_into 7.9 busy) |
+
+The interconnect was 13.7 ms of a 68 ms layer. The rest was the engine paying for its own megabytes:
+a fresh zeroed allocation for the export block (most of "fill"), a fresh zeroed allocation for the
+receive buffers, and a word-by-word `pod_read_unaligned` decode into a *second* copy.
+
+### The fix
+
+Grow-only `ExchangeBlock` columns (`set_counts` re-aims a block, `header.rows` is the authority, not
+`x.len()`), a payload pool on `PartitionState` threaded through `Transport::exchange(send, spare)`,
+and `Payload::recv_into` handing MPI mutable byte views of the receiving payload's own typed columns
+so the decode pass disappears. The in-process transport ignores the pool — it moves the payload, so
+the pool circulates through the partners.
+
+| cell | phase | before | after |
+|---|---|---|---|
+| `--n 2e6` | local wall | 6.7 | 6.5 |
+| | remote wall | 68.2 | **32–34** |
+| | export | 18.7 | 8.0 (count 3.6 + fill 4.4) |
+| | exchange | 29.8 | 13.7 (data wait 13.4; alloc/decode 0.0) |
+| | coset loop | 15.0 | 10.0–11.3 |
+| | remote/local | 10.2× | **5.0×** |
+| `--n 8e6` | local wall | 24.7 | 25.3 |
+| | remote wall | 238.4 | **116.7** |
+| | export | 68.5 | 27.8 (count 8.5 + fill 19.3) |
+| | exchange | 128.3 | 51.4 |
+| | coset loop | 39.3 | 35.3 |
+| | remote/local | 9.7× | **4.6×** |
+
+The coset loop got faster too (gather 47 → 33 ms busy at 2e6): the received rows now live in pages
+that were already touched.
+
+**Memory.** Peak RSS per rank is unchanged — 544 MB at 2e6 both sides; at 8e6 the three runs span
+1593–1716 MB before and 1605–1725 MB after, one band. What does rise is the *between-layer* resident
+set (`vmrss` 1.0 → 1.4 GB at 8e6): the pool holds one export volume of send buffers plus one of
+receive buffers instead of returning them to the allocator every layer. Peak is what a capacity run
+is bounded by, so this is the intended trade; a `shrink` hook on `DistributedSum` is the escape hatch
+if a driver ever needs the memory back between circuits.
+
+### What is left, and what was rejected
+
+- **The transfer, 13.4 ms (2e6) / 50.9 ms (8e6).** 96 MB and 384 MB per rank per layer across the
+  socket, i.e. ~7.5 GB/s both sizes — a single-threaded cross-socket copy, which is the hardware.
+  Only overlap can hide it: the CSR offsets (8 KB) are all `ExtraRows::count` needs to size the runs,
+  so a two-phase exchange could let the coset loop's *gather* run while the rows are still in flight
+  and have the first `append_into` complete the receive. It needs a non-blocking `Transport` shape
+  (rsmpi requests outliving `multiple_scope`) and the deadlock argument written down; it is the next
+  idea, not this pass's.
+- **Dropping the export's count pass: rejected on arithmetic.** The count pass reads the keys only
+  (192 MB at 8e6, 8.5 ms, 23 GB/s — bandwidth-bound). Sizing each bucket's segment at its upper bound
+  instead would write 288 MB and then read and rewrite 384 MB to compact, and raise the transient. The
+  two passes are already at the memory ceiling (fill: 480 MB in 19.3 ms = 25 GB/s).
+- **`append_into`'s second copy: not worth it yet.** 7 ms busy at 2e6 and 36 ms at 8e6, i.e. ~1 and
+  ~4.5 ms of wall on 8 threads. Removing it means receiving *per destination bucket* straight into
+  the gather run — the sender's CSR by source bucket is the receiver's `β′ ⊕ bd`, a bijection, so the
+  addresses are computable before the receive — but the runs are per-coset-task scratch that does not
+  exist until the coset loop is running, so it needs the same deferred-receive shape as the overlap
+  idea. Design them together.

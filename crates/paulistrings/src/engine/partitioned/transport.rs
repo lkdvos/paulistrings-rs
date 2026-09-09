@@ -221,7 +221,7 @@ const PARTS_PER_BLOCK: usize = 5;
 /// `bytemuck::cast_slice` would be free but requires the input to be aligned
 /// for `T`, which a received buffer need not be; the per-element
 /// `pod_read_unaligned` costs one copy on a path that is already copying.
-fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
+pub(crate) fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<T> {
     let stride = size_of::<T>();
     assert_eq!(
         bytes.len(),
@@ -301,7 +301,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
 /// Separate from [`decode_column`] because `[u64; W]` for a generic `W` is not
 /// `Pod` under the feature set this crate builds `bytemuck` with; the words are
 /// read individually and assembled.
-fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
+pub(crate) fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u64; W]> {
     let stride = W * size_of::<u64>();
     assert_eq!(
         bytes.len(),

@@ -153,6 +153,23 @@ impl PartitionRuntime {
         s
     }
 
+    /// Runs `f` on partition 0's pool and returns its result.
+    ///
+    /// The distributed shape of [`map_partitions`](Self::map_partitions): a
+    /// process that *is* one partition has nothing to fan out to, but its work
+    /// still belongs on the pinned pool, so that every allocation is
+    /// first-touched by a worker inside the process's own domain. As with
+    /// `map_partitions`, the calling thread is not re-affinitized — the work
+    /// runs on pool 0's workers, which `build_pool` pinned.
+    ///
+    /// `rayon::ThreadPool::install` blocks the caller and runs `f` **on a pool
+    /// worker**, so `f` (and any MPI call inside it) is not on the process's
+    /// main thread. That is why the MPI transport documents
+    /// `MPI_THREAD_SERIALIZED` rather than `FUNNELED`.
+    pub(crate) fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        self.pools[0].install(f)
+    }
+
     /// Runs `f(rank, item, transport)` once per partition, concurrently, and
     /// returns the results in rank order.
     ///

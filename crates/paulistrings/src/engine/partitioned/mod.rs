@@ -17,9 +17,12 @@
 //!   scoped fan-out a partitioned call runs inside.
 //! - `driver` — `PartitionedSum` and `propagate_partitioned`: the layer loop,
 //!   the collective bucket-count agreement, scatter and gather.
+//! - `distributed` — `DistributedSum`: the same layer loop with one partition
+//!   per process, over any `Transport`.
 //! - `trace` — `PartitionTrace`, the opt-in per-layer record of term counts,
 //!   bucket bits and exchange volume.
 
+pub(crate) mod distributed;
 pub(crate) mod driver;
 pub(crate) mod export;
 pub(crate) mod layer;
@@ -33,6 +36,7 @@ pub(crate) mod transport;
 pub(crate) mod truncation;
 
 // The front door: a sum split across partitions, and the one-shot entry points.
+pub use distributed::DistributedSum;
 #[cfg(feature = "phase-timing")]
 pub use driver::PartitionPhaseStats;
 pub use driver::{propagate_partitioned, propagate_partitioned_with_options, PartitionedSum};

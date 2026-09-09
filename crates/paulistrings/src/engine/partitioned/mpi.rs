@@ -110,7 +110,13 @@ use ::mpi::raw::FromRaw;
 use ::mpi::request::{RequestCollection, Scope};
 use ::mpi::topology::{Communicator, Rank, SimpleCommunicator};
 
+use super::distributed::DistributedSum;
+use super::topology::{PartitionConfig, Placement};
 use super::transport::{Collectives, Payload, Transport, ROOT};
+use super::truncation::PartitionedTruncation;
+use crate::circuit::Circuit;
+use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_sum::PauliSum;
 
 /// The `rsmpi` crate this transport is built against.
 ///
@@ -119,6 +125,11 @@ use super::transport::{Collectives, Payload, Transport, ROOT};
 /// `mpi` in one binary would each have their own datatype and operation
 /// statics.
 pub use ::mpi as rsmpi;
+
+/// The distributed sum a [`propagate_mpi`] run drives: one partition per rank,
+/// over the MPI transport. The persistent form a Trotter driver holds across
+/// steps.
+pub type MpiSum<const W: usize> = DistributedSum<W, MpiTransport>;
 
 /// `log` target for the transport's construction diagnostics, shared with
 /// [`topology`](super::topology) and [`runtime`](super::runtime).
@@ -754,6 +765,83 @@ impl Transport for MpiTransport {
         out.extend(buffers);
         Some(out)
     }
+}
+
+/// The placement a distributed rank uses when the caller does not say
+/// otherwise: **one** partition over whatever CPUs the launcher left in the
+/// process's affinity mask, with memory bound to its node.
+///
+/// Under `mpirun --map-by ppr:1:numa --bind-to numa` (or `srun
+/// --cpu-bind=ldoms`) that mask *is* one NUMA domain, so `Auto` resolves to a
+/// single slot covering exactly it — the process placement does the work the
+/// in-process engine would have done with explicit CPU lists. Under no binding
+/// at all it is one slot over the whole node, which is correct but unplaced.
+pub fn default_config() -> PartitionConfig {
+    PartitionConfig {
+        placement: Placement::Auto {
+            max_partitions: Some(1),
+        },
+        bind_memory: true,
+        partition_row_seed: None,
+    }
+}
+
+/// Propagate `sum` through `circuit` with one partition per rank of `comm`, and
+/// gather the result on rank 0.
+///
+/// **Collective**: every rank of `comm` must call this, with the *same*
+/// replicated `sum`, the same circuit, direction and options. Rank 0 gets
+/// `Some(gathered)`; every other rank gets `None`.
+///
+/// One-shot convenience — it duplicates the communicator, builds a pinned pool,
+/// scatters, runs and gathers. A driver stepping an observable through many
+/// circuits should hold an [`MpiSum`] instead, so the communicator, the pool,
+/// the split and the scratch survive between steps. For a placement other than
+/// [`default_config`]'s, build the [`MpiSum`] directly:
+///
+/// ```no_run
+/// # use paulistrings::mpi::{default_config, MpiSum, MpiTransport, rsmpi};
+/// # use paulistrings::{Circuit, Direction, PartitionedTruncation, TruncationPolicy, PauliSum};
+/// # struct KeepAll;
+/// # impl<const W: usize> TruncationPolicy<W> for KeepAll { fn finalizes_layer(&self) -> bool { false } }
+/// # impl<const W: usize> PartitionedTruncation<W> for KeepAll {}
+/// # fn go(circuit: &Circuit<1>, sum: PauliSum<1>) {
+/// let (universe, _) =
+///     rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).expect("MPI initializes");
+/// let transport = MpiTransport::from_communicator(&universe.world());
+/// let mut split: MpiSum<1> =
+///     MpiSum::scatter(sum, transport, &default_config()).expect("topology resolves");
+/// for _ in 0..10 {
+///     split.propagate(circuit, &KeepAll, Direction::Heisenberg);
+/// }
+/// if let Some(out) = split.gather() {
+///     println!("{} terms", out.len());
+/// }
+/// # }
+/// ```
+///
+/// # Panics
+///
+/// If the group size is not a power of two, if the placement cannot be
+/// resolved, or for any of the reasons
+/// [`DistributedSum::propagate_with_options`] panics — including the ranks
+/// disagreeing about the run.
+pub fn propagate_mpi<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    options: PropagateOptions,
+    comm: &impl Communicator,
+) -> Option<PauliSum<W>>
+where
+    T: PartitionedTruncation<W> + ?Sized,
+{
+    let transport = MpiTransport::from_communicator(comm);
+    let mut split = MpiSum::<W>::scatter(sum, transport, &default_config())
+        .unwrap_or_else(|err| panic!("could not place the MPI rank's partition: {err}"));
+    split.propagate_with_options(circuit, policy, direction, options);
+    split.gather()
 }
 
 #[cfg(test)]

@@ -1002,7 +1002,7 @@ impl Transport for MpiTransport {
         recv
     }
 
-    /// The two-phase exchange (see [`ChunkPipeline`]): the framing header, the
+    /// The two-phase exchange (see `ChunkPipeline`): the framing header, the
     /// block headers and the CSR offsets arrive before `body` starts, the
     /// columns arrive under it, chunk by chunk.
     ///

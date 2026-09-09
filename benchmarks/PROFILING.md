@@ -159,17 +159,16 @@ lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, 
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
 (list, one entry per partition).
 
-Nine further keys break the export and the exchange down — they are **sub-phases, contained in the
+Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
 phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
 `export_fill_ns` ≈ `export_ns` (the count pass and the fill pass); `send_post_ns` + `hdr_wait_ns` +
-`recv_alloc_ns` + `data_wait_ns` + `decode_ns` ≈ `exchange_ns` (encoding and posting the sends, the
-blocking framing-header and early-part receives — where a partner's skew lands — sizing the receive
-buffers and posting the bulk ones, whatever transfer is left over after the coset loop, and turning
-the bytes into typed columns, which is zero for a transport that receives straight into them); and
+`recv_alloc_ns` + `data_wait_ns` ≈ `exchange_ns` (encoding and posting the sends, the blocking
+framing-header and early-part receives — where a partner's skew lands — sizing the receive buffers
+and posting the bulk ones, and whatever transfer is left over after the coset loop); and
 `append_ns`, worker busy time inside `gather_ns`, for merging received rows into the output buckets'
 rest streams, of which `chunk_wait_ns` is the part spent blocked waiting for a chunk of those rows to
-land. Only a distributed cell fills the five exchange laps: the in-process transport moves a typed
-payload and has no encode, wait or decode to attribute.
+land. Only a distributed cell fills the four exchange laps: the in-process transport moves a typed
+payload and has no encode or wait to attribute.
 
 **The exchange is two-phase, so `exchange_ns` is small and the transfer shows up inside the coset
 loop** (ARCHITECTURE.md §Partitioning): the rows arrive while the layer runs, and `chunk_wait_ns` is

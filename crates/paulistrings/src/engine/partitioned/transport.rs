@@ -844,10 +844,9 @@ pub(crate) struct ExchangeTimings {
     pub(crate) hdr_wait_ns: AtomicU64,
     /// Sizing the receive buffers.
     pub(crate) recv_alloc_ns: AtomicU64,
-    /// Posting the part receives and waiting them (and the sends) out.
+    /// Posting the part receives and waiting out whatever the coset loop did
+    /// not already drive to completion.
     pub(crate) data_wait_ns: AtomicU64,
-    /// Turning received bytes into typed columns.
-    pub(crate) decode_ns: AtomicU64,
 }
 
 #[cfg(all(feature = "phase-timing", feature = "mpi"))]
@@ -868,7 +867,6 @@ impl ExchangeTimings {
         stats.hdr_wait_ns += self.hdr_wait_ns.swap(0, Ordering::Relaxed);
         stats.recv_alloc_ns += self.recv_alloc_ns.swap(0, Ordering::Relaxed);
         stats.data_wait_ns += self.data_wait_ns.swap(0, Ordering::Relaxed);
-        stats.decode_ns += self.decode_ns.swap(0, Ordering::Relaxed);
     }
 }
 
@@ -952,14 +950,27 @@ pub trait Collectives: Send + Sync {
 /// call monomorphizes into the partition's driving thread with no virtual
 /// dispatch on a per-layer path.
 pub trait Transport: Collectives {
-    /// Send `send[q]` to partition `q` and return what each partition sent
-    /// here: `recv[q]` is `q`'s payload, `None` where `q` sent nothing.
+    /// **The** exchange: send `send[q]` to partition `q`, run `body` on what
+    /// the partners sent here, and give both back.
+    ///
+    /// It is **two-phase**. Everything the coset loop needs to size its gather
+    /// runs — the block headers and the CSR offsets
+    /// ([`Payload::early_parts`]) — has arrived before `body` starts; the rows
+    /// themselves ([`Payload::bulk_parts`]) may still be in flight while it
+    /// runs, and `body` blocks on the [`ChunkWait`] it is handed before it
+    /// reads a chunk's rows. A transport with nothing to overlap hands over
+    /// `AlreadyHere` and is a blocking exchange with extra steps — which is
+    /// what [`InProcessTransport`] is, its "transfer" being a moved pointer.
     ///
     /// `send.len()` must be [`size`](Collectives::size) and
-    /// `send[self.rank()]` must be `None`; the returned vector has the same
-    /// length and `None` in the same self slot. A partner with nothing to send
-    /// still participates, with `None` — silence would desynchronize the group
-    /// (module docs).
+    /// `send[self.rank()]` must be `None`; the slots handed to `body` have the
+    /// same length and `None` in the same self slot. A partner with nothing to
+    /// send still participates, with `None` — silence would desynchronize the
+    /// group (module docs).
+    ///
+    /// `map` is the destination-coset order both sides laid the blocks out in
+    /// and the chunks the bulk transfer is cut into. Every partition passes the
+    /// same one, for the same reason both sides agree on the bucket count.
     ///
     /// `spare` is the caller's **payload pool**, and it is what keeps a
     /// steady-state layer from allocating: a transport that has to materialize
@@ -971,24 +982,9 @@ pub trait Transport: Collectives {
     /// transport must fall back to [`Default`]. [`InProcessTransport`] uses
     /// neither direction: it *moves* the sender's payload to the receiver, so
     /// the pool circulates through the partners instead.
-    fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>>;
-
-    /// The layer's exchange, **two-phase**: everything the coset loop needs to
-    /// size its gather runs arrives before `body` starts, and the rows
-    /// themselves may still be in flight while it runs.
     ///
-    /// `body` is handed the receive slots — shaped, with their CSR offsets in
-    /// place — and a [`ChunkWait`] to block on before it reads a chunk's rows.
-    /// It returns whatever the caller needs out of the layer; the received
+    /// `body` returns whatever the caller needs out of the layer; the received
     /// payloads come back with it, for the caller to return to `spare`.
-    ///
-    /// `map` is the destination-coset order both sides laid the blocks out in
-    /// and the chunks the bulk transfer is cut into. Every partition passes the
-    /// same one, for the same reason both sides agree on the bucket count.
-    ///
-    /// The default is the blocking exchange followed by the body — correct,
-    /// with no overlap — and it is what [`InProcessTransport`] uses, whose
-    /// "transfer" is a moved pointer.
     fn exchange_layer<P, F, R>(
         &self,
         send: Vec<Option<P>>,
@@ -998,23 +994,28 @@ pub trait Transport: Collectives {
     ) -> (Vec<Option<P>>, R)
     where
         P: Payload,
-        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
-    {
-        let _ = map;
-        let recv = self.exchange(send, spare);
-        let out = body(&recv, &AlreadyHere);
-        (recv, out)
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R;
+
+    /// [`exchange_layer`](Self::exchange_layer) with nothing to overlap: the
+    /// blocking all-to-all, for a caller that wants the payloads and no more.
+    ///
+    /// The empty [`ChunkMap`] cuts no chunks, so every part travels as an early
+    /// one — which is what a payload with no interesting internal structure
+    /// wants, [`ByteParts`] being the only one. A payload whose `bulk_parts`
+    /// needs a real map goes through `exchange_layer`.
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
+        self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())
+            .0
     }
 
     /// Fold the sub-phase laps this transport took inside
-    /// [`exchange`](Self::exchange) into `stats`, and reset them.
+    /// [`exchange_layer`](Self::exchange_layer) into `stats`, and reset them.
     ///
     /// Measurement only (feature `phase-timing`), called by the partitioned
     /// layer right after the exchange. The default records nothing, which is
     /// what a transport whose exchange has no interesting internal structure
     /// wants: [`InProcessTransport`] moves a typed payload through a channel
-    /// and has no encode, wait or decode to attribute. `MpiTransport`
-    /// overrides it.
+    /// and has no encode or wait to attribute. `MpiTransport` overrides it.
     #[cfg(feature = "phase-timing")]
     fn drain_timings(&self, _stats: &mut crate::engine::stats::PhaseStats) {}
 
@@ -1025,12 +1026,11 @@ pub trait Transport: Collectives {
     /// This is the gather that ends a distributed run: each partition hands
     /// over its share of the sum as bytes and rank 0 reassembles.
     ///
-    /// One collective. Unlike [`exchange`](Self::exchange) it is deliberately
-    /// *not* symmetric — every partition talks to rank 0 and to nobody else —
-    /// so a transport whose `exchange` infers its partner set from the `Some`
-    /// positions (as the MPI one does) overrides this rather than inheriting
-    /// it. The default body is the honest all-to-all: rank 0 sends nothing and
-    /// receives from everyone.
+    /// One collective. Unlike the exchange it is deliberately *not* symmetric —
+    /// every partition talks to rank 0 and to nobody else — so a transport that
+    /// infers its partner set from the `Some` positions (as the MPI one does)
+    /// overrides this rather than inheriting it. The default body is the honest
+    /// all-to-all: rank 0 sends nothing and receives from everyone.
     fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
         let n = self.size() as usize;
         let me = self.rank() as usize;
@@ -1706,11 +1706,23 @@ impl Collectives for InProcessTransport {
 }
 
 impl Transport for InProcessTransport {
-    /// Moves the payloads, so `spare` is neither drawn from nor added to: a
-    /// sender's blocks become the receiver's, and the pool circulates through
-    /// the group rather than through the transport (see
-    /// [`Transport::exchange`]).
-    fn exchange<P: Payload>(&self, send: Vec<Option<P>>, _spare: &mut Vec<P>) -> Vec<Option<P>> {
+    /// A payload is *moved* to its partner rather than copied, so there is
+    /// nothing for the two-phase shape to overlap: the transfer is complete
+    /// before `body` runs and its [`ChunkWait`] is a no-op. `map` therefore
+    /// goes unread, and `spare` is neither drawn from nor added to — a sender's
+    /// blocks become the receiver's, and the pool circulates through the group
+    /// rather than through the transport.
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        _spare: &mut Vec<P>,
+        _map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
         let n = self.size as usize;
         assert_eq!(
             send.len(),
@@ -1723,34 +1735,36 @@ impl Transport for InProcessTransport {
             "exchange: send[{}] is this partition's own slot and must be None",
             self.rank,
         );
-        if n == 1 {
-            return vec![None];
-        }
-
-        let seq = self.next_gen();
-        // The exchange consumes a generation like any other call and publishes
-        // it before sending, even though it waits on the channels rather than
-        // on the slots: that is what lets a partner spinning in a *collective*
-        // at the same generation see the kind mismatch and panic, instead of
-        // the pair hanging on each other's different call.
-        self.state.publish(self.rank, seq, CallKind::Exchange, 0);
-        // Unbounded channels: every send completes before the first receive,
-        // so no pair of partitions can block on each other.
-        for (dst, payload) in send.into_iter().enumerate() {
-            if dst != self.rank as usize {
-                self.send_to(dst, seq, Box::new(payload), "exchange");
-            }
-        }
-
-        (0..n)
-            .map(|src| {
-                if src == self.rank as usize {
-                    None
-                } else {
-                    downcast::<Option<P>>(self.recv_from(src, seq, "exchange"), src, "exchange")
+        let recv: Vec<Option<P>> = if n == 1 {
+            vec![None]
+        } else {
+            let seq = self.next_gen();
+            // The exchange consumes a generation like any other call and
+            // publishes it before sending, even though it waits on the channels
+            // rather than on the slots: that is what lets a partner spinning in
+            // a *collective* at the same generation see the kind mismatch and
+            // panic, instead of the pair hanging on each other's different call.
+            self.state.publish(self.rank, seq, CallKind::Exchange, 0);
+            // Unbounded channels: every send completes before the first
+            // receive, so no pair of partitions can block on each other.
+            for (dst, payload) in send.into_iter().enumerate() {
+                if dst != self.rank as usize {
+                    self.send_to(dst, seq, Box::new(payload), "exchange");
                 }
-            })
-            .collect()
+            }
+            (0..n)
+                .map(|src| {
+                    if src == self.rank as usize {
+                        None
+                    } else {
+                        downcast::<Option<P>>(self.recv_from(src, seq, "exchange"), src, "exchange")
+                    }
+                })
+                .collect()
+        };
+
+        let out = body(&recv, &AlreadyHere);
+        (recv, out)
     }
 }
 

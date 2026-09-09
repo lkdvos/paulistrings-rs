@@ -711,9 +711,19 @@ mod tests {
     }
 
     impl Transport for CountingTransport {
-        fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
+        fn exchange_layer<P, F, R>(
+            &self,
+            send: Vec<Option<P>>,
+            spare: &mut Vec<P>,
+            map: &ChunkMap,
+            body: F,
+        ) -> (Vec<Option<P>>, R)
+        where
+            P: Payload,
+            F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+        {
             self.exchanges.fetch_add(1, Ordering::Relaxed);
-            self.inner.exchange(send, spare)
+            self.inner.exchange_layer(send, spare, map, body)
         }
     }
 

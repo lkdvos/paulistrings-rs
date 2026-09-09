@@ -435,6 +435,11 @@ impl<const W: usize> ExchangeBlock<W> {
 
     /// Destination positions the block is indexed by — the group's agreed
     /// bucket count, which both sides hold.
+    ///
+    /// The engine reads it only to check a received block against its own
+    /// count, which is a `debug_assert` (the count is a collective decision, so
+    /// a mismatch is a driver bug, not a data-dependent outcome).
+    #[cfg(any(test, debug_assertions))]
     pub fn num_buckets(&self) -> u32 {
         self.header.num_buckets
     }

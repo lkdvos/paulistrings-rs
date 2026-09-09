@@ -88,7 +88,7 @@ use super::transport::Collectives;
 /// So there is no impl, and a partitioned run with `TopN` fails to compile
 /// instead of quietly truncating per partition (which would keep `P·n` terms
 /// and a different set on every thread count). Use [`ApproxTopN`] when `n` is
-/// a memory budget; the distributed selection is a phase-6 follow-up.
+/// a memory budget; a distributed `k`-th selection is open work.
 pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
     /// The collective layer pass: `local` is this partition's slice of the
     /// layer, `coll` its view of the group.

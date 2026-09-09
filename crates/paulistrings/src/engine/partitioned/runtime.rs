@@ -3,14 +3,16 @@
 //!
 //! A partitioned run has two kinds of thread. Each partition has one
 //! **driving** thread that walks the layers, issues the collectives and calls
-//! into the engine; partition 0's driving thread is the *calling* thread (a
-//! later MPI phase funnels its calls through the thread that owns the MPI
-//! communicator), partitions `1..P` get a scoped thread each. Inside a
-//! partition, the layer itself runs on that partition's own pinned Rayon pool
-//! — the driving thread enters it with `ThreadPool::install`, so every
-//! allocation a layer makes is first-touched by a worker in the partition's own
-//! NUMA domain (ARCHITECTURE.md §Parallelism for why the layer needs no
-//! synchronization of its own).
+//! into the engine; partition 0's driving thread is the *calling* thread, and
+//! partitions `1..P` get a scoped thread each. Inside a partition, the layer
+//! itself runs on that partition's own pinned Rayon pool — the driving thread
+//! enters it with `ThreadPool::install`, so every allocation a layer makes is
+//! first-touched by a worker in the partition's own NUMA domain
+//! (ARCHITECTURE.md §Parallelism for why the layer needs no synchronization of
+//! its own). That `install` is also why the MPI transport requires
+//! `MPI_THREAD_SERIALIZED` rather than `FUNNELED`: a distributed rank's
+//! collectives are issued from a pool worker, not from the process's main
+//! thread.
 //!
 //! There is no synchronization between partitions other than the transport:
 //! every partition issues the identical sequence of transport calls per layer

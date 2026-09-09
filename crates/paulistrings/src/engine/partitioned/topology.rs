@@ -176,9 +176,8 @@ pub(crate) fn allowed_cpus() -> CpuSet {
 ///
 /// Each node's CPU set is intersected with the process's affinity mask, and
 /// nodes left empty by that intersection are dropped. When sysfs exposes no
-/// usable node —
-/// a kernel without NUMA, a sandbox without `/sys`, a non-Linux target — the
-/// whole affinity mask is reported as node 0.
+/// usable node — a kernel without NUMA, a sandbox without `/sys`, a non-Linux
+/// target — the whole affinity mask is reported as node 0.
 #[must_use]
 pub fn numa_nodes() -> Vec<(usize, CpuSet)> {
     let allowed = allowed_cpus();
@@ -438,7 +437,11 @@ pub struct PartitionConfig {
     /// How partitions map onto the machine.
     pub placement: Placement,
     /// Whether each pool's workers bind their allocations to the partition's
-    /// NUMA node.
+    /// NUMA node (`MPOL_BIND`, through `set_mempolicy`).
+    ///
+    /// The Python surface spells this `pin_memory=`, and the probe's JSON
+    /// sidecar follows the Python name; everything on the Rust side is
+    /// `bind_memory`, because it is a memory policy and not a thread affinity.
     pub bind_memory: bool,
     /// Seed selecting which GF(2) hash rows designate the partition, or
     /// `None` to take the engine's default choice.

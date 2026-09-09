@@ -49,6 +49,42 @@
 //! group (which is the hang the per-call group exists to prevent) or a
 //! replicated-input, byte-framed scatter for the in-process case, which is
 //! strictly more work for the same answer.
+//!
+//! # What is an error and what is a panic
+//!
+//! **Setting a run up returns `Result`; running it panics.** Exactly two things
+//! can fail without being a bug in the caller's code, and both happen before a
+//! term is touched:
+//!
+//! - resolving a [`PartitionConfig`] against the machine and building its pools
+//!   — [`TopologyError`], from [`PartitionRuntime::new`] and everything that
+//!   calls it;
+//! - adopting a communicator — `MpiError`, from
+//!   `MpiTransport::from_raw_handle` (`from_communicator` is the panicking
+//!   convenience over it; `mpi` feature).
+//!
+//! Everything after that is a **contract violation**, and the engine panics
+//! naming the partition and what it expected: a group size that is not a power
+//! of two, partition rows that do not match the sum, a channel whose `prepare`
+//! declines, a policy that finalizes layers without a collective form, a
+//! partner that desynchronized or died. None of them is recoverable — the group
+//! is already out of step — and turning them into `Result` would only move the
+//! `unwrap` to the caller.
+//!
+//! # Naming
+//!
+//! - **`size` is a transport's group cardinality** ([`Collectives::size`]);
+//!   **`num_partitions` is a placement's or a row set's**
+//!   ([`PartitionRuntime::num_partitions`],
+//!   [`PartitionRows::num_partitions`](crate::PartitionRows::num_partitions)).
+//!   They are equal in any well-formed run, and the drivers assert it at
+//!   scatter. "Rank" is a partition index, used where the peer is a process.
+//! - **`bind_memory` is the Rust name throughout** (the [`PartitionConfig`]
+//!   field, `build_pool`'s argument, the probe's `--bind-memory`): it installs
+//!   `MPOL_BIND` on the slot's NUMA node, which is a *memory* policy and not a
+//!   thread affinity. The Python surface calls the same knob `pin_memory=`, and
+//!   the probe's JSON sidecar uses that spelling to match it; those two are the
+//!   only places the other name appears.
 
 pub(crate) mod distributed;
 pub(crate) mod driver;

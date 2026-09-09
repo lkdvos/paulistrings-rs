@@ -34,6 +34,14 @@ command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
 }
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
 unset RUST_LOG
+# Build a pinned commit in a private worktree, never the live checkout (see ab-campaign.sbatch).
+PS_REV=${PS_REV:-$(git rev-parse HEAD)}
+repo=$PWD
+src="$CARGO_TARGET_DIR/src"
+git worktree add --detach "$src" "$PS_REV" >/dev/null
+trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null || true' EXIT
+cd "$src"
+echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 
 echo "== job ${SLURM_JOB_ID:-?} on $SLURM_JOB_NODELIST, $(date -Is)"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
@@ -70,7 +78,7 @@ if [ "${PROBE:-1}" = "1" ]; then
     cargo build --offline --release --features phase-timing,mpi -p paulistrings \
         --example phase_breakdown >/dev/null
     probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
-    out="benchmarks/results/mpi-${SLURM_JOB_ID:-local}.jsonl"
+    out="$repo/benchmarks/results/mpi-${SLURM_JOB_ID:-local}.jsonl"
     echo "== probe: $ranks ranks, D=1, $cpus_per_numa threads each -> $out.rank*"
     srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
          --cpu-bind=ldoms --mpi=pmix "$probe" --mpi --threads "$cpus_per_numa" \

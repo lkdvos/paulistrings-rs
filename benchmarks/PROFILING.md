@@ -159,6 +159,24 @@ lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, 
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
 (list, one entry per partition).
 
+Six further keys carry the workload and row-policy axes the two Trotter-step
+layers (`tfim_step`, `heavyhex_step`) brought with them, and are written on every row:
+`initial` (string, `"random"` or `"z0"` — the cell's input sum, whose default is per layer, so
+read it rather than assuming the run's flag), `partition_rows` (string, `"random"` / `"cut"` /
+`"select"`), `rows_remote_gens` (int) and `rows_remote_weight` (float) — the distinct key-delta
+masks those rows leave remote and the number of *layers* carrying one, the same scale for all
+three policies — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
+`max/mean` of the partitions' input term counts per layer, in application order) and
+`terms_by_layer` (list of ints, the group's total terms in per layer). The cell-level
+`partition_imbalance` sums the layers before dividing and so hides the mixing dynamics; the series
+is what shows them, and `terms_by_layer` is the growth curve to read it against. Both are long —
+a four-step heavy-hex cell is 1084 layers — and both are empty on an unpartitioned row.
+`--format tsv` carries all six as trailing columns of the same names, the two series
+`|`-joined. `hash_seed` on a partitioned row is the seed actually used, which a `cut`/`select`
+cell may have re-drawn to keep its rows independent of `H`'s (it says so on stderr); that also
+moves the coset dimension, so do not compare such a cell's phase timings against a differently
+seeded one.
+
 Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
 phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
 `export_fill_ns` ≈ `export_ns` (the count pass and the fill pass); `send_post_ns` + `hdr_wait_ns` +
@@ -286,6 +304,23 @@ runs the same warm-up + timed pair as above through `PartitionedSum::propagate_w
   (`count_remote_deltas` decides, once per cell, outside the timed region). They are the best and worst
   case of the exchange on otherwise identical work, and both collapse to `rotation_zz` at `P = 1`. The
   chosen pair goes to stderr and into the sidecar's `gen_qubits`.
+- `--partition-rows random|cut|select` (default `random`) chooses the rows themselves, which is what
+  decides how many layers exchange at all: `random` is `PartitionRows::from_seed`, the driver's own draw
+  (roughly half a two-qubit generator's deltas cross at `P = 2`); `cut` is `PartitionRows::cut` over `P`
+  contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit
+  generators as possible at ±25% size balance; `select` is `select_rows` over the cell's circuit. All three
+  report `rows_remote_gens` / `rows_remote_weight` in the sidecar, and `cut`/`select` say their cut or
+  their remote set on stderr. **With the default `--partition-seed`, `random` is not the "half remote" case:**
+  the partition-row salt equals `DEFAULT_HASH_SEED`, so the draw starts from `Xs64` state 1 and the first
+  rows come out sparse — pass an explicit `--partition-seed` for a representative random draw.
+- Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit
+  Eagle r3 lattice, so `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies
+  exist for: `--reps` is the number of steps, the angles are the presentation's (`theta_zz = -pi/2`,
+  `theta_h = 5*pi/16`), and both default to `--initial z0` — a single-site `Z` observable on qubit
+  `--qubits / 2` whose term count grows step by step, rather than the dense `rand_sum` every other layer
+  starts from. Both need a truncation policy to converge (`coeff:1.220703125e-4` is the presentation's
+  `2^-13`), and `--initial random` on them decays to zero terms under any threshold, `theta_zz = -pi/2`
+  multiplying every anticommuting term by `cos(pi/4)` per layer.
 - `--truncation topn:<N>` is refused for a partitioned cell: `TopN`'s exact selection has no
   `PartitionedTruncation` impl (the bound rejects it at compile time). `atopn:<N>`, `coeff:<t>` and `keep`
   all run.

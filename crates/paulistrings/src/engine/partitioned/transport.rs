@@ -10,16 +10,37 @@
 //! # The collective-order invariant
 //!
 //! **Every partition issues the identical sequence of transport calls, in the
-//! same order, on every layer.** Nothing in the transport reorders, tags by
-//! kind, or matches calls up: a call's `n`-th message is paired with the
-//! partner's `n`-th message positionally. A partition that skips an exchange
-//! because it happens to have nothing to send, or that runs an extra
-//! reduction, desynchronizes the whole group — so a layer's transport calls
-//! are driven by the *plan* (which every partition computes identically from
-//! the channel and the hash), never by local data. Empty is sent as `None`,
-//! not as silence. Debug builds carry a per-transport sequence counter on
-//! every message and assert it on receive, so a violation is a panic naming
-//! both partitions rather than a hang or a silently crossed payload.
+//! same order, on every layer.** Nothing in the transport reorders or matches
+//! calls up by intent: a call's `n`-th message is paired with the partner's
+//! `n`-th message positionally. A partition that skips an exchange because it
+//! happens to have nothing to send, or that runs an extra reduction,
+//! desynchronizes the whole group — so a layer's transport calls are driven by
+//! the *plan* (which every partition computes identically from the channel and
+//! the hash), never by local data. Empty is sent as `None`, not as silence.
+//!
+//! The invariant is *checked*, in every build. Each rank numbers its own
+//! transport calls with a **generation** counter and publishes
+//! `(generation, kind)` before it waits; a rank waiting for generation `g`
+//! panics if the partner published a different kind at `g`, or ran past `g`
+//! without publishing it. So a violation is a panic naming both partitions
+//! rather than a hang or a silently crossed payload. Exchange messages carry
+//! the same number as a debug-only stamp on the channel, checked on receive.
+//!
+//! # The in-process collectives are shared memory, not messages
+//!
+//! [`InProcessTransport`] keeps the [`Transport::exchange`] all-to-all on a
+//! `P × P` matrix of `mpsc` channels — it moves a payload, and it runs only on
+//! the layers that have something to move — but the three [`Collectives`]
+//! operations run on **shared atomics with a spin wait**
+//! ([`GroupState`]). They are on the per-layer critical path (the bucket-count
+//! maximum is unconditional, ARCHITECTURE.md §Partitioning), they carry a
+//! handful of words, and the `P` partition threads are pinned and dedicated
+//! for the whole call — so a futex sleep/wake per round trip was the whole
+//! cost. Measured on the reference host at `P = 2`: one `allreduce_max_u8`
+//! costs ~2.9 µs on the channels and ~0.25 µs on the atomics. (The engine's
+//! per-layer `collective_ns` is larger than either, because a partition that
+//! finishes its layer first waits out its partner's skew inside the
+//! collective; that part is load imbalance, not transport.)
 //!
 //! # The wire unit: a CSR block indexed by source bucket
 //!
@@ -55,7 +76,11 @@
 //! Both directions are exercised by tests, so the wire format is pinned before
 //! the first `MPI_Isend` exists.
 
+use std::cell::UnsafeCell;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use num_complex::Complex64;
 
@@ -323,8 +348,10 @@ fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u6
 /// Both reductions must return **the identical value on every partition** —
 /// callers use them to agree on a global decision (a truncation threshold, a
 /// term-count total), and a partition that computed a different answer would
-/// diverge silently. Implementations therefore combine contributions in rank
-/// order rather than in arrival order.
+/// diverge silently. Both are exact and order-independent (a maximum, and a
+/// wrapping integer sum), so an implementation is free to combine in arrival
+/// order; one whose reduction were *not* order-independent would have to
+/// combine in rank order.
 ///
 /// Every method obeys the collective-order invariant in the module docs: all
 /// partitions call them in the same order, the same number of times.
@@ -360,6 +387,339 @@ pub trait Transport: Collectives {
     /// still participates, with `None` — silence would desynchronize the group
     /// (module docs).
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>) -> Vec<Option<P>>;
+}
+
+// ---- the shared-memory collective state ------------------------------------
+
+/// Which transport call a published generation word belongs to.
+///
+/// Stamped into every word a rank publishes, so a rank waiting for generation
+/// `g` can tell "my partner has not arrived yet" from "my partner issued a
+/// *different* call at `g`" — the collective-order invariant (module docs).
+/// Never zero: a slot that was never written reads as generation 0, kind 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum CallKind {
+    Barrier = 1,
+    MaxU8 = 2,
+    SumU64 = 3,
+    Exchange = 4,
+}
+
+impl CallKind {
+    /// The name used in a mismatch panic. Also the `op` string a partner-death
+    /// panic names, so the two messages agree on what a call is called.
+    fn name(self) -> &'static str {
+        match self {
+            CallKind::Barrier => "barrier",
+            CallKind::MaxU8 => "allreduce_max_u8",
+            CallKind::SumU64 => "allreduce_sum_u64",
+            CallKind::Exchange => "exchange",
+        }
+    }
+
+    /// The name of a raw kind byte off a published word, which may be a kind
+    /// this build does not know (or the 0 of a never-written slot).
+    fn name_of(raw: u8) -> &'static str {
+        match raw {
+            1 => "barrier",
+            2 => "allreduce_max_u8",
+            3 => "allreduce_sum_u64",
+            4 => "exchange",
+            _ => "no call",
+        }
+    }
+}
+
+/// `spin_loop` hints a waiting rank issues before it starts yielding instead.
+///
+/// The mechanism is a few hundred nanoseconds between dedicated threads, so
+/// the fast path — the partner is already here, or arrives within a couple of
+/// microseconds — never leaves this tier. Roughly 15 µs of `pause` on the
+/// reference host.
+const SPINS_BEFORE_YIELD: u32 = 1_000;
+
+/// `yield_now` calls after the spin tier before the waiter starts sleeping.
+///
+/// Covers the ordinary case the spins do not: the partner is a few tens of
+/// microseconds behind because its share of the layer was bigger. A `P = 16`
+/// group on a smaller box (the test suite runs one) also makes progress here
+/// rather than livelocking.
+const YIELDS_BEFORE_SLEEP: u32 = 100;
+
+/// How long a waiter sleeps per iteration once even yielding has not helped.
+///
+/// `sched_yield` in a loop is not free to the rest of the machine: it re-enters
+/// the run queue and takes its fair share of the CPU, which on a partitioned
+/// run is a share of the CPUs the partner's *own* workers are trying to finish
+/// the layer on. Measured on a loaded reference host, a waiter that only spun
+/// and yielded inflated its partner's coset loop by 10–60% and fed the skew
+/// back into itself. Past a wait this long the partner is not close, so paying
+/// up to one step of extra latency to stay off its cores is the right trade.
+const SLEEP_STEP: Duration = Duration::from_micros(50);
+
+/// Spin iterations between two checks of the departure mask and the deadline
+/// while still in the spin tier. Past it, both are checked every iteration —
+/// a yield or a sleep dwarfs two loads.
+///
+/// Both live on lines nobody writes in steady state, but keeping them out of
+/// the tight loop leaves the fast path a single load. 64 iterations is well
+/// under a microsecond, so a dead partner is still reported promptly.
+const CHECKS_EVERY: u32 = 64;
+
+/// How long a rank waits for a partner before declaring it dead.
+///
+/// The backstop, not the mechanism: a partner that panics drops its transport
+/// and is reported within `CHECKS_EVERY` spins ([`InProcessTransport::drop`]).
+/// This bound only catches a partner that is neither dead nor arriving — a
+/// deadlock elsewhere in the process — so it is generous.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One rank's contribution to one generation, double-buffered by generation
+/// parity (see [`GroupState`] for why two are enough).
+#[derive(Default)]
+struct ValueSlot {
+    /// `(generation << 16) | (kind << 8) | u8 payload`, published last-but-one
+    /// with `Release`. Generation 0 means "never written".
+    tag: AtomicU64,
+    /// Elements of `buf` that belong to this generation.
+    len: AtomicUsize,
+    /// The `allreduce_sum_u64` contribution.
+    ///
+    /// Written only by the owning rank and only while no partner can be
+    /// reading it, which is what the parity split buys (see [`GroupState`]);
+    /// the elements are atomics so that a *hypothetical* overlap is a stale
+    /// read rather than undefined behaviour, and the `UnsafeCell` is there for
+    /// the resize, which needs `&mut`. Allocated on first use and reused at
+    /// the same length ever after.
+    buf: UnsafeCell<Vec<AtomicU64>>,
+}
+
+/// SAFETY: `buf`'s exclusivity is established by the generation protocol
+/// documented on [`GroupState`], not by Rust's borrow checker.
+unsafe impl Sync for ValueSlot {}
+
+impl ValueSlot {
+    /// Store `values` as this generation's contribution.
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the rank that owns this slot, and no partner may be
+    /// reading it — [`GroupState`]'s parity argument.
+    unsafe fn write_buf(&self, values: &[u64]) {
+        let buf = &mut *self.buf.get();
+        if buf.len() != values.len() {
+            buf.clear();
+            buf.resize_with(values.len(), AtomicU64::default);
+        }
+        for (slot, &v) in buf.iter().zip(values) {
+            slot.store(v, Ordering::Relaxed);
+        }
+        self.len.store(values.len(), Ordering::Relaxed);
+    }
+
+    /// This generation's contribution.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have observed the owner's `Release` of the generation
+    /// it is reading (so the elements are visible) and must be inside the
+    /// window in which the owner cannot be writing — [`GroupState`]'s parity
+    /// argument.
+    unsafe fn read_buf(&self) -> &[AtomicU64] {
+        let buf: &Vec<AtomicU64> = &*self.buf.get();
+        &buf[..]
+    }
+}
+
+/// One rank's publication point: everything a partner reads to learn where
+/// that rank is and what it contributed.
+///
+/// Padded to 128 bytes — two x86 cache lines, the granularity the hardware
+/// prefetcher pairs — so `P` ranks polling each other never share a line.
+#[repr(align(128))]
+#[derive(Default)]
+struct RankSlot {
+    /// `(generation << 8) | kind` of the last call this rank published:
+    /// **monotone**, overwritten every call, both parities.
+    ///
+    /// It is what makes a desynchronized partner a panic instead of a hang: a
+    /// rank waiting for generation `g` sees a partner that ran *past* `g`
+    /// here, even though the partner's `values` slot for `g`'s parity never
+    /// got `g`'s tag.
+    progress: AtomicU64,
+    /// The value published at each generation parity.
+    values: [ValueSlot; 2],
+}
+
+/// The collective state one [`InProcessTransport`] group shares.
+///
+/// # The protocol
+///
+/// Each rank numbers its own calls: generation 1, 2, 3, … in the order it
+/// issues them. Since every rank issues the identical sequence (module docs),
+/// the `g`-th call of every rank is the same call. To make call `g` of kind
+/// `k`, a rank
+///
+/// 1. writes its contribution into `slots[rank].values[g % 2]` (the buffer
+///    first, then `len`, both `Relaxed`),
+/// 2. `Release`-stores `(g << 16) | (k << 8) | payload` into that slot's
+///    `tag`,
+/// 3. `Release`-stores `(g << 8) | k` into `slots[rank].progress`, and
+/// 4. spins on every partner's `progress` until it reads generation `g` or
+///    later, then reads that partner's `values[g % 2]`.
+///
+/// Nobody resets anything and no rank waits to be released, so back-to-back
+/// calls cannot mix: the generation *is* the sense, and each rank owns the
+/// word it publishes.
+///
+/// # Memory ordering
+///
+/// The `Release` on `progress` (3) and the `Acquire` that reads it (4) are the
+/// only synchronization. A reader that observes generation `g` in `progress`
+/// therefore also observes everything the writer did before that store — the
+/// tag, `len`, and the buffer elements — so those may be loaded `Relaxed`
+/// afterwards. (`tag` is stored `Release` and loaded `Acquire` as well, which
+/// is redundant on the path through `progress` but costs nothing measurable
+/// and keeps the slot readable on its own.) `departed` is `Release`/`Acquire`
+/// for the same reason in the other direction: a panicking rank's mask bit
+/// must not be observed before the writes that preceded it.
+///
+/// # Why two value buffers are enough
+///
+/// A rank may only overwrite `values[p]` when no partner can still be reading
+/// it. Every call — including [`Transport::exchange`], which receives from
+/// every partner — completes only after its rank has observed *all* partners
+/// publish that generation. So:
+///
+/// > rank `r` finished call `g` ⟹ every rank `s` published `g` ⟹ every `s`
+/// > had finished call `g − 1`, reads included.
+///
+/// Rank `r` starts call `g + 1` only after finishing `g`, and `g + 1` writes
+/// parity `(g + 1) % 2`, whose previous use was `g − 1` — which the chain
+/// above shows every partner has finished. The same argument bounds how far
+/// ahead a partner can be: while `r` waits at `g`, no partner can be past
+/// `g + 1`, so the tag `r` reads at parity `g % 2` is `g`'s and not `g + 2`'s.
+struct GroupState {
+    /// Ranks in the group.
+    size: u32,
+    /// Bit `q` set once rank `q`'s transport has been dropped — it will
+    /// publish nothing further. `P ≤ 16`, so a `u32` mask is ample.
+    departed: AtomicU32,
+    /// One publication point per rank, in rank order.
+    slots: Box<[RankSlot]>,
+}
+
+impl GroupState {
+    fn new(size: u32) -> Self {
+        Self {
+            size,
+            departed: AtomicU32::new(0),
+            slots: (0..size).map(|_| RankSlot::default()).collect(),
+        }
+    }
+
+    /// The slot rank `rank` publishes generation `gen` into.
+    fn value_slot(&self, rank: u32, gen: u64) -> &ValueSlot {
+        &self.slots[rank as usize].values[(gen & 1) as usize]
+    }
+
+    /// Publish generation `gen` of kind `kind` carrying `payload`.
+    ///
+    /// Steps 2 and 3 of the protocol; the caller has already done step 1 if
+    /// its call carries a buffer.
+    fn publish(&self, rank: u32, gen: u64, kind: CallKind, payload: u8) {
+        let k = kind as u64;
+        self.value_slot(rank, gen).tag.store(
+            (gen << 16) | (k << 8) | u64::from(payload),
+            Ordering::Release,
+        );
+        self.slots[rank as usize]
+            .progress
+            .store((gen << 8) | k, Ordering::Release);
+    }
+
+    /// Wait for rank `src` to publish generation `gen` of kind `kind`, and
+    /// return its tag word (whose low byte is the `u8` payload).
+    ///
+    /// `waiter` is only used to name this rank in a mismatch panic.
+    ///
+    /// # Panics
+    ///
+    /// If `src` published a different call at `gen`, or ran past `gen` without
+    /// publishing it (the collective-order invariant); if `src`'s transport
+    /// has been dropped without publishing `gen` (it panicked); or if `src`
+    /// has neither arrived nor died within [`WAIT_TIMEOUT`].
+    fn wait(&self, waiter: u32, src: u32, gen: u64, kind: CallKind) -> u64 {
+        let slot = &self.slots[src as usize];
+        let value = &slot.values[(gen & 1) as usize];
+        let mut spins: u32 = 0;
+        let mut waiting_since: Option<Instant> = None;
+        loop {
+            let progress = slot.progress.load(Ordering::Acquire);
+            if progress >> 8 >= gen {
+                let tag = value.tag.load(Ordering::Acquire);
+                if tag >> 16 == gen && (tag >> 8) & 0xff == kind as u64 {
+                    return tag;
+                }
+                panic!(
+                    "collective order mismatch: partition {waiter} is at transport call {gen} \
+                     ({}) but partition {src} published {} at call {} — every partition must \
+                     issue the identical sequence of transport calls per layer",
+                    kind.name(),
+                    CallKind::name_of(((tag >> 8) & 0xff) as u8),
+                    tag >> 16,
+                );
+            }
+
+            spins = spins.saturating_add(1);
+            if spins >= SPINS_BEFORE_YIELD || spins.is_multiple_of(CHECKS_EVERY) {
+                if self.departed.load(Ordering::Acquire) & (1 << src) != 0
+                    // A rank that published this generation and then left the
+                    // group is not a dead partner: re-read before condemning
+                    // it, so the last collective of a call cannot race the
+                    // partner's return.
+                    && slot.progress.load(Ordering::Acquire) >> 8 < gen
+                {
+                    panic!(
+                        "partition {src} terminated before completing the {} (it panicked)",
+                        kind.name(),
+                    );
+                }
+                let since = waiting_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > WAIT_TIMEOUT {
+                    panic!(
+                        "partition {src} terminated before completing the {}: no response in \
+                         {} s (this partition is at transport call {gen}, that one at {})",
+                        kind.name(),
+                        WAIT_TIMEOUT.as_secs(),
+                        slot.progress.load(Ordering::Acquire) >> 8,
+                    );
+                }
+            }
+            // Three tiers, cheapest first: burn a few microseconds where the
+            // partner is about to arrive, hand the core over where it is a
+            // layer's skew behind, and get off the machine entirely where it
+            // is further than that.
+            if spins < SPINS_BEFORE_YIELD {
+                std::hint::spin_loop();
+            } else if spins < SPINS_BEFORE_YIELD + YIELDS_BEFORE_SLEEP {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(SLEEP_STEP);
+            }
+        }
+    }
+
+    /// Wait for every partner of `rank` to publish generation `gen` of kind
+    /// `kind`, folding their tag words in **rank order** through `fold`.
+    fn wait_all(&self, rank: u32, gen: u64, kind: CallKind, mut fold: impl FnMut(u32, u64)) {
+        for src in 0..self.size {
+            if src != rank {
+                fold(src, self.wait(rank, src, gen, kind));
+            }
+        }
+    }
 }
 
 /// One message on an in-process channel: the payload, plus (debug builds) the
@@ -401,35 +761,66 @@ fn downcast<T: 'static>(body: Box<dyn std::any::Any + Send>, from: usize, op: &s
     }
 }
 
-/// In-process transport: `P` partitions wired as a `P × P` matrix of
-/// unbounded `std::sync::mpsc` channels, one per ordered pair.
+/// In-process transport: `P` partitions sharing one `GroupState` for the
+/// collectives, and wired as a `P × P` matrix of unbounded
+/// `std::sync::mpsc` channels for the exchange.
 ///
 /// Built as a group by [`group`](Self::group) and moved one per partition
 /// thread. Deliberately Rayon-free: it is called from the partition's driving
-/// thread between layers, never from inside a parallel region.
+/// thread between layers, never from inside a parallel region — and by *one*
+/// thread per rank, since the generation counter is that thread's call index.
 ///
-/// Channels are unbounded, so a send never blocks and the "send everything,
-/// then receive in rank order" shape every operation here uses cannot
-/// deadlock. Receives block; a partner that died is reported by name rather
-/// than waited on forever (its dropped sender disconnects the channel).
+/// The three [`Collectives`] operations spin on shared atomics (module docs
+/// and `GroupState`): a few hundred nanoseconds between dedicated threads,
+/// where a channel round trip cost a few microseconds of futex sleep and wake
+/// on the per-layer path. The exchange keeps the channels — it moves a
+/// payload, and only on the layers that have one. Channels are unbounded, so a
+/// send never blocks and the "send everything, then receive in rank order"
+/// shape cannot deadlock. Its receives block; a partner that died is reported
+/// by name rather than waited on forever (its dropped sender disconnects the
+/// channel).
 ///
-/// `size == 1` is a no-op path: no channels exist, [`Transport::exchange`]
-/// returns one `None`, and the reductions return their input.
+/// `size == 1` is a no-op path: no channels exist, no generation is consumed,
+/// [`Transport::exchange`] returns one `None`, and the reductions return their
+/// input.
 pub struct InProcessTransport {
     /// This partition's index.
     rank: u32,
     /// Partitions in the group.
     size: u32,
+    /// The group's shared collective state, one `Arc` per rank. It outlives
+    /// every rank's endpoint, which is what lets a partner read a slot's
+    /// buffer while its owner is on its way out.
+    state: Arc<GroupState>,
+    /// This rank's transport-call counter: one increment per call, the
+    /// generation published to [`GroupState`] and (in debug builds) the stamp
+    /// on every exchange message. Atomic only because the methods take
+    /// `&self`; nothing but this rank's driving thread touches it.
+    gen: AtomicU64,
     /// Sender to partition `q`, `None` in the self slot.
     outbox: Vec<Option<std::sync::mpsc::Sender<Message>>>,
     /// Receiver of what partition `q` sends here, `None` in the self slot.
     /// `Mutex` only to make the transport `Sync` — `Receiver` is `Send` but
     /// not `Sync`, and nothing here contends for it.
     inbox: Vec<Option<std::sync::Mutex<std::sync::mpsc::Receiver<Message>>>>,
-    /// Collective counter: one increment per transport call, stamped on every
-    /// message and asserted on receive. Debug builds only.
-    #[cfg(debug_assertions)]
-    seq: std::sync::atomic::AtomicU64,
+}
+
+/// Leaving the group marks this rank departed, so a partner spinning for a
+/// generation this rank will never publish fails fast instead of waiting out
+/// its `WAIT_TIMEOUT` backstop.
+///
+/// Unconditional rather than `if std::thread::panicking()`: a rank that
+/// returns from its partition body with fewer collectives than its partners is
+/// exactly as dead to them as one that panicked, and the panic message they
+/// raise says so. It cannot fire spuriously at the end of a healthy call —
+/// `GroupState::wait` re-reads the partner's progress before condemning it,
+/// and a rank only leaves after publishing the group's last generation.
+impl Drop for InProcessTransport {
+    fn drop(&mut self) {
+        self.state
+            .departed
+            .fetch_or(1 << self.rank, Ordering::Release);
+    }
 }
 
 impl InProcessTransport {
@@ -456,38 +847,31 @@ impl InProcessTransport {
             }
         }
 
+        let state = Arc::new(GroupState::new(size));
         (0..n)
             .map(|rank| InProcessTransport {
                 rank: rank as u32,
                 size,
+                state: Arc::clone(&state),
+                gen: AtomicU64::new(0),
                 outbox: std::mem::take(&mut senders[rank]),
                 inbox: (0..n)
                     .map(|src| receivers[src][rank].take().map(std::sync::Mutex::new))
                     .collect(),
-                #[cfg(debug_assertions)]
-                seq: std::sync::atomic::AtomicU64::new(0),
             })
             .collect()
     }
 
-    /// The sequence number for the transport call starting now, and advance
-    /// the counter. Always zero in release builds, where messages carry no
-    /// sequence number.
-    fn next_seq(&self) -> u64 {
-        #[cfg(debug_assertions)]
-        {
-            self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            0
-        }
+    /// The generation of the transport call starting now: one more than the
+    /// last, and never zero (an unwritten slot reads as generation 0).
+    fn next_gen(&self) -> u64 {
+        self.gen.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// Pretend one extra collective was issued, to test the sequence check.
-    #[cfg(all(test, debug_assertions))]
+    /// Pretend one extra collective was issued, to test the order check.
+    #[cfg(test)]
     fn skip_sequence_for_test(&self) {
-        self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Send one message to partition `dst`.
@@ -497,20 +881,6 @@ impl InProcessTransport {
             .expect("a partition has no channel to itself");
         if tx.send(Message::new(seq, body)).is_err() {
             panic!("partition {dst} terminated before completing the {op} (it panicked)");
-        }
-    }
-
-    /// Send one message to every partner, built fresh per partner.
-    fn broadcast(
-        &self,
-        seq: u64,
-        mut body: impl FnMut() -> Box<dyn std::any::Any + Send>,
-        op: &str,
-    ) {
-        for dst in 0..self.size as usize {
-            if dst != self.rank as usize {
-                self.send_to(dst, seq, body(), op);
-            }
         }
     }
 
@@ -551,53 +921,56 @@ impl Collectives for InProcessTransport {
         self.size
     }
 
+    /// The maximum rides in the published word's payload byte, so the whole
+    /// reduction is one store and `P − 1` loads. `max` is order-independent,
+    /// so every partition returns the same byte however the arrivals
+    /// interleave.
     fn allreduce_max_u8(&self, v: u8) -> u8 {
         if self.size == 1 {
             return v;
         }
-        let seq = self.next_seq();
-        self.broadcast(seq, || Box::new(v), "allreduce_max_u8");
+        let gen = self.next_gen();
+        self.state.publish(self.rank, gen, CallKind::MaxU8, v);
 
         let mut acc = v;
-        for src in 0..self.size as usize {
-            if src == self.rank as usize {
-                continue;
-            }
-            let their = downcast::<u8>(
-                self.recv_from(src, seq, "allreduce_max_u8"),
-                src,
-                "allreduce_max_u8",
-            );
-            acc = acc.max(their);
-        }
+        self.state
+            .wait_all(self.rank, gen, CallKind::MaxU8, |_, tag| {
+                acc = acc.max((tag & 0xff) as u8);
+            });
         acc
     }
 
+    /// Each partition publishes its own contribution once and folds its
+    /// partners' in place.
+    ///
+    /// The local sum runs in rank order, but it would not have to: wrapping
+    /// `u64` addition is exact, associative and commutative, so every
+    /// partition ends with the identical bits whatever order it folds in.
     fn allreduce_sum_u64(&self, buf: &mut [u64]) {
         if self.size == 1 {
             return;
         }
-        let seq = self.next_seq();
-        let mine = buf.to_vec();
-        self.broadcast(seq, || Box::new(mine.clone()), "allreduce_sum_u64");
+        let gen = self.next_gen();
+        let slot = self.state.value_slot(self.rank, gen);
+        // SAFETY: this rank owns the slot, and the generation parity keeps
+        // every partner out of it — `GroupState`'s "why two value buffers are
+        // enough". The write must precede the publish below, which is what
+        // makes it visible to the partners at all.
+        unsafe { slot.write_buf(buf) };
+        self.state.publish(self.rank, gen, CallKind::SumU64, 0);
 
-        // Received first, combined second, so the summation order is rank
-        // order on every partition and all of them get the same bits back.
-        let n = self.size as usize;
-        let mut contributions: Vec<Option<Vec<u64>>> = Vec::with_capacity(n);
+        let n = self.size;
         for src in 0..n {
-            contributions.push((src != self.rank as usize).then(|| {
-                downcast::<Vec<u64>>(
-                    self.recv_from(src, seq, "allreduce_sum_u64"),
-                    src,
-                    "allreduce_sum_u64",
-                )
-            }));
-        }
-
-        let mut acc = vec![0u64; buf.len()];
-        for (src, contribution) in contributions.iter().enumerate() {
-            let values = contribution.as_ref().unwrap_or(&mine);
+            if src == self.rank {
+                continue;
+            }
+            self.state.wait(self.rank, src, gen, CallKind::SumU64);
+            let theirs = self.state.value_slot(src, gen);
+            // SAFETY: `wait` returned, so this rank has observed `src`'s
+            // `Release` of this generation — its buffer and length are visible
+            // — and by the parity argument `src` cannot write the slot again
+            // before this rank publishes its next generation.
+            let values = unsafe { theirs.read_buf() };
             assert_eq!(
                 values.len(),
                 buf.len(),
@@ -605,24 +978,20 @@ impl Collectives for InProcessTransport {
                 values.len(),
                 buf.len(),
             );
-            for (a, v) in acc.iter_mut().zip(values) {
-                *a = a.wrapping_add(*v);
+            for (a, v) in buf.iter_mut().zip(values) {
+                *a = a.wrapping_add(v.load(Ordering::Relaxed));
             }
         }
-        buf.copy_from_slice(&acc);
     }
 
     fn barrier(&self) {
         if self.size == 1 {
             return;
         }
-        let seq = self.next_seq();
-        self.broadcast(seq, || Box::new(()), "barrier");
-        for src in 0..self.size as usize {
-            if src != self.rank as usize {
-                downcast::<()>(self.recv_from(src, seq, "barrier"), src, "barrier");
-            }
-        }
+        let gen = self.next_gen();
+        self.state.publish(self.rank, gen, CallKind::Barrier, 0);
+        self.state
+            .wait_all(self.rank, gen, CallKind::Barrier, |_, _| {});
     }
 }
 
@@ -644,7 +1013,13 @@ impl Transport for InProcessTransport {
             return vec![None];
         }
 
-        let seq = self.next_seq();
+        let seq = self.next_gen();
+        // The exchange consumes a generation like any other call and publishes
+        // it before sending, even though it waits on the channels rather than
+        // on the slots: that is what lets a partner spinning in a *collective*
+        // at the same generation see the kind mismatch and panic, instead of
+        // the pair hanging on each other's different call.
+        self.state.publish(self.rank, seq, CallKind::Exchange, 0);
         // Unbounded channels: every send completes before the first receive,
         // so no pair of partitions can block on each other.
         for (dst, payload) in send.into_iter().enumerate() {
@@ -980,28 +1355,258 @@ mod tests {
         let _: Vec<Option<Vec<u64>>> = group[0].exchange(vec![None]);
     }
 
-    /// A partition that issues one collective more than its partners is caught
-    /// on the next receive rather than crossing payloads. Debug builds only:
-    /// the sequence counter is `cfg(debug_assertions)`.
-    #[cfg(debug_assertions)]
+    /// A partition that issues one collective more than its partners is
+    /// caught by the generation stamp rather than crossing payloads.
+    ///
+    /// The *in-step* rank is the one that names it: the desynchronized rank
+    /// has published a generation its partner never reached, so the partner
+    /// finds a call it did not issue in that generation's slot. The
+    /// desynchronized rank is left waiting for a generation that will never
+    /// come, and dies of its partner's departure instead — both panics are
+    /// checked here, and both ranks own their endpoint inside their own thread
+    /// so neither drop waits on the other.
     #[test]
-    #[should_panic(expected = "collective order mismatch")]
-    fn a_desynchronized_partition_is_caught_on_receive() {
+    fn a_desynchronized_partition_is_caught_by_the_generation_stamp() {
         let mut group = InProcessTransport::group(2);
         let one = group.pop().expect("rank 1");
         let zero = group.pop().expect("rank 0");
 
-        std::thread::scope(|scope| {
-            scope.spawn(move || {
-                // Rank 1 is in step with itself but not with rank 0, so it sees
-                // the mismatch too; swallow it so only rank 0's panic reaches
-                // the test harness.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| one.barrier()));
-            });
+        let (desynced, in_step) = std::thread::scope(|scope| {
             // Rank 0 behaves as if it had issued one extra collective.
-            zero.skip_sequence_for_test();
-            zero.barrier();
+            let desynced = scope.spawn(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    zero.skip_sequence_for_test();
+                    zero.barrier();
+                }))
+            });
+            let in_step = scope.spawn(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || one.barrier()))
+            });
+            (
+                desynced.join().expect("rank 0 thread"),
+                in_step.join().expect("rank 1 thread"),
+            )
         });
+
+        let in_step = panic_message(
+            in_step
+                .expect_err("the in-step rank must reject the mismatched generation")
+                .as_ref(),
+        );
+        assert!(in_step.contains("collective order mismatch"), "{in_step}");
+        let desynced = panic_message(
+            desynced
+                .expect_err("the desynchronized rank waits for a call nobody makes")
+                .as_ref(),
+        );
+        assert!(desynced.contains("terminated"), "{desynced}");
+    }
+
+    /// The panic message behind a `catch_unwind` payload.
+    fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+        if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<panic payload is not a string>".to_string()
+        }
+    }
+
+    /// A rank that dies *between* two collectives must fail its partners fast
+    /// — through the departure mask, not the 10 s backstop — and name itself.
+    #[test]
+    fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
+        let mut group = InProcessTransport::group(2);
+        let one = group.pop().expect("rank 1");
+        let zero = group.pop().expect("rank 0");
+
+        let (elapsed, message) = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // The transport is dropped *while unwinding*, which is what a
+                // partitioned run does when a partition body panics.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    one.barrier();
+                    panic!("rank 1 dies after its barrier");
+                }));
+            });
+            zero.barrier();
+            let started = Instant::now();
+            let payload =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zero.allreduce_max_u8(3)))
+                    .expect_err("the surviving rank cannot complete a collective alone");
+            (started.elapsed(), panic_message(payload.as_ref()))
+        });
+
+        assert!(message.contains("terminated"), "{message}");
+        assert!(message.contains("partition 1"), "{message}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the survivor waited {elapsed:?}, so it fell back on the {WAIT_TIMEOUT:?} timeout \
+             instead of noticing the departure",
+        );
+    }
+
+    /// A thousand back-to-back reductions on four ranks with rank- *and*
+    /// round-dependent contributions: a generation that mixed with its
+    /// neighbour shows up as a wrong sum, not as a hang.
+    #[test]
+    fn a_thousand_back_to_back_sums_never_mix_generations() {
+        const ROUNDS: u64 = 1_000;
+        let size = 4u32;
+        let group = InProcessTransport::group(size);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        let rank = u64::from(transport.rank());
+                        for round in 1..=ROUNDS {
+                            let mut buf = vec![rank * round, round, rank];
+                            transport.allreduce_sum_u64(&mut buf);
+                            // Σ rank = 0+1+2+3 = 6, Σ round = 4·round.
+                            assert_eq!(
+                                buf,
+                                vec![6 * round, 4 * round, 6],
+                                "rank {rank}, round {round}",
+                            );
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("rank thread panicked");
+            }
+        });
+    }
+
+    /// One round of the mixed script: the first `max`, the reduced buffer, and
+    /// the flag `max`.
+    type MixedRound = (u8, Vec<u64>, u8);
+    /// What one rank came out of the mixed script with.
+    type MixedScript = (u32, Vec<MixedRound>);
+
+    /// Reductions and barriers interleaved: every rank runs the same mixed
+    /// script and every rank must come out with the same hand-computed
+    /// answers.
+    #[test]
+    fn mixed_collective_sequences_agree_on_every_rank() {
+        const ROUNDS: u8 = 25;
+        let size = 4u32;
+        let group = InProcessTransport::group(size);
+
+        let mut results: Vec<MixedScript> = std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        let rank = transport.rank();
+                        let mut rounds = Vec::new();
+                        for round in 0..ROUNDS {
+                            let hi = transport.allreduce_max_u8(rank as u8 * 3 + round);
+                            transport.barrier();
+                            let mut buf =
+                                vec![u64::from(rank) + 1, u64::from(round), u64::from(rank) << 8];
+                            transport.allreduce_sum_u64(&mut buf);
+                            transport.barrier();
+                            let flag = transport.allreduce_max_u8(if rank == 2 { 255 } else { 0 });
+                            rounds.push((hi, buf, flag));
+                        }
+                        (rank, rounds)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("rank thread panicked"))
+                .collect()
+        });
+
+        results.sort_by_key(|(rank, _)| *rank);
+        for (rank, rounds) in &results {
+            assert_eq!(rounds.len(), ROUNDS as usize, "rank {rank}");
+            for (round, (hi, sum, flag)) in rounds.iter().enumerate() {
+                let round = round as u8;
+                // max over 3·rank + round is 9 + round; Σ(rank+1) = 10,
+                // Σ round = 4·round, Σ(rank << 8) = 6·256.
+                assert_eq!(*hi, 9 + round, "rank {rank}, round {round}");
+                assert_eq!(
+                    *sum,
+                    vec![10, 4 * u64::from(round), 6 << 8],
+                    "rank {rank}, round {round}",
+                );
+                assert_eq!(*flag, 255, "rank {rank}, round {round}");
+            }
+        }
+        // And identical across ranks, not merely correct on each.
+        for (rank, rounds) in &results[1..] {
+            assert_eq!(rounds, &results[0].1, "rank {rank} disagrees with rank 0");
+        }
+    }
+
+    /// Sixteen ranks — more than a CI box has cores — must finish rather than
+    /// livelock: past [`SPINS_BEFORE_YIELD`] a waiting rank hands the core to
+    /// the partner it is waiting for. Completing *is* the assertion.
+    #[test]
+    fn sixteen_ranks_complete_when_oversubscribed() {
+        const ROUNDS: u64 = 50;
+        let size = 16u32;
+        let group = InProcessTransport::group(size);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        let rank = transport.rank();
+                        for round in 1..=ROUNDS {
+                            assert_eq!(transport.allreduce_max_u8(rank as u8 + 1), 16);
+                            let mut buf = vec![u64::from(rank), round];
+                            transport.allreduce_sum_u64(&mut buf);
+                            // Σ_{r<16} r = 120.
+                            assert_eq!(buf, vec![120, 16 * round], "rank {rank}, round {round}");
+                            transport.barrier();
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("rank thread panicked");
+            }
+        });
+    }
+
+    /// Measurement, not assertion: the per-call latency of the cheapest
+    /// collective on two ranks, printed under `--nocapture`. It asserts
+    /// nothing about time — the box is shared — but it keeps the number one
+    /// command away when the collective path is touched again.
+    #[test]
+    fn allreduce_max_u8_latency_on_two_ranks_is_reported() {
+        const CALLS: u32 = 20_000;
+        let mut group = InProcessTransport::group(2);
+        let one = group.pop().expect("rank 1");
+        let zero = group.pop().expect("rank 0");
+
+        let elapsed = std::thread::scope(|scope| {
+            let handle = scope.spawn(move || {
+                for i in 0..CALLS {
+                    one.allreduce_max_u8((i % 251) as u8);
+                }
+            });
+            let started = Instant::now();
+            for i in 0..CALLS {
+                zero.allreduce_max_u8((i % 251) as u8);
+            }
+            let elapsed = started.elapsed();
+            handle.join().expect("rank thread panicked");
+            elapsed
+        });
+
+        println!(
+            "allreduce_max_u8 P=2 (unpinned): {:.0} ns/call over {CALLS} calls",
+            elapsed.as_nanos() as f64 / f64::from(CALLS),
+        );
     }
 
     /// A partner that died mid-layer must be reported, not waited on forever.

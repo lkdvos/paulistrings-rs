@@ -511,6 +511,19 @@ to their slot and enter their pool. The transport group is built **per call**
 and moved into the partitions, so a partition that panics drops its endpoints
 and its partners fail naming its rank instead of blocking forever.
 
+In-process, the exchange moves its payload through a `P × P` matrix of `mpsc`
+channels, but the **collectives are shared atomics with a spin wait**: each
+rank numbers its own transport calls and publishes `(generation, kind)` plus
+its contribution into its own cache-line-padded slot, and a waiter spins on its
+partners' slots — `spin_loop`, then `yield_now`, then short sleeps, so a
+waiter never takes CPU from the partner's own workers, with a dropped endpoint
+as the fail-fast signal. The partition threads are pinned and dedicated for the whole
+call, so a per-layer futex sleep/wake — tens of microseconds on the critical
+path, against a bucket-count reduction of a few hundred nanoseconds' work — was
+the entire cost of the unconditional collective. The published
+`(generation, kind)` pair is also what makes a collective-order violation a
+panic naming both partitions, in every build, rather than a hang.
+
 Scatter and gather bracket a run, not a layer. `filter_partition` runs on the
 owning partition's own pool, so every column is first-touched in the domain
 that will read it, and `merge_partitions` merges the disjoint runs back. The

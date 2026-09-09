@@ -197,3 +197,14 @@ Decisions/deviations worth remembering:
 - Slurm: `scripts/slurm/mpi-ranks.sbatch` now builds a pinned commit (`PS_REV`) in a private worktree,
   runs the rank matrix (`ranks = 2^k ≤ nodes × numa`, one per NUMA domain, `--cpu-bind=ldoms`), then
   the probe with `--mpi` (env `LAYERS`, `N`).
+
+## 2026-09-09 — Python `comm=` landed; the reported communicator "leak" is not one
+
+Bindings: `propagate(..., comm=<mpi4py comm>, result="gather"|"local")`, `mpi_available()`,
+`PartitionStats.rank/.size`, `tests/test_mpi.py` (any world size), `scripts/mpi-test.sh --python`,
+`docs/book/src/design/mpi.md`. The binding validates everything non-collective (mode conflict,
+placement, exact-`topn` gate, thread level ≥ SERIALIZED, `MPI._sizeof` ABI guard) *before* the
+collective `MPI_Comm_dup`, so a rank that raises never enters a collective its partners wait on.
+The handoff flagged `MpiTransport::adopt` returning `SizeNotPowerOfTwo` after the dup as a leak: it is
+not — rsmpi's `SimpleCommunicator::from_raw` owns the handle and `Drop` calls `MPI_Comm_free`
+(`mpi-0.8.2/src/topology/sealed.rs:152`), and `adopt` takes the communicator by value.

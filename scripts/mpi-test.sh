@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# Run the MPI transport's differential net (`tests/mpi_ranks.rs`) at several
-# rank counts under `mpirun`.
+# Run the MPI nets at several rank counts under `mpirun`: the Rust transport's
+# differential net (`tests/mpi_ranks.rs`) and, with --python, the bindings'
+# (`python/paulistrings/tests/test_mpi.py`).
 #
 #   scripts/mpi-test.sh                        # 2 and 4 ranks, debug profile
 #   scripts/mpi-test.sh --ranks 2,4,8          # more
 #   scripts/mpi-test.sh --oversubscribe        # more ranks than cores (CI, a busy box)
 #   scripts/mpi-test.sh --release              # the shipping codegen
+#   scripts/mpi-test.sh --python               # also build the extension and run its net
+#   scripts/mpi-test.sh --python --no-rust     # only the Python net
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
 # else with exit 2.
+#
+# --python builds `_paulistrings` with `--features mpi` into $VIRTUAL_ENV, or
+# ./.venv-mpi if that is unset, and runs pytest under mpirun. That venv needs
+# maturin, pytest, numpy and an importable mpi4py built against the *same* MPI:
+#
+#   python3 -m venv --system-site-packages .venv-mpi   # from an interpreter with mpi4py
+#   .venv-mpi/bin/pip install maturin pytest numpy
 #
 # This script loads no modules. It needs `mpicc` (for rsmpi's build probe),
 # `LIBCLANG_PATH` (for its bindgen) and `mpirun` on PATH, and says how to get
@@ -21,16 +31,24 @@ cd "$(dirname "$0")/.."
 ranks="2,4"
 profile=""
 oversubscribe=0
+python_net=0
+rust_net=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --ranks) ranks="$2"; shift 2 ;;
         --ranks=*) ranks="${1#*=}"; shift ;;
         --oversubscribe) oversubscribe=1; shift ;;
         --release) profile="--release"; shift ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        --python) python_net=1; shift ;;
+        --no-rust) rust_net=0; shift ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
+if [ "$rust_net" -eq 0 ] && [ "$python_net" -eq 0 ]; then
+    echo "--no-rust without --python leaves nothing to run" >&2
+    exit 64
+fi
 
 missing=0
 command -v mpicc  >/dev/null 2>&1 || { echo "mpicc not found (rsmpi's build script probes it)" >&2; missing=1; }
@@ -50,10 +68,11 @@ EOF
     exit 2
 fi
 
-echo "== building the mpi_ranks test binary ${profile:-(debug)}"
-bin=$(cargo test -p paulistrings --features mpi --test mpi_ranks --no-run \
-        ${profile:+$profile} --message-format=json 2>/dev/null \
-      | python3 -c 'import json, sys
+if [ "$rust_net" -eq 1 ]; then
+    echo "== building the mpi_ranks test binary ${profile:-(debug)}"
+    bin=$(cargo test -p paulistrings --features mpi --test mpi_ranks --no-run \
+            ${profile:+$profile} --message-format=json 2>/dev/null \
+          | python3 -c 'import json, sys
 for line in sys.stdin:
     try:
         rec = json.loads(line)
@@ -62,12 +81,39 @@ for line in sys.stdin:
     if rec.get("reason") == "compiler-artifact" \
        and rec["target"]["name"] == "mpi_ranks" and rec.get("executable"):
         print(rec["executable"])')
-if [ -z "$bin" ]; then
-    echo "could not find the mpi_ranks executable; rebuilding with output:" >&2
-    cargo test -p paulistrings --features mpi --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
-    exit 1
+    if [ -z "$bin" ]; then
+        echo "could not find the mpi_ranks executable; rebuilding with output:" >&2
+        cargo test -p paulistrings --features mpi --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
+        exit 1
+    fi
+    echo "   $bin"
 fi
-echo "   $bin"
+
+if [ "$python_net" -eq 1 ]; then
+    venv="${VIRTUAL_ENV:-$PWD/.venv-mpi}"
+    if [ ! -x "$venv/bin/python" ]; then
+        echo "no virtualenv at $venv (set VIRTUAL_ENV, or create ./.venv-mpi)" >&2
+        sed -n '18,24p' "$0" >&2
+        exit 2
+    fi
+    if ! "$venv/bin/python" -c 'import mpi4py' 2>/dev/null; then
+        echo "$venv has no importable mpi4py; the Python net needs one built against this MPI" >&2
+        exit 2
+    fi
+    maturin="$venv/bin/maturin"
+    if [ ! -x "$maturin" ]; then
+        maturin=$(command -v maturin || true)
+    fi
+    if [ -z "$maturin" ]; then
+        echo "no maturin in $venv (or on PATH): pip install maturin into it" >&2
+        exit 2
+    fi
+    echo "== building _paulistrings --features mpi into $venv"
+    # `maturin develop` installs into the *active* venv, so name it explicitly
+    # rather than relying on the caller's shell.
+    VIRTUAL_ENV="$venv" "$maturin" develop ${profile:+$profile} \
+        --features mpi -m crates/paulistrings-py/Cargo.toml
+fi
 
 # Shared-memory and oversubscription knobs. `vader_single_copy_mechanism=none`
 # turns off CMA/XPMEM cross-process copies, which container runtimes and
@@ -83,12 +129,29 @@ flags=""
 
 status=0
 for n in ${ranks//,/ }; do
-    echo "== mpirun -n $n $flags"
-    if mpirun -n "$n" $flags "$bin"; then
-        echo "== $n ranks: ok"
-    else
-        echo "== $n ranks: FAILED" >&2
-        status=1
+    if [ "$rust_net" -eq 1 ]; then
+        echo "== mpirun -n $n $flags (mpi_ranks)"
+        if mpirun -n "$n" $flags "$bin"; then
+            echo "== $n ranks, mpi_ranks: ok"
+        else
+            echo "== $n ranks, mpi_ranks: FAILED" >&2
+            status=1
+        fi
+    fi
+    if [ "$python_net" -eq 1 ]; then
+        # `-p no:randomly` because the cases are collective: a plugin that
+        # shuffled them would shuffle each rank independently and deadlock.
+        # `-p no:cacheprovider` because every rank would write the same
+        # .pytest_cache.
+        echo "== mpirun -n $n $flags (test_mpi.py)"
+        if mpirun -n "$n" $flags "$venv/bin/python" -m pytest \
+                python/paulistrings/tests/test_mpi.py -q \
+                -p no:cacheprovider -p no:randomly; then
+            echo "== $n ranks, test_mpi.py: ok"
+        else
+            echo "== $n ranks, test_mpi.py: FAILED" >&2
+            status=1
+        fi
     fi
 done
 exit "$status"

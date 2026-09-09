@@ -19,7 +19,7 @@
 //!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
 //!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
 //!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic] \
-//!     [--mpi]
+//!     [--initial random|z0] [--mpi]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -38,6 +38,46 @@
 //! tens of GB well before `--n`'s default of 1,000,000 — see
 //! `TROTTER_MAX_N`'s doc comment for the measurement. A capped cell prints
 //! a note to stderr.
+//!
+//! # The Trotter-step workloads
+//!
+//! `tfim_step` and `heavyhex_step` are the partitioned engine's **primary**
+//! workload: rotation-only kicked-Ising circuits, one channel per gate, whose
+//! two-qubit generators live on a fixed qubit graph — which is what makes the
+//! partition rows a graph cut rather than a free draw (`ARCHITECTURE.md
+//! §Partitioning`, `research/plans/2026-09-09-partition-row-tuning.md`). Both
+//! take `--reps` as the number of **Trotter steps**, and both use the
+//! presentation workload's angles: `theta_zz = -pi/2`, `theta_h = 5·pi/16`
+//! (the notes give no chain-specific recipe, so the chain reuses the
+//! heavy-hex one and the two sit on the same physical point).
+//!
+//! - `tfim_step` — a 1D **open chain** of `--qubits` qubits. A step is the
+//!   `ZZ(i, i+1)` layer then the `X(q)` layer, so `2·qubits - 1` channels.
+//! - `heavyhex_step` — the fixed **127-qubit heavy-hex** lattice
+//!   (`test_support::HEAVY_HEX_127_EDGES`, i.e. IBM Eagle r3). A step is the
+//!   `X` layer then the `ZZ` layer in hardware-colored order, so 271
+//!   channels. `--qubits` must be at least 127; anything above is a spectator.
+//!
+//! Unlike every other layer they default to `--initial z0`: a single-term
+//! `Z` observable on qubit `--qubits / 2`, whose term count then **grows** step
+//! by step. That growth, not a fixed `--n`, is the capacity-relevant dynamics,
+//! and it is also the only input under which a partition imbalance means
+//! anything — a dense random sum is balanced under any row by construction.
+//! `--initial random` puts them back on the shared `rand_sum` input.
+//!
+//! Being growth workloads they need a truncation policy or they do not
+//! converge: a step is a fresh set of distinct generators, so under
+//! `--truncation keep` the term count rises without bound (the probe warns).
+//! `--truncation coeff:1.220703125e-4` is `2^-13`, the presentation's working
+//! point (~1.16e6 peak terms on the heavy-hex circuit); `coeff:3.90625e-3`
+//! (`2^-8`) is the quick, few-thousand-term version.
+//!
+//! `--initial random` on these two layers is a different measurement, not a
+//! bigger one: a `theta_zz = -pi/2` rotation multiplies every anticommuting
+//! term by `cos(pi/4)`, so a *dense* input decays uniformly and a run of any
+//! depth under a coefficient threshold truncates it to nothing (a 254-channel
+//! chain cell reports `n = 0`). Use it with `--truncation keep` and a small
+//! `--reps`, or read the `z0` cells.
 //!
 //! `--truncation` selects the [`TruncationPolicy`] every cell runs under,
 //! statically (one monomorphization per spec, so `keep_term` inlines into the
@@ -172,8 +212,9 @@ use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch_and_options, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
-    PauliString, PauliSum, PhaseStats, PropagateOptions, TruncationPolicy,
+    propagate_with_scratch_and_options, BuildAccumulator, Circuit, Direction, Gf2Hash,
+    LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
+    TruncationPolicy,
 };
 
 // ---------------------------------------------------------------------
@@ -194,12 +235,14 @@ Options:
                             16 = the reference host's physical-core count)
   --layers <csv>           Comma-separated layers, from:
                               rotation_zz, rotation_local, rotation_remote,
-                              cnot, gu2q, su4, depolarizing, trotter
+                              cnot, gu2q, su4, depolarizing, trotter,
+                              tfim_step, heavyhex_step
                             (default: rotation_zz,cnot,gu2q,depolarizing,trotter
                             — su4 is opt-in, being the heaviest cell per --n:
                             a dense 16x16 PTM, so ~16x the fanout of gu2q's
                             sqrt(SWAP) and a ~16x larger closed key set)
-  --reps <usize>           Channel repetitions per cell, ignored by trotter
+  --reps <usize>           Channel repetitions per cell, ignored by trotter;
+                            Trotter STEPS for tfim_step / heavyhex_step
                             (default: 8)
                             NOTE: trotter also ignores --n above 100 (see
                             TROTTER_MAX_N in the source) — it is 64 distinct
@@ -276,6 +319,20 @@ Options:
   --partition-seed <u64|0xHEX>
                            Seed picking the GF(2) partition rows. Default: the
                             driver's own choice (the sum's hash seed).
+  --initial random|z0      The cell's input sum before the warm-up call:
+                              random  rand_sum(--n, --qubits, --seed), the
+                                      dense steady-state input; the default
+                                      for every layer but the two Trotter
+                                      steps
+                              z0      one term, Z on qubit --qubits/2, whose
+                                      support and term count then grow step by
+                                      step; the default for tfim_step and
+                                      heavyhex_step, and the input under which
+                                      the partition imbalance of a cut row
+                                      means anything (a dense random sum is
+                                      balanced under any row by construction)
+                            --n is not a size under z0, and trotter ignores
+                            this flag entirely (it keeps its low-weight input).
   --p1-path classic|partitioned
                            Which path a P = 1 cell takes (default: classic,
                             i.e. today's propagate_with_scratch_and_options).
@@ -306,6 +363,14 @@ enum LayerKind {
     Su4Local,
     Depolarizing,
     Trotter,
+    /// One kicked-Ising Trotter step on a 1D **open chain** of `--qubits`
+    /// qubits, `--reps` steps: `ZZ(i, i+1)` on every bond then `X(q)` on every
+    /// qubit, one channel each. See [`tfim_step_circuit`].
+    TfimStep,
+    /// One kicked-Ising Trotter step on the **127-qubit heavy-hex** lattice,
+    /// `--reps` steps: `X(q)` on every qubit then `ZZ` on every edge in
+    /// hardware-colored order. See [`heavy_hex_step_circuit`].
+    HeavyHexStep,
 }
 
 impl LayerKind {
@@ -320,6 +385,8 @@ impl LayerKind {
             LayerKind::Su4Local => "su4_local",
             LayerKind::Depolarizing => "depolarizing",
             LayerKind::Trotter => "trotter",
+            LayerKind::TfimStep => "tfim_step",
+            LayerKind::HeavyHexStep => "heavyhex_step",
         }
     }
 
@@ -334,11 +401,20 @@ impl LayerKind {
             "su4_local" => Ok(LayerKind::Su4Local),
             "depolarizing" => Ok(LayerKind::Depolarizing),
             "trotter" => Ok(LayerKind::Trotter),
+            "tfim_step" => Ok(LayerKind::TfimStep),
+            "heavyhex_step" => Ok(LayerKind::HeavyHexStep),
             other => Err(format!(
                 "unknown layer '{other}' (expected one of: rotation_zz, rotation_local, \
-                 rotation_remote, cnot, gu2q, su4, su4_local, depolarizing, trotter)"
+                 rotation_remote, cnot, gu2q, su4, su4_local, depolarizing, trotter, tfim_step, \
+                 heavyhex_step)"
             )),
         }
+    }
+
+    /// The two rotation-only Trotter workloads, whose default input is a
+    /// single-site `Z` observable rather than a random dense sum.
+    fn is_trotter_step(self) -> bool {
+        matches!(self, LayerKind::TfimStep | LayerKind::HeavyHexStep)
     }
 
     /// Whether the layer's generator qubits are chosen per cell from the
@@ -523,6 +599,55 @@ impl P1Path {
     }
 }
 
+/// What a cell's input sum is, before the warm-up call.
+///
+/// The two shapes measure different things. [`Initial::Random`] is a dense
+/// sum of `--n` terms spread over every qubit — the steady-state, capacity-
+/// bound picture, and what every layer but the two Trotter steps has always
+/// used. [`Initial::Z0`] is the *observable* picture: one term, `Z` on the
+/// middle qubit, whose support and term count then grow step by step. That
+/// growth is the capacity-relevant dynamics for a Heisenberg-picture
+/// simulation, and it is also the only input under which the partition
+/// imbalance of a cut row means anything — a dense random sum is balanced by
+/// construction under any row (half its terms have odd parity on any mask),
+/// whereas a growing light cone need not be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Initial {
+    /// `test_support::rand_sum(--n, --qubits, --seed)`.
+    Random,
+    /// A single `Z` on qubit `--qubits / 2`, coefficient 1. `--n` is then not
+    /// a size at all (it is still echoed, and the reported `n` is the
+    /// warm-up's output like every other cell).
+    Z0,
+}
+
+impl Initial {
+    fn label(self) -> &'static str {
+        match self {
+            Initial::Random => "random",
+            Initial::Z0 => "z0",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "random" => Ok(Initial::Random),
+            "z0" => Ok(Initial::Z0),
+            other => Err(format!("--initial expects random | z0, got '{other}'")),
+        }
+    }
+
+    /// The input a layer takes when `--initial` is absent: an observable for
+    /// the two Trotter-step workloads, a dense random sum for everything else.
+    fn default_for(layer: LayerKind) -> Self {
+        if layer.is_trotter_step() {
+            Initial::Z0
+        } else {
+            Initial::Random
+        }
+    }
+}
+
 struct Config {
     n: usize,
     qubits: usize,
@@ -552,6 +677,9 @@ struct Config {
     bind_memory: bool,
     /// Seed for the partition rows, or `None` for the driver's own choice.
     partition_seed: Option<u64>,
+    /// `--initial`, or `None` for each layer's own default
+    /// ([`Initial::default_for`]).
+    initial: Option<Initial>,
     /// Which path a `P = 1` cell takes. See `--p1-path`.
     p1_path: P1Path,
     layers: Vec<LayerKind>,
@@ -625,6 +753,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut partition_cpus = PartitionCpus::Auto;
     let mut bind_memory = true;
     let mut partition_seed: Option<u64> = None;
+    let mut initial: Option<Initial> = None;
     let mut p1_path = P1Path::Classic;
     let mut mpi = false;
 
@@ -677,6 +806,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
             }
             "--partition-seed" => partition_seed = Some(parse_seed(value)?),
+            "--initial" => initial = Some(Initial::parse(value)?),
             "--p1-path" => p1_path = P1Path::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
@@ -713,6 +843,21 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     }
     if partitions.is_empty() {
         return Err("--partitions must list at least one partition count".to_string());
+    }
+
+    // The two Trotter-step workloads run on a lattice of their own, so their
+    // qubit count is a property of the circuit rather than of the sum.
+    if layers.contains(&LayerKind::HeavyHexStep) && qubits < HEAVY_HEX_QUBITS {
+        return Err(format!(
+            "--layers heavyhex_step needs --qubits >= {HEAVY_HEX_QUBITS} (the Eagle r3 lattice \
+             names qubits 0..{}), got {qubits}",
+            HEAVY_HEX_QUBITS - 1,
+        ));
+    }
+    if layers.contains(&LayerKind::TfimStep) && qubits < 2 {
+        return Err(format!(
+            "--layers tfim_step needs --qubits >= 2 (a chain has n-1 bonds), got {qubits}"
+        ));
     }
 
     // The partition axis, checked against everything it interacts with before
@@ -817,6 +962,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         partition_cpus,
         bind_memory,
         partition_seed,
+        initial,
         p1_path,
         layers,
         reps,
@@ -924,6 +1070,153 @@ fn trotter_circuit<const W: usize>() -> Circuit<W> {
     circuit
 }
 
+// ---------------------------------------------------------------------
+// The kicked-Ising Trotter-step workloads (`tfim_step`, `heavyhex_step`)
+// ---------------------------------------------------------------------
+
+/// Qubits in the heavy-hex lattice [`heavy_hex_127_edges`] describes.
+const HEAVY_HEX_QUBITS: usize = 127;
+
+/// The `ZZ` angle of the presentation's kicked-Ising workload: `-pi/2`, the
+/// utility experiment's Clifford entangler `exp(+i·(pi/4)·Z_i Z_j)`.
+const THETA_ZZ: f64 = -std::f64::consts::FRAC_PI_2;
+
+/// The transverse-field kick angle of the same workload, `5·pi/16` — the
+/// non-Clifford point (`presentation/bench/src/workload.rs::THETA_H`, itself a
+/// copy of `examples/common/circuits.py`'s default for
+/// `heavy_hex_kicked_ising`).
+const THETA_H: f64 = 5.0 * std::f64::consts::PI / 16.0;
+
+/// The bonds of a 1D **open** chain: `n - 1` edges `(i, i+1)`.
+fn chain_edges(num_qubits: usize) -> Vec<(u32, u32)> {
+    (0..num_qubits.saturating_sub(1))
+        .map(|i| (i as u32, i as u32 + 1))
+        .collect()
+}
+
+/// The 127-qubit heavy-hex coupling map, from `test_support` (which carries the
+/// provenance of `examples/data/heavy_hex_127.edges`).
+fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+    paulistrings::test_support::heavy_hex_127_edges()
+}
+
+/// Greedy first-fit edge coloring in sorted edge order, copied verbatim from
+/// `presentation/bench/src/workload.rs::edge_coloring` (itself the port of
+/// `examples/common/circuits.py::heavy_hex_edge_coloring`).
+///
+/// A color is a set of disjoint-support edges, i.e. one hardware layer. All
+/// `ZZ` rotations commute, so the grouping cannot change the exact result — it
+/// changes only the order in which per-channel truncation sees the sum, and
+/// the colored order is the physically faithful one.
+fn edge_coloring(edges: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
+    let n = edges
+        .iter()
+        .map(|&(a, b)| a.max(b) as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let mut used: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut classes: Vec<Vec<(u32, u32)>> = Vec::new();
+    for &(a, b) in edges {
+        let mut color = 0usize;
+        while used[a as usize].contains(&color) || used[b as usize].contains(&color) {
+            color += 1;
+        }
+        while classes.len() <= color {
+            classes.push(Vec::new());
+        }
+        classes[color].push((a, b));
+        used[a as usize].push(color);
+        used[b as usize].push(color);
+    }
+    classes
+}
+
+/// A `PauliRotation` about `X_q`.
+fn x_rotation<const W: usize>(q: u32, theta: f64) -> PauliRotation<W> {
+    PauliRotation::new(PauliString::<W>::x(q), theta)
+}
+
+/// `steps` Trotter steps of the kicked transverse-field Ising model on an open
+/// chain of `num_qubits` qubits, one channel per gate.
+///
+/// A step is the `ZZ` layer **then** the `X` layer:
+///
+/// ```text
+/// prod_{i}   exp(-i · THETA_ZZ · Z_i Z_{i+1} / 2)     (n - 1 channels)
+/// prod_{q}   exp(-i · THETA_H  · X_q         / 2)     (n     channels)
+/// ```
+///
+/// so a step is `2n - 1` channels and the whole cell is `steps · (2n - 1)`.
+/// The angles are the presentation workload's ([`THETA_ZZ`], [`THETA_H`]);
+/// there is no chain-specific recipe in the notes, and reusing them keeps the
+/// chain and [`heavy_hex_step_circuit`] on the same physical point, which is
+/// what makes their exchange volumes comparable.
+///
+/// The `ZZ`-then-`X` order is the one this probe was asked for and is *not*
+/// the heavy-hex builder's `X`-then-`ZZ`: from a `Z`-type observable the
+/// leading `ZZ` layer is a no-op (every `ZZ` commutes with `Z`), so a
+/// `--reps r` chain cell is effectively half a step shallower than a heavy-hex
+/// cell at the same `r`. Nothing downstream compares the two step-for-step.
+fn tfim_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit<W> {
+    let mut c = Circuit::<W>::new(num_qubits);
+    for _ in 0..steps {
+        for (a, b) in chain_edges(num_qubits) {
+            c.push(zz_rotation::<W>(a, b, THETA_ZZ));
+        }
+        for q in 0..num_qubits as u32 {
+            c.push(x_rotation::<W>(q, THETA_H));
+        }
+    }
+    c
+}
+
+/// `steps` Trotter steps of the 127-qubit heavy-hex kicked-Ising circuit, one
+/// channel per gate — the presentation's fixed workload
+/// (`presentation/bench/src/workload.rs::kicked_ising`, gate for gate).
+///
+/// A step is the `X` layer **then** the `ZZ` layer, in
+/// [`edge_coloring`] order:
+///
+/// ```text
+/// prod_{q in 0..127}    exp(-i · THETA_H  · X_q       / 2)     (127 channels)
+/// prod_{(i,j) in E}     exp(-i · THETA_ZZ · Z_i Z_j   / 2)     (144 channels)
+/// ```
+///
+/// so a step is 271 channels. `X`-then-`ZZ` is Kim et al. (2023) SI Eq. (4)'s
+/// ordering and the one `examples/common/circuits.py` defaults to; the
+/// published weight-10 and weight-17 operators only come out under it.
+///
+/// `num_qubits` sizes the `Circuit` (it must be at least
+/// [`HEAVY_HEX_QUBITS`]); any qubit above the lattice is a spectator no
+/// channel touches.
+fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit<W> {
+    assert!(
+        num_qubits >= HEAVY_HEX_QUBITS,
+        "heavy_hex_step_circuit: the lattice needs {HEAVY_HEX_QUBITS} qubits, got {num_qubits}",
+    );
+    let zz_order: Vec<(u32, u32)> = edge_coloring(&heavy_hex_127_edges())
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut c = Circuit::<W>::new(num_qubits);
+    for _ in 0..steps {
+        for q in 0..HEAVY_HEX_QUBITS as u32 {
+            c.push(x_rotation::<W>(q, THETA_H));
+        }
+        for &(a, b) in &zz_order {
+            c.push(zz_rotation::<W>(a, b, THETA_ZZ));
+        }
+    }
+    c
+}
+
+/// The single-term observable `Z_q` on `num_qubits` qubits, coefficient 1.
+fn z_observable<const W: usize>(num_qubits: usize, q: u32) -> PauliSum<W> {
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
+    acc.add_term(PauliString::<W>::z(q), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.finalize()
+}
+
 /// A truncation policy that never drops anything — mirrors the `AlwaysKeep`
 /// helper used throughout the engine's own tests and `benches/pauli_ops.rs`.
 struct AlwaysKeep;
@@ -1001,6 +1294,8 @@ fn build_circuit<const W: usize>(
             c
         }
         LayerKind::Trotter => trotter_circuit::<W>(),
+        LayerKind::TfimStep => tfim_step_circuit::<W>(qubits, reps),
+        LayerKind::HeavyHexStep => heavy_hex_step_circuit::<W>(qubits, reps),
     }
 }
 
@@ -1035,6 +1330,9 @@ struct CellResult {
     pin_memory: bool,
     /// The `(q0, q1)` the `rotation_*` layers rotated about.
     gen_qubits: (u32, u32),
+    /// `--initial` as it applied to *this* layer (each layer has its own
+    /// default, so the effective value is per cell, not per run).
+    initial: &'static str,
     /// Everything only a partitioned cell has, `None` at `P = 1` classic.
     partitioned: Option<PartitionCellStats>,
     /// `(rank, ranks)` for a `--mpi` cell, `None` otherwise. Every field above
@@ -1096,6 +1394,16 @@ fn parse_kb_field(s: &str) -> u64 {
 /// Shared by the unpartitioned and the partitioned path, so a `P = 1` and a
 /// `P = 2` cell of the same `(layer, --n, --seed)` propagate the same terms.
 fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W> {
+    if layer.is_trotter_step() && cfg.truncation == TruncSpec::Keep {
+        eprintln!(
+            "phase_breakdown: warning: {} under --truncation keep does not converge — a \
+             kicked-Ising step is a fresh set of distinct generators every step, so the term \
+             count grows without bound. Pass a coefficient threshold, e.g. \
+             --truncation coeff:1.220703125e-4 (2^-13, the presentation's working point) or \
+             --truncation coeff:3.90625e-3 (2^-8) for a quick run.",
+            layer.name(),
+        );
+    }
     // `trotter` is 64 *distinct* generators applied once each, not one
     // generator repeated — the latter provably closes to a bounded key set,
     // which is what keeps rotation_zz/cnot/gu2q/su4 bounded here. A dense input
@@ -1119,7 +1427,13 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
             }
             low_weight_sum::<W>(cfg.n.min(TROTTER_MAX_N), TROTTER_QUBITS, 3, cfg.seed)
         }
-        _ => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
+        // Everything else takes `--initial`, defaulting per layer: a dense
+        // random sum, or the single-site observable the two Trotter steps grow
+        // from.
+        _ => match cfg.initial.unwrap_or_else(|| Initial::default_for(layer)) {
+            Initial::Random => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
+            Initial::Z0 => z_observable::<W>(cfg.qubits, (cfg.qubits / 2) as u32),
+        },
     };
     // `--hash-seed` re-draws H's rows. It is *not* cosmetic: the rank of the
     // layer's bucket-delta span `h(D)` — hence the coset dimension `r`, hence
@@ -1226,6 +1540,10 @@ where
         partition_cpus: cfg.partition_cpus.label(),
         pin_memory: cfg.bind_memory,
         gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
         // No split, so no partition numbers: the sidecar's partition fields
         // stay zero/empty on this row (machine contract (a)).
         partitioned: None,
@@ -1420,6 +1738,10 @@ where
         partition_cpus: cfg.partition_cpus.label(),
         pin_memory: cfg.bind_memory,
         gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
         partitioned: Some(summary),
         mpi: None,
     }
@@ -1555,6 +1877,10 @@ where
         partition_cpus: cfg.partition_cpus.label(),
         pin_memory: cfg.bind_memory,
         gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
     }
@@ -1909,7 +2235,7 @@ fn json_line(cell: &CellResult) -> String {
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
          \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"append_ns\":{},\
-         \"chunk_wait_ns\":{}",
+         \"chunk_wait_ns\":{},\"initial\":\"{}\"",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -1933,6 +2259,7 @@ fn json_line(cell: &CellResult) -> String {
         s.data_wait_ns,
         s.append_ns,
         s.chunk_wait_ns,
+        cell.initial,
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -1996,7 +2323,7 @@ terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartiti
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
-recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns";
+recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2007,7 +2334,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2067,6 +2394,7 @@ fn print_tsv_row(cell: &CellResult) {
         s.data_wait_ns,
         s.append_ns,
         s.chunk_wait_ns,
+        cell.initial,
     );
 }
 

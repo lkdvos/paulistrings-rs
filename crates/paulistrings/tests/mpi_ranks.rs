@@ -29,13 +29,15 @@ use std::panic::AssertUnwindSafe;
 use num_complex::Complex64;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
 use paulistrings::engine::partitioned::{count_remote_deltas, DistributedSum, PartitionConfig};
-use paulistrings::mpi::{rsmpi, MpiTransport};
+use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
-use paulistrings::{propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliSum};
+use paulistrings::{
+    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliSum, PropagateOptions,
+};
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
 use rsmpi::Threading;
@@ -405,6 +407,33 @@ fn run_matrix(r: &mut Runner) {
             let want = propagate(&circuit, sum, &KeepAll, Direction::Forward);
             assert_terms_close(&got, &want, TOL, "depolarizing");
             assert_eq!(got.len(), want.len());
+        }
+    });
+
+    // ---- the one-shot front door ----------------------------------------
+    r.case("propagate_mpi is the persistent driver in one call", |r| {
+        let circuit = cnot_ring::<1>(10);
+        let sum = rand_sum::<1>(300, 10, 0xA015);
+        // Everything the persistent path does — duplicate, place, scatter, run,
+        // gather — behind one call, under the production `default_config`
+        // placement rather than this file's unpinned one.
+        let got = propagate_mpi(
+            &circuit,
+            sum.clone(),
+            &KeepAll,
+            Direction::Forward,
+            PropagateOptions::default(),
+            r.world,
+        );
+        match (r.rank, got) {
+            (0, Some(got)) => {
+                let want = propagate(&circuit, sum, &KeepAll, Direction::Forward);
+                assert_terms_close(&got, &want, TOL, "propagate_mpi");
+                assert_eq!(got.len(), want.len());
+            }
+            (0, None) => panic!("propagate_mpi: rank 0 did not gather"),
+            (rank, Some(_)) => panic!("propagate_mpi: rank {rank} gathered but is not the root"),
+            (_, None) => {}
         }
     });
 

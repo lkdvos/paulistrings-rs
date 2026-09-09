@@ -71,6 +71,28 @@ pub(super) struct PartitionWork<const W: usize> {
     pub(super) rows: Vec<PartitionLayerRow>,
 }
 
+impl<const W: usize> PartitionWork<W> {
+    /// Move one partition's sum and scratch out of the driver for the duration
+    /// of a call, leaving an empty sum under the same hash behind.
+    ///
+    /// The placeholder is what keeps the driver self-consistent — same rows,
+    /// same hash, same bucket count on every partition — if the partition
+    /// panics and the work is never handed back.
+    pub(super) fn take(
+        local: &mut PauliSum<W>,
+        state: &mut PartitionState<W>,
+        layers: usize,
+        tracing: bool,
+    ) -> Self {
+        let placeholder = PauliSum::empty_with_hash(local.num_qubits(), local.hash().clone());
+        Self {
+            local: std::mem::replace(local, placeholder),
+            state: std::mem::take(state),
+            rows: Vec::with_capacity(if tracing { layers } else { 0 }),
+        }
+    }
+}
+
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`].
 ///
 /// Held across calls: the split, the partition rows, the pools and the
@@ -225,18 +247,12 @@ impl<const W: usize> PartitionedSum<W> {
              will correlate with the bucket partition and load-balance badly",
         );
 
-        let pbits = rows.bits();
         let started = Instant::now();
         let locals = {
             let sum = &sum;
             let rows = &rows;
             runtime.map_partitions((0..size).collect(), |rank, _, transport| {
-                let mut local = sum.filter_partition(rows, rank as u32);
-                let want =
-                    desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
-                let want = transport.allreduce_max_u8(want);
-                local.coarsen_to(scatter_bits(local.hash().bits(), pbits, want));
-                local
+                scatter_local(sum, rows, rank as u32, transport)
             })
         };
         log::info!(
@@ -331,25 +347,9 @@ impl<const W: usize> PartitionedSum<W> {
             // Hoisted out of every partition's layer loop: nothing inside one
             // can turn tracing on or off.
             let tracing = self.trace.is_some();
-            let num_qubits = self.num_qubits();
             let items: Vec<PartitionWork<W>> = (0..size)
                 .map(|rank| {
-                    // The placeholder keeps `self` self-consistent (same rows,
-                    // same hash, same bucket count on every partition) if a
-                    // partition panics and the work is never handed back.
-                    let hash = self.locals[rank].hash().clone();
-                    PartitionWork {
-                        local: std::mem::replace(
-                            &mut self.locals[rank],
-                            PauliSum::empty_with_hash(num_qubits, hash),
-                        ),
-                        state: std::mem::take(&mut self.states[rank]),
-                        rows: if tracing {
-                            Vec::with_capacity(n)
-                        } else {
-                            Vec::new()
-                        },
-                    }
+                    PartitionWork::take(&mut self.locals[rank], &mut self.states[rank], n, tracing)
                 })
                 .collect();
 
@@ -589,6 +589,26 @@ pub struct PartitionPhaseStats {
     pub layers: u64,
 }
 
+/// One partition's share of `sum`, at the bucket count the group agrees on —
+/// **the** scatter body, shared by the in-process and distributed drivers.
+///
+/// Runs on the partition's own pool (the caller is inside `install`), so every
+/// column is first-touched in the domain that will read it. One collective: the
+/// per-partition [`desired_bits`] maximum, which is what makes the group agree
+/// on a count before the first layer.
+pub(super) fn scatter_local<const W: usize>(
+    sum: &PauliSum<W>,
+    rows: &PartitionRows<W>,
+    rank: u32,
+    coll: &dyn Collectives,
+) -> PauliSum<W> {
+    let mut local = sum.filter_partition(rows, rank);
+    let want = desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+    let want = coll.allreduce_max_u8(want);
+    local.coarsen_to(scatter_bits(local.hash().bits(), rows.bits(), want));
+    local
+}
+
 /// The bucket bits a partition takes on at scatter: at most `pbits` shed from
 /// the count the unpartitioned sum arrived with, and never below what this
 /// partition's own share wants.
@@ -600,7 +620,7 @@ pub struct PartitionPhaseStats {
 /// (and the layer loop grows it from there). At `P = 1`, `pbits = 0`, so this
 /// is `bits` — the scatter is the identity and the partitioned run is the
 /// unpartitioned one.
-pub(super) fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
+fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
     want.max(bits.saturating_sub(pbits)).min(bits)
 }
 

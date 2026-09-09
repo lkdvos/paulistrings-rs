@@ -174,8 +174,9 @@ pub(crate) fn allowed_cpus() -> CpuSet {
 
 /// The NUMA nodes visible in the current affinity mask, ascending by node id.
 ///
-/// Each node's CPU set is intersected with [`allowed_cpus`] and nodes left
-/// empty by that intersection are dropped. When sysfs exposes no usable node —
+/// Each node's CPU set is intersected with the process's affinity mask, and
+/// nodes left empty by that intersection are dropped. When sysfs exposes no
+/// usable node —
 /// a kernel without NUMA, a sandbox without `/sys`, a non-Linux target — the
 /// whole affinity mask is reported as node 0.
 #[must_use]
@@ -415,7 +416,7 @@ pub enum Placement {
     /// One partition per listed CPU set, exactly as given.
     ///
     /// Sets may overlap — the resolve logs a warning and proceeds — but each
-    /// must be non-empty and a subset of [`allowed_cpus`].
+    /// must be non-empty and a subset of the process's affinity mask.
     Explicit(
         /// The CPU sets, one per partition; the count must be a power of two.
         Vec<CpuSet>,
@@ -469,7 +470,7 @@ impl PartitionConfig {
     /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition
     /// count is not a power of two, [`TopologyError::EmptySet`] if an explicit
     /// set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set
-    /// names a CPU outside [`allowed_cpus`].
+    /// names a CPU outside the process's affinity mask.
     pub fn resolve(&self) -> Result<Vec<PartitionSlot>, TopologyError> {
         match &self.placement {
             Placement::Auto { max_partitions } => Ok(resolve_auto(*max_partitions)),
@@ -615,7 +616,7 @@ pub enum TopologyError {
     ),
     /// An explicit set named a CPU outside the process's affinity mask.
     CpuNotAllowed(
-        /// The CPU index that is not in [`allowed_cpus`].
+        /// The CPU index that is outside the process's affinity mask.
         usize,
     ),
 }

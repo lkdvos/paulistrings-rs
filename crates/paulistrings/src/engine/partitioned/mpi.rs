@@ -58,9 +58,9 @@
 //! ascending order.
 //!
 //! **The parts are received into the receiving payload's own columns.** Those
-//! declared lengths are all the receiver needs to size a
-//! [`PartnerPayload`](super::transport::PartnerPayload) — five parts per block,
-//! and each block's shape follows from the lengths — so
+//! declared lengths are all the receiver needs to size the layer's exchange
+//! blocks — five parts per block, and each block's shape follows from the
+//! lengths — so
 //! [`Payload::recv_into`] hands back mutable byte views of the very `Vec<[u64;
 //! W]>` and `Vec<Complex64>` the coset loop will read, and MPI writes into
 //! them. There is no staging buffer and no decode pass; what is left afterwards
@@ -70,8 +70,7 @@
 //!
 //! **Chunking.** MPI counts are `i32`, so one message carries under 2 GiB; a
 //! coefficient column at large `m` can exceed that. Every part is therefore
-//! split into chunks of at most [`DEFAULT_CHUNK_BYTES`] (1 GiB) under the same
-//! tag. An empty part is zero chunks — `slice::chunks` and `slice::chunks_mut`
+//! split into chunks of at most 1 GiB under the same tag. An empty part is zero chunks — `slice::chunks` and `slice::chunks_mut`
 //! agree on that, which is what keeps the two sides' message counts equal
 //! without a second rule.
 //!

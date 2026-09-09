@@ -1,12 +1,12 @@
-//! Partitioned execution: the sum split across NUMA domains (and, later, MPI
-//! ranks) by designated *partition rows* of the GF(2) hash, one pinned Rayon
-//! pool per partition, and a push-model exchange of the rows a layer moves
-//! across partitions. See ARCHITECTURE.md §Partitioning.
+//! Partitioned execution: the sum split across NUMA domains or MPI ranks by
+//! designated *partition rows* of the GF(2) hash, one pinned Rayon pool per
+//! partition, and a push-model exchange of the rows a layer moves across
+//! partitions. See ARCHITECTURE.md §Partitioning.
 //!
-//! Module map (each lands in its own step; see the plan in the research notes):
+//! Module map:
 //! - `topology` — CPU sets, NUMA node discovery, thread/memory pinning, pinned pools.
-//! - `transport` — `Collectives`/`Transport` traits, the `ExchangeBlock` wire
-//!   format, and the in-process channel-matrix transport.
+//! - `transport` — the `Collectives`/`Transport`/`Payload` seam, the
+//!   `ExchangeBlock` wire format, and the in-process channel-matrix transport.
 //! - `plan` — per-layer classification of a prepared channel's deltas into
 //!   local and remote (partner) deltas.
 //! - `export` — the export pass building per-partner exchange blocks.
@@ -15,12 +15,40 @@
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 //! - `runtime` — `PartitionRuntime`: the resolved placement, its pools, and the
 //!   scoped fan-out a partitioned call runs inside.
-//! - `driver` — `PartitionedSum` and `propagate_partitioned`: the layer loop,
-//!   the collective bucket-count agreement, scatter and gather.
-//! - `distributed` — `DistributedSum`: the same layer loop with one partition
+//! - `driver` — `PartitionedSum`, `propagate_partitioned`, and `run_layers`.
+//! - `distributed` — `DistributedSum`: `run_layers` again, with one partition
 //!   per process, over any `Transport`.
 //! - `trace` — `PartitionTrace`, the opt-in per-layer record of term counts,
 //!   bucket bits and exchange volume.
+//!
+//! # Why there are two drivers
+//!
+//! [`PartitionedSum`] holds `P` partitions inside one process and fans out to
+//! them per call; [`DistributedSum`] *is* one partition and its peers are other
+//! processes. Everything below the fan-out is literally one implementation —
+//! `run_layers` is the layer loop for both, `scatter_local` the scatter body,
+//! `PartitionWork` the per-partition payload, and `apply_layer_partitioned` the
+//! layer — and the two differ only above it, in three ways that do not
+//! reconcile:
+//!
+//! - **The transport group's lifetime.** `PartitionedSum` builds a fresh
+//!   in-process group *per call* and moves the endpoints into the partitions,
+//!   so a partition that panics drops its senders and its partners fail by name
+//!   instead of blocking in `recv`. A `DistributedSum` owns one endpoint for
+//!   its whole life, because an `MPI_Comm` is not something to duplicate per
+//!   layer.
+//! - **Scatter and gather.** In-process, the input is *one* sum split by
+//!   `filter_partition` and merged back locally, bitwise, with no wire format
+//!   in sight. Distributed, the input is *replicated* on every rank and the
+//!   gather goes through the transport's byte framing to rank 0 alone.
+//! - **The consistency check.** One process cannot hand its own partitions
+//!   different circuits; separate processes can, so only the distributed driver
+//!   pays for `check_consistency`.
+//!
+//! Expressing one as the other would mean either a runtime-owned transport
+//! group (which is the hang the per-call group exists to prevent) or a
+//! replicated-input, byte-framed scatter for the in-process case, which is
+//! strictly more work for the same answer.
 
 pub(crate) mod distributed;
 pub(crate) mod driver;

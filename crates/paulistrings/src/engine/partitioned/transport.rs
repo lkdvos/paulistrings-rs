@@ -496,7 +496,8 @@ pub trait Payload: Default + Send + 'static {
 
     /// The parts the engine reads **before** it reads a single row, so a
     /// two-phase transport must have them in hand before it hands the payload
-    /// over: for a [`PartnerPayload`] the block headers and the CSR offsets, a
+    /// over: for the layer's exchange blocks that is the block headers and the
+    /// CSR offsets, a
     /// few tens of kilobytes against a layer's hundreds of megabytes, and all
     /// the engine needs to size a gather run (`ExtraRows::count`).
     ///
@@ -1001,7 +1002,7 @@ pub trait Transport: Collectives {
     ///
     /// The empty [`ChunkMap`] cuts no chunks, so every part travels as an early
     /// one — which is what a payload with no interesting internal structure
-    /// wants, [`ByteParts`] being the only one. A payload whose `bulk_parts`
+    /// wants, and the gather's is the only one. A payload whose `bulk_parts`
     /// needs a real map goes through `exchange_layer`.
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
         self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())

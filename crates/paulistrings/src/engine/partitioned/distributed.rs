@@ -47,7 +47,7 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::driver::{run_layers, scatter_bits, PartitionWork};
+use super::driver::{run_layers, scatter_local, PartitionWork};
 use super::layer::PartitionState;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
@@ -55,7 +55,6 @@ use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
 use super::truncation::PartitionedTruncation;
 use crate::bucket::hash::PartitionRows;
-use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::circuit::Circuit;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::{PauliSum, ProductState};
@@ -265,20 +264,12 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
              with the bucket partition and load-balance badly",
         );
 
-        let pbits = rows.bits();
         let started = Instant::now();
         let local = {
             let sum = &sum;
             let rows = &rows;
             let transport = &transport;
-            runtime.install(move || {
-                let mut local = sum.filter_partition(rows, transport.rank());
-                let want =
-                    desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
-                let want = transport.allreduce_max_u8(want);
-                local.coarsen_to(scatter_bits(local.hash().bits(), pbits, want));
-                local
-            })
+            runtime.install(move || scatter_local(sum, rows, transport.rank(), transport))
         };
         log::info!(
             target: LOG_TARGET,
@@ -366,22 +357,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
         if n > 0 {
             let tracing = self.trace.is_some();
-            let num_qubits = self.num_qubits();
-            let hash = self.local.hash().clone();
-            let mut work = PartitionWork {
-                // The placeholder keeps `self` self-consistent if the layer
-                // loop panics and the work is never handed back.
-                local: std::mem::replace(
-                    &mut self.local,
-                    PauliSum::empty_with_hash(num_qubits, hash),
-                ),
-                state: std::mem::take(&mut self.state),
-                rows: if tracing {
-                    Vec::with_capacity(n)
-                } else {
-                    Vec::new()
-                },
-            };
+            let mut work = PartitionWork::take(&mut self.local, &mut self.state, n, tracing);
 
             {
                 let runtime = Arc::clone(&self.runtime);

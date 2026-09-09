@@ -93,6 +93,14 @@
 //!   coset layer loop), `engine::coset` (the GF(2) span and its cosets) and
 //!   `engine::merge` (the per-run sort and fused merge kernels). Most users
 //!   will not call any of them directly; [`propagate`] is the front door.
+//! - [`engine::partitioned`] — the same engine with the sum split across
+//!   `P = 2^p ≤ 16` partitions by designated GF(2) [`PartitionRows`], one
+//!   pinned Rayon pool each, exchanging only the rows a layer moves across a
+//!   partition boundary. [`propagate_partitioned`] and [`PartitionedSum`] run
+//!   `P` NUMA domains inside one process; [`DistributedSum`] is one partition
+//!   per process over a [`Transport`](engine::partitioned::Transport), which
+//!   `paulistrings::mpi` implements over MPI behind the off-by-default `mpi`
+//!   feature. At `P = 1` the output is bitwise [`propagate`]'s.
 //! - [`examples`] — worked-example walkthroughs of full-scale simulations
 //!   (currently: a 2D transverse-field Ising quench on 4×4 and 6×6
 //!   lattices with embedded plot).

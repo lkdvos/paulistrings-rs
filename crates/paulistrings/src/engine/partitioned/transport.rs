@@ -415,7 +415,11 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             self.blocks.resize_with(n, ExchangeBlock::<W>::default);
         }
         let mut parts = Vec::with_capacity(lens.len());
-        for (block, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(PARTS_PER_BLOCK)) {
+        for (block, lens) in self
+            .blocks
+            .iter_mut()
+            .zip(lens.chunks_exact(PARTS_PER_BLOCK))
+        {
             assert_eq!(
                 lens[0],
                 size_of::<BlockHeader>(),
@@ -2168,7 +2172,8 @@ mod tests {
                 let _ = std::panic::catch_unwind(|| panic!("rank 1 dies before its exchange"));
                 drop(one);
             });
-            let _: Vec<Option<Vec<u64>>> = zero.exchange(vec![None, Some(vec![7u64])], &mut Vec::new());
+            let _: Vec<Option<Vec<u64>>> =
+                zero.exchange(vec![None, Some(vec![7u64])], &mut Vec::new());
         });
     }
 }

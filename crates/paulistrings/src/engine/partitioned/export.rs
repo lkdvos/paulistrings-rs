@@ -237,7 +237,9 @@ pub(crate) fn export_layer<const W: usize>(
         let j = blocks_used[q];
         blocks_used[q] += 1;
         if payload.blocks.len() <= j {
-            payload.blocks.resize_with(j + 1, ExchangeBlock::<W>::default);
+            payload
+                .blocks
+                .resize_with(j + 1, ExchangeBlock::<W>::default);
         }
         let block = &mut payload.blocks[j];
         block.set_counts(r.entry as u32, &scratch.block_counts);

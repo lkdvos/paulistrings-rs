@@ -158,3 +158,17 @@ Consequences for the plan:
   exports ~7.5 m rows per layer (2 GB per layer at m = 2.8e6 in the smoke run), which at large `m`
   can exceed the resident sum. Mitigations in scope: chunked export/exchange (bounded transient) and
   the phase-5 locality rows.
+
+## 2026-09-08 (evening) — workload priority: Pauli rotations first
+
+The user's primary target is rotation-heavy circuits (Trotter / kicked-Ising style layers of Pauli
+rotations); dense two-qubit unitaries are secondary. Consequences:
+- Exchange volume per remote rotation layer is at most one row per anticommuting term (the cos pass
+  is always local), so the exchange transient is ≤ 1× the resident sum, not the ~7.5× of a dense gate:
+  chunked exchange is a lesser concern for the primary workload.
+- Locality is about generators: for a partition row with zero x-bits and z-bits equal to the indicator
+  of one side of a cut, every single-qubit X rotation is local and a ZZ(i, j) rotation is remote iff
+  the edge (i, j) crosses the cut. For kicked-Ising on heavy-hex, only the cut-crossing ZZ layers
+  exchange. This is the phase-5 hypothesis to test first, on the presentation workload.
+- Phase-3 measurement uses the `trotter` layer / kicked-Ising circuits at large `m` as the headline,
+  `su4` as a secondary stress case.

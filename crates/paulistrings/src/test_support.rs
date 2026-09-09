@@ -788,3 +788,80 @@ pub fn unpinned_partitions(
         partition_row_seed: Some(row_seed),
     }
 }
+
+/// The 127-qubit heavy-hex coupling map (IBM Eagle r3), 144 undirected edges
+/// as `(lo, hi)` pairs in sorted order.
+///
+/// A verbatim copy of the checked-in, provenance-tagged edge list
+/// `examples/data/heavy_hex_127.edges` (generated from
+/// `qiskit-ibm-runtime`'s `FakeSherbrooke().coupling_map` by
+/// `examples/data/generate_heavy_hex.py`; qubit indices are the device's own
+/// numbering `0..126`). It lives here as a constant so the Rust probes can
+/// build the presentation's kicked-Ising workload with no file I/O and no
+/// path resolution (`presentation/bench/src/workload.rs` reads the same list
+/// from disk instead). `heavy_hex_127_edges_match_the_source_lattice` pins the
+/// transcription against the invariants that file's header records.
+///
+/// Degree histogram: 2 qubits of degree 1, 89 of degree 2, 36 of degree 3.
+#[rustfmt::skip]
+pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
+    (0, 1), (0, 14), (1, 2), (2, 3), (3, 4), (4, 5),
+    (4, 15), (5, 6), (6, 7), (7, 8), (8, 9), (8, 16),
+    (9, 10), (10, 11), (11, 12), (12, 13), (12, 17), (14, 18),
+    (15, 22), (16, 26), (17, 30), (18, 19), (19, 20), (20, 21),
+    (20, 33), (21, 22), (22, 23), (23, 24), (24, 25), (24, 34),
+    (25, 26), (26, 27), (27, 28), (28, 29), (28, 35), (29, 30),
+    (30, 31), (31, 32), (32, 36), (33, 39), (34, 43), (35, 47),
+    (36, 51), (37, 38), (37, 52), (38, 39), (39, 40), (40, 41),
+    (41, 42), (41, 53), (42, 43), (43, 44), (44, 45), (45, 46),
+    (45, 54), (46, 47), (47, 48), (48, 49), (49, 50), (49, 55),
+    (50, 51), (52, 56), (53, 60), (54, 64), (55, 68), (56, 57),
+    (57, 58), (58, 59), (58, 71), (59, 60), (60, 61), (61, 62),
+    (62, 63), (62, 72), (63, 64), (64, 65), (65, 66), (66, 67),
+    (66, 73), (67, 68), (68, 69), (69, 70), (70, 74), (71, 77),
+    (72, 81), (73, 85), (74, 89), (75, 76), (75, 90), (76, 77),
+    (77, 78), (78, 79), (79, 80), (79, 91), (80, 81), (81, 82),
+    (82, 83), (83, 84), (83, 92), (84, 85), (85, 86), (86, 87),
+    (87, 88), (87, 93), (88, 89), (90, 94), (91, 98), (92, 102),
+    (93, 106), (94, 95), (95, 96), (96, 97), (96, 109), (97, 98),
+    (98, 99), (99, 100), (100, 101), (100, 110), (101, 102), (102, 103),
+    (103, 104), (104, 105), (104, 111), (105, 106), (106, 107), (107, 108),
+    (108, 112), (109, 114), (110, 118), (111, 122), (112, 126), (113, 114),
+    (114, 115), (115, 116), (116, 117), (117, 118), (118, 119), (119, 120),
+    (120, 121), (121, 122), (122, 123), (123, 124), (124, 125), (125, 126),
+];
+
+/// [`HEAVY_HEX_127_EDGES`] as a `Vec`, for callers that want to own it.
+pub fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+    HEAVY_HEX_127_EDGES.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HEAVY_HEX_127_EDGES;
+
+    /// Pins the transcribed copy against the invariants the source file's own
+    /// header records: 144 undirected edges over qubits `0..126`, sorted and
+    /// unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
+    #[test]
+    fn heavy_hex_127_edges_match_the_source_lattice() {
+        assert_eq!(HEAVY_HEX_127_EDGES.len(), 144);
+        let mut degree = [0usize; 127];
+        let mut prev = (0u32, 0u32);
+        for (i, &(a, b)) in HEAVY_HEX_127_EDGES.iter().enumerate() {
+            assert!(a < b, "edge {i} is not (lo, hi): ({a}, {b})");
+            assert!(b < 127, "edge {i} names qubit {b} outside 0..126");
+            if i > 0 {
+                assert!(prev < (a, b), "edge {i} breaks the sorted-unique order");
+            }
+            prev = (a, b);
+            degree[a as usize] += 1;
+            degree[b as usize] += 1;
+        }
+        let mut histogram = [0usize; 4];
+        for d in degree {
+            histogram[d] += 1;
+        }
+        assert_eq!(histogram, [0, 2, 89, 36]);
+    }
+}

@@ -18,7 +18,8 @@
 //!     [--layers rotation_zz,cnot,gu2q,su4,depolarizing,trotter] [--reps 8] \
 //!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
 //!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
-//!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic]
+//!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic] \
+//!     [--mpi]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -106,6 +107,34 @@
 //! `--bind-memory 0` drops the per-partition `set_mempolicy` binding (pinning
 //! stays); `--partition-seed <u64>` fixes the partition rows instead of
 //! letting the driver derive them from the sum's hash seed.
+//!
+//! # Distributed cells (`--mpi`, needs the `mpi` feature)
+//!
+//! `--mpi` swaps the in-process partition axis for ranks: every process holds
+//! **one** partition (`D = 1`) and the group is `MPI_COMM_WORLD`, so
+//! `--partitions` must stay at its default of 1. The cell shape is otherwise
+//! `run_cell_partitioned`'s — scatter outside the timed region, one warm-up,
+//! one timed call — and `--threads` is this rank's pool width, not a total,
+//! because the placement comes from the launcher:
+//!
+//! ```bash
+//! cargo build --release --features phase-timing,mpi --example phase_breakdown
+//! mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
+//!     target/release/examples/phase_breakdown --mpi --threads 16 \
+//!     --layers su4 --json-out results/mpi.jsonl
+//! ```
+//!
+//! Every rank runs the whole matrix and reports **its own** numbers: one `cell`
+//! line and one JSON object per rank per cell, each carrying `rank` and `ranks`
+//! fields, and each rank appending to its own `--json-out` sidecar suffixed
+//! `.rank<N>` (separate processes have no shared file position). The headline
+//! is `vmhwm_kb` — peak resident set per rank, including the export and receive
+//! transients, which is the capacity metric the distributed engine exists to
+//! report; `partition_terms_in` and `partition_coset_loop_ns` have a single
+//! entry (this rank's), and comparing ranks is the caller's job.
+//!
+//! Without `--mpi` nothing about the output changes, so a `--mpi`-capable
+//! binary is still the binary for every other cell.
 //!
 //! The two partition-aware layers are `rotation_local` and `rotation_remote`:
 //! a `ZZ` rotation on `(0, q)` where `q` is the smallest qubit in
@@ -511,6 +540,12 @@ struct Config {
     threads: Vec<usize>,
     /// Partition counts to sweep. See `--partitions`.
     partitions: Vec<usize>,
+    /// `--mpi`: run each cell on the distributed driver, one partition per
+    /// rank of `MPI_COMM_WORLD`. Only settable when the `mpi` feature is on —
+    /// `parse_args` rejects the flag otherwise, so without the feature the
+    /// field is always false and nothing reads it.
+    #[cfg_attr(not(feature = "mpi"), allow(dead_code))]
+    mpi: bool,
     /// Placement spec for the partitioned cells. See `--partition-cpus`.
     partition_cpus: PartitionCpus,
     /// Whether each partition binds its allocations to its NUMA node.
@@ -591,10 +626,24 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut bind_memory = true;
     let mut partition_seed: Option<u64> = None;
     let mut p1_path = P1Path::Classic;
+    let mut mpi = false;
 
     let mut i = 0;
     while i < args.len() {
         let flag = args[i].as_str();
+        // The one flag with no value.
+        if flag == "--mpi" {
+            if cfg!(not(feature = "mpi")) {
+                return Err(
+                    "--mpi needs the `mpi` cargo feature (cargo run --release --features \
+                     phase-timing,mpi --example phase_breakdown)"
+                        .to_string(),
+                );
+            }
+            mpi = true;
+            i += 1;
+            continue;
+        }
         let value = args
             .get(i + 1)
             .ok_or_else(|| format!("{flag} requires a value"))?;
@@ -737,6 +786,24 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
+    // `--mpi` is the distributed shape: the rank *is* the partition (D = 1), so
+    // the in-process axis has to stay at one.
+    if mpi && partitions != vec![1] {
+        return Err(
+            "--mpi runs one partition per rank (D = 1), so --partitions must stay at its default \
+             of 1: there is no domains-per-rank hybrid"
+                .to_string(),
+        );
+    }
+    if mpi {
+        if let TruncSpec::TopN(topn) = truncation {
+            return Err(format!(
+                "--truncation topn:{topn} cannot run a distributed cell: TopN has no \
+                 PartitionedTruncation impl. Use --truncation atopn:{topn}"
+            ));
+        }
+    }
+
     Ok(Config {
         n,
         qubits,
@@ -746,6 +813,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         min_buckets,
         threads,
         partitions,
+        mpi,
         partition_cpus,
         bind_memory,
         partition_seed,
@@ -969,6 +1037,11 @@ struct CellResult {
     gen_qubits: (u32, u32),
     /// Everything only a partitioned cell has, `None` at `P = 1` classic.
     partitioned: Option<PartitionCellStats>,
+    /// `(rank, ranks)` for a `--mpi` cell, `None` otherwise. Every field above
+    /// is then **this rank's**: the numbers are per process, not per group, and
+    /// `vmhwm_kb` in particular is the capacity metric a distributed run exists
+    /// to report. `None` keeps the non-MPI output byte-identical.
+    mpi: Option<(u32, u32)>,
 }
 
 /// The partition-axis numbers of one cell, from the timed call's
@@ -1156,6 +1229,7 @@ where
         // No split, so no partition numbers: the sidecar's partition fields
         // stay zero/empty on this row (machine contract (a)).
         partitioned: None,
+        mpi: None,
     }
 }
 
@@ -1347,6 +1421,142 @@ where
         pin_memory: cfg.bind_memory,
         gen_qubits,
         partitioned: Some(summary),
+        mpi: None,
+    }
+}
+
+/// One cell on the **distributed** driver: this process is one rank's
+/// partition, and the numbers it reports are its own.
+///
+/// The MPI counterpart of [`run_cell_partitioned`], and deliberately the same
+/// shape — one untimed warm-up, one timed call, the counters drained between —
+/// so a rank's row is comparable with an in-process partition's. What differs
+/// is what a "partition" is: the runtime holds exactly one, placed by the
+/// launcher's affinity mask (`mpirun --map-by ppr:1:numa --bind-to numa`), and
+/// the group is the world communicator.
+///
+/// **Collective.** Every rank runs the identical cell matrix in the identical
+/// order; the input comes from the same seed on every rank and the partition
+/// rows from the same draw, so nothing here needs to be agreed at run time.
+///
+/// The headline is `vmhwm_kb`: peak resident set **per rank, including the
+/// export and receive transients**, which is the capacity metric a multi-node
+/// run exists to report.
+#[cfg(feature = "mpi")]
+fn run_cell_mpi<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    use paulistrings::engine::partitioned::{Collectives, DistributedSum};
+    use paulistrings::mpi::{rsmpi, MpiTransport};
+    use rsmpi::topology::{Communicator, SimpleCommunicator};
+
+    let world = SimpleCommunicator::world();
+    let rank = world.rank() as u32;
+    let ranks = world.size() as u32;
+    if !ranks.is_power_of_two() {
+        if rank == 0 {
+            eprintln!(
+                "phase_breakdown: --mpi needs a power-of-two rank count (a partition is named by \
+                 log2(P) GF(2) rows), got {ranks}",
+            );
+        }
+        std::process::exit(2);
+    }
+
+    let base = build_base_sum::<W>(layer, cfg);
+    let num_qubits = base.num_qubits();
+
+    // D = 1: one partition over whatever CPUs the launcher left us. `Auto`
+    // reads that mask, so `--bind-to numa` is what places this rank.
+    let config = PartitionConfig {
+        placement: cfg.partition_cpus.placement(1, threads),
+        bind_memory: cfg.bind_memory,
+        partition_row_seed: cfg.partition_seed,
+    };
+    let runtime = PartitionRuntime::with_threads_per_partition(&config, Some(threads))
+        .unwrap_or_else(|err| {
+            eprintln!("phase_breakdown: rank {rank} cannot resolve its placement: {err}");
+            std::process::exit(2);
+        });
+
+    // The rows every rank derives, built here so the generator scan below sees
+    // the split the run will use. Same seed on every rank, so same rows.
+    let rows = PartitionRows::<W>::from_seed(
+        num_qubits,
+        ranks.trailing_zeros() as u8,
+        cfg.partition_seed.unwrap_or_else(|| base.hash().seed()),
+    );
+    let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
+    if layer.picks_generator() && rank == 0 {
+        eprintln!(
+            "phase_breakdown: note: {} on {ranks} ranks acts on ({}, {}).",
+            layer.name(),
+            gen_qubits.0,
+            gen_qubits.1,
+        );
+    }
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+
+    let transport = MpiTransport::from_communicator(&world);
+    let mut split = DistributedSum::scatter_with_rows(base, transport, runtime, rows);
+    split.enable_trace();
+
+    // Untimed warm-up, counters discarded — the same contract as every other
+    // cell. A barrier after it so the timed call starts together and
+    // `exchange_ns` measures traffic rather than a straggling warm-up.
+    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    let _ = split.take_trace();
+    let _ = split.take_stats();
+    split.transport().barrier();
+
+    let steady_n = split.len_local();
+    let started = Instant::now();
+    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let trace = split.take_trace().expect("tracing was enabled");
+    let per_partition = split.take_stats();
+    std::hint::black_box(&split);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+    let stats = fold_partition_stats(&per_partition);
+    // One "partition" here: this rank. The trace's per-layer vectors carry a
+    // single entry for the same reason.
+    let summary = summarize_partitions(1, &trace, &per_partition, &stats);
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: cfg.hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions: 1,
+        partition_cpus: cfg.partition_cpus.label(),
+        pin_memory: cfg.bind_memory,
+        gen_qubits,
+        partitioned: Some(summary),
+        mpi: Some((rank, ranks)),
     }
 }
 
@@ -1453,8 +1663,14 @@ fn summarize_partitions(
 /// awk; machine contract (b) in `benchmarks/PROFILING.md`). `trunc=` and then
 /// `partitions=` are appended last so those greps keep matching unchanged.
 fn print_cell_line(cell: &CellResult) {
+    // The MPI suffix is empty for every non-`--mpi` cell, so the line is
+    // byte-identical to what it was before the flag existed.
+    let mpi = match cell.mpi {
+        Some((rank, ranks)) => format!(" rank={rank}/{ranks} vmhwm_kb={}", cell.vmhwm_kb),
+        None => String::new(),
+    };
     println!(
-        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}",
+        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}{mpi}",
         cell.layer,
         cell.threads,
         cell.n,
@@ -1725,7 +1941,11 @@ fn json_line(cell: &CellResult) -> String {
         cell.target_bucket_len,
         cell.min_buckets,
     );
-    format!("{core}{partition_fields}}}")
+    let mpi_fields = match cell.mpi {
+        Some((rank, ranks)) => format!(",\"rank\":{rank},\"ranks\":{ranks}"),
+        None => String::new(),
+    };
+    format!("{core}{partition_fields}{mpi_fields}}}")
 }
 
 const TSV_HEADER: &str =
@@ -1834,10 +2054,15 @@ where
     }
 
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
+        // Under `--mpi` every rank writes its own file: the ranks are separate
+        // processes with no shared file position, and appending to one path
+        // would interleave partial lines. The suffix is the rank, so a harness
+        // globs `<path>.rank*` and each line carries its own `rank` field.
+        let path = mpi_sidecar_path(path, cfg);
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
+            .open(&path)
             .unwrap_or_else(|e| {
                 eprintln!("phase_breakdown: cannot open --json-out '{path}': {e}");
                 std::process::exit(2);
@@ -1847,6 +2072,23 @@ where
     for &layer in &cfg.layers {
         for &partitions in &cfg.partitions {
             for &threads in &cfg.threads {
+                #[cfg(feature = "mpi")]
+                let cell = if cfg.mpi {
+                    let policy = partitioned_policy.expect(
+                        "an --mpi cell without a partitioned policy — parse_args rejects the one \
+                         spec (topn) that has none",
+                    );
+                    run_cell_mpi::<W, PP>(layer, threads, cfg, policy)
+                } else if partitions > 1 || cfg.p1_path == P1Path::Partitioned {
+                    let policy = partitioned_policy.expect(
+                        "a partitioned cell without a partitioned policy — parse_args rejects \
+                         the one spec (topn) that has none",
+                    );
+                    run_cell_partitioned::<W, PP>(layer, threads, partitions, cfg, policy)
+                } else {
+                    run_cell::<W, P>(layer, threads, cfg, policy)
+                };
+                #[cfg(not(feature = "mpi"))]
                 let cell = if partitions > 1 || cfg.p1_path == P1Path::Partitioned {
                     let policy = partitioned_policy.expect(
                         "a partitioned cell without a partitioned policy — parse_args rejects \
@@ -1875,10 +2117,44 @@ where
     }
 }
 
+/// The `--json-out` path this process writes: unchanged without `--mpi`, and
+/// suffixed `.rank<N>` with it.
+#[cfg(feature = "mpi")]
+fn mpi_sidecar_path(path: &str, cfg: &Config) -> String {
+    if !cfg.mpi {
+        return path.to_string();
+    }
+    use paulistrings::mpi::rsmpi::topology::{Communicator, SimpleCommunicator};
+    format!("{path}.rank{}", SimpleCommunicator::world().rank())
+}
+
+/// Without the `mpi` feature there is no rank, so the path is the path.
+#[cfg(not(feature = "mpi"))]
+fn mpi_sidecar_path(path: &str, _cfg: &Config) -> String {
+    path.to_string()
+}
+
+/// The extra `--help` lines the `mpi` feature adds.
+#[cfg(feature = "mpi")]
+const MPI_USAGE: &str = "\
+  --mpi                    Run each cell on the distributed driver: one
+                            partition per rank of MPI_COMM_WORLD (D = 1),
+                            placed by the launcher's affinity mask. Every rank
+                            runs the whole matrix and reports its own numbers,
+                            `vmhwm_kb` being peak RSS per rank including the
+                            exchange transients. --partitions must stay at 1.
+                            Each rank appends to its own --json-out sidecar,
+                            suffixed `.rank<N>`, whose lines carry `rank` and
+                            `ranks` fields. Launch it, e.g.:
+                              mpirun -n 4 --map-by ppr:1:numa --bind-to numa \\
+                                target/release/examples/phase_breakdown --mpi";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
+        #[cfg(feature = "mpi")]
+        println!("{MPI_USAGE}");
         return;
     }
 
@@ -1891,6 +2167,29 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // The universe outlives every cell: the transports hold duplicates of its
+    // communicator, and `Universe`'s drop is `MPI_Finalize`. The library never
+    // creates one (see `paulistrings::mpi`), so the probe does it here.
+    #[cfg(feature = "mpi")]
+    let _universe = cfg.mpi.then(|| {
+        use paulistrings::mpi::rsmpi;
+        // SERIALIZED, not FUNNELED: the layer loop runs inside a Rayon pool, so
+        // the thread issuing MPI calls is a pool worker — one at a time, but
+        // not the main thread.
+        let (universe, threading) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized)
+            .unwrap_or_else(|| {
+                eprintln!("phase_breakdown: MPI is already initialized in this process");
+                std::process::exit(2);
+            });
+        if threading < rsmpi::Threading::Serialized {
+            eprintln!(
+                "phase_breakdown: warning: MPI provided {threading:?}, below the SERIALIZED the \
+                 engine needs",
+            );
+        }
+        universe
+    });
 
     let words = cfg.qubits.div_ceil(64);
     match words {

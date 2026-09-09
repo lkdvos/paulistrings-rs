@@ -64,11 +64,16 @@ srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_
      --cpu-bind=ldoms --mpi=pmix "$bin"
 
 # The capacity probe, same placement: per-rank phase breakdown and peak RSS including the
-# exchange transients (the metric phase 3 exists for). Only if the probe was built with --mpi.
-probe=$CARGO_TARGET_DIR/release/examples/phase_breakdown
-if [ -x "$probe" ]; then
-    echo "== probe: $ranks ranks, D=1"
+# exchange transients (the metric phase 3 exists for). Each rank writes its own
+# `<path>.rank<N>` sidecar. Set PROBE=0 to run the differential net alone.
+if [ "${PROBE:-1}" = "1" ]; then
+    cargo build --offline --release --features phase-timing,mpi -p paulistrings \
+        --example phase_breakdown >/dev/null
+    probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
+    out="benchmarks/results/mpi-${SLURM_JOB_ID:-local}.jsonl"
+    echo "== probe: $ranks ranks, D=1, $cpus_per_numa threads each -> $out.rank*"
     srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
          --cpu-bind=ldoms --mpi=pmix "$probe" --mpi --threads "$cpus_per_numa" \
-         --json-out "benchmarks/results/mpi-${SLURM_JOB_ID:-local}.json"
+         --layers "${LAYERS:-cnot,su4,trotter}" --n "${N:-3000000}" --format json \
+         --json-out "$out"
 fi

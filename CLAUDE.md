@@ -70,6 +70,12 @@ export LIBCLANG_PATH=$(llvm-config --libdir)                 # bindgen (rsmpi)
 cargo test -p paulistrings --features mpi        # includes tests/mpi_ranks.rs as a one-rank world
 scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
 cargo clippy -p paulistrings --all-targets --features mpi -- -D warnings
+
+# The probe's distributed cell: one partition per rank, each rank reporting its own
+# vmhwm_kb (peak RSS incl. exchange transients) into its own `.rank<N>` sidecar.
+cargo build --release --features phase-timing,mpi --example phase_breakdown
+mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
+  target/release/examples/phase_breakdown --mpi --threads 16 --layers su4 --json-out out.jsonl
 ```
 
 Quiet-box campaigns run on an exclusive Slurm node from the templates in `scripts/slurm/` (`ab-campaign.sbatch`,

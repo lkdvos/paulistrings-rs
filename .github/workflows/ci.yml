@@ -63,6 +63,30 @@ jobs:
       # --oversubscribe.
       - run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features mpi
+      - run: cargo clippy -p paulistrings-py --features mpi -- -D warnings
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # mpi4py has no wheel for the runner's Open MPI, so it compiles against
+      # the libopenmpi-dev installed above (~1-2 min). `continue-on-error`
+      # plus the `outcome` guard below: a broken mpi4py build skips the Python
+      # leg with a visible red X on this step rather than failing the job,
+      # because the Rust net above already covers the transport.
+      - id: mpi4py
+        name: build the MPI venv (mpi4py compiles here)
+        continue-on-error: true
+        run: |
+          python -m venv .venv-mpi
+          .venv-mpi/bin/pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'numpy>=1.24' 'mpi4py>=4,<5'
+          .venv-mpi/bin/python -c 'import mpi4py; print(mpi4py.__version__)'
+      - name: the bindings' MPI net, at 2 and 4 ranks
+        if: steps.mpi4py.outcome == 'success'
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv-mpi
+        run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe --python --no-rust
+      - name: say so when the Python leg was skipped
+        if: steps.mpi4py.outcome != 'success'
+        run: echo "::warning::mpi4py could not be installed; the bindings' MPI net did not run"
 
   doc:
     name: doc

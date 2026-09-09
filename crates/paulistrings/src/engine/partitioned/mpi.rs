@@ -112,6 +112,8 @@ use ::mpi::topology::{Communicator, Rank, SimpleCommunicator};
 
 use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
+#[cfg(feature = "phase-timing")]
+use super::transport::ExchangeTimings;
 use super::transport::{Collectives, Payload, Transport, ROOT};
 use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
@@ -267,6 +269,10 @@ pub struct MpiTransport {
     /// [`with_chunk_bytes`](Self::with_chunk_bytes)); production uses
     /// [`DEFAULT_CHUNK_BYTES`].
     chunk: usize,
+    /// Sub-phase laps of [`Transport::exchange`], drained by
+    /// [`Transport::drain_timings`]. Measurement only.
+    #[cfg(feature = "phase-timing")]
+    timings: super::transport::ExchangeTimings,
 }
 
 // SAFETY: `SimpleCommunicator` is not `Send`/`Sync` because `MPI_Comm` is a raw
@@ -391,6 +397,8 @@ impl MpiTransport {
             epoch: AtomicU32::new(0),
             scratch: Mutex::new(Vec::new()),
             chunk: DEFAULT_CHUNK_BYTES,
+            #[cfg(feature = "phase-timing")]
+            timings: super::transport::ExchangeTimings::default(),
         })
     }
 
@@ -665,6 +673,8 @@ impl Transport for MpiTransport {
         if partners.is_empty() {
             return recv;
         }
+        #[cfg(feature = "phase-timing")]
+        let mut lap = std::time::Instant::now();
         let parts: Vec<Vec<&[u8]>> = partners
             .iter()
             .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
@@ -689,30 +699,41 @@ impl Transport for MpiTransport {
                     coll,
                 );
             }
+            #[cfg(feature = "phase-timing")]
+            ExchangeTimings::lap(&self.timings.send_post_ns, &mut lap);
 
             // Every send is in flight, so no blocking receive below can wait on
             // a partner that has not spoken yet.
-            let mut buffers: Vec<Vec<Vec<u8>>> = partners
-                .iter()
-                .map(|&src| {
-                    self.recv_header(src, tags)
-                        .into_iter()
-                        .map(|len| vec![0u8; len])
-                        .collect()
-                })
-                .collect();
+            let mut buffers: Vec<Vec<Vec<u8>>> = Vec::with_capacity(partners.len());
+            for &src in &partners {
+                let lens = self.recv_header(src, tags);
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
+                buffers.push(lens.into_iter().map(|len| vec![0u8; len]).collect());
+                #[cfg(feature = "phase-timing")]
+                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
+            }
             self.recv_parts(&partners, &mut buffers, tags);
 
             let mut done = Vec::with_capacity(sends);
             coll.wait_all(&mut done);
+            #[cfg(feature = "phase-timing")]
+            ExchangeTimings::lap(&self.timings.data_wait_ns, &mut lap);
 
             for (i, &src) in partners.iter().enumerate() {
                 let refs: Vec<&[u8]> = buffers[i].iter().map(Vec::as_slice).collect();
                 recv[src] = Some(P::from_byte_parts(&refs));
             }
+            #[cfg(feature = "phase-timing")]
+            ExchangeTimings::lap(&self.timings.decode_ns, &mut lap);
         });
 
         recv
+    }
+
+    #[cfg(feature = "phase-timing")]
+    fn drain_timings(&self, stats: &mut crate::engine::stats::PhaseStats) {
+        self.timings.drain_into(stats);
     }
 
     /// Root-centric, not an exchange: the default body in

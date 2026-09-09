@@ -49,6 +49,12 @@ use num_complex::Complex64;
 pub(crate) struct RecvRows<'a, const W: usize> {
     /// `(bucket_delta, block)` per remote delta, ascending by entry.
     blocks: Vec<(u32, Option<&'a ExchangeBlock<W>>)>,
+    /// Nanoseconds spent in [`append_into`](ExtraRows::append_into), summed
+    /// over every coset task that ran one. Measurement only; the coset loop is
+    /// parallel, so the counter is an atomic, and it is read once after the
+    /// loop has joined.
+    #[cfg(feature = "phase-timing")]
+    append_ns: std::sync::atomic::AtomicU64,
 }
 
 impl<'a, const W: usize> RecvRows<'a, W> {
@@ -85,7 +91,11 @@ impl<'a, const W: usize> RecvRows<'a, W> {
             );
             blocks.push((r.bucket_delta, block));
         }
-        Self { blocks }
+        Self {
+            blocks,
+            #[cfg(feature = "phase-timing")]
+            append_ns: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 }
 
@@ -109,6 +119,8 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         z: &mut Vec<[u64; W]>,
         c: &mut Vec<Complex64>,
     ) {
+        #[cfg(feature = "phase-timing")]
+        let t0 = std::time::Instant::now();
         for &(bucket_delta, block) in &self.blocks {
             let Some(block) = block else { continue };
             let (sx, sz, sc) = block.segment(beta ^ bucket_delta);
@@ -116,6 +128,11 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
             z.extend_from_slice(sz);
             c.extend_from_slice(sc);
         }
+        #[cfg(feature = "phase-timing")]
+        self.append_ns.fetch_add(
+            t0.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 }
 
@@ -198,6 +215,8 @@ where
     {
         st.lap(&mut state.layer.stats.export_ns);
         state.layer.stats.rows_exported += export.rows_to.iter().sum::<u64>();
+        state.layer.stats.export_count_ns += std::mem::take(&mut state.export.count_ns);
+        state.layer.stats.export_fill_ns += std::mem::take(&mut state.export.fill_ns);
     }
     #[cfg(debug_assertions)]
     {
@@ -211,7 +230,10 @@ where
     }
     let recv = transport.exchange(send);
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut state.layer.stats.exchange_ns);
+    {
+        st.lap(&mut state.layer.stats.exchange_ns);
+        transport.drain_timings(&mut state.layer.stats);
+    }
     #[cfg(debug_assertions)]
     for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
         // The bucket count is a *collective* decision the driver makes before
@@ -276,6 +298,13 @@ where
         &recv_rows,
         knobs,
     );
+    #[cfg(feature = "phase-timing")]
+    {
+        // The coset loop has joined, so the counter is quiescent.
+        state.layer.stats.append_ns += recv_rows
+            .append_ns
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
 
     LayerExchangeCounts {
         remote_deltas: plan.remote.len(),

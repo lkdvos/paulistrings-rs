@@ -1587,6 +1587,15 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.collective_ns = out.collective_ns.max(s.collective_ns);
         out.export_ns = out.export_ns.max(s.export_ns);
         out.exchange_ns = out.exchange_ns.max(s.exchange_ns);
+        // Sub-phases of the two above, folded the same way so a row's parts
+        // still add up to the whole on the partition that defined it.
+        out.export_count_ns = out.export_count_ns.max(s.export_count_ns);
+        out.export_fill_ns = out.export_fill_ns.max(s.export_fill_ns);
+        out.send_post_ns = out.send_post_ns.max(s.send_post_ns);
+        out.hdr_wait_ns = out.hdr_wait_ns.max(s.hdr_wait_ns);
+        out.recv_alloc_ns = out.recv_alloc_ns.max(s.recv_alloc_ns);
+        out.data_wait_ns = out.data_wait_ns.max(s.data_wait_ns);
+        out.decode_ns = out.decode_ns.max(s.decode_ns);
         // Worker busy time and counters: sums over the group.
         out.swap_ns += s.swap_ns;
         out.size_ns += s.size_ns;
@@ -1603,6 +1612,7 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.terms_out += s.terms_out;
         out.rows_exported += s.rows_exported;
         out.recv_rows += s.recv_rows;
+        out.append_ns += s.append_ns;
     }
     out.layers = stats.layers;
     out
@@ -1820,6 +1830,25 @@ fn print_partition_block(cell: &CellResult) {
         s.collective_ns as f64 / 1e6,
     );
     println!(
+        "      export  = count {:.3} + fill {:.3} ms",
+        s.export_count_ns as f64 / 1e6,
+        s.export_fill_ns as f64 / 1e6,
+    );
+    println!(
+        "      exchange = send/post {:.3} + header wait {:.3} + recv alloc {:.3} + data wait \
+         {:.3} + decode {:.3} ms",
+        s.send_post_ns as f64 / 1e6,
+        s.hdr_wait_ns as f64 / 1e6,
+        s.recv_alloc_ns as f64 / 1e6,
+        s.data_wait_ns as f64 / 1e6,
+        s.decode_ns as f64 / 1e6,
+    );
+    println!(
+        "      received rows appended into the rest streams = {:.3} ms [worker busy time, part \
+         of gather]",
+        s.append_ns as f64 / 1e6,
+    );
+    println!(
         "    terms in per partition = {:?}   imbalance (max/mean) = {:.3}",
         p.terms_in, p.imbalance,
     );
@@ -1877,7 +1906,9 @@ fn json_line(cell: &CellResult) -> String {
         ",\"partitions\":{},\"partition_cpus\":\"{}\",\"pin_memory\":{},\"gen_qubits\":[{},{}],\
          \"local_layers\":{},\"remote_layers\":{},\"rows_exported\":{},\"bytes_exported\":{},\
          \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
-         \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{}",
+         \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
+         \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
+         \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"decode_ns\":{},\"append_ns\":{}",
         cell.partitions,
         cell.partition_cpus,
         u8::from(cell.pin_memory),
@@ -1893,6 +1924,14 @@ fn json_line(cell: &CellResult) -> String {
         s.exchange_ns,
         s.collective_ns,
         json_u64_array(coset_loop_ns),
+        s.export_count_ns,
+        s.export_fill_ns,
+        s.send_post_ns,
+        s.hdr_wait_ns,
+        s.recv_alloc_ns,
+        s.data_wait_ns,
+        s.decode_ns,
+        s.append_ns,
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
@@ -1955,7 +1994,8 @@ swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\t
 terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartitions\t\
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
-partition_coset_loop_ns";
+partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
+recv_alloc_ns\tdata_wait_ns\tdecode_ns\tappend_ns";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -1965,7 +2005,8 @@ fn print_tsv_row(cell: &CellResult) {
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2017,6 +2058,14 @@ fn print_tsv_row(cell: &CellResult) {
         // `barrier_ns` in every output format is the engine's `collective_ns`.
         s.collective_ns,
         tsv_array(p.map_or(&empty_ns, |p| &p.coset_loop_ns)),
+        s.export_count_ns,
+        s.export_fill_ns,
+        s.send_post_ns,
+        s.hdr_wait_ns,
+        s.recv_alloc_ns,
+        s.data_wait_ns,
+        s.decode_ns,
+        s.append_ns,
     );
 }
 

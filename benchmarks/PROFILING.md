@@ -157,7 +157,19 @@ lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, 
 `rotation_*` layer rotated about — `[0, 1]` for every other layer), `local_layers`, `remote_layers`,
 `rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
-(list, one entry per partition). **Every consumer of this sidecar must read every one of these — old and
+(list, one entry per partition).
+
+Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
+phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
+`export_fill_ns` ≈ `export_ns` (the count pass and the fill pass); `send_post_ns` + `hdr_wait_ns` +
+`recv_alloc_ns` + `data_wait_ns` + `decode_ns` ≈ `exchange_ns` (encoding and posting the sends, the
+blocking framing-header receive — where a partner's skew lands — sizing the receive buffers, the part
+receives and the `wait_all`, and turning the bytes into typed columns, which is zero for a transport
+that receives straight into them); and `append_ns`, worker busy time inside `gather_ns`, for merging
+received rows into the output buckets' rest streams. Only a distributed cell fills the five exchange
+laps: the in-process transport moves a typed payload and has no encode, wait or decode to attribute.
+
+**Every consumer of this sidecar must read every one of these — old and
 new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the
 partitioned engine landed has none of them, and `partitions` defaults to `1` in that case (an
 unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both follow this rule;

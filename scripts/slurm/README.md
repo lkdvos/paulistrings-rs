@@ -7,7 +7,7 @@ design: allocating cluster resources is a user check-in point.
 | script | what it runs | when |
 |---|---|---|
 | `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | phase 2 (and the post-S9 re-check) |
-| `mpi-ranks.sbatch` | the multi-rank differential test and the D-domains-vs-ranks probe comparison under `srun --mpi=pmix` | phase 3 (needs the `mpi` cargo feature; placeholder until it lands) |
+| `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix` | phase 3 (needs the `mpi` cargo feature) |
 
 ## Node choice
 
@@ -15,9 +15,10 @@ Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's). 
 (2 × 64), 11 genoa (2 × 48, mostly allocated). The templates default to
 `--constraint=icelake&rocky9` for availability and because rocky9 matches the module stack the
 workstation uses; override with `sbatch --constraint='genoa&rocky9' ...` to get more NUMA domains per
-socket (P = 4 or 8 if the BIOS exposes NPS4). The scripts never hard-code CPU lists: they read
-`/sys/devices/system/node/node*/cpulist` on the node and build the `--partition-cpus` string from it,
-so a node with N NUMA domains runs P = N.
+socket (P = 4 or 8 if the BIOS exposes NPS4). The scripts never hard-code CPU lists: `ab-campaign.sbatch`
+reads `/sys/devices/system/node/node*/cpulist` on the node and builds the `--partition-cpus` string
+from it, so a node with N NUMA domains runs P = N, and `mpi-ranks.sbatch` lets `--cpu-bind=ldoms`
+do the same job for it.
 
 ## One-time setup: a toolchain on the shared filesystem
 
@@ -50,6 +51,27 @@ A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sba
 # more NUMA domains:
 sbatch --constraint='genoa&rocky9' scripts/slurm/ab-campaign.sbatch
 ```
+
+## Phase 3: the MPI ranks job
+
+`mpi-ranks.sbatch` builds with `--features mpi` and runs the differential net across the allocation
+at **one rank per NUMA domain** (`D = 1`). The engine holds exactly one partition per process and
+reads its placement from the launcher's affinity mask, so `--cpu-bind=ldoms` is what pins the run —
+there is no domains-per-rank knob and no `--partition-cpus` string to build. The rank count must be
+a power of two (a partition is named by `log2(P)` GF(2) rows), so the script rounds
+`nodes × domains` down and prints what it picked: two icelake nodes of two domains each give four
+ranks.
+
+```bash
+env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-ranks.sbatch
+env -u SBATCH_RESERVATION sbatch --nodes=4 scripts/slurm/mpi-ranks.sbatch          # 8 ranks
+env -u SBATCH_RESERVATION sbatch --constraint='genoa&rocky9' scripts/slurm/mpi-ranks.sbatch
+```
+
+The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/19.1.7`
+alongside `openmpi/5.0.6` and exports `LIBCLANG_PATH`. Run `cargo fetch` once on a login host after
+adding the feature — the job builds `--offline` against the shared registry cache. On the
+workstation the same net runs without Slurm through `scripts/mpi-test.sh --ranks 2,4`.
 
 Jobs build the commit `PS_REV` (default: `HEAD` when the job starts) in a git worktree, never the
 live checkout, so editing the tree while jobs are queued is safe; pin with

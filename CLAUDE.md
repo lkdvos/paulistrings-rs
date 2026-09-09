@@ -14,7 +14,9 @@ of `span(h(D))`, write-disjoint by construction — no atomics, no locks, no syn
 core takes `W` as a const generic; the PyO3 bindings monomorphize widths `{1, 2, 4, 8, 16}` (64–1024 qubits), dispatching
 once outside any hot loop. Above that sits an optional **partitioned** engine (`ARCHITECTURE.md §Partitioning`): the sum
 split across `P ≤ 16` NUMA domains by designated GF(2) partition rows, one pinned Rayon pool each, with a push-model
-exchange of the rows a layer moves across domains and a `Transport` trait as the seam for a later MPI phase.
+exchange of the rows a layer moves across domains and a `Transport` trait as the seam. The same layer loop runs
+distributed — one partition per MPI rank (`DistributedSum`, the off-by-default `mpi` feature) — with the transport as
+the only difference.
 
 `ARCHITECTURE.md` is the design source of truth; code comments cite its named sections as `ARCHITECTURE.md §Engine`. Do
 not rename its `##` headings without sweeping those citations.
@@ -58,6 +60,18 @@ cargo run --release --features phase-timing --example phase_breakdown -- \
   --partitions 2 --partition-cpus "0-7,16-23;8-15,24-31" --threads 32 --n 1000000 --layers su4
 ```
 
+The MPI transport is behind the off-by-default `mpi` feature, which needs an MPI installation plus `libclang` for
+rsmpi's bindgen. Every gate below must be run from a shell with the modules loaded:
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7   # sets MPICC
+export LIBCLANG_PATH=$(llvm-config --libdir)                 # bindgen (rsmpi)
+
+cargo test -p paulistrings --features mpi        # includes tests/mpi_ranks.rs as a one-rank world
+scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
+cargo clippy -p paulistrings --all-targets --features mpi -- -D warnings
+```
+
 Quiet-box campaigns run on an exclusive Slurm node from the templates in `scripts/slurm/` (`ab-campaign.sbatch`,
 `mpi-ranks.sbatch`). **Submitting is the user's step, never an agent's** — write or adjust the template and hand over the
 `sbatch` line.
@@ -91,6 +105,11 @@ speculative), **refactor** (only after green).
   box or a `taskset`ed CI container; placement itself is covered by `topology.rs`'s own tests. A policy used in a
   partitioned test must answer `finalizes_layer() == false` or implement `PartitionedTruncation` — the trait default
   panics on a policy that finalizes layers with no collective form.
+- The distributed driver has two nets: `tests/propagate_distributed.rs` runs `DistributedSum` over
+  `InProcessTransport` (one thread per "rank", no MPI, so it is part of the default `cargo test`), and
+  `tests/mpi_ranks.rs` runs the same matrix over `MpiTransport` under `mpirun`. The latter is `harness = false` —
+  the cases are collective, so they must run in one order on every rank — and all-reduces each verdict so every
+  rank exits with the same status.
 - No `#[ignore]`d tests. `cargo test --workspace` must be green at every commit; `cargo test --workspace --release` runs the
   same suite against the shipping codegen. Benchmarks follow tests, never the reverse.
 - Commit logical units, and check in with the user at feature boundaries rather than rolling several features into one commit.
@@ -108,6 +127,9 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
 
 ## Performance discipline
 
+- **Every cargo feature is off by default and stays that way** — `phase-timing`, `test-utils` and `mpi` alike. The
+  default build must be byte- and performance-identical to one from before the feature existed, which for `mpi`
+  also means `crates/paulistrings/build.rs` emits nothing at all without `CARGO_FEATURE_MPI`.
 - Benchmark `--release` only; keep input generation deterministic (seeded RNG) outside the timed region; report single-thread
   and multi-thread numbers separately. The probe is
   `cargo run --release --features phase-timing --example phase_breakdown`; its `phase-timing` feature (`engine/stats.rs`)
@@ -145,6 +167,11 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
 - Partitioned mode rejects exact `TopN` at compile time (a distributed `k`-th selection has no collective form yet);
   `ApproxTopN` is partition-exact and is the partitioned default. Thread and memory pinning are Linux-only — elsewhere
   the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
+- The `mpi` feature does not build without an MPI installation and a `libclang` for rsmpi's bindgen (`LIBCLANG_PATH`),
+  which is why `[package.metadata.docs.rs]` names its features explicitly instead of `all-features = true`. A
+  distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask; there is no
+  domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and
+  the wire format is raw host bytes (same architecture and same `W` on every rank).
 - Partition rows are drawn at random by default, so export volume is a property of the draw: roughly half of a dense
   two-qubit gate's deltas cross at `P = 2`. Tuning the rows (cut-like rows, conserved quantities) is open research.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under
@@ -156,9 +183,12 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
 - `crates/paulistrings/` — pure Rust core, no Python deps. Modules: `pauli_string`, `phase`, `pauli_sum`,
   `bucket/{hash,sum}`, `accumulator`, `circuit`, `channel/{clifford,rotation,unitary,noise,identity,prepared}`,
   `truncation/{builtin}`, `engine/{bucketed,coset,merge,stats}`,
-  `engine/partitioned/{topology,transport,plan,export,layer,truncation,runtime,driver,trace}`, `stabilizer`,
-  `test_support`, `examples`; re-exports in `lib.rs`. Also
-  `benches/pauli_ops.rs` (criterion), runnable `examples/`, and walkthroughs in `docs/examples/`. Dependencies worth
+  `engine/partitioned/{topology,transport,plan,export,layer,truncation,runtime,driver,distributed,trace,mpi}`,
+  `stabilizer`, `test_support`, `examples`; re-exports in `lib.rs` (`mpi` is re-exported as `paulistrings::mpi`).
+  `build.rs` exists only for the `mpi` feature: it re-adds the `-Wl,-rpath` rsmpi drops and stamps the MPI version
+  the build probed. Also
+  `benches/pauli_ops.rs` (criterion), runnable `examples/`, `tests/mpi_ranks.rs` (the multi-rank net, run by
+  `scripts/mpi-test.sh`), and walkthroughs in `docs/examples/`. Dependencies worth
   knowing: `libc` is a `cfg(target_os = "linux")` target dependency (pinning and `set_mempolicy` only), and num-complex
   carries the `bytemuck` feature so exchange blocks cast coefficient columns to bytes without a copy.
 - `crates/paulistrings-py/` — PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22. Modules: `sum`, `circuit`,

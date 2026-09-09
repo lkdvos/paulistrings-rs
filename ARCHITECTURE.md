@@ -546,6 +546,81 @@ minimize traffic are cut-like, reading the qubits on the boundary of a spatial
 cut. `Transport` is the seam for that work and for the distributed phase: MPI
 is the same exchange over ranks, with the same collective-order invariant.
 
+### Transport composition
+
+The engine's *partition* is deliberately not a thread and not a process: it is
+whatever a `Transport` says a peer is. Two implementations exist, and the layer
+code cannot tell them apart — `run_layers` is one function, generic over the
+transport, driven both by `PartitionedSum` (`P` partitions inside one process,
+`InProcessTransport`) and by `DistributedSum` (**one partition per process**,
+`MpiTransport`, behind the off-by-default `mpi` feature).
+
+**`D = 1`: one rank per NUMA domain, no hybrid.** A distributed rank's runtime
+holds exactly one partition, and its placement comes from the launcher rather
+than from the engine — `mpirun --map-by ppr:1:numa --bind-to numa` or `srun
+--cpu-bind=ldoms` leaves the process an affinity mask of one domain, and
+`Placement::Auto` over that mask resolves to a single slot covering it. So the
+process placement does the work explicit CPU lists do in-process, and the two
+mechanisms never have to be composed. A domains-per-rank hybrid (`D > 1` inside
+each rank, MPI between ranks) is a possible later shape, not an implemented
+one.
+
+**The library never initializes MPI.** `MPI_Init` is a process-global one-shot,
+so the application owns it: `MpiTransport::from_communicator` duplicates a
+communicator the caller already has, and `from_raw_handle` does the same for a
+foreign `MPI_Comm` (a Python host's, through `mpi4py`). The duplicate is the
+engine's own, so its tags cannot collide with the application's traffic. The
+`mpi` crate is re-exported as `paulistrings::mpi::rsmpi` for the same reason a
+duplicate is taken: the caller must build its `Universe` from the version the
+library links. The engine's MPI calls come off a Rayon pool worker (the layer
+loop runs inside `ThreadPool::install`), one at a time, so the level to request
+is `MPI_THREAD_SERIALIZED` — never `FUNNELED`.
+
+**Point-to-point, not all-to-all-v.** The partner set of a layer's exchange is
+symmetric by construction: a remote delta moves rank `R`'s rows to `R ⊕ pd`,
+and the same delta on `R ⊕ pd` moves its rows back to `R`. So "who sends to me"
+*is* "who I send to", every rank knows the set from its own plan, and no
+count-exchange or group-sized collective is needed to discover it.
+
+**The per-layer collective schedule** is unchanged from the in-process case,
+and it is what an MPI implementation must not second-guess: one unconditional
+`allreduce_max_u8` for the bucket count, then the layer's exchange **only if
+the plan has a remote delta** (a key-preserving channel issues no transport
+call at all), then whatever the policy's collective finalization runs. On top
+of that a distributed propagation calls `check_consistency` exactly once,
+before its first layer: an all-reduce of a fingerprint of the run's shape
+(channel count, direction, bucket-policy knobs, qubit count, `W`), exact
+because it reduces the 64 per-bit counts and every count must be 0 or `size`.
+Ranks handed different circuits then get a message instead of a deadlock two
+layers in.
+
+**Wire framing.** Per partner, one self-describing header — `u64[2 +
+n_parts]`, carrying the wire version, the source rank and one byte length per
+part — followed by the payload's `byte_parts` in order. The header is the only
+message whose size the receiver cannot predict, so it arrives through a matched
+probe; the parts are posted receives of known length, matched to their sends by
+MPI's non-overtaking guarantee for a `(source, tag, communicator)` triple,
+which is why both sides walk partners, parts and chunks in the same ascending
+order. Tags pack `epoch:11 | kind:4`, at most 32767 and so inside the
+guaranteed `MPI_TAG_UB`. Everything is sent as bytes and chunked at 1 GiB:
+MPI's counts are `i32`, and a `u64` view of the parts — which would raise the
+per-message ceiling — is not available, the block header being four `u32`s and
+the CSR `offsets` column a `Vec<u32>`, neither 8-aligned. All sends are posted
+before the call's first receive, so the rendezvous cannot deadlock. Raw host
+bytes on the wire means a run is homogeneous: same architecture, same `W`,
+every rank.
+
+**Scatter and gather bracket a distributed run too, with a different
+contract.** The input is *replicated* — every rank calls `scatter` with the
+same sum and keeps `filter_partition(rows, rank)`, the rows drawn from one seed
+so nobody has to agree by collective. `local()` is always this rank's share, a
+valid `PauliSum` under the group's shared hash; `gather()` is collective and
+returns `Some` on rank 0 only, each rank shipping its bucket lengths and the
+three columns `to_arrays` concatenates and rank 0 rebuilding them before
+`merge_partitions`. `PartitionTrace` stays per rank: `terms_in`, `terms_out`
+and `rows_received` have one entry, while `rows_sent` and `bytes_sent` are
+indexed by destination rank over the whole group.
+
 ## Determinism
 
 The correctness bar for engine changes is **agreement to floating-point

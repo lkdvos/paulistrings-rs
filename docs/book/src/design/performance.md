@@ -110,15 +110,25 @@ The sparse classes at 32 threads stay latency-bound and keep scaling:
 They stop at half the write ceiling with 70–90% of their modeled traffic cache-served: bandwidth is
 not what limits them, and they take the full thread count profitably.
 
-## Across NUMA nodes
+## Across NUMA nodes and across ranks
 
 Both facts above — the second socket adding 15–25% rather than 2×, and the dense-PTM class
 pinned to the write ceiling — are the same effect: pages are placed by first touch and Rayon then
 steals work across sockets, so roughly half of the second socket's reads are remote. The engine
 can instead be run partitioned, one pinned pool and one share of the sum per NUMA domain, with
 only the rows a layer moves across a domain boundary exchanged.
-[Running across NUMA nodes](numa.md) covers when that is worth doing and how to ask for it. It
-carries no measured numbers yet.
+
+**Locality decides whether that pays.** A layer with no row crossing runs 4–18% faster at `P = 2`,
+the gain growing with cores per socket; a layer that exports rows costs 2–8× the layer it feeds.
+Random partition rows put about half of a dense two-qubit gate's deltas across a boundary, so the
+default draw lands a mixed circuit in the second case.
+[Running across NUMA nodes](numa.md) covers when to reach for it and how to ask for it.
+
+The same split across *processes* is one partition per MPI rank, and there the goal is capacity
+rather than bandwidth. Per-rank overhead is bounded and flat in the rank count: local layers cost
+~10.5 ms at 6·10⁶ terms per rank whatever the group size, and a rotation layer whose generator
+crosses costs 3.5× that intra-node and 4.4–4.7× inter-node, unchanged from 4 to 8 ranks.
+[Running across MPI ranks](mpi.md) covers the launch and the limits.
 
 ## Thread-count guidance
 
@@ -139,6 +149,8 @@ Sources:
 (all achieved numbers, phase shares, verdicts);
 [`research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md)
 (ceilings);
+[`research/notes/2026-09-08-numa-partitioning-results.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/notes/2026-09-08-numa-partitioning-results.md)
+(the partitioned and distributed tables);
 [`benchmarks/PROFILING.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md)
 (byte model, interpretation rules, noise floor);
 [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md)

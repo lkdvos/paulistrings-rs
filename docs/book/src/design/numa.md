@@ -1,33 +1,36 @@
 # Running across NUMA nodes
 
 A partitioned run splits the sum across NUMA domains instead of sharing one pool across the whole
-box. Each domain gets its own pinned thread pool and its own share of the terms, and a layer
-exchanges only the rows that cross a domain boundary. The mechanism is in
+box. Each domain gets its own pinned thread pool and its own share of the terms, selected by
+designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain
+boundary. The mechanism is in
 [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md)
 §Partitioning; this page is when to reach for it and how.
 
-## When it should help
+## What it costs and what it buys
 
-The single-pool engine places pages by first touch and then work-steals across sockets, so about
-half of every second socket's reads are remote. That is why the second socket adds only 15–25% of
-bandwidth rather than 2× on the reference host, and why the dense two-qubit PTM class sits at the
-machine's write ceiling from 16 threads up ([Performance](performance.md)). A bandwidth-bound layer
-is the case partitioning targets: each domain reads and writes its own pages, and the only
-cross-socket traffic is the exchange itself.
+**Locality decides everything.** A layer whose gates leave the partition rows fixed runs entirely
+inside its own domain and gains; a layer that moves any row across a boundary pays for the export
+pass, the copy and the receiver's larger merge stream. Measured at `P = 2` against `P = 1` on the
+same binary, on two-socket hosts from 8 to 48 cores per socket:
 
-Reach for it when the profile says **bandwidth-bound and flat past one socket**: dense two-qubit
-unitaries (`unitary_2q` with a full transfer matrix), large sums, high thread counts.
+| layer class | `P = 2` vs `P = 1` |
+|---|---|
+| dense two-qubit unitaries, no row crossing | **4–18% faster**, direction-consistent on every host |
+| Pauli rotations, no row crossing | coset loop 12–22% faster on two of three hosts |
+| any layer that exports rows (random rows) | **2–8× slower**, and worse at higher core counts |
 
-## When it will not
+The gain grows with cores per socket, as a memory-system effect should: −4% on an 8-core-per-socket
+workstation, −18% on a 48-core Genoa at 96 threads. Load imbalance across partitions stays within
+1.000–1.004 with random rows. Full tables:
+[`research/notes/2026-09-08-numa-partitioning-results.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/notes/2026-09-08-numa-partitioning-results.md).
 
-A latency-bound layer has nothing to recover. Rotation and Clifford circuits already scale to
-11–13× at 32 threads with most of their traffic cache-served, and partitioning adds an export pass
-and an all-to-all per layer on top. A rotation whose generator crosses a partition boundary is the
-worst shape: it exports one row per anticommuting term.
-
-Two structural limits also apply. Pinning is Linux-only — elsewhere the run is correct but
-unplaced. And a partitioned run holds `P` shares of the sum plus the exchange blocks, so peak
-memory is above a single-pool run's.
+Random partition rows put roughly half of a dense two-qubit gate's deltas across a boundary, so the
+default draw lands a mixed circuit in the bottom row of that table. **In-process partitioning is
+worth it when the exchange is rare**, and choosing rows that make it rare — rows reading the qubits
+on the boundary of a spatial cut, so only cut-crossing gates exchange — is open research. To split
+across *processes* instead, for capacity rather than bandwidth, see
+[Running across MPI ranks](mpi.md).
 
 ## Python
 
@@ -48,15 +51,15 @@ you want:
 partitions=["0-7,16-23", "8-15,24-31"]
 ```
 
-`paulistrings.numa_nodes()` reports what the machine offers, as `(node, cpus)` pairs, so a script
-can decide for itself before choosing.
+`paulistrings.numa_nodes()` reports what the machine offers, as one CPU list per node intersected
+with this process's affinity mask, so a script can decide for itself before choosing.
+`pin_memory=False` pins the threads but not their
+allocations; the default binds both, which is the point of the placement.
 
 `propagate_with_stats` fills `PropagationStats.partition` on a partitioned run: per layer, the
 terms each partition held, the rows and bytes it sent, and the imbalance across partitions. It is
-`None` for an unpartitioned run.
-
-To split across *processes* instead of pools — one partition per MPI rank, across sockets or nodes —
-see [Running across MPI ranks](mpi.md).
+`None` for an unpartitioned run. `local[k]` says whether layer `k` exchanged at all, which is the
+figure the table above turns on.
 
 ## Rust
 
@@ -92,15 +95,34 @@ placement, not from Rayon's global pool, so the thread count comes from the CPU 
 unpartitioned run ([Getting started](../getting-started.md#threads)).
 
 **Exact `topn` is unavailable.** Choosing the `n`-th largest magnitude across partitions is a
-distributed selection, and the engine has no collective form for it — a partitioned run rejects
+distributed selection, and the engine has no collective form for it, so a partitioned run rejects
 `truncation.topn`. Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is
 all-reduced, so the retained set is exactly the set the single-partition run would have kept.
 `coeff` and `weight` are per-term filters and need nothing.
 
-## Numbers to come
+## Limits
 
-The partitioned engine has landed but has no committed measurement yet. The measurement plan is a
-P=1 versus P=N runtime-knob A/B of one binary on a quiet exclusive node
-(`scripts/slurm/ab-campaign.sbatch`), with the roofline denominators re-measured on that node. This
-page will carry the results when they exist; until then treat partitioning as a facility to try on
-a bandwidth-bound workload, not as a documented speedup.
+- **Pinning is Linux-only.** Elsewhere the topology module reports one node and pins nothing, so
+  the run is correct but unplaced.
+- **`P` is a power of two, at most 16.** A partition is named by `log2(P)` GF(2) hash rows.
+- **Peak memory is above a single-pool run's.** A partitioned run holds `P` shares of the sum plus
+  one layer's exchange buffers, which are pooled and reused rather than freed between layers.
+- **Results agree to floating-point tolerance, not bit for bit** — as they do across bucket counts.
+  At `P = 1` the output is bitwise the unpartitioned engine's.
+
+## Measuring it
+
+`P = 1` versus `P = N` is a runtime-knob A/B of one binary, not a code A/B:
+
+```bash
+scripts/ab-compare.sh partitions-1v2 --a . --b . \
+  --probe   '--n 1000000 --threads 32 --layers su4_local --partitions 1' \
+  --probe-b '--n 1000000 --threads 32 --layers su4_local --partitions 2 \
+             --partition-cpus "0-15,32-47;16-31,48-63"'
+```
+
+`--threads` is the total at every `P`. A partitioned cell runs under **no** placement prefix:
+`numactl` and `taskset` both defeat the split the engine is making. On an exclusive cluster node,
+`scripts/slurm/ab-campaign.sbatch` builds the CPU lists from the node's own topology. The protocol
+and the sidecar fields are in
+[`benchmarks/PROFILING.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md).

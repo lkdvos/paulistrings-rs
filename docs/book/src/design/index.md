@@ -129,6 +129,10 @@ trade-offs, and the negative results behind each choice. The rustdoc under
 [/api/](../api/paulistrings/index.html) documents the public types; the module docs on
 `engine::bucketed`, `engine::merge`, and `pauli_sum` carry the precise per-module contracts.
 
+The same loop runs with the sum split across NUMA domains or MPI ranks —
+[Running across NUMA nodes](numa.md), [Running across MPI ranks](mpi.md), and `ARCHITECTURE.md`
+§Partitioning for the mechanism.
+
 Sources: [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md)
 §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism,
 §Truncation; module docs

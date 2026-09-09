@@ -14,6 +14,7 @@ from ._paulistrings import (
     PartitionStats,
     PauliSum,
     PropagationStats,
+    mpi_available,
     numa_nodes,
     reset_log_cache,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "truncation",
     "interop",
     "io",
+    "mpi_available",
     "numa_nodes",
     "reset_log_cache",
 ]

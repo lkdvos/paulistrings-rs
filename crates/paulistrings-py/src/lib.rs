@@ -18,6 +18,8 @@ mod macros;
 mod channel_spec;
 mod circuit;
 mod gates;
+#[cfg(feature = "mpi")]
+mod mpi;
 mod noise;
 mod sum;
 mod truncation;
@@ -70,6 +72,27 @@ fn numa_nodes() -> Vec<Vec<usize>> {
         .collect()
 }
 
+/// Whether this build of the extension can run `PauliSum.propagate(comm=...)`.
+///
+/// `True` only if the extension was compiled with the `mpi` cargo feature
+/// (`maturin develop --release --features mpi`), which needs an MPI
+/// installation and a `libclang` for rsmpi's bindgen at build time. The
+/// default wheel is built without it, and a `comm=` there raises
+/// `RuntimeError`.
+///
+/// Importing `paulistrings` never imports `mpi4py` and never touches MPI, so
+/// this is safe to call anywhere, including in a serial process:
+///
+/// ```python
+/// if paulistrings.mpi_available():
+///     from mpi4py import MPI
+///     evolved = observable.propagate(circuit, comm=MPI.COMM_WORLD)
+/// ```
+#[pyfunction]
+fn mpi_available() -> bool {
+    cfg!(feature = "mpi")
+}
+
 #[pymodule]
 fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route the core crate's `log` records (target `paulistrings::propagate`,
@@ -80,6 +103,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_function(wrap_pyfunction!(reset_log_cache, m)?)?;
     m.add_function(wrap_pyfunction!(numa_nodes, m)?)?;
+    m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
 
     // Default for `PauliSum.propagate(small_sum_threshold=...)`, re-exported
     // from the core so the Python default cannot drift from the Rust one.

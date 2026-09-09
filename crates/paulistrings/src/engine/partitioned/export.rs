@@ -4,20 +4,26 @@
 //! A remote delta `e` (see [`PartitionPlan`]) moves *every* row it produces to
 //! the one partner `rank ^ pd[e]`, from local bucket `β` to that partner's
 //! bucket `β ^ bd[e]`. So the export is a pure per-delta gather, with no
-//! per-term routing decision: the block is CSR by **source** bucket and the
-//! receiver applies the bucket offset itself (`transport`'s module docs).
+//! per-term routing decision.
 //!
-//! Two passes over the local buckets, both parallel over buckets because a
-//! bucket's rows occupy one contiguous CSR segment of each block and segments
-//! are disjoint:
+//! The block is CSR **in the receiver's destination-coset order**
+//! ([`ChunkMap`](super::transport::ChunkMap)): segment `p` holds the rows for
+//! the receiver's position `p`, generated from source bucket
+//! `map.bucket_at(p) ^ bd[e]`. The permutation costs one pass over the count
+//! array — the fill walks positions instead of buckets and is otherwise
+//! unchanged — and it is what makes a receiving coset's rows contiguous, so
+//! the transfer can be cut into chunks the receiver consumes as they land.
+//!
+//! Two passes over the local buckets, both parallel because a position's rows
+//! occupy one contiguous CSR segment of each block and segments are disjoint:
 //!
 //! 1. **Count** rows per (remote delta, source bucket). An entry whose
 //!    amplitude is nonzero on every active support pattern emits one row per
 //!    term, so its count is the bucket length with no scan at all; a sparse
 //!    entry is counted with one support-bit lookup per term, shared across
 //!    every sparse entry of the layer.
-//! 2. **Fill** each block, source bucket by source bucket, writing straight
-//!    into `offsets[β]..offsets[β + 1]`.
+//! 2. **Fill** each block, position by position, writing straight into
+//!    `offsets[p]..offsets[p + 1]`.
 //!
 //! The row arithmetic is not reimplemented here: it is
 //! [`DeltaEntry::emit`](crate::channel::prepared::DeltaEntry::emit) and
@@ -29,7 +35,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::plan::PartitionPlan;
-use super::transport::{ExchangeBlock, PartnerPayload};
+use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload};
 use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
@@ -38,7 +44,7 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Rows below which a block's fill stays on one thread.
 ///
-/// The fill splits a block's source-bucket range in two and hands the halves
+/// The fill splits a block's position range in two and hands the halves
 /// to `rayon::join`; the split is exact (the CSR offsets say where the halves
 /// meet), so this threshold is purely about not paying task overhead for a
 /// handful of rows.
@@ -57,8 +63,13 @@ const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 pub(crate) struct ExportScratch<const W: usize> {
     /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
     counts: Vec<u32>,
-    /// One block's counts by source bucket, gathered out of [`Self::counts`].
+    /// One block's counts by destination position, gathered out of
+    /// [`Self::counts`].
     block_counts: Vec<u32>,
+    /// One block's source bucket per destination position:
+    /// `src_of[p] = map.bucket_at(p) ^ bd`. Built once per block and read by
+    /// both the count transpose and the fill.
+    src_of: Vec<u32>,
     /// Payloads not currently in flight, with their block columns intact.
     ///
     /// The layer's own pool ([`Transport::exchange`](super::transport::Transport::exchange)):
@@ -84,6 +95,7 @@ impl<const W: usize> Default for ExportScratch<W> {
         Self {
             counts: Vec::new(),
             block_counts: Vec::new(),
+            src_of: Vec::new(),
             pool: Vec::new(),
             #[cfg(feature = "phase-timing")]
             count_ns: 0,
@@ -175,6 +187,7 @@ pub(crate) fn export_layer<const W: usize>(
     prep: &Prepared<W>,
     plan: &PartitionPlan,
     size: u32,
+    map: &ChunkMap,
     scratch: &mut ExportScratch<W>,
 ) -> (Vec<Option<PartnerPayload<W>>>, ExportCounts) {
     let k = plan.remote.len();
@@ -225,12 +238,23 @@ pub(crate) fn export_layer<const W: usize>(
     // Pass 2, one block per remote delta, written into payloads taken from the
     // pool: their blocks already have the columns this layer needs, so the fill
     // writes by index into storage that is neither allocated nor zeroed here.
+    debug_assert_eq!(
+        map.positions(),
+        nb,
+        "the chunk map is built for a different bucket count than the sum has",
+    );
     scratch.block_counts.clear();
     scratch.block_counts.resize(nb, 0);
+    scratch.src_of.clear();
+    scratch.src_of.resize(nb, 0);
     let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
-        for b in 0..nb {
-            scratch.block_counts[b] = scratch.counts[b * k + i];
+        // Destination-coset order: position `p` of the receiver is filled from
+        // this partition's bucket `bucket_at(p) ^ bd`.
+        for p in 0..nb {
+            let src = map.bucket_at(p as u32) ^ r.bucket_delta;
+            scratch.src_of[p] = src;
+            scratch.block_counts[p] = scratch.counts[src as usize * k + i];
         }
         let q = r.partner as usize;
         let payload = send[q].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
@@ -257,7 +281,7 @@ pub(crate) fn export_layer<const W: usize>(
                 z: &mut z[..rows],
                 c: &mut coeff[..rows],
             };
-            fill_range(local, &emitters[i], offsets, 0, nb, cols);
+            fill_range(local, &emitters[i], offsets, &scratch.src_of, 0, nb, cols);
         }
         counts.rows_to[q] += rows as u64;
         counts.bytes_to[q] += block.bytes() as u64;
@@ -328,18 +352,19 @@ fn count_bucket<const W: usize>(
     }
 }
 
-/// Fill source buckets `lo..hi` of one block.
+/// Fill destination positions `lo..hi` of one block.
 ///
-/// The column slices are exactly that range's rows
-/// (`offsets[lo]..offsets[hi]`), so splitting the range at `mid` splits the
-/// columns at `offsets[mid] - offsets[lo]` and the two halves are disjoint by
-/// construction — no atomics, no locks, and the same rows in the same slots
-/// however the split falls, which is what keeps a block's contents independent
-/// of the thread count.
+/// `src_of[p]` is the source bucket position `p` draws from. The column slices
+/// are exactly that range's rows (`offsets[lo]..offsets[hi]`), so splitting the
+/// range at `mid` splits the columns at `offsets[mid] - offsets[lo]` and the
+/// two halves are disjoint by construction — no atomics, no locks, and the same
+/// rows in the same slots however the split falls, which is what keeps a
+/// block's contents independent of the thread count.
 fn fill_range<const W: usize>(
     local: &PauliSum<W>,
     emitter: &RowEmitter<'_, W>,
     offsets: &[u32],
+    src_of: &[u32],
     lo: usize,
     hi: usize,
     cols: BlockCols<'_, W>,
@@ -349,15 +374,15 @@ fn fill_range<const W: usize>(
         let mid = lo + (hi - lo) / 2;
         let (head, tail) = cols.split_at((offsets[mid] - offsets[lo]) as usize);
         rayon::join(
-            || fill_range(local, emitter, offsets, lo, mid, head),
-            || fill_range(local, emitter, offsets, mid, hi, tail),
+            || fill_range(local, emitter, offsets, src_of, lo, mid, head),
+            || fill_range(local, emitter, offsets, src_of, mid, hi, tail),
         );
         return;
     }
     let BlockCols { x, z, c } = cols;
     let mut w = 0usize;
-    for b in lo..hi {
-        let (bx, bz, bc) = local.bucket(b);
+    for &src in &src_of[lo..hi] {
+        let (bx, bz, bc) = local.bucket(src as usize);
         for t in 0..bc.len() {
             if let Some((kx, kz, kc)) = emitter.emit(&bx[t], &bz[t], bc[t]) {
                 x[w] = kx;
@@ -458,6 +483,21 @@ mod tests {
 
     const TOL: f64 = 1e-12;
 
+    /// The destination-coset order for `plan` over `num_buckets` buckets, in
+    /// one chunk — the layout every export test compares against.
+    fn map_for(plan: &PartitionPlan, num_buckets: usize) -> ChunkMap {
+        let mut map = ChunkMap::default();
+        map.rebuild(
+            &crate::engine::coset::Gf2Span::new(
+                &plan.local_bucket_deltas,
+                num_buckets.trailing_zeros() as u8,
+            ),
+            num_buckets,
+            1,
+        );
+        map
+    }
+
     /// One partition's export of one layer.
     struct Exported<const W: usize> {
         rank: u32,
@@ -485,7 +525,8 @@ mod tests {
                 let local = whole.filter_partition(rows, rank);
                 let plan = PartitionPlan::new(&prep, rows, rank);
                 let mut scratch = ExportScratch::default();
-                let (send, counts) = export_layer(&local, &prep, &plan, size, &mut scratch);
+                let map = map_for(&plan, local.num_buckets());
+                let (send, counts) = export_layer(&local, &prep, &plan, size, &map, &mut scratch);
                 assert!(
                     send[rank as usize].is_none(),
                     "a partition exports to itself"
@@ -654,6 +695,57 @@ mod tests {
             let blocks: Vec<_> = e.send.iter().flatten().flat_map(|p| &p.blocks).collect();
             assert_eq!(blocks.len(), 1, "the empty block is still exported");
             assert_eq!(blocks[0].rows(), 0);
+        }
+    }
+
+    /// The CSR is in the *receiver's* order: every row of segment `p` lands in
+    /// the receiver's bucket `map.bucket_at(p)`.
+    ///
+    /// This is the contract `RecvRows` reads the block through
+    /// (`segment(position_of(β′))`), and the only thing that makes a coset's
+    /// rows contiguous — so it is checked directly against the hash rather than
+    /// only end to end through the differential nets. The matrix covers a
+    /// non-trivial permutation (`bits > 0` with a local delta, so the span has
+    /// `r > 0`) and a non-zero bucket delta on the remote entry.
+    #[test]
+    fn every_segment_holds_the_rows_of_its_destination_bucket() {
+        let input = rand_sum::<1>(700, 8, 0x9C7);
+        for (_name, ch) in &differential_channels_w1() {
+            for &adjoint in &[false, true] {
+                for &bits in &[1u8, 3, 4] {
+                    for &pbits in &[1u8, 2] {
+                        let rows = PartitionRows::<1>::from_seed(8, pbits, 0x1234);
+                        let hash = Gf2Hash::<1>::new(8, bits, 0xAB);
+                        let whole = input.clone().with_hash(hash);
+                        let prep = ch.prepare(whole.hash(), adjoint).expect("prepare");
+                        let size = rows.num_partitions() as u32;
+                        for rank in 0..size {
+                            let local = whole.filter_partition(&rows, rank);
+                            let plan = PartitionPlan::new(&prep, &rows, rank);
+                            let map = map_for(&plan, local.num_buckets());
+                            let mut scratch = ExportScratch::default();
+                            let (send, _) =
+                                export_layer(&local, &prep, &plan, size, &map, &mut scratch);
+                            for payload in send.iter().flatten() {
+                                for block in &payload.blocks {
+                                    for p in 0..block.num_buckets() {
+                                        let want = map.bucket_at(p);
+                                        let (sx, sz, _) = block.segment(p);
+                                        for (x, z) in sx.iter().zip(sz) {
+                                            assert_eq!(
+                                                whole.hash().bucket_of(x, z),
+                                                want,
+                                                "segment {p} of entry {} carries a row for                                                  another bucket",
+                                                block.header.entry,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -828,21 +920,18 @@ mod tests {
             .expect("the dense SU(4) cell");
         let prep = wide.prepare(whole.hash(), false).unwrap();
         let plan = PartitionPlan::new(&prep, &rows, 0);
-        let _ = export_layer(
-            &whole.filter_partition(&rows, 0),
-            &prep,
-            &plan,
-            4,
-            &mut scratch,
-        );
+        let wide_local = whole.filter_partition(&rows, 0);
+        let map = map_for(&plan, wide_local.num_buckets());
+        let _ = export_layer(&wide_local, &prep, &plan, 4, &map, &mut scratch);
 
         let h = Clifford1Q::h(3);
         let prep = Channel::<1>::prepare(&h, whole.hash(), false).unwrap();
         let plan = PartitionPlan::new(&prep, &rows, 0);
         let local = whole.filter_partition(&rows, 0);
-        let (reused, counts_reused) = export_layer(&local, &prep, &plan, 4, &mut scratch);
+        let map = map_for(&plan, local.num_buckets());
+        let (reused, counts_reused) = export_layer(&local, &prep, &plan, 4, &map, &mut scratch);
         let (fresh, counts_fresh) =
-            export_layer(&local, &prep, &plan, 4, &mut ExportScratch::default());
+            export_layer(&local, &prep, &plan, 4, &map, &mut ExportScratch::default());
         assert_eq!(counts_reused, counts_fresh);
         assert_eq!(reused.len(), fresh.len());
         for (a, b) in reused.iter().zip(&fresh) {

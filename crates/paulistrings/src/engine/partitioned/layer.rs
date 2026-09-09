@@ -24,31 +24,58 @@
 
 use super::export::{export_layer, ExportScratch};
 use super::plan::PartitionPlan;
-use super::transport::{ExchangeBlock, PartnerPayload, Transport};
+use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload, Transport};
 use crate::bucket::hash::PartitionRows;
 use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
     apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
 };
+use crate::engine::coset::Gf2Span;
 use crate::truncation::TruncationPolicy;
 use num_complex::Complex64;
+
+/// Chunks a layer's bulk transfer is cut into, by default.
+///
+/// The receiver consumes chunk `k` as soon as it lands, so the pipeline is
+/// only as deep as the chunk count — but every chunk is three MPI messages per
+/// block per partner, and a chunk under a few megabytes stops amortizing the
+/// per-message cost. Eight is deep enough that the last chunk's coset work is a
+/// small tail behind the transfer and coarse enough that a 384 MB layer still
+/// moves 48 MB per message.
+///
+/// It is **not** derived from the thread count: both sides of an exchange must
+/// cut the same block the same way, and two ranks need not have equal-sized
+/// pools.
+pub(crate) const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
+
+/// The chunk count in effect, overridable by
+/// [`set_exchange_chunks`](set_exchange_chunks).
+static EXCHANGE_CHUNKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_EXCHANGE_CHUNKS);
+
+/// The chunk count every partition cuts this layer's transfer into.
+pub(crate) fn exchange_chunks() -> usize {
+    EXCHANGE_CHUNKS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The rows this partition received, as an [`ExtraRows`] source for the coset
 /// loop.
 ///
-/// One entry per remote delta, in ascending remote-delta index, pairing the
-/// delta's bucket offset `bd` with the block the partner sent for it. Output
-/// bucket `β′` reads `segment(β′ ^ bd)` of each — the receive rule from
-/// [`transport`](super::transport)'s module docs, and the only place the
-/// offset appears, since the sender never permutes.
+/// One entry per remote delta, in ascending remote-delta index. Output bucket
+/// `β′` reads `segment(map.position_of(β′))` of each — the receive rule from
+/// [`transport`](super::transport)'s module docs. The sender laid its CSR out
+/// in this partition's destination-coset order, so the lookup is a table read
+/// and a coset's rows are contiguous in the block.
 ///
 /// Received rows always join the **rest** stream:
 /// [`NEEDS_BETA`](ExtraRows::NEEDS_BETA) is `true`, so the engine names each
 /// coset member by its original bucket index.
 pub(crate) struct RecvRows<'a, const W: usize> {
-    /// `(bucket_delta, block)` per remote delta, ascending by entry.
-    blocks: Vec<(u32, Option<&'a ExchangeBlock<W>>)>,
+    /// The block per remote delta, ascending by entry.
+    blocks: Vec<Option<&'a ExchangeBlock<W>>>,
+    /// The destination-coset order the blocks are laid out in.
+    map: &'a ChunkMap,
     /// Nanoseconds spent in [`append_into`](ExtraRows::append_into), summed
     /// over every coset task that ran one. Measurement only; the coset loop is
     /// parallel, so the counter is an atomic, and it is read once after the
@@ -64,7 +91,7 @@ impl<'a, const W: usize> RecvRows<'a, W> {
     /// so partner `q`'s remote deltas addressed here are the same entries, in
     /// the same order, as this partition's remote deltas addressed to `q`: the
     /// `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`.
-    fn new(plan: &PartitionPlan, recv: &'a [Option<PartnerPayload<W>>]) -> Self {
+    fn new(plan: &PartitionPlan, recv: &'a [Option<PartnerPayload<W>>], map: &'a ChunkMap) -> Self {
         let mut blocks = Vec::with_capacity(plan.remote.len());
         for r in &plan.remote {
             let j = plan
@@ -89,10 +116,11 @@ impl<'a, const W: usize> RecvRows<'a, W> {
                 block.map(|b| b.header.entry),
                 r.entry,
             );
-            blocks.push((r.bucket_delta, block));
+            blocks.push(block);
         }
         Self {
             blocks,
+            map,
             #[cfg(feature = "phase-timing")]
             append_ns: std::sync::atomic::AtomicU64::new(0),
         }
@@ -103,11 +131,10 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
     const NEEDS_BETA: bool = true;
 
     fn count(&self, beta: u32) -> usize {
+        let p = self.map.position_of(beta);
         let mut n = 0usize;
-        for &(bucket_delta, block) in &self.blocks {
-            if let Some(block) = block {
-                n += block.segment(beta ^ bucket_delta).2.len();
-            }
+        for block in self.blocks.iter().flatten() {
+            n += block.segment(p).2.len();
         }
         n
     }
@@ -121,9 +148,10 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
     ) {
         #[cfg(feature = "phase-timing")]
         let t0 = std::time::Instant::now();
-        for &(bucket_delta, block) in &self.blocks {
+        let p = self.map.position_of(beta);
+        for block in &self.blocks {
             let Some(block) = block else { continue };
-            let (sx, sz, sc) = block.segment(beta ^ bucket_delta);
+            let (sx, sz, sc) = block.segment(p);
             x.extend_from_slice(sx);
             z.extend_from_slice(sz);
             c.extend_from_slice(sc);
@@ -144,6 +172,10 @@ pub(crate) struct PartitionState<const W: usize> {
     pub layer: LayerScratch<W>,
     /// The export pass's count buffers and its pool of exchange payloads.
     pub export: ExportScratch<W>,
+    /// The destination-coset order this layer's blocks are laid out in, and
+    /// the chunks its bulk transfer is cut into. Rebuilt per remote layer,
+    /// keeping its permutation buffers.
+    pub chunks: ChunkMap,
 }
 
 /// What one layer's exchange moved, from this partition's point of view.
@@ -210,7 +242,16 @@ where
 
     #[cfg(feature = "phase-timing")]
     let mut st = crate::engine::stats::Stamp::now();
-    let (send, export) = export_layer(local, prep, &plan, size, &mut state.export);
+    // Both sides lay the blocks out in the *receiver's* coset order, and every
+    // partition derives it from the same local bucket deltas and the same
+    // collectively agreed bucket count — so the sender can permute without a
+    // word of negotiation. `apply_layer_bucketed_with` rebuilds the identical
+    // span below from the same two inputs.
+    let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
+    state
+        .chunks
+        .rebuild(&span, local.num_buckets(), exchange_chunks());
+    let (send, export) = export_layer(local, prep, &plan, size, &state.chunks, &mut state.export);
     #[cfg(feature = "phase-timing")]
     {
         st.lap(&mut state.layer.stats.export_ns);
@@ -260,7 +301,7 @@ where
     {
         state.layer.stats.recv_rows += rows_received;
     }
-    let recv_rows = RecvRows::new(&plan, &recv);
+    let recv_rows = RecvRows::new(&plan, &recv, &state.chunks);
 
     // The layer as this partition sees it: the local delta table (a tabulated
     // channel keeps only its local entries, so the gather loops stay a plain

@@ -42,7 +42,7 @@
 //! finishes its layer first waits out its partner's skew inside the
 //! collective; that part is load imbalance, not transport.)
 //!
-//! # The wire unit: a CSR block indexed by source bucket
+//! # The wire unit: a CSR block in the receiver's destination-coset order
 //!
 //! Per layer a prepared channel's delta set `D` splits into deltas that keep a
 //! row inside its own partition and **remote deltas**, whose partition bits
@@ -52,19 +52,24 @@
 //! single term is touched.
 //!
 //! So the natural unit is one [`ExchangeBlock`] per remote delta: the rows in
-//! CSR order **by source bucket**, `offsets[β]..offsets[β + 1]` addressing the
-//! rows generated from source bucket `β`. The receiver filling its output
-//! bucket `β′` reads
+//! CSR order, one segment per destination bucket. The segments are ordered by
+//! the **receiver's coset position** ([`ChunkMap`]) rather than by the
+//! sender's bucket index, so
 //!
 //! ```text
-//! block.segment(β′ ^ bd[e])
+//! block.segment(p)   holds the rows generated from source bucket  bucket_at(p) ^ bd[e]
 //! ```
 //!
-//! which is the only place the delta's bucket offset appears on the receive
-//! side — the sender never permutes. A [`PartnerPayload`] is the blocks for
-//! one partner in ascending remote-delta index (the block's
-//! [`BlockHeader::entry`]), so the receiver walks its plan's remote deltas and
-//! the payload's blocks in lockstep.
+//! and the receiver filling its output bucket `β′` reads
+//! `block.segment(map.position_of(β′))`. Both sides derive the permutation
+//! from the same local bucket deltas and the same collectively agreed bucket
+//! count, so the sender pays one permutation of its count and offset arrays
+//! and the receiver pays a table lookup. What it buys is that a coset's rows
+//! are **contiguous** in the block, which is what lets the transfer be cut
+//! into chunks the receiver consumes in order while the rest is still in
+//! flight. A [`PartnerPayload`] is the blocks for one partner in ascending
+//! remote-delta index (the block's [`BlockHeader::entry`]), so the receiver
+//! walks its plan's remote deltas and the payload's blocks in lockstep.
 //!
 //! # Bytes, and why nothing is copied twice
 //!
@@ -98,6 +103,162 @@ use std::time::{Duration, Instant};
 
 use num_complex::Complex64;
 
+use crate::engine::coset::Gf2Span;
+
+/// The order a layer's exchange blocks are laid out in, and the chunks the
+/// bulk transfer is cut into.
+///
+/// # Destination-coset order
+///
+/// The receiver's unit of work is a **coset** of `span(h(D_local))`, and
+/// `Gf2Span::perm_index` renumbers the bucket index so that a coset occupies a
+/// contiguous run of *positions* (ARCHITECTURE.md §Engine). Both sides of an
+/// exchange can compute that renumbering — the local bucket deltas are a
+/// function of the channel and the hash, not of the rank, and the bucket count
+/// is agreed by collective before the layer — so the **sender** lays its CSR
+/// block out in the receiver's position order instead of its own source-bucket
+/// order:
+///
+/// ```text
+/// segment p  holds the rows generated from source bucket  bucket_at(p) ^ bd
+/// ```
+///
+/// and the receiver filling output bucket `β′` reads `segment(position_of(β′))`
+/// with no arithmetic of its own. Reordering costs the sender nothing: it is a
+/// permutation of the count and offset arrays, applied before the fill pass
+/// walks them.
+///
+/// # Chunks
+///
+/// Because a coset is contiguous in position space, a contiguous *range* of
+/// positions is a whole number of cosets — so the block splits into `chunks`
+/// pieces that the receiver can consume one at a time, in order, as they
+/// arrive. Chunk `k` covers positions `bound(k)..bound(k + 1)`, always on a
+/// coset boundary.
+///
+/// A chunk count above the coset count would produce empty chunks, so it is
+/// clamped; `chunks == 1` is the un-pipelined layout.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChunkMap {
+    /// `perm[β]` is bucket `β`'s destination position. Empty when the
+    /// permutation is the identity (`r == 0`), which is what a layer whose
+    /// local deltas are all zero — a rotation with a remote generator, the
+    /// common case — produces.
+    perm: Vec<u32>,
+    /// `inv[p]` is the bucket at position `p`. Empty with [`Self::perm`].
+    inv: Vec<u32>,
+    /// Positions, i.e. buckets.
+    positions: u32,
+    /// `log2` of the coset size: coset `c` owns positions `c << r ..
+    /// (c + 1) << r`.
+    r: u32,
+    /// Cosets, `positions >> r`.
+    cosets: u32,
+    /// Chunks the bulk transfer is cut into, `1..=cosets`.
+    chunks: u32,
+}
+
+impl ChunkMap {
+    /// Re-aim the map at `span` over `num_buckets` buckets, cut into at most
+    /// `chunks` pieces, **keeping the permutation buffers' allocations**.
+    ///
+    /// # Panics
+    ///
+    /// If `num_buckets` is zero or not a power of two, or if `chunks` is zero.
+    pub(crate) fn rebuild(&mut self, span: &Gf2Span, num_buckets: usize, chunks: usize) {
+        assert!(
+            num_buckets.is_power_of_two(),
+            "ChunkMap: {num_buckets} buckets is not a power of two",
+        );
+        assert!(chunks > 0, "ChunkMap: a layer needs at least one chunk");
+        let positions = num_buckets as u32;
+        let r = span.r() as u32;
+        debug_assert!(
+            (1u32 << r) <= positions,
+            "ChunkMap: a coset of {} buckets does not fit in {positions}",
+            1u32 << r,
+        );
+        self.positions = positions;
+        self.r = r;
+        self.cosets = positions >> r;
+        self.chunks = (chunks as u32).min(self.cosets).max(1);
+        self.perm.clear();
+        self.inv.clear();
+        if r == 0 {
+            // `perm_index` compresses over every bit, so it is the identity;
+            // the empty vectors say so and save both the build and the
+            // indirection.
+            return;
+        }
+        self.perm.reserve(num_buckets);
+        self.inv.resize(num_buckets, 0);
+        for beta in 0..positions {
+            let p = span.perm_index(beta);
+            self.perm.push(p);
+            self.inv[p as usize] = beta;
+        }
+    }
+
+    /// Bucket `beta`'s destination position.
+    #[inline]
+    pub(crate) fn position_of(&self, beta: u32) -> u32 {
+        if self.perm.is_empty() {
+            beta
+        } else {
+            self.perm[beta as usize]
+        }
+    }
+
+    /// The bucket at destination position `p` — the inverse of
+    /// [`position_of`](Self::position_of).
+    #[inline]
+    pub(crate) fn bucket_at(&self, p: u32) -> u32 {
+        if self.inv.is_empty() {
+            p
+        } else {
+            self.inv[p as usize]
+        }
+    }
+
+    /// Positions, i.e. buckets.
+    pub(crate) fn positions(&self) -> usize {
+        self.positions as usize
+    }
+
+    /// Chunks the bulk transfer is cut into.
+    // Read by the transport that pipelines the receive, and by this module's
+    // own layout tests; a build with neither still wants the map's order.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn chunks(&self) -> usize {
+        self.chunks as usize
+    }
+
+    /// The first position of chunk `k`; `bound(chunks())` is the position
+    /// count, so chunk `k` is `bound(k)..bound(k + 1)`.
+    ///
+    /// Always a multiple of the coset size, so no coset straddles two chunks.
+    ///
+    /// # Panics
+    ///
+    /// If `k > chunks()`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn bound(&self, k: usize) -> u32 {
+        assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
+        let c = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
+        c << self.r
+    }
+
+    /// The chunk position `p` belongs to.
+    ///
+    /// The inverse of [`bound`](Self::bound): `bound(k) <= p < bound(k + 1)`.
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
+        let c = u64::from(p >> self.r);
+        ((c * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
+    }
+}
+
 /// Fixed-size prefix describing one [`ExchangeBlock`] on the wire.
 ///
 /// `#[repr(C)]` and `Pod`: four `u32`s, 16 bytes, no padding, so it casts to
@@ -105,8 +266,8 @@ use num_complex::Complex64;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlockHeader {
-    /// Number of **source** buckets the block is indexed by — the sender's
-    /// local bucket count. `offsets` has `num_buckets + 1` entries.
+    /// Number of destination positions the block is indexed by — the group's
+    /// agreed bucket count. `offsets` has `num_buckets + 1` entries.
     pub num_buckets: u32,
     /// Total rows in the block: `offsets[num_buckets]`, and the length of each
     /// column once the export pass has filled it.
@@ -121,7 +282,7 @@ pub struct BlockHeader {
 }
 
 /// The rows one remote delta moves from this partition to one partner, in CSR
-/// order by **source** bucket.
+/// order by the receiver's **destination position** ([`ChunkMap`]).
 ///
 /// Columns are structure-of-arrays, matching the bucket storage they are
 /// gathered from and scattered into: `x`, `z` and `coeff` are parallel and
@@ -137,14 +298,14 @@ pub struct BlockHeader {
 /// never through `x.len()`. Whatever sits past `rows` is a previous layer's
 /// rows, and never travels.
 ///
-/// The receiver never scans: for its output bucket `β′` under remote delta `e`
-/// it reads [`segment`](Self::segment)`(β′ ^ bd[e])` and merges those rows into
-/// that bucket. See the module docs for where `bd[e]` comes from.
+/// The receiver never scans: for its output bucket `β′` it reads
+/// [`segment`](Self::segment)`(map.position_of(β′))` and merges those rows into
+/// that bucket. See the module docs for the ordering.
 #[derive(Clone, Debug, Default)]
 pub struct ExchangeBlock<const W: usize> {
     /// Wire prefix: source-bucket count, row count, width, remote-delta index.
     pub header: BlockHeader,
-    /// CSR offsets by **source** bucket, `num_buckets + 1` entries.
+    /// CSR offsets by destination position, `num_buckets + 1` entries.
     pub offsets: Vec<u32>,
     /// X-part column, at least [`rows`](Self::rows) entries.
     pub x: Vec<[u64; W]>,
@@ -178,8 +339,8 @@ pub struct PartnerPayload<const W: usize> {
 }
 
 impl<const W: usize> ExchangeBlock<W> {
-    /// Build the CSR skeleton for `counts[β]` rows from each source bucket `β`
-    /// under remote-delta index `entry`, and size the columns.
+    /// Build the CSR skeleton for `counts[p]` rows at each destination
+    /// position `p` under remote-delta index `entry`, and size the columns.
     ///
     /// [`set_counts`](Self::set_counts) on a fresh block: the columns come back
     /// `rows` long, ready for the export pass to write by index.
@@ -193,8 +354,8 @@ impl<const W: usize> ExchangeBlock<W> {
         block
     }
 
-    /// Re-aim an existing block at `counts[β]` rows per source bucket `β` under
-    /// remote-delta index `entry`, **keeping every allocation**.
+    /// Re-aim an existing block at `counts[p]` rows per destination position
+    /// `p` under remote-delta index `entry`, **keeping every allocation**.
     ///
     /// The export pass then writes each row by index into the segment the
     /// offsets describe. The columns are only ever grown, never shrunk or
@@ -243,20 +404,20 @@ impl<const W: usize> ExchangeBlock<W> {
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
 
-    /// The rows generated from source bucket `src_bucket`, as parallel
-    /// `x` / `z` / `coeff` slices.
+    /// The rows destined for position `p`, as parallel `x` / `z` / `coeff`
+    /// slices.
     ///
-    /// The receiver's rule for its own output bucket `β′` under remote delta
-    /// `e` is `segment(β′ ^ bd[e])` (module docs). An empty source bucket
+    /// The receiver's rule for its own output bucket `β′` is
+    /// `segment(map.position_of(β′))` (module docs). A position with no rows
     /// yields three empty slices.
     ///
     /// # Panics
     ///
-    /// If `src_bucket >= num_buckets()`, or if the block's columns are shorter
+    /// If `p >= num_buckets()`, or if the block's columns are shorter
     /// than [`rows`](Self::rows) — which only a hand-built block can be.
-    pub fn segment(&self, src_bucket: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
-        let lo = self.offsets[src_bucket as usize] as usize;
-        let hi = self.offsets[src_bucket as usize + 1] as usize;
+    pub fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+        let lo = self.offsets[p as usize] as usize;
+        let hi = self.offsets[p as usize + 1] as usize;
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
     }
 
@@ -266,9 +427,8 @@ impl<const W: usize> ExchangeBlock<W> {
         self.header.rows as usize
     }
 
-    /// Source buckets the block is indexed by — the *sender's* local bucket
-    /// count, which is also the receiver's (every partition holds the same
-    /// number of local buckets).
+    /// Destination positions the block is indexed by — the group's agreed
+    /// bucket count, which both sides hold.
     pub fn num_buckets(&self) -> u32 {
         self.header.num_buckets
     }
@@ -1471,6 +1631,148 @@ mod tests {
     use super::*;
 
     use proptest::prelude::*;
+
+    // ---- the destination-coset order and its chunks -----------------------
+
+    /// The map for `deltas` over `2^bits` buckets, cut into `chunks`.
+    fn map_of(bits: u8, deltas: &[u32], chunks: usize) -> ChunkMap {
+        let mut map = ChunkMap::default();
+        map.rebuild(&Gf2Span::new(deltas, bits), 1usize << bits, chunks);
+        map
+    }
+
+    /// Both directions of the layout are one permutation: every bucket has one
+    /// position, every position one bucket, and nothing is dropped or
+    /// duplicated. This is the property the sender's permuted CSR and the
+    /// receiver's table lookup both rest on.
+    #[test]
+    fn the_destination_order_is_a_bijection() {
+        for (bits, deltas) in [
+            (0u8, vec![0u32]),
+            (1, vec![0]),
+            (4, vec![0]),
+            (4, vec![0, 1]),
+            (4, vec![0, 3, 5]),
+            (6, vec![0, 1, 2, 3]),
+            (6, vec![0, 9, 18, 27]),
+        ] {
+            let map = map_of(bits, &deltas, 1);
+            let n = 1u32 << bits;
+            assert_eq!(map.positions(), n as usize);
+            let mut seen = vec![false; n as usize];
+            for beta in 0..n {
+                let p = map.position_of(beta);
+                assert!(p < n, "position {p} outside {n} for bits={bits}");
+                assert!(!seen[p as usize], "position {p} claimed twice");
+                seen[p as usize] = true;
+                assert_eq!(map.bucket_at(p), beta, "bucket_at is not the inverse");
+            }
+            assert!(
+                seen.iter().all(|&s| s),
+                "bits={bits} left a position unfilled"
+            );
+        }
+    }
+
+    /// The chunks tile the position range: ascending bounds from 0 to the
+    /// position count, and `chunk_of_position` is their inverse.
+    #[test]
+    fn the_chunks_tile_the_position_range() {
+        for (bits, deltas) in [(4u8, vec![0u32]), (6, vec![0, 3]), (6, vec![0, 1, 2, 3])] {
+            for chunks in [1usize, 2, 3, 5, 8, 16] {
+                let map = map_of(bits, &deltas, chunks);
+                let k = map.chunks();
+                assert!(k >= 1 && k <= chunks);
+                assert_eq!(map.bound(0), 0);
+                assert_eq!(map.bound(k) as usize, map.positions());
+                for i in 0..k {
+                    assert!(
+                        map.bound(i) < map.bound(i + 1),
+                        "chunk {i} of {k} is empty at bits={bits}",
+                    );
+                }
+                for p in 0..map.positions() as u32 {
+                    let c = map.chunk_of_position(p);
+                    assert!(
+                        map.bound(c) <= p && p < map.bound(c + 1),
+                        "position {p} says chunk {c}, whose range is                          {}..{}",
+                        map.bound(c),
+                        map.bound(c + 1),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A chunk boundary always falls between cosets, so a coset task never has
+    /// to wait for two chunks — which is what makes the receiver's per-chunk
+    /// wait sound.
+    #[test]
+    fn a_chunk_never_splits_a_coset() {
+        for (bits, deltas) in [(6u8, vec![0u32, 3]), (6, vec![0, 1, 2, 3]), (5, vec![0, 7])] {
+            let span = Gf2Span::new(&deltas, bits);
+            for chunks in [1usize, 2, 4, 8, 64] {
+                let mut map = ChunkMap::default();
+                map.rebuild(&span, 1usize << bits, chunks);
+                let coset = span.coset_size() as u32;
+                for k in 0..=map.chunks() {
+                    assert_eq!(
+                        map.bound(k) % coset,
+                        0,
+                        "chunk bound {} is not on a coset boundary of {coset}",
+                        map.bound(k),
+                    );
+                }
+                for beta in 0..(1u32 << bits) {
+                    let want = map.chunk_of_position(map.position_of(span.rep_of(beta)));
+                    assert_eq!(
+                        map.chunk_of_position(map.position_of(beta)),
+                        want,
+                        "bucket {beta} is in another chunk than its coset representative",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Asking for more chunks than there are cosets would make empty ones; the
+    /// map clamps instead, so the pipeline degrades to one batch per coset.
+    #[test]
+    fn the_chunk_count_is_clamped_to_the_coset_count() {
+        // 2^3 buckets, a span of dimension 2, so two cosets.
+        let map = map_of(3, &[0, 1, 2, 3], 16);
+        assert_eq!(map.chunks(), 2);
+        assert_eq!(map.bound(0), 0);
+        assert_eq!(map.bound(1), 4);
+        assert_eq!(map.bound(2), 8);
+    }
+
+    proptest! {
+        /// The two properties above over arbitrary spans and chunk counts.
+        #[test]
+        fn the_layout_is_a_bijection_and_its_chunks_tile_it(
+            bits in 0u8..=7,
+            deltas in prop::collection::vec(0u32..128, 0..5),
+            chunks in 1usize..=20,
+        ) {
+            let hi = 1u32 << bits;
+            let mut deltas: Vec<u32> = deltas.into_iter().map(|d| d % hi).chain([0]).collect();
+            deltas.sort_unstable();
+            deltas.dedup();
+            let map = map_of(bits, &deltas, chunks);
+            let mut seen = vec![false; hi as usize];
+            for beta in 0..hi {
+                let p = map.position_of(beta);
+                prop_assert!(p < hi);
+                prop_assert!(!seen[p as usize]);
+                seen[p as usize] = true;
+                prop_assert_eq!(map.bucket_at(p), beta);
+                let c = map.chunk_of_position(p);
+                prop_assert!(map.bound(c) <= p && p < map.bound(c + 1));
+            }
+            prop_assert_eq!(map.bound(map.chunks()) as usize, map.positions());
+        }
+    }
 
     /// Deterministic pseudo-random row filler: xorshift64, so the tests carry
     /// no RNG dependency and a failing case is reproducible from its seed.

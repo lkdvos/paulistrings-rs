@@ -28,5 +28,11 @@ echo "== registry (cargo fetch, all workspace targets)"
 cargo fetch
 echo "== offline check"
 CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing --example phase_breakdown
+if command -v mpicc >/dev/null 2>&1 && [ -n "${LIBCLANG_PATH:-}" ]; then
+  echo "== offline check, mpi feature (rsmpi + bindgen build-time crates)"
+  CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing,mpi --example phase_breakdown --tests
+else
+  echo "note: mpicc/LIBCLANG_PATH not set — load openmpi + llvm modules and re-run to verify the mpi feature builds offline" >&2
+fi
 rm -rf "${TMPDIR:-/tmp}/paulistrings-shared-check-$$"
 echo "ready: RUSTUP_HOME=$RUSTUP_HOME CARGO_HOME=$CARGO_HOME ($(du -sh "$SHARED_RUST" | cut -f1))"

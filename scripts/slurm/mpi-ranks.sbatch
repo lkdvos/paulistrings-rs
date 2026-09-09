@@ -40,6 +40,8 @@ repo=$PWD
 src="$CARGO_TARGET_DIR/src"
 git worktree add --detach "$src" "$PS_REV" >/dev/null
 trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null || true' EXIT
+# The lock file is untracked; reuse the checkout's so the offline build resolves to the cached versions.
+[ -f "$repo/Cargo.lock" ] && cp "$repo/Cargo.lock" "$src/Cargo.lock"
 cd "$src"
 echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 
@@ -58,6 +60,8 @@ per_node=$(( ranks / nodes ))
 [ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
 echo "== running $ranks ranks ($per_node per node, D=1), from $total available domains"
 
+# Build first with stderr visible (a failure here used to vanish into /dev/null), then query the path.
+cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run
 bin=$(cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run \
       --message-format=json 2>/dev/null \
       | python3 -c 'import json,sys

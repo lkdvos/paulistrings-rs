@@ -55,6 +55,9 @@ can decide for itself before choosing.
 terms each partition held, the rows and bytes it sent, and the imbalance across partitions. It is
 `None` for an unpartitioned run.
 
+To split across *processes* instead of pools — one partition per MPI rank, across sockets or nodes —
+see [Running across MPI ranks](mpi.md).
+
 ## Rust
 
 ```rust

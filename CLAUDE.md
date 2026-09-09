@@ -69,7 +69,9 @@ export LIBCLANG_PATH=$(llvm-config --libdir)                 # bindgen (rsmpi)
 
 cargo test -p paulistrings --features mpi        # includes tests/mpi_ranks.rs as a one-rank world
 scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
+scripts/mpi-test.sh --ranks 2,4 --python         # and the bindings' net (python/.../test_mpi.py)
 cargo clippy -p paulistrings --all-targets --features mpi -- -D warnings
+cargo clippy -p paulistrings-py --features mpi -- -D warnings
 
 # The probe's distributed cell: one partition per rank, each rank reporting its own
 # vmhwm_kb (peak RSS incl. exchange transients) into its own `.rank<N>` sidecar.
@@ -77,6 +79,20 @@ cargo build --release --features phase-timing,mpi --example phase_breakdown
 mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
   target/release/examples/phase_breakdown --mpi --threads 16 --layers su4 --json-out out.jsonl
 ```
+
+`--python` needs a **second venv**: the repo's `./.venv` has no mpi4py, and mpi4py has to come from
+the same interpreter (and the same MPI) the modules provide. Build it once, and `--python` reuses it
+(`$VIRTUAL_ENV` overrides the path):
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+python3 -m venv --system-site-packages .venv-mpi   # gitignored
+.venv-mpi/bin/pip install maturin pytest numpy
+```
+
+The py crate has its own `mpi` feature (`mpi = ["paulistrings/mpi"]`) and its own `build.rs`, a copy
+of the core's rpath probe: `cargo:rustc-link-arg` is not inherited from a dependency, so the cdylib
+would otherwise not find `libmpi.so.40` at import time. Keep the two copies in sync.
 
 Quiet-box campaigns run on an exclusive Slurm node from the templates in `scripts/slurm/` (`ab-campaign.sbatch`,
 `mpi-ranks.sbatch`). **Submitting is the user's step, never an agent's** — write or adjust the template and hand over the
@@ -198,7 +214,8 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   knowing: `libc` is a `cfg(target_os = "linux")` target dependency (pinning and `set_mempolicy` only), and num-complex
   carries the `bytemuck` feature so exchange blocks cast coefficient columns to bytes without a copy.
 - `crates/paulistrings-py/` — PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22. Modules: `sum`, `circuit`,
-  `gates`, `noise`, `truncation`, `channel_spec`, `truncation_spec`, `macros`.
+  `gates`, `noise`, `truncation`, `channel_spec`, `truncation_spec`, `macros`, and `mpi` (behind the crate's own
+  `mpi` feature: `comm=` / `result=` on the propagate surface). `build.rs` exists only for that feature.
 - `crates/membench/` — STREAM-style memory-bandwidth probe behind `scripts/bandwidth.sh`. `python/paulistrings/` — the
   Python package shipped to users: a thin re-export of the extension, `interop.py` (stim/qiskit/task-JSON circuit
   importers) and `io.py` (`.npz` save/load), plus `tests/`.

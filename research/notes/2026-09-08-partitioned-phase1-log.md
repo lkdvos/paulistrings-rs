@@ -488,3 +488,10 @@ faster at P=2 than the single-process engine** (4 of 271 layers remote instead o
 10× fewer; imbalance ≤ 1.09); the chain is a wash. Two fixes on the way: the partition-row salt equalled
 the default hash seed (`f39341a`), and the selector's tie order picks the cut location (balance-scored
 restarts in progress).
+
+## 2026-09-10 — phase-5 C2 (MPI, cut vs random rows) and the per-layer collective floor
+
+Cut rows: 1.9–2.4× faster than random at 2/4/8 ranks on heavy-hex (Slurm 7015679–85; table in the
+phase-5 results note). At ≤ 3e5 terms per rank the per-layer bucket-bits all-reduce (~30–70 µs over IB
+× 271 layers per step) is the dominant cost of exchange-free layers; amortizing it (every K layers and
+before remote layers) is the next engine change (in progress).

@@ -130,6 +130,19 @@ Two things fall out.
 - **Retuning `GATHER_OUTPUT_MAJOR_MIN_R` downward is not the fix.** Below `r = 3` output-major is worth −14%,
   −6%, and *+7%* — inconsistent and small. **Rejected on deterministic evidence, before any timing.**
 
+  > **Correction, 2026-09-10** (`research/notes/2026-09-10-constant-recalibration.md`). The conclusion is
+  > confirmed by timing and the constant is unchanged, but **this table's sign is wrong below `r = 3`** and
+  > the deterministic instrument should not be reused for this question. Measured wall, output-major against
+  > input-major, `--n 1e6`, 1 thread, 7/7 pairs: `r = 1` **+4.61 %** (`trotter`), `r = 2` **+23.31 %**
+  > (`cnot`) and **+15.53 %** (`gu2q`) — where the comparison count predicted −14 % and −6 % in output-major's
+  > favour. The reason is that this choice does not trade sort against sort: `sort_ns` moves −0.3 % / +0.4 %
+  > (sign-inconsistent) while `gather_ns` moves **+11 % to +48 %**. Comparisons per row are the right
+  > instrument for §1's bucket-count question, where both sides gather identically, and the wrong one here.
+  > The first bullet's `r = 4` claim ("a pure gather-cost question", input-major +48 % at 32 threads)
+  > reproduces: at 16 threads input-major's gather is **+69.25 %**, 7/7 — though at *one* thread the two
+  > orders are within noise (−0.31 %, 6/7), so the multi-threaded gather is the whole justification for
+  > keeping `su4` on output-major.
+
 ### 1.3 Rank deficiency is a draw, and not a rare one
 
 `rank(h(D)) < 4` is a property of `H`'s rows, not of the channel. Measured over all support pairs at
@@ -251,7 +264,8 @@ same rank and the same rows-per-run is the **≈1.35×** residual width penalty.
    is precisely the failure `PROFILING.md` is written against.
 
 Also **rejected on deterministic evidence** (§1.2): retuning `GATHER_OUTPUT_MAJOR_MIN_R`. Worth −14%/−6%/+7% in
-comparisons at `r = 1/2/0` — inconsistent and small, and it does not touch the rank problem.
+comparisons at `r = 1/2/0` — inconsistent and small, and it does not touch the rank problem. *(2026-09-10:
+rejection confirmed by timing, sign of the instrument corrected — see §1.2's dated note.)*
 
 And **not attempted**: choosing `H` to guarantee full delta rank for every support pair. It is a *partial
 spread* of 2-dimensional subspaces — `V_i = ⟨h(X_i), h(Z_i)⟩` must satisfy `V_i ∩ V_j = 0` for all `i ≠ j` — and

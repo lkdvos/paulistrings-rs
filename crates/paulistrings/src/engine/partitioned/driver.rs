@@ -16,15 +16,27 @@
 //!    the maximum, and each partition refines to it. Equal bucket counts are
 //!    what the exchange's CSR block index and its `β ^ bd` receive rule assume
 //!    ([`transport`](super::transport)), and `refine` is grow-only, so the
-//!    count never falls mid-run.
+//!    count never falls mid-run. It is agreed on a **schedule**
+//!    ([`BITS_AGREE_EVERY`]), not every layer — see below.
 //! 2. **The layer may exchange rows.** [`apply_layer_partitioned`] does that
-//!    itself, including the "no remote delta ⇒ no transport call" case; the
-//!    bits agreement above is the one *unconditional* collective per layer.
+//!    itself, including the "no remote delta ⇒ no transport call" case.
 //! 3. **The layer finalization is collective**, so the policy bound is
 //!    [`PartitionedTruncation`] and its
 //!    [`finalize_layer_partitioned`](PartitionedTruncation::finalize_layer_partitioned)
-//!    runs on **every** layer, on every partition, whatever
-//!    [`finalizes_layer`](crate::TruncationPolicy::finalizes_layer) says.
+//!    runs on every layer where
+//!    [`finalizes_layer`](crate::TruncationPolicy::finalizes_layer) is true —
+//!    a property of the policy *type*, so the group never splits on it.
+//!
+//! # The collective schedule
+//!
+//! **A layer that exchanges nothing costs no communication.** Every collective
+//! the loop issues is decided from inputs every partition computes identically
+//! and without talking: the layer index, and
+//! [`PartitionPlan::has_remote`](super::plan::PartitionPlan::has_remote),
+//! which reads the prepared channel's delta masks against the partition rows.
+//! A "my own share grew" trigger would *not* qualify — one partition entering
+//! a collective the others skip is a hang — which is why the periodic term
+//! below is on the layer index and not on the term count.
 //!
 //! [`PropagateOptions`] is reused unchanged, with one exception:
 //! [`EngineSelection`](crate::EngineSelection) is **ignored**. The partitioned
@@ -32,12 +44,14 @@
 //! terms in a hash map with no bucket structure for an exchange to index, and
 //! a sum small enough to want it is a sum too small to partition.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::layer::{apply_layer_partitioned, PartitionState};
+use super::layer::{apply_layer_partitioned_with_plan, PartitionState};
+use super::plan::PartitionPlan;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
@@ -57,6 +71,81 @@ use crate::pauli_sum::{PauliSum, ProductState};
 /// the unpartitioned [`propagate`](crate::propagate) uses, so one filter
 /// covers both.
 const LOG_TARGET: &str = "paulistrings::propagate";
+
+/// Layers between two bucket-count agreements, and the length of the opening
+/// ramp that precedes them (ARCHITECTURE.md §Partitioning).
+///
+/// A partitioned layer that exchanges nothing has no other reason to
+/// communicate, so the bucket-count all-reduce is the whole cost of a local
+/// layer — measured at 30–70 µs over InfiniBand against a ~500 µs layer, which
+/// is why the heavy-hex kicked-Ising step (4 remote layers out of 271) stopped
+/// scaling with rank count while its coset loop kept shrinking. Agreeing every
+/// `BITS_AGREE_EVERY`-th layer amortizes that to under half a percent.
+///
+/// **Why 16, and why a ramp.** Two regimes:
+///
+/// - *Steady state.* Under a truncation policy the term count moves by a few
+///   percent per layer, so 16 layers of lag is far less than the factor of two
+///   that would cost a bucket bit at all. The bound is 2^16 only in the
+///   pathological case where every layer doubles the sum; the price of the lag
+///   is bucket occupancy above the target, and §Bucket-Policy's sweep is flat
+///   within 15% over 250–4000 terms per bucket.
+/// - *Growth.* A run starting from a one-term operator does double every
+///   layer for a while, and freezing the count through that is exactly the
+///   64×-too-full regime the sweep measures at 4.5×. So the first
+///   `BITS_AGREE_EVERY` layers of every call agree unconditionally — 16
+///   collectives, under a millisecond, against a first call that would
+///   otherwise run its growth phase under-bucketed.
+///
+/// Between agreements a partition keeps the bucket count it has even if its
+/// own [`desired_bits`] is higher: nobody refines off-schedule, so the group's
+/// counts stay equal by construction and an exchange can always index a
+/// partner's blocks. The lag is bounded by `BITS_AGREE_EVERY` layers.
+pub const BITS_AGREE_EVERY: usize = 16;
+
+/// Whether layer `k` of a call agrees the bucket count with the group.
+///
+/// A pure function of the layer index — the same answer on every partition,
+/// with nothing exchanged to reach it. See [`BITS_AGREE_EVERY`] for the two
+/// terms.
+#[inline]
+fn agrees_bucket_bits(k: usize) -> bool {
+    k < BITS_AGREE_EVERY || k.is_multiple_of(BITS_AGREE_EVERY)
+}
+
+/// A [`Collectives`] view that counts the calls made through it.
+///
+/// Wrapped around the transport for the *policy's* collective finalization
+/// only, so the trace's `collectives` figure counts what a composite policy
+/// does inside `finalize_layer_partitioned` rather than guessing. The layer's
+/// own exchange never goes through here — it is point-to-point — and neither
+/// does anything on the coset loop's path, so the extra indirection is one
+/// virtual call per collective.
+struct CountingCollectives<'a> {
+    inner: &'a dyn Collectives,
+    calls: &'a AtomicU32,
+}
+
+impl Collectives for CountingCollectives<'_> {
+    fn rank(&self) -> u32 {
+        self.inner.rank()
+    }
+    fn size(&self) -> u32 {
+        self.inner.size()
+    }
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.allreduce_max_u8(v)
+    }
+    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.allreduce_sum_u64(buf)
+    }
+    fn barrier(&self) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.barrier()
+    }
+}
 
 /// One partition's payload, moved into its thread for the duration of a call
 /// and handed back.
@@ -647,6 +736,32 @@ pub(super) struct PartitionCtx<'a, const W: usize> {
     pub(super) tracing: bool,
 }
 
+/// [`Channel::prepare`] or the engine's one hard error.
+///
+/// Called twice on a layer that refines (the bucket count is settled between
+/// the two), so the panic — which is the unpartitioned engine's, with the
+/// partition and layer named — lives here rather than inline.
+fn prepare_or_panic<const W: usize>(
+    ch: &dyn Channel<W>,
+    local: &PauliSum<W>,
+    adjoint: bool,
+    rank: usize,
+    idx: usize,
+) -> crate::channel::prepared::Prepared<W> {
+    ch.prepare(local.hash(), adjoint).unwrap_or_else(|| {
+        // Same hard error as the unpartitioned engine: no whole-sum fallback
+        // exists to absorb a channel the engine cannot tabulate.
+        let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
+        panic!(
+            "partition {rank}, layer {idx}: Channel::prepare declined, so this channel \
+             cannot be propagated. The engine tabulates channels of support ≤ \
+             {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
+             not write outside its declared support. See \
+             research/notes/2026-08-31-local-ptm-generalization.md",
+        )
+    })
+}
+
 /// One partition's whole layer loop — **the** layer loop, shared by the
 /// in-process driver ([`PartitionedSum`]) and the distributed one
 /// ([`DistributedSum`](super::DistributedSum)).
@@ -677,6 +792,13 @@ pub(super) fn run_layers<const W: usize, T, X>(
     } = ctx;
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
+    let size32 = transport.size();
+    // Both hoisted out of the loop: neither can change inside one, and
+    // `finalizes_layer` is a property of the policy *type*, hence the same
+    // answer on every partition — which is what makes skipping the call
+    // collective-safe.
+    let finalizes = policy.finalizes_layer();
+    let policy_calls = AtomicU32::new(0);
     let local = &mut work.local;
 
     for k in 0..n {
@@ -697,48 +819,76 @@ pub(super) fn run_layers<const W: usize, T, X>(
             work.state.layer.stats.terms_in += terms_before as u64;
         }
 
-        // The one unconditional collective per layer: the bucket count. Each
-        // partition proposes what its own share wants, clamped below by what it
-        // already has (`refine` is grow-only), and the group takes the maximum
-        // — equal bucket counts are what the exchange assumes.
-        let want = desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
-            .max(local.hash().bits());
-        let want = transport.allreduce_max_u8(want);
-        #[cfg(feature = "phase-timing")]
-        st.lap(&mut work.state.layer.stats.collective_ns);
-        while local.hash().bits() < want {
-            local.refine();
-        }
-        #[cfg(feature = "phase-timing")]
-        st.lap(&mut work.state.layer.stats.rebucket_ns);
-
-        let Some(prep) = ch.prepare(local.hash(), adjoint) else {
-            // Same hard error as the unpartitioned engine: no whole-sum
-            // fallback exists to absorb a channel the engine cannot tabulate.
-            let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
-            panic!(
-                "partition {rank}, layer {idx}: Channel::prepare declined, so this channel \
-                 cannot be propagated. The engine tabulates channels of support ≤ \
-                 {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
-                 not write outside its declared support. See \
-                 research/notes/2026-08-31-local-ptm-generalization.md",
-            );
-        };
-
+        // Prepared *before* the bucket count is settled, because the plan is
+        // what says whether this layer needs a collective at all: a delta's
+        // remoteness is a property of its mask and the partition rows, neither
+        // of which the bucket count touches. Only `bucket_delta` depends on it,
+        // so the prepared form is re-derived below on the rare layer that
+        // actually refines.
+        let mut prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+        let mut plan = PartitionPlan::new(&prep, rows, rank as u32);
         #[cfg(feature = "phase-timing")]
         st.lap(&mut work.state.layer.stats.prepare_ns);
 
+        // The bucket count, on the schedule the module docs describe: on any
+        // layer that exchanges (both sides index the blocks by it), and
+        // otherwise every `BITS_AGREE_EVERY`-th. At `P = 1` there is no group,
+        // so the local answer is the agreed one and the loop rebuckets every
+        // layer exactly as `propagate` does.
+        let mut collectives = 0u32;
+        let solo = size32 == 1;
+        if solo || plan.has_remote() || agrees_bucket_bits(k) {
+            let mut want =
+                desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
+                    .max(local.hash().bits());
+            if !solo {
+                want = transport.allreduce_max_u8(want);
+                collectives += 1;
+            }
+            #[cfg(feature = "phase-timing")]
+            st.lap(&mut work.state.layer.stats.collective_ns);
+            if want > local.hash().bits() {
+                while local.hash().bits() < want {
+                    local.refine();
+                }
+                #[cfg(feature = "phase-timing")]
+                st.lap(&mut work.state.layer.stats.rebucket_ns);
+                // The hash moved, so every `bucket_delta` in the prepared form
+                // did too. Rare — the count is grow-only and settles — and
+                // this is the only reason a layer prepares twice.
+                prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+                plan = PartitionPlan::new(&prep, rows, rank as u32);
+                #[cfg(feature = "phase-timing")]
+                st.lap(&mut work.state.layer.stats.prepare_ns);
+            }
+        }
+
         // The layer times its own export, exchange and coset loop into the
         // same `LayerScratch`.
-        let counts =
-            apply_layer_partitioned(local, &prep, rows, policy, &mut work.state, transport);
+        let counts = apply_layer_partitioned_with_plan(
+            local,
+            &prep,
+            &plan,
+            rows,
+            policy,
+            &mut work.state,
+            transport,
+        );
         #[cfg(feature = "phase-timing")]
         st.rearm();
 
-        // Unconditional and collective, whatever `finalizes_layer` says: a
-        // partition that skipped it would desynchronize the group (see
-        // `PartitionedTruncation`).
-        policy.finalize_layer_partitioned(local, transport);
+        // Collective, so it runs on every partition or on none — and
+        // `finalizes_layer` is the same answer on all of them (see
+        // `PartitionedTruncation`). A policy with no layer pass costs nothing.
+        if finalizes {
+            policy_calls.store(0, Ordering::Relaxed);
+            let counting = CountingCollectives {
+                inner: transport,
+                calls: &policy_calls,
+            };
+            policy.finalize_layer_partitioned(local, &counting);
+            collectives += policy_calls.load(Ordering::Relaxed);
+        }
         #[cfg(feature = "phase-timing")]
         {
             st.lap(&mut work.state.layer.stats.finalize_ns);
@@ -756,6 +906,7 @@ pub(super) fn run_layers<const W: usize, T, X>(
             record_layer_row(
                 &mut work.rows,
                 local.hash().bits(),
+                collectives,
                 terms_before,
                 local.len(),
                 counts,

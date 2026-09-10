@@ -100,6 +100,17 @@ pub struct RowSelection<const W: usize> {
     /// dimension, which are the ones a larger `bits` would not have saved
     /// either.
     pub conserved_rejected: usize,
+    /// Share of the probe's terms held by the least-loaded partition, or
+    /// `None` when no (non-empty) probe was given.
+    ///
+    /// The balance score the selector maximized, reported so a caller can see
+    /// what it got: `1 / num_partitions` is a perfect split and `0.0` says some
+    /// partition is empty on the probe — the rows are *conserved in practice*
+    /// even if no single generator says so, and the run will be serial until
+    /// something mixes. Measured on the same bounded sample the selector uses
+    /// (1024 terms of the probe's canonical order), so a longer probe makes it
+    /// an estimate.
+    pub probe_min_share: Option<f64>,
 }
 
 /// Every non-identity key delta mask `circuit` produces, with the number of
@@ -234,8 +245,9 @@ pub fn select_rows<const W: usize>(
     bits: u8,
     probe: Option<&PauliSum<W>>,
 ) -> RowSelection<W> {
+    let samples = probe_samples(probe);
     if bits == 0 {
-        return classify(PartitionRows::none(num_qubits), gens, 0);
+        return classify(PartitionRows::none(num_qubits), gens, 0, &samples);
     }
     assert!(
         2 * num_qubits >= bits as usize,
@@ -254,6 +266,7 @@ pub fn select_rows<const W: usize>(
             PartitionRows::from_seed(num_qubits, bits, FALLBACK_ROW_SEED),
             gens,
             0,
+            &samples,
         );
     }
 
@@ -310,6 +323,7 @@ pub fn select_rows<const W: usize>(
             PartitionRows::from_seed(num_qubits, bits, FALLBACK_ROW_SEED),
             gens,
             conserved_rejected,
+            &samples,
         );
     };
 
@@ -333,7 +347,6 @@ pub fn select_rows<const W: usize>(
     pool.sort_by(|a, b| mask_weight(a).cmp(&mask_weight(b)).then(a.cmp(b)));
     pool.dedup();
 
-    let samples = probe_samples(probe);
     let mut labels: Vec<u32> = vec![0; samples.len()];
     let mut chosen = Rref::<W>::new(cols);
     let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
@@ -369,6 +382,7 @@ pub fn select_rows<const W: usize>(
         PartitionRows::from_rows(num_qubits, rows_x, rows_z),
         gens,
         conserved_rejected,
+        &samples,
     )
 }
 
@@ -602,11 +616,13 @@ fn balance_score<const W: usize>(
     counts.into_iter().min().unwrap_or(0)
 }
 
-/// Wrap `rows` with the local/remote split of `gens` under them.
+/// Wrap `rows` with the local/remote split of `gens` under them, and with the
+/// split of `samples` they produce.
 fn classify<const W: usize>(
     rows: PartitionRows<W>,
     gens: &[GeneratorWeight<W>],
     conserved_rejected: usize,
+    samples: &[Mask<W>],
 ) -> RowSelection<W> {
     let mut local_weight = 0.0;
     let mut remote_weight = 0.0;
@@ -619,12 +635,20 @@ fn classify<const W: usize>(
             remote.push(g.clone());
         }
     }
+    let probe_min_share = (!samples.is_empty()).then(|| {
+        let mut counts = vec![0usize; rows.num_partitions()];
+        for (x, z) in samples {
+            counts[rows.partition_of(x, z) as usize] += 1;
+        }
+        counts.into_iter().min().unwrap_or(0) as f64 / samples.len() as f64
+    });
     RowSelection {
         rows,
         local_weight,
         remote_weight,
         remote,
         conserved_rejected,
+        probe_min_share,
     }
 }
 
@@ -877,6 +901,28 @@ mod tests {
             PartitionRows::<1>::from_seed(8, 2, FALLBACK_ROW_SEED)
         );
         assert!(sel.remote.is_empty());
+    }
+
+    #[test]
+    fn the_selection_reports_how_it_split_the_probe() {
+        const N: usize = 8;
+        let c = tfim_open_chain(N);
+        let gens = circuit_generators(&c, &hash(N), false);
+        let probe = low_weight_sum::<1>(400, N, 2, 0xC0FFEE);
+
+        // Hand-checked against the rows: the same count, over every term
+        // (the probe is shorter than the sample cap, so nothing is skipped).
+        let sel = select_rows(&gens, N, 1, Some(&probe));
+        assert!(probe.len() <= PROBE_SAMPLES);
+        let mut counts = [0usize; 2];
+        for (x, z, _) in probe.iter() {
+            counts[sel.rows.partition_of(x, z) as usize] += 1;
+        }
+        let want = counts.iter().min().copied().unwrap() as f64 / probe.len() as f64;
+        assert_eq!(sel.probe_min_share, Some(want));
+
+        // No probe, nothing to report.
+        assert_eq!(select_rows(&gens, N, 1, None).probe_min_share, None);
     }
 
     #[test]

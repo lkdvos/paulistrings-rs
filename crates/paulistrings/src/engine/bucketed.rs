@@ -241,6 +241,12 @@ pub(super) struct GatherRun<const W: usize> {
     coeff: Vec<Complex64>,
 }
 
+/// `a != ZERO`, without the `||` short-circuit — one flag, no branch.
+#[inline(always)]
+fn nonzero(a: Complex64) -> bool {
+    (a.re != 0.0) | (a.im != 0.0)
+}
+
 impl<const W: usize> GatherRun<W> {
     #[inline]
     fn reset(&mut self, cap_id_keys: usize, cap_id_coeff: usize, cap_rest: usize) {
@@ -250,21 +256,17 @@ impl<const W: usize> GatherRun<W> {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        if self.id_x.capacity() < cap_id_keys {
-            let extra = cap_id_keys - self.id_x.capacity();
-            self.id_x.reserve(extra);
-            self.id_z.reserve(extra);
-        }
-        if self.id_coeff.capacity() < cap_id_coeff {
-            self.id_coeff
-                .reserve(cap_id_coeff - self.id_coeff.capacity());
-        }
-        if self.x.capacity() < cap_rest {
-            let extra = cap_rest - self.x.capacity();
-            self.x.reserve(extra);
-            self.z.reserve(extra);
-            self.coeff.reserve(extra);
-        }
+        // One slot past the exact capacity, and `reserve` on an empty `Vec`
+        // (so `additional` *is* the capacity asked for). The spare slot is
+        // what `push_if` writes into when it discards a row: the row is
+        // materialized at `len` and only published by the `set_len`, so the
+        // write must be in bounds even when every countable row is kept.
+        self.id_x.reserve(cap_id_keys + 1);
+        self.id_z.reserve(cap_id_keys + 1);
+        self.id_coeff.reserve(cap_id_coeff + 1);
+        self.x.reserve(cap_rest + 1);
+        self.z.reserve(cap_rest + 1);
+        self.coeff.reserve(cap_rest + 1);
     }
 
     #[inline]
@@ -279,6 +281,50 @@ impl<const W: usize> GatherRun<W> {
         self.x.push(x);
         self.z.push(z);
         self.coeff.push(c);
+    }
+
+    /// Branchless filtered append to the rest stream.
+    #[inline]
+    fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        let n = self.x.len();
+        debug_assert!(n < self.x.capacity());
+        debug_assert!(n < self.z.capacity());
+        debug_assert!(n < self.coeff.capacity());
+        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and
+        // `cap_rest` counts every row the plan's deltas can emit into this
+        // run, so `len <= cap_rest < capacity` holds at every call. The three
+        // writes therefore land in allocated storage, and `set_len` publishes
+        // the row only when `keep` — the discarded row stays in the spare
+        // slot, overwritten by the next call.
+        unsafe {
+            self.x.as_mut_ptr().add(n).write(x);
+            self.z.as_mut_ptr().add(n).write(z);
+            self.coeff.as_mut_ptr().add(n).write(c);
+            let m = n + keep as usize;
+            self.x.set_len(m);
+            self.z.set_len(m);
+            self.coeff.set_len(m);
+        }
+    }
+
+    /// Branchless filtered append to the identity stream.
+    #[inline]
+    fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        let n = self.id_x.len();
+        debug_assert!(n < self.id_x.capacity());
+        debug_assert!(n < self.id_z.capacity());
+        debug_assert!(n < self.id_coeff.capacity());
+        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding
+        // the identity stream's rows.
+        unsafe {
+            self.id_x.as_mut_ptr().add(n).write(x);
+            self.id_z.as_mut_ptr().add(n).write(z);
+            self.id_coeff.as_mut_ptr().add(n).write(c);
+            let m = n + keep as usize;
+            self.id_x.set_len(m);
+            self.id_z.set_len(m);
+            self.id_coeff.set_len(m);
+        }
     }
 
     #[cfg(any(test, feature = "phase-timing"))]
@@ -1002,6 +1048,28 @@ const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 /// once and its whole fanout is scattered by
 /// `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
 /// (input member, input position, delta) order.
+///
+/// **The zero-amplitude filter is branchless.** A `if a == ZERO { continue }`
+/// here was the single largest source of branch mispredictions in the engine:
+/// which entries of a PTM row vanish is a property of the term's support
+/// pattern, so the test is a data-dependent near-coin-flip taken tens of
+/// millions of times a second — 39% of all mispredicts on `rotation_zz` and
+/// 43% on `cnot`, one instruction. The row is now always materialized and
+/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, so
+/// the branch is gone and the discarded rows cost only the emit body.
+/// Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs:
+///
+/// | layer | wall Δ% | gather Δ% | `br_misp_retired` |
+/// |---|---:|---:|---:|
+/// | `rotation_zz` | −10.71 | −19.48 | 55.4M → 33.7M |
+/// | `cnot` | −7.91 | −14.37 | 76.7M → 44.2M |
+/// | `gu2q` | −4.11 | −11.93 | |
+/// | `su4` | ns | ns | (dense PTM: nothing to filter) |
+///
+/// `cnot` retires 22% *more* instructions and is still 7.9% faster — the
+/// wasted emit work is much cheaper than the mispredicts it removes. Work
+/// counters are bit-identical throughout, and so is the emitted row
+/// sequence. `research/notes/2026-09-10-branch-misprediction.md`.
 fn gather_local_input_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1025,22 +1093,19 @@ fn gather_local_input_major<const W: usize>(
                     // the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
                     runs[i].id_coeff.push(src.coeff[t] * a);
-                } else if a != ZERO {
-                    runs[i].push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                } else {
+                    runs[i].push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
             for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
                 let a = d.amp[s];
-                if a == ZERO {
-                    continue;
-                }
                 let mut kx = src.x[t];
                 let mut kz = src.z[t];
                 for w in 0..W {
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a);
+                runs[i ^ coords[e] as usize].push_if(nonzero(a), kx, kz, src.coeff[t] * a);
             }
         }
     }
@@ -1154,6 +1219,52 @@ mod tests {
     pub(super) use crate::test_support::{
         assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
     };
+
+    /// `push_if` publishes a row exactly when `keep`, and a discarded row
+    /// leaves the columns' lengths — and every already-published row —
+    /// untouched, even when it is the last countable row (the `+ 1` slot
+    /// `reset` reserves is the one it writes into).
+    #[test]
+    fn push_if_publishes_only_kept_rows_and_never_overruns() {
+        let mut run: GatherRun<1> = GatherRun::default();
+        // Exactly two countable rows for the rest stream.
+        run.reset(0, 0, 2);
+        let c = |v: f64| Complex64::new(v, 0.0);
+        run.push_if(false, [7], [7], c(9.0)); // discarded at len 0
+        assert_eq!(run.x.len(), 0);
+        run.push_if(true, [1], [2], c(1.0));
+        run.push_if(false, [7], [7], c(9.0)); // discarded at len 1
+        run.push_if(true, [3], [4], c(2.0)); // the last countable row
+        assert_eq!(run.x.as_slice(), &[[1], [3]]);
+        assert_eq!(run.z.as_slice(), &[[2], [4]]);
+        assert_eq!(run.coeff.as_slice(), &[c(1.0), c(2.0)]);
+        // The identity stream answers the same contract.
+        run.reset(1, 1, 0);
+        run.push_id_if(false, [5], [6], c(3.0));
+        assert_eq!(run.id_x.len(), 0);
+        run.push_id_if(true, [5], [6], c(3.0));
+        assert_eq!(run.id_x.as_slice(), &[[5]]);
+        assert_eq!(run.id_coeff.as_slice(), &[c(3.0)]);
+    }
+
+    /// The zero test `push_if` is handed must agree with `Complex64`'s own
+    /// `!= ZERO`, signed zeros and NaN included.
+    #[test]
+    fn nonzero_agrees_with_complex_inequality() {
+        for a in [
+            Complex64::new(0.0, 0.0),
+            Complex64::new(-0.0, 0.0),
+            Complex64::new(0.0, -0.0),
+            Complex64::new(-0.0, -0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(0.0, 1.0),
+            Complex64::new(f64::NAN, 0.0),
+            Complex64::new(0.0, f64::NAN),
+            Complex64::new(f64::MIN_POSITIVE, 0.0),
+        ] {
+            assert_eq!(nonzero(a), a != ZERO, "disagreement at {a}");
+        }
+    }
 
     const TOL: f64 = 1e-11;
 

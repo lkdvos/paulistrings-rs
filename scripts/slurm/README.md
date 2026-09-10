@@ -7,6 +7,7 @@ cluster resources is a user check-in point.
 | script | what it runs | when |
 |---|---|---|
 | `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
+| `jcc-portability.sbatch` | the shipping `-Cllvm-args=-x86-branches-within-32B-boundaries` padding, paired against an unpadded build of the same commit, at 1 thread and full physical cores | deciding whether the JCC-erratum flag helps or costs on a given node type — **and** the quiet-box multi-thread campaign |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
 
 ## Node choice
@@ -95,3 +96,33 @@ nodes), which is why `ab-compare.sh` honours `CARGO_TARGET_DIR` for its worktree
 Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's local scratch
 (`$TMPDIR`), with `cargo --offline` against the shared `~/.cargo` registry cache — so run any
 `cargo fetch`/build once on a login host first if dependencies changed.
+
+## JCC-erratum padding across node types
+
+`.cargo/config.toml` carries `-Cllvm-args=-x86-branches-within-32B-boundaries` for **all**
+`x86_64`. On the reference workstation (ccqlin038, Cascade Lake) it is worth −9..−13% wall: the
+JCC erratum (SKX102) excludes any 32-byte fetch window whose jump crosses or ends on the boundary
+from the decoded-uop cache, and the padding takes DSB residency from 45.8% to 98.0%
+(`research/notes/2026-09-10-hot-path-code-size.md`).
+
+**The erratum is Skylake-derived Intel only.** AMD Zen (rome, genoa) and Ice Lake and later do not
+have it and pay ~2% extra instructions for nothing. `ccq` is mostly rome and genoa, so the shipping
+default is unvalidated on the hardware most jobs actually run on. `jcc-portability.sbatch` settles
+it per node type; the job prints whether the erratum applies to the part it landed on, and refuses
+to run if the two builds come out byte-identical (i.e. the override silently failed).
+
+```bash
+for c in rome genoa icelake; do
+  ISA_TAG=$c env -u SBATCH_RESERVATION sbatch --constraint="$c&rocky9" \
+    scripts/slurm/jcc-portability.sbatch
+done
+```
+
+Read it as: side B (padded) consistently lower ⇒ the shipping config is right for that part. Side B
+consistently *higher* ⇒ narrow the flag from `cfg(target_arch = "x86_64")` to something that
+excludes it. There is no cargo cfg for a CPU model, so narrowing means either a `target-cpu`-keyed
+profile, a documented per-site `RUSTFLAGS` (remembering that an exported `RUSTFLAGS` **replaces**
+the config's list wholesale), or a `build.rs` that emits the flag conditionally.
+
+Hardware counters do not work on cluster nodes, so this job is wall-clock paired only — no DSB
+share and no branch-miss attribution. Counter work stays on the workstation.

@@ -516,3 +516,24 @@ the small-message regime of cut-crossing layers, intra-node zero-copy handoff.
 Slurm 7015753/54: heavy-hex step with cut rows 133 → 86 ms (4 ranks) and 136 → 81 ms (8 ranks) per
 step; multi-node strong scaling now visible (125/86/81 at 2/4/8). Phase 5 closed; table in the results
 note.
+
+## 2026-09-10 — pre-merge trim (PR #6)
+
+Review size, not behaviour: the PR against `main` was 24.6k added lines, of which the partitioned module
+was 12.2k (4.1k code, 3.9k comments, 3.7k inline tests). Two removals, each its own commit, verified by the
+full gate set (default / `phase-timing` / `mpi`, `mpi-test.sh --ranks 2,4 --python`, pytest):
+
+- `e4c6c6b` — measurement scaffolding whose numbers are recorded above: `ExchangeTimings` and the four
+  MPI exchange laps, the `export_count_ns`/`export_fill_ns` sub-split, the probe's `--p1-path` (P=1
+  partitioned was measured byte-identical and equal in wall to the classic path, which is now the only
+  P=1 path), `DistributedSum::is_empty_local`. `append_ns`/`chunk_wait_ns` stay: they are the documented
+  "what the coset loop failed to hide" diagnostic.
+- `fd085ec` — the greedy MAX-XOR-SAT selector (`select_rows`, `select_rows_with`, `SelectOptions`,
+  `RowSelection`, `--partition-rows select`). Verdict it rests on: on heavy-hex it saved 2 remote layers
+  per step at an imbalance of 1.30 against 1.085 for the hand cut; `cut` is the recommendation for a known
+  lattice. Last present at `da86546`; `PartitionRows::cut`, `circuit_generators` and `layer_locality` are
+  the supported tools. Re-introduce from that commit if a workload without a known lattice needs it.
+
+Net −1.75k lines (24.6k → 22.9k against `main`); module code 4.1k → 3.9k. Not done, on purpose: comment
+density (32%, in the repo's register) and the layer-level tests in `layer.rs`, which test a different level
+than the driver nets in `tests/propagate_partitioned.rs`.

@@ -320,8 +320,6 @@ where
     {
         st.lap(&mut state.layer.stats.export_ns);
         state.layer.stats.rows_exported += export.rows_to.iter().sum::<u64>();
-        state.layer.stats.export_count_ns += std::mem::take(&mut state.export.count_ns);
-        state.layer.stats.export_fill_ns += std::mem::take(&mut state.export.fill_ns);
     }
     #[cfg(debug_assertions)]
     {
@@ -428,7 +426,6 @@ where
         // loop did not manage to hide before the closing wait.
         layer_scratch.stats.exchange_ns +=
             exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
-        transport.drain_timings(&mut layer_scratch.stats);
         st.rearm();
     }
     // The received rows are merged; the payloads that carried them go back into

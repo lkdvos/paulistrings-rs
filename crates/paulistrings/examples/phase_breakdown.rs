@@ -18,7 +18,7 @@
 //!     [--layers rotation_zz,cnot,gu2q,su4,depolarizing,trotter] [--reps 8] \
 //!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
 //!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
-//!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic] \
+//!     [--bind-memory 1] [--partition-seed <u64>] \
 //!     [--partition-rows random|cut|select] [--initial random|z0] [--mpi]
 //! ```
 //!
@@ -127,12 +127,9 @@
 //! divisible by every `--partitions` value is an error, not a rounding.
 //!
 //! `P = 1` runs the *unpartitioned* path — today's `propagate_with_scratch_
-//! and_options`, byte for byte — unless `--p1-path partitioned` is given, in
-//! which case it goes through `PartitionedSum` with one partition. The pair
-//! `--partitions 1 --p1-path partitioned` against `--partitions 1` (default)
-//! is the machinery's own overhead: a pool build, a thread scope, a transport
-//! group and a per-layer all-reduce of one number, over a code path the
-//! driver's tests pin as bitwise identical.
+//! and_options`, byte for byte. `PartitionedSum` with one partition was
+//! measured byte-identical and equal in wall, and the driver's tests pin the
+//! identity, so the classic path is the only `P = 1` path here.
 //!
 //! Placement comes from `--partition-cpus`:
 //!
@@ -340,7 +337,7 @@ Options:
   --partitions <csv>       Comma-separated partition counts, each a power of
                             two (default: 1). P > 1 runs the cell through the
                             partitioned engine; P = 1 runs the unpartitioned
-                            one unless --p1-path partitioned.
+                            one.
                             NOTE: --threads is the TOTAL thread count, so each
                             partition's pool gets threads/P workers. Every
                             --threads value must be divisible by every
@@ -405,12 +402,6 @@ Options:
                                       balanced under any row by construction)
                             --n is not a size under z0, and trotter ignores
                             this flag entirely (it keeps its low-weight input).
-  --p1-path classic|partitioned
-                           Which path a P = 1 cell takes (default: classic,
-                            i.e. today's propagate_with_scratch_and_options).
-                            `partitioned` sends it through PartitionedSum with
-                            one partition, which measures the machinery's
-                            overhead against an otherwise identical run.
   --format table|json|tsv  Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE,
                            regardless of --format (input for scripts/perf-viz.py)
@@ -659,31 +650,6 @@ impl PartitionCpus {
     }
 }
 
-/// What a `P = 1` cell measures.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum P1Path {
-    /// Today's `propagate_with_scratch_and_options` on one Rayon pool — the
-    /// default, and the reference point every partitioned number is read
-    /// against.
-    Classic,
-    /// `PartitionedSum` with one partition: the same layer code with the
-    /// driver's machinery (pool build, thread scope, transport group, the
-    /// per-layer all-reduce) around it.
-    Partitioned,
-}
-
-impl P1Path {
-    fn parse(s: &str) -> Result<Self, String> {
-        match s.trim() {
-            "classic" => Ok(P1Path::Classic),
-            "partitioned" => Ok(P1Path::Partitioned),
-            other => Err(format!(
-                "--p1-path expects classic | partitioned, got '{other}'"
-            )),
-        }
-    }
-}
-
 /// What a cell's input sum is, before the warm-up call.
 ///
 /// The two shapes measure different things. [`Initial::Random`] is a dense
@@ -812,8 +778,6 @@ struct Config {
     /// `--initial`, or `None` for each layer's own default
     /// ([`Initial::default_for`]).
     initial: Option<Initial>,
-    /// Which path a `P = 1` cell takes. See `--p1-path`.
-    p1_path: P1Path,
     layers: Vec<LayerKind>,
     reps: usize,
     seed: u64,
@@ -887,7 +851,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut partition_seed: Option<u64> = None;
     let mut partition_rows = PartitionRowSpec::Random;
     let mut initial: Option<Initial> = None;
-    let mut p1_path = P1Path::Classic;
     let mut mpi = false;
 
     let mut i = 0;
@@ -941,7 +904,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--partition-seed" => partition_seed = Some(parse_seed(value)?),
             "--partition-rows" => partition_rows = PartitionRowSpec::parse(value)?,
             "--initial" => initial = Some(Initial::parse(value)?),
-            "--p1-path" => p1_path = P1Path::parse(value)?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -1036,24 +998,11 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
         }
     }
-    if p1_path == P1Path::Partitioned && partitions.contains(&1) {
-        if let Some(sets) = explicit {
-            if sets != 1 {
-                return Err(format!(
-                    "--p1-path partitioned runs the P = 1 cell through the partitioned engine, \
-                     but --partition-cpus lists {sets} CPU sets: give one set, or drop \
-                     --partition-cpus for the P = 1 cell"
-                ));
-            }
-        }
-    }
     // `TopN`'s exact selection needs a global view of the coefficients and has
     // no `PartitionedTruncation` impl — the bound rejects it at compile time,
     // so the probe has to reject it here rather than dispatch into a
     // partitioned cell that cannot exist.
-    let any_partitioned = partitions
-        .iter()
-        .any(|&p| p > 1 || p1_path == P1Path::Partitioned);
+    let any_partitioned = partitions.iter().any(|&p| p > 1);
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
@@ -1098,7 +1047,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         partition_seed,
         partition_rows,
         initial,
-        p1_path,
         layers,
         reps,
         seed,
@@ -2411,14 +2359,6 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.collective_ns = out.collective_ns.max(s.collective_ns);
         out.export_ns = out.export_ns.max(s.export_ns);
         out.exchange_ns = out.exchange_ns.max(s.exchange_ns);
-        // Sub-phases of the two above, folded the same way so a row's parts
-        // still add up to the whole on the partition that defined it.
-        out.export_count_ns = out.export_count_ns.max(s.export_count_ns);
-        out.export_fill_ns = out.export_fill_ns.max(s.export_fill_ns);
-        out.send_post_ns = out.send_post_ns.max(s.send_post_ns);
-        out.hdr_wait_ns = out.hdr_wait_ns.max(s.hdr_wait_ns);
-        out.recv_alloc_ns = out.recv_alloc_ns.max(s.recv_alloc_ns);
-        out.data_wait_ns = out.data_wait_ns.max(s.data_wait_ns);
         // Worker busy time and counters: sums over the group.
         out.swap_ns += s.swap_ns;
         out.size_ns += s.size_ns;
@@ -2668,19 +2608,6 @@ fn print_partition_block(cell: &CellResult) {
         s.collective_ns as f64 / 1e6,
     );
     println!(
-        "      export  = count {:.3} + fill {:.3} ms",
-        s.export_count_ns as f64 / 1e6,
-        s.export_fill_ns as f64 / 1e6,
-    );
-    println!(
-        "      exchange = send/post {:.3} + header+early wait {:.3} + recv alloc {:.3} + \
-         residual data wait {:.3} ms",
-        s.send_post_ns as f64 / 1e6,
-        s.hdr_wait_ns as f64 / 1e6,
-        s.recv_alloc_ns as f64 / 1e6,
-        s.data_wait_ns as f64 / 1e6,
-    );
-    println!(
         "      received rows appended into the rest streams = {:.3} ms (of which {:.3} ms waiting \
          for a chunk to land) [worker busy time, part of gather]",
         s.append_ns as f64 / 1e6,
@@ -2778,9 +2705,7 @@ fn json_line(cell: &CellResult) -> String {
          \"bytes_exported\":{},\
          \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
-         \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
-         \"recv_alloc_ns\":{},\"data_wait_ns\":{},\"append_ns\":{},\
-         \"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\",\
+         \"append_ns\":{},\"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\",\
          \"partition_imbalance_by_layer\":{},\"terms_by_layer\":{},\
          \"rows_remote_gens\":{},\"rows_remote_weight\":{:.1}",
         cell.partitions,
@@ -2799,12 +2724,6 @@ fn json_line(cell: &CellResult) -> String {
         s.exchange_ns,
         s.collective_ns,
         json_u64_array(coset_loop_ns),
-        s.export_count_ns,
-        s.export_fill_ns,
-        s.send_post_ns,
-        s.hdr_wait_ns,
-        s.recv_alloc_ns,
-        s.data_wait_ns,
         s.append_ns,
         s.chunk_wait_ns,
         cell.initial,
@@ -2880,8 +2799,7 @@ terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartiti
 partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\tcollectives\t\
 rows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
-partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
-recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
+partition_coset_loop_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
 partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight";
 
 fn print_tsv_row(cell: &CellResult) {
@@ -2893,7 +2811,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2946,12 +2864,6 @@ fn print_tsv_row(cell: &CellResult) {
         // `barrier_ns` in every output format is the engine's `collective_ns`.
         s.collective_ns,
         tsv_array(p.map_or(&empty_ns, |p| &p.coset_loop_ns)),
-        s.export_count_ns,
-        s.export_fill_ns,
-        s.send_post_ns,
-        s.hdr_wait_ns,
-        s.recv_alloc_ns,
-        s.data_wait_ns,
         s.append_ns,
         s.chunk_wait_ns,
         cell.initial,
@@ -3022,7 +2934,7 @@ where
                          spec (topn) that has none",
                     );
                     run_cell_mpi::<W, PP>(layer, threads, cfg, policy)
-                } else if partitions > 1 || cfg.p1_path == P1Path::Partitioned {
+                } else if partitions > 1 {
                     let policy = partitioned_policy.expect(
                         "a partitioned cell without a partitioned policy — parse_args rejects \
                          the one spec (topn) that has none",
@@ -3032,7 +2944,7 @@ where
                     run_cell::<W, P>(layer, threads, cfg, policy)
                 };
                 #[cfg(not(feature = "mpi"))]
-                let cell = if partitions > 1 || cfg.p1_path == P1Path::Partitioned {
+                let cell = if partitions > 1 {
                     let policy = partitioned_policy.expect(
                         "a partitioned cell without a partitioned policy — parse_args rejects \
                          the one spec (topn) that has none",

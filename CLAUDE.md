@@ -171,12 +171,11 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   `PARTITION_CPUS`. `P = 1` under the existing `node0`/`phys8` placements is the one-socket reference.
 - P=1 vs P=2 is a **runtime-knob** A/B, not a code A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'`
   runs one binary both ways and pairs on `(layer, threads)`.
-- The probe's JSON sidecar carries the partition fields on **every** row, partitioned or not, and the exchange
-  sub-phases (`export_count_ns`/`export_fill_ns`, the four exchange laps, `append_ns`, `chunk_wait_ns`) are
-  *contained in* the phase above rather than additional to it — never sum them into a total. Because the transfer
-  runs under the coset loop, `exchange_ns` is small by construction and `chunk_wait_ns` is what the loop failed to
-  hide; read the two together. Contract (a) in `benchmarks/PROFILING.md` lists the fields, and it is the thing to
-  update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
+- The probe's JSON sidecar carries the partition fields on **every** row, partitioned or not, and the two
+  sub-phases (`append_ns`, `chunk_wait_ns`) are *contained in* the phase above rather than additional to it —
+  never sum them into a total. Because the transfer runs under the coset loop, `exchange_ns` is small by construction
+  and `chunk_wait_ns` is what the loop failed to hide; read the two together. Contract (a) in `benchmarks/PROFILING.md`
+  lists the fields, and it is the thing to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
 - LTO code-layout effects are real: the `#[inline]` set in `engine/merge.rs` is A/B-verified load-bearing in both directions

@@ -19,10 +19,9 @@
 //! `PartitionedSum::take_stats`.
 //!
 //! The three `*_ns` fields the partitioned engine adds (`collective_ns`,
-//! `export_ns`, `exchange_ns`), its two row counters, and the sub-phase laps
-//! that break the export and the exchange down (`export_count_ns` …
-//! `chunk_wait_ns`) are all zero in the unpartitioned engine, which has no
-//! exchange.
+//! `export_ns`, `exchange_ns`), its two row counters, and the two worker
+//! sub-phases (`append_ns`, `chunk_wait_ns`) are all zero in the
+//! unpartitioned engine, which has no exchange.
 
 use std::time::Instant;
 
@@ -40,11 +39,10 @@ pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 ///   once per layer on the calling thread — in partitioned mode, on the
 ///   partition's own driving thread, one `PhaseStats` per partition; per layer
 ///   they sum to approximately the layer's wall time.
-/// - **Sub-phases** (`export_count_ns` through `chunk_wait_ns`) break a phase
-///   above down further and are *contained in* it — `export_count_ns +
-///   export_fill_ns ≈ export_ns`, the four exchange laps sum to
-///   `exchange_ns`, and `append_ns` is part of `gather_ns`. They are excluded
-///   from [`wall_total_ns`](Self::wall_total_ns) for exactly that reason.
+/// - **Sub-phases** (`append_ns`, `chunk_wait_ns`) break a phase above down
+///   further and are *contained in* it — `append_ns` is part of `gather_ns`,
+///   and `chunk_wait_ns` part of `append_ns`. They are excluded from
+///   [`wall_total_ns`](Self::wall_total_ns) for exactly that reason.
 /// - **Worker busy-time phases** (`swap_ns` through `clear_ns`) are summed
 ///   across every coset task on every Rayon worker. Under a `t`-thread pool
 ///   they sum to `coset_loop_ns × t × efficiency`, **not** to
@@ -143,30 +141,7 @@ pub struct PhaseStats {
     /// Each becomes one row of a gather run's rest stream, so this is the
     /// exchange's contribution to `rows_sorted`.
     pub recv_rows: u64,
-    // -- sub-phases of `export_ns` and `exchange_ns` (see below) --
-    /// **Partitioned only.** Export pass 1: counting rows per (remote delta,
-    /// source bucket). A *part of* `export_ns`, not another phase.
-    pub export_count_ns: u64,
-    /// **Partitioned only.** Export pass 2: filling the blocks' CSR segments.
-    /// A part of `export_ns`.
-    pub export_fill_ns: u64,
-    /// **Distributed only.** Inside the exchange: encoding the framing headers
-    /// and posting every send. A part of `exchange_ns`.
-    pub send_post_ns: u64,
-    /// **Distributed only.** Inside the exchange: the blocking receive of each
-    /// partner's framing header and of the early parts — where a partner's skew
-    /// shows up, since the header cannot arrive before the partner has finished
-    /// its export. A part of `exchange_ns`.
-    pub hdr_wait_ns: u64,
-    /// **Distributed only.** Inside the exchange: sizing (and, on the first
-    /// layer, allocating) the receive buffers and posting their receives. A
-    /// part of `exchange_ns`.
-    pub recv_alloc_ns: u64,
-    /// **Distributed only.** Inside the exchange: waiting out whatever of the
-    /// bulk transfer the coset loop did not already drive to completion, plus
-    /// this rank's own sends. A part of `exchange_ns`, and small by
-    /// construction — read it together with `chunk_wait_ns`.
-    pub data_wait_ns: u64,
+    // -- sub-phases, contained in the phases above (see the type docs) --
     /// **Partitioned only, worker busy time.** Appending received rows into
     /// each output bucket's rest stream (`RecvRows::append_into`), summed over
     /// every coset task. A part of `gather_ns`.
@@ -211,12 +186,6 @@ impl PhaseStats {
         self.terms_out += o.terms_out;
         self.rows_exported += o.rows_exported;
         self.recv_rows += o.recv_rows;
-        self.export_count_ns += o.export_count_ns;
-        self.export_fill_ns += o.export_fill_ns;
-        self.send_post_ns += o.send_post_ns;
-        self.hdr_wait_ns += o.hdr_wait_ns;
-        self.recv_alloc_ns += o.recv_alloc_ns;
-        self.data_wait_ns += o.data_wait_ns;
         self.append_ns += o.append_ns;
         self.chunk_wait_ns += o.chunk_wait_ns;
     }

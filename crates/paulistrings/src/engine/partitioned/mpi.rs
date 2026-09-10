@@ -135,8 +135,6 @@ use ::mpi::topology::{Communicator, Rank, SimpleCommunicator};
 
 use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
-#[cfg(feature = "phase-timing")]
-use super::transport::ExchangeTimings;
 use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Collectives, Payload, Transport, ROOT};
 use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
@@ -291,10 +289,6 @@ pub struct MpiTransport {
     /// [`with_chunk_bytes`](Self::with_chunk_bytes)); production uses
     /// [`DEFAULT_CHUNK_BYTES`].
     chunk: usize,
-    /// Sub-phase laps of [`Transport::exchange_layer`], drained by
-    /// [`Transport::drain_timings`]. Measurement only.
-    #[cfg(feature = "phase-timing")]
-    timings: super::transport::ExchangeTimings,
 }
 
 // SAFETY: `SimpleCommunicator` is not `Send`/`Sync` because `MPI_Comm` is a raw
@@ -407,8 +401,6 @@ impl MpiTransport {
             epoch: AtomicU32::new(0),
             scratch: Mutex::new(Vec::new()),
             chunk: DEFAULT_CHUNK_BYTES,
-            #[cfg(feature = "phase-timing")]
-            timings: super::transport::ExchangeTimings::default(),
         })
     }
 
@@ -945,9 +937,6 @@ impl Transport for MpiTransport {
             return (recv, out);
         }
 
-        #[cfg(feature = "phase-timing")]
-        let mut lap = std::time::Instant::now();
-
         // Everything the sends borrow must outlive the request scope.
         let all_parts: Vec<Vec<&[u8]>> = partners
             .iter()
@@ -999,8 +988,6 @@ impl Transport for MpiTransport {
                         &mut slot_of,
                     );
                 }
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.send_post_ns, &mut lap);
 
                 // Every send is in flight, so no blocking receive below can
                 // wait on a partner that has not spoken yet.
@@ -1008,8 +995,6 @@ impl Transport for MpiTransport {
                 for &src in &partners {
                     lens.push(self.recv_header(src, tags.header));
                 }
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
 
                 // Phase 1: the payloads come from the caller's pool, are sized
                 // from the declared part lengths, and hand out byte views of
@@ -1038,8 +1023,6 @@ impl Transport for MpiTransport {
                         }
                     }
                 }
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
 
                 // The early parts are kilobytes; wait them out here so the CSR
                 // offsets are in place before anything reads a block.
@@ -1054,8 +1037,6 @@ impl Transport for MpiTransport {
                         }
                     }
                 }
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.hdr_wait_ns, &mut lap);
 
                 // Nothing borrows the payloads now, so the arrived headers and
                 // offsets can be checked against the shape the lengths implied.
@@ -1090,23 +1071,13 @@ impl Transport for MpiTransport {
                         }
                     }
                 }
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.recv_alloc_ns, &mut lap);
 
                 let mut pipeline = ChunkPipeline::new(coll, slot_of, chunks.max(1));
                 // SAFETY: the body reads a chunk's rows only after
                 // `wait_chunk` reports its receives complete (see the cell's
                 // comment above).
                 let out = body(unsafe { &*recv_cell.get() }, &pipeline);
-                // The body is the layer's own work, not the exchange's; only
-                // the transfer left over after it counts as a data wait.
-                #[cfg(feature = "phase-timing")]
-                {
-                    lap = std::time::Instant::now();
-                }
                 pipeline.finish();
-                #[cfg(feature = "phase-timing")]
-                ExchangeTimings::lap(&self.timings.data_wait_ns, &mut lap);
                 out
             });
 
@@ -1114,11 +1085,6 @@ impl Transport for MpiTransport {
         // go, so the next layer's export reuses them.
         spare.extend(send.into_iter().flatten());
         (recv_cell.into_inner(), out)
-    }
-
-    #[cfg(feature = "phase-timing")]
-    fn drain_timings(&self, stats: &mut crate::engine::stats::PhaseStats) {
-        self.timings.drain_into(stats);
     }
 
     /// Root-centric, not an exchange: the default body in

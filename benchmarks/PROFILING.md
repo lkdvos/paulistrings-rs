@@ -181,21 +181,15 @@ seeded one.
 A distributed cell (`--mpi`) adds two more, and only there: `rank` and `ranks`. Each rank writes its
 own sidecar file, `<--json-out path>.rank<N>`.
 
-Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
-phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
-`export_fill_ns` ≈ `export_ns` (the count pass and the fill pass); `send_post_ns` + `hdr_wait_ns` +
-`recv_alloc_ns` + `data_wait_ns` ≈ `exchange_ns` (encoding and posting the sends, the blocking
-framing-header and early-part receives — where a partner's skew lands — sizing the receive buffers
-and posting the bulk ones, and whatever transfer is left over after the coset loop); and
-`append_ns`, worker busy time inside `gather_ns`, for merging received rows into the output buckets'
-rest streams, of which `chunk_wait_ns` is the part spent blocked waiting for a chunk of those rows to
-land. Only a distributed cell fills the four exchange laps: the in-process transport moves a typed
-payload and has no encode or wait to attribute.
+Two further keys are **sub-phases, contained in the phase above rather than additional to it**, so
+never add them to a total: `append_ns`, worker busy time inside `gather_ns`, for merging received rows
+into the output buckets' rest streams, of which `chunk_wait_ns` is the part spent blocked waiting for a
+chunk of those rows to land.
 
 **The exchange is two-phase, so `exchange_ns` is small and the transfer shows up inside the coset
 loop** (ARCHITECTURE.md §Partitioning): the rows arrive while the layer runs, and `chunk_wait_ns` is
 what the loop failed to hide. Read the pair together — a remote layer whose `chunk_wait_ns / threads`
-is close to the old `data_wait_ns` hid nothing, and one where it is near zero is compute-bound.
+is close to `exchange_ns` hid nothing, and one where it is near zero is compute-bound.
 
 **Every consumer of this sidecar must read every one of these — old and
 new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the
@@ -206,7 +200,7 @@ match it in any new consumer.
 Two details of how the probe fills those fields:
 
 - **Every row carries all of them, partitioned or not** — one schema per campaign. An unpartitioned
-  (P=1, `--p1-path classic`) row has `partitions: 1`, zero counters, empty `partition_terms_in` /
+  (P=1) row has `partitions: 1`, zero counters, empty `partition_terms_in` /
   `partition_coset_loop_ns` lists and `partition_imbalance: 1.0`, and its `partition_cpus`/`pin_memory`
   echo the flags even though no placement was applied. A consequence for `ab-report.py`: in a P=1-vs-P=2
   knob A/B, `export_ns`/`exchange_ns`/`barrier_ns` are 0 on side A, so `--all-phases` reports them as
@@ -299,10 +293,8 @@ runs the same warm-up + timed pair as above through `PartitionedSum::propagate_w
 - `--bind-memory 0|1` (default 1) is `PartitionConfig::bind_memory`; `--partition-seed <u64>` fixes the
   GF(2) partition rows instead of letting the driver derive them from the sum's hash seed.
 - `P = 1` runs the **unpartitioned** engine — the same code path, policy value and output as before the
-  partition axis existed — unless `--p1-path partitioned` sends it through `PartitionedSum` with one
-  partition. That pair (`--partitions 1` against `--partitions 1 --p1-path partitioned`) is how to price
-  the driver's own machinery: a pool build, a thread scope, a transport group and one all-reduce per layer
-  over a path the driver's tests pin as bitwise identical to `propagate`.
+  partition axis existed. `PartitionedSum` with one partition was measured byte-identical to it and equal
+  in wall, and the driver's tests pin the identity, so the classic path is the only `P = 1` path.
 - Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest
   qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows
   (`count_remote_deltas` decides, once per cell, outside the timed region). They are the best and worst
@@ -352,10 +344,10 @@ mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
   is the probe, not the engine — hold terms per rank fixed by scaling `--n` with the rank count, and
   read the engine's own footprint from the flat part.
 - **Each rank writes `<path>.rank<N>`** and prints its own `cell` line. Take medians over ranks; a
-  spread between ranks on the same cell is arrival skew, which shows up in `hdr_wait_ns`.
-- **The exchange laps are only filled here.** The in-process transport moves a typed payload and has
-  no encode, no receive sizing and no transfer to attribute, so `send_post_ns` … `data_wait_ns` and
-  `chunk_wait_ns` are zero for a `--partitions` cell and nonzero for an `--mpi` one.
+  spread between ranks on the same cell is arrival skew, which shows up in `exchange_ns` and
+  `barrier_ns`.
+- **`chunk_wait_ns` is only filled here.** The in-process transport moves a typed payload and has no
+  transfer to wait on, so it is zero for a `--partitions` cell and nonzero for an `--mpi` one.
 - **`PAULISTRINGS_EXCHANGE_CHUNKS`** overrides the pipeline's chunk count, read once per process, so
   it needs `mpirun -x` to reach the ranks. `K = 1` is the two-phase shape with no pipelining and is
   the control for "did the overlap do anything".

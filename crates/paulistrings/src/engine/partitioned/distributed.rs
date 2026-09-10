@@ -472,11 +472,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         self.local.len()
     }
 
-    /// Whether this rank holds no terms. Local: the *group* may be non-empty.
-    pub fn is_empty_local(&self) -> bool {
-        self.local.is_empty()
-    }
-
     /// Terms in the whole sum. **Collective** — one all-reduce, same answer on
     /// every rank.
     pub fn len(&self) -> usize {

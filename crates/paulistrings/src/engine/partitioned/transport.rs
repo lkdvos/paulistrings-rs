@@ -831,52 +831,6 @@ impl<const W: usize> Payload for PartnerPayload<W> {
     }
 }
 
-/// The laps a [`Transport::exchange_layer`] takes inside itself, for
-/// [`Transport::drain_timings`] to hand the engine's [`PhaseStats`] (feature
-/// `phase-timing`).
-///
-/// Atomics because `exchange` takes `&self`; uncontended, and one `Relaxed`
-/// add per phase per layer, so the counters cost nothing measurable next to
-/// the phases they measure. Every field is a *part of* `exchange_ns`.
-///
-/// [`PhaseStats`]: crate::engine::stats::PhaseStats
-// Only the MPI transport takes these laps (the in-process one moves payloads),
-// so without the `mpi` feature the type has no constructor and would be dead code.
-#[cfg(all(feature = "phase-timing", feature = "mpi"))]
-#[derive(Debug, Default)]
-pub(crate) struct ExchangeTimings {
-    /// Encoding the framing headers and posting every send.
-    pub(crate) send_post_ns: AtomicU64,
-    /// Blocking receive of each partner's framing header.
-    pub(crate) hdr_wait_ns: AtomicU64,
-    /// Sizing the receive buffers.
-    pub(crate) recv_alloc_ns: AtomicU64,
-    /// Posting the part receives and waiting out whatever the coset loop did
-    /// not already drive to completion.
-    pub(crate) data_wait_ns: AtomicU64,
-}
-
-#[cfg(all(feature = "phase-timing", feature = "mpi"))]
-impl ExchangeTimings {
-    /// Add `since.elapsed()` to `slot` and re-arm the stamp.
-    pub(crate) fn lap(slot: &AtomicU64, since: &mut Instant) {
-        let now = Instant::now();
-        slot.fetch_add(
-            now.duration_since(*since).as_nanos() as u64,
-            Ordering::Relaxed,
-        );
-        *since = now;
-    }
-
-    /// Move every lap into `stats`, leaving the counters at zero.
-    pub(crate) fn drain_into(&self, stats: &mut crate::engine::stats::PhaseStats) {
-        stats.send_post_ns += self.send_post_ns.swap(0, Ordering::Relaxed);
-        stats.hdr_wait_ns += self.hdr_wait_ns.swap(0, Ordering::Relaxed);
-        stats.recv_alloc_ns += self.recv_alloc_ns.swap(0, Ordering::Relaxed);
-        stats.data_wait_ns += self.data_wait_ns.swap(0, Ordering::Relaxed);
-    }
-}
-
 /// The collective operations a partition needs outside the exchange itself:
 /// its identity in the group, the two reductions a layer's truncation and
 /// bookkeeping need, and a barrier.
@@ -1016,17 +970,6 @@ pub trait Transport: Collectives {
         self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())
             .0
     }
-
-    /// Fold the sub-phase laps this transport took inside
-    /// [`exchange_layer`](Self::exchange_layer) into `stats`, and reset them.
-    ///
-    /// Measurement only (feature `phase-timing`), called by the partitioned
-    /// layer right after the exchange. The default records nothing, which is
-    /// what a transport whose exchange has no interesting internal structure
-    /// wants: [`InProcessTransport`] moves a typed payload through a channel
-    /// and has no encode or wait to attribute. `MpiTransport` overrides it.
-    #[cfg(feature = "phase-timing")]
-    fn drain_timings(&self, _stats: &mut crate::engine::stats::PhaseStats) {}
 
     /// Collect every partition's `parts` on partition 0.
     ///

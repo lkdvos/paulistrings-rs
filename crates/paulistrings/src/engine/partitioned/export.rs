@@ -81,13 +81,6 @@ pub(crate) struct ExportScratch<const W: usize> {
     /// faulting in and zeroing the layer's whole export volume, twice, every
     /// layer.
     pub(crate) pool: Vec<PartnerPayload<W>>,
-    /// Sub-phase laps of the two passes, drained by the layer into
-    /// [`PhaseStats`](crate::engine::stats::PhaseStats). Measurement only.
-    #[cfg(feature = "phase-timing")]
-    pub(crate) count_ns: u64,
-    /// Pass 2's lap. Measurement only.
-    #[cfg(feature = "phase-timing")]
-    pub(crate) fill_ns: u64,
 }
 
 // Hand-written because `#[derive(Default)]` would demand `W: Default`.
@@ -98,10 +91,6 @@ impl<const W: usize> Default for ExportScratch<W> {
             block_counts: Vec::new(),
             src_of: Vec::new(),
             pool: Vec::new(),
-            #[cfg(feature = "phase-timing")]
-            count_ns: 0,
-            #[cfg(feature = "phase-timing")]
-            fill_ns: 0,
         }
     }
 }
@@ -221,9 +210,6 @@ pub(crate) fn export_layer<const W: usize>(
         .collect();
     let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
 
-    #[cfg(feature = "phase-timing")]
-    let mut st = crate::engine::stats::Stamp::now();
-
     // Pass 1. Bucket-major counts, so each bucket owns one contiguous chunk
     // and the pass needs no synchronization.
     scratch.counts.clear();
@@ -233,8 +219,6 @@ pub(crate) fn export_layer<const W: usize>(
         .par_chunks_mut(k)
         .enumerate()
         .for_each(|(b, slot)| count_bucket(local, prep, plan, &dense, b, slot));
-    #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.count_ns);
 
     // Pass 2, one block per remote delta, written into payloads taken from the
     // pool: their blocks already have the columns this layer needs, so the fill
@@ -295,8 +279,6 @@ pub(crate) fn export_layer<const W: usize>(
             payload.blocks.truncate(blocks_used[q]);
         }
     }
-    #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.fill_ns);
 
     (send, counts)
 }

@@ -87,3 +87,25 @@ Reading:
   (14 ns/term). Both are small-message regimes outside the capacity target, but they price the
   cut-crossing layers for medium problems: look after the collective fix (fewer, larger chunks when a
   layer is small; export parallelism with few buckets).
+
+## Selector after the balance-scored restarts (`38e07e3`, `afb99d7`; 2026-09-10, in-process P=2, 4 steps, cutoff 4e-3)
+
+`select_rows` now runs the greedy under several tie orders (each accepted generator moved last in turn,
+then seeded shuffles within weight/support tie groups) and ranks the answers: non-conserved → every
+partition populated on the probe → least-loaded share in eighths of the ideal → remote weight → row
+weight. Without a probe it is the old greedy bit for bit. Setup cost 7–14 ms once per run.
+
+| workload | rows | remote layers / step | rows exported (4 steps) | final imbalance |
+|---|---|---|---|---|
+| chain (64 q) | select, before fix | 1 (at the chain's end) | 0 | one partition empty |
+| chain (64 q) | select, after | 1 | 5.7e3 | 1.014 |
+| chain (64 q) | cut | 1 | 6.0e3 | 1.01 |
+| heavy-hex (127 q) | cut | 4 | 7.3e3 | 1.085 |
+| heavy-hex (127 q) | select | **2** | 6.4e3 | **1.30** |
+
+`select` finds a 2-edge separator on heavy-hex (half the remote layers of the hand bisection) but the
+region it cuts off is smaller, so balance is worse (1.30 vs 1.085); the exported volume is similar
+because the remote layers move the same anticommuting terms. Both are an order of magnitude below
+random rows. Recommendation: for a known lattice use `cut` with a balanced bisection; `select` for
+circuits without an obvious geometry, with the balance band as the knob if imbalance matters more than
+remote weight.

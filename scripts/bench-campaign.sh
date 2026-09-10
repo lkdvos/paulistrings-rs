@@ -52,7 +52,9 @@ Items (parsed on the first ':'):
       <args> is split into an argv array via `eval "args_arr=( ${args} )"`,
       so ordinary shell quoting inside <args> is honored -- pass it as a
       single shell word, e.g. probe:"--width 2 --n 1000000" or
-      probe:'--layers "a,b" --n 1000000'.
+      probe:'--layers "a,b" --n 1000000' or probe:'--partitions 1,2 --n 1000000'.
+      `partitions` (default 1) becomes part of the probe sidecar's per-cell
+      key (layer, threads, partitions) -- see benchmarks/PROFILING.md.
 
   perf-stat:<args>
       scripts/perf-stat.sh <args>  (split into argv the same way as

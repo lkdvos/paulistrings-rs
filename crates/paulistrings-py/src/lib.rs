@@ -18,6 +18,8 @@ mod macros;
 mod channel_spec;
 mod circuit;
 mod gates;
+#[cfg(feature = "mpi")]
+mod mpi;
 mod noise;
 mod sum;
 mod truncation;
@@ -46,6 +48,51 @@ fn reset_log_cache() {
     }
 }
 
+/// The NUMA nodes this process may run on, as one list of CPU indices each,
+/// in ascending node order.
+///
+/// This is what `PauliSum.propagate(partitions="auto")` places against: `"auto"`
+/// takes one partition per entry, rounded down to a power of two, and
+/// `partitions=k` is refused unless there are at least `k` entries. Each list
+/// is intersected with the process's CPU affinity mask, so a run inside a
+/// cgroup or under `taskset` sees only the CPUs it may actually use, and a node
+/// left empty by that intersection does not appear at all.
+///
+/// A machine with no NUMA information — no `/sys/devices/system/node`, a
+/// kernel without NUMA, a non-Linux host — reports the whole affinity mask as
+/// a single node, which is the honest answer: there is one domain to place in.
+///
+/// The lists are a snapshot: an affinity change (``os.sched_setaffinity``)
+/// after the call is not reflected until the next one.
+#[pyfunction]
+fn numa_nodes() -> Vec<Vec<usize>> {
+    paulistrings::engine::partitioned::numa_nodes()
+        .into_iter()
+        .map(|(_id, cpus)| cpus.0)
+        .collect()
+}
+
+/// Whether this build of the extension can run `PauliSum.propagate(comm=...)`.
+///
+/// `True` only if the extension was compiled with the `mpi` cargo feature
+/// (`maturin develop --release --features mpi`), which needs an MPI
+/// installation and a `libclang` for rsmpi's bindgen at build time. The
+/// default wheel is built without it, and a `comm=` there raises
+/// `RuntimeError`.
+///
+/// Importing `paulistrings` never imports `mpi4py` and never touches MPI, so
+/// this is safe to call anywhere, including in a serial process:
+///
+/// ```python
+/// if paulistrings.mpi_available():
+///     from mpi4py import MPI
+///     evolved = observable.propagate(circuit, comm=MPI.COMM_WORLD)
+/// ```
+#[pyfunction]
+fn mpi_available() -> bool {
+    cfg!(feature = "mpi")
+}
+
 #[pymodule]
 fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route the core crate's `log` records (target `paulistrings::propagate`,
@@ -55,6 +102,8 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let _ = LOG_RESET.set(handle);
     }
     m.add_function(wrap_pyfunction!(reset_log_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(numa_nodes, m)?)?;
+    m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
 
     // Default for `PauliSum.propagate(small_sum_threshold=...)`, re-exported
     // from the core so the Python default cannot drift from the Rust one.
@@ -65,6 +114,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<sum::PauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;
+    m.add_class::<sum::PartitionStats>()?;
     m.add_class::<circuit::Circuit>()?;
     m.add_class::<channel_spec::PyChannel>()?;
     m.add_class::<truncation_spec::PyTruncation>()?;

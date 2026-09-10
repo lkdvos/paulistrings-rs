@@ -15,6 +15,23 @@
 #                        perf-viz.py to label roofline ceilings. Pinned
 #                        format -- do not reformat without updating the
 #                        parser in perf-viz.py.
+#   PARTITION_CPUS     -- associative array, placement name -> "A;B" CPU list
+#                        string for the partitioned engine's --partition-cpus
+#                        flag (partition A's list before the ';', B's after).
+#                        Empty (no keys) on a host/placement with no
+#                        calibrated partition split -- see the IMPORTANT note
+#                        below before using it.
+#
+# IMPORTANT: the partitioned engine pins its own worker threads to the lists
+# named by PARTITION_CPUS -- a partitioned cell (P > 1) must run under NO
+# placement prefix at all. `numactl --membind` forces every page onto one
+# node regardless of which partition touches it, defeating the split;
+# `--cpunodebind`/`taskset` shrink the CPU mask the engine's own `Auto`
+# placement reads, which fights its own pinning instead of composing with
+# it. The one legitimate combination of PARTITION_CPUS with an entry in
+# PLACEMENT_PREFIX is P=1 under the existing `node0`/`phys8` placements,
+# used as the one-socket reference point for a partitioned-vs-unpartitioned
+# comparison.
 #
 # Add a new host by adding a case arm below with its own topology; do not
 # edit the ccqlin038 arm to "generalize" it -- each host gets its own arm.
@@ -24,6 +41,7 @@
 declare -gA PLACEMENT_PREFIX
 declare -ga BANDWIDTH_RUNS
 declare -g CEILING_MAP
+declare -gA PARTITION_CPUS
 
 _host_topology_host=$(hostname -s)
 
@@ -51,6 +69,16 @@ case "$_host_topology_host" in
     )
 
     CEILING_MAP='1=1 core, node0 local;8=node0, 8 physical;16=both sockets, 16 physical;default=both sockets, 32 threads'
+
+    # Partitioned-engine CPU lists, keyed by a placement name distinct from
+    # PLACEMENT_PREFIX's (these are --partition-cpus lists, not a command
+    # prefix -- see the header note above on why a partitioned run gets no
+    # prefix at all). node2x8: 2 partitions, 8 physical cores each, one per
+    # socket. node2x16: 2 partitions, 8 physical + 8 HT each, one per socket.
+    PARTITION_CPUS=(
+      [node2x8]="0-7;8-15"
+      [node2x16]="0-7,16-23;8-15,24-31"
+    )
     ;;
 
   *)
@@ -69,6 +97,10 @@ case "$_host_topology_host" in
     )
 
     CEILING_MAP="default=$(nproc) threads, no calibrated placement"
+
+    # No calibrated partition split for this host either -- see the header
+    # note above for why PARTITION_CPUS is never generalized across hosts.
+    PARTITION_CPUS=()
 
     echo "warning: scripts/host-topology.sh has no entry for host '${_host_topology_host}'" \
       "-- using an uncalibrated default (1 thread / nproc threads, no NUMA placement)." \

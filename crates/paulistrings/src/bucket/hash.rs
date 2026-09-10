@@ -10,6 +10,36 @@ use crate::pauli_string::PauliString;
 /// rather than a re-hash.
 pub const B_MAX_BITS: u8 = 20;
 
+/// Maximum number of partition bits, i.e. `P ≤ 2^4 = 16` partitions.
+///
+/// Partitions are the *coarse* split of a sum across independent workers (see
+/// [`PartitionRows`]); the bucket bits of [`Gf2Hash`] refine within one
+/// partition. The cap is deliberately small: `P` tracks NUMA-scale hardware
+/// parallelism, not term count.
+pub const P_MAX_BITS: u8 = 4;
+
+/// Salt mixed into a [`PartitionRows`] seed before row generation.
+///
+/// Without it, `PartitionRows::from_seed(n, p, s)` and `Gf2Hash::new(n, b, s)`
+/// would draw from the same stream and the partition rows would *be* the
+/// hash's first `p` rows — dependent by construction, and the global bucket
+/// `(part(v), loc(v))` would only have `max(p, b)` bits of entropy instead of
+/// `p + b`. The seed is mixed through a splitmix64 finalizer *before* the salt
+/// so no particular seed value can cancel it: the first constant chosen here
+/// equalled `DEFAULT_HASH_SEED`, and `seed ^ salt == 0` handed the default
+/// seed a degenerate generator state (`Xs64::new(0)` → 1) whose first rows were
+/// nearly empty — `--partition-rows random` at the default seed measured "half
+/// as remote" as a real random draw for that reason.
+const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
+
+/// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
+#[inline]
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 /// Xorshift64 — deterministic row generation without pulling in an RNG crate.
 ///
 /// Matches the generator used for reproducible benchmark input, so `H` is
@@ -264,6 +294,405 @@ impl<const W: usize> Gf2Hash<W> {
     pub fn same_rows_as(&self, other: &Self) -> bool {
         self.seed == other.seed && self.num_qubits == other.num_qubits
     }
+
+    /// Row `i` of `H` as `(x-mask, z-mask)`, already masked to the live columns.
+    ///
+    /// Rows for all [`B_MAX_BITS`] bits exist regardless of the active prefix
+    /// length, so `i` may exceed [`Self::bits`]; a caller that means "the rows
+    /// currently in use" must restrict itself to `0..bits()`.
+    /// [`PartitionRows::is_independent_of`] is the one such caller.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= B_MAX_BITS`.
+    #[inline]
+    pub(crate) fn row(&self, i: usize) -> ([u64; W], [u64; W]) {
+        (self.rows_x[i], self.rows_z[i])
+    }
+}
+
+/// The `p` designated **partition rows** that split a sum across `P = 2^p`
+/// independent partitions.
+///
+/// A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from these
+/// rows, and `loc(v) = H·v` from an unchanged [`Gf2Hash`]. Both maps are
+/// GF(2)-linear, so `part(v ⊕ d) = part(v) ⊕ part(d)` exactly as in
+/// ARCHITECTURE.md §Bucketing — a channel's *partition* deltas are as
+/// statically predictable as its bucket deltas, which is what makes the
+/// cross-partition traffic of a layer knowable before any term is touched.
+///
+/// # Why a separate matrix
+///
+/// `Gf2Hash`'s active rows are a prefix of one fixed matrix so that refinement
+/// is a single parity pass, and that prefix grows and shrinks with the term
+/// count. Partition rows must *not* move when it does — a term would change
+/// owner mid-run. Drawing them from a salted seed ([`Self::from_seed`]) makes
+/// them independent of the refinement-row stream at every bucket count;
+/// [`Self::is_independent_of`] checks the resulting matrix actually has full
+/// rank, and [`Self::from_rows`] is the hook for choosing rows deliberately.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::bucket::PartitionRows;
+/// use paulistrings::PauliString;
+///
+/// let p = PartitionRows::<1>::from_seed(64, 2, 0xC0FFEE);
+/// assert_eq!(p.num_partitions(), 4);
+///
+/// // Linearity: part(v ^ w) == part(v) ^ part(w).
+/// let v = PauliString::<1>::x(3);
+/// let w = PauliString::<1>::z(11);
+/// let xor = PauliString::<1> { x: [v.x[0] ^ w.x[0]], z: [v.z[0] ^ w.z[0]] };
+/// assert_eq!(p.partition_of_pauli(&xor), p.partition_of_pauli(&v) ^ p.partition_of_pauli(&w));
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartitionRows<const W: usize> {
+    /// X-part of each partition row, masked to the live qubit columns.
+    rows_x: Vec<[u64; W]>,
+    /// Z-part of each partition row, masked to the live qubit columns.
+    rows_z: Vec<[u64; W]>,
+    /// Number of rows: `P = 1 << bits` partitions. `0 ≤ bits ≤ P_MAX_BITS`.
+    bits: u8,
+    /// Qubit count the rows were masked against.
+    num_qubits: usize,
+}
+
+impl<const W: usize> PartitionRows<W> {
+    /// Draw `bits` partition rows deterministically from `seed`.
+    ///
+    /// The seed is salted, so these rows are unrelated to
+    /// `Gf2Hash::new(num_qubits, _, seed)`'s rows at any bucket count. Column
+    /// masking and the all-zero-row retry match [`Gf2Hash::new`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bits > P_MAX_BITS`, or in debug builds if
+    /// `num_qubits > 64 · W`.
+    pub fn from_seed(num_qubits: usize, bits: u8, seed: u64) -> Self {
+        assert!(
+            bits <= P_MAX_BITS,
+            "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
+        );
+        debug_assert!(num_qubits <= 64 * W);
+
+        let mut rng = Xs64::new(mix64(seed) ^ PARTITION_ROW_SALT);
+        let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
+        let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
+
+        // As in `Gf2Hash::new`: `num_qubits == 0` has a single key, so every
+        // row is legitimately zero and the retry must not spin.
+        let has_live_columns = num_qubits > 0;
+
+        for _ in 0..bits {
+            let (rx, rz) = loop {
+                let mut rx = [0u64; W];
+                let mut rz = [0u64; W];
+                let mut any = false;
+                for w in 0..W {
+                    let mask = word_mask(num_qubits, w);
+                    rx[w] = rng.next_u64() & mask;
+                    rz[w] = rng.next_u64() & mask;
+                    any |= (rx[w] | rz[w]) != 0;
+                }
+                if any || !has_live_columns {
+                    break (rx, rz);
+                }
+            };
+            rows_x.push(rx);
+            rows_z.push(rz);
+        }
+
+        Self {
+            rows_x,
+            rows_z,
+            bits,
+            num_qubits,
+        }
+    }
+
+    /// Build from explicit rows — the hash-tuning hook.
+    ///
+    /// Rows are masked to the live qubit columns on the way in, so
+    /// [`Self::rows`] returns the masked form, not the argument verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rows_x` and `rows_z` differ in length, if there are more than
+    /// [`P_MAX_BITS`] rows, or if any row masks to all-zero while
+    /// `num_qubits > 0` (such a row contributes a constant bit and would waste
+    /// half the partitions). Panics in debug builds if `num_qubits > 64 · W`.
+    pub fn from_rows(num_qubits: usize, rows_x: Vec<[u64; W]>, rows_z: Vec<[u64; W]>) -> Self {
+        assert_eq!(
+            rows_x.len(),
+            rows_z.len(),
+            "PartitionRows::from_rows: row count mismatch, {} x-rows vs {} z-rows",
+            rows_x.len(),
+            rows_z.len(),
+        );
+        assert!(
+            rows_x.len() <= P_MAX_BITS as usize,
+            "PartitionRows: bits {} exceeds P_MAX_BITS {P_MAX_BITS}",
+            rows_x.len(),
+        );
+        debug_assert!(num_qubits <= 64 * W);
+
+        let bits = rows_x.len() as u8;
+        let mut rows_x = rows_x;
+        let mut rows_z = rows_z;
+        let has_live_columns = num_qubits > 0;
+        for i in 0..bits as usize {
+            let mut any = false;
+            for w in 0..W {
+                let mask = word_mask(num_qubits, w);
+                rows_x[i][w] &= mask;
+                rows_z[i][w] &= mask;
+                any |= (rows_x[i][w] | rows_z[i][w]) != 0;
+            }
+            assert!(
+                any || !has_live_columns,
+                "PartitionRows::from_rows: row {i} masks to zero",
+            );
+        }
+
+        Self {
+            rows_x,
+            rows_z,
+            bits,
+            num_qubits,
+        }
+    }
+
+    /// Rows that label a **qubit cut**: `log2(blocks.len())` z-only rows
+    /// giving block `b` the label `b`.
+    ///
+    /// Row `i` has its z-bits set on exactly the qubits of the blocks whose
+    /// index has bit `i` set, and no x-bits at all. Since `part` is GF(2)
+    /// linear and reads the z-half only,
+    ///
+    /// > a term's partition label is the **XOR of the labels of the blocks it
+    /// > has odd z-weight in**.
+    ///
+    /// So a term whose z-support lies inside one block is labelled by that
+    /// block when its z-weight there is odd, and by block 0 when it is even —
+    /// these rows label *blocks*, not terms, and only the per-block z-weight
+    /// parities decide. Qubits in no block contribute nothing, i.e. they behave
+    /// as if they were in block 0. Blocks need not cover every qubit, but they
+    /// must be disjoint.
+    ///
+    /// # Why this shape
+    ///
+    /// This is the geometric row set for 1- and 2-local Pauli generators
+    /// (ARCHITECTURE.md §Partitioning): a generator with no z-bits — every
+    /// single-qubit `X` rotation — has `part = 0` and is local under *any* cut,
+    /// and a `ZZ(i, j)` bond is remote exactly when the edge `(i, j)` crosses
+    /// between blocks with different labels. `p` rows are `p` simultaneous
+    /// cuts labelling `2^p` blocks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use paulistrings::bucket::PartitionRows;
+    /// use paulistrings::PauliString;
+    ///
+    /// // A chain of four qubits bisected: {0,1} | {2,3}.
+    /// let rows = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![2, 3]]);
+    /// assert_eq!(rows.num_partitions(), 2);
+    ///
+    /// // The transverse-field generator is x-only: local.
+    /// assert_eq!(rows.partition_of_pauli(&PauliString::<1>::x(2)), 0);
+    /// // The bond ZZ(1,2) crosses the cut; ZZ(0,1) does not.
+    /// assert_eq!(rows.partition_of(&[0], &[0b0110]), 1);
+    /// assert_eq!(rows.partition_of(&[0], &[0b0011]), 0);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `blocks.len()` is not a power of two, if it exceeds
+    /// `2^P_MAX_BITS`, if a qubit is `>= num_qubits` or appears in two blocks,
+    /// or if some row would be all-zero — that is, if no qubit lies in any
+    /// block whose label has that bit set (such a row would waste half the
+    /// partitions, the same condition [`Self::from_rows`] rejects).
+    pub fn cut(num_qubits: usize, blocks: &[Vec<u32>]) -> Self {
+        assert!(
+            blocks.len().is_power_of_two(),
+            "PartitionRows::cut: block count {} is not a power of two",
+            blocks.len(),
+        );
+        let bits = blocks.len().trailing_zeros() as u8;
+        assert!(
+            bits <= P_MAX_BITS,
+            "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
+        );
+        debug_assert!(num_qubits <= 64 * W);
+
+        let mut seen = vec![false; num_qubits];
+        let mut rows_z = vec![[0u64; W]; bits as usize];
+        for (b, qubits) in blocks.iter().enumerate() {
+            for &q in qubits {
+                let qi = q as usize;
+                assert!(
+                    qi < num_qubits,
+                    "PartitionRows::cut: qubit {q} in block {b} is outside 0..{num_qubits}",
+                );
+                assert!(
+                    !seen[qi],
+                    "PartitionRows::cut: blocks must be disjoint, qubit {q} appears twice",
+                );
+                seen[qi] = true;
+                for (i, row) in rows_z.iter_mut().enumerate() {
+                    if (b >> i) & 1 == 1 {
+                        row[qi / 64] |= 1u64 << (qi % 64);
+                    }
+                }
+            }
+        }
+        for (i, row) in rows_z.iter().enumerate() {
+            assert!(
+                row.iter().any(|w| *w != 0),
+                "PartitionRows::cut: row {i} is empty — no qubit lies in a block \
+                 whose label has bit {i} set",
+            );
+        }
+
+        Self::from_rows(num_qubits, vec![[0u64; W]; bits as usize], rows_z)
+    }
+
+    /// The trivial partitioning: one partition, no rows.
+    #[inline]
+    pub fn none(num_qubits: usize) -> Self {
+        Self {
+            rows_x: Vec::new(),
+            rows_z: Vec::new(),
+            bits: 0,
+            num_qubits,
+        }
+    }
+
+    /// Number of partition bits.
+    #[inline]
+    pub fn bits(&self) -> u8 {
+        self.bits
+    }
+
+    /// Number of partitions, `1 << bits()`.
+    #[inline]
+    pub fn num_partitions(&self) -> usize {
+        1usize << self.bits
+    }
+
+    /// The qubit count the rows were masked against.
+    #[inline]
+    pub fn num_qubits(&self) -> usize {
+        self.num_qubits
+    }
+
+    /// `part(v)` for a key given as separate `x` and `z` words.
+    ///
+    /// Bit `i` is the parity of `(x & rows_x[i]) ^ (z & rows_z[i])`. The
+    /// identity key maps to partition 0, the same wart `h` has.
+    #[inline]
+    pub fn partition_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
+        let mut acc: u32 = 0;
+        for i in 0..self.bits as usize {
+            let rx = &self.rows_x[i];
+            let rz = &self.rows_z[i];
+            let mut parity: u32 = 0;
+            for w in 0..W {
+                parity ^= (x[w] & rx[w]).count_ones();
+                parity ^= (z[w] & rz[w]).count_ones();
+            }
+            acc |= (parity & 1) << i;
+        }
+        acc
+    }
+
+    /// `part(v)` for a [`PauliString`]. Convenience wrapper over
+    /// [`Self::partition_of`].
+    #[inline]
+    pub fn partition_of_pauli(&self, p: &PauliString<W>) -> u32 {
+        self.partition_of(&p.x, &p.z)
+    }
+
+    /// The rows as `(x-masks, z-masks)`, already masked to the live columns.
+    #[inline]
+    pub fn rows(&self) -> (&[[u64; W]], &[[u64; W]]) {
+        (&self.rows_x, &self.rows_z)
+    }
+
+    /// `true` if the partition rows and `hash`'s **active** rows are jointly
+    /// GF(2)-independent over the `2·num_qubits` key columns.
+    ///
+    /// Equivalent to: the global bucket `(part(v), loc(v))` really has
+    /// `bits() + hash.bits()` bits of entropy, so no partition is a function of
+    /// the local bucket index (or vice versa). Only rows `0..hash.bits()` are
+    /// considered — the inactive suffix of `H` does not influence any term's
+    /// bucket, so at `hash.bits() == 0` this reduces to the partition rows
+    /// being independent among themselves.
+    pub fn is_independent_of(&self, hash: &Gf2Hash<W>) -> bool {
+        let n = self.bits as usize + hash.bits() as usize;
+        let mut rows: Vec<KeyRow<W>> = Vec::with_capacity(n);
+        for i in 0..self.bits as usize {
+            rows.push((self.rows_x[i], self.rows_z[i]));
+        }
+        for i in 0..hash.bits() as usize {
+            rows.push(hash.row(i));
+        }
+        gf2_rank_wide(&rows) == n
+    }
+}
+
+/// One row of the key space as `(x-masks, z-masks)` — a vector over the
+/// `2·W·64` symplectic columns.
+type KeyRow<const W: usize> = ([u64; W], [u64; W]);
+
+/// GF(2) rank of rows over the `2·W·64`-column key space.
+///
+/// Plain Gaussian elimination on a handful of rows (at most
+/// `P_MAX_BITS + B_MAX_BITS`), used only at construction/validation time —
+/// never in a loop that sees terms.
+fn gf2_rank_wide<const W: usize>(rows: &[KeyRow<W>]) -> usize {
+    // (leading column, reduced row), one entry per pivot found so far.
+    let mut pivots: Vec<(usize, KeyRow<W>)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut cur = *row;
+        'reduce: loop {
+            let Some(lead) = leading_column(&cur) else {
+                break; // reduced to zero: dependent on the pivots so far.
+            };
+            for (pl, prow) in pivots.iter() {
+                if *pl == lead {
+                    for w in 0..W {
+                        cur.0[w] ^= prow.0[w];
+                        cur.1[w] ^= prow.1[w];
+                    }
+                    continue 'reduce;
+                }
+            }
+            pivots.push((lead, cur));
+            break;
+        }
+    }
+    pivots.len()
+}
+
+/// Index of the highest set column of a key-space row, or `None` if it is zero.
+///
+/// Columns `0..W·64` are the `x` half and `W·64..2·W·64` the `z` half; only the
+/// ordering matters, not the particular convention.
+#[inline]
+fn leading_column<const W: usize>(row: &KeyRow<W>) -> Option<usize> {
+    for w in (0..W).rev() {
+        if row.1[w] != 0 {
+            return Some(W * 64 + w * 64 + (63 - row.1[w].leading_zeros() as usize));
+        }
+    }
+    for w in (0..W).rev() {
+        if row.0[w] != 0 {
+            return Some(w * 64 + (63 - row.0[w].leading_zeros() as usize));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -802,6 +1231,316 @@ mod tests {
         assert!(max < 2 * mean, "max load {max} vs mean {mean}");
         assert!(min > mean / 2, "min load {min} vs mean {mean}");
     }
+
+    // ---- partition rows: the coarse prefix, independent of `H`'s refinement rows ----
+
+    #[test]
+    fn partition_of_hand_checked_w1() {
+        // Two explicit rows over 8 qubits:
+        //   row 0: x-mask 0b011, z-mask 0
+        //   row 1: x-mask 0,     z-mask 0b101
+        let p = PartitionRows::<1>::from_rows(8, vec![[0b11], [0]], vec![[0], [0b101]]);
+        assert_eq!(p.bits(), 2);
+        assert_eq!(p.num_partitions(), 4);
+        assert_eq!(p.num_qubits(), 8);
+        // X_0: bit 0 = parity(0b001 & 0b011) = 1, bit 1 = 0.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::x(0)), 1);
+        // Z_0: bit 0 = 0, bit 1 = parity(0b001 & 0b101) = 1.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(0)), 2);
+        // Y_0 = X_0 ⊕ Z_0.
+        assert_eq!(p.partition_of(&[1], &[1]), 3);
+        // X_0 X_1: parity(0b011 & 0b011) = 0.
+        assert_eq!(p.partition_of(&[0b11], &[0]), 0);
+        // Z_1: parity(0b010 & 0b101) = 0.
+        assert_eq!(p.partition_of(&[0], &[0b10]), 0);
+        // Z_2: parity(0b100 & 0b101) = 1.
+        assert_eq!(p.partition_of(&[0], &[0b100]), 2);
+    }
+
+    #[test]
+    fn partition_is_within_range_and_the_identity_key_is_partition_zero() {
+        let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, 0xABCDEF);
+        assert_eq!(p.num_partitions(), 16);
+        // p(0) = 0 for any linear map — the same documented wart as `h`.
+        assert_eq!(p.partition_of(&[0, 0], &[0, 0]), 0);
+        let mut rng = Xs64::new(101);
+        for _ in 0..2000 {
+            let k = rand_key::<2>(&mut rng, 128);
+            assert!((p.partition_of_pauli(&k) as usize) < p.num_partitions());
+        }
+    }
+
+    #[test]
+    fn zero_partition_bits_is_a_single_partition() {
+        let p = PartitionRows::<1>::none(64);
+        assert_eq!(p.bits(), 0);
+        assert_eq!(p.num_partitions(), 1);
+        assert_eq!(p.num_qubits(), 64);
+        let (rx, rz) = p.rows();
+        assert!(rx.is_empty() && rz.is_empty());
+        let mut rng = Xs64::new(102);
+        for _ in 0..200 {
+            assert_eq!(p.partition_of_pauli(&rand_key::<1>(&mut rng, 64)), 0);
+        }
+        // `from_seed` at zero bits is the same object.
+        assert_eq!(PartitionRows::<1>::from_seed(64, 0, 0x1234), p);
+    }
+
+    #[test]
+    fn partition_bits_beyond_num_qubits_do_not_affect_the_partition() {
+        let p = PartitionRows::<2>::from_seed(100, 3, 0x99);
+        let mut rng = Xs64::new(103);
+        let dead = !((1u64 << (100 - 64)) - 1);
+        for _ in 0..500 {
+            let k = rand_key::<2>(&mut rng, 100);
+            let mut polluted = k;
+            polluted.x[1] |= dead;
+            polluted.z[1] |= dead;
+            assert_eq!(p.partition_of_pauli(&k), p.partition_of_pauli(&polluted));
+        }
+    }
+
+    // ---- construction ----
+
+    #[test]
+    fn from_seed_is_reproducible_and_seed_dependent() {
+        let a = PartitionRows::<2>::from_seed(128, 4, 0x5EED);
+        let b = PartitionRows::<2>::from_seed(128, 4, 0x5EED);
+        assert_eq!(a, b);
+        assert_ne!(a, PartitionRows::<2>::from_seed(128, 4, 0x5EEE));
+    }
+
+    #[test]
+    fn partition_rows_are_salted_away_from_the_hash_rows() {
+        // Drawn from the same seed, the partition rows must not simply *be* the
+        // hash's first rows — otherwise they would be dependent on `h` at every
+        // bucket count and `is_independent_of` could never hold.
+        for seed in [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED] {
+            let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
+            let h = Gf2Hash::<2>::new(128, P_MAX_BITS, seed);
+            let (px, pz) = p.rows();
+            for i in 0..P_MAX_BITS as usize {
+                let (hx, hz) = h.row(i);
+                assert!(
+                    px[i] != hx || pz[i] != hz,
+                    "seed {seed:#x}: partition row {i} equals hash row {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn from_rows_round_trips_after_masking() {
+        let rows_x = vec![[!0u64, !0u64], [0x1, 0x0]];
+        let rows_z = vec![[0x0u64, 0x3], [0xF, 0x0]];
+        let p = PartitionRows::<2>::from_rows(70, rows_x, rows_z);
+        let live = (1u64 << (70 - 64)) - 1;
+        let (rx, rz) = p.rows();
+        assert_eq!(rx, [[!0u64, live], [0x1, 0x0]]);
+        assert_eq!(rz, [[0x0u64, 0x3], [0xF, 0x0]]);
+        assert_eq!(p.bits(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds P_MAX_BITS")]
+    fn partition_from_seed_past_the_maximum_panics() {
+        let _ = PartitionRows::<1>::from_seed(64, P_MAX_BITS + 1, 0x1);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds P_MAX_BITS")]
+    fn partition_from_rows_past_the_maximum_panics() {
+        let rows: Vec<[u64; 1]> = (0..=P_MAX_BITS as u64).map(|i| [i + 1]).collect();
+        let _ = PartitionRows::<1>::from_rows(64, rows.clone(), rows);
+    }
+
+    #[test]
+    #[should_panic(expected = "row count mismatch")]
+    fn partition_from_rows_length_mismatch_panics() {
+        let _ = PartitionRows::<1>::from_rows(64, vec![[0x1], [0x2]], vec![[0x1]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "row 1 masks to zero")]
+    fn partition_from_rows_all_zero_row_panics() {
+        // Row 1 is nonzero only outside the 8 live qubit columns.
+        let _ = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
+    }
+
+    #[test]
+    fn partition_from_rows_all_zero_row_is_fine_at_zero_qubits() {
+        // Degenerate but legal: with no live columns every row is zero.
+        let p = PartitionRows::<1>::from_rows(0, vec![[0x0]], vec![[0x0]]);
+        assert_eq!(p.partition_of(&[0], &[0]), 0);
+    }
+
+    // ---- `cut`: z-only rows labelling blocks of qubits ----
+
+    #[test]
+    fn cut_two_blocks_is_one_z_row_over_the_second_block() {
+        // 4 qubits, blocks {0,1} | {2,3}. One row, z-only, set on block 1.
+        let p = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![2, 3]]);
+        assert_eq!(p.bits(), 1);
+        assert_eq!(p.num_partitions(), 2);
+        let (rx, rz) = p.rows();
+        assert_eq!(rx, [[0u64]]);
+        assert_eq!(rz, [[0b1100u64]]);
+
+        // A term's label is the XOR of the labels of the blocks it has odd
+        // z-weight in. Z0 sits in block 0, label 0; Z2 in block 1, label 1.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(0)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 1);
+        // X rotation generators are x-only, so a cut row never reads them.
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::x(2)), 0);
+        // Bond generators: ZZ(0,1) is inside block 0, ZZ(1,2) crosses the cut,
+        // ZZ(2,3) is inside block 1 and so has even z-weight there.
+        assert_eq!(p.partition_of(&[0], &[0b0011]), 0);
+        assert_eq!(p.partition_of(&[0], &[0b0110]), 1);
+        assert_eq!(p.partition_of(&[0], &[0b1100]), 0);
+    }
+
+    #[test]
+    fn cut_four_blocks_labels_each_block_by_its_index() {
+        // 8 qubits in four pairs; row `i` is set on the blocks whose index has
+        // bit `i` set, so a single-Z term lands on its own block's label.
+        let p = PartitionRows::<1>::cut(8, &[vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]);
+        assert_eq!(p.bits(), 2);
+        let (rx, rz) = p.rows();
+        assert_eq!(rx, [[0u64], [0u64]]);
+        assert_eq!(rz, [[0b1100_1100u64], [0b1111_0000u64]]);
+        for (q, want) in [
+            (0u32, 0u32),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 3),
+            (7, 3),
+        ] {
+            assert_eq!(
+                p.partition_of_pauli(&PauliString::<1>::z(q)),
+                want,
+                "qubit {q}",
+            );
+        }
+        // Two odd blocks XOR their labels: Z2·Z4 -> 1 ^ 2 = 3.
+        assert_eq!(p.partition_of(&[0], &[0b0001_0100]), 3);
+        // Even z-weight inside one block contributes nothing.
+        assert_eq!(p.partition_of(&[0], &[0b0000_1100]), 0);
+    }
+
+    #[test]
+    fn cut_leaves_uncovered_qubits_in_the_zero_label() {
+        let p = PartitionRows::<1>::cut(4, &[vec![0], vec![1]]);
+        assert_eq!(p.rows().1, [[0b0010u64]]);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(3)), 0);
+    }
+
+    #[test]
+    fn cut_of_one_block_is_the_trivial_partitioning() {
+        assert_eq!(
+            PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]),
+            PartitionRows::<1>::none(4),
+        );
+    }
+
+    #[test]
+    fn cut_rows_round_trip_across_the_word_boundary() {
+        let lo: Vec<u32> = (0..64).collect();
+        let hi: Vec<u32> = (64..70).collect();
+        let p = PartitionRows::<2>::cut(70, &[lo, hi]);
+        assert_eq!(p.rows().0, [[0u64, 0]]);
+        assert_eq!(p.rows().1, [[0u64, 0b11_1111]]);
+        assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(63)), 0);
+        assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(64)), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two")]
+    fn cut_with_three_blocks_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0], vec![1], vec![2]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "blocks must be disjoint")]
+    fn cut_with_overlapping_blocks_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0, 1], vec![1, 2]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 0..4")]
+    fn cut_with_an_out_of_range_qubit_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0], vec![9]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "no qubit")]
+    fn cut_with_an_empty_labelled_block_panics() {
+        let _ = PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3], vec![]]);
+    }
+
+    // ---- occupancy ----
+
+    #[test]
+    fn partition_occupancy_is_balanced_on_low_weight_keys() {
+        // The same guard as `occupancy_is_balanced_on_low_weight_keys`, one
+        // level up: a partition carries a whole worker's share of the sum, so a
+        // structured (projection-like) row choice would be fatal here.
+        let num_qubits = 128;
+        let p = PartitionRows::<2>::from_seed(num_qubits, 2, 0x0CC3);
+        let mut rng = Xs64::new(0xBA3);
+        let mut counts = vec![0usize; p.num_partitions()];
+        let target = 4000usize;
+        for _ in 0..target {
+            let weight = 1 + (rng.next_u64() % 3) as usize;
+            let k = low_weight_key::<2>(&mut rng, num_qubits, weight);
+            counts[p.partition_of_pauli(&k) as usize] += 1;
+        }
+        let mean = target / p.num_partitions(); // 1000
+        let max = *counts.iter().max().unwrap();
+        let min = *counts.iter().min().unwrap();
+        assert!(
+            max < 2 * mean,
+            "max load {max} vs mean {mean}, counts {counts:?}"
+        );
+        assert!(
+            min > mean / 2,
+            "min load {min} vs mean {mean}, counts {counts:?}"
+        );
+    }
+
+    // ---- independence from the refinement rows ----
+
+    #[test]
+    fn seeded_partition_rows_are_independent_of_the_hash() {
+        for seed in [
+            0x1u64,
+            0x5EED,
+            0xBEEF,
+            crate::bucket::sum::DEFAULT_HASH_SEED,
+        ] {
+            let h = Gf2Hash::<2>::new(128, 7, seed);
+            let p = PartitionRows::<2>::from_seed(128, 3, seed);
+            assert!(p.is_independent_of(&h), "seed {seed:#x}");
+        }
+    }
+
+    #[test]
+    fn a_partition_row_copied_from_the_hash_is_not_independent() {
+        let h = Gf2Hash::<2>::new(128, 7, 0x5EED);
+        let (hx, hz) = h.row(0);
+        let seeded = PartitionRows::<2>::from_seed(128, 2, 0x5EED);
+        let (sx, sz) = seeded.rows();
+        let p = PartitionRows::<2>::from_rows(128, vec![sx[0], hx], vec![sz[0], hz]);
+        assert!(!p.is_independent_of(&h));
+        // Only the *active* rows count: at zero bucket bits there is nothing to
+        // be dependent on, and the two partition rows are independent among
+        // themselves.
+        let h0 = Gf2Hash::<2>::new(128, 0, 0x5EED);
+        assert!(p.is_independent_of(&h0));
+    }
 }
 
 #[cfg(test)]
@@ -841,6 +1580,41 @@ mod props {
             let after = h.bucket_of(&x, &z);
             let mask = (1u32 << bits) - 1;
             prop_assert_eq!(after & mask, before);
+        }
+
+        /// The partition map is GF(2)-linear for the same reason `h` is — which
+        /// is what makes the *global* bucket `(part(v), loc(v))` predictable
+        /// under a channel's delta set.
+        #[test]
+        fn partition_of_is_gf2_linear_w1(
+            ax in any::<[u64; 1]>(), az in any::<[u64; 1]>(),
+            bx in any::<[u64; 1]>(), bz in any::<[u64; 1]>(),
+            bits in 0u8..=P_MAX_BITS,
+            seed in any::<u64>(),
+        ) {
+            let p = PartitionRows::<1>::from_seed(64, bits, seed);
+            let cx = [ax[0] ^ bx[0]];
+            let cz = [az[0] ^ bz[0]];
+            prop_assert_eq!(
+                p.partition_of(&cx, &cz),
+                p.partition_of(&ax, &az) ^ p.partition_of(&bx, &bz)
+            );
+        }
+
+        #[test]
+        fn partition_of_is_gf2_linear_w2(
+            ax in any::<[u64; 2]>(), az in any::<[u64; 2]>(),
+            bx in any::<[u64; 2]>(), bz in any::<[u64; 2]>(),
+            bits in 0u8..=P_MAX_BITS,
+            seed in any::<u64>(),
+        ) {
+            let p = PartitionRows::<2>::from_seed(128, bits, seed);
+            let cx = [ax[0] ^ bx[0], ax[1] ^ bx[1]];
+            let cz = [az[0] ^ bz[0], az[1] ^ bz[1]];
+            prop_assert_eq!(
+                p.partition_of(&cx, &cz),
+                p.partition_of(&ax, &az) ^ p.partition_of(&bx, &bz)
+            );
         }
     }
 }

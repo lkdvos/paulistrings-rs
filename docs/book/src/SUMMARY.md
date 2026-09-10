@@ -25,6 +25,8 @@
 
 - [How it works](design/index.md)
 - [Performance](design/performance.md)
+- [Running across NUMA nodes](design/numa.md)
+- [Running across MPI ranks](design/mpi.md)
 
 # Comparisons
 

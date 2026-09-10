@@ -6,6 +6,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+# The MPI venv `scripts/mpi-test.sh --python` builds into: a second
+# environment, because mpi4py has to come from the same interpreter the MPI
+# modules provide (see the script's header).
+.venv-mpi/
 .pytest_cache/
 .ruff_cache/
 build/

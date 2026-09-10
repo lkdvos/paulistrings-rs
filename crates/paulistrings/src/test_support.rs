@@ -436,6 +436,27 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
+/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for
+/// [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
+///
+/// The canonical **sparse but wide** two-qubit fixture: its delta set spans
+/// more than one bucket bit, yet its PTM is far from dense (steady-state
+/// fanout 3.65 against a dense PTM's 14.94), so it exercises multi-delta
+/// behaviour without the all-sixteen-entries cost of
+/// [`haar_su4_matrix`].
+pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
+    let h = Complex64::new(0.5, 0.5);
+    let hc = Complex64::new(0.5, -0.5);
+    let one = Complex64::new(1.0, 0.0);
+    let zero = Complex64::new(0.0, 0.0);
+    [
+        [one, zero, zero, zero],
+        [zero, h, hc, zero],
+        [zero, hc, h, zero],
+        [zero, zero, zero, one],
+    ]
+}
+
 /// One draw of Haar-random SU(4), as a 4×4 unitary in the computational basis.
 ///
 /// The entries come from `examples/common/circuits.py::haar_su4` (Mezzadri
@@ -527,4 +548,320 @@ pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits:
         imgs.push(h.bucket_of_pauli(&PauliString::<W>::z(q)));
     }
     gf2_rank(&imgs)
+}
+
+/// The engine's differential channel net at `W = 1`: every built-in channel
+/// class, on an 8-qubit key space.
+///
+/// One list, shared by `engine::bucketed`'s differential net and the
+/// partitioned engine's, so the two cover exactly the same channels and a
+/// channel added here is exercised by both. Supports are chosen to spread over
+/// the key space (`h` at 3, two-qubit gates at 1 and 5, noise at 2) and the
+/// list ends with the three shapes that are structurally distinct for the
+/// gather: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and
+/// a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
+pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::identity::IdentityChannel;
+    use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::{GeneralUnitary1Q, GeneralUnitary2Q};
+
+    vec![
+        ("identity", Box::new(IdentityChannel::new())),
+        ("h", Box::new(Clifford1Q::h(3))),
+        ("s", Box::new(Clifford1Q::s(3))),
+        ("x", Box::new(Clifford1Q::x(3))),
+        ("y", Box::new(Clifford1Q::y(3))),
+        ("z", Box::new(Clifford1Q::z(3))),
+        ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
+        ("cz", Box::new(Clifford2Q::cz(1, 5))),
+        ("swap", Box::new(Clifford2Q::swap(1, 5))),
+        (
+            "depolarizing",
+            Box::new(Depolarizing {
+                support: [2],
+                p: 0.07,
+            }),
+        ),
+        (
+            "dephasing",
+            Box::new(Dephasing {
+                support: [2],
+                p: 0.07,
+            }),
+        ),
+        (
+            "amp_damping",
+            Box::new(AmplitudeDamping {
+                support: [2],
+                gamma: 0.3,
+            }),
+        ),
+        (
+            "rot_z",
+            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
+        ),
+        (
+            "rot_zz",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<1>::z(1);
+                    g.mul_assign(&PauliString::<1>::z(6));
+                    g
+                },
+                0.41,
+            )),
+        ),
+        (
+            // General unitaries: a non-Clifford T gate (fanout 2) and a
+            // dense 2Q unitary (fanout up to 16), both as local PTMs.
+            "t_gate",
+            Box::new(GeneralUnitary1Q::from_matrix(
+                2,
+                [
+                    [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                    [
+                        Complex64::new(0.0, 0.0),
+                        Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
+                    ],
+                ],
+            )),
+        ),
+        (
+            // sqrt(SWAP): a wide delta set with a sparse PTM.
+            "general_2q",
+            Box::new(GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix())),
+        ),
+        (
+            // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
+            // deltas are realized (fanout ~15) — the shape the per-run sort
+            // kernel is selected on (see `merge::sort_rows_radix_with_scratch`).
+            "haar_su4",
+            Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
+        ),
+        (
+            // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
+            "rot_wide",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<1>::z(0);
+                    for q in [2u32, 4, 6] {
+                        g.mul_assign(&PauliString::<1>::x(q));
+                    }
+                    g
+                },
+                0.41,
+            )),
+        ),
+    ]
+}
+
+/// The engine's differential channel net at `W = 2`: the other occupancy
+/// regime — 128 qubits, wide keys, supports straddling the 64-bit word
+/// boundary.
+///
+/// Shared by `engine::bucketed`'s differential net and the partitioned
+/// engine's, as [`differential_channels_w1`] is.
+pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::noise::AmplitudeDamping;
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::GeneralUnitary2Q;
+
+    vec![
+        ("h@70", Box::new(Clifford1Q::h(70))),
+        ("s@64", Box::new(Clifford1Q::s(64))),
+        ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
+        ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
+        (
+            "amp_damping@70",
+            Box::new(AmplitudeDamping {
+                support: [70],
+                gamma: 0.25,
+            }),
+        ),
+        (
+            "rot_y@70",
+            Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
+        ),
+        (
+            "rot_zz_cross_word",
+            Box::new(PauliRotation::new(
+                {
+                    let mut g = PauliString::<2>::z(9);
+                    g.mul_assign(&PauliString::<2>::z(70));
+                    g
+                },
+                0.33,
+            )),
+        ),
+        // Dense SU(4), support straddling the word boundary — the dense-PTM
+        // run shape at `W = 2`.
+        (
+            "haar_su4_cross_word",
+            Box::new(GeneralUnitary2Q::from_matrix(60, 70, haar_su4_matrix())),
+        ),
+    ]
+}
+
+// ---- partitioned-engine fixtures -------------------------------------------
+//
+// The partitioned nets (`tests/propagate_partitioned.rs`,
+// `tests/propagate_distributed.rs`, `tests/mpi_ranks.rs`,
+// `tests/partitioned_*.rs`, `tests/phase_timing.rs`) all need the same three
+// things: a policy with no layer pass, a `ZZ` rotation, and a placement with no
+// placement. They live here so a change to any of them is one edit.
+
+/// Keep every term, with no layer finalization at all.
+///
+/// [`TruncationPolicy::finalizes_layer`]'s default is the conservative `true`,
+/// which [`PartitionedTruncation`]'s default body rejects — a policy with no
+/// layer pass has to say so, since the trait cannot know that skipping a
+/// collective is safe.
+///
+/// [`PartitionedTruncation`]: crate::PartitionedTruncation
+pub struct KeepAll;
+
+impl<const W: usize> TruncationPolicy<W> for KeepAll {
+    fn finalizes_layer(&self) -> bool {
+        false
+    }
+}
+
+impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
+
+/// A weight-2 `ZZ` rotation — the TFIM bond term, and the smallest layer whose
+/// generator can cross a partition boundary.
+pub fn zz_rotation<const W: usize>(
+    q0: u32,
+    q1: u32,
+    theta: f64,
+) -> crate::channel::rotation::PauliRotation<W> {
+    let mut gen = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    for q in [q0, q1] {
+        gen.z[q as usize / 64] |= 1u64 << (q % 64);
+    }
+    crate::channel::rotation::PauliRotation::new(gen, theta)
+}
+
+/// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that
+/// many transverse-field `X` rotations, all at angle `2 · theta`.
+///
+/// `2 · num_qubits` layers, enough that the term count — and with it the bucket
+/// count the group agrees on every layer — grows across the run.
+pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::Circuit<W> {
+    let mut circuit = crate::Circuit::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        let q1 = ((q + 1) % num_qubits) as u32;
+        circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+    }
+    for q in 0..num_qubits {
+        circuit.push(crate::channel::rotation::PauliRotation::new(
+            PauliString::<W>::x(q as u32),
+            2.0 * theta,
+        ));
+    }
+    circuit
+}
+
+/// A partitioned placement with no placement: `partitions` unpinned pools of
+/// `threads` workers each, drawing partition rows from `row_seed`.
+///
+/// Every partitioned test uses this rather than `Placement::Auto`, so the suite
+/// runs on a one-node box or a `taskset`ed CI container; placement itself is
+/// covered by `engine::partitioned::topology`'s own tests.
+pub fn unpinned_partitions(
+    partitions: usize,
+    threads: usize,
+    row_seed: u64,
+) -> crate::engine::partitioned::PartitionConfig {
+    crate::engine::partitioned::PartitionConfig {
+        placement: crate::engine::partitioned::Placement::Unpinned {
+            partitions,
+            threads_per_partition: Some(threads),
+        },
+        bind_memory: false,
+        partition_row_seed: Some(row_seed),
+    }
+}
+
+/// The 127-qubit heavy-hex coupling map (IBM Eagle r3), 144 undirected edges
+/// as `(lo, hi)` pairs in sorted order.
+///
+/// A verbatim copy of the checked-in, provenance-tagged edge list
+/// `examples/data/heavy_hex_127.edges` (generated from
+/// `qiskit-ibm-runtime`'s `FakeSherbrooke().coupling_map` by
+/// `examples/data/generate_heavy_hex.py`; qubit indices are the device's own
+/// numbering `0..126`). It lives here as a constant so the Rust probes can
+/// build the presentation's kicked-Ising workload with no file I/O and no
+/// path resolution (`presentation/bench/src/workload.rs` reads the same list
+/// from disk instead). `heavy_hex_127_edges_match_the_source_lattice` pins the
+/// transcription against the invariants that file's header records.
+///
+/// Degree histogram: 2 qubits of degree 1, 89 of degree 2, 36 of degree 3.
+#[rustfmt::skip]
+pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
+    (0, 1), (0, 14), (1, 2), (2, 3), (3, 4), (4, 5),
+    (4, 15), (5, 6), (6, 7), (7, 8), (8, 9), (8, 16),
+    (9, 10), (10, 11), (11, 12), (12, 13), (12, 17), (14, 18),
+    (15, 22), (16, 26), (17, 30), (18, 19), (19, 20), (20, 21),
+    (20, 33), (21, 22), (22, 23), (23, 24), (24, 25), (24, 34),
+    (25, 26), (26, 27), (27, 28), (28, 29), (28, 35), (29, 30),
+    (30, 31), (31, 32), (32, 36), (33, 39), (34, 43), (35, 47),
+    (36, 51), (37, 38), (37, 52), (38, 39), (39, 40), (40, 41),
+    (41, 42), (41, 53), (42, 43), (43, 44), (44, 45), (45, 46),
+    (45, 54), (46, 47), (47, 48), (48, 49), (49, 50), (49, 55),
+    (50, 51), (52, 56), (53, 60), (54, 64), (55, 68), (56, 57),
+    (57, 58), (58, 59), (58, 71), (59, 60), (60, 61), (61, 62),
+    (62, 63), (62, 72), (63, 64), (64, 65), (65, 66), (66, 67),
+    (66, 73), (67, 68), (68, 69), (69, 70), (70, 74), (71, 77),
+    (72, 81), (73, 85), (74, 89), (75, 76), (75, 90), (76, 77),
+    (77, 78), (78, 79), (79, 80), (79, 91), (80, 81), (81, 82),
+    (82, 83), (83, 84), (83, 92), (84, 85), (85, 86), (86, 87),
+    (87, 88), (87, 93), (88, 89), (90, 94), (91, 98), (92, 102),
+    (93, 106), (94, 95), (95, 96), (96, 97), (96, 109), (97, 98),
+    (98, 99), (99, 100), (100, 101), (100, 110), (101, 102), (102, 103),
+    (103, 104), (104, 105), (104, 111), (105, 106), (106, 107), (107, 108),
+    (108, 112), (109, 114), (110, 118), (111, 122), (112, 126), (113, 114),
+    (114, 115), (115, 116), (116, 117), (117, 118), (118, 119), (119, 120),
+    (120, 121), (121, 122), (122, 123), (123, 124), (124, 125), (125, 126),
+];
+
+/// [`HEAVY_HEX_127_EDGES`] as a `Vec`, for callers that want to own it.
+pub fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+    HEAVY_HEX_127_EDGES.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HEAVY_HEX_127_EDGES;
+
+    /// Pins the transcribed copy against the invariants the source file's own
+    /// header records: 144 undirected edges over qubits `0..126`, sorted and
+    /// unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
+    #[test]
+    fn heavy_hex_127_edges_match_the_source_lattice() {
+        assert_eq!(HEAVY_HEX_127_EDGES.len(), 144);
+        let mut degree = [0usize; 127];
+        let mut prev = (0u32, 0u32);
+        for (i, &(a, b)) in HEAVY_HEX_127_EDGES.iter().enumerate() {
+            assert!(a < b, "edge {i} is not (lo, hi): ({a}, {b})");
+            assert!(b < 127, "edge {i} names qubit {b} outside 0..126");
+            if i > 0 {
+                assert!(prev < (a, b), "edge {i} breaks the sorted-unique order");
+            }
+            prev = (a, b);
+            degree[a as usize] += 1;
+            degree[b as usize] += 1;
+        }
+        let mut histogram = [0usize; 4];
+        for d in degree {
+            histogram[d] += 1;
+        }
+        assert_eq!(histogram, [0, 2, 89, 36]);
+    }
 }

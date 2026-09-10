@@ -269,3 +269,11 @@ RAYON_NUM_THREADS=1 python my_script.py
 
 Every timed number on this site was taken this way; the sweeps that are physics
 measurements rather than timings say so and run on the default pool.
+
+On a multi-socket machine the engine can instead run **partitioned**: one pinned
+pool and one share of the sum per NUMA domain, asked for with `partitions="auto"`.
+`RAYON_NUM_THREADS` does not reach that mode — the thread count comes from the
+placement — and exact `topn` is unavailable there. Whether it pays depends on how
+often a layer moves rows across a domain boundary. See
+[Running across NUMA nodes](design/numa.md), or
+[Running across MPI ranks](design/mpi.md) to split across processes instead.

@@ -30,6 +30,13 @@
 #     not even --seed: the probe already defaults to a fixed seed, and adding
 #     a flag the pinned binary might not accept would break the A side, the
 #     B side, or both. If you want a specific seed, put it in --probe.
+#   - --probe-b (optional, defaults to --probe's value) gives side B its own
+#     probe args, so a runtime-knob A/B (e.g. --partitions 1 on A vs
+#     --partitions 2 on B, same binary via --a . --b .) measures the knob,
+#     not a code change. The verbatim-passthrough symmetry above still holds
+#     per side: A gets exactly --probe's words, B gets exactly --probe-b's
+#     (or --probe's, if --probe-b was not given) -- neither side's args leak
+#     into the other's invocation.
 #   - A failing single run is logged and the campaign continues; ab-report.py
 #     pairs up to the minimum run count per cell, so a lost run costs one
 #     pair, not the whole comparison. Build failures, malformed usage and
@@ -72,6 +79,17 @@ Required:
                           --example phase_breakdown -- --help`.
 
 Options:
+  --probe-b '<args>'      Side B's probe args, if different from --probe
+                          (default: same as --probe). Use this for a
+                          runtime-knob A/B on one binary -- e.g. --a . --b .
+                          with --probe '--partitions 1 ...' and --probe-b
+                          '--partitions 2 ...' -- rather than a code change.
+                          One (layer, threads) cell per invocation is
+                          recommended so the report pairs cleanly; when
+                          --probe-b is given, the report is invoked with
+                          --pair-on layer,threads (dropping partitions from
+                          the pairing key, since A and B deliberately differ
+                          there).
   --pairs N               Number of A/B pairs to run (default: 3). Direction
                           consistency across all N pairs is the acceptance
                           criterion -- see the report's closing note.
@@ -89,7 +107,7 @@ Outputs (benchmarks/results/<date>-<hostname>/):
 
 The report can be re-run at any time on the archived sidecars:
   python3 scripts/ab-report.py <name>-a.probe.jsonl <name>-b.probe.jsonl \
-      [--field wall_ns] [--all-phases]
+      [--field wall_ns] [--all-phases] [--pair-on layer,threads]
 
 Never invokes any Slurm command.
 EOF
@@ -121,6 +139,8 @@ fi
 a_rev=""
 b_rev=""
 probe=""
+probe_b=""
+probe_b_given=0
 pairs=3
 order="abab"
 features="phase-timing"
@@ -128,12 +148,16 @@ keep_worktrees=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --a | --b | --probe | --pairs | --order | --features)
+    --a | --b | --probe | --probe-b | --pairs | --order | --features)
       [[ $# -ge 2 ]] || die "$1 requires a value"
       case "$1" in
         --a) a_rev=$2 ;;
         --b) b_rev=$2 ;;
         --probe) probe=$2 ;;
+        --probe-b)
+          probe_b=$2
+          probe_b_given=1
+          ;;
         --pairs) pairs=$2 ;;
         --order) order=$2 ;;
         --features) features=$2 ;;
@@ -161,11 +185,22 @@ done
 [[ "$order" == "abab" || "$order" == "abba" ]] || die "--order must be abab or abba, got '${order}'"
 [[ -n "$features" ]] || die "--features must not be empty (the probe requires phase-timing)"
 
+# --probe-b defaults to --probe's value, so the "no flags are injected"
+# verbatim passthrough below is symmetric: each side gets exactly its own
+# args, and an unset --probe-b is not a special case for run_side.
+if [[ $probe_b_given -eq 0 ]]; then
+  probe_b="$probe"
+fi
+
 # Verbatim pass-through of the probe args: `eval` so that quoting *inside*
-# --probe is honored, unlike bench-campaign.sh's plain word-splitting.
-eval "probe_args=( $probe )"
-if [[ ${#probe_args[@]} -eq 0 ]]; then
+# --probe/--probe-b is honored, unlike bench-campaign.sh's plain word-splitting.
+eval "probe_args_a=( $probe )"
+if [[ ${#probe_args_a[@]} -eq 0 ]]; then
   die "--probe expanded to no arguments"
+fi
+eval "probe_args_b=( $probe_b )"
+if [[ ${#probe_args_b[@]} -eq 0 ]]; then
+  die "--probe-b expanded to no arguments"
 fi
 
 out_dir="benchmarks/results/$(date +%F)-$(hostname -s)"
@@ -173,7 +208,10 @@ mkdir -p "$out_dir"
 log_file="$out_dir/${name}-ab.log"
 sidecar_a="$out_dir/${name}-a.probe.jsonl"
 sidecar_b="$out_dir/${name}-b.probe.jsonl"
-wt_root="target/ab-worktrees"
+# Honour CARGO_TARGET_DIR (cluster jobs build into a job-private dir; on the
+# CCQ workstations `target` is a symlink into the local NVMe /home).
+target_dir="${CARGO_TARGET_DIR:-target}"
+wt_root="${target_dir}/ab-worktrees"
 
 log() {
   printf '%s\n' "$*" | tee -a "$log_file"
@@ -265,7 +303,8 @@ log "date: $(date -Iseconds)"
 log "command: $(printf '%q ' "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"})"
 log "side A: rev '${a_rev}' -> ${a_sha} (dirty: ${a_dirty})"
 log "side B: rev '${b_rev}' -> ${b_sha} (dirty: ${b_dirty})"
-log "probe args: ${probe_args[*]}"
+log "probe args: ${probe_args_a[*]}"
+log "probe args B: ${probe_args_b[*]}"
 log "pairs: ${pairs}   order: ${order}   features: ${features}"
 log "$(rustc -V)"
 log "threads (nproc): $(nproc)"
@@ -273,8 +312,22 @@ log "governor: ${governor}"
 log "cpu: ${cpu_model}"
 log "load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
 
-# Smoke mode: identical trees on both sides measure the harness, not a change.
+# Smoke mode: identical trees on both sides measure the harness, not a
+# change -- UNLESS --probe-b was given, in which case identical trees are
+# the *point*: this is a runtime-knob A/B (e.g. --partitions 1 vs 2 on the
+# same binary), not a code change, and the smoke-mode warning would be
+# misleading.
+same_tree=0
 if [[ "$a_rev" == "." && "$b_rev" == "." ]]; then
+  same_tree=1
+elif [[ "$a_sha" == "$b_sha" && "$a_dirty" == "no" && "$b_dirty" == "no" ]]; then
+  same_tree=1
+fi
+if [[ $same_tree -eq 1 && $probe_b_given -eq 1 ]]; then
+  log "note: both sides share the same tree/commit, and --probe-b differs from"
+  log "      --probe by design -- this is a runtime-knob A/B measuring the"
+  log "      probe-arg difference (${probe} vs ${probe_b}), not a code change."
+elif [[ "$a_rev" == "." && "$b_rev" == "." ]]; then
   log "WARNING: both sides are the current working tree — this measures this"
   log "         host's own noise floor (smoke mode), not a code change."
 elif [[ "$a_sha" == "$b_sha" && "$a_dirty" == "no" && "$b_dirty" == "no" ]]; then
@@ -307,13 +360,13 @@ build_side() {
   dest="$out_dir/${name}-${side}-${tag}"
 
   if [[ "$rev" == "." ]]; then
-    log "build[${side}]: current working tree (${sha}, dirty=${dirty}) in ./target"
+    log "build[${side}]: current working tree (${sha}, dirty=${dirty}) in ${target_dir}"
     if ! (cargo build --offline --release --features "$features" \
       -p paulistrings --example phase_breakdown) 2>&1 | tee -a "$log_file"; then
       log "error: build of side ${side} (working tree) failed — aborting"
       exit 1
     fi
-    src="target/release/examples/phase_breakdown"
+    src="${target_dir}/release/examples/phase_breakdown"
   else
     wt="${wt_root}/${name}-${side}-$$"
     mkdir -p "$wt_root"
@@ -335,7 +388,8 @@ build_side() {
       log "error: build of side ${side} (${rev} @ ${sha}) failed — aborting"
       exit 1
     fi
-    src="$wt/target/release/examples/phase_breakdown"
+    # With CARGO_TARGET_DIR set cargo ignores the worktree's own target dir.
+    src="${CARGO_TARGET_DIR:-$wt/target}/release/examples/phase_breakdown"
   fi
 
   if [[ ! -x "$src" ]]; then
@@ -383,8 +437,17 @@ done
 
 run_side() {
   local side=$1 bin=$2 sidecar=$3 pair=$4
+  # Each side gets exactly its own probe args -- probe_args_a for A,
+  # probe_args_b for B (equal to A's unless --probe-b was given) -- never a
+  # shared/injected array, preserving the verbatim-passthrough promise.
+  local -a args
+  if [[ "$side" == "a" ]]; then
+    args=(${probe_args_a[@]+"${probe_args_a[@]}"})
+  else
+    args=(${probe_args_b[@]+"${probe_args_b[@]}"})
+  fi
   log "--- pair ${pair}: side ${side} ($(basename "$bin")) ---"
-  if ! ("$bin" ${probe_args[@]+"${probe_args[@]}"} --json-out "$sidecar") \
+  if ! ("$bin" ${args[@]+"${args[@]}"} --json-out "$sidecar") \
     2>&1 | tee -a "$log_file"; then
     log "  (side ${side} run in pair ${pair} exited nonzero — continuing; the"
     log "   report pairs up to the minimum run count per cell)"
@@ -410,10 +473,22 @@ log ""
 # ---------------------------------------------------------------------------
 
 log "=== report ==="
+label_b="B=${b_rev}"
+pair_on_note=""
+report_extra_args=()
+if [[ $probe_b_given -eq 1 ]]; then
+  # A and B deliberately ran different probe args (typically --partitions),
+  # so pairing on the full (layer, threads, partitions) key would treat
+  # every cell as "only in A" / "only in B" instead of comparing them.
+  label_b="B=${b_rev} (--probe-b: ${probe_b})"
+  report_extra_args=(--pair-on layer,threads)
+  pair_on_note=" --pair-on layer,threads"
+fi
 if ! (python3 scripts/ab-report.py "$sidecar_a" "$sidecar_b" --all-phases \
-  --label-a "A=${a_rev}" --label-b "B=${b_rev}") 2>&1 | tee -a "$log_file"; then
+  --label-a "A=${a_rev}" --label-b "$label_b" \
+  ${report_extra_args[@]+"${report_extra_args[@]}"}) 2>&1 | tee -a "$log_file"; then
   log "  (ab-report.py exited nonzero — the sidecars are intact, re-run it by hand:"
-  log "   python3 scripts/ab-report.py '${sidecar_a}' '${sidecar_b}' --all-phases)"
+  log "   python3 scripts/ab-report.py '${sidecar_a}' '${sidecar_b}' --all-phases${pair_on_note})"
 fi
 
 log ""

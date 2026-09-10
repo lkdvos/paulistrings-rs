@@ -16,6 +16,7 @@ use num_complex::Complex64;
 use super::{Channel, OutputBuffer};
 use crate::bucket::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
+use crate::phase::Phase;
 
 /// Largest support size handled by [`Prepared::Local`].
 ///
@@ -54,6 +55,48 @@ pub struct DeltaEntry<const W: usize> {
     /// `amp[s]` is the amplitude taking input support pattern `s` to
     /// `s ^ local_delta`. Exactly zero means "no output for this `s`".
     pub amp: [Complex64; LOCAL_DIM],
+}
+
+impl<const W: usize> DeltaEntry<W> {
+    /// The output row this entry emits for a term with support pattern `s`, or
+    /// `None` when the amplitude is exactly zero.
+    ///
+    /// This is the row-level form of the engine's gather inner loop
+    /// (`engine::bucketed::gather_local_input_major`): the same amplitude
+    /// lookup, the same XOR with the lifted mask, and the same `coeff * amp`
+    /// multiply in the same order — so the partitioned export pass
+    /// (ARCHITECTURE.md §Engine) produces bitwise the rows a local gather
+    /// would have.
+    #[inline]
+    pub(crate) fn emit(
+        &self,
+        s: usize,
+        x: &[u64; W],
+        z: &[u64; W],
+        c: Complex64,
+    ) -> Option<([u64; W], [u64; W], Complex64)> {
+        let a = self.amp[s];
+        if a == ZERO {
+            return None;
+        }
+        let mut kx = *x;
+        let mut kz = *z;
+        for w in 0..W {
+            kx[w] ^= self.mask_x[w];
+            kz[w] ^= self.mask_z[w];
+        }
+        Some((kx, kz, c * a))
+    }
+
+    /// The entry's key delta as a full-width XOR mask pair, `(mask_x, mask_z)`.
+    ///
+    /// The quantity a partitioning reads to classify the entry: `part(mask)`
+    /// is the partition delta and `h(mask)` the (already stored)
+    /// [`bucket_delta`](Self::bucket_delta).
+    #[inline]
+    pub(crate) fn mask(&self) -> ([u64; W], [u64; W]) {
+        (self.mask_x, self.mask_z)
+    }
 }
 
 /// A channel with support on at most [`MAX_LOCAL_SUPPORT`] qubits, as a dense
@@ -134,6 +177,37 @@ impl<const W: usize> LocalPtm<W> {
         self.deltas.len() == 1 && self.deltas[0].local_delta == 0
     }
 
+    /// A copy keeping only the entries with `keep[e] == true`, in order, with
+    /// the same support qubits and `k`.
+    ///
+    /// Used at prepare time to split a partitioned layer's table into a
+    /// local-only one, so the gather loops keep running over a plain
+    /// `deltas()` slice with no per-entry predicate in the inner loop. The
+    /// result is still ascending by `local_delta` — a subsequence of an
+    /// ascending sequence — so every invariant `deltas()` documents survives.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `keep` is not one flag per entry.
+    pub(crate) fn retain_entries(&self, keep: &[bool]) -> LocalPtm<W> {
+        debug_assert_eq!(
+            keep.len(),
+            self.deltas.len(),
+            "retain_entries: one flag per delta entry",
+        );
+        LocalPtm {
+            qubits: self.qubits,
+            k: self.k,
+            deltas: self
+                .deltas
+                .iter()
+                .zip(keep)
+                .filter(|(_, &k)| k)
+                .map(|(d, _)| d.clone())
+                .collect(),
+        }
+    }
+
     /// Lift a local delta to full-width XOR masks.
     fn lift(&self, local_delta: u8) -> ([u64; W], [u64; W]) {
         let mut mx = [0u64; W];
@@ -171,6 +245,45 @@ pub struct RotationPrep<const W: usize> {
     pub bucket_delta_identity: u32,
     /// `H·P`: the bucket delta for the `v ⊕ P` output.
     pub bucket_delta_gen: u32,
+}
+
+impl<const W: usize> RotationPrep<W> {
+    /// The generator-pass row for a term, or `None` if it commutes with the
+    /// generator (in which case the rotation leaves the term alone and only
+    /// the identity pass emits).
+    ///
+    /// The arithmetic is copied verbatim from the `DeltaPlan::Rotation` arm of
+    /// `engine::bucketed::fill_coset`: `mul_assign` returns the `i^k` of the
+    /// Pauli product, the leading `i` of `i · Q · P` is folded in as
+    /// `Phase::I + phase`, the phase is applied to the *coefficient* and the
+    /// hoisted `sin` multiplies last. Operand order matters — this has to be
+    /// bitwise-equal to the gather.
+    ///
+    /// The identity pass has no emitter: every term contributes one identity
+    /// row unconditionally (full coefficient when it commutes, `cos`-scaled
+    /// when it does not), so there is nothing to decide per row.
+    #[inline]
+    pub(crate) fn emit_gen(
+        &self,
+        x: &[u64; W],
+        z: &[u64; W],
+        c: Complex64,
+    ) -> Option<([u64; W], [u64; W], Complex64)> {
+        let v = PauliString::<W> { x: *x, z: *z };
+        if v.commutes_with(&self.gen) {
+            return None;
+        }
+        let mut prod = v;
+        let phase = prod.mul_assign(&self.gen);
+        let total = Phase::I + phase;
+        Some((prod.x, prod.z, total.apply(c) * self.sin))
+    }
+
+    /// The generator-pass key delta as a full-width XOR mask pair — i.e. the
+    /// generator itself, since the delta set is `{0, P}`.
+    pub(crate) fn gen_mask(&self) -> ([u64; W], [u64; W]) {
+        (self.gen.x, self.gen.z)
+    }
 }
 
 /// A channel prepared for one layer of the bucketed engine.
@@ -393,8 +506,9 @@ mod tests {
     use crate::channel::identity::IdentityChannel;
     use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
     use crate::channel::rotation::PauliRotation;
+    use crate::channel::unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
 
-    use crate::test_support::Xs64;
+    use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, Xs64};
 
     const TOL: f64 = 1e-12;
 
@@ -615,6 +729,275 @@ mod tests {
         let rot = PauliRotation::new(gen, 0.41);
         assert_eq!(rot.weight(), 4);
         check_agrees_on_random_inputs::<2, _>(&rot, 128, "rot_weight4");
+    }
+
+    // ---- the per-entry emitters agree with `Channel::apply` ----
+    //
+    // `DeltaEntry::emit` / `RotationPrep::emit_gen` are the row-level form the
+    // partitioned export pass uses in place of the engine's gather loops. They
+    // must produce exactly what the gather would have produced, which is what
+    // these check — against `Channel::apply` itself, not against the gather.
+
+    /// The same outputs, reconstructed one entry at a time through the
+    /// emitters. Mirrors `via_prepared`, but routes every row through
+    /// [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
+    fn via_emit<const W: usize>(
+        prep: &Prepared<W>,
+        x: &[u64; W],
+        z: &[u64; W],
+        coeff: Complex64,
+    ) -> Vec<Term<W>> {
+        let mut out: Vec<Term<W>> = Vec::new();
+        match prep {
+            Prepared::Local(p) => {
+                let s = p.support_bits(x, z);
+                for m in p.deltas() {
+                    if let Some(row) = m.emit(s, x, z, coeff) {
+                        out.push(row);
+                    }
+                }
+            }
+            Prepared::Rotation(r) => {
+                // Entry 0, the identity pass, has no `DeltaEntry`: every term
+                // emits one such row, full coefficient when it commutes and
+                // `cos`-scaled when it does not.
+                let input = PauliString::<W> { x: *x, z: *z };
+                let commutes = input.commutes_with(&r.gen);
+                out.push((*x, *z, if commutes { coeff } else { coeff * r.cos }));
+                let gen_row = r.emit_gen(x, z, coeff);
+                assert_eq!(
+                    gen_row.is_none(),
+                    commutes,
+                    "emit_gen must be None exactly when the term commutes",
+                );
+                if let Some(row) = gen_row {
+                    out.push(row);
+                }
+            }
+        }
+        normalize(out)
+    }
+
+    fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
+        ch: &C,
+        num_qubits: usize,
+        label: &str,
+    ) {
+        let hash = Gf2Hash::<W>::new(num_qubits, 10, 0xD00D);
+        for &adjoint in &[false, true] {
+            let prep = ch
+                .prepare(&hash, adjoint)
+                .unwrap_or_else(|| panic!("{label}: prepare returned None"));
+            let mut rng = Xs64::new(0x5EED ^ (adjoint as u64));
+            for _ in 0..400 {
+                let mut x = [0u64; W];
+                let mut z = [0u64; W];
+                for w in 0..W {
+                    x[w] = rng.next_u64();
+                    z[w] = rng.next_u64();
+                }
+                let coeff = Complex64::new(
+                    (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
+                    (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
+                );
+                let direct = via_apply(ch, adjoint, &x, &z, coeff);
+                let emitted = via_emit(&prep, &x, &z, coeff);
+                assert_terms_eq(&direct, &emitted, &format!("{label} adjoint={adjoint}"));
+            }
+        }
+    }
+
+    #[test]
+    fn emit_matches_apply_for_cliffords() {
+        for (name, ch) in [
+            ("h", Clifford1Q::h(3)),
+            ("s", Clifford1Q::s(3)),
+            ("x", Clifford1Q::x(3)),
+        ] {
+            check_emit_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        }
+        for (name, ch) in [
+            ("cnot", Clifford2Q::cnot(1, 4)),
+            ("cz", Clifford2Q::cz(1, 4)),
+            ("swap", Clifford2Q::swap(1, 4)),
+        ] {
+            check_emit_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        }
+    }
+
+    #[test]
+    fn emit_matches_apply_for_general_unitaries() {
+        // T gate: a non-Clifford 1Q PTM.
+        let t = GeneralUnitary1Q::from_matrix(
+            2,
+            [
+                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                [
+                    Complex64::new(0.0, 0.0),
+                    Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
+                ],
+            ],
+        );
+        check_emit_agrees_on_random_inputs::<2, _>(&t, 128, "t_gate");
+
+        check_emit_agrees_on_random_inputs::<2, _>(
+            &GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix()),
+            128,
+            "sqrt_swap",
+        );
+        // The dense fixture: all sixteen entries carry a nonzero amplitude.
+        check_emit_agrees_on_random_inputs::<2, _>(
+            &GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix()),
+            128,
+            "haar_su4",
+        );
+    }
+
+    #[test]
+    fn emit_matches_apply_for_noise() {
+        check_emit_agrees_on_random_inputs::<2, _>(
+            &AmplitudeDamping {
+                support: [5],
+                gamma: 0.3,
+            },
+            128,
+            "amplitude_damping",
+        );
+    }
+
+    #[test]
+    fn emit_matches_apply_for_rotations_at_every_width() {
+        // Weight 1 and 2 take the tabulated path...
+        check_emit_agrees_on_random_inputs::<2, _>(
+            &PauliRotation::new(PauliString::<2>::z(9), 0.37),
+            128,
+            "rot_z",
+        );
+        let mut zz = PauliString::<2>::z(9);
+        zz.mul_assign(&PauliString::<2>::z(70));
+        check_emit_agrees_on_random_inputs::<2, _>(&PauliRotation::new(zz, 0.37), 128, "rot_zz");
+        // ...weight 4 takes `Prepared::Rotation`, so `emit_gen` is exercised.
+        let mut gen = PauliString::<2>::z(1);
+        for q in [5u32, 66, 100] {
+            gen.mul_assign(&PauliString::<2>::z(q));
+        }
+        let rot = PauliRotation::new(gen, 0.41);
+        assert_eq!(rot.weight(), 4);
+        check_emit_agrees_on_random_inputs::<2, _>(&rot, 128, "rot_weight4");
+    }
+
+    #[test]
+    fn emit_returns_none_exactly_on_a_zero_amplitude() {
+        // CNOT's identity entry is nonzero on 4 of the 16 support patterns, so
+        // both branches of `emit` are reachable from one table.
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+            panic!("expected Local")
+        };
+        let one = Complex64::new(1.0, 0.0);
+        let x = [0u64; 2];
+        let z = [0u64; 2];
+        let mut zero_seen = false;
+        let mut some_seen = false;
+        for m in p.deltas() {
+            for s in 0..16usize {
+                let got = m.emit(s, &x, &z, one);
+                assert_eq!(
+                    got.is_none(),
+                    m.amp[s] == ZERO,
+                    "emit must be None exactly on a zero amplitude",
+                );
+                if got.is_none() {
+                    zero_seen = true;
+                } else {
+                    some_seen = true;
+                }
+            }
+        }
+        assert!(zero_seen && some_seen, "both branches must be exercised");
+    }
+
+    #[test]
+    fn mask_returns_the_entrys_lifted_delta() {
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Local(p) = Clifford1Q::h(3).prepare(&hash, false).unwrap() else {
+            panic!("expected Local")
+        };
+        // H's delta set is {0, XZ on qubit 3}.
+        let masks: Vec<([u64; 2], [u64; 2])> = p.deltas().iter().map(|m| m.mask()).collect();
+        assert_eq!(masks, vec![([0, 0], [0, 0]), ([1 << 3, 0], [1 << 3, 0])]);
+    }
+
+    #[test]
+    fn rotation_gen_mask_is_the_generator() {
+        let mut gen = PauliString::<2>::z(1);
+        for q in [5u32, 66, 100] {
+            gen.mul_assign(&PauliString::<2>::z(q));
+        }
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Rotation(r) = PauliRotation::new(gen, 0.41).prepare(&hash, false).unwrap()
+        else {
+            panic!("expected Rotation")
+        };
+        assert_eq!(r.gen_mask(), (gen.x, gen.z));
+    }
+
+    // ---- retaining a subset of the entries ----
+
+    fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &str) {
+        assert_eq!(a.bucket_delta, b.bucket_delta, "{what}: bucket_delta");
+        assert_eq!(a.local_delta, b.local_delta, "{what}: local_delta");
+        assert_eq!(a.mask_x, b.mask_x, "{what}: mask_x");
+        assert_eq!(a.mask_z, b.mask_z, "{what}: mask_z");
+        assert_eq!(a.amp, b.amp, "{what}: amp");
+    }
+
+    #[test]
+    fn retain_entries_keeps_the_selected_entries_in_order() {
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Local(p) = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap() else {
+            panic!("expected Local")
+        };
+        assert_eq!(p.num_deltas(), 4);
+        let keep = [true, false, true, false];
+        let sub = p.retain_entries(&keep);
+        assert_eq!(sub.k(), p.k());
+        assert_eq!(sub.qubits(), p.qubits());
+        assert_eq!(sub.num_deltas(), 2);
+        assert_entry_eq(&sub.deltas()[0], &p.deltas()[0], "entry 0");
+        assert_entry_eq(&sub.deltas()[1], &p.deltas()[2], "entry 1");
+    }
+
+    #[test]
+    fn a_retain_to_the_identity_alone_is_key_preserving() {
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+            panic!("expected Local")
+        };
+        assert!(!p.is_key_preserving());
+        // Entry 0 is the identity by the ascending-`local_delta` construction.
+        assert_eq!(p.deltas()[0].local_delta, 0);
+        let keep: Vec<bool> = (0..p.num_deltas()).map(|e| e == 0).collect();
+        assert!(p.retain_entries(&keep).is_key_preserving());
+    }
+
+    #[test]
+    fn retain_entries_keeping_everything_is_the_original() {
+        let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+        let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+            panic!("expected Local")
+        };
+        let keep = vec![true; p.num_deltas()];
+        let sub = p.retain_entries(&keep);
+        assert_eq!(sub.num_deltas(), p.num_deltas());
+        for (a, b) in sub.deltas().iter().zip(p.deltas()) {
+            assert_entry_eq(a, b, "all-kept");
+        }
+        // And an empty selection is legal, if useless.
+        assert_eq!(
+            p.retain_entries(&vec![false; p.num_deltas()]).num_deltas(),
+            0
+        );
     }
 
     // ---- delta-set dimensions must match ARCHITECTURE.md §Bucketing ----

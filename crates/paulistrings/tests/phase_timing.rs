@@ -5,25 +5,15 @@
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::channel::{Depolarizing, PauliRotation};
+use paulistrings::engine::partitioned::{PartitionRuntime, PartitionedSum};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
-use paulistrings::test_support::rand_sum_real;
+use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PhaseStats,
-    TruncationPolicy,
+    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PauliString,
+    PhaseStats,
 };
-
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-fn zz_rotation(q0: u32, q1: u32, theta: f64) -> PauliRotation<1> {
-    let gen = PauliString::<1> {
-        x: [0],
-        z: [(1 << q0) | (1 << q1)],
-    };
-    PauliRotation::new(gen, theta)
-}
 
 #[test]
 fn stats_sum_approximates_total() {
@@ -32,7 +22,7 @@ fn stats_sum_approximates_total() {
     // and coset-loop wall time are the same clock domain.
     let mut circuit = Circuit::<1>::new(32);
     for q in 0..4 {
-        circuit.push(zz_rotation(q, q + 1, 0.13 + q as f64 * 0.05));
+        circuit.push(zz_rotation::<1>(q, q + 1, 0.13 + q as f64 * 0.05));
     }
     let sum = rand_sum_real::<1>(20_000, 32, 0x51A75);
 
@@ -42,13 +32,7 @@ fn stats_sum_approximates_total() {
         .expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
-        propagate_with_scratch(
-            &circuit,
-            sum,
-            &AlwaysKeep,
-            Direction::Heisenberg,
-            &mut scratch,
-        )
+        propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Heisenberg, &mut scratch)
     });
     assert!(!out.is_empty());
 
@@ -86,11 +70,11 @@ fn stats_sum_approximates_total() {
 #[test]
 fn take_stats_drains() {
     let mut circuit = Circuit::<1>::new(16);
-    circuit.push(zz_rotation(0, 1, 0.4));
+    circuit.push(zz_rotation::<1>(0, 1, 0.4));
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
 
     let first = scratch.take_stats();
     assert!(first.layers == 1 && first.coset_loop_ns > 0);
@@ -108,7 +92,7 @@ fn rescale_path_is_attributed() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
 
     let stats = scratch.take_stats();
     assert!(stats.rescale_ns > 0, "{stats:?}");
@@ -128,4 +112,89 @@ fn add_accumulates() {
     a.add(&b);
     assert_eq!(a.layers, 5);
     assert_eq!(a.gather_ns, 15);
+}
+
+/// The partitioned driver's counters: one breakdown per partition with the
+/// collective, export and exchange phases attributed, plus the driver's own
+/// scatter and gather.
+#[test]
+fn partitioned_stats_are_attributed() {
+    // A weight-4 rotation whose generator carries `X` on qubit 0, and one
+    // partition row seeing exactly that bit — so the generator pass is remote
+    // and every layer exports.
+    let gen = PauliString::<1> {
+        x: [0b0101],
+        z: [0b1010],
+    };
+    let mut circuit = Circuit::<1>::new(16);
+    for _ in 0..3 {
+        circuit.push(PauliRotation::new(gen, 0.3));
+    }
+    let sum = rand_sum_real::<1>(20_000, 16, 0x9A17);
+
+    let config = unpinned_partitions(2, 1, 0x51A75);
+    let runtime = PartitionRuntime::new(&config).expect("topology resolves");
+    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
+    let mut split = PartitionedSum::scatter_with_rows(sum, rows, runtime);
+
+    let started = std::time::Instant::now();
+    split.propagate(&circuit, &KeepAll, Direction::Forward);
+    let wall = started.elapsed().as_nanos() as u64;
+
+    let stats = split.take_stats();
+    assert_eq!(stats.layers, 3);
+    assert_eq!(stats.per_partition.len(), 2);
+    assert!(stats.scatter_ns > 0, "{stats:?}");
+    assert_eq!(stats.gather_ns, 0, "nothing gathered yet: {stats:?}");
+
+    for (rank, p) in stats.per_partition.iter().enumerate() {
+        assert_eq!(p.layers, 3, "partition {rank}: {p:?}");
+        assert!(p.collective_ns > 0, "partition {rank}: {p:?}");
+        assert!(p.export_ns > 0, "partition {rank}: {p:?}");
+        assert!(p.exchange_ns > 0, "partition {rank}: {p:?}");
+        assert!(p.rows_exported > 0, "partition {rank}: {p:?}");
+        assert!(p.recv_rows > 0, "partition {rank}: {p:?}");
+        assert!(p.coset_loop_ns > 0, "partition {rank}: {p:?}");
+        // The wall-clock phases are measured inside the call, on this
+        // partition's driving thread, so they are bounded by the call itself —
+        // and, with real work in every layer, they account for most of it.
+        assert!(
+            p.wall_total_ns() <= wall,
+            "partition {rank}: phases {} exceed the call's {wall} ns",
+            p.wall_total_ns(),
+        );
+        assert!(
+            p.wall_total_ns() * 4 >= wall,
+            "partition {rank}: phases {} are less than a quarter of the call's {wall} ns",
+            p.wall_total_ns(),
+        );
+        // And the exchange's own phases fit inside them.
+        assert!(p.export_ns + p.exchange_ns + p.coset_loop_ns <= p.wall_total_ns());
+    }
+
+    // Drained, and `gather` is timed too.
+    let drained = split.take_stats();
+    assert_eq!(drained.layers, 0);
+    assert_eq!(drained.per_partition.len(), 2);
+    assert_eq!(drained.per_partition[0], PhaseStats::default());
+    let _ = split.gather();
+    assert!(split.take_stats().gather_ns > 0);
+}
+
+/// The unpartitioned engine leaves the partitioned counters at zero.
+#[test]
+fn the_unpartitioned_engine_reports_no_exchange() {
+    let mut circuit = Circuit::<1>::new(16);
+    circuit.push(zz_rotation::<1>(0, 1, 0.4));
+    let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
+
+    let mut scratch = LayerScratch::<1>::new();
+    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+
+    let stats = scratch.take_stats();
+    assert_eq!(stats.collective_ns, 0, "{stats:?}");
+    assert_eq!(stats.export_ns, 0, "{stats:?}");
+    assert_eq!(stats.exchange_ns, 0, "{stats:?}");
+    assert_eq!(stats.rows_exported, 0, "{stats:?}");
+    assert_eq!(stats.recv_rows, 0, "{stats:?}");
 }

@@ -44,6 +44,50 @@ jobs:
       - run: cargo test -p paulistrings --features phase-timing
       - run: cargo build -p paulistrings --features phase-timing --example phase_breakdown
 
+  mpi:
+    name: mpi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rsmpi needs an MPI to probe (`mpicc`) and a libclang for its bindgen.
+      - run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libclang-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p paulistrings --all-targets --features mpi -- -D warnings
+      # A singleton world: Open MPI initializes fine outside mpirun, so the
+      # whole matrix runs at one rank without a launcher.
+      - run: cargo test -p paulistrings --features mpi
+      # And the real thing, at 2 and 4 ranks. The runner has two cores, hence
+      # --oversubscribe.
+      - run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features mpi
+      - run: cargo clippy -p paulistrings-py --features mpi -- -D warnings
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # mpi4py has no wheel for the runner's Open MPI, so it compiles against
+      # the libopenmpi-dev installed above (~1-2 min). `continue-on-error`
+      # plus the `outcome` guard below: a broken mpi4py build skips the Python
+      # leg with a visible red X on this step rather than failing the job,
+      # because the Rust net above already covers the transport.
+      - id: mpi4py
+        name: build the MPI venv (mpi4py compiles here)
+        continue-on-error: true
+        run: |
+          python -m venv .venv-mpi
+          .venv-mpi/bin/pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'numpy>=1.24' 'mpi4py>=4,<5'
+          .venv-mpi/bin/python -c 'import mpi4py; print(mpi4py.__version__)'
+      - name: the bindings' MPI net, at 2 and 4 ranks
+        if: steps.mpi4py.outcome == 'success'
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv-mpi
+        run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe --python --no-rust
+      - name: say so when the Python leg was skipped
+        if: steps.mpi4py.outcome != 'success'
+        run: echo "::warning::mpi4py could not be installed; the bindings' MPI net did not run"
+
   doc:
     name: doc
     runs-on: ubuntu-latest

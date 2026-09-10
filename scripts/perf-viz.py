@@ -230,20 +230,24 @@ def load_probe(path: Path, missing: list, malformed: dict) -> list:
 
 
 def dedupe_probe_rows(rows: list) -> list:
-    """Keep only the LAST line for each (layer, threads) key.
+    """Keep only the LAST line for each (layer, threads, partitions) key.
 
     ``<prefix>-probe.json`` may contain multiple lines for the same
-    (layer, threads) pair from appended re-runs (e.g. a campaign resumed
-    after a partial run). Newer lines carry an extra ``rows_gathered``
-    field; older lines lack it, which ``dict.get`` already treats as
-    ``None`` — no special-casing needed here beyond picking the last line.
-    Order is preserved: rows are emitted in the position of each key's
-    last occurrence, so unrelated (layer, threads) groups keep their
-    original relative order in the file.
+    (layer, threads, partitions) triple from appended re-runs (e.g. a
+    campaign resumed after a partial run). ``partitions`` defaults to ``1``
+    when absent -- a sidecar row from a probe predating the partitioned
+    engine, or any P=1 row -- so old and new sidecars key the same way and
+    a P=1 row never collides with a P=2 row for the same (layer, threads).
+    Newer lines carry extra fields (``rows_gathered``, ``partitions``, ...);
+    older lines lack them, which ``dict.get`` already treats as ``None`` —
+    no special-casing needed here beyond picking the last line. Order is
+    preserved: rows are emitted in the position of each key's last
+    occurrence, so unrelated groups keep their original relative order in
+    the file.
     """
     last_idx: dict = {}
     for i, row in enumerate(rows):
-        key = (row.get("layer"), row.get("threads"))
+        key = (row.get("layer"), row.get("threads"), row.get("partitions", 1) or 1)
         last_idx[key] = i
     keep = sorted(last_idx.values())
     return [rows[i] for i in keep]
@@ -424,6 +428,14 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
     formula with this cell's numbers substituted, for a hover tooltip.
     ``gbps`` is None when the byte model itself is inapplicable (neither the
     coset-loop nor the in-place-rescale traffic shape matches this row).
+
+    When the row carries a ``bytes_exported`` field (the partitioned engine,
+    P > 1; absent on a pre-partitioning probe or at P=1), ``2 x
+    bytes_exported`` is added to the modeled bytes/layer: the exporting
+    partition writes its exported rows once, and the importing partition(s)
+    read them once, so it is priced the same as any other write+read leg of
+    the model above (gather, sort, merge already follow the same 2x
+    convention for a row that is written then read once).
     """
     qubits = row.get("qubits")
     wall_ns = row.get("wall_ns", 0) or 0
@@ -468,7 +480,7 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
                 f"2×({rows_gathered - id_borrowed}/{layers})×{T} [gather w + merge r]"
                 f"{id_note} + "
                 f"2×({rows_sorted}/{layers})×{T} [sort r/w] + "
-                f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
+                f"({terms_out}/{layers})×{T} [merge out]"
             )
         else:
             # pre-v0.5 probe lines: tag byte + every row through the sort.
@@ -480,13 +492,22 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
             formula = (
                 f"({terms_in}/{layers})×{T} [gather in] + "
                 f"4×({rows_gathered}/{layers})×({T}+1) [tag r/w + sort r/w] + "
-                f"({terms_out}/{layers})×{T} [merge out] = {bytes_per_layer:,.0f} B/layer"
+                f"({terms_out}/{layers})×{T} [merge out]"
             )
     elif rescale_ns > 0 and coset_loop_ns == 0:
         bytes_per_layer = 2 * (terms_in / layers) * T
-        formula = f"2×({terms_in}/{layers})×{T} [in-place r/w] = {bytes_per_layer:,.0f} B/layer"
+        formula = f"2×({terms_in}/{layers})×{T} [in-place r/w]"
     else:
         return {"gbps": None, "pct": None, "ceiling": None, "section": None, "title": None}
+
+    # bytes_exported (partitioned engine, P > 1) prices the exported rows the
+    # same way gather/sort/merge already price a row that's written once and
+    # read once: 2x. Absent on a pre-partitioning probe or a P=1 cell.
+    bytes_exported = row.get("bytes_exported")
+    if bytes_exported:
+        bytes_per_layer += 2 * (bytes_exported / layers)
+        formula += f" + 2×({bytes_exported}/{layers}) [export write + import read]"
+    formula += f" = {bytes_per_layer:,.0f} B/layer"
 
     gbps = bytes_per_layer * layers / (wall_ns / 1e9) / 1e9
     ceiling, section = triad_ceiling_gbps(bandwidth_sections, threads, ceiling_map)
@@ -827,7 +848,13 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_m
         )
 
     for layer in sorted(groups):
-        rows = sorted(groups[layer], key=lambda r: r.get("threads", 0))
+        # Sort by (partitions, threads): partitions defaults to 1 (a
+        # pre-partitioning probe row, or a P=1 row), so a group with no
+        # partitioned rows sorts exactly as before.
+        rows = sorted(
+            groups[layer],
+            key=lambda r: (r.get("partitions", 1) or 1, r.get("threads", 0)),
+        )
         out.append(f'<h3 class="layer-name">{esc(layer)}</h3>')
 
         # Group scale is CPU time (wall × threads), not wall time: see
@@ -843,6 +870,7 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_m
 
         for row in rows:
             threads = row.get("threads", "?")
+            partitions = row.get("partitions", 1) or 1
             wall_ns = row.get("wall_ns", 0) or 0
             layers = row.get("layers", 1) or 1
             terms_in = row.get("terms_in", 0) or 0
@@ -851,7 +879,11 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_m
             strings_per_s = terms_in / (wall_ns / 1e9) if wall_ns > 0 else None
             vmhwm_mb = vmhwm_kb / 1024.0
 
-            uid = _slug(layer, threads)
+            threads_label = f"{threads} t"
+            if partitions > 1:
+                threads_label += f" P={partitions}"
+
+            uid = _slug(layer, threads, partitions)
             bar_svg = _phase_cell_svg(row, group_max_cpu_ms, uid)
 
             metric = metrics_by_id[id(row)]
@@ -870,7 +902,7 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_m
                 )
 
             out.append('<div class="phase-row">')
-            out.append(f'<div class="phase-threads">{esc(threads)} t</div>')
+            out.append(f'<div class="phase-threads">{esc(threads_label)}</div>')
             out.append(f'<div class="phase-bar">{bar_svg}</div>')
             out.append('<div class="phase-stats">')
             out.append(f"<div>wall: {wall_ms_per_layer:.3f} ms/layer</div>")
@@ -902,13 +934,17 @@ def render_throughput_chart(probe_rows: list) -> str:
     thread_set = set()
     for row in probe_rows:
         layer = row.get("layer", "?")
+        partitions = row.get("partitions", 1) or 1
+        # A partitioned run gets its own series (layer, P) -- P=1 keeps the
+        # bare layer name so an unpartitioned campaign's chart is unchanged.
+        series_key = f"{layer} P={partitions}" if partitions > 1 else layer
         threads = row.get("threads")
         wall_ns = row.get("wall_ns", 0) or 0
         terms_in = row.get("terms_in", 0) or 0
         if threads is None or wall_ns <= 0:
             continue
         strings_per_s = terms_in / (wall_ns / 1e9)
-        by_layer.setdefault(layer, {})[threads] = strings_per_s
+        by_layer.setdefault(series_key, {})[threads] = strings_per_s
         thread_set.add(threads)
 
     if not thread_set:
@@ -1318,7 +1354,7 @@ dl.provenance dd { margin: 0; }
   flex-wrap: wrap;
 }
 .phase-threads {
-  width: 40px;
+  width: 64px;
   font-weight: 600;
   font-size: 0.85em;
   flex-shrink: 0;

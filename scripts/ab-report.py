@@ -11,15 +11,27 @@ compare *pairs* (run i of A against run i of B) and ask whether every pair
 moved the same way.
 
 Input: two files written by ``phase_breakdown --json-out FILE``, one JSON
-object per line, one line per ``(layer, threads)`` cell per invocation.
-Runs are paired within a cell by their order of appearance in the file, so
-each file must come from a single A/B campaign (ab-compare.sh rotates stale
-sidecars aside for exactly this reason). Unequal run counts pair up to the
-minimum; a cell present in only one file is listed, not compared.
+object per line, one line per ``(layer, threads, partitions)`` cell per
+invocation (``partitions`` defaults to ``1`` on sidecars from a probe that
+predates the partitioned-engine ``partitions`` field -- see benchmarks/
+PROFILING.md's machine contracts). Runs are paired within a cell by their
+order of appearance in the file, so each file must come from a single A/B
+campaign (ab-compare.sh rotates stale sidecars aside for exactly this
+reason). Unequal run counts pair up to the minimum; a cell present in only
+one file is listed, not compared.
+
+``--pair-on`` controls which of ``layer``, ``threads``, ``partitions`` make
+up the cell key (default: all three). Drop ``partitions`` from the key --
+``--pair-on layer,threads`` -- to pair a P=1 run against a P=2 run of the
+same ``(layer, threads)``, e.g. when side A and side B are the same binary
+run with different ``--partitions`` values (a runtime-knob A/B, not a code
+change); the report then prints both sides' partitions value(s) in the
+cell header instead of treating them as separate cells.
 
 Usage:
     python3 scripts/ab-report.py A.jsonl B.jsonl [--field wall_ns]
         [--all-phases] [--label-a NAME] [--label-b NAME]
+        [--pair-on layer,threads[,partitions]]
 
 Re-invokable at any time on archived sidecars -- it reads nothing but the
 two files. Stdlib only; runs no benchmarks and no cargo.
@@ -40,7 +52,17 @@ from typing import Optional
 # are summed across every Rayon worker (see benchmarks/PROFILING.md), so they
 # do not sum to wall time -- they are where a traffic/working-set change
 # shows up first, which is why the results notes quote them alongside wall.
-PHASE_FIELDS = ["gather_ns", "sort_ns", "merge_ns"]
+#
+# exchange_ns/export_ns/barrier_ns are the partitioned engine's own per-layer
+# overhead fields (not present on a pre-partitioning probe, or at P=1): a
+# missing field reports "not present in these runs" below like any other
+# absent key, never a crash.
+PHASE_FIELDS = ["gather_ns", "sort_ns", "merge_ns", "exchange_ns", "export_ns", "barrier_ns"]
+
+# Fields that make up a cell's identity, in canonical order. --pair-on
+# selects a subset of these (always rendered in this order, regardless of
+# the order given on the command line).
+CELL_KEY_FIELDS = ("layer", "threads", "partitions")
 
 
 class InputError(Exception):
@@ -85,21 +107,45 @@ def load_runs(path: str) -> list[dict]:
     return runs
 
 
-def cell_key(run: dict) -> tuple[str, str]:
-    """Cell identity: the probe's (layer, threads) pair, as strings."""
-    layer = run.get("layer")
-    threads = run.get("threads")
-    return (
-        str(layer) if layer is not None else "?",
-        str(threads) if threads is not None else "?",
-    )
+def parse_pair_on(spec: str) -> tuple[str, ...]:
+    """Parse ``--pair-on``'s comma list into canonical-order CELL_KEY_FIELDS.
+
+    Raises ValueError (caught by argparse's type= machinery, which reports
+    it as a normal usage error) on an empty list or an unknown field name.
+    """
+    requested = {f.strip() for f in spec.split(",") if f.strip()}
+    unknown = requested - set(CELL_KEY_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"unknown --pair-on field(s) {sorted(unknown)}; "
+            f"expected a comma list drawn from {list(CELL_KEY_FIELDS)}"
+        )
+    if not requested:
+        raise ValueError("--pair-on must name at least one field")
+    return tuple(f for f in CELL_KEY_FIELDS if f in requested)
 
 
-def group_by_cell(runs: list[dict]) -> dict[tuple[str, str], list[dict]]:
+def cell_key(run: dict, fields: tuple[str, ...] = CELL_KEY_FIELDS) -> tuple[str, ...]:
+    """Cell identity: ``fields`` (default layer, threads, partitions), as
+    strings. ``partitions`` defaults to ``1`` when absent (a probe sidecar
+    predating the partitioned engine, or a P=1 run)."""
+    parts = []
+    for field in fields:
+        if field == "partitions":
+            value = run.get("partitions", 1)
+        else:
+            value = run.get(field)
+        parts.append(str(value) if value is not None else "?")
+    return tuple(parts)
+
+
+def group_by_cell(
+    runs: list[dict], fields: tuple[str, ...] = CELL_KEY_FIELDS
+) -> dict[tuple[str, ...], list[dict]]:
     """{cell: [run, ...]} preserving file order within each cell."""
-    cells: dict[tuple[str, str], list[dict]] = {}
+    cells: dict[tuple[str, ...], list[dict]] = {}
     for run in runs:
-        cells.setdefault(cell_key(run), []).append(run)
+        cells.setdefault(cell_key(run, fields), []).append(run)
     return cells
 
 
@@ -196,7 +242,8 @@ def summarize(deltas: list[Optional[float]]) -> Optional[tuple[float, float, flo
 
 
 def report_cell(
-    cell: tuple[str, str],
+    cell: tuple[str, ...],
+    key_fields: tuple[str, ...],
     runs_a: list[dict],
     runs_b: list[dict],
     field: str,
@@ -204,8 +251,19 @@ def report_cell(
     label_a: str,
     label_b: str,
 ) -> None:
-    layer, threads = cell
-    print(f"=== layer={layer}  threads={threads} ===")
+    header = "  ".join(f"{f}={v}" for f, v in zip(key_fields, cell))
+    print(f"=== {header} ===")
+
+    if "partitions" not in key_fields:
+        # partitions dropped from the pairing key (--pair-on layer,threads):
+        # show what each side actually ran, since a cell can now legitimately
+        # mix e.g. a P=1 run on A against a P=2 run on B.
+        parts_a = sorted({str(r.get("partitions", 1)) for r in runs_a})
+        parts_b = sorted({str(r.get("partitions", 1)) for r in runs_b})
+        print(
+            f"  A partitions: {','.join(parts_a) if parts_a else '?'}   "
+            f"B partitions: {','.join(parts_b) if parts_b else '?'}"
+        )
 
     n_pairs = min(len(runs_a), len(runs_b))
     if len(runs_a) != len(runs_b):
@@ -304,7 +362,20 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--label-a", default="A", help="Label for side A in the header.")
     parser.add_argument("--label-b", default="B", help="Label for side B in the header.")
+    parser.add_argument(
+        "--pair-on",
+        default="layer,threads,partitions",
+        type=parse_pair_on,
+        metavar="layer,threads[,partitions]",
+        help=(
+            "Comma list of fields identifying a cell (default: all three -- "
+            "layer,threads,partitions). Drop 'partitions' to pair a P=1 run "
+            "against a P=2 run of the same (layer, threads), e.g. when A and "
+            "B are the same binary run with different --partitions values."
+        ),
+    )
     args = parser.parse_args(argv)
+    key_fields = args.pair_on
 
     try:
         runs_a = load_runs(args.a)
@@ -313,13 +384,14 @@ def main(argv=None) -> int:
         print(f"ab-report: {exc}", file=sys.stderr)
         return 2
 
-    cells_a = group_by_cell(runs_a)
-    cells_b = group_by_cell(runs_b)
+    cells_a = group_by_cell(runs_a, key_fields)
+    cells_b = group_by_cell(runs_b, key_fields)
 
     print("Interleaved A/B report")
     print(f"  A: {args.a}  ({len(runs_a)} run row(s), {len(cells_a)} cell(s))  [{args.label_a}]")
     print(f"  B: {args.b}  ({len(runs_b)} run row(s), {len(cells_b)} cell(s))  [{args.label_b}]")
     print(f"  field: {args.field}" + ("  +all-phases" if args.all_phases else ""))
+    print(f"  pair-on: {','.join(key_fields)}")
     print()
 
     extra_fields = PHASE_FIELDS if args.all_phases else []
@@ -330,6 +402,7 @@ def main(argv=None) -> int:
     for cell in ordered:
         report_cell(
             cell,
+            key_fields,
             cells_a.get(cell, []),
             cells_b.get(cell, []),
             args.field,
@@ -343,9 +416,9 @@ def main(argv=None) -> int:
     if only_a or only_b:
         print("Cells present in only one file (not compared)")
         for cell in only_a:
-            print(f"  only in A: layer={cell[0]} threads={cell[1]}")
+            print(f"  only in A: {'  '.join(f'{f}={v}' for f, v in zip(key_fields, cell))}")
         for cell in only_b:
-            print(f"  only in B: layer={cell[0]} threads={cell[1]}")
+            print(f"  only in B: {'  '.join(f'{f}={v}' for f, v in zip(key_fields, cell))}")
         print()
 
     print(HONESTY_RULE)

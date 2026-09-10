@@ -73,17 +73,23 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 #[derive(Debug, Default)]
 pub struct LayerScratch<const W: usize> {
     /// The per-coset working set (serial path).
-    task: CosetScratch<W>,
+    pub(super) task: CosetScratch<W>,
     /// The layer's handle permutation, `perm[β] = span.perm_index(β)`.
-    perm: Vec<u32>,
+    pub(super) perm: Vec<u32>,
+    /// The inverse of [`Self::perm`], `inv_perm[perm[β]] = β`, so a coset
+    /// member's *original* bucket index is recoverable from its permuted
+    /// position. Filled only when the layer's [`ExtraRows`] source asks for
+    /// it ([`ExtraRows::NEEDS_BETA`]); left empty otherwise, which
+    /// [`fill_coset`] reads as "the permutation is the identity".
+    pub(super) inv_perm: Vec<u32>,
     /// Staging area the bucket handles are permuted into. Holds handles only
     /// while a layer runs; its elements carry no capacity of their own.
-    staging: Vec<BucketCols<W>>,
+    pub(super) staging: Vec<BucketCols<W>>,
     /// Worker-persistent coset working sets for the parallel path, one slot
     /// per Rayon worker, indexed by `rayon::current_thread_index()`. Each
     /// worker locks only its own slot, so the mutexes are uncontended; they
     /// exist to make the shared borrow safe, not to arbitrate.
-    workers: Vec<Mutex<CosetScratch<W>>>,
+    pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
     /// Layer-level (wall-clock) phase counters; the per-coset busy-time
     /// counters live in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
@@ -193,7 +199,7 @@ impl TermTrace {
 /// One coset task's working set: the swapped-out input columns and the
 /// per-output-member gather runs.
 #[derive(Clone, Debug, Default)]
-struct CosetScratch<const W: usize> {
+pub(super) struct CosetScratch<const W: usize> {
     /// The coset's input columns, one slot per member, `mem::swap`ped with the
     /// live bucket slots. After the swap the live slots hold these slots'
     /// previous — cleared, capacity-retaining — columns, which is what makes
@@ -216,7 +222,7 @@ struct CosetScratch<const W: usize> {
 /// Equal-key summation order is not pinned by a sort tiebreak — see the
 /// module doc and `merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
-struct GatherRun<const W: usize> {
+pub(super) struct GatherRun<const W: usize> {
     /// The identity-delta stream: keys untouched, so it inherits the
     /// source bucket's strictly-ascending, duplicate-free order and is never
     /// sorted. `H·0 = 0` puts this stream in the member's own run, in source
@@ -284,7 +290,7 @@ impl<const W: usize> GatherRun<W> {
 
 /// A prepared channel's delta set, annotated with each entry's coset
 /// coordinate (`span.coord_of(bucket_delta)`), computed once per layer.
-enum DeltaPlan<'p, const W: usize> {
+pub(super) enum DeltaPlan<'p, const W: usize> {
     /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`.
     Local {
         ptm: &'p LocalPtm<W>,
@@ -323,11 +329,53 @@ enum DeltaPlan<'p, const W: usize> {
         prep: &'p RotationPrep<W>,
         coord_identity: u32,
         coord_gen: u32,
+        /// Whether the generator pass emits *here*. False only under a
+        /// partitioning whose partition rows see the generator, where every
+        /// generator row belongs to a partner and this partition ships it
+        /// instead ([`LayerKnobs::gen_local`]); the identity pass still runs.
+        /// `coord_gen` is then meaningless (the generator's bucket delta is
+        /// not in this layer's span) and set to 0.
+        gen_local: bool,
     },
 }
 
+/// Per-layer overrides the partitioned engine hands the coset loop.
+///
+/// [`Default`] is the non-partitioned answer to all three, so
+/// `apply_layer_bucketed` passes it and nothing about the single-partition
+/// path changes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerKnobs<'k> {
+    /// Bucket deltas to build the coset span from. `None` — the default —
+    /// means the prepared channel's own [`Prepared::bucket_deltas`]. The
+    /// partitioned layer passes its plan's *local* bucket deltas: the deltas
+    /// that stay inside this partition are the only ones its coset loop
+    /// gathers.
+    pub bucket_deltas: Option<&'k [u32]>,
+    /// Rest-stream count driving the sort-kernel choice. `None` — the
+    /// default — derives it from the plan, which is the same thing whenever
+    /// the plan is the whole channel. The partitioned layer passes the
+    /// channel's *total* stream count (local + remote): how wide a fanout is
+    /// is a property of the channel, not of how one partition happens to see
+    /// it, so every partition picks the same kernel as the unpartitioned run.
+    pub rest_streams: Option<usize>,
+    /// Whether a wide rotation's generator pass emits here (see
+    /// [`DeltaPlan::Rotation::gen_local`]). `true` by default.
+    pub gen_local: bool,
+}
+
+impl Default for LayerKnobs<'_> {
+    fn default() -> Self {
+        Self {
+            bucket_deltas: None,
+            rest_streams: None,
+            gen_local: true,
+        }
+    }
+}
+
 impl<'p, const W: usize> DeltaPlan<'p, W> {
-    fn new(prep: &'p Prepared<W>, span: &Gf2Span) -> Self {
+    pub(super) fn new(prep: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
         match prep {
             Prepared::Local(ptm) => {
                 let coords: Vec<u32> = ptm
@@ -348,7 +396,9 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 // length minus the identity entry is exactly the number of
                 // streams the gather concatenates into a run's rest columns —
                 // the quantity the two sort kernels' crossover turns on.
-                let rest_streams = ptm.deltas().len() - has_identity as usize;
+                let rest_streams = knobs
+                    .rest_streams
+                    .unwrap_or(ptm.deltas().len() - has_identity as usize);
                 DeltaPlan::Local {
                     ptm,
                     coords,
@@ -360,11 +410,76 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
             Prepared::Rotation(r) => DeltaPlan::Rotation {
                 prep: r,
                 coord_identity: span.coord_of(r.bucket_delta_identity),
-                coord_gen: span.coord_of(r.bucket_delta_gen),
+                // `coord_of` demands its argument be in the span, and a
+                // remote generator's bucket delta is not.
+                coord_gen: if knobs.gen_local {
+                    span.coord_of(r.bucket_delta_gen)
+                } else {
+                    0
+                },
+                gen_local: knobs.gen_local,
             },
         }
     }
 }
+
+/// Extra **rest-stream** rows for an output bucket, supplied by the
+/// partitioned engine.
+///
+/// A partition generates rows whose output bucket lives on another partition;
+/// they arrive here and are appended to that bucket's gather run after the
+/// local gather and before the per-run sort. Going into the *rest* stream
+/// (never the pre-sorted id stream) is what makes them safe: the rest stream
+/// is sorted anyway, so a received row may duplicate a local key, and
+/// `merge2_into` then sees the complete sum before `keep_term` runs
+/// (ARCHITECTURE.md §Truncation).
+///
+/// Zero-cost when [`NoExtra`]: [`NEEDS_BETA`](Self::NEEDS_BETA) is a `const
+/// false` that deletes every call site, along with the inverse-permutation
+/// pass that exists only to answer them.
+///
+/// # Contract
+///
+/// An implementation that can return rows **must** set `NEEDS_BETA = true`.
+/// It is what makes `beta` the bucket's original index rather than its
+/// coset-permuted position, and the engine skips `count`/`append_into`
+/// entirely when it is `false`.
+pub(crate) trait ExtraRows<const W: usize> {
+    /// Whether the engine must recover each coset member's original bucket
+    /// index (an `O(B)` inverse-permutation pass per layer) before calling
+    /// this source. `false` — the default — also means the engine never
+    /// calls [`count`](Self::count) or [`append_into`](Self::append_into).
+    const NEEDS_BETA: bool = false;
+
+    /// How many rows are destined for output bucket `beta` — the bucket's
+    /// ORIGINAL index, not its coset-permuted position. Used to size the
+    /// gather run exactly, so it must agree with what
+    /// [`append_into`](Self::append_into) pushes.
+    #[inline]
+    fn count(&self, beta: u32) -> usize {
+        let _ = beta;
+        0
+    }
+
+    /// Append bucket `beta`'s rows onto the run's rest columns, all three in
+    /// step. `beta` is the bucket's ORIGINAL index.
+    #[inline]
+    fn append_into(
+        &self,
+        beta: u32,
+        x: &mut Vec<[u64; W]>,
+        z: &mut Vec<[u64; W]>,
+        c: &mut Vec<Complex64>,
+    ) {
+        let _ = (beta, x, z, c);
+    }
+}
+
+/// The non-partitioned engine's [`ExtraRows`]: no rows, ever. Every method is
+/// the trait default, so the hook compiles away entirely.
+pub(crate) struct NoExtra;
+
+impl<const W: usize> ExtraRows<W> for NoExtra {}
 
 /// Apply one prepared channel to a bucketed sum.
 ///
@@ -379,6 +494,28 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
+    apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra, LayerKnobs::default())
+}
+
+/// [`apply_layer_bucketed`] with an [`ExtraRows`] source feeding each output
+/// bucket's rest stream and the partitioned engine's per-layer
+/// [`LayerKnobs`] — the entry point the partitioned engine drives.
+///
+/// Identical to [`apply_layer_bucketed`] in every other respect; under
+/// [`NoExtra`] and default knobs it *is* [`apply_layer_bucketed`], with the
+/// hook's two call sites and the inverse-permutation pass behind a `const
+/// false`.
+pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
+    sum: &mut PauliSum<W>,
+    prep: &Prepared<W>,
+    policy: &T,
+    scratch: &mut LayerScratch<W>,
+    extra: &X,
+    knobs: LayerKnobs<'_>,
+) where
+    T: TruncationPolicy<W> + ?Sized,
+    X: ExtraRows<W> + Sync,
+{
     #[cfg(feature = "phase-timing")]
     let mut st = Stamp::now();
 
@@ -386,8 +523,13 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     // leave every key bitwise unchanged, so the output is already sorted and
     // duplicate-free: multiplying each coefficient by a scalar is an
     // in-place filter, with no sort needed.
+    // `!X::NEEDS_BETA` is a `const true` on the unpartitioned path, so the
+    // condition is unchanged there. It has to be asked: a partitioned layer
+    // hands this function the *local* delta table, and a channel whose every
+    // non-identity delta is remote leaves a table that looks key-preserving
+    // while received rows still have to be merged in.
     if let Prepared::Local(ptm) = prep {
-        if ptm.is_key_preserving() {
+        if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
             #[cfg(feature = "phase-timing")]
             st.lap(&mut scratch.stats.rescale_ns);
@@ -398,8 +540,16 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     // The coset structure of this layer's bucket-delta set. `span(h(D))`
     // rather than `h(D)` itself: an open-trait channel's delta set need not be
     // XOR-closed, and only the span's cosets are guaranteed to partition.
-    let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
-    let plan = DeltaPlan::new(prep, &span);
+    let own_deltas;
+    let deltas: &[u32] = match knobs.bucket_deltas {
+        Some(d) => d,
+        None => {
+            own_deltas = prep.bucket_deltas();
+            &own_deltas
+        }
+    };
+    let span = Gf2Span::new(deltas, sum.hash().bits());
+    let plan = DeltaPlan::new(prep, &span, knobs);
     let m = span.coset_size();
     let num_cosets = span.num_cosets();
     #[cfg(feature = "phase-timing")]
@@ -425,6 +575,20 @@ pub fn apply_layer_bucketed<const W: usize, T>(
             scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
         }
     }
+    // The inverse handle permutation, so `fill_coset` can name a member's
+    // *original* bucket. Under `NoExtra` this is a `const false` branch the
+    // compiler deletes and `inv_perm` stays empty — which `fill_coset` reads
+    // as "the permutation is the identity", the same answer it gets at
+    // `r = 0`.
+    if X::NEEDS_BETA {
+        scratch.inv_perm.clear();
+        if !identity_perm {
+            scratch.inv_perm.resize(scratch.perm.len(), 0);
+            for (beta, &p) in scratch.perm.iter().enumerate() {
+                scratch.inv_perm[p as usize] = beta as u32;
+            }
+        }
+    }
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.stats.permute_ns);
 
@@ -444,31 +608,51 @@ pub fn apply_layer_bucketed<const W: usize, T>(
             }
         }
         let workers = &scratch.workers;
+        // Empty unless this layer's `ExtraRows` asked for it; `fill_coset`
+        // takes empty to mean the identity permutation.
+        let inv_perm: &[u32] = &scratch.inv_perm;
         let chunks: &mut [BucketCols<W>] = if identity_perm {
             sum.buckets_mut()
         } else {
             scratch.staging.as_mut_slice()
         };
         if num_cosets < MIN_COSETS_FOR_PARALLEL {
-            for chunk in chunks.chunks_mut(m) {
-                fill_coset::<W, T>(chunk, &plan, policy, &mut scratch.task);
+            for (ci, chunk) in chunks.chunks_mut(m).enumerate() {
+                let base = ci * m;
+                fill_coset::<W, T, X>(
+                    chunk,
+                    &plan,
+                    policy,
+                    &mut scratch.task,
+                    extra,
+                    base,
+                    inv_perm,
+                );
             }
         } else {
-            chunks.par_chunks_mut(m).for_each(|chunk| {
-                // Inside `par_chunks_mut` the body always runs on a pool
-                // worker, so the index is present and below the pool size;
-                // the fresh-scratch arm is a defensive fallback only.
-                match rayon::current_thread_index() {
-                    Some(i) if i < workers.len() => {
-                        let mut ws = workers[i].lock().unwrap();
-                        fill_coset::<W, T>(chunk, &plan, policy, &mut ws);
+            chunks
+                .par_chunks_mut(m)
+                .enumerate()
+                .for_each(|(ci, chunk)| {
+                    let base = ci * m;
+                    // Inside `par_chunks_mut` the body always runs on a pool
+                    // worker, so the index is present and below the pool size;
+                    // the fresh-scratch arm is a defensive fallback only.
+                    match rayon::current_thread_index() {
+                        Some(i) if i < workers.len() => {
+                            let mut ws = workers[i].lock().unwrap();
+                            fill_coset::<W, T, X>(
+                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                            );
+                        }
+                        _ => {
+                            let mut ws = CosetScratch::<W>::default();
+                            fill_coset::<W, T, X>(
+                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                            );
+                        }
                     }
-                    _ => {
-                        let mut ws = CosetScratch::<W>::default();
-                        fill_coset::<W, T>(chunk, &plan, policy, &mut ws);
-                    }
-                }
-            });
+                });
         }
     }
     #[cfg(feature = "phase-timing")]
@@ -497,21 +681,43 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 /// `desired_bits` already gives a small sum few buckets, so this mostly catches
 /// the `bits = 0` case (or `r = bits`), where one coset spans every bucket and
 /// the layer degenerates to a single whole-sum task on the same code path.
-const MIN_COSETS_FOR_PARALLEL: usize = 2;
+pub(super) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
 /// Gather, sort and merge one coset, in place. The unit of parallel work.
 ///
 /// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis
 /// coordinate, serving as both input source and output destination.
-fn fill_coset<const W: usize, T>(
+///
+/// `extra` supplies rows generated elsewhere (the partitioned engine); they
+/// join each member's **rest** stream between the gather and the sort, so the
+/// merge sees the complete sum. Naming their destination needs the member's
+/// *original* bucket index, which `chunk_base` (the chunk's first slot in the
+/// permuted array) and `inv_perm` (`inv_perm[permuted] = original`, empty when
+/// the permutation is the identity) recover. Under [`NoExtra`] all of that is
+/// behind `X::NEEDS_BETA == false` and compiles away.
+pub(super) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketCols<W>],
     plan: &DeltaPlan<'_, W>,
     policy: &T,
     ws: &mut CosetScratch<W>,
+    extra: &X,
+    chunk_base: usize,
+    inv_perm: &[u32],
 ) where
     T: TruncationPolicy<W> + ?Sized,
+    X: ExtraRows<W>,
 {
     let m = chunk.len();
+    // Member `j`'s ORIGINAL bucket index. An empty `inv_perm` means the layer
+    // skipped the handle permutation (`r = 0`), where the permuted slot *is*
+    // the bucket. Reached only from the `X::NEEDS_BETA` sites below.
+    let beta_of = |j: usize| -> u32 {
+        if inv_perm.is_empty() {
+            (chunk_base + j) as u32
+        } else {
+            inv_perm[chunk_base + j]
+        }
+    };
     #[cfg(feature = "phase-timing")]
     let CosetScratch {
         old,
@@ -546,7 +752,7 @@ fn fill_coset<const W: usize, T>(
     // capacity; a rotation's id stream is dense by construction (every row
     // emits exactly one id row).
     for (j, run) in runs.iter_mut().enumerate() {
-        let (cap_id_keys, cap_id_coeff, cap_rest): (usize, usize, usize) = match plan {
+        let (cap_id_keys, cap_id_coeff, mut cap_rest): (usize, usize, usize) = match plan {
             DeltaPlan::Local {
                 coords,
                 has_identity,
@@ -568,13 +774,25 @@ fn fill_coset<const W: usize, T>(
             DeltaPlan::Rotation {
                 coord_identity,
                 coord_gen,
+                gen_local,
                 ..
             } => (
                 0,
                 old[j ^ *coord_identity as usize].len(),
-                old[j ^ *coord_gen as usize].len(),
+                // A remote generator emits nothing here, so the rest stream
+                // is whatever `extra` adds below and nothing else.
+                if *gen_local {
+                    old[j ^ *coord_gen as usize].len()
+                } else {
+                    0
+                },
             ),
         };
+        // Received rows land in the rest stream, so they belong to its exact
+        // capacity. `const false` under `NoExtra`.
+        if X::NEEDS_BETA {
+            cap_rest += extra.count(beta_of(j));
+        }
         run.reset(cap_id_keys, cap_id_coeff, cap_rest);
     }
     #[cfg(feature = "phase-timing")]
@@ -609,6 +827,7 @@ fn fill_coset<const W: usize, T>(
             prep,
             coord_identity,
             coord_gen,
+            gen_local,
         } => {
             // The identity pass and the generator pass. `cos`/`sin` stay
             // hoisted; the `i^k` phase depends on 2w support bits and is
@@ -634,17 +853,33 @@ fn fill_coset<const W: usize, T>(
                         runs[i ^ *coord_identity as usize]
                             .id_coeff
                             .push(src.coeff[t] * prep.cos);
-                        let mut prod = v;
-                        let phase = prod.mul_assign(&prep.gen);
-                        let total = Phase::I + phase;
-                        runs[i ^ *coord_gen as usize].push(
-                            prod.x,
-                            prod.z,
-                            total.apply(src.coeff[t]) * prep.sin,
-                        );
+                        // Loop-invariant, `true` on every unpartitioned
+                        // layer, and asked before any of the generator
+                        // arithmetic: under a partitioning that sees the
+                        // generator, these rows belong to a partner and the
+                        // export pass has already shipped them.
+                        if *gen_local {
+                            let mut prod = v;
+                            let phase = prod.mul_assign(&prep.gen);
+                            let total = Phase::I + phase;
+                            runs[i ^ *coord_gen as usize].push(
+                                prod.x,
+                                prod.z,
+                                total.apply(src.coeff[t]) * prep.sin,
+                            );
+                        }
                     }
                 }
             }
+        }
+    }
+    // Rows generated on other partitions whose output bucket lives here. The
+    // rest stream only: it is sorted below, so a received row may duplicate a
+    // local key and `merge2_into` still sees the complete sum before
+    // `keep_term` runs. `const false` under `NoExtra`.
+    if X::NEEDS_BETA {
+        for (j, run) in runs.iter_mut().enumerate() {
+            extra.append_into(beta_of(j), &mut run.x, &mut run.z, &mut run.coeff);
         }
     }
     #[cfg(feature = "phase-timing")]
@@ -1076,112 +1311,9 @@ mod tests {
         // (both `v` and `v ^ gen` are usually present) and the merge phase has
         // real duplicate runs to combine. This is the case that matters.
         let input = rand_sum::<1>(2000, 8, 0xC0FFEE);
-        let channels: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("identity", Box::new(IdentityChannel::new())),
-            ("h", Box::new(Clifford1Q::h(3))),
-            ("s", Box::new(Clifford1Q::s(3))),
-            ("x", Box::new(Clifford1Q::x(3))),
-            ("y", Box::new(Clifford1Q::y(3))),
-            ("z", Box::new(Clifford1Q::z(3))),
-            ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-            ("cz", Box::new(Clifford2Q::cz(1, 5))),
-            ("swap", Box::new(Clifford2Q::swap(1, 5))),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "dephasing",
-                Box::new(Dephasing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "amp_damping",
-                Box::new(AmplitudeDamping {
-                    support: [2],
-                    gamma: 0.3,
-                }),
-            ),
-            (
-                "rot_z",
-                Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
-            ),
-            (
-                "rot_zz",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(1);
-                        g.mul_assign(&PauliString::<1>::z(6));
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-            (
-                // General unitaries: a non-Clifford T gate (fanout 2) and a
-                // dense 2Q unitary (fanout up to 16), both as local PTMs.
-                "t_gate",
-                Box::new(crate::channel::GeneralUnitary1Q::from_matrix(
-                    2,
-                    [
-                        [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-                        [
-                            Complex64::new(0.0, 0.0),
-                            Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-                        ],
-                    ],
-                )),
-            ),
-            (
-                "general_2q",
-                Box::new({
-                    // sqrt(SWAP): dense enough to exercise a wide delta set.
-                    let h = Complex64::new(0.5, 0.5);
-                    let hc = Complex64::new(0.5, -0.5);
-                    let one = Complex64::new(1.0, 0.0);
-                    let zero = Complex64::new(0.0, 0.0);
-                    crate::channel::GeneralUnitary2Q::from_matrix(
-                        1,
-                        5,
-                        [
-                            [one, zero, zero, zero],
-                            [zero, h, hc, zero],
-                            [zero, hc, h, zero],
-                            [zero, zero, zero, one],
-                        ],
-                    )
-                }),
-            ),
-            (
-                // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
-                // deltas are realized (fanout ~15). `general_2q` above is
-                // sqrt(SWAP), whose PTM is sparse (measured fanout 3.65), so
-                // without this cell nothing in the net exercises the
-                // dense-PTM gather run — the shape the per-run sort kernel is
-                // selected on (see `merge::sort_rows_radix_with_scratch`).
-                "haar_su4",
-                Box::new(haar_su4(1, 5)),
-            ),
-            (
-                // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
-                "rot_wide",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(0);
-                        for q in [2u32, 4, 6] {
-                            g.mul_assign(&PauliString::<1>::x(q));
-                        }
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-        ];
+        // The shared channel net (`test_support::differential_channels_w1`),
+        // so the bucketed and partitioned engines cover the same list.
+        let channels = crate::test_support::differential_channels_w1();
 
         for (name, ch) in &channels {
             let cr: &dyn Channel<1> = ch.as_ref();
@@ -1204,37 +1336,7 @@ mod tests {
     fn differential_against_the_naive_oracle_w2_sparse() {
         // The other regime: wide keys, few collisions, word-boundary supports.
         let input = rand_sum::<2>(3000, 128, 0xBEEF);
-        let channels: Vec<(&str, Box<dyn Channel<2>>)> = vec![
-            ("h@70", Box::new(Clifford1Q::h(70))),
-            ("s@64", Box::new(Clifford1Q::s(64))),
-            ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
-            ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
-            (
-                "amp_damping@70",
-                Box::new(AmplitudeDamping {
-                    support: [70],
-                    gamma: 0.25,
-                }),
-            ),
-            (
-                "rot_y@70",
-                Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
-            ),
-            (
-                "rot_zz_cross_word",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<2>::z(9);
-                        g.mul_assign(&PauliString::<2>::z(70));
-                        g
-                    },
-                    0.33,
-                )),
-            ),
-            // Dense SU(4), support straddling the word boundary — the
-            // dense-PTM run shape at `W = 2`.
-            ("haar_su4_cross_word", Box::new(haar_su4(60, 70))),
-        ];
+        let channels = crate::test_support::differential_channels_w2();
         for (name, ch) in &channels {
             let cr: &dyn Channel<2> = ch.as_ref();
             for &adjoint in &[false, true] {
@@ -1565,7 +1667,7 @@ mod tests {
         let check = |ch: &dyn Channel<1>, want: bool, label: &str| {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 6);
-            match DeltaPlan::new(&prep, &span) {
+            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
                 DeltaPlan::Local { dense_identity, .. } => {
                     assert_eq!(dense_identity, want, "{label}")
                 }
@@ -1608,7 +1710,7 @@ mod tests {
         let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool) {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 8);
-            match DeltaPlan::new(&prep, &span) {
+            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
                 DeltaPlan::Local {
                     ptm,
                     has_identity,
@@ -2162,6 +2264,289 @@ mod tests {
                 &want,
                 TOL,
                 &format!("non-subspace deltas, bits={bits}"),
+            );
+        }
+    }
+}
+
+/// The [`ExtraRows`] hook: rows handed to a layer from outside, as the
+/// partitioned engine will hand them over.
+#[cfg(test)]
+mod extra_rows_tests {
+    use super::tests::{assert_terms_close, bucketed_layer, AlwaysKeep};
+    use super::*;
+    use crate::accumulator::BuildAccumulator;
+    use crate::bucket::hash::Gf2Hash;
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::Channel;
+    use crate::pauli_sum::PauliSum;
+    use crate::test_support::{naive_apply_layer, rand_sum};
+    use crate::truncation::builtin::CoefficientThreshold;
+    use std::collections::{HashMap, HashSet};
+
+    const TOL: f64 = 1e-11;
+
+    /// Rows to inject, keyed by their **original** output bucket index — the
+    /// quantity `fill_coset` has to reconstruct from `chunk_base` + the
+    /// inverse permutation. Built through [`Self::push`], which derives the
+    /// bucket from the layer's own hash, so a row can never be filed under a
+    /// bucket it does not belong to.
+    /// One row to inject: key columns plus coefficient.
+    type Row<const W: usize> = ([u64; W], [u64; W], Complex64);
+
+    #[derive(Default)]
+    struct Injected<const W: usize> {
+        rows: HashMap<u32, Vec<Row<W>>>,
+    }
+
+    impl<const W: usize> Injected<W> {
+        fn push(&mut self, hash: &Gf2Hash<W>, x: [u64; W], z: [u64; W], c: Complex64) {
+            let beta = hash.bucket_of(&x, &z);
+            self.rows.entry(beta).or_default().push((x, z, c));
+        }
+
+        fn all(&self) -> impl Iterator<Item = &Row<W>> {
+            self.rows.values().flatten()
+        }
+    }
+
+    impl<const W: usize> ExtraRows<W> for Injected<W> {
+        const NEEDS_BETA: bool = true;
+
+        fn count(&self, beta: u32) -> usize {
+            self.rows.get(&beta).map_or(0, Vec::len)
+        }
+
+        fn append_into(
+            &self,
+            beta: u32,
+            x: &mut Vec<[u64; W]>,
+            z: &mut Vec<[u64; W]>,
+            c: &mut Vec<Complex64>,
+        ) {
+            let Some(rows) = self.rows.get(&beta) else {
+                return;
+            };
+            for &(rx, rz, rc) in rows {
+                x.push(rx);
+                z.push(rz);
+                c.push(rc);
+            }
+        }
+    }
+
+    /// One layer through [`apply_layer_bucketed_with`], at a fixed partition.
+    fn layer_with_extra<const W: usize, T, X>(
+        input: &PauliSum<W>,
+        ch: &dyn Channel<W>,
+        policy: &T,
+        bits: u8,
+        seed: u64,
+        extra: &X,
+    ) -> PauliSum<W>
+    where
+        T: TruncationPolicy<W> + ?Sized,
+        X: ExtraRows<W> + Sync,
+    {
+        let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
+        let mut b = input.clone().with_hash(hash);
+        let prep = ch
+            .prepare(b.hash(), false)
+            .expect("channel could not be prepared");
+        let mut scratch = LayerScratch::<W>::new();
+        apply_layer_bucketed_with(
+            &mut b,
+            &prep,
+            policy,
+            &mut scratch,
+            extra,
+            LayerKnobs::default(),
+        );
+        b
+    }
+
+    /// The oracle: the naive layer plus the injected rows, summed per key and
+    /// only then filtered — which is what "the merge sees the complete sum
+    /// before `keep_term`" means.
+    fn expected<const W: usize, T>(
+        input: &PauliSum<W>,
+        ch: &dyn Channel<W>,
+        policy: &T,
+        injected: &Injected<W>,
+    ) -> PauliSum<W>
+    where
+        T: TruncationPolicy<W> + ?Sized,
+    {
+        let base = naive_apply_layer(input, ch, &AlwaysKeep, false);
+        let mut map: HashMap<([u64; W], [u64; W]), Complex64> = HashMap::new();
+        for (x, z, c) in base.iter() {
+            *map.entry((*x, *z)).or_insert(ZERO) += c;
+        }
+        for &(x, z, c) in injected.all() {
+            *map.entry((x, z)).or_insert(ZERO) += c;
+        }
+        let mut acc = BuildAccumulator::<W>::with_capacity(input.num_qubits(), map.len());
+        for ((x, z), c) in map {
+            if c == ZERO || !policy.keep_term(&x, &z, c) {
+                continue;
+            }
+            acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
+        }
+        acc.finalize()
+    }
+
+    /// A handful of rows for a layer: some on keys the fixture already
+    /// carries (so they collide with the local output and must be *summed*
+    /// with it), some on keys it does not.
+    fn injection_for(input: &PauliSum<1>, hash: &Gf2Hash<1>) -> Injected<1> {
+        let mut injected = Injected::<1>::default();
+        let mut seen: HashSet<([u64; 1], [u64; 1])> = HashSet::new();
+        for (i, (x, z, _)) in input.iter().enumerate() {
+            if i % 137 == 0 && seen.insert((*x, *z)) {
+                injected.push(hash, *x, *z, Complex64::new(0.25, -0.5));
+            }
+        }
+        // 8-qubit fixture, so keys stay inside the low byte.
+        for k in 0u64..5 {
+            let x = [(0xA5u64 ^ k.wrapping_mul(31)) & 0xFF];
+            let z = [(0x3Cu64 ^ k.wrapping_mul(17)) & 0xFF];
+            if seen.insert((x, z)) {
+                injected.push(hash, x, z, Complex64::new(-0.75, 0.125));
+            }
+        }
+        injected
+    }
+
+    /// Injected rows reach the output bucket named by their **original**
+    /// index, under both the permuted (`bits > 0`) and the identity
+    /// (`bits = 0`) handle layouts, and are deduplicated against the local
+    /// output rather than appended beside it.
+    ///
+    /// Misreading `beta` as the coset-permuted position files a row in the
+    /// wrong bucket, which shows up twice over: the debug invariant check
+    /// inside the layer rejects it, and a key already produced locally then
+    /// appears twice in the term list.
+    #[test]
+    fn injected_rows_land_in_their_original_bucket_and_are_summed() {
+        let input = rand_sum::<1>(600, 8, 0xE47A);
+        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
+        let cnot = Clifford2Q::cnot(1, 5);
+        // `want_r` at `bits = 5`: a one-qubit rotation realizes one bucket
+        // delta, CNOT four — so the permutation is non-trivial in both cases,
+        // with 16 and 8 cosets, i.e. the parallel chunk loop.
+        let cases: [(&str, &dyn Channel<1>, u8, usize); 4] = [
+            ("rot bits=5", &rot, 5, 1),
+            ("cnot bits=5", &cnot, 5, 2),
+            ("rot bits=0", &rot, 0, 0),
+            ("cnot bits=0", &cnot, 0, 0),
+        ];
+        for (label, ch, bits, want_r) in cases {
+            // Pick the hash so the span rank is the one the case is about:
+            // whether the handle permutation is non-trivial is a property of
+            // `h(D)`, and a colliding draw would silently turn the `bits = 5`
+            // cases into more of the `bits = 0` one.
+            let seed = (0u64..4096)
+                .find(|&s| {
+                    let hash = Gf2Hash::<1>::new(8, bits, s);
+                    let prep = ch.prepare(&hash, false).unwrap();
+                    Gf2Span::new(&prep.bucket_deltas(), bits).r() == want_r
+                })
+                .unwrap_or_else(|| panic!("{label}: no seed of rank {want_r} in 4096 tries"));
+            let hash = Gf2Hash::<1>::new(8, bits, seed);
+
+            let injected = injection_for(&input, &hash);
+            assert!(
+                injected.all().count() >= 6,
+                "{label}: too few injected rows"
+            );
+
+            // Non-vacuity: the injection must exercise both the summed and
+            // the inserted case.
+            let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, seed);
+            let collided = injected
+                .all()
+                .filter(|(x, z, _)| plain.get(x, z).is_some())
+                .count();
+            let fresh = injected.all().count() - collided;
+            assert!(
+                collided > 0 && fresh > 0,
+                "{label}: want both colliding and fresh keys (collided={collided} fresh={fresh})"
+            );
+
+            let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, seed, &injected);
+            let want = expected(&input, ch, &AlwaysKeep, &injected);
+            assert_eq!(got.len(), plain.len() + fresh, "{label}: term count");
+            assert_terms_close(&got, &want, TOL, label);
+        }
+    }
+
+    /// `NoExtra` is the identity: driving a layer through the generic entry
+    /// point with an *empty* `Injected` (`NEEDS_BETA = true`, so the
+    /// inverse-permutation pass and both hook call sites really run) gives
+    /// exactly what the ordinary path gives.
+    #[test]
+    fn an_empty_injection_changes_nothing() {
+        let input = rand_sum::<1>(600, 8, 0xE47B);
+        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
+        let cnot = Clifford2Q::cnot(1, 5);
+        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
+            for bits in [0u8, 2, 5] {
+                let empty = Injected::<1>::default();
+                let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, 0x7A58, &empty);
+                let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x7A58);
+                assert_eq!(
+                    got.to_arrays(),
+                    plain.to_arrays(),
+                    "bits={bits}: the empty hook perturbed the layer"
+                );
+            }
+        }
+    }
+
+    /// `keep_term` runs on the **sum** of the local and the injected
+    /// contribution, not on either alone: two coefficients that each clear
+    /// the threshold by five orders of magnitude cancel to below it, and the
+    /// term is dropped.
+    #[test]
+    fn keep_term_sees_local_plus_injected() {
+        let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
+        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(0.5, 0.0));
+        acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
+        let input = acc.finalize();
+        // H on qubit 0 sends Z₀ → X₀ with amplitude 1 and leaves Z₁ alone.
+        let h = Clifford1Q::h(0);
+        let x0 = PauliString::<1>::x(0);
+        let z1 = PauliString::<1>::z(1);
+
+        for bits in [0u8, 3] {
+            let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
+            let mut injected = Injected::<1>::default();
+            injected.push(&hash, x0.x, x0.z, Complex64::new(-0.4999999, 0.0));
+
+            let policy = CoefficientThreshold(1e-6);
+            let got = layer_with_extra(&input, &h, &policy, bits, 0x9F, &injected);
+            assert!(
+                got.get(&x0.x, &x0.z).is_none(),
+                "bits={bits}: a term that only survives unsummed was kept"
+            );
+            assert_eq!(got.len(), 1, "bits={bits}");
+            assert!(
+                (got.get(&z1.x, &z1.z).unwrap() - Complex64::new(1.0, 0.0)).norm() < TOL,
+                "bits={bits}: the untouched term must survive"
+            );
+
+            // The same layer without the threshold: the residue is there, and
+            // it is the sum of the two contributions.
+            let kept = layer_with_extra(&input, &h, &AlwaysKeep, bits, 0x9F, &injected);
+            let want = expected(&input, &h, &AlwaysKeep, &injected);
+            assert_terms_close(&kept, &want, TOL, &format!("no threshold bits={bits}"));
+            assert!(
+                (kept.get(&x0.x, &x0.z).unwrap() - Complex64::new(1.0000000000287557e-7, 0.0))
+                    .norm()
+                    < 1e-18,
+                "bits={bits}: residue {:?}",
+                kept.get(&x0.x, &x0.z),
             );
         }
     }

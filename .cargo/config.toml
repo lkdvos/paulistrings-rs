@@ -1,0 +1,10 @@
+# Debug test binaries occasionally abort with "fatal runtime error: stack
+# overflow" on an unnamed (Rayon worker) thread — roughly one full-parallel
+# `cargo test -p paulistrings` run in four on the reference host, never with a
+# 16 MiB stack. Pre-existing (reproduced on commits before the partitioned
+# engine); the depth of Rayon's adaptive splitting under work-stealing plus
+# debug-build frame sizes is the leading hypothesis, not yet root-caused.
+# Only the default stack size of threads spawned by cargo-launched processes
+# changes (a virtual reservation); release codegen is untouched.
+[env]
+RUST_MIN_STACK = "16777216"

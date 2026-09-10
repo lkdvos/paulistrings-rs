@@ -320,7 +320,7 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
 /// finer threshold would leave L1 (3 bits → 64 KB) and turn that increment
 /// into an L2 access — the resolution/cost trade-off is documented on
 /// [`ApproxTopN`] and deliberately settled in favour of the cache.
-const APPROX_BINS: usize = 2048;
+pub(crate) const APPROX_BINS: usize = 2048;
 
 /// Retain **approximately** `n` terms: at most `n`, and more than `n - p`
 /// where `p` is the population of the coarsest octave that did not fit. The
@@ -392,82 +392,156 @@ pub struct ApproxTopN(
     pub usize,
 );
 
+/// What [`octave_edge`] decided a layer's histogram means for the terms.
+///
+/// The three cases are [`ApproxTopN`]'s three outcomes, factored out so the
+/// single-partition and the partitioned paths share one decision rule: the
+/// histogram they feed it is local in the first case and all-reduced in the
+/// second, and everything downstream of the decision is a per-sum
+/// [`retain_at_or_above`] that needs no further communication.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum EdgeDecision {
+    /// The whole sum fits within `n`: nothing is dropped.
+    KeepAll,
+    /// Nothing fits — `n == 0`, or the top octave alone overshoots `n` (the
+    /// single-octave wipe documented on [`ApproxTopN`]).
+    Clear,
+    /// Keep the terms with `norm_sqr() >= threshold`.
+    AtOrAbove {
+        /// The lower edge of the lowest octave of `|c|²` that still fits.
+        threshold: f64,
+        /// How many terms survive **across the whole sum** — the cumulative
+        /// octave population the walk stopped at. In partitioned mode this is
+        /// the global count, not any one partition's.
+        kept: usize,
+    },
+}
+
+/// Population of each octave of `|c|²` over the whole sum.
+///
+/// The bin index is `norm_sqr().to_bits() >> 52`: the `f64` bit pattern of a
+/// non-negative number is monotone in its value, so the high 12 bits (sign
+/// always 0, then the exponent) are a `log₂` bucketing.
+///
+/// Accumulated in a fixed number of tasks (four per worker) rather than
+/// through a `fold`-per-split, so the number of 8 KB accumulators and
+/// elementwise reductions is bounded by the thread count instead of by rayon's
+/// splitting.
+pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPROX_BINS] {
+    // A bin counter is `u32`; a sum of 2^32 terms is >100 GB of columns.
+    debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
+    let nb = sum.num_buckets();
+    let tasks = (rayon::current_num_threads() * 4).clamp(1, nb);
+    (0..tasks)
+        .into_par_iter()
+        .map(|t| {
+            let mut h = [0u32; APPROX_BINS];
+            for b in (nb * t / tasks)..(nb * (t + 1) / tasks) {
+                for c in sum.bucket(b).2 {
+                    h[(c.norm_sqr().to_bits() >> 52) as usize] += 1;
+                }
+            }
+            h
+        })
+        .reduce(
+            || [0u32; APPROX_BINS],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x += y;
+                }
+                a
+            },
+        )
+}
+
+/// The octave edge [`ApproxTopN`] retains against, from a histogram of the
+/// whole sum.
+///
+/// `hist` is [`octave_histogram`]'s output — locally, or summed across
+/// partitions, in which case `total_len` is the summed length too. Generic in
+/// the counter type so an all-reduced `[u64]` needs no narrowing copy.
+///
+/// Walks down from the top bin while the running count still fits: `S_k` is
+/// non-increasing in `k`, so the first overshoot is the boundary.
+/// `f64::from_bits(k << 52)` inverts the bin index to the bin's lower edge, and
+/// comparing `norm_sqr() >= edge` is then the same predicate as `bin >= k` for
+/// one `f64` compare — and drops `NaN`, which the bin index would keep.
+pub(crate) fn octave_edge<C>(hist: &[C], total_len: usize, n: usize) -> EdgeDecision
+where
+    C: Copy + Into<u64>,
+{
+    debug_assert_eq!(hist.len(), APPROX_BINS, "octave_edge: wrong histogram size");
+    if total_len <= n {
+        return EdgeDecision::KeepAll;
+    }
+    if n == 0 {
+        return EdgeDecision::Clear;
+    }
+
+    let mut kept = 0usize;
+    let mut edge = APPROX_BINS;
+    for bin in (0..APPROX_BINS).rev() {
+        let next = kept + hist[bin].into() as usize;
+        if next > n {
+            break;
+        }
+        kept = next;
+        edge = bin;
+    }
+    if kept == 0 {
+        // Even the top octave alone overshoots `n`.
+        return EdgeDecision::Clear;
+    }
+    EdgeDecision::AtOrAbove {
+        threshold: f64::from_bits((edge as u64) << 52),
+        kept,
+    }
+}
+
+/// Apply an [`EdgeDecision`] to one sum — the only step that touches terms.
+///
+/// Per-sum and communication-free by construction: every partition holding a
+/// slice of a distributed sum applies the *same* decision to its own terms and
+/// the union is the single-partition answer, because the predicate reads only
+/// a term's own coefficient.
+pub(crate) fn retain_at_or_above<const W: usize>(sum: &mut PauliSum<W>, edge: EdgeDecision) {
+    match edge {
+        EdgeDecision::KeepAll => {}
+        EdgeDecision::Clear => sum.clear(),
+        EdgeDecision::AtOrAbove { threshold, .. } => {
+            sum.retain(|_, _, c| c.norm_sqr() >= threshold);
+        }
+    }
+}
+
 impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
-    /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²`,
-    /// walk the 2048 bins down from the top to the last edge that still fits
-    /// in `n`, then [`PauliSum::retain`] against that edge.
+    /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²`
+    /// (`octave_histogram`), walk the 2048 bins down to the last edge that
+    /// still fits in `n` (`octave_edge`), then [`PauliSum::retain`] against
+    /// that edge (`retain_at_or_above`).
     ///
-    /// The bin index is `norm_sqr().to_bits() >> 52`: the `f64` bit pattern of
-    /// a non-negative number is monotone in its value, so the high 12 bits
-    /// (sign always 0, then the exponent) are a `log₂` bucketing, and
-    /// `f64::from_bits(k << 52)` inverts it to the bin's lower edge. Comparing
-    /// `norm_sqr() >= edge` is then the same predicate as `bin >= k` for one
-    /// `f64` compare — and drops `NaN`, which the bin index would keep.
-    ///
-    /// The histogram is accumulated in a fixed number of tasks (four per
-    /// worker) rather than through a `fold`-per-split, so the number of 8 KB
-    /// accumulators and elementwise reductions is bounded by the thread count
-    /// instead of by rayon's splitting.
+    /// The two early exits are taken before the histogram rather than left to
+    /// `octave_edge`, which decides them too: there is no point walking the
+    /// terms to answer a question their count already settles. The partitioned
+    /// sibling, whose global length is not known locally, does go through the
+    /// histogram — see
+    /// [`PartitionedTruncation`](crate::PartitionedTruncation).
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
-        if sum.len() <= n {
+        let total = sum.len();
+        if total <= n {
             return;
         }
         if n == 0 {
             sum.clear();
             return;
         }
-        // A bin counter is `u32`; a sum of 2^32 terms is >100 GB of columns.
-        debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
 
-        let hist = {
-            let view = &*sum;
-            let nb = view.num_buckets();
-            let tasks = (rayon::current_num_threads() * 4).clamp(1, nb);
-            (0..tasks)
-                .into_par_iter()
-                .map(|t| {
-                    let mut h = [0u32; APPROX_BINS];
-                    for b in (nb * t / tasks)..(nb * (t + 1) / tasks) {
-                        for c in view.bucket(b).2 {
-                            h[(c.norm_sqr().to_bits() >> 52) as usize] += 1;
-                        }
-                    }
-                    h
-                })
-                .reduce(
-                    || [0u32; APPROX_BINS],
-                    |mut a, b| {
-                        for (x, y) in a.iter_mut().zip(b.iter()) {
-                            *x += y;
-                        }
-                        a
-                    },
-                )
-        };
-
-        // Walk down from the top bin while the running count still fits. `S_k`
-        // is non-increasing in `k`, so the first overshoot is the boundary.
-        let mut kept = 0usize;
-        let mut edge = APPROX_BINS;
-        for bin in (0..APPROX_BINS).rev() {
-            let next = kept + hist[bin] as usize;
-            if next > n {
-                break;
-            }
-            kept = next;
-            edge = bin;
+        let edge = octave_edge(&octave_histogram(sum), total, n);
+        retain_at_or_above(sum, edge);
+        if let EdgeDecision::AtOrAbove { kept, .. } = edge {
+            debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
         }
-        if kept == 0 {
-            // Even the top octave alone overshoots `n` — the single-octave
-            // wipe documented on the type.
-            sum.clear();
-            return;
-        }
-
-        let threshold = f64::from_bits((edge as u64) << 52);
-        sum.retain(|_, _, c| c.norm_sqr() >= threshold);
-        debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
     }
 }
 

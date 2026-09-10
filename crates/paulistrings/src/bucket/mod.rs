@@ -23,7 +23,7 @@
 pub mod hash;
 pub mod sum;
 
-pub use hash::{Gf2Hash, B_MAX_BITS};
+pub use hash::{Gf2Hash, PartitionRows, B_MAX_BITS, P_MAX_BITS};
 pub use sum::{
     desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
     MIN_TERMS_PER_TASK,

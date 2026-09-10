@@ -27,7 +27,8 @@
 //! - `runs` — maximal ascending runs in one member's rest stream. Rust's stable
 //!   `sort_by` is driftsort, which *detects and merges* natural ascending runs;
 //!   `sort_rows_with_scratch`'s doc comment records that switching to
-//!   `sort_unstable_by` cost +77%, i.e. that adaptivity is the whole design.
+//!   `sort_unstable_by` costs +44% wall on CNOT (4 streams per coset) and
+//!   nothing on a single-stream run — `runs` is exactly what decides which.
 //! - `cmp/row` — comparisons the sort performs per row. Its floor for a
 //!   `k`-way merge of sorted runs is `log2(k) + 1`; a dense two-qubit PTM has
 //!   15 non-identity delta streams, so the floor is ≈ 4.9.

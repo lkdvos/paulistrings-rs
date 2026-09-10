@@ -75,9 +75,19 @@ impl<const W: usize> SortScratch<W> {
 /// bucket — the identity stream arrives fully sorted, and an XOR-by-constant
 /// stream is piecewise sorted (order survives wherever the mask's high bits
 /// don't flip) — and Rust's stable driftsort detects and merges those natural
-/// ascending runs while the unstable pdqsort does not. Measured: switching
-/// this line to `sort_unstable_by` cost +77% on a 10⁶ `rotation_zz` layer
-/// and +43% on CNOT.
+/// ascending runs while the unstable pdqsort does not.
+///
+/// Re-measured 2026-09-10 on the JCC-padded build (`.cargo/config.toml`),
+/// 7 pairs, bit-identical work counters: switching this line to
+/// `sort_unstable_by` costs **+44.3% wall / +189% sort** on a 10⁶ CNOT layer
+/// (7/7) and **nothing at all** on `rotation_zz` (median −0.43%, 5/7 vs 2/7 —
+/// no consistent change). The difference is the run count, not the layer:
+/// CNOT gathers 4 streams per coset, `rotation_zz` exactly *one* non-identity
+/// stream, and on a single already-ascending run pdqsort's presorted-input
+/// fast path is as cheap as driftsort's run detection. The requirement is
+/// real and it is *conditional on there being ≥2 streams to merge*. The older
+/// "+77% on `rotation_zz`" figure was taken pre-padding and does not
+/// reproduce; see `research/notes/2026-09-10-inline-set-repost.md`.
 ///
 /// **When those streams are ascending is a partition property, not a given.**
 /// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of
@@ -112,11 +122,16 @@ impl<const W: usize> SortScratch<W> {
 /// columns' storage (cleared next call) as its own scratch capacity — so
 /// capacity circulates between the live columns and the scratch instead of
 /// either side ever growing past its high-water mark.
-// `#[inline]` is load-bearing: without it, moving this function between
-// modules measured ~6% slower single-threaded on the rotation family
-// (interleaved A/B, 3/3 pairs) — an LTO code-layout effect, not logic.
-// Hint the sort ONLY: adding `#[inline]` to `merge2_into` as well measured
-// +20-34% on criterion's apply_layer_bucketed/rotation_zz.
+// `#[inline]` here is **codegen-inert under the shipping profile** and is kept
+// only as a hint for builds that are not `lto = "fat"` + `codegen-units = 1`.
+// Re-measured 2026-09-10, after the JCC-erratum branch padding landed (6f7c66c):
+// removing it leaves `.text` **byte-identical** (the only bytes that move are
+// panic-location line numbers), and the paired A/B is pure noise —
+// `rotation_zz` median +0.01%, `cnot` +0.35%, 3/7 pairs negative in both.
+// The recorded "~6% and load-bearing" predates the padding, when any code
+// motion re-rolled every branch against the 32-byte boundary; it does not
+// reproduce. Do not treat this attribute as a performance constraint.
+// `research/notes/2026-09-10-inline-set-repost.md`.
 #[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
@@ -281,11 +296,12 @@ fn discriminating_window<const W: usize>(
 /// key column (the permutation sort's whole cost, ~10–13 cycles), whereas a
 /// radix pass streams 8-byte records sequentially at ~2 cycles each. Two
 /// passes plus the fixup replace 4.9 such comparisons with ~1.
-// No `#[inline]` hint, deliberately: the one on `sort_rows_with_scratch` is
-// A/B-verified worth ~6% and the one tried on `merge2_into` cost +20-34%
-// (both recorded on those items), so the attribute is load-bearing in both
-// directions here and this function has no measurement either way yet. Leave
-// it at the default and A/B the hint as its own change.
+// No `#[inline]` hint. Measured for the first time 2026-09-10 on the
+// JCC-padded build (this comment used to say it had never been A/B'd either
+// way): adding one leaves `.text` byte-identical, and the paired A/B is noise
+// on both dense-PTM layers this kernel serves — `gu2q` median +0.01%, `su4`
+// median +0.03%, 3/7 pairs negative in each. Nothing to gain; nothing to
+// protect. `research/notes/2026-09-10-inline-set-repost.md`.
 pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -412,9 +428,18 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
 /// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
 /// compare it saves. Full data in `research/notes/2026-08-31-v0.6-results.md`.
 #[allow(clippy::too_many_arguments)]
-// Deliberately NOT `#[inline]`: hinting this function measured +20-34% on
-// criterion's apply_layer_bucketed/rotation_zz (layout/icache), while the
-// `sort_rows_with_scratch` hint alone already recovers the probe path.
+// No `#[inline]` hint, and none is needed. Re-measured 2026-09-10 on the
+// JCC-padded build: adding `#[inline]` leaves `.text` byte-identical — at
+// `codegen-units = 1` + fat LTO this function's monomorphizations are
+// 1 095-1 379 bytes each, far past any inline threshold, so the hint changes
+// nothing — and the A/B is noise (`rotation_zz` median −1.02%, `cnot` +0.08%,
+// both sign-inconsistent). The recorded "+20-34%" was a pre-padding layout
+// coin flip and is void. `#[inline(never)]`, which *does* change codegen, is
+// also nearly free now: wall shows no consistent change (median +0.02%
+// `rotation_zz`, +0.33% `cnot`) at an unmoved 97.9%/98.4% DSB share, where the
+// same experiment on the unpadded build cost +5.7% cycles at 31.5% DSB. The
+// only surviving signal is merge busy +1.68% (7/7) on `cnot`.
+// `research/notes/2026-09-10-inline-set-repost.md`.
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
     a_z: &[[u64; W]],

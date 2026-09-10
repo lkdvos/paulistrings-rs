@@ -346,11 +346,16 @@ bitwise. `merge::tests::assert_sort_contract` holds both to it.
 ever sees — is a permutation sort over the run.
 
 > Its comparison sort **must remain the standard library's stable adaptive
-> `sort_by`**. A gather run is a concatenation of per-delta streams, each
-> drawn from one sorted bucket — piecewise-sorted data whose natural runs the
-> adaptive driftsort detects and merges nearly for free. Switching to
-> `sort_unstable_by` (pdqsort, no run detection) measured **+77%** on a
-> rotation layer. Stability per se is irrelevant; adaptivity is the point.
+> `sort_by`** wherever a gather run holds more than one stream. A gather run
+> is a concatenation of per-delta streams, each drawn from one sorted bucket —
+> piecewise-sorted data whose natural runs the adaptive driftsort detects and
+> merges nearly for free. Switching to `sort_unstable_by` (pdqsort, no run
+> detection) costs **+44% wall / +189% sort** on a 10⁶ CNOT layer, whose run
+> is 4 streams per coset (2026-09-10, JCC-padded build, 7/7 pairs). It costs
+> **nothing** on `rotation_zz`, whose run is a single already-ascending
+> stream that pdqsort's presorted fast path handles just as cheaply — the
+> earlier "+77% on a rotation layer" was measured pre-padding and does not
+> reproduce. Stability per se is irrelevant; adaptivity is the point.
 > Recorded on the function's doc — do not "simplify" it.
 
 `sort_rows_radix_with_scratch` serves the dense-PTM path, where the sort is
@@ -917,7 +922,13 @@ way:
 2. **The signed-zero contract** (§Engine): exact-zero id rows flow to the
    accumulator; the only zero test is on the final sum.
 3. **The stable adaptive sort** (§Engine): the per-run sort exploits
-   piecewise-sortedness; replacing it with an unstable sort measured +77%.
+   piecewise-sortedness; replacing it with an unstable sort costs +44% wall
+   (+189% sort) on CNOT, and nothing on a single-stream run such as
+   `rotation_zz` — the constraint binds wherever a coset gathers ≥2 streams.
+   It is *not* accompanied by an `#[inline]` constraint: the `engine/merge.rs`
+   hint set was re-A/B'd on the JCC-padded build (2026-09-10) and every one of
+   its recorded effects is gone — see
+   `research/notes/2026-09-10-inline-set-repost.md`.
 4. **Measurement discipline:** release builds only, seeded inputs outside the
    timed region, the reference host, and the campaign workflow in
    `benchmarks/PROFILING.md`. Single-shot campaign noise on the reference host

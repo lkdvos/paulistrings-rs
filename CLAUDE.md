@@ -178,9 +178,13 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   lists the fields, and it is the thing to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
-- LTO code-layout effects are real: the `#[inline]` set in `engine/merge.rs` is A/B-verified load-bearing in both directions
-  (the hint on `sort_rows_with_scratch` is worth ~6%; adding one to `merge2_into` cost +20–34%). Read the comments there
-  before adding or removing an attribute.
+- LTO code-layout effects **were** the JCC erratum, and are fixed: `.cargo/config.toml` sets
+  `-Cllvm-args=-x86-branches-within-32B-boundaries` (45.8% → 98.0% DSB residency, −9..−13% wall). The `#[inline]` folklore
+  in `engine/merge.rs` was re-A/B'd on the padded build (2026-09-10) and **none of it survives** — the hints are
+  codegen-inert at `lto = "fat"` + `codegen-units = 1` and every recorded effect was branch-alignment noise
+  (`research/notes/2026-09-10-inline-set-repost.md`). Adding or removing an attribute there is no longer a hazard; the
+  sort *algorithm* choice still is (see `sort_rows_with_scratch`'s doc). An exported `RUSTFLAGS` replaces the config's
+  list wholesale — re-append the padding flag or you benchmark a different binary.
 
 ## Known gaps
 

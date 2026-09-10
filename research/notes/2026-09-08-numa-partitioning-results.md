@@ -1,4 +1,12 @@
-# NUMA partitioning, phase 2 — first measurements (P=1 vs P=2)
+# Partitioned engine — measured results
+
+The results of record for the partitioned engine: **P=1 vs P=2 in-process** (tables A–C, phase 2)
+and **MPI weak scaling at 2/4/8 ranks** (phase 3). Every partitioned number quoted in
+`ARCHITECTURE.md` §Partitioning or on the docs site comes from here. The decisions behind them, and
+the optimization history that produced the distributed numbers, are in the decision log
+`2026-09-08-partitioned-phase1-log.md`.
+
+## Phase 2 — P=1 vs P=2, in-process (2026-09-08)
 
 Paired A/B of the partitioned engine at P=2 against the same binary at P=1 (runtime-knob A/B:
 `scripts/ab-compare.sh --a <rev> --b <rev> --probe ... --probe-b '... --partitions 2 --partition-cpus ...'`,
@@ -6,10 +14,10 @@ Paired A/B of the partitioned engine at P=2 against the same binary at P=1 (runt
 socket, with `MPOL_BIND`. Partition rows are the default random rows (seeded from the hash). Raw data:
 `benchmarks/results/2026-09-08-{ccqlin038,worker6140,worker6141,worker6142,worker7230}/` and the Slurm
 logs `benchmarks/results/slurm-70049{70,71,72,73}.out`, `slurm-700500{1,2}.out` (worker6127 Icelake, worker7224 Genoa; gitignored).
-Decision log: `2026-09-08-partitioned-phase1-log.md`. Success criterion (user, 2026-09-08): only the
+Success criterion (user, 2026-09-08): only the
 intra-node NUMA effect must be a speedup; multi-node exists for memory capacity and may be slower.
 
-## Provenance
+### Provenance
 
 | host | CPUs | NUMA | governor | who ran it | engine commit |
 |---|---|---|---|---|---|
@@ -21,7 +29,7 @@ intra-node NUMA effect must be a speedup; multi-node exists for memory capacity 
 1.4e7 for `su4`/`su4_local`. Rotation cells `--reps 40`, dense cells `--reps 8`. Cluster nodes have no
 `perf` counter access; counters below are ccqlin038 only (`scripts/perf-stat.sh`, shared box, approximate).
 
-## Table A — wall time per layer, P=2 vs P=1 (median Δ%, pairs agreeing)
+### Table A — wall time per layer, P=2 vs P=1 (median Δ%, pairs agreeing)
 
 | cell | ccqlin038 16t | ccqlin038 32t | Icelake 32t | Icelake 64t | Genoa 48t | Genoa 96t |
 |---|---|---|---|---|---|---|
@@ -38,7 +46,7 @@ per socket, as a memory-system effect should. Every cell that exports rows is 2�
 and the penalty grows with core count: the exchange (export pass + copy + the receiver's larger rest
 stream) costs more than the layer it feeds. `rotation_remote` at 3 ms/layer ships ~1e6 rows/layer.
 
-## Table B — where the time goes in the exchange-free rotation layer (per layer, from the sidecars)
+### Table B — where the time goes in the exchange-free rotation layer (per layer, from the sidecars)
 
 | host, threads | P=1 wall | P=2 wall | P=2 collective (`barrier_ns`) | coset loop P=1 → P=2 |
 |---|---|---|---|---|
@@ -57,7 +65,7 @@ transport are separate columns. Icelake's slower coset loop at P=2 (+15%) is une
 on the node; 16 threads per socket there vs 8 here — and is not on the critical path now that the
 priority is multi-node capacity.
 
-## Table C — counters on ccqlin038, dense layers at 16 threads (8 per socket at P=2)
+### Table C — counters on ccqlin038, dense layers at 16 threads (8 per socket at P=2)
 
 | cell | IPC | LLC load-miss | cycles/string | S0 read / write GB/s (% of 39.0 / 18.6) | S1 read / write | total GB/s |
 |---|---|---|---|---|---|---|
@@ -75,7 +83,7 @@ consistent −4% is the honest size of the effect for dense layers here. `su4` w
 moves *less* DRAM traffic (44 vs 60 GB/s) while taking 2.3× longer: the exchange is extra work and
 copies, not bandwidth — a design cost, fixable (pull model), not a hardware wall.
 
-## Verdicts against the plan's acceptance list
+### Verdicts against the plan's acceptance list
 
 - `su4` P=2 direction-consistent, bound ≈ 1.3×: **fails** (2.2–2.3× slower with random rows; −4% when
   exchange-free). The bound assumed write-bandwidth-bound P=1 with single-socket traffic; P=1 already
@@ -86,7 +94,7 @@ copies, not bandwidth — a design cost, fixable (pull model), not a hardware wa
 - Per-socket write ≥ 70% of ceiling at P=2: 70% on `su4_local`, 51% on exporting `su4`.
 - `partition_imbalance ≤ 1.05`: 1.000–1.004 everywhere.
 
-## What follows from this
+### What follows from this
 
 1. **Locality is the whole game.** A layer with any remote delta costs 2–8× its local time under the
    push exchange; a fully local layer gains 4–22%. Phase 5 (partition rows as cuts of the gate graph)
@@ -94,13 +102,14 @@ copies, not bandwidth — a design cost, fixable (pull model), not a hardware wa
    upper bound on this hardware.
 2. ~~Remove the collective's wake-up latency~~ — done (`4dda4ad`); the column was arrival skew, see
    Table B. Remaining: instrument skew separately from the mechanism.
-3. **Pull-based in-process exchange** (receiver reads the partner's input buckets directly, one
-   interconnect crossing, no export pass, no copy) to bound the residual remote-layer cost;
-   MPI keeps push. Under the success criterion this is a bound, not a target.
+3. ~~Pull-based in-process exchange~~ (receiver reads the partner's input buckets directly, one
+   interconnect crossing, no export pass, no copy) — **dropped** the same evening when the priority
+   became multi-node capacity: the inter-node copy is inevitable and the in-process path is now
+   mainly the CI stand-in. Push everywhere, optimized instead (decision log, 2026-09-09 entries).
 4. The untouched path (`--partitions 1`) shows no regression on a quiet node (Slurm 7004973: all four
    cells within ±1.3%, mixed sign); the ±4% seen on the workstation is placement/layout noise.
 
-## Phase 3 — MPI weak scaling on Rusty (2026-09-09, head `4bb32b6`)
+## Phase 3 — MPI weak scaling on Rusty (2026-09-09, engine commit `4bb32b6`)
 
 Icelake `ccq` nodes (2× Xeon 8362, 32 cores/socket), one rank per NUMA domain, 32 threads per rank,
 InfiniBand between nodes, UCX shared memory within a node. `phase_breakdown --mpi`, replicated input
@@ -134,3 +143,13 @@ Reading:
   engine: real capacity runs must ingest distributed. Engine-side peak per rank is flat.
 - Against the revised goal (bounded overhead, capacity): local layers 1×, remote rotation layers
   3.5× (intra-node) to 4.7× (inter-node) at 6e6 terms per rank, unchanged from 4 to 8 ranks.
+
+## Where these numbers are quoted
+
+- `ARCHITECTURE.md` §Partitioning — the cost-model bullets (4–18%, 12–22%, 2–8×, ~10.5 ms,
+  3.5×/4.4–4.7×) and §Performance-Model.
+- `docs/book/src/design/numa.md` and `design/mpi.md` — the two user-facing tables.
+- `docs/book/src/design/performance.md` — the "Across NUMA nodes and across ranks" paragraph.
+
+Nothing else on the docs site carries a partitioned number. Adding one means adding a row here
+first.

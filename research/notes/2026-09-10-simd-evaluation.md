@@ -61,6 +61,12 @@ serial two-pointer walk that has repeatedly measured hypersensitive to codegen (
 `#[inline]` worth +20–34%, a segment-copy restructure +20–35%). Autovectorizing around it
 is another way to perturb it, and the perturbation is reliably negative.
 
+> **Retracted 2026-09-10 — see `2026-09-10-hot-path-code-size.md` §5.** The universal
+> `merge2_into` regression below was DSB eviction, not the ISA. Re-measured with JCC padding
+> applied to both sides it **disappears in all three cells**, and `x86-64-v3` becomes a
+> consistent win on every layer (−1.19 / −4.85 / −2.14, 7/7). The consequences drawn here do
+> not follow.
+
 **Consequences.**
 
 1. **`-C target-cpu` must not be set globally and called an improvement.** On the priority
@@ -216,6 +222,14 @@ on two of three priority layers.
 
 ## 3c. The mechanism: uop-cache (DSB) eviction, and the engine is already frontend-bound
 
+> **Superseded 2026-09-10 by `2026-09-10-hot-path-code-size.md`.** The observations below
+> stand; the diagnosis does not. The cause is not hot-path code *size* but the **JCC erratum**
+> (SKX102): with the mitigating microcode loaded, a 32-byte window whose jump touches the
+> 32-byte boundary is excluded from the DSB outright. One build flag
+> (`-Cllvm-args=-x86-branches-within-32B-boundaries`, now in `.cargo/config.toml`) takes DSB
+> residency from 45.8% to **97.9%** and wall time down **7.5–12.6%** on all three priority
+> layers, 7/7 pairs, at bit-identical work counters.
+
 §3b's +34.66% on an untouched sort demanded a mechanism. It is the **decoded-uop cache
 (DSB)**, and the evidence is unambiguous.
 
@@ -330,6 +344,11 @@ one of them adds a second path. The remaining honest options are narrow:
    fat-LTO layout the engine currently depends on. That is a large, risky change to
    evaluate against a single-digit-percent prize.
 3. Doing nothing, which the phase budget and the latency-bound verdict both support.
+
+> **Withdrawn 2026-09-10 — see `2026-09-10-hot-path-code-size.md`.** This recommendation
+> rests on §2 and §3b, both of which were measuring an unpadded binary in a JCC-erratum
+> regime. The study should be reopened and every Stage-0 measurement retaken on the padded
+> baseline.
 
 **Recommendation: do not proceed to Stages 1-3 as scoped.** The decisive layout gate
 (`G-MERGE-1`) was never reached, because a cheaper experiment closed the door upstream of

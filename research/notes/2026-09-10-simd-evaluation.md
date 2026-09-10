@@ -119,6 +119,51 @@ by new tests at `W ∈ {1,2,4,8,16}` against the per-word form as an independent
 removes an ISA dependence, and it costs nothing. It is recorded here as a *null* on layer
 time so nobody re-measures it expecting a win.
 
+## 3a. What actually dominates each phase, at instruction level
+
+`perf annotate` on the baseline (`rotation_zz`, W=2, 128 qubits, 1 thread). Symbol shares
+of the whole run: `gather_local_input_major` 39.3%, `fill_coset` 33.8% (carries the merge),
+sort family ~10% (`quicksort` 4.9% + `sort_rows_with_scratch` 3.5% + `drift::sort` 1.8%).
+
+**Gather (39.3%)** — no single dominant op; five roughly equal costs:
+
+| % of fn | instruction | what it is |
+|---:|---|---|
+| 6.1 | `mov (%rcx,%rax,1),%rdi` | indexed load of the source key word |
+| 6.1 | `mulpd %xmm2,%xmm4` | the complex multiply `coeff * amp` — already SSE2-vectorized |
+| 5.9 | `jp` | parity flag after `ucomisd`: the **`if a == ZERO` amplitude test** |
+| 5.7 | `movapd %xmm4,%xmm0` | shuffling the complex value |
+| ~6 | `shr %cl` / `and $0x8` / `bt %rcx,%rdi` | `support_bits` extraction |
+| 2.0 | `movups %xmm6,(%rax,%rcx,1)` | the scattered store into the run |
+
+Worth noting the amplitude zero-test alone is ~6% of the largest phase, and the complex
+multiply is *already* vectorized at baseline SSE2 — there is no scalar FP to speed up.
+
+**Merge (33.8%, inlined into `fill_coset`)** — one branch dominates:
+
+| % of fn | instruction | what it is |
+|---:|---|---|
+| **8.7** | `jne` | the data-dependent two-pointer advance — the misprediction hotspot |
+| 6.8 | `mov %rbp,0x8(%rax,%rcx,1)` | writing the key's second word to `dst` |
+| 5.9 | `movupd (%rax),%xmm2` | loading a coefficient |
+| 4.5 | `mov %r13,(%rax,%rcx,1)` | writing the key's first word |
+| 1.8 | `addpd %xmm0,%xmm2` | the equal-key coefficient sum |
+| ~4 | `setb %cl` / `cmp` / `test $0x1,%cl` | materializing the `take_a` decision |
+
+A single conditional branch at 8.7% is the merge's real cost, which is exactly why it does
+not vectorize and why the "do not restructure" verdict holds.
+
+**Sort (~10%)** — the dependent indexed load, as the sort-kernel note argued:
+
+| % of fn | instruction | what it is |
+|---:|---|---|
+| 13.2 | `movdqu %xmm0,(%r11)` | permutation-gather store of a 16-byte key |
+| **11.8** | `mov (%r12,%r10,4),%ecx` | **loading the permutation index** — the dependent load |
+| 6.6 / 5.3 | `mov 0x8(%rdi),%rcx` / `mov 0x8(%rsi),%rcx` | the comparator's z-word loads |
+
+In `quicksort` the cost is `movups` 16-byte element moves plus `xor %edi,%edi` /
+`mov $0x1,%edi` at ~9% each — the branchless comparison result.
+
 ## 3b. Targeted `#[target_feature]` on the gather: real ISA win, larger layout damage
 
 §2 suggested the obvious next move: give the *gather* AVX2 while leaving the merge on
@@ -168,6 +213,77 @@ which is the cheapest possible time to learn it. Any future attempt needs either
 separate codegen unit for the kernels (breaking the fat-LTO assumption the whole crate is
 built on) or a global build flag — and §2 already showed the global flag is net negative
 on two of three priority layers.
+
+## 3c. The mechanism: uop-cache (DSB) eviction, and the engine is already frontend-bound
+
+§3b's +34.66% on an untouched sort demanded a mechanism. It is the **decoded-uop cache
+(DSB)**, and the evidence is unambiguous.
+
+**It is not a codegen change.** `sort_rows_with_scratch`, `merge2_into` and every
+`fill_coset` have *identical sizes* in both binaries, and a normalized disassembly diff of
+the sort is byte-for-byte identical (303 instructions). Only the addresses moved. The
+duplicated AVX2 gather body added **336 bytes**, and **336 mod 32 = 16** — so every
+downstream function shifted by half a 32-byte DSB window, turning 32-byte-aligned
+functions into 16-byte-misaligned ones and vice versa.
+
+**Counters** (`rotation_zz`, W=2, 1 thread, `--reps 20`, pinned core):
+
+| counter | pb-fold | pb-gavx |
+|---|---:|---:|
+| `idq.dsb_uops` | 10.59e9 | **3.35e9** (−68%) |
+| `idq.mite_uops` | 12.46e9 | **17.96e9** (+44%) |
+| instructions | 20.83e9 | 20.24e9 (**fewer**) |
+| cycles | 9.40e9 | 10.23e9 (+8.9%) |
+| IPC | 2.22 | 1.98 |
+| branch-misses | 55.5M | 54.9M (flat) |
+| `icache_64b.iftag_miss` | 8.0M | 8.5M (flat) |
+
+Fewer instructions, more cycles, flat I-cache and flat branch misses: this is purely the
+front end. Per-symbol attribution of MITE (legacy-decode) uops localizes it exactly:
+
+| symbol | pb-fold | pb-gavx |
+|---|---:|---:|
+| `sort_rows_with_scratch` | 0.27% | **5.32%** |
+| `quicksort` | 0.35% | **3.04%** |
+| `drift::sort` | 0.10% | **2.98%** |
+| **sort family** | **0.72%** (0.09e9 uops) | **11.34%** (2.04e9 uops) |
+
+**A 22.7× increase in legacy-decoded uops in the sort** — from uop-cache resident to
+re-decoded essentially every iteration. That is the +34.66%.
+
+**The baseline is itself only 45.8% DSB.** This is the more consequential finding: the
+engine already delivers less than half its uops from the uop cache, i.e. it is
+substantially front-end bound before anything is added. The reason is code size — the DSB
+is 32 sets × 8 ways × 6 uops, and a 32-byte window that needs more than ~3 ways cannot be
+cached at all, while `fill_coset` monomorphizations run to 0x13d0 (5 072) bytes.
+
+**Two obvious remedies were measured and both made it worse:**
+
+| variant | DSB share | cycles vs fold |
+|---|---:|---:|
+| baseline (`pb-fold`) | 45.8% | — |
+| `-C llvm-args=-align-all-functions=5` | 42.5% | +0.9% |
+| `#[inline(never)]` on `merge2_into` | 31.5% | +5.7% |
+
+Forcing 32-byte function alignment pads the binary and costs more footprint than the
+alignment buys; outlining the merge costs more in call overhead and lost context than the
+size saves. Both reverted.
+
+**This retroactively explains several previously-unexplained results in this repo**, which
+is the main reason to record it:
+
+- *"adding `#[inline]` to `merge2_into` measured +20–34%"* — inlining it at more call
+  sites inflates code size and evicts the uop cache.
+- *"the `#[inline]` on `sort_rows_with_scratch` is worth ~6%"* — the same effect with the
+  sign flipped.
+- *"adding ANY code, even `cfg(test)`-only code, moves untouched hot paths ±4–7%
+  direction-consistently"* — address shifts remap DSB sets.
+
+The general statement: **this binary sits at a fragile local optimum in a front-end-bound
+regime, and its sensitivity to code motion is a uop-cache phenomenon, not a mystery.** Any
+change that adds code to the hot path pays a front-end tax that is frequently larger than
+the arithmetic it saves — which is precisely why §3b's targeted SIMD failed, and why it
+would fail for a word-planar kernel set too.
 
 ## 4. Method notes worth keeping
 

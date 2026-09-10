@@ -19,7 +19,7 @@
 //!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
 //!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
 //!     [--bind-memory 1] [--partition-seed <u64>] [--p1-path classic] \
-//!     [--partition-rows random|cut|select] [--initial random|z0] [--mpi]
+//!     [--partition-rows random|cut] [--initial random|z0] [--mpi]
 //! ```
 //!
 //! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
@@ -166,17 +166,11 @@
 //!   `heavyhex_step`, and no edges at all (hence an even index split) for
 //!   every other layer — minimising crossed edges subject to ±25% block-size
 //!   balance. The blocks and the crossing count go to stderr.
-//! - `select` — [`select_rows`] over the cell's own circuit
-//!   ([`circuit_generators`] for the masks): the greedy weighted MAX-XOR-SAT
-//!   selector, which recovers the cut by itself on a chain or a heavy-hex step
-//!   and is the answer when the geometry is not known. The masks it leaves
-//!   remote, their weight, and how many constraints it refused in order to keep
-//!   a row from being a conserved quantity all go to stderr.
 //!
-//! `cut` and `select` rows are **low weight** by construction, which makes them
-//! far likelier than a random draw to lie inside the span of `H`'s own active
+//! `cut` rows are **low weight** by construction, which makes them far
+//! likelier than a random draw to lie inside the span of `H`'s own active
 //! rows — dependence costs load balance exactly where a cut row is already at
-//! risk. Both are therefore checked with
+//! risk. They are therefore checked with
 //! [`PartitionRows::is_independent_of`] against the first
 //! [`INDEPENDENCE_PROBE_BITS`] rows `H` will grow into (all of `H`'s rows are
 //! drawn from the seed up front, so the look-ahead is exact), and the hash is
@@ -247,7 +241,7 @@ use paulistrings::bucket::sum::{
 };
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::partitioned::{
-    circuit_generators, count_remote_deltas, select_rows, CpuSet, GeneratorWeight, PartitionConfig,
+    circuit_generators, count_remote_deltas, CpuSet, GeneratorWeight, PartitionConfig,
     PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
     Placement, BITS_AGREE_EVERY,
 };
@@ -378,16 +372,9 @@ Options:
                                       index split -- otherwise) subject to
                                       +-25% size balance; the cut and its
                                       crossing count are echoed to stderr
-                              select  select_rows() over the cell's own
-                                      circuit: the greedy weighted MAX-XOR-SAT
-                                      selector, which finds the cut itself on
-                                      a chain or a heavy-hex step. The
-                                      generators it leaves remote, the weights
-                                      and the conserved-row rejections go to
-                                      stderr
-                            cut and select rows are low weight, so they collide
-                            with H's own rows far more often than a random draw:
-                            both are checked with is_independent_of against the
+                            cut rows are low weight, so they collide with H's
+                            own rows far more often than a random draw: they
+                            are checked with is_independent_of against the
                             first 10 rows H will grow into, and the hash is
                             re-seeded until they pass (said so on stderr, since
                             it moves the coset dimension too).
@@ -751,10 +738,6 @@ enum PartitionRowSpec {
     /// single-qubit `X` rotation is local and a `ZZ(i, j)` rotation is remote
     /// exactly when the edge `(i, j)` crosses the cut. See [`cut_rows`].
     Cut,
-    /// [`select_rows`] over the cell's own circuit: the greedy weighted
-    /// MAX-XOR-SAT selector, which finds the cut itself when the circuit has
-    /// one and something useful when it does not.
-    Select,
 }
 
 impl PartitionRowSpec {
@@ -762,7 +745,6 @@ impl PartitionRowSpec {
         match self {
             PartitionRowSpec::Random => "random",
             PartitionRowSpec::Cut => "cut",
-            PartitionRowSpec::Select => "select",
         }
     }
 
@@ -770,9 +752,8 @@ impl PartitionRowSpec {
         match s.trim() {
             "random" => Ok(PartitionRowSpec::Random),
             "cut" => Ok(PartitionRowSpec::Cut),
-            "select" => Ok(PartitionRowSpec::Select),
             other => Err(format!(
-                "--partition-rows expects random | cut | select, got '{other}'"
+                "--partition-rows expects random | cut, got '{other}'"
             )),
         }
     }
@@ -1942,8 +1923,8 @@ const INDEPENDENCE_RETRIES: usize = 16;
 /// — from the same inputs, with nothing agreed at run time.
 ///
 /// Takes the base sum by value and gives it back because of that re-draw:
-/// `cut` and `select` rows are *low weight* by construction (a cut row is one
-/// contiguous run of z-bits), and a low-weight row is far likelier than a
+/// `cut` rows are *low weight* by construction (a cut row is one contiguous
+/// run of z-bits), and a low-weight row is far likelier than a
 /// random one to fall inside the span of `H`'s active rows. Dependence costs
 /// load balance rather than correctness, but it costs it exactly where a cut
 /// row is already at risk, so a non-random row set that fails
@@ -1960,10 +1941,10 @@ fn choose_partition_rows<const W: usize>(
 ) -> (PauliSum<W>, PartitionRows<W>, RowChoiceStats) {
     let num_qubits = base.num_qubits();
     let bits = partitions.trailing_zeros() as u8;
-    // The rows and the generator scan both need the circuit. A layer whose
-    // generator qubits come from the rows themselves (`rotation_local` and
-    // friends) is circular, so the selector sees that layer's `(0, 1)` variant
-    // — harmless, since those layers exist to probe a *given* row set.
+    // The generator scan needs the circuit. A layer whose generator qubits
+    // come from the rows themselves (`rotation_local` and friends) is
+    // circular, so the scan sees that layer's `(0, 1)` variant — harmless,
+    // since those layers exist to probe a *given* row set.
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, (0, 1));
     let gens = circuit_generators(&circuit, base.hash(), false);
 
@@ -1986,41 +1967,6 @@ fn choose_partition_rows<const W: usize>(
                 );
             }
             rows
-        }
-        // === SELECT ARM (deliverable A of the row-tuning plan) ===========
-        PartitionRowSpec::Select => {
-            // Balance is judged on a *spread* operator, not the one-term `z0`
-            // initial sum: from a single site the selector would otherwise
-            // pick a `{site}`-vs-rest cut and leave one partition empty for the
-            // whole run. A coarse untimed warm-up through the cell's own
-            // circuit gives it a representative sample; the run itself still
-            // starts from `base`.
-            let warm = paulistrings::propagate(
-                &circuit,
-                base.clone(),
-                &CoefficientThreshold(1e-2),
-                Direction::Forward,
-            );
-            let probe = if warm.len() > base.len() {
-                &warm
-            } else {
-                &base
-            };
-            let selection = select_rows(&gens, num_qubits, bits, Some(probe));
-            if partitions > 1 {
-                eprintln!(
-                    "phase_breakdown: note: --partition-rows select on {} at P={partitions}: {} \
-                     of {} generator masks left remote (weight {:.0} remote / {:.0} local, i.e. \
-                     layers), {} generator(s) rejected to keep a row from being conserved.",
-                    layer.name(),
-                    selection.remote.len(),
-                    gens.len(),
-                    selection.remote_weight,
-                    selection.local_weight,
-                    selection.conserved_rejected,
-                );
-            }
-            selection.rows
         }
     };
 

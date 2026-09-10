@@ -79,6 +79,19 @@ Items that genuinely need the user are collected under **Needs you** at the end.
     figure is kept (`fig0_term_growth.svg`) but not used. The untruncated curve is partial (stops at 2 M).
 20. **fig7 (per-layer profile) was not produced** — no run used `--layer-times`; the binary supports it
     (`presentation-bench bucketed --layer-times`) if a per-layer slide is wanted.
+21. **Slide 28's two superseded bullets became one shipped-result bullet** after the partitioned engine
+    merged to `main` (2026-09-10). "NUMA-aware placement — the smart version has to steal within a socket
+    first" and "Distributed prototype — the exchange plan exists on paper" are both answered, and not the way
+    the slide guessed: the answer is cut partition rows along the circuit graph plus one pinned pool per
+    domain, not smarter stealing. The slide carries one number (4 of 271 layers remote, 21 % per step at
+    `P = 2`); the rest — −20.7 % / −14.5 % at 16 / 32 threads, 125 / 133 / 136 ms at 2 / 4 / 8 MPI ranks,
+    cut rows 1.9–2.4× over random — is in the speaker notes, per the deck's usual split. Static coset
+    placement stays in the appendix as the negative result it is. Slide count unchanged (32 pages).
+22. **No figure or number was regenerated for the merge.** The library-dependent ladder cell was re-measured
+    on the merged engine, same host and working point: identical peak terms (1 071 093) and layer count
+    (2710), 15.63 s at 1 thread and 1.569 s at 32 against the campaign's 15.3 s / 1.46 s — inside the
+    ±5–8 % / ±10–26 % single-shot bands in `benchmarks/PROFILING.md`. The talk's measurements stand as taken.
+    `presentation/bench/Cargo.lock` did need updating: the core links `libc` for placement now.
 
 ## Needs you
 
@@ -93,4 +106,8 @@ Items that genuinely need the user are collected under **Needs you** at the end.
   kernel-flags slide, slides 9 and F1 stage 2 are self-contained.
 - **Speaker identity line** on the title slide ("Lukas Devos · CCQ, Flatiron Institute · 2026") and the venue
   are placeholders.
+- **The abstract still frames distributed memory as a direction** — "extends naturally towards distributed
+  memory", "a statically known communication plan" (`ABSTRACT.md` lines 17 and 36). It is now built and
+  measured, so the abstract could claim the result instead. Left untouched on the assumption the announcement
+  text has already gone out; say the word if it has not.
 

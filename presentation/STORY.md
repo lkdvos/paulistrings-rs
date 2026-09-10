@@ -50,8 +50,8 @@ truncation tuned to ~10⁶ resident terms. Its "time to propagate" bar chart (F1
 
 | # | scene | claim | evidence |
 |---|---|---|---|
-| 19 | One structure, many wins | parallelism; locality; footprint (SoA, no pointers, 48 B/term); GPU-ready buffers; distributed memory: partition on h across ranks, a layer is a statically known sparse exchange computed from H and D; no key is ever split across ranks. NUMA is the same problem one level down. | `ARCHITECTURE.md §GPU-Readiness` |
-| 20 | Open threads | NUMA-aware placement (static placement lost 1.25–1.9× to work stealing, so it has to be smarter); dense-PTM write ceiling; distributed prototype. Close: strong and smart. | `research/notes/2026-08-30-static-coset-placement.md` |
+| 19 | One structure, many wins | parallelism; locality; footprint (SoA, no pointers, 48 B/term); GPU-ready buffers; distributed memory: partition on h across ranks, a layer is a statically known sparse exchange computed from H and D; no key is ever split across ranks. NUMA is the same problem one level down. Implemented since this campaign, so state it as built, not planned. | `ARCHITECTURE.md §GPU-Readiness`, `§Partitioning` |
+| 20 | Open threads | The exchange plan is built and measured: cut partition rows leave 4 of 271 heavy-hex layers per step remote (139 random), in-process P=2 is 21 % faster per step than one process, and the same layer loop runs one partition per MPI rank. Still open there: the per-layer bits all-reduce, and ingestion replicating the input per rank. Also open: dense-PTM write ceiling; rank-deficient hash seeds, channel-aware bucket floor. Static coset→worker placement stays a negative result — the answer was partition rows, not smarter stealing. Close: strong and smart. | `research/notes/2026-09-09-partition-row-tuning-results.md`, `2026-09-08-numa-partitioning-results.md`, `2026-08-30-static-coset-placement.md` |
 
 ## Figures
 

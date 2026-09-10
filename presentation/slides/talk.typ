@@ -401,9 +401,9 @@
 
 #slide[Open threads, and the proverb the right way round][
   #two-col[
-    - *NUMA-aware placement.* A static coset→worker map lost 1.25–1.9× to work stealing (stragglers). The smart version has to steal _within_ a socket first.
+    - *The exchange plan is no longer on paper.* Partition rows cut along the circuit's graph — 4 of 271 layers per step cross a boundary, not 139 — and $P = 2$ runs *21 % faster* per step than one process. One partition per MPI rank, same layer loop.
+    - *Still open there.* A bits all-reduce on every layer; ingestion replicates the input per rank.
     - *Dense-PTM write ceiling.* Fanout-16 gather runs at 16 threads saturate the write path; smaller runs or fused passes.
-    - *Distributed prototype.* The exchange plan exists on paper; the buckets are already the message boundaries.
     - *Rank-deficient hash seeds*, a channel-aware bucket floor, more channel types.
   ][
     #v(0.5em)

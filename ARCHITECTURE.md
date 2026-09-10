@@ -215,6 +215,18 @@ actively harmful (~10%): it parks the steady state up to 4× above the
 per-bucket target, on the wrong side of the sweep above. Refine and coarsen
 parallelize per bucket (pair) above the same 8192-term threshold.
 
+`PropagateOptions::{target_bucket_len, min_buckets}` expose both values per
+call. They are a **measurement lever, not a tuning parameter**: the defaults
+are the optimum above, and the only reason to move them is to measure what a
+coarser or finer partition costs. Both have to move together — above the
+floor, `desired_bits` clamps the count at `min_buckets` whatever the target
+asks for — and `min_buckets` must stay `>= 16` or the "worth splitting" gate
+goes non-monotone. `rebucket` being grow-only, lowering either mid-run never
+coarsens a partition already grown. The small-sum direct path
+(`engine::direct`) still sizes its partition from the defaults; there is
+nothing to measure at small `n`. Pinned by
+`crates/paulistrings/tests/bucket_knob.rs`.
+
 ## Prepared-Channels
 
 Applying a channel through its trait object once per term would pay a vtable

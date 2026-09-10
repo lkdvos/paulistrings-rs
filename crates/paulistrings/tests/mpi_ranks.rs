@@ -27,8 +27,12 @@
 use std::panic::AssertUnwindSafe;
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::engine::partitioned::{count_remote_deltas, DistributedSum, PartitionConfig};
+use paulistrings::channel::{
+    Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
+};
+use paulistrings::engine::partitioned::{
+    count_remote_deltas, DistributedSum, PartitionConfig, PartitionRuntime, BITS_AGREE_EVERY,
+};
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
@@ -36,7 +40,8 @@ use paulistrings::test_support::{
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
-    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliSum, PropagateOptions,
+    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliString, PauliSum,
+    PropagateOptions,
 };
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -72,6 +77,37 @@ fn haar_su4<const W: usize>(nq: usize) -> Circuit<W> {
     circuit.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
     circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
     circuit
+}
+
+/// A long run of layers that cannot cross a **z-only cut row** — `X`
+/// rotations, whose generator carries no `z` bits — with the one bond that
+/// does cross at the end.
+///
+/// Longer than [`BITS_AGREE_EVERY`], so the bucket-count schedule has to skip
+/// layers, and the closing bond is the layer that must agree before it
+/// exchanges.
+fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
+    let mut circuit = Circuit::<W>::new(nq);
+    for round in 0..3 {
+        for q in 0..nq as u32 {
+            circuit.push(PauliRotation::new(
+                PauliString::<W>::x(q),
+                0.21 + 0.01 * f64::from(round),
+            ));
+        }
+    }
+    circuit.push(zz_rotation::<W>(nq as u32 / 2 - 1, nq as u32 / 2, 0.33));
+    circuit
+}
+
+/// `size` equal blocks of `nq` qubits, as a z-only cut: the rows that make
+/// [`local_run_then_one_crossing`] one remote layer at any rank count.
+fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
+    let per = nq / size;
+    let blocks: Vec<Vec<u32>> = (0..size)
+        .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+        .collect();
+    PartitionRows::<W>::cut(nq, &blocks)
 }
 
 /// Depolarizing noise on every qubit: key-preserving, so the layer must issue
@@ -406,6 +442,59 @@ fn run_matrix(r: &mut Runner) {
         if let Some(got) = split.gather() {
             let want = propagate(&circuit, sum, &KeepAll, Direction::Forward);
             assert_terms_close(&got, &want, TOL, "depolarizing");
+            assert_eq!(got.len(), want.len());
+        }
+    });
+
+    // ---- the collective schedule ----------------------------------------
+    r.case("a long local run skips the bucket-count collective", |r| {
+        const NQ: usize = 16;
+        let circuit = local_run_then_one_crossing::<1>(NQ);
+        let layers = circuit.channels.len();
+        assert!(
+            layers > 2 * BITS_AGREE_EVERY,
+            "the schedule must have something to skip: {layers} layers",
+        );
+        let rows = block_cut::<1>(NQ, r.size as usize);
+        let sum = rand_sum_real::<1>(600, NQ, 0xA021);
+
+        let config = r.config(SEED);
+        let runtime = PartitionRuntime::new(&config).expect("topology resolves");
+        let transport = MpiTransport::from_communicator(r.world);
+        let mut split = DistributedSum::scatter_with_rows(sum.clone(), transport, runtime, rows);
+        split.enable_trace();
+        split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
+        let trace = split.take_trace().expect("tracing is on");
+
+        assert_eq!(trace.layers.len(), layers);
+        assert_eq!(
+            trace.remote_layers(),
+            usize::from(r.size > 1),
+            "only the closing bond crosses, and only when there is a group",
+        );
+        // The opening ramp, one per period after it, and the remote layer. At
+        // one rank there is no group at all and the count is zero.
+        let allowed = if r.size == 1 {
+            0
+        } else {
+            (BITS_AGREE_EVERY + layers.div_ceil(BITS_AGREE_EVERY) + 1) as u64
+        };
+        assert!(
+            trace.total_collectives() <= allowed,
+            "{} collectives over {layers} layers, the schedule allows {allowed}",
+            trace.total_collectives(),
+        );
+        // The crossing layer agreed first — otherwise a receiver would index a
+        // partner's blocks by the wrong bucket count.
+        let last = trace.layers.last().expect("layers");
+        assert!(
+            r.size == 1 || (last.remote_deltas > 0 && last.collectives > 0),
+            "a remote layer must agree the bucket count before it exchanges",
+        );
+
+        if let Some(got) = split.gather() {
+            let want = propagate(&circuit, sum, &WeightCutoff(4), Direction::Forward);
+            assert_terms_close(&got, &want, TOL, "long local run");
             assert_eq!(got.len(), want.len());
         }
     });

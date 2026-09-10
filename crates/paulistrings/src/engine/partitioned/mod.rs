@@ -15,7 +15,8 @@
 //! - `truncation` — `PartitionedTruncation` (collective `ApproxTopN`).
 //! - `runtime` — `PartitionRuntime`: the resolved placement, its pools, and the
 //!   scoped fan-out a partitioned call runs inside.
-//! - `driver` — `PartitionedSum`, `propagate_partitioned`, and `run_layers`.
+//! - `driver` — `PartitionedSum`, `propagate_partitioned`, `run_layers`, and
+//!   the per-layer collective schedule (`BITS_AGREE_EVERY`).
 //! - `distributed` — `DistributedSum`: `run_layers` again, with one partition
 //!   per process, over any `Transport`.
 //! - `trace` — `PartitionTrace`, the opt-in per-layer record of term counts,
@@ -104,7 +105,9 @@ pub(crate) mod truncation;
 pub use distributed::DistributedSum;
 #[cfg(feature = "phase-timing")]
 pub use driver::PartitionPhaseStats;
-pub use driver::{propagate_partitioned, propagate_partitioned_with_options, PartitionedSum};
+pub use driver::{
+    propagate_partitioned, propagate_partitioned_with_options, PartitionedSum, BITS_AGREE_EVERY,
+};
 pub use plan::count_remote_deltas;
 // Choosing the partition rows instead of drawing them: the circuit's generator
 // masks, the weighted MAX-XOR-SAT selector over them, and the per-layer

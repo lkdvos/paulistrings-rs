@@ -32,18 +32,30 @@ use super::transport::Collectives;
 /// # The contract
 ///
 /// [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) is called
-/// on **every** layer, on **every** partition, in lock-step — regardless of
-/// what [`finalizes_layer`](TruncationPolicy::finalizes_layer) says. That is
-/// not an accident of the caller: a collective is only well-defined if every
-/// partition issues the same collectives in the same order, so a policy is not
-/// free to skip a layer on the partitions where it happens to have nothing to
-/// do. The hint stays an optimization for the single-partition paths.
+/// on **every** layer, on **every** partition, in lock-step, for a policy whose
+/// [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true`. A
+/// collective is only well-defined if every partition issues the same
+/// collectives in the same order, so a policy is not free to skip a layer on
+/// the partitions where it happens to have nothing to do.
+///
+/// The driver *does* skip the call on a policy that answers `false`, and that
+/// is safe for the same reason: `finalizes_layer` is a property of the policy
+/// **type**, so it is the same answer on every partition and the group cannot
+/// split on it. The consequence for an implementor is one rule: **a policy
+/// that overrides `finalize_layer_partitioned` with anything collective must
+/// answer `finalizes_layer() == true`.** Every built-in does — the default
+/// `finalizes_layer` is the conservative `true`, and the two policies that
+/// override it to `false` ([`CoefficientThreshold`], [`WeightCutoff`]) have no
+/// layer pass in either mode. Note what this costs the one policy that does:
+/// [`ApproxTopN`] all-reduces its histogram on **every** layer in partitioned
+/// mode, whatever the partition rows do, so a distributed run under it pays
+/// one collective per layer no matter how few layers exchange.
 ///
 /// An implementation must therefore
 ///
 /// 1. call the same collectives, in the same order, on every partition and
-///    every layer (in particular, no early return before a collective on a
-///    locally empty or locally short partition), and
+///    every layer it is called on (in particular, no early return before a
+///    collective on a locally empty or locally short partition), and
 /// 2. derive its decision **only** from all-reduced values, so that every
 ///    partition applies the identical predicate to its own terms.
 ///
@@ -93,10 +105,14 @@ pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
     /// The collective layer pass: `local` is this partition's slice of the
     /// layer, `coll` its view of the group.
     ///
-    /// Called on every layer on every partition, in lock-step. The default is
-    /// no layer pass at all, which is correct exactly for the policies that
-    /// have none — so it asserts that this is one of them rather than
-    /// silently dropping a `finalize_layer` a caller was relying on.
+    /// Called on every layer on every partition, in lock-step, for a policy
+    /// whose [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true`
+    /// — the driver skips the call entirely on one that answers `false`, so an
+    /// override with a collective in it must answer `true` (see the trait
+    /// docs). The default is no layer pass at all, which is correct exactly
+    /// for the policies that have none — so it asserts that this is one of
+    /// them rather than silently dropping a `finalize_layer` a caller was
+    /// relying on.
     ///
     /// # Panics
     ///

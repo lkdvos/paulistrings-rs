@@ -28,6 +28,13 @@ pub struct PartitionLayerRecord {
     /// mask alone, so every partition reaches the same verdict. Zero means the
     /// layer was purely local and made no transport call.
     pub remote_deltas: u32,
+    /// Collective calls the layer issued, **not** counting the exchange itself
+    /// (`remote_deltas` reports that): the bucket-count all-reduce, when the
+    /// schedule called for one, plus whatever the policy's collective
+    /// finalization ran. One number like the two above — the schedule is a
+    /// function of the layer index and the plan, both rank-independent, so
+    /// every partition issues the same calls.
+    pub collectives: u32,
     /// Terms each partition held before the layer.
     pub terms_in: Vec<usize>,
     /// Terms each partition held after the layer, i.e. after `keep_term` and
@@ -108,6 +115,19 @@ impl PartitionTrace {
             .filter(|layer| layer.remote_deltas > 0)
             .count()
     }
+
+    /// Collective calls over the whole trace — the figure the per-layer
+    /// collective schedule exists to hold down (ARCHITECTURE.md
+    /// §Partitioning).
+    ///
+    /// Excludes the exchanges themselves, which are point-to-point;
+    /// [`remote_layers`](Self::remote_layers) counts those.
+    pub fn total_collectives(&self) -> u64 {
+        self.layers
+            .iter()
+            .map(|layer| u64::from(layer.collectives))
+            .sum()
+    }
 }
 
 /// One layer as a single partition saw it, before the transpose.
@@ -119,6 +139,9 @@ impl PartitionTrace {
 pub(crate) struct PartitionLayerRow {
     pub bits: u8,
     pub remote_deltas: u32,
+    /// Collectives this partition issued for the layer; see
+    /// [`PartitionLayerRecord::collectives`].
+    pub collectives: u32,
     pub terms_in: usize,
     pub terms_out: usize,
     /// Rows sent to each partner rank (`P` long, own slot zero).
@@ -141,6 +164,7 @@ pub(crate) struct PartitionLayerRow {
 pub(crate) fn record_layer_row(
     rows: &mut Vec<PartitionLayerRow>,
     bits: u8,
+    collectives: u32,
     terms_in: usize,
     terms_out: usize,
     counts: LayerExchangeCounts,
@@ -148,6 +172,7 @@ pub(crate) fn record_layer_row(
     rows.push(PartitionLayerRow {
         bits,
         remote_deltas: counts.remote_deltas as u32,
+        collectives,
         terms_in,
         terms_out,
         rows_sent: counts.rows_sent,
@@ -182,6 +207,7 @@ pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<Partit
         let mut record = PartitionLayerRecord {
             bits: head.bits,
             remote_deltas: head.remote_deltas,
+            collectives: head.collectives,
             terms_in: Vec::with_capacity(size),
             terms_out: Vec::with_capacity(size),
             rows_sent: Vec::with_capacity(size),
@@ -199,6 +225,11 @@ pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<Partit
                 row.remote_deltas, head.remote_deltas,
                 "layer {k}: partition {rank} saw {} remote deltas, partition 0 saw {}",
                 row.remote_deltas, head.remote_deltas,
+            );
+            assert_eq!(
+                row.collectives, head.collectives,
+                "layer {k}: partition {rank} issued {} collectives, partition 0 issued {}",
+                row.collectives, head.collectives,
             );
             record.terms_in.push(row.terms_in);
             record.terms_out.push(row.terms_out);
@@ -219,6 +250,7 @@ mod tests {
         PartitionLayerRow {
             bits,
             remote_deltas: remote,
+            collectives: 1,
             terms_in,
             terms_out: terms_in,
             rows_sent: sent,

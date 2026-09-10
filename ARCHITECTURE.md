@@ -315,13 +315,20 @@ layer), then each coset task, independently:
    empty, capacity-retaining columns as write destinations — the layer is
    in-place: peak memory is `n` plus per-worker scratch of one coset's working
    set, not a second full-size copy.
-2. **Size** each per-member gather run exactly from the swapped-out lengths.
+2. **Size** each per-member gather run exactly from the swapped-out lengths,
+   plus one spare slot per column — the slot the gather's branchless
+   zero-amplitude filter writes a discarded row into.
 3. **Gather input-major**: each term is loaded once and its whole fanout
    scattered to runs via the O(1) index identity
    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — so the gather visits each input
-   term exactly once, with no read amplification. (An output-major variant
-   guards rank ≥ 3 custom channels, selected by `GATHER_OUTPUT_MAJOR_MIN_R`;
-   no built-in reaches it.)
+   term exactly once, with no read amplification. Rows whose PTM amplitude is
+   exactly zero are filtered **branchlessly** — always materialized, published
+   only by `len += (amp != 0)` — because which entries vanish depends on the
+   term's support pattern, making the test the engine's single largest source
+   of branch mispredictions when written as a branch
+   (`research/notes/2026-09-10-branch-misprediction.md`). (An output-major
+   variant guards rank ≥ 3 custom channels, selected by
+   `GATHER_OUTPUT_MAJOR_MIN_R`; no built-in reaches it.)
 4. Per run, **sort the rest stream and merge**, straight into the member's
    live slot.
 
@@ -390,7 +397,13 @@ accumulator — the only zero test is on the final sum (the signed-zero
 contract, pinned by test). A segment-copy variant (gallop + bulk copy of
 id segments) was measured and rejected: real stream densities make the
 average segment 1–2 rows, and it cost +20–35% merge time — recorded on the
-function's doc.
+function's doc. The walk is written as three loops — both streams live, then
+one drain each — so the hot loop tests neither stream's bound and a channel
+with no identity delta runs a single-stream reduction with no `a`-side test at
+all (−1.96..−4.80% wall, 7/7 pairs). Making the *comparison* branchless was
+measured and rejected: the mispredicts simply move to the equal-key drain test
+and the merge gets 10–12% slower
+(`research/notes/2026-09-10-branch-misprediction.md`).
 
 After the coset loop the handles are un-permuted, the length recounted, and
 invariants asserted (debug builds).

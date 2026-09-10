@@ -514,20 +514,40 @@ drop every received row, so the fast path is gated on the absence of extra
 rows. A rotation with a remote generator keeps its `Prepared` and switches the
 generator pass off instead, exporting its anticommuting rows.
 
-**One collective per layer is unconditional: the bucket count.** Each partition
-proposes `desired_bits` for its own share, the group takes the maximum, and
-each refines to it. Per-partition rather than global, so `P` partitions of
-`n/P` terms carry the same *total* bucket count as one partition of `n`; the
-grow-only rule (§Bucket-Policy) survives the reduction because a maximum of
-grow-only proposals is itself monotone, so the count never falls mid-run and
-the two sides of an exchange always agree. Everything else is conditional: **a
-layer with no remote delta makes no transport call at all**, so a transport
-implementation must not assume a fixed number of calls per layer.
+**Nothing in a layer is unconditional, the bucket count included.** Each
+partition proposes `desired_bits` for its own share, the group takes the
+maximum, and each refines to it. Per-partition rather than global, so `P`
+partitions of `n/P` terms carry the same *total* bucket count as one partition
+of `n`; the grow-only rule (§Bucket-Policy) survives the reduction because a
+maximum of grow-only proposals is itself monotone. But it is agreed on a
+**schedule**, not every layer: on any layer whose plan has a remote delta
+(both sides index the exchange's blocks by the count, so they must agree first)
+and otherwise every `BITS_AGREE_EVERY = 16` layers, preceded by an opening ramp
+of the same length. Between agreements a partition keeps the count it has even
+when its own `desired_bits` is higher — nobody refines off-schedule, so the
+counts stay equal by construction and the lag is bounded by 16 layers of
+above-target bucket occupancy, which §Bucket-Policy's sweep is flat across; the
+ramp is there because a run's opening growth phase *is* the regime where
+freezing the count costs the 4.5× that sweep measures. The schedule is decided
+from the layer index and the plan, both of which every partition computes
+identically without communicating — a "my own share grew" trigger would not
+qualify, and is why the periodic term is on the index. `P = 1` has no group, so
+it skips the reduction and refines every layer, which is what keeps it bit for
+bit `propagate`. **A layer with no remote delta makes no transport call at
+all**, and with the bits agreement off its schedule it makes no call of any
+kind: over InfiniBand with cut rows that is what lets a step of 271 layers with
+4 remote ones scale with the rank count rather than pay a 30–70 µs all-reduce
+267 times.
 
 Layer finalization is collective, so the policy bound is
 `PartitionedTruncation` and its `finalize_layer_partitioned` runs on every
-layer on every partition, whatever `finalizes_layer` reports — a collective is
-well defined only if nobody skips it. `ApproxTopN` is **partition-exact**: the
+layer on every partition for a policy whose `finalizes_layer` is true — a
+collective is well defined only if nobody skips it, and `finalizes_layer` is a
+property of the policy *type*, so the group cannot split on it. A policy with
+no layer pass therefore costs nothing per layer; one that has a collective form
+must report `finalizes_layer`. Note the consequence for `ApproxTopN`: its
+histogram all-reduce is its semantics, so a distributed run under it pays one
+collective per layer whatever the partition rows do. `ApproxTopN` is **partition-exact**: the
 global octave histogram is the sum of the per-partition histograms, so one
 all-reduce has every partition choose the same edge and the union of the
 retained sets is the single-partition answer (§Truncation). `And` runs both
@@ -570,8 +590,8 @@ unpartitioned one. At `P = 1` it is the identity, and the round trip is
 bitwise.
 
 `PartitionTrace` is the opt-in per-layer record: bucket bits, remote-delta
-count, terms in and out per rank, rows and bytes sent `[from][to]`, rows
-received, and an imbalance figure per layer. Under `phase-timing` the same run
+count, collectives issued, terms in and out per rank, rows and bytes sent
+`[from][to]`, rows received, and an imbalance figure per layer. Under `phase-timing` the same run
 also reports `export_ns`, `exchange_ns` (which includes the wait for a partner,
 so it is the imbalance signal and the traffic cost at once), `collective_ns`,
 `rows_exported` and `recv_rows`.
@@ -632,10 +652,11 @@ and the same delta on `R ⊕ pd` moves its rows back to `R`. So "who sends to me
 count-exchange or group-sized collective is needed to discover it.
 
 **The per-layer collective schedule** is unchanged from the in-process case,
-and it is what an MPI implementation must not second-guess: one unconditional
-`allreduce_max_u8` for the bucket count, then the layer's exchange **only if
-the plan has a remote delta** (a key-preserving channel issues no transport
-call at all), then whatever the policy's collective finalization runs. On top
+and it is what an MPI implementation must not second-guess: an
+`allreduce_max_u8` for the bucket count **on the schedule above**, then the
+layer's exchange **only if the plan has a remote delta** (a key-preserving
+channel issues no transport call at all), then the policy's collective
+finalization if it has one. A layer can therefore make no call whatsoever. On top
 of that a distributed propagation calls `check_consistency` exactly once,
 before its first layer: an all-reduce of a fingerprint of the run's shape
 (channel count, direction, bucket-policy knobs, qubit count, `W`), exact

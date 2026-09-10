@@ -249,7 +249,7 @@ use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRot
 use paulistrings::engine::partitioned::{
     circuit_generators, count_remote_deltas, select_rows, CpuSet, GeneratorWeight, PartitionConfig,
     PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Placement,
+    Placement, BITS_AGREE_EVERY,
 };
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
@@ -1490,6 +1490,12 @@ struct PartitionCellStats {
     local_layers: usize,
     /// Layers with at least one remote delta.
     remote_layers: usize,
+    /// Collective calls over the timed run, summed over layers — the
+    /// bucket-count all-reduces the schedule kept plus whatever the policy's
+    /// collective finalization ran, *not* the exchanges. One per layer was the
+    /// old unconditional cost; `remote_layers + layers/BITS_AGREE_EVERY` is
+    /// roughly the new one.
+    collectives: u64,
     /// Rows moved across partitions, summed over layers and senders.
     rows_exported: u64,
     /// Wire bytes for those rows.
@@ -2465,6 +2471,7 @@ fn summarize_partitions(
     PartitionCellStats {
         local_layers: trace.local_layers(),
         remote_layers: trace.remote_layers(),
+        collectives: trace.total_collectives(),
         rows_exported: folded.rows_exported,
         bytes_exported: trace
             .layers
@@ -2647,6 +2654,13 @@ fn print_partition_block(cell: &CellResult) {
         p.bytes_exported as f64 / (1024.0 * 1024.0),
     );
     println!(
+        "    collectives = {} over {} layers (bucket-count schedule every {} layers, \
+         plus every remote layer and any the policy runs)",
+        p.collectives,
+        p.local_layers + p.remote_layers,
+        BITS_AGREE_EVERY,
+    );
+    println!(
         "    export = {:.3} ms   exchange = {:.3} ms   barrier (bucket-count all-reduce) = \
          {:.3} ms   [max over partitions]",
         s.export_ns as f64 / 1e6,
@@ -2760,7 +2774,8 @@ fn json_line(cell: &CellResult) -> String {
     let partition_fields =
         format!(
         ",\"partitions\":{},\"partition_cpus\":\"{}\",\"pin_memory\":{},\"gen_qubits\":[{},{}],\
-         \"local_layers\":{},\"remote_layers\":{},\"rows_exported\":{},\"bytes_exported\":{},\
+         \"local_layers\":{},\"remote_layers\":{},\"collectives\":{},\"rows_exported\":{},\
+         \"bytes_exported\":{},\
          \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
          \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
          \"export_count_ns\":{},\"export_fill_ns\":{},\"send_post_ns\":{},\"hdr_wait_ns\":{},\
@@ -2775,6 +2790,7 @@ fn json_line(cell: &CellResult) -> String {
         cell.gen_qubits.1,
         cell.partitioned.as_ref().map_or(0, |p| p.local_layers),
         cell.partitioned.as_ref().map_or(0, |p| p.remote_layers),
+        cell.partitioned.as_ref().map_or(0, |p| p.collectives),
         cell.partitioned.as_ref().map_or(0, |p| p.rows_exported),
         cell.partitioned.as_ref().map_or(0, |p| p.bytes_exported),
         json_u64_array(terms_in),
@@ -2861,7 +2877,8 @@ const TSV_HEADER: &str =
 rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
 swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
 terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartitions\t\
-partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\trows_exported\t\
+partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\tcollectives\t\
+rows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\texport_count_ns\texport_fill_ns\tsend_post_ns\thdr_wait_ns\t\
 recv_alloc_ns\tdata_wait_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
@@ -2875,7 +2892,7 @@ fn print_tsv_row(cell: &CellResult) {
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
+         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
         cell.layer,
         cell.truncation,
@@ -2919,6 +2936,7 @@ fn print_tsv_row(cell: &CellResult) {
         cell.gen_qubits.1,
         p.map_or(0, |p| p.local_layers),
         p.map_or(0, |p| p.remote_layers),
+        p.map_or(0, |p| p.collectives),
         p.map_or(0, |p| p.rows_exported),
         p.map_or(0, |p| p.bytes_exported),
         tsv_array(p.map_or(&empty, |p| &p.terms_in)),

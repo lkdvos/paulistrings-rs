@@ -992,11 +992,18 @@ mod tests {
         let prep = su4.prepare(whole.hash(), false).expect("prepare");
         assert!(PartitionPlan::new(&prep, &rows, 0).has_remote());
 
-        let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+        // Two terms over four partitions: at least two *input* parts are
+        // empty, whatever the rows are. (The dense gate's fan-out may well
+        // populate every output partition — that is not what is under test.)
+        let empty_inputs = (0..4)
+            .filter(|&r| whole.filter_partition(&rows, r).is_empty())
+            .count();
         assert!(
-            parts.iter().any(|p| p.is_empty()),
-            "the fixture must leave a partition empty",
+            empty_inputs >= 2,
+            "the fixture must leave an input partition empty (got {empty_inputs} empty)",
         );
+        let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+        assert_eq!(parts.len(), 4);
         assert_eq!(counts.len(), 4);
         let got = PauliSum::merge_partitions(parts);
         let want = naive_apply_layer(&input, su4.as_ref(), &AlwaysKeep, false);

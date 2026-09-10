@@ -149,9 +149,10 @@ pub use engine::partitioned::mpi;
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
     circuit_generators, count_remote_deltas, layer_locality, propagate_partitioned,
-    propagate_partitioned_with_options, select_rows, DistributedSum, GeneratorWeight,
-    PartitionConfig, PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum,
-    PartitionedTruncation, Placement, RowSelection, TopologyError,
+    propagate_partitioned_with_options, select_rows, select_rows_with, DistributedSum,
+    GeneratorWeight, PartitionConfig, PartitionLayerRecord, PartitionRuntime, PartitionTrace,
+    PartitionedSum, PartitionedTruncation, Placement, RowSelection, SelectOptions, TopologyError,
+    DEFAULT_ENUMERATE_REJECTIONS, DEFAULT_RESTARTS,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

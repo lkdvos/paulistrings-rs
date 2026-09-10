@@ -320,3 +320,57 @@ mod props {
         }
     }
 }
+
+/// The XOR-fold in `commutes_with` must agree **bitwise** with the naive
+/// one-popcount-per-word form it replaced, at every width.
+///
+/// `commutes_with` folds the masked words together and takes a single
+/// `count_ones`, relying on `parity(a) ^ parity(b) == parity(a ^ b)`. That is
+/// an exact integer identity, so the bar here is bitwise equality, not
+/// tolerance.
+#[test]
+fn xor_fold_commutes_matches_per_word_popcount() {
+    fn naive<const W: usize>(a: &PauliString<W>, b: &PauliString<W>) -> bool {
+        let mut parity: u32 = 0;
+        for i in 0..W {
+            parity ^= (a.x[i] & b.z[i]).count_ones();
+            parity ^= (a.z[i] & b.x[i]).count_ones();
+        }
+        parity & 1 == 0
+    }
+
+    fn check<const W: usize>(seed: u64) {
+        let mut s = seed;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..2000 {
+            let mut p = PauliString::<W>::identity();
+            let mut q = PauliString::<W>::identity();
+            // Low-weight keys, as weight truncation actually produces, plus a
+            // dense word each to exercise multi-word behaviour.
+            for _ in 0..3 {
+                let b = next();
+                p.x[(b as usize >> 3) % W] |= 1u64 << (b % 64);
+                let c = next();
+                q.z[(c as usize >> 3) % W] |= 1u64 << (c % 64);
+            }
+            p.z[0] = next();
+            q.x[0] = next();
+            assert_eq!(
+                p.commutes_with(&q),
+                naive(&p, &q),
+                "W={W}: XOR-fold disagrees with per-word popcount"
+            );
+        }
+    }
+
+    check::<1>(0xA11CE);
+    check::<2>(0xB0B);
+    check::<4>(0xC0FFEE);
+    check::<8>(0xD00D);
+    check::<16>(0xFEED);
+}

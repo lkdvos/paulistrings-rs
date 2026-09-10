@@ -1,8 +1,27 @@
-# Partitioned engine, phase 1 — decision log
+# Partitioned engine — decision log
 
-Running log of gates and decisions while the partitioned (NUMA/multi-node) engine lands on branch
-`partitioned-engine`. Plan: `~/.claude/plans/i-would-like-to-cheerful-mitten.md` (user-approved
-2026-09-08). Numbers here come from `benchmarks/results/2026-09-08-ccqlin038/` (gitignored).
+Chronological record of the gates, measurements and decisions behind the partitioned engine on
+branch `partitioned-engine`, phase 1 (in-process) through phase 4 (cleanup).
+
+## Index
+
+- **Design of record**: `ARCHITECTURE.md` §Partitioning and its `### Transport composition`.
+- **Results**: `2026-09-08-numa-partitioning-results.md` — the P=1 vs P=2 tables across four hosts,
+  the counter pass, and the MPI weak-scaling table. Every partitioned number on the docs site traces
+  there.
+- **Plan**: `~/.claude/plans/i-would-like-to-cheerful-mitten.md` (user-approved 2026-09-08).
+- **Optimization history lives here and nowhere else.** A remote rotation layer went from 19× a
+  local one to 10×, then 4.6×, then 3.8× over three passes; the entries below say what each pass
+  moved and what it rejected. The design doc carries only the final measured cost model.
+
+## Measurement protocol
+
+Unless an entry says otherwise: **ccqlin038** (2 sockets × Xeon Gold 6244, 8 cores + HT per socket,
+shared box, load noted per run), release build, `RUST_LOG` unset, seeded input outside the timed
+region, medians of 3 runs, **ms per layer**. Distributed cells run `mpirun -n 2 --map-by ppr:1:numa
+--bind-to numa` at 8 threads per rank, with `rotation_local` as the load control. Campaign output
+lands in `benchmarks/results/<date>-<host>/` (gitignored). A/B verdicts follow CLAUDE.md
+§Performance discipline: direction consistency across every pair, median Δ% as the effect size.
 
 ## 2026-09-08 — S7a `ExtraRows` hook on `fill_coset`: accepted
 
@@ -102,12 +121,12 @@ check on its receive path**, alongside an equivalent of the debug collective-ord
 - Exact `TopN` is rejected at compile time by the `PartitionedTruncation` bound. A distributed
   `k`-th selection is the phase-6 follow-up.
 
-### Not measured
+### Not measured (at this point)
 
 No campaign or A/B has been run against the partitioned path. The S7a verdict above is the only
 measurement in this log; the post-S9 `--partitions 1` re-check and the P=1 vs P=N runtime-knob A/B
 (`scripts/slurm/ab-campaign.sbatch`) are still open. Nothing on the docs site quotes a partitioned
-number.
+number. — Closed by the next entry and by `2026-09-08-numa-partitioning-results.md`.
 
 ## 2026-09-08 — post-S9 A/B of the untouched path (`e7de227` vs phase-1 tip `c6b11e2`): accepted
 
@@ -235,9 +254,8 @@ node-local `/tmp`; the template now builds on the shared filesystem.
 
 ## 2026-09-09 — the exchange path optimized: remote rotation layer 10× → 4.6× a local one
 
-Measured and fixed on **ccqlin038** (2 sockets × 16 cores, Xeon Gold 6244), `mpirun -n 2 --map-by
-ppr:1:numa --bind-to numa`, 8 threads per rank, `--layers rotation_local,rotation_remote --reps 6`,
-medians of 3 runs, ms **per layer**. Two commits: `33194aa` (sub-phase laps) and `a2a7633` (the fix).
+Standard protocol, `--layers rotation_local,rotation_remote --reps 6`. Two commits: `33194aa`
+(sub-phase laps) and `a2a7633` (the fix).
 
 ### Where the time went (the laps, before any fix)
 
@@ -309,10 +327,9 @@ if a driver ever needs the memory back between circuits.
 
 ## 2026-09-09 — the transfer hidden under the coset loop: remote rotation layer 4.5× → 3.8× a local one
 
-Same box and protocol as the entry above: **ccqlin038**, `mpirun -n 2 --map-by ppr:1:numa --bind-to
-numa`, 8 threads per rank, `--layers rotation_local,rotation_remote --reps 6`, medians of 3 runs, ms
-**per layer**, load 1.4–3.5 (noted per run; the *local* layer is the load control and did not move).
-Two commits: `4260cde` (the destination-coset order) and `58bf6d7` (the two-phase exchange).
+Standard protocol, `--layers rotation_local,rotation_remote --reps 6`, load 1.4–3.5 (the local layer
+is the control and did not move). Two commits: `4260cde` (the destination-coset order) and `58bf6d7`
+(the two-phase exchange).
 
 ### The idea
 
@@ -406,6 +423,63 @@ per node over IB with two ranks sharing the NIC), compute fully hidden. Full tab
 `2026-09-08-numa-partitioning-results.md`. Decision: proceed to phase 4 (cleanup) per the plan; the
 intra-node zero-copy handoff (in-process domains per rank) stays a scoped follow-up — it would take the
 2-rank case from 3.5× to ~1.6× but does nothing for the inter-node share.
+
+## 2026-09-09 — phase 4 (cleanup): the code half
+
+Eight commits `cbea2f4`..`a7b865f` on top of `04ae45b`, behaviour unchanged: `engine/bucketed.rs`
+and `engine/merge.rs` are byte-for-byte untouched, the fingerprint net and the thread-count
+byte-identity tests pass with their literals unregenerated. Net **−325 lines of code** (partitioned
+module −174, the six partitioned test files −200, `test_support` +49) against +101 lines of comment.
+
+Surface narrowed: the concrete wire types (`AlreadyHere`, `BlockHeader`, `ExchangeBlock`,
+`PartnerPayload`), the topology pinning helpers and `Payload::from_byte_parts` are `pub(crate)` or
+gone — a `Transport` moves an opaque `P: Payload` and never names them. `mpi::DEFAULT_CHUNK_BYTES`
+is private (`with_chunk_bytes` is the documented override), and
+`MpiTransport::{try_from_communicator, communicator}` are gone. **`Transport::exchange_layer` is now
+the required method** and `exchange` the provided one over an empty `ChunkMap`; it was the other way
+round. `PhaseStats::decode_ns` is removed with the blocking exchange that fed it, and with it the
+column in the probe's TSV and JSON sidecar.
+
+Shared where it was duplicated: `driver::scatter_local`, `driver::PartitionCtx`,
+`PartitionWork::take`, `mpi::note_slot`, and the partitioned fixtures (`KeepAll`, `zz_rotation`,
+`trotter_circuit`, `unpinned_partitions`) in `test_support`. `tests/mpi_ranks.rs` gained coverage of
+`propagate_mpi`, the one public entry point nothing exercised.
+
+Deliberately left whole: `MpiTransport::exchange_layer` at 210 lines, because top to bottom it *is*
+the deadlock argument (post every send → wait the headers → post and wait the early parts → post the
+bulk → body → finish) and splitting it buys no borrow-checker win;
+`post_layer_send`'s nine arguments, which are borrows the request scope has to outlive.
+
+Smoke check, standard protocol, `--n 2000000 --threads 8 --reps 4`, three runs alternated, load 2–3:
+remote/local 3.73× before and 3.62× after, remote wall 98.4 → 98.6 ms, peak RSS per rank +0.27%. Not
+an A/B; the point was that nothing moved.
+
+## 2026-09-10 — phase 4 (cleanup): the docs half
+
+`ARCHITECTURE.md` §Partitioning rewritten as the current state of the whole engine, with the
+optimization history removed from it — the 19× → 3.8× sequence lives in this log, and the design doc
+carries only the two committed result tables. §Parallelism and §Performance-Model updated to match.
+
+The book's `design/numa.md` and `design/mpi.md` stop saying "no committed measurement yet" and open
+with what to expect; `benchmarks/PROFILING.md` contract (a) lists the fields the probe emits now and
+gains a rank-axis section; CLAUDE.md gains the sidecar-contract rule and the probe's replicated-input
+artefact under Known gaps.
+
+Still open, in rough order of expected value:
+
+1. **Locality rows** (phase 5). The whole in-process story turns on it, and inter-node the only
+   remaining lever is fewer bytes. Hypothesis to test first: a row with zero x-bits whose z-bits are
+   the indicator of one side of a spatial cut makes every single-qubit rotation local and only
+   cut-crossing ZZ layers remote.
+2. **Ingest distributed.** The replicated input caps a capacity run at what one rank can build.
+3. **Intra-node zero-copy handoff** (`MPI_Win_allocate_shared`, or in-process domains per rank):
+   3.5× → ~1.6× on the 2-rank case, nothing off-node.
+4. **Split `collective_ns`** into a publish lap and a wait lap, so arrival skew and transport are
+   separate columns.
+5. **The debug stack-overflow flake** (`RUST_MIN_STACK` workaround in `.cargo/config.toml`) still has
+   no root cause, and the function-alignment A/B that would test the LTO-layout hypothesis behind the
+   S7a and post-S9 verdicts was never run.
+6. **Exact `TopN` under partitioning**, as a distributed *k*-th selection.
 
 ## 2026-09-09 — phase 5 (partition-row tuning) first results
 

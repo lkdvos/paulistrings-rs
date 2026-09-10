@@ -1,13 +1,13 @@
 # Slurm templates for the partitioned-engine measurements
 
-Batch scripts that move the *quiet-box* measurement steps of the partitioned-engine plan off the
-reference workstation and onto an exclusive Rusty node. Submitting is a manual step (`sbatch`), by
-design: allocating cluster resources is a user check-in point.
+Batch scripts that run the partitioned engine's measurements on an exclusive Rusty node rather than
+the shared reference workstation. Submitting is a manual step (`sbatch`), by design: allocating
+cluster resources is a user check-in point.
 
 | script | what it runs | when |
 |---|---|---|
-| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | phase 2 (and the post-S9 re-check) |
-| `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix` | phase 3 (needs the `mpi` cargo feature) |
+| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
+| `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
 
 ## Node choice
 
@@ -42,8 +42,8 @@ invalid". Unset it for the submission (`env -u SBATCH_RESERVATION sbatch ...`, o
 SBATCH_RESERVATION` once in the shell).
 
 ```bash
+# P=1 vs P=<numa> runtime-knob campaign on one binary:
 env -u SBATCH_RESERVATION sbatch scripts/slurm/ab-campaign.sbatch
-# P=1 vs P=<numa> runtime-knob campaign on one binary (the phase-2 headline):
 # same, choosing layers / sizes / pairs:
 LAYERS="su4 rotation_local rotation_remote gu2q" NS="1000000 3000000" PAIRS=5 sbatch scripts/slurm/ab-campaign.sbatch
 # code A/B of the untouched path (P=1 both sides): baseline sha vs the working tree
@@ -52,7 +52,7 @@ A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sba
 sbatch --constraint='genoa&rocky9' scripts/slurm/ab-campaign.sbatch
 ```
 
-## Phase 3: the MPI ranks job
+## The MPI ranks job
 
 `mpi-ranks.sbatch` builds with `--features mpi` and runs the differential net across the allocation
 at **one rank per NUMA domain** (`D = 1`). The engine holds exactly one partition per process and
@@ -60,7 +60,8 @@ reads its placement from the launcher's affinity mask, so `--cpu-bind=ldoms` is 
 there is no domains-per-rank knob and no `--partition-cpus` string to build. The rank count must be
 a power of two (a partition is named by `log2(P)` GF(2) rows), so the script rounds
 `nodes × domains` down and prints what it picked: two icelake nodes of two domains each give four
-ranks.
+ranks. The net having passed, it then runs `phase_breakdown --mpi` at the same rank count — `LAYERS`
+and `N` choose the cells — and each rank writes its own `.rank<N>` sidecar.
 
 ```bash
 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-ranks.sbatch
@@ -80,8 +81,8 @@ live checkout, so editing the tree while jobs are queued is safe; pin with
 Output lands where `ab-compare.sh` always puts it, `benchmarks/results/<date>-<nodename>/`
 (gitignored, on the shared home filesystem), plus `benchmarks/results/slurm-<jobid>.out` with the
 node's topology dump (`lscpu`, `numactl -H`) as provenance. Results are **per host**: a node's numbers
-are not comparable with ccqlin038's, but P=1 vs P=N on the same node is exactly the comparison the
-plan needs. Roofline percentages need that node's ceilings: run `crates/membench` there
+are not comparable with ccqlin038's, but P=1 vs P=N on the same node is the comparison that means
+something. Roofline percentages need that node's ceilings: run `crates/membench` there
 (`MEMBENCH=1 sbatch ...` adds a short node-local / all-core pass) and add a `host-topology.sh` arm
 for the node type before quoting them.
 

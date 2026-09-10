@@ -87,7 +87,8 @@
 //! allocates nor zeroes its megabytes again. That is worth more than it sounds:
 //! measured at 2 ranks x 8 threads with 48 MB crossing per layer, faulting in
 //! and zeroing the send and receive buffers cost 14 ms a layer and the word-by-
-//! word decode another 8.5, against 13.7 ms of actual transfer.
+//! word decode another 8.5, against 13.7 ms of actual transfer
+//! (`research/notes/2026-09-08-partitioned-phase1-log.md`).
 //!
 //! The in-process transport calls none of them — it moves the typed payload
 //! through a channel — but an MPI transport implements the same traits by
@@ -965,9 +966,10 @@ pub trait Transport: Collectives {
     /// ([`Payload::early_parts`]) — has arrived before `body` starts; the rows
     /// themselves ([`Payload::bulk_parts`]) may still be in flight while it
     /// runs, and `body` blocks on the [`ChunkWait`] it is handed before it
-    /// reads a chunk's rows. A transport with nothing to overlap hands over
-    /// `AlreadyHere` and is a blocking exchange with extra steps — which is
-    /// what [`InProcessTransport`] is, its "transfer" being a moved pointer.
+    /// reads a chunk's rows. A transport with nothing to overlap completes the
+    /// transfer first and hands over a no-op [`ChunkWait`], which makes it a
+    /// blocking exchange with extra steps — that is what [`InProcessTransport`]
+    /// is, its "transfer" being a moved pointer.
     ///
     /// `send.len()` must be [`size`](Collectives::size) and
     /// `send[self.rank()]` must be `None`; the slots handed to `body` have the

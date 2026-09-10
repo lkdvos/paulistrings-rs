@@ -126,7 +126,8 @@ speculative), **refactor** (only after green).
   `engine/partitioned/layer.rs`. Every test configuration uses `Placement::Unpinned`, so the suite runs on a one-node
   box or a `taskset`ed CI container; placement itself is covered by `topology.rs`'s own tests. A policy used in a
   partitioned test must answer `finalizes_layer() == false` or implement `PartitionedTruncation` — the trait default
-  panics on a policy that finalizes layers with no collective form.
+  panics on a policy that finalizes layers with no collective form. The shared fixtures — `unpinned_partitions`,
+  `zz_rotation`, `trotter_circuit`, `KeepAll` — live in `test_support` with the rest, not beside any one test file.
 - The distributed driver has two nets: `tests/propagate_distributed.rs` runs `DistributedSum` over
   `InProcessTransport` (one thread per "rank", no MPI, so it is part of the default `cargo test`), and
   `tests/mpi_ranks.rs` runs the same matrix over `MpiTransport` under `mpirun`. The latter is `harness = false` —
@@ -170,6 +171,12 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   `PARTITION_CPUS`. `P = 1` under the existing `node0`/`phys8` placements is the one-socket reference.
 - P=1 vs P=2 is a **runtime-knob** A/B, not a code A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'`
   runs one binary both ways and pairs on `(layer, threads)`.
+- The probe's JSON sidecar carries the partition fields on **every** row, partitioned or not, and the exchange
+  sub-phases (`export_count_ns`/`export_fill_ns`, the four exchange laps, `append_ns`, `chunk_wait_ns`) are
+  *contained in* the phase above rather than additional to it — never sum them into a total. Because the transfer
+  runs under the coset loop, `exchange_ns` is small by construction and `chunk_wait_ns` is what the loop failed to
+  hide; read the two together. Contract (a) in `benchmarks/PROFILING.md` lists the fields, and it is the thing to
+  update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
 - LTO code-layout effects are real: the `#[inline]` set in `engine/merge.rs` is A/B-verified load-bearing in both directions
@@ -196,6 +203,9 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   the wire format is raw host bytes (same architecture and same `W` on every rank).
 - Partition rows are drawn at random by default, so export volume is a property of the draw: roughly half of a dense
   two-qubit gate's deltas cross at `P = 2`. Tuning the rows (cut-like rows, conserved quantities) is open research.
+- The probe replicates its input on every rank (`--n` terms built everywhere, then filtered), so its `vmhwm_kb` grows
+  with the rank count at constant terms per rank. That is a probe artefact, not the engine: a capacity run needs a
+  driver that ingests already distributed. Engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under
   full parallelism — pre-existing, reproduced before any partitioned code, never with a 16 MiB stack. `.cargo/config.toml`
   sets `RUST_MIN_STACK = "16777216"` as the workaround; root cause is still open.

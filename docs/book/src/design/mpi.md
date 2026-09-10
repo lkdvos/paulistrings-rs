@@ -6,9 +6,29 @@ only the rows that cross a rank boundary. Everything on the NUMA page still appl
 loop, the same truncation rules, the same two things that change. What is new is the transport
 (point-to-point MPI instead of in-process channels) and the launch.
 
+**The reason to reach for it is capacity.** A sum that does not fit one node's memory fits `P` of
+them, and the per-rank overhead is bounded and does not grow with the rank count.
+
 It is behind the off-by-default `mpi` cargo feature, so the default wheel cannot do it.
 `paulistrings.mpi_available()` says whether this build can, and `comm=` in a build without it raises
 `RuntimeError`.
+
+## What to expect
+
+Measured on Icelake `ccq` nodes (2 × 32 cores), one rank per NUMA domain, 32 threads per rank,
+UCX shared memory within a node and InfiniBand between nodes, at 6·10⁶ terms per rank:
+
+| | 2 ranks (1 node) | 4 ranks (2 nodes) | 8 ranks (4 nodes) |
+|---|---|---|---|
+| layer with no row crossing | 10.6 ms | 11.1 ms | 10.3 ms |
+| Pauli rotation whose generator crosses | 37.5 ms (**3.5×**) | 48.3 ms (**4.4×**) | 48.6 ms (**4.7×**) |
+
+**Weak scaling is flat once the exchange leaves the node**: the remote layer costs the same at 4 and
+8 ranks, and local layers cost ~10.5 ms whatever the rank count. The step from 2 to 4 is shared
+memory giving way to InfiniBand. A remote layer is **transfer-bound** — the pipeline runs the coset
+loop under the transfer, so what is left is the export pass plus the bytes on the wire — which means
+the lever is fewer bytes (locality rows, a lower truncation), not more threads. Full table:
+[`research/notes/2026-09-08-numa-partitioning-results.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/notes/2026-09-08-numa-partitioning-results.md).
 
 ## Building it
 
@@ -25,10 +45,10 @@ VIRTUAL_ENV=$PWD/.venv-mpi .venv-mpi/bin/maturin develop --release --features mp
     -m crates/paulistrings-py/Cargo.toml
 ```
 
-`mpi4py` must be built against the *same* MPI the extension links; the boundary checks the width of
-`MPI_Comm` and refuses a mismatch rather than corrupting a handle. The built extension carries an
-rpath to that MPI's library directory, so `import paulistrings` works from a shell with no modules
-loaded.
+A second venv is needed because the repo's `./.venv` has no mpi4py, and `mpi4py` must be built
+against the *same* MPI the extension links; the boundary checks the width of `MPI_Comm` and refuses
+a mismatch rather than corrupting a handle. The built extension carries an rpath to that MPI's
+library directory, so `import paulistrings` works from a shell with no modules loaded.
 
 `scripts/mpi-test.sh --ranks 2,4 --python` builds the extension into that venv and runs
 `python/paulistrings/tests/test_mpi.py` under `mpirun` at each rank count.
@@ -86,12 +106,18 @@ with explicit CPU lists, done by the launcher instead:
 
 ```bash
 mpirun -n 4 --map-by ppr:1:numa --bind-to numa python script.py
-srun --ntasks-per-node=4 --cpu-bind=ldoms --mpi=pmix python script.py
+srun --ntasks-per-node=2 -c 32 --cpu-bind=ldoms --mpi=pmix python script.py
 ```
 
-Each rank's Rayon pool sizes itself from the CPUs the launcher left in its affinity mask, so an
-unbound launch gives every rank a pool over the whole node and they fight. `RAYON_NUM_THREADS` is
-ignored, as in any partitioned run.
+`--ntasks-per-node` is the node's NUMA-domain count and `-c` its cores per domain. Each rank's Rayon
+pool sizes itself from the CPUs the launcher left in its affinity mask, so an unbound launch gives
+every rank a pool over the whole node and they fight. `RAYON_NUM_THREADS` is ignored, as in any
+partitioned run.
+
+On Rusty, `scripts/slurm/mpi-ranks.sbatch` does the arithmetic: it reads the node's domain count,
+rounds `nodes × domains` down to a power of two, and runs the differential net and then the probe
+at that rank count. See
+[`scripts/slurm/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md).
 
 ## The three requirements
 
@@ -131,8 +157,13 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 - **Exact `topn` is unavailable**, as in any partitioned run: choosing the `n`-th largest magnitude
   across ranks is a distributed selection. `truncation.approx_topn(n)` all-reduces its octave
   histogram and retains exactly the set a single-process run would have.
-- **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-endianness job is silently
-  wrong.
+- **A replicated input caps the sum at what one rank can build.** Reaching the capacity the ranks
+  together have needs a driver that ingests already distributed; the scatter itself is a local
+  filter and costs nothing extra.
+- **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-architecture or mixed-`W`
+  job is silently wrong.
 - **One partition per rank.** The hybrid — several NUMA domains inside one rank — is not implemented.
-- **No committed measurement yet.** The transport works and is tested at 1, 2 and 4 ranks; no scaling
-  campaign has been run. Treat it as a facility to try, not as a documented speedup.
+  Intra-node, that is what would take the 2-rank case below 3.5×.
+- **The library never initializes MPI.** The application owns `MPI_Init` and `MPI_Finalize`; from
+  Rust, build the universe with the re-exported `paulistrings::mpi::rsmpi` rather than a separate
+  `mpi` dependency, so the versions cannot disagree.

@@ -141,12 +141,13 @@ consumer elsewhere unless the coupling is written down.
 **(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s
 phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from
 `phase_breakdown.rs`'s `json_line` — verify against `PhaseStats` in
-`crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `threads`, `n`, `reps`,
-`qubits`, `seed`, `wall_ns`; the wall-clock phases `rebucket_ns`, `prepare_ns`, `rescale_ns`,
+`crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `threads`,
+`n`, `reps`, `qubits`, `seed`, `hash_seed`, `bucket_bits`, `wall_ns`; the wall-clock phases
+`rebucket_ns`, `prepare_ns`, `rescale_ns`,
 `span_plan_ns`, `permute_ns`, `coset_loop_ns`, `unpermute_ns`, `recount_ns`, `finalize_ns`; the worker
 busy-time phases `swap_ns`, `size_ns`, `gather_ns`, `sort_ns`, `merge_ns`, `clear_ns`; and the counters
 `layers`, `cosets`, `runs`, `rows_gathered`, `rows_sorted`, `rows_id`, `terms_in`, `terms_out`, `vmrss_kb`,
-`vmhwm_kb`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
+`vmhwm_kb`, `target_bucket_len`, `min_buckets`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
 requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* line per
 `(layer, threads, partitions)` key, so an appended re-run overwrites the earlier one in the rendered
 report.
@@ -176,6 +177,9 @@ a four-step heavy-hex cell is 1084 layers — and both are empty on an unpartiti
 cell may have re-drawn to keep its rows independent of `H`'s (it says so on stderr); that also
 moves the coset dimension, so do not compare such a cell's phase timings against a differently
 seeded one.
+
+A distributed cell (`--mpi`) adds two more, and only there: `rank` and `ranks`. Each rank writes its
+own sidecar file, `<--json-out path>.rank<N>`.
 
 Eight further keys break the export and the exchange down — they are **sub-phases, contained in the
 phase above rather than additional to it**, so never add them to a total: `export_count_ns` +
@@ -324,6 +328,40 @@ runs the same warm-up + timed pair as above through `PartitionedSum::propagate_w
 - `--truncation topn:<N>` is refused for a partitioned cell: `TopN`'s exact selection has no
   `PartitionedTruncation` impl (the bound rejects it at compile time). `atopn:<N>`, `coeff:<t>` and `keep`
   all run.
+
+### The rank axis
+
+`--mpi` (feature `mpi`) runs the same cells as **one partition per process**, taking the group from
+`MPI_COMM_WORLD` instead of from `--partitions`, which must stay at its default `1`. Leave
+`--partition-cpus` at `auto`: the launcher's affinity mask is the placement, and `Auto` over a mask
+of one domain resolves to a single slot covering it.
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+export LIBCLANG_PATH=$(llvm-config --libdir)
+cargo build --release --features phase-timing,mpi --example phase_breakdown
+
+mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
+  target/release/examples/phase_breakdown --mpi --threads 32 \
+  --layers rotation_local,rotation_remote --n 4000000 --reps 8 --json-out out.jsonl
+```
+
+- **`--threads` is per rank** here, not a total to divide: a rank is one partition.
+- **The input is replicated.** Every rank builds `--n` terms and keeps its own share, so terms per
+  rank is `n / ranks` and `vmhwm_kb` grows with the rank count at constant terms per rank. That growth
+  is the probe, not the engine — hold terms per rank fixed by scaling `--n` with the rank count, and
+  read the engine's own footprint from the flat part.
+- **Each rank writes `<path>.rank<N>`** and prints its own `cell` line. Take medians over ranks; a
+  spread between ranks on the same cell is arrival skew, which shows up in `hdr_wait_ns`.
+- **The exchange laps are only filled here.** The in-process transport moves a typed payload and has
+  no encode, no receive sizing and no transfer to attribute, so `send_post_ns` … `data_wait_ns` and
+  `chunk_wait_ns` are zero for a `--partitions` cell and nonzero for an `--mpi` one.
+- **`PAULISTRINGS_EXCHANGE_CHUNKS`** overrides the pipeline's chunk count, read once per process, so
+  it needs `mpirun -x` to reach the ranks. `K = 1` is the two-phase shape with no pipelining and is
+  the control for "did the overlap do anything".
+- Reference numbers and the weak-scaling table:
+  `research/notes/2026-09-08-numa-partitioning-results.md`. On Rusty, `scripts/slurm/mpi-ranks.sbatch`
+  runs the differential net and then this probe across the allocation.
 
 ## Flamegraphs
 

@@ -1143,9 +1143,10 @@ fn gather_local_input_major<const W: usize>(
 /// whose amplitudes never vanish, so no row is ever discarded. What
 /// [`GatherRun::push_if`] removes there is the three `Vec::push` capacity
 /// checks and length increments per row. Measured `su4`, `--n 1000000`,
-/// 1 thread, `taskset -c 6`, 7/7 pairs, work counters bit-identical:
-/// **wall −3.38%, gather −9.74%**, instructions −3.9%, `br_misp_retired`
-/// 28.8M → 14.7M, DSB 97.6% both sides. The layers that keep input-major
+/// 1 thread, `taskset -c 6`, work counters bit-identical, over three
+/// independent campaigns (7, 7 and 11 pairs; medians −3.38 / −4.22 / −4.22):
+/// **wall −4.22% (11/11), gather −10.68% (11/11)**, instructions −3.9%,
+/// `br_misp_retired` 28.8M → 14.7M, DSB 97.6% both sides. The layers that keep input-major
 /// (`cnot`, `gu2q`, `rotation_zz`) are a clean null, 4/7–5/7 either way, which
 /// is also the layout control.
 /// `research/notes/2026-09-10-constant-recalibration.md`.

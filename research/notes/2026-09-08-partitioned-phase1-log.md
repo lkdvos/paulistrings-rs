@@ -495,3 +495,18 @@ Cut rows: 1.9–2.4× faster than random at 2/4/8 ranks on heavy-hex (Slurm 7015
 phase-5 results note). At ≤ 3e5 terms per rank the per-layer bucket-bits all-reduce (~30–70 µs over IB
 × 271 layers per step) is the dominant cost of exchange-free layers; amortizing it (every K layers and
 before remote layers) is the next engine change (in progress).
+
+## 2026-09-10 — bucket-bits collective on a schedule; phase 5 results complete
+
+`19a7971`..`9c14435`: the bucket-count all-reduce runs only on layers with a remote delta, on the first
+`BITS_AGREE_EVERY = 16` layers, and every 16th layer after that; non-finalizing policies skip
+`finalize_layer_partitioned`. Heavy-hex step with cut rows, 2 ranks on one node: 1355 → 120 collectives
+per call, wall unchanged (shared-memory all-reduce is µs) — the effect this targets is the 30–70 µs per
+layer measured over InfiniBand at 4–8 ranks (Slurm 7015681/83: 133/136 ms per step); re-measure there.
+`collective_ns` did not fall 11×: it is arrival skew, and fewer sync points each absorb more of it.
+
+Phase 5 status: hypothesis confirmed on both workloads (cut rows: 4/271 layers remote per heavy-hex
+step, P=2 in-process 15–21% faster than single-process, 1.9–2.4× over random rows on IB); selector fixed
+(balance-scored restarts) and compared to hand cuts; recommendation recorded in the results note.
+Open after this: the IB re-measurement of the bits schedule, distributed ingestion for capacity runs,
+the small-message regime of cut-crossing layers, intra-node zero-copy handoff.

@@ -270,13 +270,6 @@ impl<const W: usize> GatherRun<W> {
     }
 
     #[inline]
-    fn push_id(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.id_x.push(x);
-        self.id_z.push(z);
-        self.id_coeff.push(c);
-    }
-
-    #[inline]
     fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.x.push(x);
         self.z.push(z);
@@ -1042,6 +1035,28 @@ pub(super) fn fill_coset<const W: usize, T, X>(
 /// agree only to floating-point tolerance — pinned by
 /// `local_gather_orders_agree_to_fp_tolerance` — and the threshold remains a
 /// pure performance knob, not a correctness one.
+///
+/// **Re-measured 2026-09-10** on the JCC-padded build, with both arms carrying
+/// the branchless filter (the asymmetry `4ee8033` introduced is gone), and
+/// **the value is unchanged**. Only three built-in layers take a `Local` plan
+/// that reaches this branch, at `r = 1` (`trotter`, `tfim_step`), `r = 2`
+/// (`cnot`, `gu2q`) and `r = 4` (`su4`), so the constant has exactly four
+/// distinct settings; all four were measured, 7 pairs, `--n 1000000`,
+/// 1 thread, `taskset -c 6`:
+///
+/// | value | who changes order | wall Δ% vs 3 |
+/// |---|---|---|
+/// | 1 | `trotter` → output-major | **+4.61** (7/7), gather +11.39 |
+/// | 2 | `cnot`, `gu2q` → output-major | **+23.31 / +15.53** (7/7), gather +43 / +48 |
+/// | **3** | — | incumbent |
+/// | 5 | `su4` → input-major | ns at 1 thread (−0.31%, 4/7); gather **+69%** (7/7) at 16 threads |
+///
+/// The `r = 2` row reproduces the original −14…−22% the other way round and
+/// then some. The `r = 4` row is the one worth knowing: at one thread the two
+/// orders are indistinguishable, and the whole justification for keeping
+/// `su4` on output-major is the multi-threaded gather, where input-major's
+/// sixteen open write streams plus the swapped coset overflow L2 exactly as
+/// recorded. `research/notes/2026-09-10-constant-recalibration.md`.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
 /// Input-major gather for a tabulated (`Local`) plan: each term is loaded
@@ -1118,6 +1133,22 @@ fn gather_local_input_major<const W: usize>(
 /// key-only, so it does not canonicalize the two orders to an identical
 /// sequence; they agree only up to floating-point tolerance on
 /// any equal-key summation (see `local_gather_orders_agree_to_fp_tolerance`).
+///
+/// **The zero-amplitude filter is branchless**, as in
+/// [`gather_local_input_major`]. `4ee8033` converted only the input-major arm,
+/// which left the two sides of [`GATHER_OUTPUT_MAJOR_MIN_R`] measuring
+/// different code; this arm was converted 2026-09-10. The interesting part is
+/// that it wins on the layer where the *filter* cannot possibly help:
+/// output-major is only reached at `r >= 3`, i.e. by a dense two-qubit PTM,
+/// whose amplitudes never vanish, so no row is ever discarded. What
+/// [`GatherRun::push_if`] removes there is the three `Vec::push` capacity
+/// checks and length increments per row. Measured `su4`, `--n 1000000`,
+/// 1 thread, `taskset -c 6`, 7/7 pairs, work counters bit-identical:
+/// **wall −3.38%, gather −9.74%**, instructions −3.9%, `br_misp_retired`
+/// 28.8M → 14.7M, DSB 97.6% both sides. The layers that keep input-major
+/// (`cnot`, `gu2q`, `rotation_zz`) are a clean null, 4/7–5/7 either way, which
+/// is also the layout control.
+/// `research/notes/2026-09-10-constant-recalibration.md`.
 fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1140,8 +1171,8 @@ fn gather_local_output_major<const W: usize>(
                 if dense_identity {
                     debug_assert!(a != ZERO);
                     run.id_coeff.push(src.coeff[t] * a);
-                } else if a != ZERO {
-                    run.push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                } else {
+                    run.push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
         }
@@ -1150,16 +1181,13 @@ fn gather_local_output_major<const W: usize>(
             for t in 0..src.len() {
                 let s = ptm.support_bits(&src.x[t], &src.z[t]);
                 let a = d.amp[s];
-                if a == ZERO {
-                    continue;
-                }
                 let mut kx = src.x[t];
                 let mut kz = src.z[t];
                 for w in 0..W {
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                run.push(kx, kz, src.coeff[t] * a);
+                run.push_if(nonzero(a), kx, kz, src.coeff[t] * a);
             }
         }
     }

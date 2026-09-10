@@ -186,14 +186,44 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// The sparse-PTM row is why this is a gate and not a replacement: with one
 /// nearly-sorted stream the comparison sort costs about one comparison per row
 /// and the radix's fixed passes are pure overhead. `2..8` rest streams —
-/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — is **unmeasured**
-/// and deliberately left on the comparison kernel.
+/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — was **unmeasured**
+/// when the gate was set; it is measured now, and the answer is in the
+/// 2026-09-10 section below.
 ///
 /// Both `W = 1` rows above are favourable, and by a similar margin, in *both*
 /// delta-span rank regimes (`r = 3` and `r = 4`, see
 /// `research/notes/2026-09-01-bucket-cliff.md`): this kernel is
 /// order-oblivious, so it does not repair a deficient rank draw — it removes
 /// the sort's sensitivity to one.
+///
+/// # 2026-09-10: the `2..8` gap is measured, and the value stands — but not
+/// for the recorded reason
+///
+/// Re-measured on the JCC-padded build (`2026-09-10-hot-path-code-size.md`),
+/// after the gather and merge rewrites of `06777e3` / `4ee8033` changed the
+/// phase mix. Every built-in `Local` plan has 1, 3 or 15 rest streams, so this
+/// constant has three distinct settings, not fourteen; all three were measured
+/// at `--n 1000000`, 1 thread, `taskset -c 6`, 7 pairs:
+///
+/// | value | effect | wall Δ% vs 8 |
+/// |---|---|---|
+/// | 1 | 1-stream `Local` layers join | `trotter` ns, `tfim_step` ns (sort **+6.1%**, 7/7) |
+/// | 2 or 3 | `cnot`, `gu2q` join | `cnot` **−5.48%** (sort −22.7%), `gu2q` **+13.20%** (sort +34.3%) |
+/// | **4..=15** | incumbent | — |
+/// | 16 | nobody; radix off | `su4` **+17.20%** (sort +31.4%) |
+///
+/// The `su4` justification reproduces intact (radix is −14.7% wall / −23.9%
+/// sort there, against the original −15.2% / −25.4%). What does *not* survive
+/// is the assumption behind the shape of the gate: **`cnot` and `gu2q` both
+/// have exactly 3 rest streams and want opposite kernels**, by −5.5% and
+/// +13.2%. The rest-stream count is therefore not a predictor at all in this
+/// band — it is only a proxy for how presorted the concatenated stream is, and
+/// the two layers differ there (`gu2q`'s three Pauli-structured deltas each
+/// own a coset coordinate and arrive as clean ascending blocks; `cnot`'s do
+/// not). No threshold on *this* quantity can take `cnot`'s win without taking
+/// `gu2q`'s loss, so 8 stands and the open question moves to finding a
+/// plan-time presortedness predictor.
+/// `research/notes/2026-09-10-constant-recalibration.md`.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
 
 /// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.

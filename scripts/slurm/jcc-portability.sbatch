@@ -36,6 +36,13 @@
 #   LAYERS    probe layers, space separated (default "rotation_zz cnot trotter su4")
 #   NS        --n values (default "1000000")
 #   THREADS   thread counts (default: "1 <physical cores>")
+#             WARNING: --n is NOT scaled with the thread count, so a multi-thread
+#             cell at the default n=1e6 gives ~10-20k terms per worker and measures
+#             scheduling noise, not the kernel (jobs 7018021-3: zero direction-
+#             consistent multi-thread wall cells, spreads up to -33%..+33%). For a
+#             real multi-thread campaign pass NS scaled with the cores, e.g.
+#             NS=30000000 on a 96-core node. su4 is the exception: it closes at
+#             ~1.4e7 from n=1e6 and stays informative.
 #   REPS      --reps (default 20 — the timed region must be >=200ms; the
 #             governor is not pinnable and short regions run downclocked)
 #   PAIRS     pairs per cell (default 7)

@@ -32,9 +32,18 @@ RUST_MIN_STACK = "16777216"
 # branch/boundary alignment, and padding pins it.
 # See research/notes/2026-09-10-hot-path-code-size.md.
 #
-# Cost is ~2% more instructions (the padding) and ~2% larger binaries. Scoped
-# to x86_64 because the LLVM option is x86-only; harmless but unmeasured on
-# non-Skylake x86 parts (AMD Zen, Ice Lake and later do not have the erratum).
+# Cost is ~2% more instructions (the padding) and ~2% larger binaries. Scoped to
+# x86_64 because the LLVM option is x86-only.
+#
+# MEASURED on the parts that do NOT have the erratum (2026-09-10, ccq jobs
+# 7018021-3, research/notes/2026-09-10-jcc-portability.md): it is a tax there,
+# not merely harmless. Across rome (Zen2), genoa (Zen4) and icelake (Ice
+# Lake-SP), **13 of 13 direction-consistent phase results at 1 thread show the
+# padded build slower**, by +0.6..+3.8% (~1% wall where wall resolves at all),
+# landing on whichever phase is branchiest in the layer. So this flag trades
+# ~1% on every non-Skylake host for -9..-13% on the reference workstation.
+# Narrowing it to Skylake-derived parts is open; the options and their costs are
+# in that note's final section. Until then, cluster runs pay the ~1%.
 #
 # NOTE: an exported RUSTFLAGS replaces this list wholesale. Anything that sets
 # RUSTFLAGS for a benchmark build must append this flag too (scripts/profile.sh

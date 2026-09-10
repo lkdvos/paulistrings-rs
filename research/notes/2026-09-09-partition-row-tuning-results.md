@@ -109,3 +109,19 @@ because the remote layers move the same anticommuting terms. Both are an order o
 random rows. Recommendation: for a known lattice use `cut` with a balanced bisection; `select` for
 circuits without an obvious geometry, with the balance band as the knob if imbalance matters more than
 remote weight.
+
+## C2b — the bits-collective schedule over InfiniBand (2026-09-10, head `6355bdc`, Slurm 7015753/54)
+
+Same cells as C2 (heavy-hex step, cut rows, 2⁻¹², 32 threads per rank), with the bucket-bits all-reduce
+on the 16-layer schedule instead of every layer:
+
+| ranks (nodes) | before ms/step (7015681/83) | after ms/step | coset loop | collectives per call | remote layers/step |
+|---|---|---|---|---|---|
+| 4 (2) | 133 | **85.6** (−36%) | 40 | 160 (was 1355) | 12 |
+| 8 (4) | 136 | **81.1** (−40%) | 31 | 219 (was 1355) | 25 |
+
+The per-layer collective was the floor: removing it takes the 4- and 8-rank steps from flat (125 → 133
+→ 136 ms at 2/4/8 ranks) to scaling (125 → 86 → 81). What remains above the coset loop (~45–50 ms per
+step) is the 12–25 cut-crossing layers at this small per-rank size (latency-bound 16 MB exchanges) plus
+arrival skew. Random rows at the same cells: 292 / 257 ms — cut rows plus the schedule are now
+**3.4× (4 ranks) and 3.2× (8 ranks) faster than random rows**.

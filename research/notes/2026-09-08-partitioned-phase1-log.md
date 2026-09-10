@@ -510,3 +510,9 @@ step, P=2 in-process 15–21% faster than single-process, 1.9–2.4× over rando
 (balance-scored restarts) and compared to hand cuts; recommendation recorded in the results note.
 Open after this: the IB re-measurement of the bits schedule, distributed ingestion for capacity runs,
 the small-message regime of cut-crossing layers, intra-node zero-copy handoff.
+
+## 2026-09-10 — bits schedule confirmed over InfiniBand
+
+Slurm 7015753/54: heavy-hex step with cut rows 133 → 86 ms (4 ranks) and 136 → 81 ms (8 ranks) per
+step; multi-node strong scaling now visible (125/86/81 at 2/4/8). Phase 5 closed; table in the results
+note.

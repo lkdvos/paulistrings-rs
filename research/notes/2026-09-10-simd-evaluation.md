@@ -119,6 +119,56 @@ by new tests at `W ∈ {1,2,4,8,16}` against the per-word form as an independent
 removes an ISA dependence, and it costs nothing. It is recorded here as a *null* on layer
 time so nobody re-measures it expecting a win.
 
+## 3b. Targeted `#[target_feature]` on the gather: real ISA win, larger layout damage
+
+§2 suggested the obvious next move: give the *gather* AVX2 while leaving the merge on
+baseline codegen, capturing `cnot`'s −9.35% without the merge's +6.5..+9.1%. Implemented
+as a runtime `is_x86_feature_detected!("avx2")` check dispatching to a
+`#[target_feature(enable = "avx2")]` wrapper around an `#[inline(always)]` copy of the
+body — dispatch once per coset task, never per row.
+
+It works, in the narrow sense: the AVX2 monomorphizations are emitted (204 VEX-encoded
+instructions; 128-bit `xmm` rather than `ymm`, since `W ∈ {1,2}` keys are small), and
+`cnot`'s gather does move. Isolating A/B against a fold-only binary, 7 pairs:
+
+| layer | wall Δ% | gather Δ% | sort Δ% | merge Δ% |
+|---|---:|---:|---:|---:|
+| `cnot` | +1.80% (7/7) | **−5.33%** (7/7) | **+11.97%** (7/7) | +8.81% (7/7) |
+| `rotation_zz` | **+8.92%** (7/7) | +1.45% (7/7) | **+34.66%** (7/7) | +14.33% (7/7) |
+
+**The sort — which this change does not touch in any way — got 34.66% slower, 7/7
+consistent, min +34.35 max +35.60.**
+
+This is not noise and it is not a mistake in the measurement. Applying the LTO
+discriminator the protocol requires, every work counter is bit-identical between the two
+binaries:
+
+```
+terms_in, terms_out, rows_gathered, rows_sorted, rows_id, cosets, runs, layers
+  -> identical in both cells
+```
+
+The engine performed exactly the same work, row for row, and an untouched function ran a
+third slower. This is pure code placement.
+
+**The structural reason, and why it is not tunable away.** To recompile a body under a
+wider feature set, `#[target_feature]` *requires* a second copy of that body — a
+`#[target_feature]` function cannot be inlined into a caller lacking those features, so
+the scalar path needs its own instantiation. In a `lto = "fat"`, `codegen-units = 1`
+binary the duplicated gather body (× 2 widths) displaces everything around it, and the
+sort and merge pay for it. The tension is inherent: the mechanism that delivers the ISA
+win is the same mechanism that causes the damage.
+
+**Verdict: reverted.** Targeted `#[target_feature]` dispatch is not viable in this tree at
+this granularity. A −5.33% gather bought at the price of +34.66% on the sort is not a
+trade worth making, and there is no obvious knob that keeps the first without the second.
+
+This also retires the Stage-2 plan's recommended dispatch strategy before it was built,
+which is the cheapest possible time to learn it. Any future attempt needs either a
+separate codegen unit for the kernels (breaking the fat-LTO assumption the whole crate is
+built on) or a global build flag — and §2 already showed the global flag is net negative
+on two of three priority layers.
+
 ## 4. Method notes worth keeping
 
 - `perf_event_paranoid == 0` on this host, so in-process `perf_event_open` counters work.
@@ -147,12 +197,28 @@ Neither result supports a broad SIMD program for the sparse regime, and both are
 consistent with the standing verdict that gather is latency-bound and merge must not be
 disturbed.
 
-The one positive signal is `cnot`'s gather at **−9.35%, 7/7 consistent**, under AVX2 —
-paired with a merge regression of +6.5 to +9.1% that is equally consistent and, on
-merge-heavy layers, larger. **Isolating the first from the second is the highest-value
-Stage-1 experiment**, and it is a far narrower change than the word-planar refactor this
-study set out to evaluate: put `#[target_feature(enable="avx2")]` on the gather, leave the
-global build at baseline so the merge keeps its current codegen, and re-run this matrix.
+The one positive signal was `cnot`'s gather at **−9.35%, 7/7 consistent**, under AVX2. §3b
+tried to isolate it with targeted `#[target_feature]` dispatch and found that the
+isolation mechanism costs **+34.66% on the untouched sort** at bit-identical work counts.
+That avenue is closed.
+
+**What this means for Stages 1-3.** The study set out to ask whether a word-planar layout
+and SIMD kernels would pay. Stage 0 has instead established something more binding: in
+this binary, *the code-placement cost of adding a second kernel path exceeds the
+arithmetic it buys*. That applies to any SIMD program here, planar or not, because every
+one of them adds a second path. The remaining honest options are narrow:
+
+1. A **global** build flag, per-workload — net negative on 2 of 3 priority layers (§2), so
+   at best a documented opt-in for gather-dominated circuits like `cnot`.
+2. Moving the kernels into a **separate codegen unit / crate**, giving up the whole-program
+   fat-LTO layout the engine currently depends on. That is a large, risky change to
+   evaluate against a single-digit-percent prize.
+3. Doing nothing, which the phase budget and the latency-bound verdict both support.
+
+**Recommendation: do not proceed to Stages 1-3 as scoped.** The decisive layout gate
+(`G-MERGE-1`) was never reached, because a cheaper experiment closed the door upstream of
+it. If the question is revisited, the first thing to settle is not SIMD but whether the
+kernels can live outside the fat-LTO unit without losing more than they gain.
 
 Still open (Stage 1): whether a word-planar layout helps, which the decisive cheap gate
 `G-MERGE-1` (planar `merge2_into` ≤ +2% at W=2) should settle before any refactor.

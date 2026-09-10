@@ -5,6 +5,10 @@ Parent plan: the partitioned-engine plan (phases 1–4 landed; see
 `research/notes/2026-09-08-numa-partitioning-results.md`). Priority (user, 2026-09-08): multi-node
 capacity for very large sums; Pauli-rotation circuits (Trotter, kicked Ising) are the primary workload.
 
+Status (2026-09-10): closed — results in `research/notes/2026-09-09-partition-row-tuning-results.md`;
+`PartitionRows::cut` and `layer_locality` landed, the `select` selector was measured and removed
+(last at `da86546`).
+
 ## Why
 
 A layer whose deltas all have zero partition bits touches no transport and costs 1×; a remote rotation

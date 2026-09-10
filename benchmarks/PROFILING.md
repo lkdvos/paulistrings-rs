@@ -163,8 +163,8 @@ lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, 
 Six further keys carry the workload and row-policy axes the two Trotter-step
 layers (`tfim_step`, `heavyhex_step`) brought with them, and are written on every row:
 `initial` (string, `"random"` or `"z0"` — the cell's input sum, whose default is per layer, so
-read it rather than assuming the run's flag), `partition_rows` (string, `"random"` / `"cut"` /
-`"select"`), `rows_remote_gens` (int) and `rows_remote_weight` (float) — the distinct key-delta
+read it rather than assuming the run's flag), `partition_rows` (string, `"random"` / `"cut"`),
+`rows_remote_gens` (int) and `rows_remote_weight` (float) — the distinct key-delta
 masks those rows leave remote and the number of *layers* carrying one, the same scale for all
 three policies — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
 `max/mean` of the partitions' input term counts per layer, in application order) and
@@ -300,15 +300,12 @@ runs the same warm-up + timed pair as above through `PartitionedSum::propagate_w
   (`count_remote_deltas` decides, once per cell, outside the timed region). They are the best and worst
   case of the exchange on otherwise identical work, and both collapse to `rotation_zz` at `P = 1`. The
   chosen pair goes to stderr and into the sidecar's `gen_qubits`.
-- `--partition-rows random|cut|select` (default `random`) chooses the rows themselves, which is what
-  decides how many layers exchange at all: `random` is `PartitionRows::from_seed`, the driver's own draw
+- `--partition-rows random|cut` (default `random`) chooses the rows themselves, which is what decides
+  how many layers exchange at all: `random` is `PartitionRows::from_seed`, the driver's own draw
   (roughly half a two-qubit generator's deltas cross at `P = 2`); `cut` is `PartitionRows::cut` over `P`
   contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit
-  generators as possible at ±25% size balance; `select` is `select_rows` over the cell's circuit. All three
-  report `rows_remote_gens` / `rows_remote_weight` in the sidecar, and `cut`/`select` say their cut or
-  their remote set on stderr. **With the default `--partition-seed`, `random` is not the "half remote" case:**
-  the partition-row salt equals `DEFAULT_HASH_SEED`, so the draw starts from `Xs64` state 1 and the first
-  rows come out sparse — pass an explicit `--partition-seed` for a representative random draw.
+  generators as possible at ±25% size balance. Both report `rows_remote_gens` / `rows_remote_weight` in
+  the sidecar, and `cut` says its blocks and crossing count on stderr.
 - Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit
   Eagle r3 lattice, so `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies
   exist for: `--reps` is the number of steps, the angles are the presentation's (`theta_zz = -pi/2`,

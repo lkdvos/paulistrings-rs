@@ -110,6 +110,12 @@ random rows. Recommendation: for a known lattice use `cut` with a balanced bisec
 circuits without an obvious geometry, with the balance band as the knob if imbalance matters more than
 remote weight.
 
+**Removed 2026-09-10.** The selector (`select_rows`, `select_rows_with`, `SelectOptions`, `RowSelection`,
+the probe's `--partition-rows select`) was taken out of the crate on the verdict above: on the primary
+workload it buys two remote layers at the price of a 1.30 imbalance, and `cut` is the recommendation
+wherever the lattice is known. Last present at commit `da86546`. `PartitionRows::cut`, `circuit_generators`
+and `layer_locality` are the supported tools.
+
 ## C2b — the bits-collective schedule over InfiniBand (2026-09-10, head `6355bdc`, Slurm 7015753/54)
 
 Same cells as C2 (heavy-hex step, cut rows, 2⁻¹², 32 threads per rank), with the bucket-bits all-reduce

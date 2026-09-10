@@ -89,7 +89,7 @@ echo "ISA_TAG=$ISA_TAG phys=$phys threads='$THREADS' rev=$PS_REV"
 
 # Build both arms from a worktree of PS_REV, never the live checkout.
 wt=$(mktemp -d "${TMPDIR:-/tmp}/ps-jcc-wt.XXXXXX")
-git worktree add --detach "$wt" "$PS_REV" >/dev/null
+git worktree add --detach -q "$wt" "$PS_REV" >/dev/null
 trap 'git worktree remove --force "$wt" 2>/dev/null || true' EXIT
 cp Cargo.lock "$wt/Cargo.lock" 2>/dev/null || true
 
@@ -97,6 +97,16 @@ out=benchmarks/results/$(date +%F)-$(hostname -s)
 mkdir -p "$out"
 bin_pad="$out/jcc-${ISA_TAG}-padded"
 bin_raw="$out/jcc-${ISA_TAG}-unpadded"
+
+# The shared registry goes stale whenever Cargo.lock moves (jobs 7017996-8 died
+# this way: the cache held zerocopy 0.8.48 against a lock pinning 0.8.57). Check
+# once, cheaply, and say exactly what to do rather than failing inside a build.
+if ! ( cd "$wt" && cargo metadata --offline --format-version 1 >/dev/null 2>&1 ); then
+    echo "!! the shared cargo registry ($CARGO_HOME) cannot resolve Cargo.lock offline." >&2
+    echo "!! Refresh it on a networked host (the workstation), then resubmit:" >&2
+    echo "!!   RUSTUP_HOME=\$HOME/.local/rust-shared/rustup CARGO_HOME=\$HOME/.local/rust-shared/cargo cargo fetch" >&2
+    exit 5
+fi
 
 echo "== building PADDED (config as committed)"
 ( cd "$wt" && cargo build --offline --release --features phase-timing --example phase_breakdown )

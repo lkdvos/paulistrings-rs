@@ -8,3 +8,36 @@
 # changes (a virtual reservation); release codegen is untouched.
 [env]
 RUST_MIN_STACK = "16777216"
+
+# Cascade Lake and every other Skylake-derived core carries the JCC erratum
+# (SKX102): with the mitigating microcode loaded, a 32-byte fetch window whose
+# *last* instruction is a jump that touches the 32-byte boundary is excluded
+# from the decoded-uop cache (DSB) outright, and the window re-decodes through
+# the legacy MITE path on every iteration. LLVM's `-x86-branches-within-32B-
+# boundaries` pads with prefixes and nops so no branch straddles or ends on a
+# boundary.
+#
+# The engine is a branchy, front-end-bound kernel and was paying almost the
+# whole tax: measured on the reference host (Xeon Gold 6244, microcode
+# 0x5003901) the baseline delivered only 45.8% of its uops from the DSB. With
+# this flag that is 97.9%, at bit-identical work counters:
+#
+#   layer         DSB share        wall Δ%, 1 thread, 7/7 pairs
+#   rotation_zz   45.9% -> 97.9%   -9.33%
+#   cnot          45.8% -> 98.5%   -12.57%
+#   trotter       48.4% -> 93.4%   -7.48%
+#
+# It also removes the code-placement lottery this repo has recorded for a year
+# ("adding any code moves untouched hot paths +-4-7%"): that sensitivity was
+# branch/boundary alignment, and padding pins it.
+# See research/notes/2026-09-10-hot-path-code-size.md.
+#
+# Cost is ~2% more instructions (the padding) and ~2% larger binaries. Scoped
+# to x86_64 because the LLVM option is x86-only; harmless but unmeasured on
+# non-Skylake x86 parts (AMD Zen, Ice Lake and later do not have the erratum).
+#
+# NOTE: an exported RUSTFLAGS replaces this list wholesale. Anything that sets
+# RUSTFLAGS for a benchmark build must append this flag too (scripts/profile.sh
+# does).
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-Cllvm-args=-x86-branches-within-32B-boundaries"]

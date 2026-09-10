@@ -364,7 +364,7 @@ The `[profile.profiling]` build (`Cargo.toml`) inherits `release` (same `lto = "
 `strip = "none"` so `perf`/`addr2line` can expand LTO-inlined frames. `PROFILE_MODE` picks the
 stack-walking method: `dwarf` (default, `perf record --call-graph dwarf,16384`, works against the
 normal profiling build) or `fp` (frame pointers, which forces
-`RUSTFLAGS="-Cforce-frame-pointers=yes"` and a full rebuild for `probe`/`bench` since codegen differs
+`RUSTFLAGS="-Cforce-frame-pointers=yes -Cllvm-args=-x86-branches-within-32B-boundaries"` (the second flag restores the JCC-erratum padding `.cargo/config.toml` sets, which an exported `RUSTFLAGS` replaces wholesale) and a full rebuild for `probe`/`bench` since codegen differs
 from cached artifacts, and for `bin` only changes the `perf record` flag — you are responsible for
 having built that binary with frame pointers yourself).
 

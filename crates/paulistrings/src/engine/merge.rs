@@ -418,6 +418,20 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
 /// whole story for a channel with no identity delta: everything is gathered
 /// into `b`.
 ///
+/// **Written as three loops, not one.** The main walk runs only while both
+/// streams are live, so its per-row test is the key comparison alone; the two
+/// drains then run with no test for the exhausted side at all. The single
+/// combined loop this replaces spent two extra conditional branches per output
+/// row on `j >= bn` and `i < an`, and made the `a`-empty case (every Clifford
+/// layer: `rows_id == 0`) run the two-stream loop with both short-circuits
+/// live. Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs: merge
+/// busy −11.8% / −7.9% / −6.6% and wall −4.80% / −1.96% / −3.09% on
+/// `rotation_zz` / `cnot` / `trotter`, at bit-identical work counters. The
+/// mechanism is instruction and branch *count* — retired conditional branches
+/// −11.9%, instructions −3.9% on `rotation_zz` — not misprediction, which
+/// barely moves (−2.3%). See
+/// `research/notes/2026-09-10-branch-misprediction.md`.
+///
 /// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
 /// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
 /// the sign of a zero sum, so the only zero test is on the final accumulator.
@@ -459,12 +473,14 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     debug_assert_eq!(bn, b_x.len());
     debug_assert_eq!(bn, b_z.len());
     let (mut i, mut j) = (0usize, 0usize);
-    while i < an || j < bn {
+    // Main walk: both streams live, so the "which side" test is a pure key
+    // comparison with no bounds short-circuit.
+    while i < an && j < bn {
         // Take the smaller next key; on a tie the `a` row seeds the sum. After
         // an `a` seed there is no second `a` row for the key (`a` is unique),
         // and after a `b` seed every equal-key `a` row would have compared
         // `<=`, so only `b` rows can extend the segment either way.
-        let take_a = j >= bn || (i < an && (a_x[i], a_z[i]) <= (b_x[j], b_z[j]));
+        let take_a = (a_x[i], a_z[i]) <= (b_x[j], b_z[j]);
         let (key_x, key_z, mut acc) = if take_a {
             debug_assert!(
                 i == 0 || (a_x[i - 1], a_z[i - 1]) < (a_x[i], a_z[i]),
@@ -482,6 +498,34 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             j += 1;
             t
         };
+        while j < bn && b_x[j] == key_x && b_z[j] == key_z {
+            acc += b_c[j];
+            j += 1;
+        }
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
+        }
+    }
+    // `b` exhausted: every remaining `a` key is unique, so each is its own
+    // segment.
+    while i < an {
+        let (key_x, key_z, acc) = (a_x[i], a_z[i], a_c[i]);
+        i += 1;
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
+        }
+    }
+    // `a` exhausted — which for a channel with no identity delta is the whole
+    // call: the plain single-stream segmented reduction, with no `a`-side
+    // test in the loop at all.
+    while j < bn {
+        let (key_x, key_z) = (b_x[j], b_z[j]);
+        let mut acc = b_c[j];
+        j += 1;
         while j < bn && b_x[j] == key_x && b_z[j] == key_z {
             acc += b_c[j];
             j += 1;

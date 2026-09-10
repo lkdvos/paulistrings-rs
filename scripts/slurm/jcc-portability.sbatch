@@ -108,24 +108,38 @@ if ! ( cd "$wt" && cargo metadata --offline --format-version 1 >/dev/null 2>&1 )
     exit 5
 fi
 
+# Separate target dirs: the two arms differ only in rustflags, and sharing a
+# dir would make each build invalidate the other's fingerprint for no reason.
 echo "== building PADDED (config as committed)"
-( cd "$wt" && cargo build --offline --release --features phase-timing --example phase_breakdown )
-cp "$CARGO_TARGET_DIR/release/examples/phase_breakdown" "$bin_pad"
+( cd "$wt" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR-pad" \
+    cargo build --offline --release --features phase-timing --example phase_breakdown )
+cp "$CARGO_TARGET_DIR-pad/release/examples/phase_breakdown" "$bin_pad"
 
-echo "== building UNPADDED (rustflags overridden to [])"
-# `--config` overrides the committed target.'cfg(...)'.rustflags unambiguously.
-# An exported RUSTFLAGS would also work but replaces the list wholesale and is
-# easy to get wrong; this states the intent.
-( cd "$wt" && cargo build --offline --release --features phase-timing --example phase_breakdown \
-    --config 'target."cfg(target_arch = \"x86_64\")".rustflags = []' )
-cp "$CARGO_TARGET_DIR/release/examples/phase_breakdown" "$bin_raw"
+# Strip the padding by rewriting the worktree's config, NOT with `cargo --config`:
+# cargo *merges* config arrays rather than replacing them, so
+# `--config 'rustflags = []'` is joined with the committed list and changes
+# nothing (jobs 7018011-3 died on exactly that, correctly caught by the guard
+# below). Rewriting the file is unambiguous. `[env]` is kept identical on both
+# arms so the only difference is the flag.
+echo "== building UNPADDED (worktree .cargo/config.toml rewritten without rustflags)"
+printf '[env]\nRUST_MIN_STACK = "16777216"\n' > "$wt/.cargo/config.toml"
+( cd "$wt" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR-raw" \
+    cargo build --offline --release --features phase-timing --example phase_breakdown )
+cp "$CARGO_TARGET_DIR-raw/release/examples/phase_breakdown" "$bin_raw"
 
 cmp -s "$bin_pad" "$bin_raw" && {
-    echo "!! the two builds are byte-identical — the --config override did not take effect."
+    echo "!! the two builds are byte-identical — the padding override did not take effect."
     echo "!! Nothing to measure; fix the override before trusting any result." >&2
     exit 4
 }
-echo "padded=$(stat -c%s "$bin_pad") B  unpadded=$(stat -c%s "$bin_raw") B"
+sz_pad=$(stat -c%s "$bin_pad"); sz_raw=$(stat -c%s "$bin_raw")
+echo "padded=$sz_pad B  unpadded=$sz_raw B  (delta $((sz_pad - sz_raw)) B)"
+if [ "$sz_pad" -le "$sz_raw" ]; then
+    echo "!! the padded build is not larger than the unpadded one." >&2
+    echo "!! Padding inserts prefixes and nops, so this means the arms are mislabelled" >&2
+    echo "!! or the flag is not doing what we think. Refusing to report a direction." >&2
+    exit 4
+fi
 
 for layer in $LAYERS; do
   for n in $NS; do

@@ -992,11 +992,15 @@ mod tests {
         let prep = su4.prepare(whole.hash(), false).expect("prepare");
         assert!(PartitionPlan::new(&prep, &rows, 0).has_remote());
 
-        let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+        // The fixture property is an empty *input* share — which two terms
+        // over four partitions guarantee by pigeonhole, whatever the row draw.
+        // (It used to be asserted on the outputs, where it depended on the
+        // draw, and `f39341a`'s reseeding made every output share non-empty.)
         assert!(
-            parts.iter().any(|p| p.is_empty()),
-            "the fixture must leave a partition empty",
+            (0..rows.num_partitions() as u32).any(|r| whole.filter_partition(&rows, r).is_empty()),
+            "the fixture must leave a partition's input empty",
         );
+        let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
         assert_eq!(counts.len(), 4);
         let got = PauliSum::merge_partitions(parts);
         let want = naive_apply_layer(&input, su4.as_ref(), &AlwaysKeep, false);

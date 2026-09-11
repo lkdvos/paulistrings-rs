@@ -269,13 +269,6 @@ impl<const W: usize> GatherRun<W> {
         self.coeff.reserve(cap_rest + 1);
     }
 
-    #[inline]
-    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.x.push(x);
-        self.z.push(z);
-        self.coeff.push(c);
-    }
-
     /// Branchless filtered append to the rest stream.
     #[inline]
     fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
@@ -297,6 +290,54 @@ impl<const W: usize> GatherRun<W> {
             self.x.set_len(m);
             self.z.set_len(m);
             self.coeff.set_len(m);
+        }
+    }
+
+    /// Unchecked unconditional append to the identity *coefficient* column.
+    ///
+    /// The dense-identity plans (all rotations, and every `Local` plan whose
+    /// identity amplitude never vanishes) emit exactly one identity row per
+    /// source row and borrow the keys from the source bucket, so only this
+    /// column is materialized and `reset` sized it exactly.
+    ///
+    /// This exists to drop `Vec::push`'s capacity check, not a branch: the
+    /// check is perfectly predicted here and contributes no mispredicts, but
+    /// it is still instructions in the hottest loop of every rotation layer.
+    /// The same removal on the output-major gather measured `su4` −3.83% wall
+    /// / −10.00% gather at flat IPC (2b949e6).
+    #[inline]
+    fn push_id_coeff(&mut self, c: Complex64) {
+        let n = self.id_coeff.len();
+        debug_assert!(n < self.id_coeff.capacity());
+        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is
+        // the source bucket's length — exactly the number of calls this loop
+        // makes — so `n <= cap_id_coeff < capacity` at every call.
+        unsafe {
+            self.id_coeff.as_mut_ptr().add(n).write(c);
+            self.id_coeff.set_len(n + 1);
+        }
+    }
+
+    /// Unchecked unconditional append to the rest stream.
+    ///
+    /// As [`Self::push_id_coeff`]: `reset` sized the run exactly, so the
+    /// capacity check `Vec::push` emits can never fire.
+    #[inline]
+    fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+        let n = self.x.len();
+        debug_assert!(n < self.x.capacity());
+        debug_assert!(n < self.z.capacity());
+        debug_assert!(n < self.coeff.capacity());
+        // SAFETY: `reset` reserved `cap_rest + 1`, and `cap_rest` counts every
+        // row the plan's deltas can emit into this run, so `n <= cap_rest <
+        // capacity` holds at every call.
+        unsafe {
+            self.x.as_mut_ptr().add(n).write(x);
+            self.z.as_mut_ptr().add(n).write(z);
+            self.coeff.as_mut_ptr().add(n).write(c);
+            self.x.set_len(n + 1);
+            self.z.set_len(n + 1);
+            self.coeff.set_len(n + 1);
         }
     }
 
@@ -885,13 +926,9 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                         z: src.z[t],
                     };
                     if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize]
-                            .id_coeff
-                            .push(src.coeff[t]);
+                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
                     } else {
-                        runs[i ^ *coord_identity as usize]
-                            .id_coeff
-                            .push(src.coeff[t] * prep.cos);
+                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
                         // Loop-invariant, `true` on every unpartitioned
                         // layer, and asked before any of the generator
                         // arithmetic: under a partitioning that sees the
@@ -901,7 +938,7 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                             let mut prod = v;
                             let phase = prod.mul_assign(&prep.gen);
                             let total = Phase::I + phase;
-                            runs[i ^ *coord_gen as usize].push(
+                            runs[i ^ *coord_gen as usize].push_row(
                                 prod.x,
                                 prod.z,
                                 total.apply(src.coeff[t]) * prep.sin,
@@ -1107,7 +1144,7 @@ fn gather_local_input_major<const W: usize>(
                     // the source rows, so only the coefficient is stored —
                     // the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
-                    runs[i].id_coeff.push(src.coeff[t] * a);
+                    runs[i].push_id_coeff(src.coeff[t] * a);
                 } else {
                     runs[i].push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }
@@ -1171,7 +1208,7 @@ fn gather_local_output_major<const W: usize>(
                 let a = d.amp[s];
                 if dense_identity {
                     debug_assert!(a != ZERO);
-                    run.id_coeff.push(src.coeff[t] * a);
+                    run.push_id_coeff(src.coeff[t] * a);
                 } else {
                     run.push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }

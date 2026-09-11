@@ -13,23 +13,21 @@ So this file pins, cheaply and in CI:
 
 1. **Accuracy at every `theta_h`.** Tight truncation reproduces the exact
    statevector expectation (`test_tight_truncation_matches_the_statevector`).
-2. **Convergence, not just accuracy.** Tightening `min_abs_coeff` and raising
-   `max_weight` monotonically improve the error, which is plan §7 rule 4's
-   convergence panel expressed as an assertion rather than a figure
-   (`test_error_improves_as_truncation_tightens`, `..._as_the_weight_cap_rises`).
-3. **The Clifford endpoints.** At `theta_h in {0, pi/2}` (with
+   The generic truncation-monotonicity property (tighter cutoff never raises
+   the error) is the Rust suite's, not this file's.
+2. **The Clifford endpoints.** At `theta_h in {0, pi/2}` (with
    `theta_zz = -pi/2`) the circuit is Clifford, so the evolved observable is a
    *single* Pauli string and the expectation is an exact integer, cross-checked
    against stim's tableau simulator — the same gate that Benchmark A applies at
    `n = 127` (`test_clifford_endpoints_are_exact_integers`).
-4. **The self-convergence methodology.** Benchmark B's weight-17 interior
+3. **The self-convergence methodology.** Benchmark B's weight-17 interior
    references are self-converged, not exact, because the 59-qubit cone puts an
    exact answer out of reach. A self-converged value is only worth anything if
    its stated uncertainty is honest, so here — where the exact answer *is*
    known — the driver's own `self_converged_reference` is run and its estimate
    compared against the true error
    (`test_self_convergence_estimate_tracks_the_true_error`).
-5. **No drift between the gate and the driver.** The `theta_h` grid, the
+4. **No drift between the gate and the driver.** The `theta_h` grid, the
    truncation floor and the reference routing are read out of the driver
    module, so a change there that this file does not cover fails here
    (`test_driver_constants`).
@@ -118,9 +116,8 @@ COEFF_GRID = (1e-2, 1e-4, 1e-6, 1e-8)
 #: Clifford points (see the driver's module docstring).
 TIGHT_COEFF = 1e-9
 
-#: `max_weight` grid, loosest (smallest cap) first, paired with a coefficient
-#: cutoff loose enough that the weight cap is what binds.
-WEIGHT_GRID = (2, 4, 6, 8, 10)
+#: Referenced by `test_driver_constants` to keep the floor check in sync with
+#: the driver's own weight-sweep coefficient.
 WEIGHT_SWEEP_COEFF = 1e-9
 
 
@@ -278,72 +275,6 @@ def test_the_reference_is_confirmed_by_an_independent_oracle(theta_label, theta)
         method="statevector",
     )
     assert complex(cone_value).real == pytest.approx(exact, abs=1e-10)
-
-
-# --------------------------------------------------------------------------
-# 2. Convergence, not just accuracy
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", sorted(OBSERVABLE_SUPPORTS))
-@pytest.mark.parametrize("theta_label,theta", THETA_POINTS, ids=_theta_ids(THETA_POINTS))
-def test_error_improves_as_truncation_tightens(name, theta_label, theta):
-    """Loosest-to-tightest `min_abs_coeff`: error down, term count up.
-
-    Neither is asserted point-to-point — a single grid step can flatten out
-    once the error is at the level of the *next* discarded coefficient shell,
-    and at a Clifford point every point is already exact. What is asserted is
-    the shape over the whole grid: the tightest cutoff is at least as accurate
-    as the loosest (to a tolerance covering an exactly-resolved point), and the
-    term count never falls when less is thrown away.
-    """
-    exact = _exact(name, theta)
-    errors, terms = [], []
-    for eps in COEFF_GRID:
-        value, stats = _propagate(name, theta, min_abs_coeff=eps)
-        errors.append(abs(value - exact))
-        terms.append(stats.final_terms)
-
-    assert terms == sorted(terms), (
-        f"{name} at theta_h={theta_label}: term counts {terms} are not "
-        f"non-decreasing along a loosest-to-tightest cutoff grid {COEFF_GRID}"
-    )
-    assert errors[-1] <= errors[0] + 1e-12, (
-        f"{name} at theta_h={theta_label}: tightening min_abs_coeff from "
-        f"{COEFF_GRID[0]:g} to {COEFF_GRID[-1]:g} made the error worse "
-        f"({errors[0]:.3e} -> {errors[-1]:.3e}); the truncation is not converging"
-    )
-    assert errors[-1] <= TIGHT_TOLERANCE
-
-
-@pytest.mark.parametrize("name", sorted(OBSERVABLE_SUPPORTS))
-@pytest.mark.parametrize("theta_label,theta", THETA_POINTS, ids=_theta_ids(THETA_POINTS))
-def test_error_improves_as_the_weight_cap_rises(name, theta_label, theta):
-    """The second knob: raising `max_weight` must also converge.
-
-    A weight cap is a *biased* truncation — it drops whole shells of the
-    operator rather than the numerically smallest terms — so this sweep is the
-    one that would expose a wrong `weight <= k` boundary or an off-by-one in the
-    weight computation, neither of which the coefficient sweep can see.
-    """
-    exact = _exact(name, theta)
-    errors, terms = [], []
-    for cap in WEIGHT_GRID:
-        value, stats = _propagate(
-            name, theta, max_weight=cap, min_abs_coeff=WEIGHT_SWEEP_COEFF
-        )
-        errors.append(abs(value - exact))
-        terms.append(stats.final_terms)
-
-    assert terms == sorted(terms), (
-        f"{name} at theta_h={theta_label}: term counts {terms} fell while the weight "
-        f"cap rose along {WEIGHT_GRID}"
-    )
-    assert errors[-1] <= errors[0] + 1e-12, (
-        f"{name} at theta_h={theta_label}: raising max_weight from {WEIGHT_GRID[0]} "
-        f"to {WEIGHT_GRID[-1]} made the error worse ({errors[0]:.3e} -> "
-        f"{errors[-1]:.3e})"
-    )
 
 
 # --------------------------------------------------------------------------

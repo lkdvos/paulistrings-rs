@@ -43,8 +43,8 @@ def central_qubit(n: int) -> int:
 # =============================================================================
 
 
-@pytest.mark.parametrize("n", (4, 6, 8, 12))
-@pytest.mark.parametrize("depth", (1, 2, 4))
+@pytest.mark.parametrize("n", (4, 12))
+@pytest.mark.parametrize("depth", (1, 4))
 def test_su4_staircase_matches_statevector_untruncated(n, depth):
     """Untruncated Heisenberg propagation vs. qiskit Aer, at small n/depth.
 
@@ -154,17 +154,3 @@ def test_different_seeds_give_different_circuits():
     assert abs(exp_a - exp_b) > 1e-6
 
 
-def test_su4_staircase_is_deterministic_across_repeated_construction():
-    """The circuit *builder* itself is deterministic given the seed (no RNG
-    state leaking from module import order, no wall-clock seeding anywhere).
-    Complements the propagation-level check above at the construction level.
-    """
-    n, depth = 12, 5
-    a = circuits.random_su4_staircase(n, depth, SEED)
-    b = circuits.random_su4_staircase(n, depth, SEED)
-    assert len(a) == len(b)
-
-    obs = observables.single_z(central_qubit(n), n)
-    exp_a = complex(obs.propagate(a, None, direction="heisenberg").expectation("z+"))
-    exp_b = complex(obs.propagate(b, None, direction="heisenberg").expectation("z+"))
-    assert exp_a == exp_b

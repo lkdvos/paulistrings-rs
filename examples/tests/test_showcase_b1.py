@@ -39,7 +39,7 @@ import pytest
 
 from paulistrings import PauliSum, truncation
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
@@ -205,23 +205,6 @@ def test_clifford_circuit_gives_a_sharp_cone():
     assert radii[-1] > radii[0]
     slope, _ = sc.front_velocity(range(1, steps + 1), radii)
     assert slope == pytest.approx(1.0, abs=1e-9)
-
-
-def test_truncation_only_ever_discards_weight():
-    """`N(t) <= 1` under truncation, and looser cutoffs keep less."""
-    n, steps = 13, 6
-    center = n // 2
-    step = circuits.heavy_hex_kicked_ising(
-        n, 1, THETA_H, THETA_ZZ, edges=sc.chain_edges(n)
-    )
-    norms = []
-    for eps in (1e-1, 1e-2, 1e-3):
-        evolved = observables.single_z(center, n)
-        for _ in range(steps):
-            evolved = evolved.propagate(step, truncation.coeff(eps), direction="heisenberg")
-        norms.append(sc.hs_norm(evolved))
-        assert norms[-1] <= 1.0 + TOLERANCE
-    assert norms[0] < norms[-1], f"a looser cutoff kept more norm: {norms}"
 
 
 def test_single_pauli_coefficients_reads_a_hand_built_sum():

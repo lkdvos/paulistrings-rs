@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
@@ -164,67 +164,11 @@ def test_read_results_round_trips(tmp_path):
     assert loaded == [rec]
 
 
-# --- Plot helpers (require matplotlib) ------------------------------------
-
-
-def test_plot_error_vs_runtime_writes_svg(tmp_path):
-    pytest.importorskip("matplotlib")
-    records = [
-        _make_record(engine="paulistrings", propagation_time_s=t, absolute_error=e)
-        for t, e in [(0.1, 1e-3), (0.5, 1e-5), (1.0, 1e-8)]
-    ] + [
-        _make_record(engine="PauliPropagation.jl", propagation_time_s=t, absolute_error=e)
-        for t, e in [(0.2, 1e-3), (0.6, 1e-6)]
-    ]
-    out = tmp_path / "error_vs_runtime.svg"
-    fig = report.plot_error_vs_runtime(records, save_path=out)
-    assert out.exists()
-    assert out.read_text(errors="ignore").lstrip().startswith("<?xml") or b"svg" in out.read_bytes()[:200]
-    import matplotlib.pyplot as plt
-
-    plt.close(fig)
-
-
-def test_plot_term_count_vs_truncation_writes_svg(tmp_path):
-    pytest.importorskip("matplotlib")
-    records = [
-        _make_record(truncation={"min_abs_coeff": eps}, final_terms=n)
-        for eps, n in [(1e-3, 500), (1e-6, 5000), (1e-9, 50000)]
-    ]
-    out = tmp_path / "terms_vs_trunc.svg"
-    fig = report.plot_term_count_vs_truncation(records, save_path=out)
-    assert out.exists()
-    import matplotlib.pyplot as plt
-
-    plt.close(fig)
-
-
-def test_plot_time_and_memory_vs_size_writes_svg(tmp_path):
-    pytest.importorskip("matplotlib")
-    records = [
-        _make_record(n_qubits=n, propagation_time_s=0.01 * n, peak_memory_kb=1000.0 * n)
-        for n in (16, 32, 64)
-    ]
-    out = tmp_path / "time_mem_vs_size.svg"
-    fig = report.plot_time_and_memory_vs_size(records, save_path=out)
-    assert out.exists()
-    import matplotlib.pyplot as plt
-
-    plt.close(fig)
-
-
-def test_plot_convergence_panel_writes_svg(tmp_path):
-    pytest.importorskip("matplotlib")
-    records = [
-        _make_record(truncation={"min_abs_coeff": eps}, expectation_value=v)
-        for eps, v in [(1e-3, 0.5), (1e-6, 0.7), (1e-9, 0.75)]
-    ]
-    out = tmp_path / "convergence.svg"
-    fig = report.plot_convergence_panel(records, reference_value=0.751, save_path=out)
-    assert out.exists()
-    import matplotlib.pyplot as plt
-
-    plt.close(fig)
+# Plot helpers (plot_error_vs_runtime, plot_term_count_vs_truncation,
+# plot_time_and_memory_vs_size, plot_convergence_panel) are exercised as
+# smoke tests by the showcases that call them; a test that only checks a
+# figure or an SVG file was produced guards nothing beyond matplotlib itself,
+# so none is kept here.
 
 
 # The module-level `from common import report` above already proves the

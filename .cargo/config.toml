@@ -9,44 +9,16 @@
 [env]
 RUST_MIN_STACK = "16777216"
 
-# Cascade Lake and every other Skylake-derived core carries the JCC erratum
-# (SKX102): with the mitigating microcode loaded, a 32-byte fetch window whose
-# *last* instruction is a jump that touches the 32-byte boundary is excluded
-# from the decoded-uop cache (DSB) outright, and the window re-decodes through
-# the legacy MITE path on every iteration. LLVM's `-x86-branches-within-32B-
-# boundaries` pads with prefixes and nops so no branch straddles or ends on a
-# boundary.
+# The JCC-erratum branch padding is deliberately NOT here.
 #
-# The engine is a branchy, front-end-bound kernel and was paying almost the
-# whole tax: measured on the reference host (Xeon Gold 6244, microcode
-# 0x5003901) the baseline delivered only 45.8% of its uops from the DSB. With
-# this flag that is 97.9%, at bit-identical work counters:
+# `-Cllvm-args=-x86-branches-within-32B-boundaries` is worth -9..-13% on the
+# Cascade Lake reference host and a ~1% tax on every part without the erratum
+# (AMD Zen, Ice Lake and later) — which is all of `ccq`. Measured across three
+# node types: 13 of 13 direction-consistent phase results say slower. So the
+# shipped default is the portable one and the hosts that benefit opt in.
 #
-#   layer         DSB share        wall Δ%, 1 thread, 7/7 pairs
-#   rotation_zz   45.9% -> 97.9%   -9.33%
-#   cnot          45.8% -> 98.5%   -12.57%
-#   trotter       48.4% -> 93.4%   -7.48%
-#
-# It also removes the code-placement lottery this repo has recorded for a year
-# ("adding any code moves untouched hot paths +-4-7%"): that sensitivity was
-# branch/boundary alignment, and padding pins it.
-# See research/notes/2026-09-10-hot-path-code-size.md.
-#
-# Cost is ~2% more instructions (the padding) and ~2% larger binaries. Scoped to
-# x86_64 because the LLVM option is x86-only.
-#
-# MEASURED on the parts that do NOT have the erratum (2026-09-10, ccq jobs
-# 7018021-3, research/notes/2026-09-10-jcc-portability.md): it is a tax there,
-# not merely harmless. Across rome (Zen2), genoa (Zen4) and icelake (Ice
-# Lake-SP), **13 of 13 direction-consistent phase results at 1 thread show the
-# padded build slower**, by +0.6..+3.8% (~1% wall where wall resolves at all),
-# landing on whichever phase is branchiest in the layer. So this flag trades
-# ~1% on every non-Skylake host for -9..-13% on the reference workstation.
-# Narrowing it to Skylake-derived parts is open; the options and their costs are
-# in that note's final section. Until then, cluster runs pay the ~1%.
-#
-# NOTE: an exported RUSTFLAGS replaces this list wholesale. Anything that sets
-# RUSTFLAGS for a benchmark build must append this flag too (scripts/profile.sh
-# does).
-[target.'cfg(target_arch = "x86_64")']
-rustflags = ["-Cllvm-args=-x86-branches-within-32B-boundaries"]
+# Measurement scripts source `scripts/jcc-rustflags.sh`, which detects the
+# erratum from /proc/cpuinfo and appends the flag, so the reference host cannot
+# silently lose 9-13% mid-campaign. Anything else that benchmarks must do the
+# same. See research/notes/2026-09-10-jcc-portability.md.
+

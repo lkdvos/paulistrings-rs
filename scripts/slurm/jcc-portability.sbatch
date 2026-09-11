@@ -131,19 +131,23 @@ fi
 
 # Separate target dirs: the two arms differ only in rustflags, and sharing a
 # dir would make each build invalidate the other's fingerprint for no reason.
-echo "== building PADDED (config as committed)"
+# The padding is no longer in .cargo/config.toml — the shipped default is the
+# portable one and hosts with the erratum opt in (scripts/jcc-rustflags.sh), so
+# the PADDED arm is now the one that adds a flag and UNPADDED is the default
+# build. This inverted when the config changed; the size guard below is what
+# catches it if the two ever stop differing.
+echo "== building PADDED (default + the JCC padding flag)"
 ( cd "$wt" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR-pad" \
+    RUSTFLAGS="-Cllvm-args=-x86-branches-within-32B-boundaries" \
     cargo build --offline --release --features phase-timing --example phase_breakdown )
 cp "$CARGO_TARGET_DIR-pad/release/examples/phase_breakdown" "$bin_pad"
 
-# Strip the padding by rewriting the worktree's config, NOT with `cargo --config`:
-# cargo *merges* config arrays rather than replacing them, so
-# `--config 'rustflags = []'` is joined with the committed list and changes
-# nothing (jobs 7018011-3 died on exactly that, correctly caught by the guard
-# below). Rewriting the file is unambiguous. `[env]` is kept identical on both
-# arms so the only difference is the flag.
-echo "== building UNPADDED (worktree .cargo/config.toml rewritten without rustflags)"
-printf '[env]\nRUST_MIN_STACK = "16777216"\n' > "$wt/.cargo/config.toml"
+# UNPADDED is simply the shipped default now. (Historical note, because it cost
+# three exclusive-node allocations: when the flag *was* in the config, the
+# obvious `cargo --config 'rustflags = []'` did not remove it — cargo MERGES
+# config arrays rather than replacing them, so an array cannot be cleared that
+# way. Jobs 7018011-3 died on that, caught by the size guard below.)
+echo "== building UNPADDED (shipped default, no flag)"
 ( cd "$wt" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR-raw" \
     cargo build --offline --release --features phase-timing --example phase_breakdown )
 cp "$CARGO_TARGET_DIR-raw/release/examples/phase_breakdown" "$bin_raw"

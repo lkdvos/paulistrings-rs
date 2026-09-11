@@ -178,8 +178,13 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   lists the fields, and it is the thing to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
-- LTO code-layout effects **were** the JCC erratum, and are fixed: `.cargo/config.toml` sets
-  `-Cllvm-args=-x86-branches-within-32B-boundaries` (45.8% → 98.0% DSB residency, −9..−13% wall). The `#[inline]` folklore
+- LTO code-layout effects **were** the JCC erratum (SKX102). `-Cllvm-args=-x86-branches-within-32B-boundaries`
+  takes DSB residency 45.8% → 98.0% on the Cascade Lake reference host, worth −9..−13% wall — but it is a ~1% tax on
+  every part *without* the erratum (AMD Zen, Ice Lake and later), i.e. all of `ccq`: 13 of 13 direction-consistent
+  phase results across rome/genoa/icelake say slower. **So it is not in `.cargo/config.toml`**; the shipped default is
+  the portable one and hosts that benefit opt in. Every measurement script sources `scripts/jcc-rustflags.sh`, which
+  detects the erratum from `/proc/cpuinfo` and appends the flag — **anything else that benchmarks must do the same, or
+  the reference host silently measures a 9-13% slower binary.** The `#[inline]` folklore
   in `engine/merge.rs` was re-A/B'd on the padded build (2026-09-10) and **none of it survives** — the hints are
   codegen-inert at `lto = "fat"` + `codegen-units = 1` and every recorded effect was branch-alignment noise
   (`research/notes/2026-09-10-inline-set-repost.md`). Adding or removing an attribute there is no longer a hazard; the

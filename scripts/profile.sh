@@ -6,6 +6,7 @@
 # access needed), and drops a standalone interactive HTML plus a sidecar
 # `.meta.txt` describing exactly what was profiled.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/jcc-rustflags.sh"
 
 cd "$(dirname "$0")/.."
 
@@ -41,10 +42,9 @@ Env knobs:
                           has line-tables-only debug info) and resolves
                           LTO-inlined frames.
                           fp: perf record --call-graph fp. For `probe`/`bench`
-                          this exports RUSTFLAGS="-Cforce-frame-pointers=yes
-                          -Cllvm-args=-x86-branches-within-32B-boundaries"
-                          (the second flag mirrors .cargo/config.toml, whose
-                          rustflags an exported RUSTFLAGS replaces wholesale)
+                          this exports RUSTFLAGS="-Cforce-frame-pointers=yes"
+                          plus $JCC_RUSTFLAGS from scripts/jcc-rustflags.sh, so
+                          a profiling build matches what the campaigns measure
                           before the cargo build/bench step, which forces a
                           full rebuild (frame-pointer codegen differs from the
                           cached profiling/release artifacts). For `bin` it
@@ -110,7 +110,7 @@ NAME=""
 case $MODE in
   probe)
     if [[ $PROFILE_MODE == "fp" ]]; then
-      export RUSTFLAGS="-Cforce-frame-pointers=yes -Cllvm-args=-x86-branches-within-32B-boundaries"
+      export RUSTFLAGS="-Cforce-frame-pointers=yes${JCC_RUSTFLAGS:+ $JCC_RUSTFLAGS}"
     fi
     echo "==> building phase_breakdown (profiling profile, phase-timing feature)" >&2
     cargo build --offline --profile profiling --features phase-timing \
@@ -142,7 +142,7 @@ case $MODE in
     SECONDS_ARG=${2:-10}
 
     if [[ $PROFILE_MODE == "fp" ]]; then
-      export RUSTFLAGS="-Cforce-frame-pointers=yes -Cllvm-args=-x86-branches-within-32B-boundaries"
+      export RUSTFLAGS="-Cforce-frame-pointers=yes${JCC_RUSTFLAGS:+ $JCC_RUSTFLAGS}"
     fi
     echo "==> building pauli_ops bench (--no-run)" >&2
     cargo bench --offline -p paulistrings --bench pauli_ops --no-run

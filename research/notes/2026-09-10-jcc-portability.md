@@ -98,4 +98,19 @@ Mechanism options, none free:
 3. **Leave it on and document the ~1% cluster tax.** Simplest, and defensible while the
    reference host is where optimization work happens.
 
-This note does not choose; the choice is a deployment policy, not a measurement.
+**Resolved 2026-09-11: default off, measurement hosts opt in.** The flag is out of
+`.cargo/config.toml`, so the shipped build is the portable one and no site pays a tax it
+did not ask for. The failure mode that creates — the reference host silently losing
+9-13% and corrupting an A/B — is closed by `scripts/jcc-rustflags.sh`, which detects the
+erratum from `/proc/cpuinfo` and is sourced by every script that builds a binary it then
+measures (`ab-compare.sh`, `bench-campaign.sh`, `perf-stat.sh`, `bandwidth.sh`,
+`profile.sh`). Detection reads the CPU rather than a hostname, so it is correct on
+uncalibrated nodes too.
+
+Rejected: a `build.rs` host probe (same commit would produce different binaries on
+different hosts — a real hazard for a methodology built on binary-vs-binary A/B), and
+leaving it on with the tax documented (every cluster job pays ~1% forever on the strength
+of operators reading docs).
+
+Consequence for this template: the arms inverted. PADDED is now the arm that adds a flag
+and UNPADDED is the plain default build.

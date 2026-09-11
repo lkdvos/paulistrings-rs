@@ -32,7 +32,7 @@ source .venv/bin/activate
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py           # ~26 min
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py --quick   # ~1 s, 20 qubits, writes nothing
 python examples/b2_noisy_verification/run_b2.py --figures-only                # re-render the SVGs
-pytest python/paulistrings/tests/test_showcase_b2.py                          # the CI gate
+pytest examples/tests/test_showcase_b2.py                          # the CI gate
 ```
 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts; the driver

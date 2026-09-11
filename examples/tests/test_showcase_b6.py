@@ -31,7 +31,7 @@ import pytest
 
 from paulistrings import PauliSum, truncation
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 _B6_DIR = _EXAMPLES_DIR / "b6_resource_probes"
 for _path in (str(_EXAMPLES_DIR), str(_B6_DIR)):

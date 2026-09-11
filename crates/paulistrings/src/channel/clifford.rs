@@ -1,12 +1,8 @@
 //! Clifford gates (table-driven, branchless). See ARCHITECTURE.md §Channels.
 //!
-//! A Clifford `G` conjugates each single-qubit Pauli `P` to `± P'` for some
-//! Pauli `P'`. We precompute the full lookup table at construction so
-//! `apply` is a single indexed read on the support qubit(s) — no runtime
-//! Pauli multiplication.
+//! A Clifford `G` conjugates each single-qubit Pauli `P` to `± P'` for some Pauli `P'`; the full lookup table is precomputed at construction so `apply` is a single indexed read, no runtime Pauli multiplication.
 //!
-//! Encoding: a single-qubit Pauli is indexed by `(x_bit | (z_bit << 1))` —
-//! `I = 0, X = 1, Z = 2, Y = 3`. The output Pauli uses the same packing.
+//! Encoding: a single-qubit Pauli is indexed by `(x_bit | (z_bit << 1))` — `I = 0, X = 1, Z = 2, Y = 3`. The output Pauli uses the same packing.
 
 use super::{qubit_loc, read_pauli, support_mask, write_pauli, Channel, OutputBuffer};
 use crate::phase::Phase;
@@ -14,21 +10,14 @@ use num_complex::Complex64;
 
 /// Single-qubit Clifford gate stored as a 4-entry conjugation table.
 ///
-/// `out_pauli[i]` and `phase[i]` give the result of `G · P_i · G†` for the
-/// four input Paulis (indexed as above): the new packed Pauli on the
-/// support qubit and the `i^k` phase to fold into the coefficient.
-///
-/// Generic over `W` so the same gate value can act on any Pauli width.
+/// `out_pauli[i]` and `phase[i]` give the result of `G · P_i · G†` for the four input Paulis (indexed as above): the new packed Pauli on the support qubit and the `i^k` phase to fold into the coefficient.
 #[derive(Clone, Copy, Debug)]
 pub struct Clifford1Q {
-    /// Single qubit this gate acts on. Held as `[u32; 1]` so `support()`
-    /// returns a slice without allocation.
+    /// Single qubit this gate acts on. `[u32; 1]` so `support()` returns a slice without allocation.
     pub support: [u32; 1],
-    /// Output Pauli bits per input Pauli. Same packing as the index:
-    /// `(out_x | (out_z << 1))`. `out_pauli[0]` is always `0` (`I → I`).
+    /// Output Pauli bits per input Pauli, same packing as the index. `out_pauli[0]` is always `0` (`I → I`).
     pub out_pauli: [u8; 4],
-    /// Phase factor (`i^k`) per input Pauli. `phase[0]` is always
-    /// `Phase::ONE`.
+    /// Phase factor (`i^k`) per input Pauli. `phase[0]` is always `Phase::ONE`.
     pub phase: [Phase; 4],
 }
 
@@ -42,8 +31,7 @@ impl Clifford1Q {
         }
     }
 
-    /// Phase gate `S = diag(1, i)`. Conjugation:
-    /// `I → I, X → Y, Z → Z, Y → −X`.
+    /// Phase gate `S = diag(1, i)`. Conjugation: `I → I, X → Y, Z → Z, Y → −X`.
     pub fn s(qubit: u32) -> Self {
         Self {
             support: [qubit],
@@ -79,12 +67,8 @@ impl Clifford1Q {
         }
     }
 
-    /// Conjugation table for `G†`. Inverts the Pauli permutation and conjugates
-    /// the per-input phases: if `G P_a G† = c_a · P_{f(a)}` then
-    /// `G† P_{f(a)} G = c_a* · P_a`.
-    ///
-    /// Self-inverse 1Q Cliffords (H, X, Y, Z) round-trip to themselves; `S`
-    /// returns `S†` (a distinct gate).
+    /// Conjugation table for `G†`. Inverts the Pauli permutation and conjugates the per-input phases: if `G P_a G† = c_a · P_{f(a)}` then `G† P_{f(a)} G = c_a* · P_a`.
+    /// Self-inverse 1Q Cliffords (H, X, Y, Z) round-trip to themselves; `S` returns `S†` (a distinct gate).
     pub fn adjoint(&self) -> Self {
         let mut out_pauli = [0u8; 4];
         let mut phase = [Phase::ONE; 4];
@@ -103,9 +87,7 @@ impl Clifford1Q {
 }
 
 impl Clifford1Q {
-    /// Shared body of `apply` and `apply_adjoint`. The two paths differ
-    /// only in which lookup table to use; pulling the lookup out of
-    /// `Channel::apply` keeps the bit-fiddling unduplicated.
+    /// Shared body of `apply` and `apply_adjoint`; the two paths differ only in which lookup table to use.
     #[inline]
     fn apply_table<const W: usize>(
         &self,
@@ -165,26 +147,19 @@ impl<const W: usize> Channel<W> for Clifford1Q {
 
 /// Two-qubit Clifford gate stored as a 16-entry conjugation table.
 ///
-/// Index encoding: low 2 bits select the input Pauli on `support[0]`,
-/// high 2 bits select it on `support[1]`. Each `out_pauli[i]` packs four
-/// bits `(ox0 | (oz0 << 1) | (ox1 << 2) | (oz1 << 3))`.
+/// Index encoding: low 2 bits select the input Pauli on `support[0]`, high 2 bits select it on `support[1]`. Each `out_pauli[i]` packs four bits `(ox0 | (oz0 << 1) | (ox1 << 2) | (oz1 << 3))`.
 #[derive(Clone, Copy, Debug)]
 pub struct Clifford2Q {
-    /// The two qubits this gate acts on. Convention: `support[0]` is the
-    /// "first" qubit (e.g. CNOT control), `support[1]` the second.
+    /// The two qubits this gate acts on. `support[0]` is the "first" qubit (e.g. CNOT control), `support[1]` the second.
     pub support: [u32; 2],
-    /// Output Pauli bits per input. 16 entries indexed by
-    /// `(x0 | (z0 << 1) | (x1 << 2) | (z1 << 3))`; each entry packs the
-    /// output bits in the same layout. `out_pauli[0]` is always `0`.
+    /// Output Pauli bits per input, same index/packing as above. `out_pauli[0]` is always `0`.
     pub out_pauli: [u8; 16],
     /// Phase factor (`i^k`) per input. `phase[0]` is always [`Phase::ONE`].
     pub phase: [Phase; 16],
 }
 
 impl Clifford2Q {
-    /// CNOT with `control` and `target`. Conjugation generators:
-    /// `X⊗I → X⊗X, I⊗X → I⊗X, Z⊗I → Z⊗I, I⊗Z → Z⊗Z` (all phase `+1`).
-    /// The full 16-entry table follows by linearity over Pauli products.
+    /// CNOT with `control` and `target`. Conjugation generators: `X⊗I → X⊗X, I⊗X → I⊗X, Z⊗I → Z⊗I, I⊗Z → Z⊗Z` (all phase `+1`); the full 16-entry table follows by linearity over Pauli products.
     pub fn cnot(control: u32, target: u32) -> Self {
         Self::from_2q_generators(
             [control, target],
@@ -199,8 +174,7 @@ impl Clifford2Q {
         )
     }
 
-    /// CZ on `q0` and `q1`. Conjugation generators:
-    /// `X⊗I → X⊗Z, I⊗X → Z⊗X, Z⊗I → Z⊗I, I⊗Z → I⊗Z` (all phase `+1`).
+    /// CZ on `q0` and `q1`. Conjugation generators: `X⊗I → X⊗Z, I⊗X → Z⊗X, Z⊗I → Z⊗I, I⊗Z → I⊗Z` (all phase `+1`).
     pub fn cz(q0: u32, q1: u32) -> Self {
         Self::from_2q_generators(
             [q0, q1],
@@ -215,8 +189,7 @@ impl Clifford2Q {
         )
     }
 
-    /// SWAP on `q0` and `q1`. Conjugation: `(P ⊗ Q) → (Q ⊗ P)` for all
-    /// `P, Q` (all phase `+1`).
+    /// SWAP on `q0` and `q1`. Conjugation: `(P ⊗ Q) → (Q ⊗ P)` for all `P, Q` (all phase `+1`).
     pub fn swap(q0: u32, q1: u32) -> Self {
         Self::from_2q_generators(
             [q0, q1],
@@ -231,10 +204,7 @@ impl Clifford2Q {
         )
     }
 
-    /// Build a 2Q Clifford table from the four single-Pauli generators
-    /// `(X₀, Z₀, X₁, Z₁)`. For each of the 16 inputs we multiply the
-    /// corresponding generator outputs together (using `PauliString`
-    /// multiplication on a single word) and accumulate the `i^k` phase.
+    /// Build a 2Q Clifford table from the four single-Pauli generators `(X₀, Z₀, X₁, Z₁)`: for each of the 16 inputs, multiply the corresponding generator outputs (via `PauliString` multiplication on a single word) and accumulate the `i^k` phase.
     fn from_2q_generators(
         support: [u32; 2],
         x0_image: (u8, Phase),
@@ -254,12 +224,7 @@ impl Clifford2Q {
                 ((idx >> 3) & 1) as u8, // z1
             ];
 
-            // Multiply the four generator images in X₀ Z₀ X₁ Z₁ order.
-            // The result is the image of `X^{x0} Z^{z0} X^{x1} Z^{z1}`,
-            // which is *not* the same as the Hermitian input Pauli when
-            // any qubit holds Y: `Y = i · X · Z`, so each Y in the input
-            // contributes an extra `i` factor that we must add to the
-            // accumulated phase below.
+            // Multiply the four generator images in X₀ Z₀ X₁ Z₁ order; the result is the image of `X^{x0} Z^{z0} X^{x1} Z^{z1}`, not the Hermitian input Pauli when a qubit holds Y (`Y = i · X · Z`), so each input Y needs an extra `i` folded in below.
             let mut acc_x = [0u64; 1];
             let mut acc_z = [0u64; 1];
             let mut acc_phase = Phase::ONE;
@@ -274,10 +239,7 @@ impl Clifford2Q {
                     acc_phase = acc_phase + mul_phase + *ph;
                 }
             }
-            // Add `i` for each Y in the input (qubits where both x and z
-            // bits are set). The output bits encode their Hermitian Pauli
-            // directly — no symmetric cancellation factor on the output
-            // side.
+            // Add `i` for each Y in the input (qubits where both x and z bits are set); the output bits already encode their Hermitian Pauli directly.
             let y_count = (bits[0] & bits[1]) + (bits[2] & bits[3]);
             acc_phase += Phase::new(y_count);
             out_pauli[idx] = pack4_from_word(acc_x, acc_z);
@@ -296,9 +258,7 @@ const fn pack4(x0: u8, z0: u8, x1: u8, z1: u8) -> u8 {
     (x0 & 1) | ((z0 & 1) << 1) | ((x1 & 1) << 2) | ((z1 & 1) << 3)
 }
 
-/// Convert a packed 4-bit Pauli on the two support qubits back into a
-/// `PauliString<1>`-style `(x, z)` word pair, with the support qubits at
-/// positions 0 and 1 of the word. Used only inside table construction.
+/// Convert a packed 4-bit Pauli on the two support qubits back into a `PauliString<1>`-style `(x, z)` word pair, support qubits at positions 0 and 1. Used only inside table construction.
 fn unpack4_to_word(packed: u8) -> ([u64; 1], [u64; 1]) {
     let mut x = [0u64; 1];
     let mut z = [0u64; 1];
@@ -506,8 +466,7 @@ mod tests {
 
     #[test]
     fn support_outside_bits_untouched_w2() {
-        // Build X(0) · X(70) and apply H(70). Bit 0 must stay X, bit 70
-        // must become Z, and the coefficient stays +1.
+        // Build X(0) · X(70) and apply H(70). Bit 0 must stay X, bit 70 must become Z, and the coefficient stays +1.
         let mut input = PauliString::<2>::x(0);
         let _ = input.mul_assign(&PauliString::<2>::x(70));
         let h = Clifford1Q::h(70);
@@ -558,8 +517,7 @@ mod tests {
         }
     }
 
-    /// `S` is not self-adjoint: its adjoint table differs in the phase
-    /// pattern, but `(S†)† = S` (involution).
+    /// `S` is not self-adjoint: its adjoint table differs in the phase pattern, but `(S†)† = S` (involution).
     #[test]
     fn s_adjoint_inverts_table_and_is_involutive() {
         let s = Clifford1Q::s(0);
@@ -600,9 +558,7 @@ mod tests {
 
     // ---- Clifford2Q tables ----
 
-    /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using
-    /// `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli
-    /// codes (`I=0, X=1, Z=2, Y=3`).
+    /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli codes (`I=0, X=1, Z=2, Y=3`).
     fn tensor<const W: usize>(q0: u32, q1: u32, pa: u8, pb: u8) -> PauliString<W> {
         let mut p = PauliString::<W>::identity();
         let put = |p: &mut PauliString<W>, q: u32, code: u8| {
@@ -613,9 +569,7 @@ mod tests {
                 3 => PauliString::<W>::y(q),
                 _ => unreachable!(),
             };
-            // Y on a fresh identity contributes phase 0 (Y = (1,1) bits, no
-            // pre-existing X·Z to worry about), and the partial products are
-            // on disjoint qubits, so phases are always +1 here.
+            // Y on a fresh identity contributes phase 0, and the partial products are on disjoint qubits, so phases are always +1 here.
             let _ = p.mul_assign(&g);
         };
         put(&mut p, q0, pa);
@@ -644,12 +598,10 @@ mod tests {
         assert_eq!(c, Complex64::new(1.0, 0.0));
     }
 
-    /// Reference for `CNOT (P⊗Q) CNOT†` derived from generator rules and
-    /// `PauliString::mul_assign`. Each input Pauli on each qubit maps:
+    /// Reference for `CNOT (P⊗Q) CNOT†` derived from generator rules and `PauliString::mul_assign`. Each input Pauli on each qubit maps:
     ///   qubit 0:  I→I,  X→X⊗X,  Z→Z⊗I,  Y→i·X·Z → Y⊗X (with phase from XZ·X)
     ///   qubit 1:  I→I,  X→I⊗X,  Z→Z⊗Z,  Y→i·X·Z → Z⊗Y
-    /// We compute the image as the product of these two qubit images and
-    /// fold in any phase the multiplication picks up.
+    /// The image is the product of these two qubit images, folding in any phase the multiplication picks up.
     fn cnot_reference<const W: usize>(
         control: u32,
         target: u32,
@@ -667,9 +619,7 @@ mod tests {
             }
             2 => (PauliString::<W>::z(control), Phase::ONE),
             3 => {
-                // Y → i · X · Z (decompose `pa = Y` into X·Z; image of X
-                // is X⊗X, image of Z is Z⊗I; product picks up phase from
-                // mul_assign, then multiply by `i` for the Y-decomposition).
+                // Y → i · X · Z: image of X is X⊗X, image of Z is Z⊗I; product picks up phase from mul_assign, then multiply by `i` for the Y-decomposition.
                 let mut p = PauliString::<W>::x(control);
                 let _ = p.mul_assign(&PauliString::<W>::x(target));
                 let q = PauliString::<W>::z(control);
@@ -698,9 +648,7 @@ mod tests {
             }
             _ => unreachable!(),
         };
-        // Combine the two images: image of `pa ⊗ pb` is image(pa) · image(pb)
-        // since they commute as operators on different input qubits — but
-        // the *image* operators may overlap, so phases come from mul_assign.
+        // Combine the two images: image of `pa ⊗ pb` is image(pa) · image(pb) since they commute as operators on different input qubits, but the image operators may overlap, so phases come from mul_assign.
         let mut prod = img_a;
         let mp = prod.mul_assign(&img_b);
         (prod, ph_a + ph_b + mp)
@@ -732,9 +680,7 @@ mod tests {
 
     #[test]
     fn cnot_word_boundary_w2() {
-        // Control on qubit 63 (last bit of word 0), target on qubit 64
-        // (first bit of word 1) — exercises the per-qubit word/bit math
-        // independently for each support qubit.
+        // Control on qubit 63 (last bit of word 0), target on qubit 64 (first bit of word 1) — exercises the per-qubit word/bit math independently for each support qubit.
         let cnot = Clifford2Q::cnot(63, 64);
         // X⊗X on (63, 64) → X⊗I (per CNOT rules: X⊗X → X⊗I).
         let input = tensor::<2>(63, 64, 1, 1);

@@ -1,17 +1,9 @@
-//! CPU sets, NUMA node discovery, thread/memory pinning, and the pinned Rayon
-//! pool one partition runs on. See ARCHITECTURE.md §Partitioning.
+//! CPU sets, NUMA node discovery, thread/memory pinning, and the pinned Rayon pool one partition runs on.
+//! See ARCHITECTURE.md §Partitioning.
 //!
-//! A partition owns one Rayon pool whose workers are pinned to one NUMA
-//! domain's CPUs and whose allocations are bound to that domain's memory. Work
-//! stealing therefore stays *inside* a socket: the coset loop keeps its
-//! straggler tolerance (static coset→worker placement was measured 1.25–1.9×
-//! slower — `research/notes/2026-08-30-static-coset-placement.md`) while
-//! first-touch of a partition's columns lands on the socket that reads them.
-//!
-//! Discovery is sysfs + `libc` (`sched_{get,set}affinity`, `sched_getcpu`,
-//! `set_mempolicy`); there is no hwloc or libnuma dependency. Every entry
-//! point compiles on non-Linux targets, where it reports one node covering
-//! `available_parallelism` CPUs and pins nothing.
+//! A partition owns one Rayon pool whose workers are pinned to one NUMA domain's CPUs and whose allocations are bound to that domain's memory, so work stealing stays inside a socket while first-touch of a partition's columns lands on the socket that reads them.
+//! Discovery is sysfs + `libc` (`sched_{get,set}affinity`, `sched_getcpu`, `set_mempolicy`); there is no hwloc or libnuma dependency.
+//! Every entry point compiles on non-Linux targets, where it reports one node covering `available_parallelism` CPUs and pins nothing.
 
 use std::fmt;
 use std::io;
@@ -264,12 +256,10 @@ pub(crate) fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
     Ok(())
 }
 
-/// Binds the calling thread's allocations to one NUMA node, or restores the
-/// default policy.
+/// Binds the calling thread's allocations to one NUMA node, or restores the default policy.
 ///
-/// `Some(node)` installs `MPOL_BIND` on that node alone, so pages this thread
-/// first-touches come from its own domain; `None` restores `MPOL_DEFAULT`. A
-/// no-op returning `Ok(())` on non-Linux targets.
+/// `Some(node)` installs `MPOL_BIND` on that node alone, so pages this thread first-touches come from its own domain; `None` restores `MPOL_DEFAULT`.
+/// A no-op returning `Ok(())` on non-Linux targets.
 ///
 /// # Errors
 ///
@@ -315,11 +305,9 @@ pub(crate) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> 
     Ok(())
 }
 
-/// The CPU the calling thread is running on right now, if the platform can
-/// say. `None` on non-Linux targets.
+/// The CPU the calling thread is running on right now, if the platform can say. `None` on non-Linux targets.
 ///
-/// Only [`build_pool`]'s own test asks — the engine pins and then trusts the
-/// kernel — so it is compiled for tests alone.
+/// Only [`build_pool`]'s own test asks; the engine pins and then trusts the kernel.
 #[cfg(test)]
 fn current_cpu() -> Option<usize> {
     #[cfg(target_os = "linux")]
@@ -348,13 +336,10 @@ pub struct PartitionSlot {
     pub threads: usize,
 }
 
-/// Builds the Rayon pool for one partition, pinning each worker to the slot's
-/// CPUs and (when `bind_memory`) binding its allocations to the slot's node.
+/// Builds the Rayon pool for one partition, pinning each worker to the slot's CPUs and (when `bind_memory`) binding its allocations to the slot's node.
 ///
-/// Pinning happens on the worker itself, before it enters Rayon's main loop,
-/// so the pool's own stacks and per-worker allocations are first-touched
-/// locally. A worker whose pinning call fails logs a warning and runs
-/// unpinned: a placement failure degrades locality, it does not stop the run.
+/// Pinning happens on the worker itself, before it enters Rayon's main loop, so the pool's own stacks and per-worker allocations are first-touched locally.
+/// A worker whose pinning call fails logs a warning and runs unpinned: a placement failure degrades locality, it does not stop the run.
 ///
 /// # Errors
 ///
@@ -403,10 +388,8 @@ pub(crate) fn build_pool(
 pub enum Placement {
     /// One partition per NUMA node in the affinity mask.
     ///
-    /// The partition count is the node count rounded **down** to a power of
-    /// two (at least one); when that is fewer than the node count, adjacent
-    /// nodes are merged into a partition rather than dropped, so every allowed
-    /// CPU stays in play. Each partition takes as many threads as it has CPUs.
+    /// The partition count is the node count rounded **down** to a power of two (at least one); when that is fewer than the node count, adjacent nodes are merged into a partition rather than dropped, so every allowed CPU stays in play.
+    /// Each partition takes as many threads as it has CPUs.
     Auto {
         /// Upper bound on the partition count, itself rounded down to a power
         /// of two. `None` for no bound.
@@ -414,8 +397,7 @@ pub enum Placement {
     },
     /// One partition per listed CPU set, exactly as given.
     ///
-    /// Sets may overlap — the resolve logs a warning and proceeds — but each
-    /// must be non-empty and a subset of the process's affinity mask.
+    /// Sets may overlap (the resolve logs a warning and proceeds), but each must be non-empty and a subset of the process's affinity mask.
     Explicit(
         /// The CPU sets, one per partition; the count must be a power of two.
         Vec<CpuSet>,
@@ -465,8 +447,7 @@ impl Default for PartitionConfig {
 impl PartitionConfig {
     /// Resolves the placement against the machine into one slot per partition.
     ///
-    /// The slot count is always a power of two, which is what makes a
-    /// partition index a fixed set of GF(2) hash rows.
+    /// The slot count is always a power of two, which is what makes a partition index a fixed set of GF(2) hash rows.
     ///
     /// # Errors
     ///
@@ -493,9 +474,7 @@ fn resolve_auto(max_partitions: Option<usize>) -> Vec<PartitionSlot> {
         count = prev_power_of_two(count.min(max));
     }
 
-    // Merge adjacent nodes when the count was rounded down, so no allowed CPU
-    // is left out of the run: the first `nodes.len() % count` partitions take
-    // one node more than the rest.
+    // Merge adjacent nodes when the count was rounded down, so no allowed CPU is left out of the run: the first `nodes.len() % count` partitions take one node more than the rest.
     let (base, remainder) = (nodes.len() / count, nodes.len() % count);
     let mut slots = Vec::with_capacity(count);
     let mut rest = nodes.as_slice();
@@ -865,8 +844,7 @@ mod tests {
 
     #[test]
     fn memory_binding_round_trips_on_a_scratch_thread() {
-        // On a scratch thread so the test runner's own memory policy, which
-        // every other test in this process shares, is left alone.
+        // On a scratch thread so the test runner's own memory policy, which every other test in this process shares, is left alone.
         let node = numa_nodes()[0].0;
         std::thread::scope(|scope| {
             scope.spawn(|| match bind_current_thread_memory(Some(node)) {

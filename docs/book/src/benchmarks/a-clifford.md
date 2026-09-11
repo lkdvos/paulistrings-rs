@@ -58,11 +58,11 @@ RAYON_NUM_THREADS=1 pytest benchmarks/python/bench_a_clifford.py \
 
 ## The correctness gate
 
-The CI-safe half lives in `python/paulistrings/tests/test_benchmark_a_clifford.py`
+The CI-safe half lives in `benchmarks/python/tests/test_benchmark_a_clifford.py`
 and `importorskip`s `stim`, so the numpy-only CI job stays green without it:
 
 ```bash
-pytest python/paulistrings/tests/test_benchmark_a_clifford.py
+pytest benchmarks/python/tests/test_benchmark_a_clifford.py
 ```
 
 **Sources:**

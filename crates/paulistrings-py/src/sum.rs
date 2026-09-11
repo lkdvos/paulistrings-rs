@@ -22,8 +22,7 @@ use pyo3::types::{PyAny, PyBool, PyComplex, PyDict};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Width-dispatch enum. The Python boundary picks the smallest width that
-/// fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
+/// Width-dispatch enum. The Python boundary picks the smallest width that fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
 pub enum PauliSumImpl {
     W1(CorePauliSum<1>),
     W2(CorePauliSum<2>),
@@ -33,8 +32,7 @@ pub enum PauliSumImpl {
 }
 
 impl PauliSumImpl {
-    /// Pick the smallest supported width for `num_qubits`. Returns `None` if
-    /// `num_qubits` exceeds the largest monomorphized width (1024 qubits).
+    /// Pick the smallest supported width for `num_qubits`. Returns `None` if `num_qubits` exceeds the largest monomorphized width (1024 qubits).
     pub fn empty_for(num_qubits: usize) -> Option<Self> {
         for_num_qubits!(num_qubits, |W| CorePauliSum::<W>::empty(num_qubits))
     }
@@ -52,19 +50,14 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.expectation_product_state(state))
     }
 
-    /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. The
-    /// caller has already checked that there is exactly one entry per qubit,
-    /// so the resulting masks have no bit set past `num_qubits`.
+    /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. Caller already checked one entry per qubit, so the resulting masks have no bit set past `num_qubits`.
     pub fn expectation_labels(&self, axes: &[(PauliAxis, bool)]) -> Complex64 {
         for_each_width!(self, |s| s.expectation_product_basis(
             &ProductBasis::from_axes(axes.iter().copied())
         ))
     }
 
-    /// Stabilizer state given by one signed Pauli generator per qubit. The
-    /// generator strings are parsed at the active width and validated by the
-    /// core, so both a malformed string and an invalid generator set surface
-    /// as a `ValueError`.
+    /// Stabilizer state given by one signed Pauli generator per qubit. Parsed at the active width and validated by the core, so a malformed string or an invalid generator set surfaces as a `ValueError`.
     pub fn expectation_stabilizer(&self, generators: &[String]) -> PyResult<Complex64> {
         for_each_width!(self, |s| stabilizer_expectation(s, generators))
     }
@@ -73,15 +66,12 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.identity_coefficient())
     }
 
-    /// `None` when the two sums were monomorphized at different widths, which
-    /// can only happen if their qubit counts fall in different dispatch bands.
+    /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
     pub fn overlap(&self, other: &Self) -> Option<Complex64> {
         for_each_width_pair!((self, other), |a, b| a.overlap(b))
     }
 
-    /// Snapshot of the coefficient column, in the sum's canonical order
-    /// (partition-bucket index ascending, then lexicographic `(x, z)`; equal
-    /// to plain lex order for sums of ≤ 1024 terms).
+    /// Snapshot of the coefficient column, in the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`; equal to plain lex order for sums of ≤ 1024 terms).
     pub fn coeffs(&self) -> Vec<Complex64> {
         fn coeffs_of<const W: usize>(s: &CorePauliSum<W>) -> Vec<Complex64> {
             let (_, _, c) = s.to_arrays();
@@ -90,16 +80,11 @@ impl PauliSumImpl {
         for_each_width!(self, |s| coeffs_of(s))
     }
 
-    /// `(width, x_flat, z_flat)` snapshot of the SoA columns, in the sum's
-    /// canonical order (see [`Self::coeffs`]) — the same order across the
-    /// three exported arrays, since the order is a deterministic function of
-    /// the sum. Both `x_flat` and `z_flat` have length `len() * width`, and
-    /// `width` is the active monomorphization's `W`. Caller reshapes to
-    /// `(len, width)`.
+    /// `(width, x_flat, z_flat)` snapshot of the SoA columns, in the sum's canonical order (see [`Self::coeffs`]), the same across the three arrays since the order is a deterministic function of the sum.
+    /// `x_flat`/`z_flat` have length `len() * width`; caller reshapes to `(len, width)`.
     pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>) {
         fn flatten<const W: usize>(rows: &[[u64; W]]) -> Vec<u64> {
-            // Flat-copy via iteration. The W is small (≤16) and the array
-            // length is `len()`; this is not on the hot path.
+            // Flat-copy via iteration; W is small (≤16) and this is not on the hot path.
             let mut out = Vec::with_capacity(rows.len() * W);
             for r in rows {
                 out.extend_from_slice(r);
@@ -113,8 +98,7 @@ impl PauliSumImpl {
         for_each_width!(self, |s| xz_of(s))
     }
 
-    /// Build from a `{pauli_string: coefficient}` Python dict at the requested
-    /// width. The width must already match `num_qubits` (caller's job).
+    /// Build from a `{pauli_string: coefficient}` Python dict at the requested width; the width must already match `num_qubits` (caller's job).
     pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
         for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
@@ -159,12 +143,7 @@ impl PauliSumImpl {
 }
 
 /// Build a `PauliSum<W>` from a `{pauli_string: coefficient}` Python dict.
-///
-/// Pauli-string format matches the test helper in `pauli_sum.rs`: the
-/// character at index `i` describes qubit `i`. Coefficients multiply the
-/// literal Hermitian Pauli string — `Y` maps to the symplectic key
-/// `(x=1, z=1)` with no phase factor, so a Hermitian observable keeps
-/// real coefficients (ARCHITECTURE.md §Data-Model).
+/// Format matches the test helper in `pauli_sum.rs`: character `i` describes qubit `i`, coefficients multiply the literal Hermitian Pauli string (ARCHITECTURE.md §Data-Model).
 fn parse_terms<const W: usize>(
     num_qubits: usize,
     terms: &Bound<'_, PyDict>,
@@ -188,12 +167,8 @@ fn parse_terms<const W: usize>(
     Ok(acc.finalize())
 }
 
-/// Parse an `I/X/Y/Z` label into a symplectic key: character `i` addresses
-/// qubit `i`, `Y` maps to `(x=1, z=1)` with no phase factor (the crate's
-/// Hermitian convention).
-///
-/// The caller checks the label's length against `num_qubits` first — this only
-/// rejects characters outside the alphabet.
+/// Parse an `I/X/Y/Z` label into a symplectic key (the crate's Hermitian convention: `Y` maps to `(x=1, z=1)` with no phase factor).
+/// Caller checks the label's length against `num_qubits` first; this only rejects characters outside the alphabet.
 fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
     let mut x = [0u64; W];
     let mut z = [0u64; W];
@@ -219,13 +194,8 @@ fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
     Ok(PauliString::<W> { x, z })
 }
 
-/// Contract `sum` against the stabilizer state spelled by `generators`.
-///
-/// Generators are signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"`
-/// for `+` — with the same `I/X/Y/Z` alphabet and qubit indexing as
-/// `from_strings`. The core validates the set (count, range, commutation,
-/// GF(2) independence) and its `StabilizerError` becomes the `ValueError`
-/// message verbatim.
+/// Contract `sum` against the stabilizer state spelled by `generators` (signed Pauli strings, same alphabet and indexing as `from_strings`).
+/// The core validates the set and its `StabilizerError` becomes the `ValueError` message verbatim.
 fn stabilizer_expectation<const W: usize>(
     sum: &CorePauliSum<W>,
     generators: &[String],
@@ -257,11 +227,7 @@ fn stabilizer_expectation<const W: usize>(
     Ok(sum.expectation_stabilizer(&state))
 }
 
-/// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually
-/// covers within `num_qubits` — `!0u64` for a word entirely below
-/// `num_qubits`, `0` for one entirely at or above it, and a low-bits mask for
-/// the boundary word. Any set bit outside this mask addresses a qubit that
-/// does not exist.
+/// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually covers within `num_qubits`; any set bit outside this mask addresses a qubit that does not exist.
 fn word_mask(word: usize, num_qubits: usize) -> u64 {
     let start = word * 64;
     if start >= num_qubits {
@@ -277,13 +243,8 @@ fn word_mask(word: usize, num_qubits: usize) -> u64 {
 }
 
 /// Build a `PauliSum<W>` from raw `(x, z, coefficients)` arrays.
-///
-/// `x`/`z` rows are symplectic keys in the Hermitian convention (no phase —
-/// every row is folded in with `Phase::ONE`, matching `parse_terms`). A row
-/// narrower than `W` words is zero-padded on the high side; a row wider than
-/// `W` is a `ValueError`, since silently truncating would drop data. Ingest
-/// goes through `BuildAccumulator`, so duplicate `(x, z)` rows sum their
-/// coefficients and rows that cancel to exact `0+0i` are dropped.
+/// Rows are symplectic keys in the Hermitian convention (matching `parse_terms`); a row narrower than `W` words is zero-padded, a wider one is a `ValueError`.
+/// Ingest goes through `BuildAccumulator`, so duplicate `(x, z)` rows sum their coefficients and exact-`0+0i` rows are dropped.
 fn build_from_arrays<const W: usize>(
     num_qubits: usize,
     x: &PyReadonlyArray2<'_, u64>,
@@ -358,12 +319,8 @@ fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     ))
 }
 
-/// One character of a per-qubit product-state label, in qiskit's
-/// `Statevector.from_label` alphabet: `0`/`1` are the `Z` eigenstates, `+`/`-`
-/// the `X` ones and `r`/`l` the `Y` ones. `None` for anything else.
-///
-/// Returns `(axis, minus)`, which is exactly what `ProductBasis::from_axes`
-/// consumes.
+/// One character of a per-qubit product-state label, in qiskit's `Statevector.from_label` alphabet. `None` for anything else.
+/// Returns `(axis, minus)`, exactly what `ProductBasis::from_axes` consumes.
 fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
     Some(match ch {
         '0' => (PauliAxis::Z, false),
@@ -376,10 +333,7 @@ fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
     })
 }
 
-/// `"forward"` (the default when `None`) or `"heisenberg"`.
-///
-/// Shared by `propagate` and `propagate_with_stats` so the accepted spellings
-/// and the error message cannot drift apart.
+/// `"forward"` (the default when `None`) or `"heisenberg"`, shared by `propagate` and `propagate_with_stats` so the accepted spellings and error message cannot drift apart.
 fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     match direction.unwrap_or("forward") {
         "forward" => Ok(Direction::Forward),
@@ -391,16 +345,9 @@ fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     }
 }
 
-/// `"sorted"` (the default when `None`), `"auto"` or `"direct"`, paired with an
-/// optional small-sum threshold, as a core [`PropagateOptions`].
-///
-/// `None`/`None` is `PropagateOptions::default()` exactly, which the core
-/// documents as bit-for-bit today's `propagate` — so the kwargs are additive and
-/// omitting them changes nothing. The parse happens once at the boundary,
-/// outside the width dispatch and every loop.
-///
-/// Shared by `propagate` and `propagate_with_stats` so the accepted spellings
-/// and the error message cannot drift apart, exactly as `parse_direction` is.
+/// `"sorted"` (default), `"auto"` or `"direct"`, paired with an optional small-sum threshold, as a core [`PropagateOptions`].
+/// `None`/`None` is `PropagateOptions::default()` exactly, so the kwargs are additive and omitting them changes nothing; parsed once at the boundary, outside the width dispatch.
+/// Shared by `propagate` and `propagate_with_stats`, like `parse_direction`.
 fn parse_engine(
     engine: Option<&str>,
     small_sum_threshold: Option<usize>,
@@ -423,28 +370,9 @@ fn parse_engine(
     })
 }
 
-/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`], where
-/// `None` means the classic unpartitioned path — bit for bit today's
-/// behaviour, so the kwargs stay additive.
-///
-/// Accepted spellings, and what each resolves to:
-///
-/// | `partitions` | placement |
-/// |---|---|
-/// | `None`, `1` | `None` — the classic path |
-/// | `"auto"` | one partition per NUMA node in the affinity mask, or the classic path on a single-node box |
-/// | an `int` power of two `>= 2` | the same, capped at that many partitions; rejected unless the box has that many nodes |
-/// | `list[list[int]]` | one partition per CPU list, exactly as given |
-///
-/// Anything else is a `TypeError`; a malformed value of an accepted shape (a
-/// count that is not a power of two, an empty or overlapping CPU list, a CPU
-/// outside the affinity mask) is a `ValueError`.
-///
-/// The placement is resolved against the machine **here**, at the boundary and
-/// before the GIL is released, so a bad CPU list is an exception rather than a
-/// failure inside the run. It is resolved a second time by
-/// [`PartitionRuntime::new`]; that costs one sysfs walk, once per distinct
-/// config per process (see [`runtime_for`]).
+/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
+/// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
+/// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
@@ -468,8 +396,7 @@ fn parse_partitions(
             }
         }
     } else if obj.is_instance_of::<PyBool>() {
-        // `bool` is an `int` subclass, so `partitions=True` would otherwise
-        // parse as `1` and silently mean "unpartitioned".
+        // `bool` is an `int` subclass, so `partitions=True` would otherwise parse as `1` and silently mean "unpartitioned".
         return Err(PyTypeError::new_err(
             "partitions must be None, an int, a list of CPU lists, or 'auto', not a bool",
         ));
@@ -540,18 +467,13 @@ fn parse_partitions(
     };
     let slots = config.resolve().map_err(topology_error)?;
     if slots.len() == 1 && matches!(config.placement, Placement::Auto { .. }) {
-        // A single-node box (a laptop, a cgroup pinned inside one node): there
-        // is nothing to partition, so run the classic path rather than pay for
-        // a pool build and pin a thread nobody asked to pin. An explicit
-        // one-element CPU list is honoured — that caller *did* ask.
+        // A single-node box: nothing to partition, so run the classic path rather than pay for a pool build and pin a thread nobody asked to pin. An explicit one-element CPU list is still honoured.
         return Ok(None);
     }
     Ok(Some(config))
 }
 
-/// A core [`TopologyError`] as a Python exception: `OSError` for a failed
-/// syscall or sysfs read, `ValueError` for everything the caller spelled
-/// wrong.
+/// A core [`TopologyError`] as a Python exception: `OSError` for a failed syscall or sysfs read, `ValueError` for everything the caller spelled wrong.
 fn topology_error(err: TopologyError) -> PyErr {
     match err {
         TopologyError::Io(_) => PyOSError::new_err(err.to_string()),
@@ -559,28 +481,15 @@ fn topology_error(err: TopologyError) -> PyErr {
     }
 }
 
-/// One [`PartitionRuntime`] per distinct [`PartitionConfig`], for the life of
-/// the process.
-///
-/// A runtime owns one pinned Rayon pool per partition, which is far too
-/// expensive to build per call: a Trotter driver stepping an observable
-/// through many short circuits would otherwise spawn and tear down every
-/// pinned pool on every step. Keyed by the config itself, so two different
-/// placements coexist and the same placement is built once.
-///
-/// The `Vec` is short by construction — a process uses one or two placements —
-/// so a linear scan under a mutex is the right shape, and the mutex is held
-/// across the build so two threads racing on a first call build one pool set
-/// rather than two.
+/// One [`PartitionRuntime`] per distinct [`PartitionConfig`], for the life of the process.
+/// A runtime owns one pinned Rayon pool per partition, too expensive to build per call, so it is cached keyed by config; a linear scan is fine since a process uses one or two placements, and the mutex is held across the build so two racing first calls build one pool set.
 type RuntimeCache = Mutex<Vec<(PartitionConfig, Arc<PartitionRuntime>)>>;
 
 static PARTITION_RUNTIMES: OnceLock<RuntimeCache> = OnceLock::new();
 
 fn runtime_for(config: &PartitionConfig) -> Result<Arc<PartitionRuntime>, TopologyError> {
     let cache = PARTITION_RUNTIMES.get_or_init(|| Mutex::new(Vec::new()));
-    // A poisoned lock means an earlier caller panicked; the cache is a plain
-    // append-only `Vec` that is never left half-updated, so recover rather
-    // than poison every later call.
+    // A poisoned lock means an earlier caller panicked; the cache is append-only and never half-updated, so recover rather than poison every later call.
     let mut cache = cache.lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some((_, runtime)) = cache.iter().find(|(cached, _)| cached == config) {
         return Ok(Arc::clone(runtime));
@@ -591,13 +500,9 @@ fn runtime_for(config: &PartitionConfig) -> Result<Arc<PartitionRuntime>, Topolo
 }
 
 /// What can go wrong inside the GIL-released region of a propagate call.
-///
-/// Both variants are turned into Python exceptions after the GIL is
-/// reacquired; neither can be raised from inside `allow_threads`.
+/// Both variants are turned into Python exceptions after the GIL is reacquired; neither can be raised from inside `allow_threads`.
 enum PropagateFailure {
-    /// The sum and the circuit monomorphized at different widths — impossible
-    /// (both width pickers map `num_qubits` to the same arm), but surfaced as
-    /// an error rather than a panic.
+    /// The sum and the circuit monomorphized at different widths — impossible, but surfaced as an error rather than a panic.
     WidthMismatch,
     /// The partitioned placement could not be realized on this machine.
     Topology(TopologyError),
@@ -614,12 +519,10 @@ impl From<PropagateFailure> for PyErr {
     }
 }
 
-/// The `NotImplementedError` a partitioned run with an exact `topn` raises,
-/// naming the kwarg that put the call in partitioned mode.
+/// The `NotImplementedError` a partitioned run with an exact `topn` raises, naming the kwarg that put the call in partitioned mode.
 fn topn_partitioned_error(partitions: Option<&Bound<'_, PyAny>>) -> PyErr {
     let shown = match partitions {
-        // A distributed run: `comm=` is a communicator whose repr says
-        // nothing useful, and the kwarg's *name* is the actionable part.
+        // A distributed run: `comm=`'s repr says nothing useful, so the kwarg's name is the actionable part.
         None => "comm=<mpi4py communicator>".to_string(),
         Some(obj) => {
             let repr = obj
@@ -773,12 +676,7 @@ impl RunMode {
 }
 
 /// Turn the placement kwargs into a [`RunMode`], with the GIL held.
-///
-/// Order matters. Everything that can raise on the caller's spelling —
-/// `comm=` together with `partitions=`, a bad CPU list, an exact `topn` — is
-/// decided *before* the communicator is adopted, because adopting it is
-/// collective: a rank that raises early is a rank that never entered a
-/// collective, so the whole group raises together and none of them hangs.
+/// Order matters: everything that can raise on the caller's spelling is decided before the communicator is adopted, since adopting it is collective — a rank that raises early never enters the collective, so the whole group raises together.
 fn parse_run_mode(
     py: Python<'_>,
     partitions: Option<&Bound<'_, PyAny>>,
@@ -878,14 +776,8 @@ impl PropagationStats {
         self.terms_out.clone()
     }
 
-    /// Peak *resident* term count: `max(terms_in[0], terms_out...)`, or the
-    /// input's term count for a zero-layer circuit.
-    ///
-    /// This is how large the sum ever got *between* layers. The transient
-    /// in-layer expansion — after a channel's fanout, before the merge
-    /// deduplicates and truncation filters — is deliberately not measured;
-    /// capturing it would mean instrumenting the engine's hot loop. For a
-    /// memory figure, read peak RSS from `/proc/self/status` instead.
+    /// Peak *resident* term count between layers: `max(terms_in[0], terms_out...)`, or the input's count for a zero-layer circuit.
+    /// The transient in-layer expansion (after fanout, before merge/truncation) is not measured, since that needs instrumenting the engine's hot loop; read peak RSS from `/proc/self/status` for a memory figure.
     #[getter]
     fn peak_terms(&self) -> usize {
         self.peak_terms
@@ -898,27 +790,14 @@ impl PropagationStats {
         self.final_terms
     }
 
-    /// The partitioned run's own record, or `None` for an unpartitioned call.
-    ///
-    /// `Some(PartitionStats)` exactly when `propagate_with_stats` was given a
-    /// `partitions=` or a `comm=` that put the call in partitioned mode — note
-    /// that `partitions="auto"` on a single-NUMA-node box runs unpartitioned
-    /// and so reports `None` here. The per-layer lists it carries are indexed
-    /// the same way as `terms_in` / `terms_out`: one entry per layer, in
-    /// application order.
+    /// The partitioned run's own record, or `None` for an unpartitioned call (including `partitions="auto"` on a single-NUMA-node box).
+    /// Its per-layer lists are indexed the same way as `terms_in` / `terms_out`.
     #[getter]
     fn partition(&self) -> Option<PartitionStats> {
         self.partition.clone()
     }
 
-    /// The five term-count fields, in the order the getters are declared, so a
-    /// stats record printed from a REPL or a log line is readable without
-    /// poking at it attribute by attribute. The per-layer lists are printed in
-    /// full — they are one entry per layer, not per term.
-    ///
-    /// `partition` is deliberately **not** here: the format is pinned by
-    /// `test_propagation_stats.py`, and a partitioned record's per-partition
-    /// lists are `P` times longer again. Print `stats.partition` for those.
+    /// The five term-count fields, in getter order, for a readable REPL/log line. `partition` is deliberately not here (the format is pinned by `test_propagation_stats.py`); print `stats.partition` for that.
     fn __repr__(&self) -> String {
         format!(
             "PropagationStats(layers={}, terms_in={:?}, terms_out={:?}, \
@@ -944,19 +823,9 @@ impl PropagationStats {
         }
     }
 
-    /// The same record from a partitioned run's [`PartitionTrace`], plus the
-    /// per-partition detail in `partition`.
-    ///
-    /// The layer-level counts are the per-partition ones summed over
-    /// partitions, which is what the unpartitioned engine would have recorded
-    /// for the same layer: partitions hold disjoint term sets, and a layer's
-    /// `terms_in`/`terms_out` are read at the same two points in the layer
-    /// loop. So the two `propagate_with_stats` paths report comparable
-    /// numbers, and a partitioned run can be checked against an unpartitioned
-    /// one field by field.
-    /// A distributed run's records are this rank's only, so the sum over the
-    /// "partition" dimension is a sum of one — the layer-level counts are then
-    /// this rank's, not the group's (documented on `PartitionStats.size`).
+    /// The same record from a partitioned run's [`PartitionTrace`], plus the per-partition detail in `partition`.
+    /// The layer-level counts are the per-partition ones summed, matching what the unpartitioned engine would record for the same layer — so a partitioned run is comparable to an unpartitioned one field by field.
+    /// A distributed run's records are this rank's only, so the sum is a sum of one (documented on `PartitionStats.size`).
     fn from_partition_trace(
         trace: &PartitionTrace,
         partitions: usize,
@@ -989,19 +858,9 @@ impl PropagationStats {
     }
 }
 
-/// Per-layer, per-partition record of a partitioned propagation — the
-/// `partition` attribute of a [`PropagationStats`] from a `partitions=` or
-/// `comm=` call.
-///
-/// A plain record with read-only attributes, like `PropagationStats`. Every
-/// list is one entry per layer applied, in application order (so *reverse*
-/// circuit order under `direction="heisenberg"`); the entries of `terms_in` /
-/// `terms_out` are themselves one entry per partition, in rank order.
-///
-/// This is the instrument for the two questions a partitioned run raises:
-/// how much of the sum crossed a partition boundary (`rows_exported`,
-/// `bytes_exported`, `local`), and how evenly the terms were spread
-/// (`imbalance`).
+/// Per-layer, per-partition record of a partitioned propagation — the `partition` attribute of a [`PropagationStats`] from a `partitions=` or `comm=` call.
+/// Every list is one entry per layer applied, in application order; `terms_in`/`terms_out` entries are themselves one entry per partition, in rank order.
+/// Answers the two questions a partitioned run raises: how much crossed a partition boundary (`rows_exported`, `bytes_exported`, `local`), and how evenly terms were spread (`imbalance`).
 #[pyclass(frozen, module = "paulistrings._paulistrings", name = "PartitionStats")]
 #[derive(Clone)]
 pub struct PartitionStats {
@@ -1018,107 +877,64 @@ pub struct PartitionStats {
 
 #[pymethods]
 impl PartitionStats {
-    /// Number of partitions the run was split across — always a power of two.
-    ///
-    /// For a distributed (`comm=`) run this is the MPI group size, i.e. `size`
-    /// below: one partition per rank.
+    /// Number of partitions the run was split across — always a power of two. For a distributed (`comm=`) run this is the MPI group size (`size` below): one partition per rank.
     #[getter]
     fn partitions(&self) -> usize {
         self.partitions
     }
 
-    /// This process's rank in the `comm=` group, or `None` for an in-process
-    /// (`partitions=`) run.
-    ///
-    /// It is the index into the per-partition dimension that the lists below
-    /// *would* carry if a rank could see the whole group — see `size` for why
-    /// it cannot.
+    /// This process's rank in the `comm=` group, or `None` for an in-process (`partitions=`) run.
     #[getter]
     fn rank(&self) -> Option<u32> {
         self.rank
     }
 
-    /// The `comm=` group's size, or `None` for an in-process (`partitions=`)
-    /// run.
-    ///
-    /// **A distributed run's per-layer lists hold this rank's entry only.**
-    /// `terms_in[k]` and `terms_out[k]` are one-element lists (this rank's
-    /// count for layer `k`), `rows_exported[k]` / `bytes_exported[k]` are what
-    /// *this* rank sent, and `imbalance[k]` is therefore always `1.0` —
-    /// nothing gathers the group's counters, because a per-layer all-reduce
-    /// would be a collective added to every layer for a diagnostic. Reduce
-    /// them yourself over `comm` when you want the group's picture. The
-    /// in-process case is unchanged: there the lists are `partitions` long.
+    /// The `comm=` group's size, or `None` for an in-process (`partitions=`) run.
+    /// A distributed run's per-layer lists hold this rank's entry only (`terms_in[k]`/`terms_out[k]` one-element, `rows_exported[k]`/`bytes_exported[k]` this rank's, `imbalance[k]` always `1.0`) — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic; reduce over `comm` yourself. The in-process case is unchanged: lists are `partitions` long.
     #[getter]
     fn size(&self) -> Option<u32> {
         self.size
     }
 
-    /// Whether each layer was purely local, i.e. moved no row across a
-    /// partition boundary and made no transport call for the exchange.
-    ///
-    /// A layer is local when the channel's deltas all keep the partition rows
-    /// of a key fixed — every single-qubit channel on a qubit outside the
-    /// partition rows, and every diagonal one. `local[k]` is exactly
-    /// `rows_exported[k] == 0`.
+    /// Whether each layer was purely local: moved no row across a partition boundary. `local[k]` is exactly `rows_exported[k] == 0`.
     #[getter]
     fn local(&self) -> Vec<bool> {
         self.local.clone()
     }
 
-    /// Rows sent across partition boundaries in each layer, summed over every
-    /// sender/receiver pair.
-    ///
-    /// The traffic figure: one row is one key plus one coefficient, written by
-    /// the sender and read by the receiver's merge. Compare against
-    /// `PropagationStats.terms_in` for the fraction of the sum that moved.
+    /// Rows sent across partition boundaries in each layer, summed over every sender/receiver pair. Compare against `PropagationStats.terms_in` for the fraction of the sum that moved.
     #[getter]
     fn rows_exported(&self) -> Vec<u64> {
         self.rows_exported.clone()
     }
 
-    /// Wire bytes behind `rows_exported`, per layer — the same rows counted in
-    /// their exchange-block encoding, including the per-block headers.
+    /// Wire bytes behind `rows_exported`, per layer, including per-block headers.
     #[getter]
     fn bytes_exported(&self) -> Vec<u64> {
         self.bytes_exported.clone()
     }
 
-    /// Terms each partition held before each layer: `terms_in[k][r]` for layer
-    /// `k`, rank `r`. The row sums are `PropagationStats.terms_in`.
+    /// Terms each partition held before each layer: `terms_in[k][r]` for layer `k`, rank `r`. The row sums are `PropagationStats.terms_in`.
     #[getter]
     fn terms_in(&self) -> Vec<Vec<usize>> {
         self.terms_in.clone()
     }
 
-    /// Terms each partition held after each layer, i.e. after that layer's
-    /// truncation. The row sums are `PropagationStats.terms_out`.
+    /// Terms each partition held after each layer's truncation. The row sums are `PropagationStats.terms_out`.
     #[getter]
     fn terms_out(&self) -> Vec<Vec<usize>> {
         self.terms_out.clone()
     }
 
-    /// Load imbalance of `terms_in` per layer: the maximum over partitions
-    /// divided by their mean.
-    ///
-    /// `1.0` is perfect balance (and the answer for a layer where every
-    /// partition was empty); `partitions` is the worst case, one partition
-    /// holding everything. Random partition rows on a large sum sit within a
-    /// percent or two of `1.0` — a persistent excursion is the signal that the
-    /// circuit drove the sum's support into one partition's rows.
+    /// Load imbalance of `terms_in` per layer: the maximum over partitions divided by their mean. `1.0` is perfect balance; `partitions` is the worst case.
     #[getter]
     fn imbalance(&self) -> Vec<f64> {
         self.imbalance.clone()
     }
 
-    /// All nine fields, in the order the getters are declared. The per-layer
-    /// lists are printed in full, `terms_in` / `terms_out` nested one level
-    /// deeper — one entry per layer per partition, never per term.
+    /// All nine fields, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
     fn __repr__(&self) -> String {
-        // `local` is spelled with Python's `True`/`False` rather than Rust's
-        // `Debug`, so the line can be pasted back into a REPL. `rank`/`size`
-        // are spelled the same way: `None`, not Rust's `None`-in-`Debug`
-        // (which happens to match) or `Some(0)`.
+        // Spelled with Python's `True`/`False`/`None` rather than Rust's `Debug`, so the line pastes back into a REPL.
         let local = self
             .local
             .iter()
@@ -1144,12 +960,7 @@ impl PartitionStats {
 
 impl PartitionStats {
     /// Transpose a core [`PartitionTrace`] into the Python-facing record.
-    ///
-    /// `partitions` comes from the runtime (or, distributed, from the group
-    /// size) rather than the trace, so a zero-layer circuit — which records
-    /// nothing — still reports the placement it ran on. `ranks` is
-    /// `Some((rank, size))` for a distributed run and `None` for an in-process
-    /// one, which is the only thing distinguishing the two records.
+    /// `partitions` comes from the runtime (or group size), not the trace, so a zero-layer circuit still reports its placement. `ranks` is `Some((rank, size))` for a distributed run, `None` for in-process — the only distinguishing input.
     fn from_trace(trace: &PartitionTrace, partitions: usize, ranks: Option<(u32, u32)>) -> Self {
         let total = |matrix: &[Vec<u64>]| matrix.iter().flat_map(|row| row.iter()).sum::<u64>();
         Self {
@@ -1198,22 +1009,10 @@ impl PauliSum {
         Ok(Self { inner })
     }
 
-    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
-    /// of `x_array` / `z_array` / `coefficients_array`.
+    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse of `x_array` / `z_array` / `coefficients_array`.
     ///
-    /// `x` and `z` are `uint64` arrays of shape `(n_terms, w)`; `w` may be
-    /// anywhere from `1` up to the band width `num_qubits` picks (the same
-    /// width `.width` would report), and a narrower array is zero-padded on
-    /// ingest, so a sum exported at its own band and re-imported round-trips
-    /// exactly. `coefficients` is a 1-D array of length `n_terms`,
-    /// `complex128` or a real-float dtype (cast to a zero-imaginary complex).
-    ///
-    /// Rows are symplectic keys in the Hermitian convention — no phase is
-    /// applied, matching `from_strings`. Ingest routes through the same
-    /// `BuildAccumulator` `from_strings` uses: duplicate `(x, z)` rows sum
-    /// their coefficients, and rows whose accumulated coefficient is exact
-    /// `0+0i` are dropped. A set bit at or beyond qubit index `num_qubits` in
-    /// any row is a `ValueError`.
+    /// `x`/`z` are `uint64` arrays of shape `(n_terms, w)`, `w` from `1` up to the band width `num_qubits` picks; a narrower array is zero-padded, so a sum round-trips exactly. `coefficients` is a 1-D array of length `n_terms`, `complex128` or a real-float dtype.
+    /// Rows are symplectic keys in the Hermitian convention (no phase, matching `from_strings`); duplicate `(x, z)` rows sum their coefficients and exact-zero rows are dropped. A set bit at or beyond qubit `num_qubits` is a `ValueError`.
     #[classmethod]
     fn from_arrays(
         _cls: &Bound<'_, pyo3::types::PyType>,
@@ -1243,25 +1042,8 @@ impl PauliSum {
 
     /// Expectation value in a single-qubit product state.
     ///
-    /// `state` is either a **uniform** name — `"x+"` (`|+...+>`), `"y+"`
-    /// (`|+i...+i>`) or `"z+"` (`|0...0>`), each the `+1` eigenstate of that
-    /// Pauli on every qubit, matched case-insensitively — or a **per-qubit
-    /// label string** of exactly `num_qubits` characters, where character `i`
-    /// gives qubit `i`'s state in qiskit's `Statevector.from_label` alphabet:
-    ///
-    /// | label | state | axis |
-    /// |---|---|---|
-    /// | `0` / `1` | `\|0>` / `\|1>` | Z ± |
-    /// | `+` / `-` | `\|+>` / `\|->` | X ± |
-    /// | `r` / `l` | `\|+i>` / `\|-i>` | Y ± |
-    ///
-    /// The label characters are case-sensitive (`r`/`l`, not `R`/`L`), so a
-    /// mistyped uniform name is an error rather than a silent reinterpretation.
-    /// Qubit indexing matches `from_strings`.
-    ///
-    /// Cost is one masked pass over the terms in either case — never an
-    /// expansion over basis states. Returns a Python complex; take `.real`
-    /// when the operator is Hermitian.
+    /// `state` is either a uniform name — `"x+"`, `"y+"`, `"z+"`, the `+1` eigenstate of that Pauli on every qubit, matched case-insensitively — or a per-qubit label string of exactly `num_qubits` characters in qiskit's `Statevector.from_label` alphabet (`0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±, case-sensitive). Qubit indexing matches `from_strings`.
+    /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python complex; take `.real` when the operator is Hermitian.
     #[pyo3(signature = (state="x+"))]
     fn expectation(&self, state: &str) -> PyResult<Complex64> {
         // The uniform names win first, case-insensitively, so `"x+"` keeps
@@ -1303,24 +1085,8 @@ impl PauliSum {
 
     /// Expectation value in a stabilizer state given by its generators.
     ///
-    /// `generators` is a list of exactly `num_qubits` signed Pauli strings —
-    /// `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — each of length
-    /// `num_qubits`, in the same `I/X/Y/Z` alphabet and qubit indexing as
-    /// `from_strings` (character `i` is qubit `i`, `Y` Hermitian with no phase
-    /// factor). They must be pairwise commuting and independent over GF(2);
-    /// anything else is a `ValueError`, including a set implying `-I` is a
-    /// stabilizer.
-    ///
-    /// This reads any stabilizer state — Bell, GHZ, cluster, the output of a
-    /// Clifford circuit (see `paulistrings.interop.stabilizers_from_stim`) —
-    /// where `expectation` reads only single-qubit product states. Each term
-    /// `P` contributes `+c_P` or `-c_P` when `±P` is in the stabilizer group
-    /// and `0` otherwise, so the cost is `O(terms · num_qubits² / 64)` word
-    /// operations after a one-off `O(num_qubits³ / 64)` reduction of the
-    /// generators — never an expansion over basis states. For a state that
-    /// factorizes, `expectation`'s masked scan is `num_qubits` times cheaper
-    /// per term; prefer it there.
-    ///
+    /// `generators` is a list of exactly `num_qubits` signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — in the same `I/X/Y/Z` alphabet and qubit indexing as `from_strings`. They must be pairwise commuting and independent over GF(2); anything else is a `ValueError`.
+    /// Reads any stabilizer state (Bell, GHZ, cluster, Clifford-circuit output; see `paulistrings.interop.stabilizers_from_stim`), where `expectation` reads only product states. Cost is `O(terms · num_qubits² / 64)` after a one-off `O(num_qubits³ / 64)` reduction of the generators; prefer `expectation` when the state factorizes.
     /// Returns a Python complex; take `.real` when the operator is Hermitian.
     ///
     /// ```python
@@ -1391,136 +1157,19 @@ impl PauliSum {
 
     /// Propagate `self` through `circuit`.
     ///
-    /// `direction`: `"forward"` (default) or `"heisenberg"`. `policy` is an
-    /// optional `Truncation` from the `truncation` submodule; if `None`, no
-    /// per-term filtering is applied (the engine's merge phase still drops
-    /// exact-zero terms).
+    /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
+    /// `engine` is `"sorted"` (default, always bucketed), `"auto"` (a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass like `topn`), or `"direct"` (same threshold, always). Results agree to floating-point tolerance across engines (ARCHITECTURE.md §Determinism).
+    /// The GIL is released for the duration.
     ///
-    /// `engine` picks the layer engine, and defaults to the bucketed sorting
-    /// engine at every term count — today's behaviour, unchanged:
+    /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
+    /// In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
-    /// | `engine` | layers on the small-sum direct path |
-    /// |---|---|
-    /// | `"sorted"` (default) | none |
-    /// | `"auto"` | the leading ones, while the sum is within `small_sum_threshold` **and** the policy has no layer pass |
-    /// | `"direct"` | the leading ones, while the sum is within `small_sum_threshold`, whatever the policy |
-    ///
-    /// The direct path applies each layer term by term into a hash map, skipping
-    /// the bucketed machinery and its per-layer fixed cost; it is 1.5–2.4× faster
-    /// below a few hundred terms and slower above a few thousand, which is what
-    /// `small_sum_threshold` (default 2048, `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD`)
-    /// prices. The transition is one-way: once a layer leaves the sum above the
-    /// threshold the rest of the circuit runs on the sorting engine. Entry is
-    /// re-decided on every call, so a Trotter driver stepping a small observable
-    /// through many short circuits gets it each time.
-    ///
-    /// Only the *speed* differs. Both engines apply the same truncation in the
-    /// same place and emit the same per-layer term counts and progress records;
-    /// the results agree to floating-point tolerance, since equal-key summation
-    /// order is unspecified (ARCHITECTURE.md §Determinism). `"auto"` declines a
-    /// policy with a layer pass — `topn`, `approx_topn`, or an `&` composition
-    /// containing one — because the round trip through a materialized sum would
-    /// eat the win; `"direct"` takes it anyway, and stays correct.
-    ///
-    /// The GIL is released for the duration of the propagation, so Python
-    /// threads — including `logging` handlers draining the engine's per-layer
-    /// progress records — run while a long simulation is in flight.
-    ///
-    /// # Partitioned mode
-    ///
-    /// `partitions` splits the sum across NUMA domains: each partition holds a
-    /// disjoint share of the terms, selected by designated rows of the GF(2)
-    /// hash, and runs on its own Rayon pool pinned to that domain's CPUs, with
-    /// only the rows a layer moves across a boundary exchanged between them.
-    /// It is off by default, and `partitions=None` is bit for bit today's
-    /// path.
-    ///
-    /// | `partitions` | placement |
-    /// |---|---|
-    /// | `None`, `1` (default) | unpartitioned — one pool, today's engine |
-    /// | `"auto"` | one partition per NUMA node in the affinity mask (unpartitioned on a single-node box) |
-    /// | an `int` power of two `>= 2` | the same, capped at that many partitions; a `ValueError` unless the box has that many nodes |
-    /// | `list[list[int]]` | one partition per CPU list, e.g. `[[0, 1], [2, 3]]`; the lists must be non-empty, disjoint, and inside the process's affinity mask |
-    ///
-    /// `pin_memory` (default `True`) binds each pool's allocations to its
-    /// partition's NUMA node, which is the point of the placement; pass
-    /// `False` to pin threads but not memory.
+    /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
+    /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
     ///
     /// ```python
-    /// evolved = observable.propagate(
-    ///     circuit, policy, direction="heisenberg", partitions="auto"
-    /// )
+    /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    ///
-    /// `paulistrings.numa_nodes()` reports what `"auto"` has to place against.
-    ///
-    /// Three things behave differently in partitioned mode:
-    ///
-    /// - **`RAYON_NUM_THREADS` is ignored.** Each partition builds its own
-    ///   pool sized from its CPU list, so the thread count is the placement's,
-    ///   not the environment's.
-    /// - **`engine` is ignored.** Every layer runs on the bucketed sorting
-    ///   engine; there is no partitioned small-sum direct path.
-    /// - **`truncation.topn` is unsupported** and raises
-    ///   `NotImplementedError`, anywhere in the policy tree. Exact top-n needs
-    ///   the n-th largest magnitude of the whole layer — a distributed k-th
-    ///   selection, not one reduction. Use `truncation.approx_topn`, whose
-    ///   octave histogram all-reduces exactly, or `partitions=None`.
-    ///
-    /// Results agree with the unpartitioned path to floating-point tolerance,
-    /// as the two engines do (ARCHITECTURE.md §Determinism).
-    ///
-    /// # Distributed mode (MPI)
-    ///
-    /// `comm` takes an `mpi4py` communicator and runs **one partition per
-    /// rank** — the same layer loop as `partitions=`, with the in-process
-    /// channel matrix replaced by point-to-point MPI. `comm` and `partitions`
-    /// are alternatives, not a pair: pass the placement to the launcher
-    /// instead (one rank per NUMA domain). Everything the partitioned section
-    /// above says still holds, `truncation.topn` included.
-    ///
-    /// ```python
-    /// import mpi4py
-    /// mpi4py.rc.thread_level = "serialized"      # before mpi4py.MPI is imported
-    /// from mpi4py import MPI
-    /// import paulistrings
-    ///
-    /// evolved = observable.propagate(circuit, policy, comm=MPI.COMM_WORLD)
-    /// if MPI.COMM_WORLD.Get_rank() == 0:
-    ///     print(len(evolved), evolved.expectation("z+"))
-    /// ```
-    ///
-    /// Launch it with one rank per NUMA domain, e.g.
-    /// `mpirun -n 4 --map-by ppr:1:numa --bind-to numa python script.py`, or
-    /// under Slurm `srun --ntasks-per-node=4 --cpu-bind=ldoms --mpi=pmix
-    /// python script.py`.
-    ///
-    /// | `result` | what each rank gets back |
-    /// |---|---|
-    /// | `"gather"` (default) | rank 0 the whole evolved sum; every other rank an **empty** `PauliSum` of the same `num_qubits`, so downstream code still type-checks |
-    /// | `"local"` | this rank's own share. The shares are disjoint, so a global reduction is `comm.allreduce(local.expectation(...))` and the term count is `comm.allreduce(len(local))` |
-    ///
-    /// Four requirements on the group:
-    ///
-    /// - **Thread level at least `MPI_THREAD_SERIALIZED`.** The layer loop
-    ///   runs inside a pinned Rayon pool, so MPI is called from a pool worker
-    ///   rather than the main thread. Set `mpi4py.rc.thread_level =
-    ///   "serialized"` (or `"multiple"`, which is mpi4py's default) *before*
-    ///   `from mpi4py import MPI`; a weaker level is a `RuntimeError` here
-    ///   rather than undefined behaviour later.
-    /// - **A power-of-two rank count.** A partition is named by `log2(P)`
-    ///   GF(2) hash rows, so `mpirun -n 3` is a `ValueError`.
-    /// - **A replicated input.** Every rank must call this with the *same*
-    ///   `self`, circuit, policy, direction and options; the scatter is a
-    ///   local filter of the replicated sum, not a distribution of one rank's
-    ///   copy. Nothing checks the terms — build them from the same seed, or
-    ///   load the same file, on every rank. (The run's *shape* is checked: a
-    ///   disagreement about the circuit or the bucket count aborts.)
-    /// - **A collective call.** Every rank of `comm` must reach it, in the
-    ///   same order; a rank that skips one hangs the rest.
-    ///
-    /// Without the `mpi` cargo feature (`paulistrings.mpi_available()` is
-    /// `False`), any `comm` other than `None` raises `RuntimeError`.
     #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
@@ -1574,40 +1223,11 @@ impl PauliSum {
         Ok(Self { inner })
     }
 
-    /// Propagate `self` through `circuit`, returning
-    /// `(evolved, PropagationStats)`.
+    /// Propagate `self` through `circuit`, returning `(evolved, PropagationStats)`.
     ///
-    /// Arguments and semantics are `propagate`'s, exactly — the only
-    /// difference is that the engine records per-layer term counts (before
-    /// each layer, and after each layer's truncation) on the calling thread.
-    /// The counts come from length reads the layer loop already performs, so
-    /// the propagation itself is untouched: `evolved` agrees with
-    /// `propagate`'s result to floating-point tolerance.
-    ///
-    /// See `PropagationStats.peak_terms` for what "peak" does and does not
-    /// mean.
-    ///
-    /// `engine` and `small_sum_threshold` work exactly as in `propagate`, and
-    /// the recorded counts are the same records in the same order whichever
-    /// engine ran the layer — which is what makes this the way to check the two
-    /// engines against each other.
-    ///
-    /// `partitions` and `pin_memory` work exactly as in `propagate` too. A
-    /// partitioned call additionally fills `PropagationStats.partition` with a
-    /// `PartitionStats`: per layer, which partition held how many terms and how
-    /// many rows crossed a boundary. The layer-level `terms_in`/`terms_out`
-    /// are then the per-partition counts summed, so they stay comparable with
-    /// an unpartitioned run of the same circuit.
-    ///
-    /// `comm` and `result` likewise. A distributed call fills
-    /// `PropagationStats.partition` with a `PartitionStats` whose `partitions`
-    /// and `size` are the group size and whose `rank` is this rank — but whose
-    /// per-layer lists hold **this rank's entry only**, because gathering the
-    /// group's counters would mean a collective per layer for a diagnostic.
-    /// The layer-level `terms_in`/`terms_out` are therefore this rank's too,
-    /// and `final_terms` is the length of what this rank got back (zero on a
-    /// non-root rank under `result="gather"`). Reduce over `comm` for the
-    /// group's picture.
+    /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
+    /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
+    /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(

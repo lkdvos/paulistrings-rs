@@ -109,12 +109,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Debug-profile build: the tests check correctness, not performance,
-      # and skipping the lto=fat/codegen-units=1 release link keeps the job
-      # fast. The release codegen path is covered by the Rust test job.
+      # Debug-profile build: the tests check correctness, not performance, and skipping the release link keeps the job fast.
+      # The release codegen path is covered by the Rust test job.
       - run: |
           python -m venv .venv
           source .venv/bin/activate
           pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'numpy>=1.24'
           maturin develop -m crates/paulistrings-py/Cargo.toml
           pytest python/paulistrings/tests -q
+          pytest examples/tests benchmarks/python/tests -q

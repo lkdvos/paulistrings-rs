@@ -4,15 +4,9 @@
 //! (ARCHITECTURE.md §Partitioning), so a [`TruncationPolicy`] splits cleanly
 //! in two:
 //!
-//! - [`keep_term`](TruncationPolicy::keep_term) is per term and needs nothing.
-//!   It runs inside the merge, on the complete summed coefficient of a key,
-//!   and a key lives on exactly one partition.
-//! - [`finalize_layer`](TruncationPolicy::finalize_layer) may be *global*, and
-//!   a partition cannot see the global layer. [`ApproxTopN`] chooses an octave
-//!   edge from the histogram of the whole layer — which is exactly the sum of
-//!   the per-partition histograms, so one `allreduce` makes every partition
-//!   choose the *same* edge and apply it to its own terms. The union of the
-//!   retained sets is then bit for bit the single-partition answer.
+//! - [`keep_term`](TruncationPolicy::keep_term) is per term and needs nothing: it runs inside the merge, on the complete summed coefficient of a key, and a key lives on exactly one partition.
+//! - [`finalize_layer`](TruncationPolicy::finalize_layer) may be *global*, and a partition cannot see the global layer.
+//!   [`ApproxTopN`] chooses an octave edge from the histogram of the whole layer — exactly the sum of the per-partition histograms — so one `allreduce` makes every partition choose the same edge, and the union of the retained sets is bit for bit the single-partition answer.
 //!
 //! Exact [`TopN`](crate::truncation::TopN) has no such reduction: the `n`-th
 //! largest magnitude is a distributed *k*-th selection, not a sum. It is
@@ -26,50 +20,19 @@ use crate::truncation::{
 
 use super::transport::Collectives;
 
-/// A truncation policy usable in partitioned propagation: its layer
-/// finalization is collective.
+/// A truncation policy usable in partitioned propagation: its layer finalization is collective.
 ///
 /// # The contract
 ///
-/// [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) is called
-/// on **every** layer, on **every** partition, in lock-step, for a policy whose
-/// [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true`. A
-/// collective is only well-defined if every partition issues the same
-/// collectives in the same order, so a policy is not free to skip a layer on
-/// the partitions where it happens to have nothing to do.
-///
-/// The driver *does* skip the call on a policy that answers `false`, and that
-/// is safe for the same reason: `finalizes_layer` is a property of the policy
-/// **type**, so it is the same answer on every partition and the group cannot
-/// split on it. The consequence for an implementor is one rule: **a policy
-/// that overrides `finalize_layer_partitioned` with anything collective must
-/// answer `finalizes_layer() == true`.** Every built-in does — the default
-/// `finalizes_layer` is the conservative `true`, and the two policies that
-/// override it to `false` ([`CoefficientThreshold`], [`WeightCutoff`]) have no
-/// layer pass in either mode. Note what this costs the one policy that does:
-/// [`ApproxTopN`] all-reduces its histogram on **every** layer in partitioned
-/// mode, whatever the partition rows do, so a distributed run under it pays
-/// one collective per layer no matter how few layers exchange.
-///
-/// An implementation must therefore
-///
-/// 1. call the same collectives, in the same order, on every partition and
-///    every layer it is called on (in particular, no early return before a
-///    collective on a locally empty or locally short partition), and
-/// 2. derive its decision **only** from all-reduced values, so that every
-///    partition applies the identical predicate to its own terms.
-///
-/// Under those two rules the retained set is exactly the set a single
-/// partition holding the whole sum would have retained.
+/// A truncation policy that finalizes a layer (`finalizes_layer() == true`) must implement [`PartitionedTruncation`]; the trait's default panics otherwise, since finalizing a layer with no collective form would let partitions diverge silently.
+/// [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) is called on every layer, on every partition, in lock-step: a collective is only well-defined if every partition issues the same calls in the same order, so an implementation must not skip a call on a partition that happens to have nothing to do, and must derive its decision only from all-reduced values so every partition applies the identical predicate to its own terms.
+/// Under those two rules the retained set is exactly what a single partition holding the whole sum would have retained.
 ///
 /// # Which policies implement it
 ///
-/// [`CoefficientThreshold`] and [`WeightCutoff`] are per-term filters with no
-/// layer pass, so they take the default no-op body. [`ApproxTopN`] all-reduces
-/// its octave histogram. [`And`] runs both sides in order, like
-/// [`And::finalize_layer`](TruncationPolicy::finalize_layer); [`Or`] runs
-/// neither, because its unpartitioned `finalize_layer` is the trait's no-op
-/// default rather than either child's, and the two must agree.
+/// [`CoefficientThreshold`] and [`WeightCutoff`] are per-term filters with no layer pass, so they take the default no-op body.
+/// [`ApproxTopN`] all-reduces its octave histogram every layer, regardless of what the partition rows do.
+/// [`And`] runs both sides in order, like [`And::finalize_layer`](TruncationPolicy::finalize_layer); [`Or`] runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
 ///
 /// ```
 /// use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold};
@@ -93,32 +56,17 @@ use super::transport::Collectives;
 /// propagate_partitioned(TopN(10));
 /// ```
 ///
-/// `TopN` needs the exact `n`-th largest `|c|²` of the whole layer. That is a
-/// distributed *k*-th selection — an iterated search, several rounds of
-/// communication, not one reduction — and an approximation would silently
-/// change what `TopN` *means*, which is the one thing it exists to guarantee.
-/// So there is no impl, and a partitioned run with `TopN` fails to compile
-/// instead of quietly truncating per partition (which would keep `P·n` terms
-/// and a different set on every thread count). Use [`ApproxTopN`] when `n` is
-/// a memory budget; a distributed `k`-th selection is open work.
+/// `TopN` needs the exact `n`-th largest `|c|²` of the whole layer — a distributed *k*-th selection, not a reduction — so it is rejected at compile time rather than approximated, which would silently change what `TopN` means.
+/// Use [`ApproxTopN`] when `n` is a memory budget.
 pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
-    /// The collective layer pass: `local` is this partition's slice of the
-    /// layer, `coll` its view of the group.
+    /// The collective layer pass: `local` is this partition's slice of the layer, `coll` its view of the group.
     ///
-    /// Called on every layer on every partition, in lock-step, for a policy
-    /// whose [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true`
-    /// — the driver skips the call entirely on one that answers `false`, so an
-    /// override with a collective in it must answer `true` (see the trait
-    /// docs). The default is no layer pass at all, which is correct exactly
-    /// for the policies that have none — so it asserts that this is one of
-    /// them rather than silently dropping a `finalize_layer` a caller was
-    /// relying on.
+    /// Called on every layer on every partition, in lock-step, for a policy whose [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true` — the driver skips the call entirely on one that answers `false` (see the trait docs).
+    /// The default is no layer pass at all, which is correct exactly for the policies that have none, so it asserts that this is one of them rather than silently dropping a `finalize_layer` a caller was relying on.
     ///
     /// # Panics
     ///
-    /// If the policy reports
-    /// [`finalizes_layer()`](TruncationPolicy::finalizes_layer) and has not
-    /// overridden this method.
+    /// If the policy reports [`finalizes_layer()`](TruncationPolicy::finalizes_layer) and has not overridden this method.
     fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _coll: &dyn Collectives) {
         assert!(
             !self.finalizes_layer(),
@@ -144,9 +92,7 @@ where
     A: PartitionedTruncation<W>,
     B: PartitionedTruncation<W>,
 {
-    /// Both sides, first then second — the order
-    /// [`And::finalize_layer`](TruncationPolicy::finalize_layer) uses, and the
-    /// same order on every partition, so the collectives stay in lock-step.
+    /// Both sides, first then second — the order [`And::finalize_layer`](TruncationPolicy::finalize_layer) uses, and the same order on every partition, so the collectives stay in lock-step.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         self.0.finalize_layer_partitioned(local, coll);
         self.1.finalize_layer_partitioned(local, coll);
@@ -158,42 +104,24 @@ where
     A: PartitionedTruncation<W>,
     B: PartitionedTruncation<W>,
 {
-    /// Neither side — `Or` combines only `keep_term`, and its
-    /// [`finalize_layer`](TruncationPolicy::finalize_layer) is the trait's
-    /// no-op default rather than either child's (the layer semantics of
-    /// "either policy's finalize pass" are not well-defined). Forwarding here
-    /// would make `Or(_, ApproxTopN(n))` truncate under partitioning and not
-    /// truncate without it; the two paths have to agree.
+    /// Neither side — `Or`'s unpartitioned [`finalize_layer`](TruncationPolicy::finalize_layer) is the trait's no-op default rather than either child's, and the two paths have to agree.
     ///
-    /// The children are still bounded by this trait: a composition is
-    /// partitioned-safe only if its parts are, and that keeps the bound
-    /// meaningful if `Or` ever grows a layer pass.
+    /// The children are still bounded by this trait: a composition is partitioned-safe only if its parts are, which keeps the bound meaningful if `Or` ever grows a layer pass.
     fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _coll: &dyn Collectives) {}
 }
 
 impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
-    /// One `allreduce_sum_u64` of `[len, hist…]`, then the single-partition
-    /// edge walk and retain.
+    /// One `allreduce_sum_u64` of `[len, hist…]`, then the single-partition edge walk and retain.
     ///
-    /// Octave populations are additive across a disjoint partition of the
-    /// terms, and so is the term count, so the reduced buffer is exactly the
-    /// histogram and length the single-partition path would have computed.
-    /// `octave_edge` is a pure function of those two, so every partition
-    /// reaches the same edge decision and retains its own terms against it —
-    /// no second round of communication, and the union is the
-    /// single-partition set term for term.
+    /// Octave populations are additive across a disjoint partition of the terms, and so is the term count, so the reduced buffer is exactly the histogram and length the single-partition path would have computed.
+    /// `octave_edge` is a pure function of those two, so every partition reaches the same edge decision and retains its own terms against it, with no second round of communication.
     ///
-    /// The length rides in slot 0 of the same buffer rather than in its own
-    /// reduction: one collective per layer, and 8 bytes on a 16 KB message.
-    /// Neither early exit of the single-partition path is taken here, because
-    /// neither test can be answered before the reduction — a partition that
-    /// returned early would desynchronize the group.
+    /// The length rides in slot 0 of the same buffer rather than in its own reduction.
+    /// Neither early exit of the single-partition path is taken here, because neither test can be answered before the reduction — a partition that returned early would desynchronize the group.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         let hist = octave_histogram(local);
 
-        // [len, bin 0, bin 1, …]. `u32` counters widen to `u64` for the
-        // reduction: `P` partitions of up to `u32::MAX` terms each can
-        // overflow a `u32` bin, and the transport's reduction is `u64`.
+        // [len, bin 0, bin 1, …]. `u32` counters widen to `u64` for the reduction: `P` partitions of up to `u32::MAX` terms each can overflow a `u32` bin, and the transport's reduction is `u64`.
         let mut packed = [0u64; 1 + APPROX_BINS];
         packed[0] = local.len() as u64;
         for (slot, &count) in packed[1..].iter_mut().zip(hist.iter()) {
@@ -218,12 +146,9 @@ mod tests {
     /// Seed for every `PartitionRows` in this module's tests.
     const PSEED: u64 = 0x5EED_C0FFEE;
 
-    /// Split `sum` into `1 << pbits` partitions, run the policy's collective
-    /// layer pass on each in its own thread, and gather the result.
+    /// Split `sum` into `1 << pbits` partitions, run the policy's collective layer pass on each in its own thread, and gather the result.
     ///
-    /// One `std::thread::scope` per call with one thread per partition, which
-    /// is what the in-process transport's blocking collectives need: every
-    /// rank has to be able to make progress independently.
+    /// One `std::thread::scope` per call with one thread per partition, which is what the in-process transport's blocking collectives need: every rank has to be able to make progress independently.
     fn partitioned_finalize<const W: usize, T>(
         policy: &T,
         sum: &PauliSum<W>,
@@ -269,8 +194,7 @@ mod tests {
         merged
     }
 
-    /// The whole point: partitioned finalization is *exactly* the
-    /// single-partition one, for every `P`.
+    /// The whole point: partitioned finalization is *exactly* the single-partition one, for every `P`.
     fn assert_matches_single_partition<const W: usize, T>(
         policy: &T,
         input: &PauliSum<W>,
@@ -293,9 +217,7 @@ mod tests {
         assert_same_terms(&got, &want, what);
     }
 
-    /// `W = 1`, random real coefficients: the retained set is the same at
-    /// `P = 1, 2, 4` for a spread of `n`, including `n` well inside the sum,
-    /// `n = 0`, and `n` past the end.
+    /// `W = 1`, random real coefficients: the retained set is the same at `P = 1, 2, 4` for a spread of `n`, including `n` well inside the sum, `n = 0`, and `n` past the end.
     #[test]
     fn approx_top_n_partitioned_matches_single_partition_w1() {
         let input = rand_sum_real::<1>(2000, 32, 0xA9C7);
@@ -311,16 +233,11 @@ mod tests {
         }
     }
 
-    /// `W = 2`, and a tie-heavy fixture: magnitudes 1, ½, ¼, ⅛ put one
-    /// magnitude group per octave, so several of these `n` cut *inside* a tie
-    /// band — the case where the edge choice actually matters and a
-    /// per-partition decision would differ from a global one.
+    /// `W = 2`, and a tie-heavy fixture: magnitudes 1, ½, ¼, ⅛ put one magnitude group per octave, so several of these `n` cut *inside* a tie band — the case where the edge choice actually matters and a per-partition decision would differ from a global one.
     #[test]
     fn approx_top_n_partitioned_matches_single_partition_w2_tie_heavy() {
         let input = tie_heavy_sum::<2>(2000, 100, 0x7135);
-        // The four magnitude groups are ~500 terms each, so the cumulative
-        // octave populations are ~500, ~1000, ~1500, ~2000: every one of these
-        // `n` lands strictly between two of them.
+        // The four magnitude groups are ~500 terms each, so the cumulative octave populations are ~500, ~1000, ~1500, ~2000: every one of these `n` lands strictly between two of them.
         for pbits in [1u8, 2] {
             for n in [0usize, 3, 250, 700, 1200, 1900, 2500] {
                 assert_matches_single_partition(
@@ -333,9 +250,7 @@ mod tests {
         }
     }
 
-    /// A sum confined to one octave of `|c|²` is wiped to empty — the
-    /// degenerate case documented on `ApproxTopN` — and it has to be wiped on
-    /// *every* partition, from the global histogram, not decided locally.
+    /// A sum confined to one octave of `|c|²` is wiped to empty — the degenerate case documented on `ApproxTopN` — and it has to be wiped on *every* partition, from the global histogram, not decided locally.
     /// Magnitudes 1, 1⅛, 1¼, 1⅜ square into `[1, 2)`.
     #[test]
     fn approx_top_n_partitioned_wipes_a_single_octave_sum() {
@@ -359,10 +274,8 @@ mod tests {
         }
     }
 
-    /// A four-way split of a five-term sum leaves partitions empty (or very
-    /// nearly). They must still enter the collective — an early return on
-    /// "nothing here" would hang or desynchronize the group — and the merged
-    /// result must still be the single-partition one.
+    /// A four-way split of a five-term sum leaves partitions empty (or very nearly).
+    /// They must still enter the collective — an early return on "nothing here" would hang or desynchronize the group — and the merged result must still be the single-partition one.
     #[test]
     fn an_empty_partition_still_participates() {
         let mags = [1.0f64, 2.0, 4.0, 8.0, 16.0];
@@ -382,8 +295,7 @@ mod tests {
         }
     }
 
-    /// `And` forwards to both sides in order, so a threshold paired with
-    /// `ApproxTopN` finalizes exactly as the same `And` does unpartitioned.
+    /// `And` forwards to both sides in order, so a threshold paired with `ApproxTopN` finalizes exactly as the same `And` does unpartitioned.
     #[test]
     fn and_composes_with_a_collective_finalization() {
         let input = rand_sum_real::<1>(1500, 32, 0xC0DE);
@@ -393,8 +305,7 @@ mod tests {
         }
     }
 
-    /// A per-term policy's layer pass is a no-op on every partition: nothing
-    /// is dropped, nothing is communicated.
+    /// A per-term policy's layer pass is a no-op on every partition: nothing is dropped, nothing is communicated.
     #[test]
     fn a_per_term_policy_finalizes_to_a_no_op() {
         let input = rand_sum_real::<1>(600, 32, 0xF00D);
@@ -412,9 +323,7 @@ mod tests {
         }
     }
 
-    /// `Or` does not forward `finalize_layer` to either side, and its
-    /// partitioned pass must not either — otherwise `Or(_, ApproxTopN)` would
-    /// truncate under partitioning and not without it.
+    /// `Or` does not forward `finalize_layer` to either side, and its partitioned pass must not either — otherwise `Or(_, ApproxTopN)` would truncate under partitioning and not without it.
     #[test]
     fn or_forwards_no_layer_pass_either_way() {
         let input = rand_sum_real::<1>(600, 32, 0xB0B0);
@@ -429,9 +338,7 @@ mod tests {
         }
     }
 
-    /// The default body is a no-op *and* a tripwire: a policy with a real
-    /// `finalize_layer` that forgets to write a collective one is caught at
-    /// the first layer rather than silently losing its truncation.
+    /// The default body is a no-op *and* a tripwire: a policy with a real `finalize_layer` that forgets to write a collective one is caught at the first layer rather than silently losing its truncation.
     #[test]
     #[should_panic(expected = "ApproxTopN")]
     fn the_default_body_rejects_a_policy_that_finalizes_layers() {

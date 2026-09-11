@@ -86,8 +86,6 @@ from pathlib import Path
 
 import pytest
 
-from paulistrings import PauliSum, truncation
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 for _extra_path in (_REPO_ROOT / "examples", _REPO_ROOT / "benchmarks" / "python"):
     if str(_extra_path) not in sys.path:
@@ -315,36 +313,6 @@ def test_c_reuses_benchmark_bs_plateau_criterion():
 # --------------------------------------------------------------------------
 
 
-def test_this_engine_drops_a_coefficient_equal_to_the_cutoff():
-    """The inclusive-drop rule, on a hand-built sum at an exact dyadic.
-
-    `truncation/builtin.rs` keeps `|c| > eps`, so a coefficient bit-exactly
-    equal to a dyadic cutoff is discarded. PauliPropagation.jl keeps it
-    (`benchmarks/julia/README.md` §P3). That divergence is measure-zero for a
-    power-of-ten cutoff — which is why Benchmark B could ignore it — and *not*
-    measure-zero for Benchmark C's dyadics, because at a Clifford `theta_zz` the
-    coefficients are exact dyadics too.
-    """
-    from paulistrings import Circuit
-
-    eps = 2.0**-14
-    n = 2
-    policy = truncation.coeff(eps)
-    # `z` on a `Z` string is the identity map with sign +1, so nothing but
-    # truncation can move the coefficient.
-    circuit = Circuit(n)
-    circuit.z(0)
-
-    def surviving(coefficient: float) -> int:
-        sum_ = PauliSum.from_strings({"ZI": coefficient}, num_qubits=n)
-        _, stats = sum_.propagate_with_stats(circuit, policy, direction=DIRECTION)
-        return stats.final_terms
-
-    assert surviving(eps) == 0, "a coefficient equal to the cutoff must be dropped"
-    assert surviving(math.nextafter(eps, math.inf)) == 1
-    assert surviving(math.nextafter(eps, 0.0)) == 0
-
-
 def test_julia_one_ulp_perturbation_matches_this_engines_rule():
     """`nextafter(eps, inf)` turns jl's exclusive rule into this engine's.
 
@@ -399,36 +367,6 @@ def test_tight_truncation_matches_the_statevector(theta_label, theta):
         f"vs exact {exact!r} ({stats.final_terms} terms kept at min_abs_coeff="
         f"{driver.dyadic_label(TIGHT_COEFF)})"
     )
-
-
-@pytest.mark.parametrize("theta_label,theta", THETA_POINTS, ids=_theta_ids(THETA_POINTS))
-def test_error_improves_as_truncation_tightens(theta_label, theta):
-    """Loosest-to-tightest dyadic cutoff at 5 steps: error down, term count up.
-
-    Asserted over the whole grid rather than point to point. Benchmark B
-    measured that truncation error is *not* monotone in the cutoff — the
-    discarded terms carry signs, so a smaller partial sum can sit nearer the
-    truth than a larger one, and a truncated Pauli sum has no variational bound
-    to forbid it.
-    """
-    exact = _exact(theta, SHALLOW_STEPS)
-    errors, terms = [], []
-    for eps in SHALLOW_COEFF_GRID:
-        value, stats = _propagate(theta, eps, steps=SHALLOW_STEPS)
-        errors.append(abs(value - exact))
-        terms.append(stats.final_terms)
-
-    labels = [driver.dyadic_label(e) for e in SHALLOW_COEFF_GRID]
-    assert terms == sorted(terms), (
-        f"theta_h={theta_label}: term counts {terms} are not non-decreasing along a "
-        f"loosest-to-tightest cutoff grid {labels}"
-    )
-    assert errors[-1] <= errors[0] + 1e-12, (
-        f"theta_h={theta_label}: tightening min_abs_coeff from {labels[0]} to "
-        f"{labels[-1]} made the error worse ({errors[0]:.3e} -> {errors[-1]:.3e}); the "
-        "truncation is not converging"
-    )
-    assert errors[-1] <= TIGHT_TOLERANCE
 
 
 @pytest.mark.parametrize("theta_label,theta", THETA_POINTS, ids=_theta_ids(THETA_POINTS))

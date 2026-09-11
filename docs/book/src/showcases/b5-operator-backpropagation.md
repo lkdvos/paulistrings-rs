@@ -35,7 +35,7 @@ composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
                                         direction=loaded.direction)
 ```
 
-This regenerates every artifact in the directory — both task JSONs, the `.npz`, the CSV, both SVG figures — and the whole sweep runs in about **3 seconds** on a laptop-class machine; this page is about depth reduction, not speed. The CI-visible correctness gate is numpy-only and runs well under a second: `pytest python/paulistrings/tests/test_showcase_b5.py`.
+This regenerates every artifact in the directory — both task JSONs, the `.npz`, the CSV, both SVG figures — and the whole sweep runs in about **3 seconds** on a laptop-class machine; this page is about depth reduction, not speed. The CI-visible correctness gate is numpy-only and runs well under a second: `pytest examples/tests/test_showcase_b5.py`.
 
 ## Validation
 

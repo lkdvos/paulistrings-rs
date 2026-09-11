@@ -182,7 +182,7 @@ changes being reported.
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python examples/xxz_chain/run_benchmark_d.py all
 # or one mode at a time: growth | statevector | scaling | convergence | julia | figures
-pytest python/paulistrings/tests/test_benchmark_d_xxz.py    # the CI gate: 11 tests, ~4 s
+pytest benchmarks/python/tests/test_benchmark_d_xxz.py    # the CI gate: 11 tests, ~4 s
 ```
 
 Results are committed as `results/*.json`, one file per mode, overwritten on rerun.

@@ -1,6 +1,6 @@
 """Showcase B6 -- resource-theoretic probes of the evolved observable.
 
-Handoff item B6; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B6; see `examples/README.md`
 §6 Part B (and decision D12) for the adapted specification. Every diagnostic
 lives in `resource_probes.py` next to this file, computed in pure Python over
 `PauliSum.x_array()` / `z_array()` / `coefficients_array()` -- read the module

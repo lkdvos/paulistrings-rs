@@ -91,10 +91,10 @@ engine setting that is never mixed into a table here.
 
 ## Data provenance
 
-`summary.json` and `results.json` in this directory were rebuilt from `run.log` by
-`benchmarks/python/jl_performance_recover.py`, which imports the driver's protocol math rather than reimplementing
-it and refuses to write when a recomputed median or verdict disagrees with the logged one. Ratios, medians,
-verdicts, crossovers and parity evidence come from the five-pair run itself.
+`summary.json` and `results.json` in this directory were rebuilt from `run.log` by a one-off recovery script that
+imported the driver's protocol math rather than reimplementing it, and refused to write when a recomputed median or
+verdict disagreed with the logged one. Ratios, medians, verdicts, crossovers and parity evidence come from the
+five-pair run itself.
 
 Two fields are joined from [`../summary.json`](../summary.json) and tagged `"source": "joined"`. `peak_terms` is
 exact rather than approximate, since it is a deterministic function of circuit and cutoff, the parity gate proves
@@ -117,5 +117,5 @@ python benchmarks/python/jl_performance_figures.py \
     benchmarks/python/jl_performance/post-optimization/summary.json
 
 # the CI protocol gate (no julia, no timing, < 1 s)
-pytest python/paulistrings/tests/test_jl_performance_protocol.py
+pytest benchmarks/python/tests/test_jl_performance_protocol.py
 ```

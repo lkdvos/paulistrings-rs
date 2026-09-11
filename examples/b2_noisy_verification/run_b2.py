@@ -1,6 +1,6 @@
 """Showcase B2 — noisy simulation and quantum-utility verification.
 
-Handoff item B2; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B2; see `examples/README.md`
 §6 Part B for the adapted specification. The headline claim, and the one worth
 checking hardest, is the *opposite* of what density-matrix methods do:
 

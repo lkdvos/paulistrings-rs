@@ -1,16 +1,6 @@
 # Benchmark C — Deep Trotter circuits
 
-Heavy-hex kicked Ising, 127 qubits, `θ_zz = −π/2`, observable `Z_62`, a depth
-ladder of 5 / 9 / 15 / 20 Trotter steps, two kick angles in the hard interior
-θ_h ∈ {7π/32, 5π/16}, and a dyadic truncation grid extended past
-`{2⁻¹⁴, 2⁻¹⁶, 2⁻¹⁸}`. Heisenberg picture against `|0…0⟩`, single-threaded,
-warm timings. Scores truncated Pauli-sum accuracy against the tightest exact
-or self-converged reference reachable at each point, and checks per-layer
-term-count parity against `PauliPropagation.jl` at the deepest point. The
-headline is a reachability boundary: the 0.01 target is met in a tenth of a
-second at 5 steps, and at 15–20 steps in the hard interior neither the
-target nor a reference to score it against is reachable.
-
+Heavy-hex kicked Ising, 127 qubits, a depth ladder of 5/9/15/20 Trotter steps in the hard interior, scored against the tightest exact or self-converged reference reachable at each depth.
 Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/c-deep-trotter.html
 
 ## Run it
@@ -18,7 +8,7 @@ Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/c-deep-trotter
 ```bash
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_c_deep_trotter.py --validate-convergence
-pytest python/paulistrings/tests/test_benchmark_c_deep.py    # CI gate, 25 tests, ~50 s
+pytest benchmarks/python/tests/test_benchmark_c_deep.py    # CI gate, 25 tests, ~50 s
 ```
 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts.

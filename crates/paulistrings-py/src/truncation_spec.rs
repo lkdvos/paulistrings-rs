@@ -1,12 +1,6 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle.
-//!
-//! Free factories `truncation.coeff(...)`, `truncation.weight(...)`,
-//! `truncation.topn(...)`, `truncation.approx_topn(...)` return a
-//! `PyTruncation`. The `&` / `|` operators
-//! compose them via `And` / `Or`. The composed spec is materialized at the
-//! correct width inside `PauliSum.propagate` via the `SpecPolicy<'_, W>`
-//! adapter, which implements `paulistrings::TruncationPolicy<W>` for any
-//! const-generic `W`.
+//! Free factories `truncation.coeff/weight/topn/approx_topn(...)` return one; `&`/`|` compose via `And`/`Or`.
+//! `SpecPolicy<'_, W>` materializes the spec at the correct width inside `PauliSum.propagate`.
 
 use num_complex::Complex64;
 use paulistrings::engine::partitioned::Collectives;
@@ -23,25 +17,18 @@ pub enum PolicySpec {
     Coeff(f64),
     /// Drop terms with Pauli weight > k.
     Weight(u32),
-    /// Keep **at most** n terms by magnitude after each layer, never splitting
-    /// a group of equal magnitudes. See `paulistrings::truncation::TopN`.
+    /// Keep at most n terms by magnitude, never splitting a tie group. See `paulistrings::truncation::TopN`.
     TopN(usize),
-    /// Keep **approximately** n terms after each layer: at most n, and short of
-    /// it by at most one octave's population. See
-    /// `paulistrings::truncation::ApproxTopN`.
+    /// Keep approximately n terms: at most n, short by at most one octave's population. See `paulistrings::truncation::ApproxTopN`.
     ApproxTopN(usize),
     And(Box<PolicySpec>, Box<PolicySpec>),
     Or(Box<PolicySpec>, Box<PolicySpec>),
-    /// Default — no filtering. Exact-zero coefficients are still dropped by
-    /// the engine's merge phase regardless of policy.
+    /// Default — no filtering; exact-zero coefficients are still dropped by the engine's merge.
     #[default]
     NoOp,
 }
 
-/// Borrow-only adapter implementing `TruncationPolicy<W>` for a `PolicySpec`.
-///
-/// The `'a` lifetime keeps the spec live for the duration of `propagate`,
-/// avoiding the clone-per-layer that would otherwise be needed.
+/// Borrow-only adapter implementing `TruncationPolicy<W>` for a `PolicySpec`. The `'a` lifetime keeps the spec live for `propagate`'s duration, avoiding a clone per layer.
 pub struct SpecPolicy<'a, const W: usize>(pub &'a PolicySpec);
 
 impl<'a, const W: usize> TruncationPolicy<W> for SpecPolicy<'a, W> {
@@ -54,44 +41,22 @@ impl<'a, const W: usize> TruncationPolicy<W> for SpecPolicy<'a, W> {
         finalize_spec::<W>(self.0, sum);
     }
 
-    /// The spec tree's own answer, rather than the trait's conservative `true`.
-    ///
-    /// `SpecPolicy` overrides `finalize_layer` unconditionally — it has to,
-    /// since the spec is only known at runtime — so without this override every
-    /// Python policy, `None`/`NoOp` included, would inherit `true` and
-    /// `EngineSelection::Auto` would never choose the engine's small-sum direct
-    /// path from Python (`research/notes/2026-09-01-small-m-path.md` §4, §7
-    /// risk 5).
-    ///
-    /// Answering `false` while `finalize_layer` does something would make the
-    /// direct path skip it — a wrong answer, not a slow one — so this mirrors
-    /// [`finalize_spec`]'s recursion exactly, and both matches are exhaustive so
-    /// a new `PolicySpec` variant cannot be added to one without the other.
+    /// The spec tree's own answer, rather than the trait's conservative `true` — without this override every Python policy would claim a layer pass and `EngineSelection::Auto` would never take the small-sum direct path (research/FINDINGS.md).
+    /// Mirrors [`finalize_spec`]'s recursion exactly; both matches are exhaustive so a new `PolicySpec` variant cannot be added to one without the other.
     fn finalizes_layer(&self) -> bool {
         finalizes_spec(self.0)
     }
 }
 
-/// The collective form of [`finalize_layer`](TruncationPolicy::finalize_layer),
-/// run on every partition on every layer in lock-step.
-///
-/// Without this impl the trait's default body would fire its assertion on the
-/// first layer of every partitioned run under a `topn`/`approx_topn` spec
-/// (`finalizes_layer()` is then `true`), so `SpecPolicy` has to answer for the
-/// whole spec tree. The one spec with no collective form — exact
-/// [`TopN`] — is rejected at the Python boundary before the run starts (see
-/// [`spec_has_exact_topn`]).
+/// The collective form of [`finalize_layer`](TruncationPolicy::finalize_layer), run on every partition on every layer in lock-step.
+/// Without this impl the trait's default body would fire its assertion on the first `topn`/`approx_topn` layer. The one spec with no collective form, exact [`TopN`], is rejected at the Python boundary first (see [`spec_has_exact_topn`]).
 impl<'a, const W: usize> PartitionedTruncation<W> for SpecPolicy<'a, W> {
     fn finalize_layer_partitioned(&self, sum: &mut PauliSum<W>, coll: &dyn Collectives) {
         finalize_spec_partitioned::<W>(self.0, sum, coll);
     }
 }
 
-/// Each arm delegates to the matching `paulistrings::truncation` builtin
-/// rather than reimplementing its predicate — the delegation itself is free
-/// (the newtype construction inlines away), and it keeps this file from
-/// drifting out of sync with the core's actual semantics. See
-/// `spec_keep_matches_core_builtins` for the cross-check.
+/// Each arm delegates to the matching `paulistrings::truncation` builtin rather than reimplementing its predicate, keeping this in sync with the core (cross-checked by `spec_keep_matches_core_builtins`).
 #[inline]
 fn keep_spec<const W: usize>(spec: &PolicySpec, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
     match spec {
@@ -109,31 +74,19 @@ fn finalize_spec<const W: usize>(spec: &PolicySpec, sum: &mut PauliSum<W>) {
     match spec {
         PolicySpec::TopN(n) => TopN(*n).finalize_layer(sum),
         PolicySpec::ApproxTopN(n) => ApproxTopN(*n).finalize_layer(sum),
-        // `And::finalize_layer` runs both sides' `finalize_layer` in order,
-        // which recurses back into `finalize_spec` through `SpecPolicy`.
+        // `And::finalize_layer` runs both sides in order, recursing back into `finalize_spec` through `SpecPolicy`.
         PolicySpec::And(a, b) => And(SpecPolicy::<W>(a), SpecPolicy::<W>(b)).finalize_layer(sum),
-        // Or has no finalize behavior in the core (matches builtin::Or): its
-        // `finalize_layer` is the trait's no-op default, not either child's.
-        // Coeff/Weight/NoOp filter per term and have nothing to finalize.
-        // Written out rather than `_` so a new variant has to answer here.
+        // Or has no finalize behavior (matches builtin::Or); Coeff/Weight/NoOp filter per term. Written out rather than `_` so a new variant has to answer here.
         PolicySpec::Coeff(_) | PolicySpec::Weight(_) | PolicySpec::Or(_, _) | PolicySpec::NoOp => {}
     }
 }
 
-/// Why a spec containing an exact `topn` cannot run partitioned, worded for
-/// the Python `NotImplementedError` raised by `PauliSum.propagate` and reused
-/// verbatim by [`finalize_spec_partitioned`]'s unreachable arm.
+/// Why a spec containing an exact `topn` cannot run partitioned, worded for the Python `NotImplementedError` and reused verbatim by [`finalize_spec_partitioned`]'s unreachable arm.
 pub(crate) const TOPN_PARTITIONED_MSG: &str =
     "exact truncation.topn is not supported in partitioned mode; use \
      truncation.approx_topn or partitions=None";
 
-/// The collective twin of [`finalize_spec`], arm for arm.
-///
-/// Each arm delegates to the matching core `PartitionedTruncation` impl, as
-/// [`finalize_spec`] delegates to the core `TruncationPolicy` impls, so the
-/// partitioned and unpartitioned layer passes cannot drift apart —
-/// `spec_finalize_partitioned_matches_core_builtins` cross-checks the union
-/// over partitions against the single-partition answer.
+/// The collective twin of [`finalize_spec`], arm for arm, delegating to the matching core `PartitionedTruncation` impl so the two layer passes cannot drift apart (`spec_finalize_partitioned_matches_core_builtins` cross-checks).
 fn finalize_spec_partitioned<const W: usize>(
     spec: &PolicySpec,
     sum: &mut PauliSum<W>,
@@ -147,9 +100,7 @@ fn finalize_spec_partitioned<const W: usize>(
                 coll,
             )
         }
-        // `And` runs both sides in order on every partition, which is what
-        // keeps the collectives in lock-step; recursing through `SpecPolicy`
-        // is the same shape `finalize_spec` uses.
+        // `And` runs both sides in order on every partition, keeping the collectives in lock-step, same shape as `finalize_spec`.
         PolicySpec::And(a, b) => {
             <And<SpecPolicy<'_, W>, SpecPolicy<'_, W>> as PartitionedTruncation<W>>::
                 finalize_layer_partitioned(
@@ -158,32 +109,15 @@ fn finalize_spec_partitioned<const W: usize>(
                     coll,
                 )
         }
-        // Unreachable: `PauliSum.propagate` rejects a spec containing an exact
-        // `topn` before the run starts (`spec_has_exact_topn`). Kept as a
-        // safety net so a future caller that skips the gate fails loudly
-        // rather than truncating per partition — which would keep `P * n`
-        // terms and a different set on every partition count.
+        // Unreachable: `PauliSum.propagate` rejects an exact `topn` before the run starts (`spec_has_exact_topn`). Kept as a safety net so a future caller that skips the gate fails loudly instead of truncating per partition.
         PolicySpec::TopN(_) => panic!("{TOPN_PARTITIONED_MSG}"),
-        // Per-term filters have no layer pass, and `Or` forwards to neither
-        // side (matching `finalize_spec` and `builtin::Or`). Written out
-        // rather than `_` so a new variant has to answer here too.
+        // Per-term filters have no layer pass, and `Or` forwards to neither side. Written out rather than `_` so a new variant has to answer here too.
         PolicySpec::Coeff(_) | PolicySpec::Weight(_) | PolicySpec::Or(_, _) | PolicySpec::NoOp => {}
     }
 }
 
-/// Whether the spec tree mentions an exact [`TopN`] anywhere — the gate
-/// `PauliSum.propagate` checks before entering partitioned mode.
-///
-/// Exhaustive, like [`finalizes_spec`]: exact top-n needs the `n`-th largest
-/// magnitude of the whole layer, a distributed *k*-th selection that has no
-/// one-reduction form (see `PartitionedTruncation`'s docs), so there is
-/// nothing to run and the call is refused rather than silently approximated.
-///
-/// `Or` votes too, even though its layer pass is a no-op and a
-/// `topn(n) | coeff(eps)` would therefore behave identically either way: the
-/// contract is the simple one — an exact `topn` anywhere in the tree means no
-/// partitioned run — and a spec that mentions `topn` while ignoring it is
-/// better rejected than silently honoured in one mode only.
+/// Whether the spec tree mentions an exact [`TopN`] anywhere — the gate `PauliSum.propagate` checks before entering partitioned mode, since exact top-n has no collective form (see `PartitionedTruncation`'s docs).
+/// `Or` votes too, even though its layer pass is a no-op: the contract is "an exact `topn` anywhere means no partitioned run", not "only where it would run".
 pub(crate) fn spec_has_exact_topn(spec: &PolicySpec) -> bool {
     match spec {
         PolicySpec::TopN(_) => true,
@@ -197,13 +131,7 @@ pub(crate) fn spec_has_exact_topn(spec: &PolicySpec) -> bool {
     }
 }
 
-/// Whether [`finalize_spec`] would do anything for this spec — the value
-/// `SpecPolicy` reports to `TruncationPolicy::finalizes_layer`.
-///
-/// One arm per [`finalize_spec`] arm, in the same order: the arms that run
-/// something are `true`, the arms that fall through are `false`.
-/// `spec_finalizes_matches_core_builtins` cross-checks each answer against the
-/// corresponding core builtin's own `finalizes_layer`.
+/// Whether [`finalize_spec`] would do anything for this spec — reported to `TruncationPolicy::finalizes_layer`. One arm per [`finalize_spec`] arm, in the same order (`spec_finalizes_matches_core_builtins` cross-checks against the core builtins).
 fn finalizes_spec(spec: &PolicySpec) -> bool {
     match spec {
         PolicySpec::TopN(_) | PolicySpec::ApproxTopN(_) => true,
@@ -276,11 +204,7 @@ mod tests {
             .collect()
     }
 
-    /// `keep_spec` (the per-term predicate `SpecPolicy::keep_term` calls into)
-    /// must agree with the corresponding `paulistrings::truncation` builtin
-    /// on every (spec, key, coefficient) combination — this is the safety net
-    /// for the delegation above, since no bench exercises the Python
-    /// truncation path.
+    /// `keep_spec` must agree with the corresponding core builtin on every (spec, key, coefficient) combination — the safety net for the delegation above.
     #[test]
     fn spec_keep_matches_core_builtins() {
         for eps in [0.0, 0.1, 0.5, 1.0] {
@@ -341,18 +265,8 @@ mod tests {
         }
     }
 
-    /// `SpecPolicy::finalizes_layer` must report the spec tree's own answer,
-    /// not the trait's conservative `true`.
-    ///
-    /// This is the hint `EngineSelection::Auto` reads to decide whether the
-    /// small-sum direct path is worth taking: `SpecPolicy` overrides
-    /// `finalize_layer` unconditionally, so without the override every Python
-    /// policy — `None` included — would claim a layer pass and `Auto` would
-    /// silently stay on the sorting engine
-    /// (`research/notes/2026-09-01-small-m-path.md` §4).
-    ///
-    /// Each expectation is stated against the core builtin the matching
-    /// `finalize_spec` arm delegates to, so the two cannot drift apart.
+    /// `SpecPolicy::finalizes_layer` must report the spec tree's own answer, not the trait's conservative `true` — this is the hint `EngineSelection::Auto` reads to decide whether the small-sum direct path is worth taking.
+    /// Each expectation is stated against the core builtin the matching `finalize_spec` arm delegates to, so the two cannot drift apart.
     #[test]
     fn spec_finalizes_matches_core_builtins() {
         let finalizes =
@@ -431,14 +345,8 @@ mod tests {
     // ---------------------------------------------------------------------
     // The collective layer pass
 
-    /// A deterministic sum whose magnitudes span ~9 octaves, so an
-    /// `approx_topn` cut lands strictly inside the histogram rather than on
-    /// one of the two early exits.
-    ///
-    /// Only every `stride`-th term starting at `offset` is taken, which is how
-    /// the partitioned fixtures below build disjoint shares: the collective is
-    /// a sum over a disjoint split of the terms, and any split will do (the
-    /// engine's own split is by partition row, which is `pub(crate)`).
+    /// A deterministic sum whose magnitudes span ~9 octaves, so an `approx_topn` cut lands strictly inside the histogram.
+    /// Only every `stride`-th term starting at `offset` is taken; the partitioned fixtures below use this to build disjoint shares (any split will do).
     fn strided_sum(count: usize, offset: usize, stride: usize) -> PauliSum<TEST_W> {
         let mut acc = BuildAccumulator::<TEST_W>::with_capacity(32, count / stride + 1);
         for i in (offset..count).step_by(stride) {
@@ -463,9 +371,7 @@ mod tests {
         out
     }
 
-    /// Run `spec`'s collective layer pass on `parts`, one thread per part
-    /// wired to an in-process transport group — the blocking collectives need
-    /// every rank to make progress independently.
+    /// Run `spec`'s collective layer pass on `parts`, one thread per part on an in-process transport group, since the blocking collectives need every rank to make progress independently.
     fn partitioned_finalize(
         spec: &PolicySpec,
         parts: Vec<PauliSum<TEST_W>>,
@@ -496,13 +402,7 @@ mod tests {
         })
     }
 
-    /// The union of the per-partition results of
-    /// `SpecPolicy::finalize_layer_partitioned` must be exactly what
-    /// `SpecPolicy::finalize_layer` — and therefore the core builtin it
-    /// delegates to — keeps on the whole sum.
-    ///
-    /// Bitwise equality is the right bar: a layer finalization only *retains*
-    /// terms, so no arithmetic happens and no summation order is involved.
+    /// The union of the per-partition results must be exactly what `SpecPolicy::finalize_layer` keeps on the whole sum. Bitwise equality is the right bar: finalization only retains terms, no arithmetic or summation order involved.
     #[test]
     fn spec_finalize_partitioned_matches_core_builtins() {
         const COUNT: usize = 400;

@@ -139,7 +139,7 @@ python benchmarks/python/jl_performance_figures.py \
     benchmarks/python/jl_performance/su4-curve/summary.json
 
 # the CI protocol gate, which pins this workload's mirror (no julia, < 1 s)
-pytest python/paulistrings/tests/test_jl_performance_protocol.py
+pytest benchmarks/python/tests/test_jl_performance_protocol.py
 ```
 
 Host ccqlin038 (2 × Xeon Gold 6244, `powersave`), Julia 1.12.6 with PauliPropagation.jl 0.8.2, `PP_BACKEND=dict`,

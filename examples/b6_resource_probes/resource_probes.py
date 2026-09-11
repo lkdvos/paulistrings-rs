@@ -1,7 +1,7 @@
 """Resource-theoretic probes read off an evolved Pauli sum (showcase B6).
 
 Handoff item B6; adapted spec in
-`research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part B and
+`examples/README.md` §6 Part B and
 decision D12 ("B6 computed in pure Python over the numpy export -- read-only
 diagnostics; no core additions"). Nothing in this module touches the Rust
 core: every function consumes `PauliSum.x_array()` / `z_array()` /

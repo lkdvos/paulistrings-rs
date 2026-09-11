@@ -1,22 +1,11 @@
-//! Per-run sort and fused two-stream merge — the bucketed engine's inner
-//! kernels.
+//! Per-run sort and fused two-stream merge — the bucketed engine's inner kernels.
 //!
-//! [`sort_rows_with_scratch`] and [`sort_rows_radix_with_scratch`] canonicalize
-//! one gather run's *rest* stream — the first by comparison, the second by a
-//! radix pass over a monotone surrogate; `bucketed.rs` picks between them per
-//! layer from the plan's rest-delta count, see [`RADIX_MIN_REST_STREAMS`].
-//! [`merge2_into`] then fuses the id/rest two-stream merge with the segmented
-//! reduction that restores the `PauliSum` invariant (strictly ascending, no
-//! duplicates) inside a destination bucket. All are called per gather run by
-//! `engine::bucketed`; [`SortScratch`] is the worker-persistent scratch the
-//! sorts reuse so a steady-state layer allocates nothing.
+//! [`sort_rows_with_scratch`] and [`sort_rows_radix_with_scratch`] canonicalize one gather run's *rest* stream — the first by comparison, the second by a radix pass over a monotone surrogate; `bucketed.rs` picks between them per layer from the plan's rest-delta count, see [`RADIX_MIN_REST_STREAMS`].
+//! [`merge2_into`] fuses the id/rest two-stream merge with the segmented reduction that restores the `PauliSum` invariant (strictly ascending, no duplicates) inside a destination bucket.
+//! All are called per gather run by `engine::bucketed`; [`SortScratch`] is the worker-persistent scratch the sorts reuse so a steady-state layer allocates nothing.
 //!
-//! Both sorts satisfy one contract and nothing more, pinned by
-//! `tests::assert_sort_contract`: the output is **ascending** in lex `(x, z)`
-//! with duplicates allowed, and is a permutation of the input `(x, z, c)`
-//! triples. Equal-key order is unspecified (ARCHITECTURE.md §Determinism), so
-//! the two kernels are interchangeable to floating-point tolerance and not
-//! bitwise.
+//! Both sorts satisfy one contract and nothing more, pinned by `tests::assert_sort_contract`: the output is **ascending** in lex `(x, z)` with duplicates allowed, and is a permutation of the input `(x, z, c)` triples.
+//! Equal-key order is unspecified (ARCHITECTURE.md §Determinism), so the two kernels are interchangeable to floating-point tolerance and not bitwise.
 
 use num_complex::Complex64;
 
@@ -24,17 +13,13 @@ use crate::truncation::TruncationPolicy;
 
 /// Worker-persistent scratch for the per-run sorts.
 ///
-/// Held across coset tasks (one instance per `CosetScratch`, in turn one per
-/// Rayon worker, per `bucketed.rs`'s `LayerScratch`): every buffer retains its
-/// high-water capacity across calls, so a run at or below a previously-seen
-/// size sorts without allocating. `perm` serves the comparison kernel;
-/// `packed`/`aux` serve the radix kernel; the `tmp_*` triple is the output
-/// staging both share.
+/// Held across coset tasks (one instance per `CosetScratch`, in turn one per Rayon worker, per `bucketed.rs`'s `LayerScratch`): every buffer retains its high-water capacity across calls, so a run at or below a previously-seen size sorts without allocating.
+/// `perm` serves the comparison kernel; `packed`/`aux` serve the radix kernel; the `tmp_*` triple is the output staging both share.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SortScratch<const W: usize> {
     perm: Vec<u32>,
-    /// `(surrogate << 32) | row index` records, in sorted order once the
-    /// radix kernel has run. Empty unless that kernel is selected.
+    /// `(surrogate << 32) | row index` records, in sorted order once the radix kernel has run.
+    /// Empty unless that kernel is selected.
     packed: Vec<u64>,
     /// The radix kernel's double buffer for `packed`.
     aux: Vec<u64>,
@@ -44,10 +29,8 @@ pub(crate) struct SortScratch<const W: usize> {
 }
 
 impl<const W: usize> SortScratch<W> {
-    /// Total heap capacity held across this scratch's buffers — a private
-    /// implementation detail exposed only for
-    /// `bucketed::tests::capacity_stabilizes_across_repeated_layers`, which
-    /// needs it to confirm the sort scratch's footprint stops growing too.
+    /// Total heap capacity held across this scratch's buffers.
+    /// Exposed only for `bucketed::tests::capacity_stabilizes_across_repeated_layers`.
     #[cfg(test)]
     pub(crate) fn total_capacity(&self) -> usize {
         self.perm.capacity()
@@ -59,79 +42,26 @@ impl<const W: usize> SortScratch<W> {
     }
 }
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as
-/// reusable scratch.
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as reusable scratch.
 ///
-/// Equal-key summation order is not required to be bucket-count- or
-/// hash-seed-independent (floating-point associativity variation across
-/// those axes is accepted, ARCHITECTURE.md §Determinism), so this sort
-/// compares the key alone — cheaper, and with one fewer column to carry
-/// through the gather.
+/// Equal-key summation order is not required to be bucket-count- or hash-seed-independent (ARCHITECTURE.md §Determinism), so this sort compares the key alone — cheaper, and with one fewer column to carry through the gather.
 ///
-/// The sort is the **stable** `sort_by`, but not for stability (nothing
-/// depends on equal-key order any more — an unstable sort would be
-/// semantically fine): it is for *adaptivity*. A gather run is a
-/// concatenation of per-delta streams, each drawn from one sorted source
-/// bucket — the identity stream arrives fully sorted, and an XOR-by-constant
-/// stream is piecewise sorted (order survives wherever the mask's high bits
-/// don't flip) — and Rust's stable driftsort detects and merges those natural
-/// ascending runs while the unstable pdqsort does not.
-///
-/// Re-measured 2026-09-10 on the JCC-padded build (`.cargo/config.toml`),
-/// 7 pairs, bit-identical work counters: switching this line to
-/// `sort_unstable_by` costs **+44.3% wall / +189% sort** on a 10⁶ CNOT layer
-/// (7/7) and **nothing at all** on `rotation_zz` (median −0.43%, 5/7 vs 2/7 —
-/// no consistent change). The difference is the run count, not the layer:
-/// CNOT gathers 4 streams per coset, `rotation_zz` exactly *one* non-identity
-/// stream, and on a single already-ascending run pdqsort's presorted-input
-/// fast path is as cheap as driftsort's run detection. The requirement is
-/// real and it is *conditional on there being ≥2 streams to merge*. The older
-/// "+77% on `rotation_zz`" figure was taken pre-padding and does not
-/// reproduce; see `research/notes/2026-09-10-inline-set-repost.md`.
+/// The sort is the **stable** `sort_by`, but not for stability — nothing depends on equal-key order any more — it is for *adaptivity*.
+/// A gather run is a concatenation of per-delta streams, each drawn from one sorted source bucket — the identity stream arrives fully sorted, and an XOR-by-constant stream is piecewise sorted (order survives wherever the mask's high bits don't flip) — and Rust's stable driftsort detects and merges those natural ascending runs while the unstable pdqsort does not.
+/// This only matters once there are ≥2 streams to merge: on a single already-ascending run, pdqsort's own presorted-input fast path is just as cheap.
 ///
 /// **When those streams are ascending is a partition property, not a given.**
-/// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of
-/// the bucket's keys differ only inside the channel's support — which holds iff
-/// the hash separates the support's key-delta space, i.e. the coset dimension
-/// `r` is full (4 for a two-qubit channel). One rank short and each bucket holds
-/// two local variants of every off-support pattern, adjacent in key order, and
-/// half the deltas invert every such pair: the stream shatters into runs of ~2,
-/// this sort's comparison count goes 4.9 → 9–14 per row, and the dense-PTM layer
-/// costs 1.7–2.2× more. `r` is capped by the bucket bits *and* is a draw from
-/// `H`'s rows, so it moves with the term count, the hash seed and `W`. Full
-/// mechanism and the tuning gate:
-/// `research/notes/2026-09-01-bucket-cliff.md`. Note before optimizing this
-/// sort: at full rank it already sits at the information-theoretic floor for a
-/// 15-way merge of sorted runs (`log2(15) + 1 ≈ 4.9` comparisons per row), so
-/// the headroom the Phase-1 fact sheet measured is *configuration*, not kernel.
+/// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of the bucket's keys differ only inside the channel's support — which holds iff the hash separates the support's key-delta space, i.e. the coset dimension `r` is full (4 for a two-qubit channel).
+/// One rank short and each bucket holds two local variants of every off-support pattern, adjacent in key order, and half the deltas invert every such pair: the stream shatters into runs of ~2 and the merge's comparison count rises sharply.
+/// `r` is capped by the bucket bits *and* is a draw from `H`'s rows, so it moves with the term count, the hash seed and `W`; see `research/FINDINGS.md`.
+/// At full rank the merge already sits at the information-theoretic floor for a 15-way merge of sorted runs (`log2(15) + 1 ≈ 4.9` comparisons per row), so headroom here is a matter of configuration, not kernel.
 ///
-/// What must still hold — and does, structurally: cosets are write-disjoint,
-/// work within one is sequential, and the sort is a deterministic function of
-/// its input, so **thread-count determinism and repeat-run determinism at
-/// fixed configuration** are unaffected. A later merge sums whatever order
-/// equal keys land in; that sum agrees with any other order to floating-point
-/// tolerance (real addition is associative; `f64` addition is not, only up to
-/// rounding), never bit-for-bit across a different order.
+/// What must still hold — and does, structurally: cosets are write-disjoint, work within one is sequential, and the sort is a deterministic function of its input, so **thread-count determinism and repeat-run determinism at fixed configuration** are unaffected.
+/// A later merge sums whatever order equal keys land in; that sum agrees with any other order to floating-point tolerance, never bit-for-bit across a different order.
 ///
-/// Scratch-swap capacity circulation: `s.perm` is filled with the identity
-/// permutation `0..len` and reordered by the sort; the caller's columns are
-/// then read out through the permutation directly into `s.tmp_*` (one pass,
-/// not two), and finally
-/// each `tmp_*` is `mem::swap`ped with the caller's `Vec`. The caller ends up
-/// holding the sorted columns; `s` ends up holding the caller's pre-sort
-/// columns' storage (cleared next call) as its own scratch capacity — so
-/// capacity circulates between the live columns and the scratch instead of
-/// either side ever growing past its high-water mark.
-// `#[inline]` here is **codegen-inert under the shipping profile** and is kept
-// only as a hint for builds that are not `lto = "fat"` + `codegen-units = 1`.
-// Re-measured 2026-09-10, after the JCC-erratum branch padding landed (6f7c66c):
-// removing it leaves `.text` **byte-identical** (the only bytes that move are
-// panic-location line numbers), and the paired A/B is pure noise —
-// `rotation_zz` median +0.01%, `cnot` +0.35%, 3/7 pairs negative in both.
-// The recorded "~6% and load-bearing" predates the padding, when any code
-// motion re-rolled every branch against the 32-byte boundary; it does not
-// reproduce. Do not treat this attribute as a performance constraint.
-// `research/notes/2026-09-10-inline-set-repost.md`.
+/// Scratch-swap capacity circulation: `s.perm` is filled with the identity permutation `0..len` and reordered by the sort; the caller's columns are then read out through the permutation directly into `s.tmp_*` (one pass, not two), and finally each `tmp_*` is `mem::swap`ped with the caller's `Vec`.
+/// The caller ends up holding the sorted columns; `s` ends up holding the caller's pre-sort columns' storage (cleared next call) as its own scratch capacity — so capacity circulates between the live columns and the scratch instead of either side ever growing past its high-water mark.
+// `#[inline]` is a hint for non-fat-LTO builds only; codegen-inert under the shipping profile.
 #[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
@@ -164,150 +94,41 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     std::mem::swap(c, &mut s.tmp_c);
 }
 
-/// Minimum number of *rest* delta streams in a gather run before
-/// `bucketed.rs` switches that layer to [`sort_rows_radix_with_scratch`].
+/// Minimum number of *rest* delta streams in a gather run before `bucketed.rs` switches that layer to [`sort_rows_radix_with_scratch`].
 ///
-/// The two kernels win in opposite regimes, and the crossover is steep, so
-/// this is deliberately conservative — only a genuinely dense two-qubit PTM
-/// (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears
-/// it. Gated with `scripts/ab-compare.sh`, 3 pairs per cell, all
-/// direction-consistent; full data and protocol in
-/// `research/notes/2026-09-01-sort-kernel.md` §3:
-///
-/// | run shape | rest streams | radix vs comparison, sort phase |
-/// |---|---|---|
-/// | `su4` layer, `W = 2`, 1 thread | 15 | **−25…−26 %** (layer −15 %) |
-/// | `su4` layer, `W = 2`, 8 threads | 15 | **−17…−42 %** (layer −10…−30 %) |
-/// | `su4` layer, `W = 1` | 15 | **−45…−50 %** (layer −33 %) |
-/// | `su4` layer, short runs (`m` = 9884) | 15 | **−38 %** (layer −24 %) |
-/// | microbench, one bucket, `W = 2` | 15 | −31…−38 % |
-/// | **microbench, sparse PTM (`rotation_zz`)** | **1** | **+133…+165 %** |
-///
-/// The sparse-PTM row is why this is a gate and not a replacement: with one
-/// nearly-sorted stream the comparison sort costs about one comparison per row
-/// and the radix's fixed passes are pure overhead. `2..8` rest streams —
-/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — was **unmeasured**
-/// when the gate was set; it is measured now, and the answer is in the
-/// 2026-09-10 section below.
-///
-/// Both `W = 1` rows above are favourable, and by a similar margin, in *both*
-/// delta-span rank regimes (`r = 3` and `r = 4`, see
-/// `research/notes/2026-09-01-bucket-cliff.md`): this kernel is
-/// order-oblivious, so it does not repair a deficient rank draw — it removes
-/// the sort's sensitivity to one.
-///
-/// # 2026-09-10: the `2..8` gap is measured, and the value stands — but not
-/// for the recorded reason
-///
-/// Re-measured on the JCC-padded build (`2026-09-10-hot-path-code-size.md`),
-/// after the gather and merge rewrites of `06777e3` / `4ee8033` changed the
-/// phase mix. Every built-in `Local` plan has 1, 3 or 15 rest streams, so this
-/// constant has three distinct settings, not fourteen; all three were measured
-/// at `--n 1000000`, 1 thread, `taskset -c 6`, 7 pairs:
-///
-/// | value | effect | wall Δ% vs 8 |
-/// |---|---|---|
-/// | 1 | 1-stream `Local` layers join | `trotter` ns, `tfim_step` ns (sort **+6.1%**, 7/7) |
-/// | 2 or 3 | `cnot`, `gu2q` join | `cnot` **−5.48%** (sort −22.7%), `gu2q` **+13.20%** (sort +34.3%) |
-/// | **4..=15** | incumbent | — |
-/// | 16 | nobody; radix off | `su4` **+17.20%** (sort +31.4%) |
-///
-/// The `su4` justification reproduces intact (radix is −14.7% wall / −23.9%
-/// sort there, against the original −15.2% / −25.4%), and this constant keeps
-/// its value as **that** arm of the gate. What did not survive is the idea
-/// that it is the *only* arm: `cnot` and `gu2q` both have exactly 3 rest
-/// streams and want opposite kernels, by −5.5% and +13.2%, so no threshold on
-/// the stream count alone can take `cnot`'s win.
-///
-/// # 2026-09-10, second pass: the second arm, and what the stream count is a
-/// proxy for
-///
-/// The separating quantity is **not** presortedness, which the
-/// 2026-09-10 note conjectured and which is measurably constant: instrumenting
-/// the engine's own gather runs shows every built-in `Local` layer arrives as
-/// *exactly* `k` maximal ascending runs for `k` rest streams — zero inversions,
-/// on `cnot`, `gu2q`, `su4` and `rotation_zz` alike. That is forced: a stream
-/// `{v ⊕ d}` inverts an adjacent pair only where the pair's highest differing
-/// bit is set in `d`, and a two-qubit gate's masks touch only bits 0–1 of
-/// `x[0]`/`z[0]` while a bucket's adjacent keys first differ in the *top* bits
-/// of `x[0]`. Comparisons per row are likewise equal on the two 3-stream
-/// layers (2.65 both, against the `log2(k) + 1` floor).
-///
-/// What differs is **nanoseconds per comparison** — 4.23 on `cnot` against
-/// 2.74 on `gu2q` — and it is branch misprediction in the `k`-way merge.
-/// `cnot` is a *key permutation*: its rest streams are pairwise disjoint key
-/// sets drawn from three different source buckets, so "which stream is next"
-/// is a coin flip. `gu2q` fans out: every output key is produced by all three
-/// streams, which therefore step in lock-step and predict perfectly. Measured
-/// (`perf stat`, 10 layers, `--n 1000000`), radix minus comparison:
-///
-/// | layer | Δ branch-misses / row sorted | Δ instructions / row | wall Δ% |
-/// |---|---:|---:|---:|
-/// | `cnot` | **−1.46** (≈0.55 per comparison) | +70 | **−5.26** (14/14) |
-/// | `gu2q` | −0.28 (≈0.11 per comparison) | +88 | **+12.43** (14/14) |
-///
-/// The radix kernel's cost is flat in both (its passes are counting sorts, so
-/// it has no data-dependent branch to miss); the comparison kernel's is not.
-/// Hence the gate has two arms, and the plan-time quantity behind the second
-/// is [`RADIX_MAX_REST_ROWS_PER_KEY`] — computed by
-/// `bucketed::rest_rows_per_key` straight out of the PTM's amplitude support,
-/// 1.00 for `cnot`, 3.00 for `gu2q` and 14.00 for `su4`, equal to the digit to
-/// the `rows_sorted / distinct keys` measured inside the gather runs.
-/// `research/notes/2026-09-10-presortedness-predictor.md`.
+/// The two kernels win in opposite regimes and the crossover is steep, so this is deliberately conservative — only a genuinely dense two-qubit PTM (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears it.
+/// A single nearly-sorted stream (the sparse-PTM case) costs about one comparison per row already, so the radix kernel's fixed passes would be pure overhead there.
+/// This is one of two gate arms; see [`RADIX_MAX_REST_ROWS_PER_KEY`] for the other, which separates layers whose streams are pairwise disjoint (a key permutation, where the k-way merge's branch mispredicts often) from those that fan out (predicting well).
+/// Measured crossovers and protocol: `research/FINDINGS.md`.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
 
-/// Second arm of the radix gate: the largest `rest_rows_per_key` a layer may
-/// have and still be treated as *disjoint*-streamed.
+/// Second arm of the radix gate: the largest `rest_rows_per_key` a layer may have and still be treated as *disjoint*-streamed.
 ///
-/// `bucketed::rest_rows_per_key` estimates, from the prepared PTM alone, how
-/// many rest rows land on one output key — `rows_sorted / distinct keys` in a
-/// gather run. Exactly `1.0` means the streams are pairwise disjoint and the
-/// `k`-way merge's branch is a coin flip, which is the regime the radix kernel
-/// wins (see [`RADIX_MIN_REST_STREAMS`]'s second 2026-09-10 section). The only
-/// values the built-ins take are **1.00** (every Clifford: a key permutation)
-/// and **3.00** (`sqrt(SWAP)`) / **14.00** (Haar SU(4)), so this sits at the
-/// midpoint of the one measured gap. Deliberately a hard floor rather than a
-/// tuned curve: the two arms cover the two mechanisms, and nothing between
-/// them has ever been measured.
+/// `bucketed::rest_rows_per_key` estimates, from the prepared PTM alone, how many rest rows land on one output key.
+/// Exactly `1.0` means the streams are pairwise disjoint and the k-way merge's branch is a coin flip, which is the regime the radix kernel wins.
+/// Built-ins take only `1.00` (every Clifford) or `3.00`/`14.00` (denser two-qubit gates), so this sits at the midpoint of the one measured gap rather than a tuned curve.
 pub(crate) const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
 
-/// Second arm of the radix gate: the minimum rest-stream count for the
-/// *disjoint*-streams arm.
+/// Second arm of the radix gate: the minimum rest-stream count for the *disjoint*-streams arm.
 ///
-/// The arm exists because a disjoint `k`-way merge mispredicts about once per
-/// two comparisons, and comparisons per row are `≈ log2(k) + 1` — so the
-/// comparison kernel's cost grows with `k` while the radix's does not. At
-/// `k = 3` (`cnot`, `cz`) the crossover has been passed: measured −5.66% wall,
-/// −22.58% sort, 14/14 pairs. At `k = 2` it has not been measured — no
-/// built-in channel realizes exactly two rest deltas — and `log2(2) + 1 = 2`
-/// comparisons per row puts it on the wrong side of the estimate, so the arm
-/// starts at 3 and a two-stream layer keeps the comparison kernel.
+/// A disjoint k-way merge mispredicts about once per two comparisons, and comparisons per row grow as `log2(k) + 1`, so the comparison kernel's cost grows with `k` while the radix kernel's does not.
+/// The measured crossover is at `k = 3`; no built-in channel realizes exactly two rest deltas, so the arm starts there and a two-stream layer keeps the comparison kernel.
 pub(crate) const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 
 /// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
 ///
-/// 16 bits is two passes. It is not chosen to resolve every key — it is chosen
-/// to resolve *groups*: a dense-PTM run of `n` rows holds about `n / 15`
-/// distinct keys, so 65536 surrogate values leave the residual tie groups at
-/// the duplicate groups themselves, which the fixup pass then orders with
-/// roughly one full-key comparison per row. Wider surrogates buy fewer ties at
-/// the cost of another whole pass and measured worse everywhere (24 bits
-/// −2…−39 %, 32 bits +11…−32 % against 16 bits' −10…−51 %); a single 11-bit
-/// pass beat it below ~8 k rows and lost above — and the engine's runs are
-/// ~15 k rows (bucket target 1024 × fanout ~15).
+/// 16 bits is two passes, chosen to resolve duplicate-key *groups* rather than every key: a dense-PTM run's residual tie groups are then ordered by the fixup pass at roughly one full-key comparison per row.
+/// Wider surrogates buy fewer ties at the cost of another whole pass and measured worse across the engine's run sizes.
 const RADIX_SURROGATE_BITS: u32 = 16;
 /// Digit width per radix pass. 256 counters is 1 KiB of stack histogram.
 const RADIX_DIGIT_BITS: u32 = 8;
 const RADIX_BUCKETS: usize = 1 << RADIX_DIGIT_BITS;
-/// Below this many *discriminating* bits in the surrogate window the radix
-/// pass cannot separate the run into useful groups, so the comparison kernel
-/// runs instead. Reached by low-weight sums (a `WeightCutoff`-truncated sum
-/// whose `x` words are nearly constant) and by narrow key spaces.
+/// Below this many *discriminating* bits in the surrogate window the radix pass cannot separate the run into useful groups, so the comparison kernel runs instead.
+/// Reached by low-weight sums (a `WeightCutoff`-truncated sum whose `x` words are nearly constant) and by narrow key spaces.
 const RADIX_MIN_WINDOW_BITS: u32 = 8;
 
-/// Word `k` of the lex key `(x, z)`: `k < W` selects `x[k]`, `k >= W` selects
-/// `z[k - W]`. Word 0 is the **most** significant, matching the derived `Ord`
-/// on `[u64; W]` and hence `PauliString`'s (ARCHITECTURE.md §Data-Model).
+/// Word `k` of the lex key `(x, z)`: `k < W` selects `x[k]`, `k >= W` selects `z[k - W]`.
+/// Word 0 is the **most** significant, matching the derived `Ord` on `[u64; W]` and hence `PauliString`'s (ARCHITECTURE.md §Data-Model).
 #[inline(always)]
 fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) -> u64 {
     if k < W {
@@ -317,12 +138,10 @@ fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) 
     }
 }
 
-/// The most significant key word the rows disagree on, its index, and the
-/// disagreeing bits within it. `None` ⟺ every row carries the same key.
+/// The most significant key word the rows disagree on, its index, and the disagreeing bits within it.
+/// `None` ⟺ every row carries the same key.
 ///
-/// One `OR`/`AND` reduction per word, stopping at the first word that
-/// disagrees — for the dense-PTM runs this kernel serves that is word 0, so
-/// the scan touches only the `x` column.
+/// One `OR`/`AND` reduction per word, stopping at the first word that disagrees — for the dense-PTM runs this kernel serves that is word 0, so the scan touches only the `x` column.
 fn discriminating_window<const W: usize>(
     x: &[[u64; W]],
     z: &[[u64; W]],
@@ -346,50 +165,31 @@ fn discriminating_window<const W: usize>(
     None
 }
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone — radix
-/// variant, for gather runs assembled from many delta streams.
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone — radix variant, for gather runs assembled from many delta streams.
 ///
-/// Same contract as [`sort_rows_with_scratch`] and freely interchangeable with
-/// it (equal-key order differs; see the module doc). Chosen per layer by
-/// `bucketed.rs` when the plan has at least [`RADIX_MIN_REST_STREAMS`] rest
-/// streams, and it falls back to the comparison kernel itself whenever its
-/// surrogate cannot discriminate.
+/// Same contract as [`sort_rows_with_scratch`] and freely interchangeable with it (equal-key order differs; see the module doc).
+/// Chosen per layer by `bucketed.rs` when the plan has at least [`RADIX_MIN_REST_STREAMS`] rest streams, and it falls back to the comparison kernel itself whenever its surrogate cannot discriminate.
 ///
 /// # Why a surrogate, and why it is order-faithful
 ///
-/// The full key is `16·W` bytes — 32 at `W = 2` — so an LSD radix over all of
-/// it would be 32 passes. Instead one pass finds
-/// [`discriminating_window`]: the most significant key word `k` the rows
-/// actually disagree on, and the highest disagreeing bit `hb` inside it. Every
-/// row then shares the same value on words before `k` and on bits above `hb`,
-/// so writing `word_k = H·2^(hb+1) + L` with `H` **constant across the run**,
+/// The full key is `16·W` bytes — 32 at `W = 2` — so an LSD radix over all of it would be 32 passes.
+/// Instead one pass finds [`discriminating_window`]: the most significant key word `k` the rows actually disagree on, and the highest disagreeing bit `hb` inside it.
+/// Every row then shares the same value on words before `k` and on bits above `hb`, so writing `word_k = H·2^(hb+1) + L` with `H` **constant across the run**,
 ///
 /// ```text
 /// surrogate = (word_k >> shift) & (2^NBITS − 1) = L >> shift,
 ///     shift = (hb + 1) − NBITS
 /// ```
 ///
-/// — the mask erases exactly the constant `H`, and `L >> shift` is monotone in
-/// `L`, which is monotone in the key. So `key₁ < key₂ ⟹ surrogate₁ ≤
-/// surrogate₂`: sorting by the surrogate never puts two rows in the wrong
-/// order, it only leaves ties, which the fixup pass resolves on the full key.
+/// — the mask erases exactly the constant `H`, and `L >> shift` is monotone in `L`, which is monotone in the key.
+/// So `key₁ < key₂ ⟹ surrogate₁ ≤ surrogate₂`: sorting by the surrogate never puts two rows in the wrong order, it only leaves ties, which the fixup pass resolves on the full key.
 /// A run whose keys are *all equal* needs no work at all and returns early.
 ///
 /// # Why this beats the comparison sort where it is selected
 ///
-/// Not by doing less work — a dense-PTM run arrives as ~15 ascending blocks
-/// and driftsort already merges them at about `log₂ 15 + 1 ≈ 4.9` comparisons
-/// per row, the information-theoretic floor. It wins on the cost of that work:
-/// each of those comparisons is a *dependent indexed load* into a 100–400 KiB
-/// key column (the permutation sort's whole cost, ~10–13 cycles), whereas a
-/// radix pass streams 8-byte records sequentially at ~2 cycles each. Two
-/// passes plus the fixup replace 4.9 such comparisons with ~1.
-// No `#[inline]` hint. Measured for the first time 2026-09-10 on the
-// JCC-padded build (this comment used to say it had never been A/B'd either
-// way): adding one leaves `.text` byte-identical, and the paired A/B is noise
-// on both dense-PTM layers this kernel serves — `gu2q` median +0.01%, `su4`
-// median +0.03%, 3/7 pairs negative in each. Nothing to gain; nothing to
-// protect. `research/notes/2026-09-10-inline-set-repost.md`.
+/// Not by doing less work — a dense-PTM run arrives as ~15 ascending blocks and driftsort already merges them near the information-theoretic floor (`log₂ 15 + 1 ≈ 4.9` comparisons per row).
+/// It wins on the cost of that work: each comparison is a dependent indexed load into a 100–400 KiB key column, whereas a radix pass streams 8-byte records sequentially at a fraction of the cost.
+/// Two passes plus the fixup replace those comparisons with about one.
 pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -428,7 +228,7 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     } = s;
     packed.clear();
     packed.extend((0..len).map(|i| (((key_word(x, z, k, i) >> shift) & mask) << 32) | i as u64));
-    // Exactly `len`, so the pass-to-pass `swap` keeps both buffers that long;
+    // Exactly `len`, so the pass-to-pass `swap` keeps both buffers that long.
     // `resize` on the retained capacity writes only when the run grew.
     aux.resize(len, 0);
 
@@ -439,8 +239,8 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         for &v in packed.iter() {
             count[(((v >> sh) as usize) & (RADIX_BUCKETS - 1)) + 1] += 1;
         }
-        // A constant digit contributes no ordering: skip its scatter. Common
-        // on the high digit, whose bits the window shift often leaves fixed.
+        // A constant digit contributes no ordering: skip its scatter.
+        // Common on the high digit, whose bits the window shift often leaves fixed.
         if count[1..].iter().filter(|&&n| n != 0).count() > 1 {
             for t in 1..=RADIX_BUCKETS {
                 count[t] += count[t - 1];
@@ -455,10 +255,8 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         digit += 1;
     }
 
-    // Fixup: rows sharing a surrogate are ordered on the full key. The radix
-    // is stable and the index sits in the low bits, so a group arrives in
-    // gather order; on the dense-PTM runs this kernel serves, a group is one
-    // duplicate key's ~15 rows and this costs ~1 comparison per row.
+    // Fixup: rows sharing a surrogate are ordered on the full key.
+    // The radix is stable and the index sits in the low bits, so a group arrives in gather order; on the dense-PTM runs this kernel serves, a group is one duplicate key's ~15 rows and this costs ~1 comparison per row.
     let mut i = 0usize;
     while i < len {
         let surrogate = packed[i] >> 32;
@@ -475,8 +273,7 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         i = j;
     }
 
-    // Read the columns out through the record order into the staging triple,
-    // then swap — the same capacity circulation `sort_rows_with_scratch` does.
+    // Read the columns out through the record order into the staging triple, then swap — the same capacity circulation `sort_rows_with_scratch` does.
     tmp_x.clear();
     tmp_x.extend(packed.iter().map(|&v| x[v as u32 as usize]));
     tmp_z.clear();
@@ -490,58 +287,20 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
 
 /// Fused two-stream merge + segmented reduction.
 ///
-/// `a` is a gather run's identity-delta stream: its keys are untouched source
-/// keys, so it inherits the bucket invariant — strictly ascending, no
-/// duplicates — and is **never sorted**. (Under a dense identity plan the
-/// key slices are the *source bucket's own columns*, borrowed in place, with
-/// only the coefficients gathered; this function cannot tell and
-/// need not care.) `b` is the run's remaining rows, canonicalized by
-/// [`sort_rows_with_scratch`] (ascending, duplicates allowed).
-/// The two-pointer walk consumes rows in global key order, seeding a key tie
-/// from the `a` row first and then adding the equal-key `b` rows in their
-/// sorted order; that order is deterministic for a fixed input but not
-/// specified across partitions (ARCHITECTURE.md §Determinism). Zero-drop and
-/// `keep_term` see the fully summed coefficient. When `a` is empty this
-/// degenerates to the plain single-stream segmented reduction, which is the
-/// whole story for a channel with no identity delta: everything is gathered
-/// into `b`.
+/// `a` is a gather run's identity-delta stream: its keys are untouched source keys, so it inherits the bucket invariant — strictly ascending, no duplicates — and is **never sorted**.
+/// (Under a dense identity plan the key slices are the *source bucket's own columns*, borrowed in place, with only the coefficients gathered; this function cannot tell and need not care.)
+/// `b` is the run's remaining rows, canonicalized by [`sort_rows_with_scratch`] (ascending, duplicates allowed).
+/// The two-pointer walk consumes rows in global key order, seeding a key tie from the `a` row first and then adding the equal-key `b` rows in their sorted order; that order is deterministic for a fixed input but not specified across partitions (ARCHITECTURE.md §Determinism).
+/// Zero-drop and `keep_term` see the fully summed coefficient.
+/// When `a` is empty this degenerates to the plain single-stream segmented reduction, which is the whole story for a channel with no identity delta: everything is gathered into `b`.
 ///
-/// **Written as three loops, not one.** The main walk runs only while both
-/// streams are live, so its per-row test is the key comparison alone; the two
-/// drains then run with no test for the exhausted side at all. The single
-/// combined loop this replaces spent two extra conditional branches per output
-/// row on `j >= bn` and `i < an`, and made the `a`-empty case (every Clifford
-/// layer: `rows_id == 0`) run the two-stream loop with both short-circuits
-/// live. Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs: merge
-/// busy −11.8% / −7.9% / −6.6% and wall −4.80% / −1.96% / −3.09% on
-/// `rotation_zz` / `cnot` / `trotter`, at bit-identical work counters. The
-/// mechanism is instruction and branch *count* — retired conditional branches
-/// −11.9%, instructions −3.9% on `rotation_zz` — not misprediction, which
-/// barely moves (−2.3%). See
-/// `research/notes/2026-09-10-branch-misprediction.md`.
+/// **Written as three loops, not one.** The main walk runs only while both streams are live, so its per-row test is the key comparison alone; the two drains then run with no test for the exhausted side at all.
+/// A single combined loop pays two extra conditional branches per output row for the exhausted-side checks, including in the all-Clifford case where `a` is always empty.
 ///
-/// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
-/// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
-/// the sign of a zero sum, so the only zero test is on the final accumulator.
+/// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip the sign of a zero sum, so the only zero test is on the final accumulator.
 ///
-/// Do not restructure this walk into gallop + bulk segment copies: measured
-/// +20–35% merge busy on every real cell except 1t trotter, because
-/// the workloads' id/rest densities make the average id segment one or two
-/// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
-/// compare it saves. Full data in `research/notes/2026-08-31-v0.6-results.md`.
+/// Do not restructure this walk into gallop + bulk segment copies: real workloads' id/rest densities make the average id segment one or two rows, so per-segment overhead swamps the per-row compare it would save; see `research/FINDINGS.md`.
 #[allow(clippy::too_many_arguments)]
-// No `#[inline]` hint, and none is needed. Re-measured 2026-09-10 on the
-// JCC-padded build: adding `#[inline]` leaves `.text` byte-identical — at
-// `codegen-units = 1` + fat LTO this function's monomorphizations are
-// 1 095-1 379 bytes each, far past any inline threshold, so the hint changes
-// nothing — and the A/B is noise (`rotation_zz` median −1.02%, `cnot` +0.08%,
-// both sign-inconsistent). The recorded "+20-34%" was a pre-padding layout
-// coin flip and is void. `#[inline(never)]`, which *does* change codegen, is
-// also nearly free now: wall shows no consistent change (median +0.02%
-// `rotation_zz`, +0.33% `cnot`) at an unmoved 97.9%/98.4% DSB share, where the
-// same experiment on the unpadded build cost +5.7% cycles at 31.5% DSB. The
-// only surviving signal is merge busy +1.68% (7/7) on `cnot`.
-// `research/notes/2026-09-10-inline-set-repost.md`.
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
     a_z: &[[u64; W]],
@@ -561,13 +320,10 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     debug_assert_eq!(bn, b_x.len());
     debug_assert_eq!(bn, b_z.len());
     let (mut i, mut j) = (0usize, 0usize);
-    // Main walk: both streams live, so the "which side" test is a pure key
-    // comparison with no bounds short-circuit.
+    // Main walk: both streams live, so the "which side" test is a pure key comparison with no bounds short-circuit.
     while i < an && j < bn {
-        // Take the smaller next key; on a tie the `a` row seeds the sum. After
-        // an `a` seed there is no second `a` row for the key (`a` is unique),
-        // and after a `b` seed every equal-key `a` row would have compared
-        // `<=`, so only `b` rows can extend the segment either way.
+        // Take the smaller next key; on a tie the `a` row seeds the sum.
+        // After an `a` seed there is no second `a` row for the key (`a` is unique), and after a `b` seed every equal-key `a` row would have compared `<=`, so only `b` rows can extend the segment either way.
         let take_a = (a_x[i], a_z[i]) <= (b_x[j], b_z[j]);
         let (key_x, key_z, mut acc) = if take_a {
             debug_assert!(
@@ -596,8 +352,7 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             dst_coeff.push(acc);
         }
     }
-    // `b` exhausted: every remaining `a` key is unique, so each is its own
-    // segment.
+    // `b` exhausted: every remaining `a` key is unique, so each is its own segment.
     while i < an {
         let (key_x, key_z, acc) = (a_x[i], a_z[i], a_c[i]);
         i += 1;
@@ -607,9 +362,7 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             dst_coeff.push(acc);
         }
     }
-    // `a` exhausted — which for a channel with no identity delta is the whole
-    // call: the plain single-stream segmented reduction, with no `a`-side
-    // test in the loop at all.
+    // `a` exhausted — which for a channel with no identity delta is the whole call: the plain single-stream segmented reduction, with no `a`-side test in the loop at all.
     while j < bn {
         let (key_x, key_z) = (b_x[j], b_z[j]);
         let mut acc = b_c[j];
@@ -637,13 +390,8 @@ mod tests {
 
     // ---- the per-run sort kernel's contract ----
     //
-    // Every kernel `bucketed.rs` may pick for a gather run's rest stream must
-    // satisfy exactly this, and nothing more: the output is **ascending** in
-    // lex `(x, z)` (duplicates allowed — `merge2_into` reduces them) and is a
-    // permutation of the input `(x, z, c)` triples, so a coefficient still
-    // travels with its own key. Equal-key order is explicitly *not* pinned
-    // (ARCHITECTURE.md §Determinism), which is why the check is a multiset
-    // comparison rather than an element-wise one.
+    // Every kernel `bucketed.rs` may pick for a gather run's rest stream must satisfy exactly this, and nothing more: the output is **ascending** in lex `(x, z)` (duplicates allowed — `merge2_into` reduces them) and is a permutation of the input `(x, z, c)` triples, so a coefficient still travels with its own key.
+    // Equal-key order is explicitly *not* pinned (ARCHITECTURE.md §Determinism), which is why the check is a multiset comparison rather than an element-wise one.
 
     type SortKernel<const W: usize> =
         fn(&mut Vec<[u64; W]>, &mut Vec<[u64; W]>, &mut Vec<Complex64>, &mut SortScratch<W>);
@@ -669,8 +417,7 @@ mod tests {
                 "{what}: not ascending at row {i}",
             );
         }
-        // Multiset of triples, with the coefficient bits as the tiebreak so
-        // the comparison is exact and order-insensitive.
+        // Multiset of triples, with the coefficient bits as the tiebreak so the comparison is exact and order-insensitive.
         let key =
             |(a, b, v): &([u64; W], [u64; W], Complex64)| (*a, *b, v.re.to_bits(), v.im.to_bits());
         let mut want: Vec<([u64; W], [u64; W], Complex64)> = x
@@ -693,8 +440,7 @@ mod tests {
         );
     }
 
-    /// Xorshift64 — local so the fixtures below need no dev-dependency draw
-    /// order shared with `test_support`.
+    /// Xorshift64 — local so the fixtures below need no dev-dependency draw order shared with `test_support`.
     fn xs64(state: &mut u64) -> u64 {
         *state ^= *state << 13;
         *state ^= *state >> 7;
@@ -702,9 +448,8 @@ mod tests {
         *state
     }
 
-    /// The shapes a real gather run takes, plus the degenerate ones a kernel
-    /// that looks at the key *bits* (rather than only comparing keys) can trip
-    /// over. `(label, x, z, c)`.
+    /// The shapes a real gather run takes, plus the degenerate ones a kernel that looks at the key *bits* (rather than only comparing keys) can trip over.
+    /// `(label, x, z, c)`.
     #[allow(clippy::type_complexity)]
     fn sort_fixtures<const W: usize>(
         num_qubits: usize,
@@ -761,8 +506,8 @@ mod tests {
         keys.reverse();
         push("reverse_sorted", keys, 0x24);
 
-        // Heavy duplicates: the dense-PTM shape. 40 distinct keys, each
-        // repeated 15 times, the repeats interleaved as 15 sorted streams.
+        // Heavy duplicates: the dense-PTM shape.
+        // 40 distinct keys, each repeated 15 times, the repeats interleaved as 15 sorted streams.
         let mut st = 0x5EED_0000_0000_0001u64;
         let mut distinct: Vec<([u64; W], [u64; W])> = (0..40)
             .map(|_| {
@@ -786,13 +531,11 @@ mod tests {
         // Every row the same key.
         push("all_equal", vec![distinct[0]; 64], 0x26);
 
-        // `x` identically zero: all discrimination lives in `z`, so a kernel
-        // that keys off the most significant word must walk past `x`.
+        // `x` identically zero: all discrimination lives in `z`, so a kernel that keys off the most significant word must walk past `x`.
         let zero_x: Vec<([u64; W], [u64; W])> = distinct.iter().map(|k| ([0u64; W], k.1)).collect();
         push("x_all_zero", zero_x, 0x27);
 
-        // Two-bit key space: only bits 0 and 1 of `x[0]` vary, so any
-        // fixed-width surrogate window has almost no discriminating power.
+        // Two-bit key space: only bits 0 and 1 of `x[0]` vary, so any fixed-width surrogate window has almost no discriminating power.
         let thin: Vec<([u64; W], [u64; W])> = (0..200u64)
             .map(|i| {
                 let mut kx = [0u64; W];
@@ -802,8 +545,7 @@ mod tests {
             .collect();
         push("thin_window", thin, 0x28);
 
-        // A constant *nonzero* high part above the varying bits — the case
-        // where masking a shifted window must not reorder rows.
+        // A constant *nonzero* high part above the varying bits — the case where masking a shifted window must not reorder rows.
         let hi = if num_qubits >= 64 {
             1u64 << 63
         } else {
@@ -835,10 +577,8 @@ mod tests {
         }
     }
 
-    /// The radix kernel satisfies the *same* contract on every shape — the
-    /// point of the harness. Includes the two shapes that must reach its
-    /// fallbacks: `thin_window` (fewer than `RADIX_MIN_WINDOW_BITS`
-    /// discriminating bits) and `all_equal` (no discriminating word at all).
+    /// The radix kernel satisfies the *same* contract on every shape — the point of the harness.
+    /// Includes the two shapes that must reach its fallbacks: `thin_window` (fewer than `RADIX_MIN_WINDOW_BITS` discriminating bits) and `all_equal` (no discriminating word at all).
     #[test]
     fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
         for (label, x, z, c) in sort_fixtures::<1>(64) {
@@ -850,8 +590,7 @@ mod tests {
         for (label, x, z, c) in sort_fixtures::<2>(65) {
             assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
         }
-        // Narrow qubit counts put every discriminating bit low in word 0, so
-        // the window shift saturates at 0 and the mask covers the whole word.
+        // Narrow qubit counts put every discriminating bit low in word 0, so the window shift saturates at 0 and the mask covers the whole word.
         for q in [3usize, 8, 17, 33] {
             for (label, x, z, c) in sort_fixtures::<1>(q) {
                 assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
@@ -859,11 +598,8 @@ mod tests {
         }
     }
 
-    /// Both kernels agree on the *reduced* content of every fixture: same keys
-    /// in the same order, and equal-key coefficient sums that agree exactly
-    /// (the fixtures' coefficients are small integers, so any summation order
-    /// is exact). This is the interchangeability claim `bucketed.rs` relies on
-    /// when it picks a kernel per layer.
+    /// Both kernels agree on the *reduced* content of every fixture: same keys in the same order, and equal-key coefficient sums that agree exactly (the fixtures' coefficients are small integers, so any summation order is exact).
+    /// This is the interchangeability claim `bucketed.rs` relies on when it picks a kernel per layer.
     #[test]
     fn the_two_sort_kernels_reduce_to_the_same_sum() {
         #[allow(clippy::type_complexity)]
@@ -911,8 +647,7 @@ mod tests {
         }
     }
 
-    /// A steady-state layer must not allocate: the radix kernel's own buffers
-    /// have to stop growing once the largest run has been seen.
+    /// A steady-state layer must not allocate: the radix kernel's own buffers have to stop growing once the largest run has been seen.
     #[test]
     fn radix_sort_scratch_capacity_stabilizes() {
         let mut scratch = SortScratch::<2>::default();
@@ -936,16 +671,14 @@ mod tests {
     }
 
     proptest! {
-        /// Randomized shapes, including short runs, narrow key spaces and
-        /// heavy duplication (the `% modulus` draw makes collisions common).
+        /// Randomized shapes, including short runs, narrow key spaces and heavy duplication (the `% modulus` draw makes collisions common).
         #[test]
         fn sort_rows_radix_contract_proptest(
             rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
             modulus in 1u64..64,
             spread in 0u32..60,
         ) {
-            // `spread` slides the varying bits up and down word 0, exercising
-            // every window shift including the saturating one.
+            // `spread` slides the varying bits up and down word 0, exercising every window shift including the saturating one.
             let x: Vec<[u64; 1]> = rows.iter().map(|r| [(r.0 % modulus) << spread]).collect();
             let z: Vec<[u64; 1]> = rows.iter().map(|r| [(r.1 % modulus) << spread]).collect();
             let c: Vec<Complex64> = rows
@@ -965,8 +698,7 @@ mod tests {
             assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x2, &z2, &c, "radix proptest w2");
         }
 
-        /// Randomized shapes, including short runs, narrow key spaces and
-        /// heavy duplication (the `% modulus` draw makes collisions common).
+        /// Randomized shapes, including short runs, narrow key spaces and heavy duplication (the `% modulus` draw makes collisions common).
         #[test]
         fn sort_rows_with_scratch_contract_proptest(
             rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
@@ -986,15 +718,13 @@ mod tests {
         }
     }
 
-    /// Truncation policy that always keeps terms — exercises the trait bound
-    /// without filtering anything out.
+    /// Truncation policy that always keeps terms — exercises the trait bound without filtering anything out.
     struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
     // ---- `sort_rows_with_scratch` ----
 
-    /// Sortedness on distinct keys. Lex on `(x, z)`: `I < Z < X` per word,
-    /// since `x[0]` dominates.
+    /// Sortedness on distinct keys. Lex on `(x, z)`: `I < Z < X` per word, since `x[0]` dominates.
     #[test]
     fn sort_rows_with_scratch_orders_by_lex_key() {
         let mut x: Vec<[u64; 1]> = vec![[1], [0], [0]];
@@ -1018,9 +748,7 @@ mod tests {
         );
     }
 
-    /// Coefficient-permutation consistency across the word boundary: `x[0]`
-    /// decides before `x[1]`, and a coefficient must follow its key through
-    /// the permutation, not just land in the right count.
+    /// Coefficient-permutation consistency across the word boundary: `x[0]` decides before `x[1]`, and a coefficient must follow its key through the permutation, not just land in the right count.
     #[test]
     fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
         let mut x: Vec<[u64; 2]> = vec![[1, 0], [0, 99]];
@@ -1055,9 +783,8 @@ mod tests {
 
     // ---- merge2_into: fused id/rest merge + reduction ----
 
-    /// Plain single-stream segmented reduction over sorted columns: adjacent
-    /// equal keys are summed, exact-zero sums are dropped, and `keep_term`
-    /// sees the summed coefficient. Used only to build `merge2_reference`.
+    /// Plain single-stream segmented reduction over sorted columns: adjacent equal keys are summed, exact-zero sums are dropped, and `keep_term` sees the summed coefficient.
+    /// Used only to build `merge2_reference`.
     fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         sorted_x: &[[u64; W]],
         sorted_z: &[[u64; W]],
@@ -1086,10 +813,8 @@ mod tests {
         (ox, oz, oc)
     }
 
-    /// Reference for `merge2_into`: concatenate both streams, sort by key,
-    /// reduce. Coefficients in these tests are small integers, so `f64`
-    /// addition is exact in any order and the comparison can be `==` even
-    /// where the two pipelines sum in different orders.
+    /// Reference for `merge2_into`: concatenate both streams, sort by key, reduce.
+    /// Coefficients in these tests are small integers, so `f64` addition is exact in any order and the comparison can be `==` even where the two pipelines sum in different orders.
     #[allow(clippy::type_complexity)]
     fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
@@ -1129,9 +854,7 @@ mod tests {
         (ox, oz, oc)
     }
 
-    /// Randomized differential against the concat-sort-reduce reference:
-    /// unique sorted id keys, rest with duplicates and cross-stream
-    /// collisions, integer coefficients so any summation order is exact.
+    /// Randomized differential against the concat-sort-reduce reference: unique sorted id keys, rest with duplicates and cross-stream collisions, integer coefficients so any summation order is exact.
     #[test]
     fn merge2_matches_concat_sort_reduce() {
         // Tiny xorshift so the cases are deterministic without new deps.
@@ -1168,10 +891,7 @@ mod tests {
         }
     }
 
-    /// Both degenerate stream shapes: empty id (a channel with no identity
-    /// delta) reduces to plain single-stream behavior; empty rest (a fully
-    /// commuting coset) passes the unique id stream through the zero-drop
-    /// and policy filters untouched.
+    /// Both degenerate stream shapes: empty id (a channel with no identity delta) reduces to plain single-stream behavior; empty rest (a fully commuting coset) passes the unique id stream through the zero-drop and policy filters untouched.
     #[test]
     fn merge2_handles_empty_streams() {
         let x: Vec<[u64; 1]> = vec![[1], [2], [3]];
@@ -1190,10 +910,7 @@ mod tests {
         assert_eq!(rest_only, (x, z, c));
     }
 
-    /// A cross-stream cancellation must drop the key entirely, and an
-    /// exact-zero id coefficient (a `θ = π/2` rotation's `cos`-scaled row)
-    /// must still participate: `-0.0 + 0.0 = +0.0` — pre-filtering zero rows
-    /// would flip the sign of a zero sum against the single-stream pipeline.
+    /// A cross-stream cancellation must drop the key entirely, and an exact-zero id coefficient (a `θ = π/2` rotation's `cos`-scaled row) must still participate: `-0.0 + 0.0 = +0.0` — pre-filtering zero rows would flip the sign of a zero sum against the single-stream pipeline.
     #[test]
     fn merge2_cancellation_and_signed_zero() {
         let a_x: Vec<[u64; 1]> = vec![[1], [2]];
@@ -1203,10 +920,8 @@ mod tests {
         let b_z: Vec<[u64; 1]> = vec![[0], [0]];
         let b_c: Vec<Complex64> = vec![Complex64::new(0.0, 0.0), Complex64::new(-5.0, 0.0)];
         let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
-        // Key [2]: exact cancellation, dropped. Key [1]: sums to +0.0 exactly
-        // (the sign a zero-row prefilter would get wrong), which the zero-drop
-        // then removes — matching the single-stream reduction on the
-        // concatenated streams.
+        // Key [2]: exact cancellation, dropped.
+        // Key [1]: sums to +0.0 exactly (the sign a zero-row prefilter would get wrong), which the zero-drop then removes — matching the single-stream reduction on the concatenated streams.
         assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
     }
 

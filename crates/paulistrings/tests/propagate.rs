@@ -147,6 +147,27 @@ fn single_layer_cnot_propagates_x_target() {
 }
 
 #[test]
+fn single_layer_cnot_w1_propagates_z_control() {
+    // The W=2 cases above pack the two qubits in separate words; here both sit in word 0.
+    let input = sum1(4, &[(PauliString::<1>::z(1), Complex64::new(1.0, 0.0))]);
+    let out = layer1(&input, 4, Clifford2Q::cnot(0, 1), &NoTruncation);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out.bucket(0).0[0], [0]);
+    assert_eq!(out.bucket(0).1[0], [0b11]);
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
+}
+
+#[test]
+fn single_layer_cnot_w1_propagates_x_target() {
+    let input = sum1(4, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
+    let out = layer1(&input, 4, Clifford2Q::cnot(0, 1), &NoTruncation);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out.bucket(0).0[0], [0b11]);
+    assert_eq!(out.bucket(0).1[0], [0]);
+    assert!(approx_eq(out.bucket(0).2[0], Complex64::new(1.0, 0.0), TOL));
+}
+
+#[test]
 fn single_layer_pauli_rotation_pi_z_flips_x_sign() {
     // exp(-i·π·Z/2) · X · exp(+i·π·Z/2) = -X.
     // `PauliRotation` emits cos(θ)·X + sin(θ)·Y; at θ=π that is (-1)·X plus a

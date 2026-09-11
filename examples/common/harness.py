@@ -1,8 +1,8 @@
 """The one runner for every Part-A benchmark and every timed Part-B showcase.
 
-Handoff item P0d; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item P0d; see `examples/README.md`
 §6 Part 0.4 for the adapted specification and
-`research/notes/2026-09-01-python-api-extensions.md` A2 (`propagate_with_stats`)
+`research/FINDINGS.md` A2 (`propagate_with_stats`)
 and A7 (truncation aliases + thread pinning) for the API this builds on.
 
 What lives here
@@ -404,7 +404,7 @@ def assert_single_threaded() -> None:
         "the process propagates. Export it before the interpreter starts:\n"
         "    RAYON_NUM_THREADS=1 python <script>\n"
         "(measured thread behaviour: this module's docstring, correcting "
-        "research/notes/2026-09-01-python-api-extensions.md §A7)"
+        "research/FINDINGS.md §A7)"
     )
 
 

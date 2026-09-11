@@ -7,7 +7,7 @@
 //! both knobs have to move together — which is what these tests pin, alongside
 //! the correctness bar: a coarser partition is the same computation to
 //! floating-point tolerance (ARCHITECTURE.md §Bucket-Policy,
-//! `research/notes/2026-09-01-bucket-cliff.md` §1.4).
+//! `research/FINDINGS.md` §1.4).
 
 use paulistrings::bucket::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::PauliRotation;

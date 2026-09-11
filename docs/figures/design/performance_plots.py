@@ -2,8 +2,7 @@
 """Performance figures for the Design → Performance page.
 
 Two figures, both plotting numbers copied verbatim from the committed fact
-sheet ``research/notes/2026-09-01-roofline-ccqlin038.md`` (host ccqlin038,
-commit 94b3364, ``--qubits 128``, W = 2):
+sheet ``research/HARDWARE.md`` (host ccqlin038, ``--qubits 128``, W = 2):
 
 * ``roofline-threads.svg`` — attributable DRAM traffic of the ``su4`` probe
   layer against thread count, with the host's measured read/write bandwidth

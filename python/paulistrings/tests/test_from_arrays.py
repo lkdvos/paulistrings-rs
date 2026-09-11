@@ -1,6 +1,6 @@
 """``PauliSum.from_arrays`` and ``paulistrings.io`` (``.npz`` save/load).
 
-Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A3.
+Design source: ``research/FINDINGS.md`` §A3.
 ``from_arrays`` is the inverse of ``x_array`` / ``z_array`` /
 ``coefficients_array``; ingest routes through the same `BuildAccumulator`
 `from_strings` uses (duplicate keys sum, exact zeros drop). ``io.save`` /

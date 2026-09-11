@@ -1,6 +1,6 @@
 """Showcase B1, phase 2 — a 2D quench, and where the coefficient cutoff gives out.
 
-Handoff item B1 (2D half); see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B1 (2D half); see `examples/README.md`
 §6 Part B (runtime class **manual-long**, time-boxed per §8 D15) and global rule
 4. Analysis helpers: `scrambling.py`. Companion: `run_b1_1d.py`.
 

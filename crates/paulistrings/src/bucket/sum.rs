@@ -1,11 +1,6 @@
-//! Storage and partition maintenance for [`PauliSum`] — per-bucket
-//! structure-of-arrays columns under a [`Gf2Hash`] partition. There is one
-//! bucketed representation; see ARCHITECTURE.md §Data-Model.
+//! Storage and partition maintenance for [`PauliSum`] — per-bucket structure-of-arrays columns under a [`Gf2Hash`] partition. See ARCHITECTURE.md §Data-Model.
 //!
-//! The type itself is re-exported as [`crate::pauli_sum::PauliSum`], which is
-//! its public home; this module owns the per-bucket column storage, the
-//! bucket-count policy ([`desired_bits`] and the sizing constants), and the
-//! merge helpers.
+//! Re-exported as [`crate::pauli_sum::PauliSum`]; this module owns the column storage, the bucket-count policy ([`desired_bits`] and the sizing constants), and the merge helpers.
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -17,23 +12,12 @@ use crate::pauli_sum::PauliAxis;
 use crate::pauli_sum::{ProductBasis, ProductState};
 use crate::stabilizer::StabilizerState;
 
-/// Default seed for the partitioning hash.
-///
-/// Fixed so a `propagate` run is reproducible across processes. Exposed as a
-/// constant rather than hidden so a caller who needs a different partition (to
-/// rule out a pathological interaction with their Hamiltonian's structure) can
-/// build their own [`Gf2Hash`].
+/// Default seed for the partitioning hash. Fixed so a `propagate` run is reproducible across processes.
+/// Exposed as a constant rather than hidden so a caller who needs a different partition can build their own [`Gf2Hash`].
 pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Bucket bits for a sum of `len` terms: the smallest `b` with
-/// `len <= target << b`, clamped below by the parallelism floor.
-///
-/// Used to size the partition once at ingestion and at the start of
-/// `propagate`, so the initial scatter hashes in a single pass rather than
-/// being refined bit by bit.
-/// [`PauliSum::rebucket`] tracks it afterwards, but only upward: it grows the
-/// partition to `desired_bits` when that exceeds the current count, and
-/// otherwise leaves the (larger) current count alone.
+/// Bucket bits for a sum of `len` terms: the smallest `b` with `len <= target << b`, clamped below by the parallelism floor.
+/// Used to size the partition once at ingestion and at the start of `propagate`. [`PauliSum::rebucket`] tracks it afterwards, but only upward.
 pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     debug_assert!(target > 0);
     let worth_splitting = len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
@@ -51,76 +35,22 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 }
 
 /// Minimum terms per bucket for the parallelism floor to apply.
+/// The floor in [`PauliSum::rebucket`] exists to give Rayon enough independent tasks, but a task carrying almost nothing is pure overhead; below `min_buckets × MIN_TERMS_PER_TASK` total terms we would rather have few buckets and let the small-`n` fallback handle it. See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value.
 ///
-/// The floor in [`PauliSum::rebucket`] exists to give Rayon enough
-/// independent tasks, but a task carrying almost nothing is pure overhead. Below
-/// `min_buckets × MIN_TERMS_PER_TASK` total terms we would rather have few
-/// buckets and let the small-`n` fallback to the whole-sum path handle it.
-/// See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value.
-///
-/// # This gate has a measured cost on the dense-PTM path
-///
-/// The bucket count is not only about parallelism: it caps the engine's coset
-/// dimension `r = min(rank(h(D)), bits)`, and the per-run sort's comparison
-/// count reaches its `log2(fanout)` floor only at *full* delta rank (`r = 4`
-/// for a two-qubit channel). Below `min_buckets × MIN_TERMS_PER_TASK` terms
-/// `bits ≤ 3`, so a **dense** 16×16 PTM cannot get there and its sort — 58–60%
-/// of that layer — costs up to 2.2× its asymptote. Forcing `bits = 7` at 980
-/// terms measured **−38.6%** on a Haar-SU(4) layer (3/3 paired, non-authoritative).
-///
-/// Do **not** just lower or drop the gate: the same forcing costs a
-/// `rotation_zz` layer **+46.6%** at 1497 terms (3/3 paired), because its sort
-/// is only 7% of the layer and the extra buckets are pure per-run overhead. Any
-/// fix has to key off the channel's fanout. Mechanism, numbers and the tuning
-/// gate: `research/notes/2026-09-01-bucket-cliff.md`.
+/// This gate is not only about parallelism: the bucket count caps the engine's coset dimension, and the per-run sort's comparison count reaches its floor only at full delta rank — so it also controls how much sort work a dense-PTM layer pays. Do not lower or drop the gate without checking a sparse-PTM layer too; the two regimes pull in opposite directions (see `research/FINDINGS.md`).
 pub const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Default target terms per bucket.
-///
-/// Chosen so a bucket plus its gather scratch stays L2-resident: a term at
-/// `W = 2` is `2·8·2 + 16 = 48` bytes, so 1024 terms is ~48 KB against 1 MiB of
-/// L2 per core on the reference host. See ARCHITECTURE.md §Bucket-Policy for
-/// the sweep that set this value.
-///
-/// Two caveats the sweep behind it does not cover, both measured since:
-///
-/// - The object that has to stay resident is the **gather run**, not the
-///   bucket. At a dense PTM's fanout of 14.94 that is `14.94 × 1024 × 48 B ≈
-///   737 KB` per live coset — nearly all of L2, and the reason the dense-PTM
-///   path saturates the write path from 16 threads
-///   (`research/notes/2026-09-01-large-m-phase-breakdown.md` §4). The 48 KB
-///   figure is a rotation layer's.
-/// - The sweep is a rotation layer, whose sort is 7% of the layer. See
-///   [`MIN_TERMS_PER_TASK`] for what the bucket count does to a dense-PTM
-///   layer's sort, which is 58–60% of it.
+/// Chosen so a bucket plus its gather scratch stays L2-resident on the reference host. See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value, and [`MIN_TERMS_PER_TASK`] for the dense-PTM caveat.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
 /// Default floor on the bucket count.
-///
-/// Fixed, not thread-derived: `128 = 4×32` is the value the 32-thread
-/// reference host (ccqlin038) has always used, so this constant reproduces
-/// every committed baseline and the committed `examples/output/*.csv`
-/// trajectories exactly. Deriving the floor from `rayon::current_num_threads`
-/// instead would make the bucket count `B` depend on how many threads happen
-/// to be available; a fixed floor instead keeps `B` a deterministic function
-/// of the sum's history alone (see ARCHITECTURE.md §Determinism), and 128
-/// gives Rayon slack to load-balance at any realistic core count.
-/// [`PauliSum::rebucket`] is grow-only, so `B` is the running max of
-/// [`desired_bits`] over every layer seen so far, not the instantaneous term
-/// count `n` alone; that history is fully determined by the circuit and the
-/// starting sum, so `B` can no longer be recovered from `len()` at a single
-/// point in time.
-///
-/// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone
-/// below that (e.g. `min_buckets = 2` would split at 128 terms), and we want
-/// "a sum of `<= 1024` terms gets a single bucket" to hold.
+/// Fixed, not thread-derived, so the bucket count `B` stays a deterministic function of the sum's history alone (ARCHITECTURE.md §Determinism) rather than of how many threads happen to be available.
+/// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone below that, and we want "a sum of `<= 1024` terms gets a single bucket" to hold.
 pub const DEFAULT_MIN_BUCKETS: usize = 128;
 
 /// One bucket's structure-of-arrays columns.
-///
-/// Capacity is retained across layers, which is the point of owning per-bucket
-/// columns rather than slicing one flat array: the steady state of a
-/// propagation loop allocates nothing (ARCHITECTURE.md §Data-Model).
+/// Capacity is retained across layers, which is the point of owning per-bucket columns rather than slicing one flat array: the steady state of a propagation loop allocates nothing (ARCHITECTURE.md §Data-Model).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BucketCols<const W: usize> {
     pub(crate) x: Vec<[u64; W]>,
@@ -157,13 +87,8 @@ impl<const W: usize> BucketCols<W> {
     }
 }
 
-/// Split one input bucket into its "low" (kept in place) and "high" (new
-/// bucket at `b + old_nb`) halves under a hash that has just gained
-/// `new_bit` as its top bit.
-///
-/// Shared by [`PauliSum::refine`]'s serial and parallel branches, so there is
-/// exactly one implementation of the split. `b` is the *old* bucket index,
-/// used only by the debug-only low-bits invariant check.
+/// Split one input bucket into its "low" (kept in place) and "high" (new bucket at `b + old_nb`) halves under a hash that has just gained `new_bit` as its top bit.
+/// Shared by [`PauliSum::refine`]'s serial and parallel branches. `b` is the old bucket index, used only by the debug-only low-bits invariant check.
 fn refine_bucket<const W: usize>(
     cols: &mut BucketCols<W>,
     up: &mut BucketCols<W>,
@@ -188,8 +113,7 @@ fn refine_bucket<const W: usize>(
         if bit == 1 {
             up.push(cols.x[i], cols.z[i], cols.coeff[i]);
         } else {
-            // Compact in place: `keep <= i` always, so this never overwrites
-            // an unread slot.
+            // Compact in place: `keep <= i` always, so this never overwrites an unread slot.
             cols.x[keep] = cols.x[i];
             cols.z[keep] = cols.z[i];
             cols.coeff[keep] = cols.coeff[i];
@@ -230,10 +154,7 @@ fn merge_two<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols
 }
 
 /// Merge two sorted runs, summing equal keys and dropping exact-zero sums.
-///
-/// The counterpart of [`merge_two`] for operands that may share keys: within a
-/// partition, equal keys are always in the same bucket pair, so a two-pointer
-/// pass over one bucket of each operand sees every collision there is.
+/// The counterpart of [`merge_two`] for operands that may share keys: within a partition, equal keys are always in the same bucket pair, so a two-pointer pass over one bucket of each operand sees every collision there is.
 fn merge_two_adding<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols<W> {
     let mut out = BucketCols::<W>::new();
     let total = a.len() + b.len();
@@ -274,16 +195,7 @@ fn merge_two_adding<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> Buc
 }
 
 /// Merge `B` sorted runs into one, by `log2(B)` rounds of pairwise merges.
-///
-/// Replaces a `BinaryHeap`-based `B`-way merge, which measured 147 ms at
-/// 10⁶ terms and 1024 buckets — 147 ns per element, because every pop does
-/// `log2(B)` comparisons against 32-byte keys scattered across 1024 runs, and
-/// the heap is inherently sequential.
-///
-/// The tree does the same `O(n log B)` comparisons but reads two sequential
-/// streams at a time, and every pair within a round is independent, so the rounds
-/// parallelize. It costs `log B` passes over the payload instead of one, which is
-/// the trade: sequential bandwidth for random access, and it wins.
+/// Faster than a `BinaryHeap`-based `B`-way merge, whose pops need `log2(B)` comparisons against keys scattered across `B` runs and which is inherently sequential. The tree does the same `O(n log B)` comparisons but reads two sequential streams at a time, and every pair within a round is independent, so the rounds parallelize — sequential bandwidth traded for `log B` passes over the payload instead of one.
 fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
     if runs.is_empty() {
         return BucketCols::new();
@@ -302,15 +214,8 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
 }
 
 /// Copy the terms of one bucket whose partition rank is `rank`.
-///
-/// Shared by `PauliSum::filter_partition`'s serial and parallel branches, so
-/// there is exactly one implementation of the filter. A subsequence of a
-/// strictly ascending run is strictly ascending, so the output needs no sort.
-///
-/// Plain pushes, no `reserve`: the surviving count is not known without a
-/// second pass, and a speculative reservation would inflate peak RSS across
-/// all `P` parts for no measured gain
-/// (`research/notes/2026-09-01-mem-growth.md`).
+/// Shared by `PauliSum::filter_partition`'s serial and parallel branches. A subsequence of a strictly ascending run is strictly ascending, so the output needs no sort.
+/// Plain pushes, no `reserve`: the surviving count is not known without a second pass, and a speculative reservation would inflate peak RSS across all `P` parts for no measured gain (see `research/FINDINGS.md`).
 fn filter_bucket<const W: usize>(
     cols: &BucketCols<W>,
     rows: &PartitionRows<W>,
@@ -325,17 +230,8 @@ fn filter_bucket<const W: usize>(
     out
 }
 
-/// Merge `k` **disjoint** sorted runs into one, in `ceil(log2 k)` pairwise
-/// rounds — the gather half of the partition scatter/gather.
-///
-/// The same tree and the same `O(n log k)` comparison count as [`merge_runs`],
-/// but serial and clone-free: the caller (`PauliSum::merge_partitions`) is
-/// already parallel over buckets and `k = P <= 16`, so a nested Rayon split
-/// would be pure overhead, and an odd run is *moved* into the next round
-/// rather than copied. A single run is returned untouched, capacity included.
-///
-/// Runs come from distinct partitions of one sum, so no key can appear twice;
-/// debug builds check that by re-verifying the strict ascent of the result.
+/// Merge `k` disjoint sorted runs into one, in `ceil(log2 k)` pairwise rounds — the gather half of the partition scatter/gather.
+/// The same tree as [`merge_runs`], but serial and clone-free: the caller is already parallel over buckets and `k = P <= 16`, so a nested Rayon split would be pure overhead. Runs come from distinct partitions of one sum, so no key can appear twice; debug builds check that by re-verifying the strict ascent of the result.
 fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
     while runs.len() > 1 {
         let mut next: Vec<BucketCols<W>> = Vec::with_capacity(runs.len().div_ceil(2));
@@ -361,41 +257,19 @@ fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCo
     out
 }
 
-/// Weighted sum of Pauli operators, stored as structure-of-arrays columns
-/// partitioned by a GF(2)-linear hash.
+/// Weighted sum of Pauli operators, stored as structure-of-arrays columns partitioned by a GF(2)-linear hash.
 ///
 /// # Canonical order
 ///
-/// Terms are ordered by **(bucket index `h(x, z)` ascending, then
-/// lexicographic `(x, z)` within a bucket)** — the order [`Self::iter`] and
-/// [`Self::to_arrays`] produce. This is a public promise, not an
-/// implementation detail. A single-bucket sum has `h ≡ 0`, so its canonical
-/// order *is* plain lexicographic `(x, z)` — and [`desired_bits`] gives every
-/// sum of at most [`DEFAULT_TARGET_BUCKET_LEN`] terms a single bucket, so
-/// small sums always come out lex-sorted.
+/// Terms are ordered by bucket index ascending, then lexicographic `(x, z)` within a bucket — the order [`Self::iter`] and [`Self::to_arrays`] produce. This is a public promise, not an implementation detail.
 ///
 /// # Invariant
 ///
-/// Every term lies in `buckets[hash.bucket_of(term)]`, and each bucket is sorted
-/// by the lexicographic `(x, z)` key with no duplicate keys. Because `h` is a
-/// function, equal keys always share a bucket — so per-bucket dedup *implies*
-/// global dedup, and no global sort is ever needed. The engine
-/// ([`propagate`]) operates on the buckets directly; there is no separate
-/// "flat" representation and nothing to convert in or out of.
+/// Every term lies in `buckets[hash.bucket_of(term)]`, and each bucket is sorted by the lexicographic `(x, z)` key with no duplicate keys. Because `h` is a function, equal keys always share a bucket, so per-bucket dedup implies global dedup and no global sort is ever needed.
 ///
 /// # Partition scatter/gather
 ///
-/// The crate-internal `filter_partition` / `merge_partitions` pair are the
-/// scatter and gather primitives of the partitioned engine (ARCHITECTURE.md
-/// §Partitioning): `filter_partition` extracts the terms a `PartitionRows`
-/// assigns to one rank as a sum under the *same* hash and bucket count, and
-/// `merge_partitions` puts partition-disjoint sums back together. A partition
-/// is a subset of the terms, so each local bucket is a subsequence of the
-/// corresponding global one — still strictly ascending, still duplicate-free.
-/// Neither direction sorts, neither combines coefficients, and a round trip is
-/// therefore bitwise. `coarsen_to` brings a sum's bucket count down to an
-/// agreed value before a gather, and `partition_rank_of_all` is the
-/// debug/test predicate for "this sum lives in one partition".
+/// The crate-internal `filter_partition` / `merge_partitions` pair are the scatter and gather primitives of the partitioned engine (ARCHITECTURE.md §Partitioning). Neither direction sorts or combines coefficients, so a round trip is bitwise.
 ///
 /// [`propagate`]: crate::propagate
 #[derive(Clone, Debug)]
@@ -407,16 +281,8 @@ pub struct PauliSum<const W: usize> {
 }
 
 impl<const W: usize> PauliSum<W> {
-    /// Partition a globally key-sorted stream of terms.
-    ///
-    /// `O(n)`: one hash evaluation and one scatter per term. Because the input
-    /// is globally key-sorted and terms are appended in input order, each
-    /// bucket comes out sorted for free — order outside a bucket is
-    /// irrelevant, and order within one is inherited.
-    ///
-    /// The caller owes the sortedness: `x`, `z`, `coeff` must be parallel
-    /// columns ascending in `(x, z)` with no duplicate keys. Feeding it an
-    /// unsorted stream silently breaks the per-bucket sort invariant.
+    /// Partition a globally key-sorted stream of terms. `O(n)`: one hash evaluation and one scatter per term, and each bucket comes out sorted for free since order within it is inherited from the input.
+    /// The caller owes the sortedness: `x`, `z`, `coeff` must be parallel columns ascending in `(x, z)` with no duplicate keys, or the per-bucket sort invariant silently breaks.
     pub(crate) fn from_key_sorted(
         x: &[[u64; W]],
         z: &[[u64; W]],
@@ -427,14 +293,8 @@ impl<const W: usize> PauliSum<W> {
         let n = coeff.len();
         let nb = hash.num_buckets();
 
-        // Hashing is the expensive part -- `b × 2W` AND+popcount-parity ops per
-        // term, and the only place in the whole design where it happens at all
-        // -- so it runs in parallel, and the counts come from the resulting
-        // indices rather than from a second hashing pass.
-        //
-        // The scatter below stays sequential: buckets are separate allocations,
-        // so a parallel scatter would need every thread to write into every
-        // bucket. Measured, hashing dominates.
+        // Hashing is the expensive part, so it runs in parallel; the counts come from the resulting indices rather than a second hashing pass.
+        // The scatter below stays sequential: buckets are separate allocations, so a parallel scatter would need every thread to write into every bucket.
         let idx: Vec<u32> = (0..n)
             .into_par_iter()
             .map(|i| hash.bucket_of(&x[i], &z[i]))
@@ -466,11 +326,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Empty sum on `num_qubits` qubits, in a single bucket.
-    ///
-    /// The hash is the zero-bit prefix of the default seed's matrix, so the
-    /// canonical order of anything built on top of this is plain lexicographic
-    /// `(x, z)` until the sum grows past the [`desired_bits`] threshold and a
-    /// caller (or the engine's `rebucket`) refines it.
+    /// The hash is the zero-bit prefix of the default seed's matrix, so the canonical order is plain lexicographic `(x, z)` until the sum grows past the [`desired_bits`] threshold and something refines it.
     ///
     /// # Panics
     ///
@@ -491,9 +347,7 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Test/oracle constructor: wrap globally key-sorted columns as a
-    /// single-bucket sum (zero hash bits, default seed), whose canonical order
-    /// is therefore exactly the given column order.
+    /// Test/oracle constructor: wrap globally key-sorted columns as a single-bucket sum (zero hash bits, default seed), whose canonical order is therefore exactly the given column order.
     #[cfg(test)]
     pub(crate) fn from_sorted_columns(
         x: Vec<[u64; W]>,
@@ -511,15 +365,8 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Repartition under `hash`, keeping every term.
-    ///
-    /// Flattens to a globally key-sorted stream and rescatters. The scatter is
-    /// what needs the global sort: a bucket inherits its order from the input
-    /// stream, so a key-sorted stream produces key-sorted buckets — the same
-    /// argument the crate-internal key-sorted constructor rests on.
-    ///
-    /// Prefer [`Self::refine`] / [`Self::coarsen`] when only the bucket *count*
-    /// changes and the hash rows are the same; those are `O(n)` and never merge.
+    /// Repartition under `hash`, keeping every term. Flattens to a globally key-sorted stream and rescatters.
+    /// Prefer [`Self::refine`] / [`Self::coarsen`] when only the bucket count changes and the hash rows are the same; those are `O(n)` and never merge.
     ///
     /// # Panics
     ///
@@ -536,11 +383,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// A copy of `self` partitioned exactly as `target` partitions.
-    ///
-    /// Three cases, cheapest first: identical partition is a clone; the same
-    /// hash rows at a different bucket count is a clone plus `O(n)` refine or
-    /// coarsen steps; different rows falls back to [`Self::with_hash`], which
-    /// pays the `O(n log B)` flatten.
+    /// Three cases, cheapest first: identical partition is a clone; same hash rows at a different bucket count is a clone plus `O(n)` refine/coarsen; different rows falls back to [`Self::with_hash`]'s `O(n log B)` flatten.
     pub(crate) fn align_to(&self, target: &Gf2Hash<W>) -> Self {
         if !self.hash.same_rows_as(target) {
             return self.clone().with_hash(target.clone());
@@ -556,63 +399,31 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state.
-    ///
-    /// For each [`ProductState`] there is exactly one single-qubit Pauli with
-    /// expectation `1`; the others have expectation `0`. A Pauli string
-    /// therefore contributes iff every one of its factors is either `I` or that
-    /// Pauli, in which case it contributes its full coefficient — a masked scan
-    /// over the key columns, run as a per-bucket parallel reduction. This is
-    /// what lets a driver hold one sum across many [`propagate`](crate::propagate)
-    /// calls and still read its observable each step.
-    ///
-    /// The uniform states are the special cases of [`ProductBasis`] with sign
-    /// `+1` everywhere, so this is a thin wrapper over
-    /// [`Self::expectation_product_basis`] — there is exactly one scan.
-    ///
-    /// Returns `Complex64` rather than `f64` because `self` need not be
-    /// Hermitian; take `.re` when it is.
+    /// For each [`ProductState`] there is exactly one single-qubit Pauli with expectation `1`; a term contributes its full coefficient iff every factor is `I` or that Pauli — a masked scan over the key columns, run as a per-bucket parallel reduction.
+    /// The uniform states are the special case of [`ProductBasis`] with sign `+1` everywhere, so this is a thin wrapper over [`Self::expectation_product_basis`].
+    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
     ///
     /// # Summation order
     ///
-    /// Partial sums are combined in bucket order — the canonical order — which
-    /// is deterministic given the partition. Floating-point addition is not
-    /// associative, so two partitions of the same terms can differ in the last
-    /// bits — far below any physically meaningful tolerance, but do not expect
-    /// bitwise equality across different hashes or bucket counts.
+    /// Partial sums are combined in bucket order, which is deterministic given the partition; two partitions of the same terms can differ in the last bits, since `f64` addition is not associative.
     pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
         self.expectation_product_basis(&ProductBasis::<W>::uniform(state))
     }
 
     /// Expectation value `⟨ψ|O|ψ⟩` in an arbitrary single-qubit product state.
-    ///
-    /// `basis` gives each qubit its own axis and sign; see [`ProductBasis`] for
-    /// the per-word match condition and the sign rule this evaluates. A term
-    /// contributes its coefficient — negated when an odd number of the sites
-    /// in its support are `-1` eigenstates — iff every non-identity factor
-    /// equals that qubit's axis exactly. Cost is one pass over the key columns
-    /// as a per-bucket parallel reduction, `O(terms · W)`, with no expansion
-    /// over basis states.
-    ///
-    /// Mask bits at qubit indices `>= num_qubits()` are irrelevant: a stored
-    /// key never has one set there.
-    ///
-    /// Returns `Complex64` rather than `f64` because `self` need not be
-    /// Hermitian; take `.re` when it is.
+    /// `basis` gives each qubit its own axis and sign; see [`ProductBasis`] for the per-word match condition and the sign rule this evaluates. A term contributes its coefficient (negated when an odd number of support sites are `-1` eigenstates) iff every non-identity factor equals that qubit's axis exactly. Cost is one pass over the key columns as a per-bucket parallel reduction, with no expansion over basis states.
+    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
     ///
     /// # Summation order
     ///
-    /// As in [`Self::expectation_product_state`] — partials are combined in
-    /// bucket order, so two partitions of the same terms can differ in the
-    /// last bits.
+    /// As in [`Self::expectation_product_state`] — partials are combined in bucket order, so two partitions of the same terms can differ in the last bits.
     pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.buckets
             .par_iter()
             .map(|cols| {
                 let mut acc = Complex64::new(0.0, 0.0);
                 for i in 0..cols.len() {
-                    // `mismatch` stays zero iff every word's non-identity
-                    // sites carry exactly the local axis Pauli; `sign_bits`
-                    // counts the `-1` eigenstates inside the support.
+                    // `mismatch` stays zero iff every word's non-identity sites carry exactly the local axis Pauli; `sign_bits` counts the `-1` eigenstates inside the support.
                     let mut mismatch = 0u64;
                     let mut sign_bits = 0u32;
                     for w in 0..W {
@@ -638,37 +449,17 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Expectation value `⟨ψ|O|ψ⟩` in a stabilizer state.
-    ///
-    /// `⟨ψ|P|ψ⟩` is `±1` when `±P` lies in the state's stabilizer group and `0`
-    /// otherwise, so this is a *filter with a sign*, exactly like
-    /// [`Self::expectation_product_basis`] — a term either contributes its
-    /// coefficient, contributes its negation, or drops out. What widens is the
-    /// admissible state: any stabilizer state (Bell, GHZ, cluster, a Clifford
-    /// circuit's output) rather than only a product state. See
-    /// [`StabilizerState`] for the membership test and the sign bookkeeping.
-    ///
-    /// Cost is `O(terms · n²/64)` word operations — `O(n)` pivot tests per
-    /// term plus a `W`-word Pauli multiply per pivot hit — after the state's
-    /// one-time `O(n³/64)` reduction, and never an expansion over basis
-    /// states. That is `n` (= `num_qubits`) times more work per term than the
-    /// product-state scan, so keep using
-    /// [`Self::expectation_product_basis`] for states that factorize.
-    ///
-    /// Run as the same per-bucket parallel reduction
-    /// [`Self::expectation_product_basis`] uses. Returns `Complex64` rather
-    /// than `f64` because `self` need not be Hermitian; take `.re` when it is.
+    /// `⟨ψ|P|ψ⟩` is `±1` when `±P` lies in the state's stabilizer group and `0` otherwise, so this is a filter with a sign, exactly like [`Self::expectation_product_basis`], but the admissible state widens to any stabilizer state (Bell, GHZ, cluster, a Clifford circuit's output). See [`StabilizerState`] for the membership test and the sign bookkeeping.
+    /// Cost is `O(terms · n²/64)` word operations after the state's one-time `O(n³/64)` reduction — `n` times more work per term than the product-state scan, so prefer [`Self::expectation_product_basis`] for states that factorize.
+    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
     ///
     /// # Summation order
     ///
-    /// As in [`Self::expectation_product_state`] — partials are combined in
-    /// bucket order, so two partitions of the same terms can differ in the
-    /// last bits.
+    /// As in [`Self::expectation_product_state`] — partials are combined in bucket order, so two partitions of the same terms can differ in the last bits.
     ///
     /// # Panics
     ///
-    /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`]: the
-    /// membership test would silently report `0` for every term supported
-    /// outside the state's qubits.
+    /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`].
     pub fn expectation_stabilizer(&self, state: &StabilizerState<W>) -> Complex64 {
         assert_eq!(
             self.num_qubits,
@@ -751,21 +542,8 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Double the bucket count, splitting each bucket in two.
-    ///
-    /// One `Gf2Hash::row_parity` evaluation per term against just the new
-    /// high bit — `O(n)` total, not `O(n · bits)` — since a term's bucket
-    /// under the old (shorter) hash prefix is exactly the bucket it is already
-    /// in; only whether the new bit is set decides which half it lands in.
-    /// The new index is `i` or `i + B` (the new hash bit is the *high* bit),
-    /// and both halves inherit the source bucket's order, so nothing is
-    /// re-sorted.
-    ///
-    /// Bucket pairs are independent — output bucket `b` and `b + old_nb`
-    /// depend only on input bucket `b` — so above [`MIN_TERMS_PER_TASK`] ×
-    /// [`DEFAULT_MIN_BUCKETS`] total terms (the same "worth splitting"
-    /// threshold [`desired_bits`] uses) the per-bucket work runs across Rayon;
-    /// below it the sequential loop avoids per-task overhead on a sum too
-    /// small to benefit.
+    /// One `Gf2Hash::row_parity` evaluation per term against just the new high bit — `O(n)` total — since only whether the new bit is set decides which half a term lands in; both halves inherit the source bucket's order, so nothing is re-sorted.
+    /// Bucket pairs are independent, so above [`MIN_TERMS_PER_TASK`] × [`DEFAULT_MIN_BUCKETS`] total terms the per-bucket work runs across Rayon; below it the sequential loop avoids per-task overhead.
     pub fn refine(&mut self) {
         let old_nb = self.buckets.len();
         self.hash.refine();
@@ -794,12 +572,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
-    ///
-    /// A 2-way merge per pair via `merge_two` — no coefficient combining,
-    /// since equal keys agree at every prefix length and were already in the
-    /// same source bucket. Pairs are independent, so — same threshold and
-    /// rationale as [`Self::refine`] — this is a parallel map above the
-    /// worth-splitting threshold and a serial one below it.
+    /// A 2-way merge per pair via `merge_two`, no coefficient combining, since equal keys were already in the same source bucket. Same threshold and rationale as [`Self::refine`].
     pub fn coarsen(&mut self) {
         self.hash.coarsen();
         let new_nb = self.buckets.len() / 2;
@@ -824,19 +597,12 @@ impl<const W: usize> PauliSum<W> {
         self.buckets = merged;
     }
 
-    /// Coarsen until the bucket count is `1 << bits`; a no-op if it is already
-    /// at or below that.
-    ///
-    /// The bulk form of [`Self::coarsen`], used to bring the partitions of a
-    /// partitioned run onto one agreed bucket count before they are gathered
-    /// (ARCHITECTURE.md §Partitioning). The hash rows are untouched, so the
-    /// result is still the same partition family, just a shorter prefix.
+    /// Coarsen until the bucket count is `1 << bits`; a no-op if it is already at or below that.
+    /// The bulk form of [`Self::coarsen`], used to bring the partitions of a partitioned run onto one agreed bucket count before they are gathered (ARCHITECTURE.md §Partitioning).
     ///
     /// # Panics
     ///
-    /// Panics if `bits` exceeds the current bucket bits — growing is
-    /// [`Self::refine`]'s job, and doing it here would silently mean "resort
-    /// the whole sum".
+    /// Panics if `bits` exceeds the current bucket bits — growing is [`Self::refine`]'s job.
     pub(crate) fn coarsen_to(&mut self, bits: u8) {
         assert!(
             bits <= self.hash.bits(),
@@ -848,18 +614,9 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// The terms `rows` assigns to partition `rank`, as a sum under the same
-    /// hash (cloned) and the same bucket count.
-    ///
-    /// The scatter half of the partition scatter/gather (ARCHITECTURE.md
-    /// §Partitioning). Each output bucket is the subsequence of the
-    /// corresponding input bucket that survives the rank test, so it inherits
-    /// both the sort and the uniqueness — one `part(v)` evaluation per term,
-    /// no sort, no coefficient arithmetic.
-    ///
-    /// Buckets are independent, so above the same "worth splitting" threshold
-    /// [`Self::refine`] uses this is a parallel map over buckets and a serial
-    /// one below it.
+    /// The terms `rows` assigns to partition `rank`, as a sum under the same hash (cloned) and bucket count.
+    /// The scatter half of the partition scatter/gather (ARCHITECTURE.md §Partitioning). Each output bucket is the subsequence of the input bucket that survives the rank test, so it inherits both the sort and the uniqueness — one `part(v)` evaluation per term, no sort, no coefficient arithmetic.
+    /// Same threshold and rationale as [`Self::refine`].
     pub(crate) fn filter_partition(&self, rows: &PartitionRows<W>, rank: u32) -> Self {
         debug_assert_eq!(
             self.num_qubits,
@@ -891,23 +648,12 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Gather partition-disjoint sums that share a partition back into one.
-    ///
-    /// The inverse of [`Self::filter_partition`] (ARCHITECTURE.md
-    /// §Partitioning). Since equal keys agree on their partition rank, the
-    /// inputs' key sets are disjoint, and since they share the hash, bucket
-    /// `b` of the result is exactly a `P`-way merge of bucket `b` of each
-    /// input — sorted runs in, one sorted run out, no coefficient arithmetic,
-    /// so a `filter_partition`/`merge_partitions` round trip is bitwise.
-    /// Debug builds assert the disjointness.
-    ///
-    /// Buckets are independent; same threshold and rationale as
-    /// [`Self::refine`]. A single input is returned unchanged.
+    /// The inverse of [`Self::filter_partition`] (ARCHITECTURE.md §Partitioning). Bucket `b` of the result is a `P`-way merge of bucket `b` of each input — sorted runs in, one sorted run out, no coefficient arithmetic, so a `filter_partition`/`merge_partitions` round trip is bitwise. Debug builds assert the key sets are disjoint.
+    /// Same threshold and rationale as [`Self::refine`]. A single input is returned unchanged.
     ///
     /// # Panics
     ///
-    /// Panics if `parts` is empty (there would be no hash to give the result),
-    /// or if the inputs disagree on their hash rows or bucket count. Align
-    /// them with [`Self::coarsen_to`] or [`Self::align_to`] first.
+    /// Panics if `parts` is empty, or if the inputs disagree on their hash rows or bucket count — align them with [`Self::coarsen_to`] or [`Self::align_to`] first.
     pub(crate) fn merge_partitions(parts: Vec<Self>) -> Self {
         let first = parts
             .first()
@@ -930,8 +676,7 @@ impl<const W: usize> PauliSum<W> {
         let k = parts.len();
         let len: usize = parts.iter().map(|p| p.len).sum();
 
-        // Transpose parts×buckets into buckets×parts, moving the columns so
-        // the merge below never copies a run it does not have to.
+        // Transpose parts×buckets into buckets×parts, moving the columns so the merge below never copies a run it does not have to.
         let mut runs: Vec<Vec<BucketCols<W>>> = (0..nb).map(|_| Vec::with_capacity(k)).collect();
         for p in parts {
             for (b, cols) in p.buckets.into_iter().enumerate() {
@@ -953,21 +698,12 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Rebuild a sum from the columns [`Self::to_arrays`] produced, cut back
-    /// into buckets by `lens`.
-    ///
-    /// The inverse of `to_arrays` given the bucket lengths, and the receive
-    /// side of the distributed gather (`engine::partitioned`): a rank ships its
-    /// bucket lengths and its three concatenated columns, and the root
-    /// reassembles the rank's `PauliSum` under the hash the group agrees on
-    /// before handing the lot to [`Self::merge_partitions`]. Nothing is sorted
-    /// or deduplicated — the columns already satisfy `PauliSum`'s invariants,
-    /// bucket by bucket, and the transfer preserved their order.
+    /// Rebuild a sum from the columns [`Self::to_arrays`] produced, cut back into buckets by `lens`.
+    /// The receive side of the distributed gather (`engine::partitioned`): a rank ships its bucket lengths and concatenated columns, and the root reassembles the rank's `PauliSum` before handing it to [`Self::merge_partitions`]. Nothing is sorted or deduplicated — the columns already satisfy `PauliSum`'s invariants bucket by bucket.
     ///
     /// # Panics
     ///
-    /// If `lens` is not one entry per bucket of `hash`, if the columns are not
-    /// parallel, or if the lengths do not sum to the column length.
+    /// If `lens` is not one entry per bucket of `hash`, if the columns are not parallel, or if the lengths do not sum to the column length.
     pub(crate) fn from_bucket_columns(
         lens: &[usize],
         x: Vec<[u64; W]>,
@@ -1018,11 +754,8 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a
-    /// mixed sum.
-    ///
-    /// Debug and test predicate for "this sum is one partition's share"; it
-    /// scans every term, so it is not for the propagation loop.
+    /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a mixed sum.
+    /// Debug and test predicate for "this sum is one partition's share"; it scans every term, so it is not for the propagation loop.
     pub(crate) fn partition_rank_of_all(&self, rows: &PartitionRows<W>) -> Option<u32> {
         let mut seen: Option<u32> = None;
         for (x, z, _) in self.iter() {
@@ -1036,31 +769,13 @@ impl<const W: usize> PauliSum<W> {
         seen
     }
 
-    /// Bring the bucket count up to what [`desired_bits`] would choose for the
-    /// current length — but never down.
+    /// Bring the bucket count up to what [`desired_bits`] would choose for the current length — but never down.
     ///
     /// # Grow-only policy
     ///
-    /// A sum's bucket count is monotone non-decreasing over its lifetime: this
-    /// clamps the target to `self.hash.bits()`, so `rebucket` only ever refines,
-    /// never coarsens. Measured: the alternative "track `desired_bits` exactly,
-    /// up or down" policy made `rebucket` 74% of wall time on a sqrt-SWAP
-    /// `GeneralUnitary2Q` workload and 45–46% at ≥8 threads on the TFIM Trotter
-    /// workload: term counts oscillate every layer (fanout grows them,
-    /// cancellation/truncation cuts them back), so a sum sitting near a
-    /// power-of-two boundary in `desired_bits` would refine and coarsen on
-    /// alternate layers, each an `O(n · bits)` serial pass.
-    ///
-    /// Keeping the larger partition instead is physically the right default:
-    /// operator support only grows under propagation until truncation cuts it,
-    /// and the cost of *not* coarsening back down is bounded — three empty `Vec`
-    /// headers per surplus bucket, not a term-proportional cost. A caller that
-    /// actually wants to shrink a sum (to reclaim memory between independent
-    /// circuits, say) still can, explicitly, via [`Self::with_hash`] or
-    /// [`Self::coarsen`]; `rebucket` itself no longer does it implicitly.
-    ///
-    /// Also keeps at least `min_buckets` buckets once there is enough work to
-    /// spread, so the bucket-parallel decomposition has slack to load-balance.
+    /// A sum's bucket count is monotone non-decreasing over its lifetime: this clamps the target to `self.hash.bits()`, so `rebucket` only ever refines, never coarsens. Term counts oscillate every layer (fanout grows them, truncation cuts them back), so tracking `desired_bits` exactly in both directions would refine and coarsen on alternate layers near a power-of-two boundary, each an `O(n · bits)` serial pass — see `research/FINDINGS.md`.
+    /// Keeping the larger partition is otherwise free: the cost of not coarsening back down is three empty `Vec` headers per surplus bucket, not a term-proportional cost. A caller that wants to shrink a sum can still do so explicitly via [`Self::with_hash`] or [`Self::coarsen`].
+    /// Also keeps at least `min_buckets` buckets once there is enough work to spread, so the bucket-parallel decomposition has slack to load-balance.
     pub fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
         let want = desired_bits(self.len, target, min_buckets).max(self.hash.bits());
@@ -1079,14 +794,8 @@ impl<const W: usize> PauliSum<W> {
         self.len = self.buckets.iter().map(|c| c.len()).sum();
     }
 
-    /// Iterate every term in canonical order: buckets by ascending index, and
-    /// within a bucket by ascending `(x, z)` key.
-    ///
-    /// This is *not* globally sorted — a bucket is a hash class, and the classes
-    /// interleave arbitrarily in key order. It is nonetheless a total,
-    /// deterministic order fixed by the partition, and it is the order
-    /// [`Self::to_arrays`] concatenates in. Setup is `O(1)`: the iterator is
-    /// lazy and borrows the bucket columns in place.
+    /// Iterate every term in canonical order: buckets by ascending index, and within a bucket by ascending `(x, z)` key.
+    /// This is not globally sorted — a bucket is a hash class, and the classes interleave arbitrarily in key order — but it is a total, deterministic order fixed by the partition, and the one [`Self::to_arrays`] concatenates in.
     pub fn iter(&self) -> impl Iterator<Item = (&[u64; W], &[u64; W], Complex64)> + '_ {
         self.buckets.iter().flat_map(|cols| {
             cols.x
@@ -1097,12 +806,8 @@ impl<const W: usize> PauliSum<W> {
         })
     }
 
-    /// Copy every term out as three parallel columns, in the canonical order of
-    /// [`Self::iter`].
-    ///
-    /// The columns are *not* globally key-sorted unless there is a single
-    /// bucket. Sort the triples yourself if you need a canonical,
-    /// partition-independent view.
+    /// Copy every term out as three parallel columns, in the canonical order of [`Self::iter`].
+    /// The columns are not globally key-sorted unless there is a single bucket; sort the triples yourself for a canonical, partition-independent view.
     pub fn to_arrays(&self) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
         let mut x = Vec::with_capacity(self.len);
         let mut z = Vec::with_capacity(self.len);
@@ -1116,11 +821,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Coefficient of the term with key `(x, z)`, or `None` if absent.
-    ///
-    /// `O(b·W + log m)`: one hash evaluation to find the bucket, then a binary
-    /// search of that bucket's `m` terms. Because `h` is a function, a key can
-    /// only ever live in `h(x, z)`, so one bucket is the whole search space —
-    /// this is the lookup that per-bucket dedup buys.
+    /// `O(b·W + log m)`: one hash evaluation to find the bucket, then a binary search of that bucket's `m` terms — one bucket is the whole search space, which is the lookup that per-bucket dedup buys.
     pub fn get(&self, x: &[u64; W], z: &[u64; W]) -> Option<Complex64> {
         let cols = &self.buckets[self.hash.bucket_of(x, z) as usize];
         let mut lo = 0usize;
@@ -1137,9 +838,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
-    ///
-    /// The Pauli basis is orthogonal under the trace, so every non-identity
-    /// term is traceless and only this one contributes.
+    /// The Pauli basis is orthogonal under the trace, so every non-identity term is traceless and only this one contributes.
     pub fn identity_coefficient(&self) -> Complex64 {
         let zero_key = [0u64; W];
         self.get(&zero_key, &zero_key)
@@ -1147,10 +846,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Multiply every coefficient by `c` in place.
-    ///
-    /// Elementwise, so the partition is irrelevant to the result: the same
-    /// terms scale to bitwise-identical coefficients whatever the bucket
-    /// count. Parallel across buckets, which are separate allocations.
+    /// Elementwise, so the partition is irrelevant to the result. Parallel across buckets, which are separate allocations.
     pub fn scale(&mut self, c: Complex64) {
         self.buckets.par_iter_mut().for_each(|cols| {
             for coeff in cols.coeff.iter_mut() {
@@ -1160,11 +856,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Keep only the terms for which `f(x, z, coeff)` is `true`.
-    ///
-    /// Order-preserving and in place, so the per-bucket sort and the
-    /// no-duplicates invariant both survive; a term never changes bucket, so the
-    /// hash invariant does too. `f` runs on every term, possibly on several
-    /// threads at once, hence the `Sync` bound.
+    /// Order-preserving and in place, so the per-bucket sort and no-duplicates invariant both survive; a term never changes bucket, so the hash invariant does too. `f` may run on several threads at once, hence the `Sync` bound.
     pub fn retain(&mut self, f: impl Fn(&[u64; W], &[u64; W], Complex64) -> bool + Sync) {
         self.buckets.par_iter_mut().for_each(|cols| {
             let n = cols.len();
@@ -1186,35 +878,16 @@ impl<const W: usize> PauliSum<W> {
         self.recount();
     }
 
-    /// Hilbert-Schmidt overlap `tr(self† · other) / 2ⁿ`, i.e. `Σ conj(aᵢ)·bᵢ`
-    /// over the keys the two sums share.
-    ///
-    /// Equal keys always land in the same bucket under a shared hash, so a
-    /// shared key can only be found by comparing bucket `i` against bucket `i`:
-    /// this is `B` independent two-pointer merges, one per bucket, and no term
-    /// is ever compared across buckets.
+    /// Hilbert-Schmidt overlap `tr(self† · other) / 2ⁿ`, i.e. `Σ conj(aᵢ)·bᵢ` over the keys the two sums share.
+    /// Equal keys always land in the same bucket under a shared hash, so this is `B` independent two-pointer merges, one per bucket, and no term is ever compared across buckets.
     ///
     /// # Summation order
     ///
-    /// Each bucket's partial is accumulated in that bucket's key order, and the
-    /// partials are then combined in ascending bucket index. That is
-    /// deterministic given the partition; floating-point addition is not
-    /// associative, so different partitions of the same operands agree to
-    /// within rounding, not bit for bit. At a single bucket the accumulation
-    /// is in plain key order.
+    /// Each bucket's partial is accumulated in key order, and the partials then combined in ascending bucket index; different partitions of the same operands agree to within rounding, not bit for bit.
     ///
     /// # Panics
     ///
-    /// Panics unless the two sums share a partition: same hash rows (same seed
-    /// and qubit count) *and* the same bucket count. Combining sums under
-    /// different partitions is [`Self::add`]'s job; overlap does not realign.
-    ///
-    /// Note that under the grow-only [`Self::rebucket`] policy, two sums can
-    /// have equal `len()` but different bucket counts if they were
-    /// grown to different high-water marks along the way (e.g. one was built
-    /// directly at its final size, the other passed through a larger
-    /// intermediate sum and never coarsened back down). Align them with
-    /// [`Self::with_hash`] before calling if that is a possibility.
+    /// Panics unless the two sums share a partition: same hash rows and the same bucket count. Combining sums under different partitions is [`Self::add`]'s job; overlap does not realign. Under the grow-only [`Self::rebucket`] policy, two sums can have equal `len()` but different bucket counts, so align them with [`Self::with_hash`] first if that is a possibility.
     pub fn overlap(&self, other: &Self) -> Complex64 {
         assert!(
             self.hash.same_rows_as(&other.hash),
@@ -1250,24 +923,12 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Sum of two bucketed sums.
-    ///
-    /// **The left partition wins**: the result is partitioned exactly as `self`
-    /// is, and `other` is realigned onto that partition first (a clone plus
-    /// refine/coarsen when the hash rows match, a full [`Self::with_hash`] when
-    /// they do not). `self` and `other` are both left untouched.
-    ///
-    /// Once aligned, equal keys are guaranteed to sit in the same bucket index
-    /// on both sides, so this is `B` independent two-pointer merges — no global
-    /// sort, and no cross-bucket comparison. Terms whose coefficients sum to
-    /// exactly `0+0i` are dropped.
+    /// The left partition wins: the result is partitioned exactly as `self` is, and `other` is realigned onto that partition first. `self` and `other` are both left untouched.
+    /// Once aligned, equal keys sit in the same bucket index on both sides, so this is `B` independent two-pointer merges — no global sort, no cross-bucket comparison. Terms whose coefficients sum to exactly `0+0i` are dropped.
     ///
     /// # Summation order
     ///
-    /// Each surviving coefficient is a single `self + other` addition, so it is
-    /// bit-identical to what the flat merge would produce. Only *derived*
-    /// quantities that accumulate across terms — [`Self::overlap`],
-    /// [`Self::expectation_product_state`] — see the bucket-order effect, since
-    /// their partials are combined in bucket order rather than key order.
+    /// Each surviving coefficient is a single `self + other` addition, bit-identical to what the flat merge would produce. Only derived quantities that accumulate across terms (e.g. [`Self::overlap`]) see the bucket-order effect.
     ///
     /// # Panics
     ///
@@ -1294,11 +955,7 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Assert the structural invariant. Debug builds and test builds only.
-    ///
-    /// Checks that every term is in its hash bucket, that each bucket is
-    /// strictly ascending in `(x, z)` (so sorted *and* duplicate-free), that
-    /// every key is within `num_qubits`, and that the cached length agrees.
+    /// Assert the structural invariant (debug and test builds only): every term is in its hash bucket, each bucket is strictly ascending in `(x, z)`, every key is within `num_qubits`, and the cached length agrees.
     #[cfg(any(test, debug_assertions))]
     pub fn assert_invariants(&self) {
         assert_eq!(
@@ -1340,10 +997,8 @@ impl<const W: usize> PauliSum<W> {
 mod tests {
     #[test]
     fn bucketed_expectation_agrees_with_the_flat_version() {
-        // Not bitwise: partials are combined in bucket order, not global sorted
-        // order, and float addition is not associative. The tolerance below is
-        // ~1e5 times looser than the observed difference and ~1e5 times tighter
-        // than anything physically meaningful.
+        // Not bitwise: partials are combined in bucket order, not global sorted order, and float addition is not associative.
+        // The tolerance below is ~1e5 times looser than the observed difference and ~1e5 times tighter than anything physically meaningful.
         for &weight in &[2usize, 4] {
             let sum = rand_low_weight_sum::<2>(20_000, 100, weight, 0xE1 + weight as u64);
             let want = sum.expectation_product_state(ProductState::XPlus);
@@ -1394,8 +1049,7 @@ mod tests {
     // `crate::test_support` — this module's copies were byte-identical.
     use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
-    /// Low-weight keys — the physically relevant regime, and the one where a
-    /// badly chosen hash would collapse into one bucket.
+    /// Low-weight keys — the physically relevant regime, and the one where a badly chosen hash would collapse into one bucket.
     fn rand_low_weight_sum<const W: usize>(
         n: usize,
         num_qubits: usize,
@@ -1512,8 +1166,7 @@ mod tests {
 
     #[test]
     fn round_trip_with_a_single_bucket() {
-        // bits = 0: everything in bucket 0, so the canonical order is plain
-        // lex and the scatter must already have produced a sorted bucket.
+        // bits = 0: everything in bucket 0, so the canonical order is plain lex and the scatter must already have produced a sorted bucket.
         let sum = rand_sum::<1>(2000, 64, 0xA6);
         let h = Gf2Hash::<1>::new(64, 0, 0x3);
         let bucketed = sum.clone().with_hash(h);
@@ -1553,8 +1206,7 @@ mod tests {
         b.refine();
         assert_eq!(b.num_buckets(), 128);
         assert_eq!(b.len(), before_len);
-        // The invariant check is the real assertion: it verifies every term is
-        // in its *new* hash bucket and that each bucket is still sorted.
+        // The invariant check is the real assertion: it verifies every term is in its new hash bucket and that each bucket is still sorted.
         b.assert_invariants();
         assert_same_sum(&sum, &b);
     }
@@ -1637,10 +1289,7 @@ mod tests {
 
     #[test]
     fn refine_and_coarsen_take_the_parallel_path_above_the_threshold() {
-        // Above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192) terms,
-        // refine/coarsen run their per-bucket work across Rayon instead of
-        // serially. Exercise that branch directly and check it produces the
-        // same invariants and content as the serial path.
+        // Above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192) terms, refine/coarsen go parallel; check that branch produces the same invariants and content as the serial path.
         let n = 10_000;
         assert!(n >= DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK);
         let sum = rand_sum::<2>(n, 128, 0xB7);
@@ -1695,8 +1344,7 @@ mod tests {
 
     #[test]
     fn rebucket_never_shrinks() {
-        // rebucket only ever grows. 200 terms at target 256 wants far fewer
-        // than 1024 buckets, but starting at 1024 must stay at 1024.
+        // rebucket only ever grows: 200 terms at target 256 wants far fewer than 1024 buckets, but starting at 1024 must stay at 1024.
         let sum = rand_sum::<1>(200, 64, 0xD2);
         let h = Gf2Hash::<1>::new(64, 10, 0xC0DE);
         let mut b = sum.clone().with_hash(h);
@@ -1714,11 +1362,7 @@ mod tests {
 
     #[test]
     fn rebucket_is_a_no_op_when_already_at_the_target() {
-        // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves.
-        // A hysteresis band that parks the steady state up to 4x above target
-        // was tried and measured ~10% slower on the Ising quench (see
-        // ARCHITECTURE.md §Bucket-Policy) — this test pins the no-hysteresis
-        // behavior.
+        // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves; pins the no-hysteresis behavior (ARCHITECTURE.md §Bucket-Policy).
         let sum = rand_sum::<2>(6400, 128, 0xD3);
         let h = Gf2Hash::<2>::new(128, 6, 0xC0DE); // 64 buckets, mean 100
         let mut b = sum.clone().with_hash(h);
@@ -1733,11 +1377,8 @@ mod tests {
 
     #[test]
     fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
-        // `rebucket` only grows, so it converges on exactly what
-        // `desired_bits` would have chosen only when the starting partition is
-        // at or below that — otherwise (e.g. `start = 12`, above every `want`
-        // in this table) the starting bit count is the high-water mark and
-        // survives unchanged. Both are `want.max(start)`.
+        // `rebucket` only grows, so it converges on `desired_bits` only when the starting partition is at or below that.
+        // Otherwise the starting bit count is the high-water mark and survives unchanged; both are `want.max(start)`.
         for &n in &[500usize, 6400, 60_000] {
             let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
             let want = desired_bits(sum.len(), 256, 8);
@@ -1757,10 +1398,7 @@ mod tests {
 
     #[test]
     fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
-        // Grow to a high bucket count from a large sum, then shrink the term
-        // count sharply (as truncation/cancellation would between layers) and
-        // rebucket again: the grow-only policy says the bucket count is a
-        // high-water mark, so it must not follow the length back down.
+        // Grow to a high bucket count from a large sum, then shrink the term count sharply and rebucket again: the grow-only policy says the bucket count is a high-water mark and must not follow the length back down.
         let sum = rand_sum::<2>(60_000, 128, 0xDA1);
         let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
         let mut b = sum.with_hash(h);
@@ -1808,8 +1446,7 @@ mod tests {
 
     #[test]
     fn rebucket_does_not_split_a_tiny_sum_to_hit_the_floor() {
-        // With only 10 terms, splitting to 32 buckets is pure overhead; the
-        // floor is gated on there being enough work to spread.
+        // With only 10 terms, splitting to 32 buckets is pure overhead; the floor is gated on there being enough work to spread.
         let sum = rand_sum::<1>(10, 64, 0xD5);
         let h = Gf2Hash::<1>::new(64, 0, 0xC0DE);
         let mut b = sum.clone().with_hash(h);
@@ -1841,8 +1478,7 @@ mod tests {
 
     #[test]
     fn single_bucket_sum_is_plain_lex_sorted() {
-        // Below the split threshold the canonical order IS lex order — the
-        // property every small-sum positional expectation in the crate rests on.
+        // Below the split threshold the canonical order is lex order — the property every small-sum positional expectation in the crate rests on.
         let sum = rand_sum::<1>(1000, 64, 0xC2);
         assert_eq!(sum.num_buckets(), 1);
         let (x, z, _) = sum.to_arrays();
@@ -1879,8 +1515,7 @@ mod tests {
         assert_eq!(got.len(), b.len());
         assert_eq!(got, canonical_triples(&b));
 
-        // Within a bucket the keys ascend; the boundaries are exactly the
-        // bucket lengths, so the concatenation is not globally sorted.
+        // Within a bucket the keys ascend; the boundaries are exactly the bucket lengths, so the concatenation is not globally sorted.
         let mut start = 0usize;
         for i in 0..b.num_buckets() {
             let n = b.bucket_len(i);
@@ -1912,8 +1547,7 @@ mod tests {
 
     #[test]
     fn single_bucket_to_arrays_is_the_key_sorted_order() {
-        // bits = 0 collapses the bucket order onto the global sorted order, so
-        // the export and the merge must agree bit for bit.
+        // bits = 0 collapses the bucket order onto the global sorted order, so the export and the merge must agree bit for bit.
         let sum = rand_sum::<2>(2000, 128, 0xF5);
         let h = Gf2Hash::<2>::new(128, 0, 0xF6);
         let b = sum.clone().with_hash(h);
@@ -1931,9 +1565,7 @@ mod tests {
     #[test]
     fn get_hits_and_misses_across_bucket_counts() {
         let sum = rand_sum::<1>(2000, 64, 0xF7);
-        // Keys that are definitely absent: the sum has 2000 of 2^128 keys, but
-        // rather than gamble, take misses from a disjoint second draw and skip
-        // any that happen to collide.
+        // Keys that are definitely absent: rather than gamble, take misses from a disjoint second draw and skip any that happen to collide.
         let other = rand_sum::<1>(2000, 64, 0xF8);
 
         for bits in [0u8, 3, 7] {
@@ -1960,8 +1592,7 @@ mod tests {
 
     #[test]
     fn get_w2_word_boundary() {
-        // Keys live entirely in word 1, so a lookup that only compared word 0
-        // would confuse them.
+        // Keys live entirely in word 1, so a lookup that only compared word 0 would confuse them.
         let mut acc = BuildAccumulator::<2>::new(128);
         for q in [64u32, 65, 100, 127] {
             acc.add_term(
@@ -2039,8 +1670,7 @@ mod tests {
             let sum = rand_sum::<2>(4000, 128, 0x106);
             let h = Gf2Hash::<2>::new(128, bits, 0x107);
             let mut b = sum.clone().with_hash(h);
-            // A predicate that reads the key as well as the coefficient, so a
-            // key/coefficient column desync would show up.
+            // A predicate that reads the key as well as the coefficient, so a key/coefficient column desync would show up.
             let keep = |x: &[u64; 2], _z: &[u64; 2], c: Complex64| x[0] & 1 == 0 && c.re > 0.0;
             b.retain(keep);
             b.assert_invariants();
@@ -2071,8 +1701,7 @@ mod tests {
 
     // ---- S4: overlap ----
 
-    /// Reference overlap: two-pointer over globally key-sorted triples — the
-    /// accumulation order a single-bucket sum uses.
+    /// Reference overlap: two-pointer over globally key-sorted triples — the accumulation order a single-bucket sum uses.
     fn flat_overlap<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) -> Complex64 {
         let ta = sorted_triples(a);
         let tb = sorted_triples(b);
@@ -2094,9 +1723,7 @@ mod tests {
 
     #[test]
     fn overlap_single_bucket_is_bitwise_flat() {
-        // One bucket means one two-pointer pass over globally sorted columns —
-        // the same additions in the same order as the flat version, so equality
-        // is exact.
+        // One bucket means one two-pointer pass over globally sorted columns — the same additions in the same order as the flat version, so equality is exact.
         let a = rand_low_weight_sum::<2>(3000, 100, 3, 0x201);
         let b = rand_low_weight_sum::<2>(3000, 100, 3, 0x202);
         let h = Gf2Hash::<2>::new(100, 0, 0x203);
@@ -2121,10 +1748,7 @@ mod tests {
             if bits == 0 {
                 assert_eq!(got, want, "bits=0 must be bitwise");
             }
-            // Relative, not absolute: the overlap here is ~1.4e3, so a handful
-            // of ulps is ~4e-12 in absolute terms. The reordering error is
-            // bounded by the accumulated magnitude, which is what a relative
-            // bound tracks.
+            // Relative, not absolute: the reordering error is bounded by the accumulated magnitude, which is what a relative bound tracks.
             assert!(
                 (got - want).norm() <= 1e-12 * want.norm(),
                 "bits={bits}: {got} vs {want}",
@@ -2163,8 +1787,7 @@ mod tests {
 
     // ---- S5: flatten / repartition ----
 
-    /// The canonical order, sorted — i.e. the multiset of terms, partition
-    /// forgotten.
+    /// The canonical order, sorted — i.e. the multiset of terms, partition forgotten.
     fn sorted_triples<const W: usize>(b: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
         let mut v = canonical_triples(b);
         v.sort_by(|p, q| (p.0, p.1).cmp(&(q.0, q.1)));
@@ -2216,8 +1839,7 @@ mod tests {
 
     #[test]
     fn align_same_rows_via_refine_coarsen() {
-        // Same rows: aligning must land on exactly the partition a scatter
-        // would have built under the target hash, both up and down.
+        // Same rows: aligning must land on exactly the partition a scatter would have built under the target hash, both up and down.
         let sum = rand_low_weight_sum::<2>(4000, 100, 4, 0x30D);
         let seed = 0x30E;
         for &(from, to) in &[(5u8, 9u8), (9, 5), (6, 6), (0, 7), (7, 0)] {
@@ -2250,8 +1872,7 @@ mod tests {
 
     // ---- S6: add ----
 
-    /// Two sums over the same keyspace with heavy key overlap, so `add` sees
-    /// merges and not just interleaving.
+    /// Two sums over the same keyspace with heavy key overlap, so `add` sees merges and not just interleaving.
     fn overlapping_pair<const W: usize>(
         n: usize,
         num_qubits: usize,
@@ -2266,9 +1887,7 @@ mod tests {
 
     #[test]
     fn add_same_hash_is_bitwise_flat_add() {
-        // Every surviving coefficient is one `a + b`, computed in the same
-        // operand order as the flat merge, so equality is exact even though the
-        // partial *sums* live in different buckets.
+        // Every surviving coefficient is one `a + b`, computed in the same operand order as the flat merge, so equality is exact even though the partial sums live in different buckets.
         let (a, b) = overlapping_pair::<2>(4000, 100, 3, 0x401);
         let want = a.add(&b);
         for bits in [0u8, 4, 9] {
@@ -2350,21 +1969,12 @@ mod tests {
     }
 
     // =====================================================================
-    // Hand-computed small-sum semantics, merged here from `pauli_sum.rs`'s
-    // own test module (the shim that re-exports this type).
+    // Hand-computed small-sum semantics.
     //
-    // Everything above is differential or a bucket-count sweep: it pins that
-    // the bucketed path agrees with the single-bucket path, not what either
-    // one computes. These pin the values themselves, on inputs small enough
-    // to work out by hand — which is why they mostly survived the merge
-    // rather than collapsing into the tests above.
+    // Everything above is differential or a bucket-count sweep: it pins agreement with the single-bucket path, not what either one computes. These pin the values themselves, on inputs small enough to work out by hand.
     // =====================================================================
 
     // ---- overlap / expectation ----
-    //
-    // Before this there was no way to get a *number* out of a propagated sum:
-    // examples/ising_2d_quench.rs hand-rolled its own observable against the raw
-    // SoA columns, a gap CLAUDE.md flagged.
 
     fn b10_build<const W: usize>(
         num_qubits: usize,
@@ -2569,15 +2179,10 @@ mod tests {
     //   |r⟩ = Y+ = (|0⟩ + i|1⟩)/√2:  ⟨Y⟩ = +1,  ⟨X⟩ = ⟨Z⟩ = 0
     //   |l⟩ = Y- = (|0⟩ - i|1⟩)/√2:  ⟨Y⟩ = -1,  ⟨X⟩ = ⟨Z⟩ = 0
     //
-    // and ⟨I⟩ = 1 in every state. Off-axis components vanish because two
-    // distinct single-qubit Paulis anticommute.
+    // and ⟨I⟩ = 1 in every state. Off-axis components vanish because two distinct single-qubit Paulis anticommute.
 
-    /// Per-qubit label string → [`ProductBasis`], in the alphabet the Python
-    /// binding accepts (qiskit `Statevector.from_label`): `0`/`1` = Z±,
-    /// `+`/`-` = X±, `r`/`l` = Y±. Character `i` addresses qubit `i`.
-    ///
-    /// Deliberately spelled out here rather than shared with the binding: the
-    /// test's job is to encode the convention independently.
+    /// Per-qubit label string → [`ProductBasis`], in the alphabet the Python binding accepts (qiskit `Statevector.from_label`): `0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±. Character `i` addresses qubit `i`.
+    /// Deliberately spelled out here rather than shared with the binding: the test's job is to encode the convention independently.
     fn basis_from_labels<const W: usize>(labels: &str) -> ProductBasis<W> {
         ProductBasis::<W>::from_axes(labels.chars().map(|ch| match ch {
             '0' => (PauliAxis::Z, false),
@@ -2590,8 +2195,7 @@ mod tests {
         }))
     }
 
-    /// Differential oracle: `⟨ψ|O|ψ⟩` evaluated one qubit at a time straight
-    /// from the Bloch table above, sharing no code with the masked scan.
+    /// Differential oracle: `⟨ψ|O|ψ⟩` evaluated one qubit at a time straight from the Bloch table above, sharing no code with the masked scan.
     fn naive_labelled_expectation<const W: usize>(sum: &PauliSum<W>, labels: &str) -> Complex64 {
         let mut total = Complex64::new(0.0, 0.0);
         for (x, z, c) in sum.iter() {
@@ -2676,8 +2280,7 @@ mod tests {
         expect_close(&ziy, "0-r", 1.0);
         expect_close(&ziy, "01r", 1.0);
 
-        // State |1⟩|-⟩|l⟩: the same axes with all three signs flipped, so a
-        // weight-3 term picks up (-1)^3 = -1.
+        // State |1⟩|-⟩|l⟩: the same axes with all three signs flipped, so a weight-3 term picks up (-1)^3 = -1.
         expect_close(&zxy, "1-l", -1.0);
         // Only the two non-identity sites' signs count: (-1)·(-1) = +1.
         expect_close(&ziy, "1-l", 1.0);
@@ -2700,9 +2303,7 @@ mod tests {
     }
 
     fn an_off_axis_pauli_never_matches<const W: usize>() {
-        // The subset-match trap: `X` on a Y-axis qubit must NOT contribute,
-        // even though the Y axis has its x-bit set — the match is an equality
-        // on both halves of the key, not `x & !ax_x == 0`. ⟨r|X|r⟩ = 0.
+        // The subset-match trap: `X` on a Y-axis qubit must not contribute, even though the Y axis has its x-bit set — the match is an equality on both halves of the key, not `x & !ax_x == 0`. ⟨r|X|r⟩ = 0.
         let off_axis = [
             ('r', "X"),
             ('r', "Z"),
@@ -2753,8 +2354,7 @@ mod tests {
 
     #[test]
     fn labels_across_the_word_boundary_are_independent_w2() {
-        // 128 qubits, |0…0⟩ except qubit 64, which is |1⟩ — its sign bit lives
-        // in word 1 of `neg`, so a word-0-only implementation would miss it.
+        // 128 qubits, |0…0⟩ except qubit 64, which is |1⟩ — its sign bit lives in word 1 of `neg`, so a word-0-only implementation would miss it.
         let mut labels: String = "0".repeat(128);
         labels.replace_range(64..65, "1");
         let basis = basis_from_labels::<2>(&labels);
@@ -2846,8 +2446,7 @@ mod tests {
 
     #[test]
     fn bucketed_labelled_expectation_agrees_across_partitions() {
-        // The sign parity is accumulated inside a bucket, so a partition
-        // change must not move the value (beyond float re-association).
+        // The sign parity is accumulated inside a bucket, so a partition change must not move the value (beyond float re-association).
         let alphabet: Vec<char> = "01+-rl".chars().collect();
         let mut rng = Xs64::new(0xB60);
         let labels: String = (0..100)
@@ -2905,8 +2504,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds num_qubits")]
     fn assert_invariants_rejects_bit_in_unused_word() {
-        // num_qubits=64 (one full word), W=2. Bit on qubit 64 lives in word 1
-        // and is therefore out of range.
+        // num_qubits=64 (one full word), W=2. Bit on qubit 64 lives in word 1 and is therefore out of range.
         let sum = PauliSum::<2>::from_sorted_columns(
             vec![[0u64, 1u64]],
             vec![[0u64; 2]],
@@ -2920,8 +2518,7 @@ mod tests {
 
     /// Three-term `PauliSum<1>` with sorted, distinct keys `K0 < K1 < K2`.
     fn three_term_sum_w1() -> PauliSum<1> {
-        // K0 = (x=0, z=1), K1 = (x=1, z=0), K2 = (x=1, z=2). Sorted by lex
-        // on (x, z): K0 has smallest x; K1, K2 share x but K1 has smaller z.
+        // K0 = (x=0, z=1), K1 = (x=1, z=0), K2 = (x=1, z=2). Sorted by lex on (x, z): K0 has smallest x; K1, K2 share x but K1 has smaller z.
         PauliSum::<1>::from_sorted_columns(
             vec![[0u64], [1u64], [1u64]],
             vec![[1u64], [0u64], [2u64]],
@@ -2954,13 +2551,8 @@ mod tests {
 
     #[test]
     fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
-        // Two terms with K_a=(x=0, z=5) and K_b=(x=1, z=0). Despite z_a > z_b,
-        // x_a < x_b, so K_a < K_b in the canonical (lex) order of a
-        // single-bucket sum. A lex-on-x-only order would invert this.
-        //
-        // `single_bucket_sum_is_plain_lex_sorted` above does not cover this:
-        // its keys are random, so two of them essentially never share an `x`
-        // and the `z` tiebreak is never exercised.
+        // Two terms with K_a=(x=0, z=5) and K_b=(x=1, z=0). Despite z_a > z_b, x_a < x_b, so K_a < K_b in the canonical (lex) order of a single-bucket sum. A lex-on-x-only order would invert this.
+        // `single_bucket_sum_is_plain_lex_sorted` above does not cover this: its keys are random, so two of them essentially never share an `x` and the `z` tiebreak is never exercised.
         let s = PauliSum::<1>::from_sorted_columns(
             vec![[0u64], [1u64]],
             vec![[5u64], [0u64]],
@@ -3172,9 +2764,7 @@ mod tests {
 
     #[test]
     fn from_strings_y_is_hermitian() {
-        // Coefficients multiply the literal Hermitian Pauli string: "Y" maps
-        // to the symplectic key (x=1, z=1) with no phase factor, matching
-        // PauliString::y and expectation_product_state.
+        // Coefficients multiply the literal Hermitian Pauli string: "Y" maps to the symplectic key (x=1, z=1) with no phase factor, matching PauliString::y and expectation_product_state.
         let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
         assert_eq!(s.bucket(0).0[0], [1u64]);
         assert_eq!(s.bucket(0).1[0], [1u64]);
@@ -3183,8 +2773,7 @@ mod tests {
 
     #[test]
     fn from_strings_real_coeffs_stay_real_for_any_y_count() {
-        // A Hermitian observable keeps real coefficients regardless of how
-        // many Y characters a term contains — no per-Y phase is folded.
+        // A Hermitian observable keeps real coefficients regardless of how many Y characters a term contains — no per-Y phase is folded.
         for s in ["Y", "YY", "YYY", "YYYY"] {
             let padded: String = format!("{s:I<4}");
             let sum = PauliSum::<1>::from_strings(&[(&padded, Complex64::new(2.5, 0.0))]);
@@ -3283,10 +2872,7 @@ mod tests {
         }
     }
 
-    /// Scatter `sum` (rehashed to `bits`) into `1 << pbits` partitions, check
-    /// each part is a well-formed single-rank sum on the same partition, and
-    /// gather it back — which must reproduce the input bit for bit, in the
-    /// same canonical order.
+    /// Scatter `sum` (rehashed to `bits`) into `1 << pbits` partitions, check each part is a well-formed single-rank sum on the same partition, and gather it back — which must reproduce the input bit for bit, in the same canonical order.
     fn check_split_merge<const W: usize>(
         sum: &PauliSum<W>,
         num_qubits: usize,
@@ -3514,9 +3100,7 @@ mod tests {
         }
 
         proptest! {
-            /// Scatter is a *tiling*: the parts have disjoint ranks, every
-            /// term of part `r` really hashes to partition `r`, and their
-            /// lengths add back up to the whole.
+            /// Scatter is a tiling: the parts have disjoint ranks, every term of part `r` really hashes to partition `r`, and their lengths add back up to the whole.
             #[test]
             fn filter_partition_tiles_the_sum(
                 terms in prop::collection::vec((0u64..64, 0u64..64, -4i32..4, -4i32..4), 0..16),
@@ -3543,10 +3127,7 @@ mod tests {
             /// `add` against an independent model: a `BTreeMap` keyed by
             /// `(x, z)`, summed then stripped of exact zeros.
             ///
-            /// Coefficients are small integers so exact cancellation actually
-            /// happens, and the keyspace is 6 qubits so the two operands share
-            /// keys often. Every surviving coefficient is a single `a + b`, so
-            /// the comparison is bitwise rather than toleranced.
+            /// Coefficients are small integers so exact cancellation actually happens, and the keyspace is 6 qubits so the two operands share keys often. Every surviving coefficient is a single `a + b`, so the comparison is bitwise rather than toleranced.
             #[test]
             fn bucketed_add_matches_btreemap_model(
                 terms_a in prop::collection::vec(
@@ -3594,14 +3175,8 @@ mod tests {
             }
         }
 
-        // ---- merged here from `pauli_sum.rs`'s own `props` module ----
-
-        /// Build a sorted, deduplicated `PauliSum<2>` from random `(x, z, coeff)`
-        /// triples. Uses `BTreeMap` keyed on `(x, z)` to enforce the sorted /
-        /// unique invariant before SoA materialization. Coefficients are kept
-        /// small (`re, im ∈ [-4, 4]`) so the property assertions don't run into
-        /// FP cancellation noise. Length capped at 8 — sufficient to exercise
-        /// merge interleaving without blowing up shrinking time.
+        /// Build a sorted, deduplicated `PauliSum<2>` from random `(x, z, coeff)` triples, via a `BTreeMap` keyed on `(x, z)` to enforce the sorted/unique invariant before SoA materialization.
+        /// Coefficients are kept small (`re, im ∈ [-4, 4]`) to avoid FP cancellation noise; length capped at 8 to bound shrinking time.
         fn arb_pauli_sum_w2() -> impl Strategy<Value = PauliSum<2>> {
             prop::collection::vec(
                 (

@@ -27,15 +27,8 @@ impl CircuitImpl {
         for_each_width!(self, |c| c.len())
     }
 
-    /// Push a width-erased channel spec onto the underlying circuit, rejecting
-    /// any qubit index the circuit cannot address.
-    ///
-    /// This is the *only* place a qubit index meets a concrete width: the
-    /// `gates`/`noise` factories build width-agnostic specs, so an out-of-range
-    /// index can only be caught here. Before the check existed, an index past
-    /// `num_qubits` but inside the monomorphized band (e.g. qubit 70 on a
-    /// 3-qubit circuit at `W = 1`... or worse, past `64 · W`) either produced
-    /// silently wrong results or tripped a `debug_assert` deep in the core.
+    /// Push a width-erased channel spec onto the underlying circuit, rejecting any qubit index the circuit cannot address.
+    /// This is the only place a qubit index meets a concrete width, since the `gates`/`noise` factories build width-agnostic specs.
     pub fn push_spec(&mut self, spec: &ChannelSpec) -> PyResult<()> {
         let n = self.num_qubits();
         let max_qubit = spec.max_qubit();
@@ -53,23 +46,12 @@ impl CircuitImpl {
 pub struct Circuit {
     pub(crate) inner: CircuitImpl,
     /// The width-erased spec of every channel pushed, in order.
-    ///
-    /// The core `Circuit<W>` stores materialized channels and has no way to
-    /// hand a gate back out, so the specs are kept alongside it. They are what
-    /// `gates`, slicing, `extend` and `adjoint` all read; `inner` and `specs`
-    /// are appended to together (`push`) and never diverge.
-    ///
-    /// The cost is one spec per channel — dominated by `Unitary2Q`'s 4x4 matrix
-    /// at ~256 bytes, negligible against the materialized channel's own
-    /// Pauli-transfer matrix.
+    /// The core `Circuit<W>` stores materialized channels and cannot hand a gate back out, so the specs are kept alongside it; `inner` and `specs` are appended together (`push`) and never diverge.
     specs: Vec<ChannelSpec>,
 }
 
 impl Circuit {
-    /// Materialize `spec` onto the core circuit and record it.
-    ///
-    /// Not a `#[pymethods]` member on purpose: `Circuit` deliberately exposes no
-    /// Python-level `push` — channels go in through `append` or a named method.
+    /// Materialize `spec` onto the core circuit and record it. Not a `#[pymethods]` member on purpose: channels go in through `append` or a named method, not a Python-level `push`.
     fn push(&mut self, spec: ChannelSpec) -> PyResult<()> {
         self.inner.push_spec(&spec)?;
         self.specs.push(spec);
@@ -119,34 +101,21 @@ impl Circuit {
 
     /// The channel list as task-JSON schema v1 gate objects.
     ///
-    /// One dict per channel, in application order — so the list index *is* the
-    /// channel index, and a broadcast call like `depolarize(p, [0, 1])` shows up
-    /// as the two channels it pushed. Keys: `name`, `qubits` (a list of ints in
-    /// the gate's own argument order), plus whichever of `theta` / `pauli` /
-    /// `p` / `gamma` / `px`,`py`,`pz` / `matrix` that name carries. A `matrix` is
-    /// nested rows of `[re, im]` pairs, so the list is JSON-native as it stands:
+    /// One dict per channel, in application order (so a broadcast call like `depolarize(p, [0, 1])` shows up as the two channels it pushed). Keys: `name`, `qubits`, plus whichever of `theta`/`pauli`/`p`/`gamma`/`px,py,pz`/`matrix` that name carries. JSON-native as it stands:
     ///
     /// ```python
     /// json.dumps({"version": 1, "n_qubits": c.num_qubits,
     ///             "circuit": {"gates": c.gates}, "run": {"direction": "heisenberg"}})
     /// ```
     ///
-    /// `paulistrings.interop.circuit_from_json({"gates": c.gates}, c.num_qubits)`
-    /// rebuilds an identical circuit — the round trip is pinned by
-    /// `test_circuit_introspection.py`.
-    ///
-    /// Each call builds fresh dicts; mutating them does not touch the circuit.
+    /// `paulistrings.interop.circuit_from_json({"gates": c.gates}, c.num_qubits)` rebuilds an identical circuit. Each call builds fresh dicts; mutating them does not touch the circuit.
     #[getter]
     fn gates<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
         self.specs.iter().map(|s| s.to_gate_dict(py)).collect()
     }
 
-    /// `circuit[i]` is the channel at `i`; `circuit[a:b]` is a new `Circuit` of
-    /// the selected channels, at the same width.
-    ///
-    /// Negative indices and every slice form work as they do for a list,
-    /// including a negative step (`circuit[::-1]` reverses the channel order —
-    /// note that reversing is *not* the adjoint; see `adjoint()`).
+    /// `circuit[i]` is the channel at `i`; `circuit[a:b]` is a new `Circuit` of the selected channels, at the same width.
+    /// Negative indices and every slice form work as for a list, including a negative step (`circuit[::-1]` reverses the channel order — not the adjoint; see `adjoint()`).
     fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         if let Ok(slice) = key.downcast::<PySlice>() {
             let indices = slice.indices(self.specs.len() as isize)?;
@@ -175,16 +144,8 @@ impl Circuit {
         Ok(Py::new(py, PyChannel::new(self.specs[i as usize].clone()))?.into_any())
     }
 
-    /// Append every channel of `other` to this circuit, in place.
-    ///
-    /// Both circuits must have the same `num_qubits`; a circuit's width is part
-    /// of its identity, and silently widening a short circuit into a wide one is
-    /// exactly the kind of mistake this would otherwise hide.
-    ///
-    /// Takes the receiver as a `Bound` rather than `&mut self` so that
-    /// `c.extend(c)` — a legitimate "repeat this circuit once" — can be served
-    /// by cloning the spec list before borrowing mutably, instead of tripping
-    /// pyo3's "already mutably borrowed".
+    /// Append every channel of `other` to this circuit, in place. Both circuits must have the same `num_qubits`.
+    /// Takes the receiver as a `Bound` rather than `&mut self` so that `c.extend(c)` clones the spec list before borrowing mutably, instead of tripping pyo3's "already mutably borrowed".
     fn extend(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
         let specs = if slf.as_any().is(other.as_any()) {
             slf.borrow().specs.clone()
@@ -211,24 +172,16 @@ impl Circuit {
         Ok(out)
     }
 
-    /// The adjoint circuit: reversed channel order, each gate replaced by its
-    /// dagger.
+    /// The adjoint circuit: reversed channel order, each gate replaced by its dagger.
     ///
-    /// Its **forward** application equals this circuit's Heisenberg
-    /// application, i.e. for any observable
+    /// Its forward application equals this circuit's Heisenberg application, to floating-point tolerance:
     ///
     /// ```python
     /// obs.propagate(c, direction="heisenberg") == obs.propagate(c.adjoint(), direction="forward")
     /// ```
     ///
-    /// to floating-point tolerance (pinned in `test_circuit_introspection.py`).
-    /// Per gate: `rz`/`rx`/`ry`/`pauli_rotation` negate `theta`, `s` becomes
-    /// `sdg` (and back), `unitary_1q`/`unitary_2q` take the conjugate transpose,
-    /// and `h`/`x`/`y`/`z`/`cnot`/`cz`/`swap` are self-adjoint.
-    ///
-    /// A non-unitary channel raises `ValueError` naming the channel: a noise
-    /// channel's dual is not its time-reversal, so there is no inverse to return
-    /// (see `ChannelSpec::adjoint`).
+    /// Per gate: `rz`/`rx`/`ry`/`pauli_rotation` negate `theta`, `s` becomes `sdg` (and back), `unitary_1q`/`unitary_2q` conjugate-transpose, and `h`/`x`/`y`/`z`/`cnot`/`cz`/`swap` are self-adjoint.
+    /// A non-unitary channel raises `ValueError` naming it (see `ChannelSpec::adjoint`).
     fn adjoint(&self) -> PyResult<Self> {
         let mut out = self.empty_like()?;
         for spec in self.specs.iter().rev() {

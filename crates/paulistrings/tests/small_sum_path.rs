@@ -4,7 +4,7 @@
 //! `EngineSelection::Auto` and `EngineSelection::SortedOnly` are the same
 //! computation — same terms to floating-point tolerance, same per-layer term
 //! counts, same records — whichever side of the transition a layer falls on.
-//! Design: `research/notes/2026-09-01-small-m-path.md`.
+//! Design: `research/FINDINGS.md`.
 //!
 //! The sorting engine is the reference here, not `naive_apply_layer`: the
 //! oracle and the direct path share an algorithm (a `Channel::apply` loop into a

@@ -1,6 +1,6 @@
 """Observable builders for the `examples/` showcase suite.
 
-Handoff item P0b; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item P0b; see `examples/README.md`
 §6 Part 0.2.
 
 Everything here is built through `PauliSum.from_strings`, so the convention is

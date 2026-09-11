@@ -6,9 +6,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-# The MPI venv `scripts/mpi-test.sh --python` builds into: a second
-# environment, because mpi4py has to come from the same interpreter the MPI
-# modules provide (see the script's header).
+# The MPI venv `scripts/mpi-test.sh --python` builds into; mpi4py must come from the same interpreter the MPI modules provide.
 .venv-mpi/
 .pytest_cache/
 .ruff_cache/
@@ -20,16 +18,15 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 .benchmarks/
 
-# Schema-v1 task files the jl head-to-head writes for each configuration: ~4 MB
-# of circuit JSON that bench_jl_performance.py regenerates deterministically
-# from the same seeds (its README's "Reproducing" section). The committed
-# artifacts are the summary, results, figures and log. The `**/` covers the
-# follow-up runs' own subdirectories (deep-kicked-ising/, ...), each of which
-# writes its own tasks/.
+# Task JSON the jl head-to-head regenerates deterministically from its seeds; the committed artifacts are the summary, results, figures and log.
 benchmarks/python/jl_performance/**/tasks/
 
 # Rendered docs site (mdbook build-dir); the source is docs/book/src.
 docs/book/site/
+
+# Sibling worktrees checked out inside the repo.
+/pres/
+/simd/
 
 .DS_Store
 .idea/

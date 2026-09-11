@@ -1,11 +1,11 @@
 # Benchmark E — Random SU(4) brickwork
 
 The deliberate worst case: `n = 36` qubits, an independent Haar-random SU(4) block on every
-brickwork site, observable `Z_18`, Heisenberg direction. No stabilizer structure, no commuting
-sublattice, no light-cone shortcut past nearest-neighbour causality — the generic case Pauli
-propagation faces with no help from problem structure. Driver:
+brickwork site, observable `Z_18`, Heisenberg direction — the generic case Pauli propagation faces
+with no help from problem structure (no stabilizer structure, no commuting sublattice, no
+light-cone shortcut). Driver:
 [`../bench_e_su4.py`](../bench_e_su4.py). CI-safe correctness gate:
-[`python/paulistrings/tests/test_benchmark_e_su4.py`](../../../python/paulistrings/tests/test_benchmark_e_su4.py).
+[`../tests/test_benchmark_e_su4.py`](../tests/test_benchmark_e_su4.py).
 
 Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/e-su4-brickwork.html
 

@@ -41,7 +41,7 @@ RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py
 ```
 
 Each script rewrites every figure and JSON file next to itself. Each showcase
-also has a CI-visible correctness gate under `python/paulistrings/tests/` that
+also has a CI-visible correctness gate under `examples/tests/` that
 runs in about a second on numpy alone — the physics is checked on every commit
 even though the full runs are manual.
 

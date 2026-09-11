@@ -2,15 +2,10 @@
 
 use crate::channel::Channel;
 
-/// A circuit on `num_qubits` qubits, stored as a heterogeneous list of
-/// channels.
+/// A circuit on `num_qubits` qubits, stored as a heterogeneous list of channels.
 ///
-/// Channels are held as `Box<dyn `[`Channel`]`>` rather than a generic enum so
-/// user-defined channel types can be appended at runtime; the engine sees only
-/// the trait. The engine reads the list in order for
-/// [`Direction::Forward`](crate::Direction::Forward) propagation and in
-/// reverse (using each channel's adjoint) for
-/// [`Direction::Heisenberg`](crate::Direction::Heisenberg).
+/// Channels are held as `Box<dyn `[`Channel`]`>` rather than a generic enum so user-defined channel types can be appended at runtime; the engine sees only the trait.
+/// The engine reads the list in order for [`Direction::Forward`](crate::Direction::Forward) propagation and in reverse (using each channel's adjoint) for [`Direction::Heisenberg`](crate::Direction::Heisenberg).
 ///
 /// # Examples
 ///
@@ -25,11 +20,9 @@ use crate::channel::Channel;
 ///
 /// [`Channel`]: crate::Channel
 pub struct Circuit<const W: usize> {
-    /// Number of qubits this circuit acts on. Constrains the support of
-    /// channels that can be pushed.
+    /// Number of qubits this circuit acts on. Constrains the support of channels that can be pushed.
     pub num_qubits: usize,
-    /// Channels in application order. Index `0` is applied first under
-    /// [`Direction::Forward`](crate::Direction::Forward).
+    /// Channels in application order. Index `0` is applied first under [`Direction::Forward`](crate::Direction::Forward).
     pub channels: Vec<Box<dyn Channel<W>>>,
 }
 

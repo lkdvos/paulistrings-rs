@@ -31,6 +31,8 @@ python-source = "python"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
-# Discover `test_*.py` (Python unit tests in `python/paulistrings/tests/`) and
-# `bench_*.py` (cross-library suites in `benchmarks/python/`).
+# Discover `test_*.py` (library unit tests in `python/paulistrings/tests/`, the
+# showcase suite's tests in `examples/tests/`, and the benchmark-driver tests in
+# `benchmarks/python/tests/`) and `bench_*.py` (cross-library suites living directly
+# in `benchmarks/python/`).
 python_files = ["test_*.py", "bench_*.py"]

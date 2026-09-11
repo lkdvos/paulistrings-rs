@@ -72,7 +72,7 @@ RAYON_NUM_THREADS=1 python benchmarks/python/bench_e_su4.py
 ```
 
 None of these is in CI. Each has a CI-safe correctness gate at smaller scale
-under `python/paulistrings/tests/`, so the physics is checked on every commit.
+under `benchmarks/python/tests/`, so the physics is checked on every commit.
 
 There are two further benchmark surfaces this section does not cover: the Rust
 criterion microbenchmarks (`cargo bench -p paulistrings`, for tight inner-loop

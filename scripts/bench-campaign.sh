@@ -35,7 +35,7 @@ set -euo pipefail
 # ~1% tax on every part without the erratum, which is all of `ccq`. Measurement
 # builds opt in, so the reference host cannot silently lose 9-13% mid-campaign.
 # Append: an exported RUSTFLAGS replaces the config's rustflags wholesale.
-# See scripts/jcc-rustflags.sh and research/notes/2026-09-10-jcc-portability.md.
+# See scripts/jcc-rustflags.sh and research/HARDWARE.md.
 . "$(dirname "$0")/jcc-rustflags.sh"
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
 

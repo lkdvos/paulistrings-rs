@@ -36,7 +36,7 @@ import pytest
 
 from paulistrings import truncation
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
@@ -315,21 +315,15 @@ def test_xxz_chain_rejects_bad_arguments():
 # --- Haar SU(4) brickwork ---------------------------------------------
 
 
-def test_haar_su4_is_special_unitary():
+def test_haar_su4_is_special_unitary_and_draws_differ():
     numpy = pytest.importorskip("numpy")
     rng = numpy.random.default_rng(0)
-    for _ in range(5):
-        u = circuits.haar_su4(rng)
+    draws = [circuits.haar_su4(rng) for _ in range(5)]
+    for u in draws:
         assert u.shape == (4, 4)
         assert numpy.allclose(u @ u.conj().T, numpy.eye(4), atol=1e-12)
         assert abs(numpy.linalg.det(u) - 1.0) < 1e-10
-
-
-def test_haar_su4_samples_differ_between_draws():
-    numpy = pytest.importorskip("numpy")
-    rng = numpy.random.default_rng(0)
-    first, second = circuits.haar_su4(rng), circuits.haar_su4(rng)
-    assert not numpy.allclose(first, second)
+    assert not numpy.allclose(draws[0], draws[1])
 
 
 def test_su4_staircase_channel_count_is_brickwork():

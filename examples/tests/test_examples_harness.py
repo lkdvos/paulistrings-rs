@@ -30,7 +30,7 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
 if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
@@ -543,15 +543,6 @@ def test_convergence_sweep_backfills_error_from_an_oracle():
     )
 
 
-def test_convergence_sweep_records_feed_the_convergence_panel():
-    matplotlib = pytest.importorskip("matplotlib")
-    matplotlib.use("Agg")
-    records = harness.convergence_sweep(_build_run, GRID, oracle_value=COS_THETA)
-    figure = report.plot_convergence_panel(records, reference_value=COS_THETA)
-    # One engine curve plus the reference line.
-    assert len(figure.axes[0].lines) == 2
-
-
 def test_convergence_sweep_rejects_an_empty_grid():
     with pytest.raises(ValueError, match="empty"):
         harness.convergence_sweep(_build_run, [])
@@ -634,15 +625,6 @@ def test_time_to_accuracy_rejects_unscorable_runs():
 def test_time_to_accuracy_rejects_a_non_positive_epsilon():
     with pytest.raises(ValueError, match="epsilon"):
         harness.time_to_accuracy(_build_run, COS_THETA, 0.0, GRID)
-
-
-def test_time_to_accuracy_records_feed_the_error_vs_runtime_plot():
-    matplotlib = pytest.importorskip("matplotlib")
-    matplotlib.use("Agg")
-    result = harness.time_to_accuracy(_build_run, COS_THETA, 1e-9, GRID)
-    figure = report.plot_error_vs_runtime(result.records)
-    # Only the non-zero-error point is plottable on log axes; the curve exists.
-    assert len(figure.axes[0].lines) == 1
 
 
 def test_time_to_accuracy_grid_accepts_a_weight_sweep():

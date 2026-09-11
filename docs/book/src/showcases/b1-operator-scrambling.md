@@ -215,7 +215,7 @@ At `min_abs_coeff = 0.05` the truncated leg keeps 54 of 1430 terms, discards
 ratio of 0.88, licensing `1 − N(t)` as the error proxy used throughout: a
 calibration, not a theorem, so the script asserts a factor-of-10 band.
 
-The CI-visible gate (`pytest python/paulistrings/tests/test_showcase_b1.py`)
+The CI-visible gate (`pytest examples/tests/test_showcase_b1.py`)
 is numpy-only and runs in under a second. Reference host: Intel Xeon Gold
 6244 @ 3.60 GHz (`ccqlin038`), rustc 1.94.0, Python 3.11.11.
 

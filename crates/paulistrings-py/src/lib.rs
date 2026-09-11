@@ -6,10 +6,7 @@
 //! at a fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop
 //! (ARCHITECTURE.md §Width).
 
-// PyO3 0.22's `#[pymethods]` expansion converts return values via
-// `.into()` even when the method already returns a `PyResult<T>`, which
-// clippy flags as a useless conversion. The lint is on the macro output, not
-// our code, so we silence it crate-wide.
+// PyO3 0.22's `#[pymethods]` expansion converts return values via `.into()` even for a `PyResult<T>`, which clippy flags; the lint is on the macro output, not our code.
 #![allow(clippy::useless_conversion)]
 
 #[macro_use]
@@ -28,19 +25,13 @@ mod truncation_spec;
 use pyo3::prelude::*;
 use std::sync::OnceLock;
 
-/// Handle returned by `pyo3_log::try_init`, kept so `reset_log_cache` can
-/// clear pyo3-log's per-logger level cache. Set exactly once, at module
-/// import.
+/// Handle returned by `pyo3_log::try_init`, kept so `reset_log_cache` can clear pyo3-log's per-logger level cache. Set exactly once, at module import.
 static LOG_RESET: OnceLock<pyo3_log::ResetHandle> = OnceLock::new();
 
 /// Drop the cached Python log levels of the Rust->Python log bridge.
 ///
-/// pyo3-log caches each logger's effective level, because looking it up on
-/// every record would be far too slow. Call this after changing Python log
-/// levels mid-process -- e.g. after
-/// `logging.getLogger("paulistrings").setLevel(logging.DEBUG)` -- otherwise
-/// the new level is not picked up. A no-op if some other logger claimed the
-/// `log` facade before this module was imported.
+/// pyo3-log caches each logger's effective level. Call this after changing Python log levels mid-process (e.g. `logging.getLogger("paulistrings").setLevel(logging.DEBUG)`), otherwise the new level is not picked up.
+/// A no-op if some other logger claimed the `log` facade before this module was imported.
 #[pyfunction]
 fn reset_log_cache() {
     if let Some(handle) = LOG_RESET.get() {
@@ -48,22 +39,10 @@ fn reset_log_cache() {
     }
 }
 
-/// The NUMA nodes this process may run on, as one list of CPU indices each,
-/// in ascending node order.
+/// The NUMA nodes this process may run on, as one list of CPU indices each, in ascending node order.
 ///
-/// This is what `PauliSum.propagate(partitions="auto")` places against: `"auto"`
-/// takes one partition per entry, rounded down to a power of two, and
-/// `partitions=k` is refused unless there are at least `k` entries. Each list
-/// is intersected with the process's CPU affinity mask, so a run inside a
-/// cgroup or under `taskset` sees only the CPUs it may actually use, and a node
-/// left empty by that intersection does not appear at all.
-///
-/// A machine with no NUMA information — no `/sys/devices/system/node`, a
-/// kernel without NUMA, a non-Linux host — reports the whole affinity mask as
-/// a single node, which is the honest answer: there is one domain to place in.
-///
-/// The lists are a snapshot: an affinity change (``os.sched_setaffinity``)
-/// after the call is not reflected until the next one.
+/// This is what `PauliSum.propagate(partitions="auto")` places against: `"auto"` takes one partition per entry (rounded down to a power of two), and `partitions=k` is refused unless there are at least `k` entries. Each list is intersected with the process's CPU affinity mask, so a cgroup- or `taskset`-confined run sees only what it may use.
+/// A machine with no NUMA information reports the whole affinity mask as a single node. The lists are a snapshot: a later affinity change is not reflected until the next call.
 #[pyfunction]
 fn numa_nodes() -> Vec<Vec<usize>> {
     paulistrings::engine::partitioned::numa_nodes()
@@ -74,14 +53,8 @@ fn numa_nodes() -> Vec<Vec<usize>> {
 
 /// Whether this build of the extension can run `PauliSum.propagate(comm=...)`.
 ///
-/// `True` only if the extension was compiled with the `mpi` cargo feature
-/// (`maturin develop --release --features mpi`), which needs an MPI
-/// installation and a `libclang` for rsmpi's bindgen at build time. The
-/// default wheel is built without it, and a `comm=` there raises
-/// `RuntimeError`.
-///
-/// Importing `paulistrings` never imports `mpi4py` and never touches MPI, so
-/// this is safe to call anywhere, including in a serial process:
+/// `True` only if compiled with the `mpi` cargo feature (`maturin develop --release --features mpi`); the default wheel lacks it and a `comm=` there raises `RuntimeError`.
+/// Importing `paulistrings` never imports `mpi4py` and never touches MPI, so this is safe to call anywhere:
 ///
 /// ```python
 /// if paulistrings.mpi_available():
@@ -95,9 +68,7 @@ fn mpi_available() -> bool {
 
 #[pymodule]
 fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Route the core crate's `log` records (target `paulistrings::propagate`,
-    // INFO entry/exit + DEBUG per layer) to Python's `logging`. Fails only if
-    // some other logger is already installed, which is not an import error.
+    // Route the core crate's `log` records to Python's `logging`. Fails only if some other logger is already installed, which is not an import error.
     if let Ok(handle) = pyo3_log::try_init() {
         let _ = LOG_RESET.set(handle);
     }
@@ -105,8 +76,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(numa_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
 
-    // Default for `PauliSum.propagate(small_sum_threshold=...)`, re-exported
-    // from the core so the Python default cannot drift from the Rust one.
+    // Re-exported from the core so the Python default cannot drift from the Rust one.
     m.add(
         "DEFAULT_SMALL_SUM_THRESHOLD",
         paulistrings::DEFAULT_SMALL_SUM_THRESHOLD,

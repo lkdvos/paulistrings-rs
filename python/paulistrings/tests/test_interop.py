@@ -1,6 +1,6 @@
 """``paulistrings.interop`` — stim / qiskit importers and the task-JSON schema.
 
-Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A5.
+Design source: ``research/FINDINGS.md`` §A5.
 The stim and qiskit sections ``pytest.importorskip`` their backend so CI
 (numpy-only) stays green; the task-JSON section has no optional dependency
 and always runs.
@@ -74,7 +74,7 @@ def _full_dict(sum_, num_qubits):
 
 def test_stim_hermitian_y_convention_matches_stim():
     # The known-by-hand conjugation cited in the module docstring and
-    # research/notes/2026-08-31-python-test-triage.md: S X S^-1 = +Y in
+    # research/FINDINGS.md: S X S^-1 = +Y in
     # stim's (Hermitian) convention. Propagating X forward through S in this
     # library must land on the same key with the same +1 sign, with no extra
     # phase to reconcile.

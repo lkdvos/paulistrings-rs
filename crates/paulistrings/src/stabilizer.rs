@@ -1,65 +1,27 @@
 //! [`StabilizerState<W>`] — expectation values `⟨ψ|P|ψ⟩` in a stabilizer state.
 //!
-//! This is an **expectation** feature, not stabilizer simulation: the state is
-//! a fixed contraction target, never updated under gates. The crate's non-goal
-//! (`lib.rs`: "not a state-vector, tensor-network, stabilizer, or MPS
-//! simulator") is about *simulation* — evolving a state through a circuit —
-//! and nothing here does that. Circuits are still propagated on the operator
-//! side by [`propagate`](crate::propagate); a [`StabilizerState`] only replaces
-//! [`ProductBasis`](crate::ProductBasis) at the final read-out, widening the
-//! set of readable initial states from product states to all stabilizer states
-//! (Bell, GHZ, cluster states, any Clifford circuit's output).
+//! This is an expectation feature, not stabilizer simulation: the state is a fixed contraction target, never evolved under gates (`lib.rs`'s non-goals cover simulation, not this).
+//! Circuits still propagate on the operator side via [`propagate`](crate::propagate); a [`StabilizerState`] only replaces [`ProductBasis`](crate::ProductBasis) at the final read-out, widening readable initial states from product states to any stabilizer state (Bell, GHZ, cluster states, any Clifford circuit's output).
 //!
 //! # Math
 //!
-//! A stabilizer state on `n` qubits is fixed by `n` independent, pairwise
-//! commuting signed Pauli generators `s_i·G_i` (`s_i = ±1`); the group `S` they
-//! generate has `2ⁿ` elements and `|ψ⟩` is the unique joint `+1` eigenvector.
-//! For a Hermitian Pauli string `P`,
-//!
-//! ```text
-//! ⟨ψ|P|ψ⟩ = σ  if  σ·P ∈ S for some σ = ±1,   and  0 otherwise
-//! ```
-//!
-//! because `E|ψ⟩ = |ψ⟩` for `E = σ·P ∈ S` gives `P|ψ⟩ = σ|ψ⟩`, while a `P`
-//! anticommuting with some group element has `⟨ψ|P|ψ⟩ = ⟨ψ|E P E|ψ⟩ =
-//! -⟨ψ|P|ψ⟩ = 0`.
+//! A stabilizer state on `n` qubits is fixed by `n` independent, pairwise commuting signed Pauli generators `s_i·G_i`; the group `S` they generate has `2ⁿ` elements and `|ψ⟩` is the unique joint `+1` eigenvector.
+//! For a Hermitian Pauli string `P`, `⟨ψ|P|ψ⟩ = σ` if `σ·P ∈ S` for some `σ = ±1`, and `0` otherwise: `E|ψ⟩ = |ψ⟩` for `E = σ·P ∈ S` gives `P|ψ⟩ = σ|ψ⟩`, while anticommuting with some group element forces `⟨ψ|P|ψ⟩ = -⟨ψ|P|ψ⟩ = 0`.
 //!
 //! # Algorithm and cost
 //!
-//! Setup reduces the generators to row echelon form over GF(2) in the
-//! symplectic `(x, z)` coordinates — `O(n²)` Pauli row multiplications of `W`
-//! words each, i.e. `O(n³/64)` word operations — carrying each row's sign
-//! along, so every stored row *is* a signed element of `S`.
-//!
-//! Per term, membership is `O(n)` one-bit pivot tests and at most `n` row
-//! multiplications of `W` words: `O(n²/64)` word operations. Contracting an
-//! `m`-term [`PauliSum`](crate::PauliSum) is therefore `O(m·n²/64)` — see
-//! [`PauliSum::expectation_stabilizer`](crate::PauliSum::expectation_stabilizer)
-//! — and never a `2ⁿ` expansion over basis states.
+//! Setup row-reduces the generators to echelon form over GF(2) in symplectic `(x, z)` coordinates (`O(n³/64)` word operations), carrying each row's sign so every stored row is a signed element of `S`.
+//! Per-term membership is `O(n)` pivot tests plus up to `n` row multiplications (`O(n²/64)` word ops), so contracting an `m`-term [`PauliSum`](crate::PauliSum) is `O(m·n²/64)` — see [`PauliSum::expectation_stabilizer`](crate::PauliSum::expectation_stabilizer) — never a `2ⁿ` basis expansion.
 //!
 //! # Sign bookkeeping
 //!
-//! Signs are tracked by *composing the group elements themselves* rather than
-//! by a separate Aaronson–Gottesman phase table: a row is a pair
-//! `(key, neg)` standing for the operator `(-1)^neg · key`, and a row
-//! multiplication folds [`PauliString::mul_assign`]'s `i^k` into `neg`. That
-//! `i^k` is always real (`k` even) because the two factors are commuting
-//! Hermitian Paulis: `AB = BA` and `(AB)† = B†A† = BA = AB`, so `AB` is
-//! Hermitian and `i^k·(A⊕B)` can only be `±(A⊕B)`.
+//! Signs are tracked by composing group elements themselves rather than a separate phase table: a row is `(key, neg)` for the operator `(-1)^neg · key`, and a row multiplication folds [`PauliString::mul_assign`]'s `i^k` into `neg`.
+//! That `i^k` is always real because the two factors are commuting Hermitian Paulis, whose product is again Hermitian.
+//! On the query side, intermediate phases can go imaginary (`Y·Z = iX`) since `P` need not commute with the group, but the total is real again once the reduction reaches the identity key, by the same Hermitian-product argument applied to `P·∏K_j`; [`StabilizerState::sign_of`] debug-asserts exactly that.
 //!
-//! On the query side the reduction multiplies the term `P` by the rows whose
-//! pivots it hits. Intermediate phases there *can* be imaginary (`Y·Z = iX`),
-//! since `P` need not commute with the group — but on the path that reaches
-//! the identity key the accumulated total is again real, by the same argument
-//! applied to `P·∏K_j` (both factors Hermitian, product proportional to `I`).
-//! [`StabilizerState::sign_of`] debug-asserts exactly that.
+//! # Example
 //!
-//! # Examples
-//!
-//! The Bell state `(|00⟩ + |11⟩)/√2` is stabilized by `+XX` and `+ZZ`; the
-//! third non-identity group element is `XX·ZZ = (-i Y)(-i Y) = -YY`, so
-//! `⟨YY⟩ = -1`.
+//! The Bell state `(|00⟩ + |11⟩)/√2` is stabilized by `+XX` and `+ZZ`; the third non-identity group element is `XX·ZZ = -YY`, so `⟨YY⟩ = -1`.
 //!
 //! ```
 //! use paulistrings::{PauliString, StabilizerState};
@@ -85,13 +47,10 @@ use crate::phase::Phase;
 
 /// Why a set of generators does not define a stabilizer state.
 ///
-/// Returned by [`StabilizerState::from_generators`]; every variant is a
-/// caller-visible input problem except [`Self::InternalPhase`], which is an
-/// invariant violation and cannot arise from validated input.
+/// Returned by [`StabilizerState::from_generators`]; every variant is a caller-visible input problem except [`Self::InternalPhase`], which is an invariant violation and cannot arise from validated input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StabilizerError {
-    /// The generator count is not `num_qubits`. A stabilizer *state* (rather
-    /// than a stabilizer code space) needs exactly one generator per qubit.
+    /// The generator count is not `num_qubits`. A stabilizer *state* (rather than a stabilizer code space) needs exactly one generator per qubit.
     GeneratorCount {
         /// The required count, i.e. `num_qubits`.
         expected: usize,
@@ -105,27 +64,22 @@ pub enum StabilizerError {
         /// The state's qubit count.
         num_qubits: usize,
     },
-    /// Generators `first` and `second` anticommute, so they have no common
-    /// eigenvector.
+    /// Generators `first` and `second` anticommute, so they have no common eigenvector.
     NotCommuting {
         /// Index of the first of the two anticommuting generators.
         first: usize,
         /// Index of the second.
         second: usize,
     },
-    /// Generator `generator` is a product of the others (up to sign), so the
-    /// generators span fewer than `num_qubits` GF(2) dimensions.
+    /// Generator `generator` is a product of the others (up to sign), so the generators span fewer than `num_qubits` GF(2) dimensions.
     ///
-    /// This also covers the `-I ∈ S` case: two generators with the same key
-    /// and opposite signs are GF(2)-dependent, and their product is `-I`,
-    /// which stabilizes nothing.
+    /// Also covers `-I ∈ S`: two generators with the same key and opposite signs are GF(2)-dependent, and their product is `-I`, which stabilizes nothing.
     Dependent {
         /// Index of a generator that reduced to the identity key.
         generator: usize,
     },
-    /// Internal invariant violation: a product of two commuting Hermitian
-    /// group elements came out with an imaginary `i^k` factor. Unreachable
-    /// once the commutation check has passed.
+    /// Internal invariant violation: a product of two commuting Hermitian group elements came out with an imaginary `i^k` factor.
+    /// Unreachable once the commutation check has passed.
     InternalPhase {
         /// Index of the generator whose row carried the imaginary phase.
         generator: usize,
@@ -170,9 +124,7 @@ impl std::error::Error for StabilizerError {}
 
 /// One GF(2) coordinate of a symplectic key: the `x`- or `z`-bit of one qubit.
 ///
-/// Column order for the elimination is "all `x` bits, qubit 0 first, then all
-/// `z` bits" — any fixed order gives a valid echelon form; this one keeps the
-/// per-row pivot test a single mask against one word.
+/// Column order for the elimination is "all `x` bits, qubit 0 first, then all `z` bits" — any fixed order gives a valid echelon form; this one keeps the per-row pivot test a single mask against one word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Column {
     /// Which `[u64; W]` word the bit lives in.
@@ -191,8 +143,7 @@ impl Column {
     }
 }
 
-/// Every symplectic coordinate of an `num_qubits`-qubit key, in elimination
-/// order.
+/// Every symplectic coordinate of an `num_qubits`-qubit key, in elimination order.
 fn columns(num_qubits: usize) -> Vec<Column> {
     let mut cols = Vec::with_capacity(2 * num_qubits);
     for is_z in [false, true] {
@@ -207,8 +158,7 @@ fn columns(num_qubits: usize) -> Vec<Column> {
     cols
 }
 
-/// One row of the reduced tableau: the signed group element
-/// `(-1)^neg · key`, plus the column it pivots on.
+/// One row of the reduced tableau: the signed group element `(-1)^neg · key`, plus the column it pivots on.
 #[derive(Clone, Copy, Debug)]
 struct Row<const W: usize> {
     key: PauliString<W>,
@@ -216,49 +166,30 @@ struct Row<const W: usize> {
     pivot: Column,
 }
 
-/// A stabilizer state on `n = num_qubits` qubits, held as a reduced tableau of
-/// signed generators.
+/// A stabilizer state on `n = num_qubits` qubits, held as a reduced tableau of signed generators.
 ///
-/// Build one with [`Self::from_generators`], then read expectation values
-/// term-by-term with [`Self::sign_of`] / [`Self::expectation_of`], or over a
-/// whole sum with
-/// [`PauliSum::expectation_stabilizer`](crate::PauliSum::expectation_stabilizer).
+/// Build one with [`Self::from_generators`], then read expectation values term-by-term with [`Self::sign_of`] / [`Self::expectation_of`], or over a whole sum with [`PauliSum::expectation_stabilizer`](crate::PauliSum::expectation_stabilizer).
+/// Product states are the special case of `n` single-qubit generators; those stay faster through [`ProductBasis`](crate::ProductBasis) (one masked word scan per term versus `O(n)` pivot tests here), so prefer [`PauliSum::expectation_product_basis`](crate::PauliSum::expectation_product_basis) when the state factorizes.
 ///
-/// Product states are the special case of `n` single-qubit generators; those
-/// stay faster through
-/// [`ProductBasis`](crate::ProductBasis) (one masked word scan per term versus
-/// `O(n)` pivot tests here), so prefer
-/// [`PauliSum::expectation_product_basis`](crate::PauliSum::expectation_product_basis)
-/// when the state factorizes.
-///
-/// See the module documentation for the algorithm, its cost, and the sign
-/// bookkeeping.
+/// See the module documentation for the algorithm, its cost, and the sign bookkeeping.
 #[derive(Clone, Debug)]
 pub struct StabilizerState<const W: usize> {
     num_qubits: usize,
-    /// Echelon rows, ascending in pivot column; exactly `num_qubits` of them
-    /// (construction fails otherwise), each a signed element of `S`.
+    /// Echelon rows, ascending in pivot column; exactly `num_qubits` of them (construction fails otherwise), each a signed element of `S`.
     rows: Vec<Row<W>>,
 }
 
 impl<const W: usize> StabilizerState<W> {
-    /// Build the state stabilized by `generators`, where entry `i` is
-    /// `(key, minus)` standing for the signed Pauli `(-1)^minus · key`.
+    /// Build the state stabilized by `generators`, where entry `i` is `(key, minus)` standing for the signed Pauli `(-1)^minus · key`.
     ///
-    /// Keys are Hermitian in the crate's convention (`Y = (x=1, z=1)`, no
-    /// phase factor — CLAUDE.md §Known gaps), so a generator is exactly the
-    /// operator its key spells out, times `±1`. The `minus` flag matches
-    /// [`ProductBasis`](crate::ProductBasis)'s `neg`: `true` selects the `-1`
-    /// eigenstate.
+    /// Keys are Hermitian in the crate's convention (`Y = (x=1, z=1)`, no phase factor — CLAUDE.md §Known gaps), so a generator is exactly the operator its key spells out, times `±1`.
+    /// The `minus` flag matches [`ProductBasis`](crate::ProductBasis)'s `neg`: `true` selects the `-1` eigenstate.
     ///
-    /// Validation, in order: exactly `num_qubits` generators; every key within
-    /// `num_qubits`; pairwise commuting; independent over GF(2). Each failure
-    /// is a [`StabilizerError`], never a panic.
+    /// Validation, in order: exactly `num_qubits` generators; every key within `num_qubits`; pairwise commuting; independent over GF(2). Each failure is a [`StabilizerError`], never a panic.
     ///
     /// # Panics
     ///
-    /// Panics if `num_qubits > 64 · W` — a width-selection bug on the caller's
-    /// side, not an input-validation case.
+    /// Panics if `num_qubits > 64 · W` — a width-selection bug on the caller's side, not an input-validation case.
     pub fn from_generators(
         num_qubits: usize,
         generators: &[(PauliString<W>, bool)],
@@ -292,9 +223,7 @@ impl<const W: usize> StabilizerState<W> {
             }
         }
 
-        // Row-reduce the signed generators. `work[r] = (key, neg, origin)`
-        // always denotes a genuine element `(-1)^neg · key` of `S`; `origin`
-        // is the input index a row started as, for error reporting.
+        // Row-reduce the signed generators. `work[r] = (key, neg, origin)` always denotes a genuine element `(-1)^neg · key` of `S`; `origin` is the input index a row started as, for error reporting.
         let mut work: Vec<(PauliString<W>, bool, usize)> = generators
             .iter()
             .enumerate()
@@ -309,9 +238,7 @@ impl<const W: usize> StabilizerState<W> {
             };
             work.swap(rank, p);
             let (key, neg, _) = work[rank];
-            // Full reduction: clear this column from *every* other row. Rows
-            // already placed keep their own pivots, because `work[rank]` was
-            // itself cleared of those columns when they were processed.
+            // Full reduction: clear this column from every other row. Rows already placed keep their own pivots, because `work[rank]` was itself cleared of those columns when they were processed.
             for (r, row) in work.iter_mut().enumerate() {
                 if r == rank || !col.is_set(&row.0) {
                     continue;
@@ -333,8 +260,7 @@ impl<const W: usize> StabilizerState<W> {
         }
 
         if rows.len() < num_qubits {
-            // Every unplaced row has reduced to the identity key: it was a
-            // product of placed rows all along.
+            // Every unplaced row has reduced to the identity key: it was a product of placed rows all along.
             return Err(StabilizerError::Dependent {
                 generator: work[rows.len()].2,
             });
@@ -348,16 +274,10 @@ impl<const W: usize> StabilizerState<W> {
         self.num_qubits
     }
 
-    /// The stabilizer sign of `key`: `None` when `±key ∉ S` (expectation `0`),
-    /// otherwise `Some(negative)` with `negative == true` iff
-    /// `⟨ψ|key|ψ⟩ = -1`.
+    /// The stabilizer sign of `key`: `None` when `±key ∉ S` (expectation `0`), otherwise `Some(negative)` with `negative == true` iff `⟨ψ|key|ψ⟩ = -1`.
     ///
-    /// Returning the sign as a `bool` rather than a float keeps the caller's
-    /// accumulation a branch between `+=` and `-=`, matching
-    /// [`PauliSum::expectation_product_basis`](crate::PauliSum::expectation_product_basis).
-    ///
-    /// Cost is one pivot test per row plus one `W`-word Pauli multiply per hit:
-    /// `O(n²/64)` word operations.
+    /// Returning the sign as a `bool` rather than a float keeps the caller's accumulation a branch between `+=` and `-=`, matching [`PauliSum::expectation_product_basis`](crate::PauliSum::expectation_product_basis).
+    /// Cost is one pivot test per row plus one `W`-word Pauli multiply per hit: `O(n²/64)` word operations.
     #[inline]
     pub fn sign_of(&self, key: &PauliString<W>) -> Option<bool> {
         let mut acc = *key;
@@ -369,14 +289,11 @@ impl<const W: usize> StabilizerState<W> {
                 neg ^= row.neg;
             }
         }
-        // Pivot columns are now clear in `acc`, and a nonzero row-space vector
-        // cannot have all of them clear — so surviving support means `key` is
-        // outside the span.
+        // Pivot columns are now clear in `acc`, and a nonzero row-space vector cannot have all of them clear — so surviving support means `key` is outside the span.
         if acc != PauliString::<W>::identity() {
             return None;
         }
-        // `key · ∏K_j = i^phase · I` with both factors Hermitian forces
-        // `i^phase = ±1`; see the module's sign-bookkeeping section.
+        // `key · ∏K_j = i^phase · I` with both factors Hermitian forces `i^phase = ±1`; see the module's sign-bookkeeping section.
         debug_assert_eq!(
             phase.exponent() & 1,
             0,
@@ -388,8 +305,7 @@ impl<const W: usize> StabilizerState<W> {
 
     /// `⟨ψ|key|ψ⟩` as a float: `0.0` when `±key ∉ S`, else `±1.0`.
     ///
-    /// A convenience wrapper over [`Self::sign_of`] for single-term reads and
-    /// doctests; the sum-level contraction uses `sign_of` directly.
+    /// A convenience wrapper over [`Self::sign_of`] for single-term reads and doctests; the sum-level contraction uses `sign_of` directly.
     #[inline]
     pub fn expectation_of(&self, key: &PauliString<W>) -> f64 {
         match self.sign_of(key) {
@@ -408,8 +324,7 @@ mod tests {
     use crate::Gf2Hash;
     use num_complex::Complex64;
 
-    /// Parse `"+XZY"` / `"-XZY"` / `"XZY"` into `(key, minus)`; character `i`
-    /// is qubit `i`, Hermitian convention (`Y = (1, 1)`, no phase).
+    /// Parse `"+XZY"` / `"-XZY"` / `"XZY"` into `(key, minus)`; character `i` is qubit `i`, Hermitian convention (`Y = (1, 1)`, no phase).
     fn gen_of<const W: usize>(s: &str) -> (PauliString<W>, bool) {
         let (minus, body) = match s.as_bytes().first() {
             Some(b'-') => (true, &s[1..]),
@@ -446,9 +361,7 @@ mod tests {
 
     // ---- Bell state: +XX, +ZZ ----
 
-    /// `XX·ZZ = (X·Z)⊗(X·Z) = (-iY)⊗(-iY) = -YY`, so the group is
-    /// `{+II, +XX, +ZZ, -YY}` and `⟨YY⟩ = -1`. Single-qubit Paulis are outside
-    /// the group, hence `0`.
+    /// `XX·ZZ = (X·Z)⊗(X·Z) = (-iY)⊗(-iY) = -YY`, so the group is `{+II, +XX, +ZZ, -YY}` and `⟨YY⟩ = -1`. Single-qubit Paulis are outside the group, hence `0`.
     #[test]
     fn bell_state_expectations_w1() {
         let bell = state::<1>(2, &["+XX", "+ZZ"]);
@@ -472,8 +385,7 @@ mod tests {
         assert_eq!(expect(&bell, "ZI"), 0.0);
     }
 
-    /// Flipping one generator's sign flips every group element containing it:
-    /// `(-XX)(+ZZ) = -(XX·ZZ) = +YY`.
+    /// Flipping one generator's sign flips every group element containing it: `(-XX)(+ZZ) = -(XX·ZZ) = +YY`.
     #[test]
     fn bell_state_with_a_minus_generator_flips_xx_and_yy() {
         let bell = state::<1>(2, &["-XX", "+ZZ"]);
@@ -495,13 +407,9 @@ mod tests {
 
     // ---- GHZ state: +XXX, +ZZI, +IZZ ----
 
-    /// `XXX·ZZI` acts as `X·Z = -iY` on qubits 0 and 1 and as `X·I = X` on
-    /// qubit 2, so it equals `(-i)²·YYX = -YYX`; the group element being
-    /// `-YYX` means `YYX|ψ⟩ = -|ψ⟩`.
+    /// `XXX·ZZI` acts as `X·Z = -iY` on qubits 0 and 1 and as `X·I = X` on qubit 2, so it equals `(-i)²·YYX = -YYX`; the group element being `-YYX` means `YYX|ψ⟩ = -|ψ⟩`.
     ///
-    /// `ZZI·IZZ = ZIZ` with no phase (no X-bits meet a Z-bit), so `⟨ZIZ⟩ = 1`.
-    /// `ZII` is outside the span of `{(x=111,z=000), (000,011), (000,110)}`,
-    /// hence `0`.
+    /// `ZZI·IZZ = ZIZ` with no phase (no X-bits meet a Z-bit), so `⟨ZIZ⟩ = 1`. `ZII` is outside the span of `{(x=111,z=000), (000,011), (000,110)}`, hence `0`.
     #[test]
     fn ghz_state_expectations_w1() {
         let ghz = state::<1>(3, &["+XXX", "+ZZI", "+IZZ"]);
@@ -527,8 +435,7 @@ mod tests {
         assert_eq!(expect(&ghz, "ZII"), 0.0);
     }
 
-    /// Generator order must not matter: the same group, listed differently,
-    /// gives the same signs.
+    /// Generator order must not matter: the same group, listed differently, gives the same signs.
     #[test]
     fn generator_order_does_not_change_the_state() {
         let a = state::<1>(3, &["XXX", "ZZI", "IZZ"]);
@@ -565,8 +472,7 @@ mod tests {
         );
     }
 
-    /// `(+ZI)·(-ZI) = -II`, and `-I` stabilizes nothing. GF(2) dependence
-    /// catches it.
+    /// `(+ZI)·(-ZI) = -II`, and `-I` stabilizes nothing. GF(2) dependence catches it.
     #[test]
     fn opposite_signs_on_one_key_are_rejected() {
         let g = [gen_of::<1>("+ZI"), gen_of::<1>("-ZI")];
@@ -632,9 +538,8 @@ mod tests {
 
     // ---- word-boundary coverage (W = 2, qubits 63/64) ----
 
-    /// A Bell pair straddling the 64-qubit word boundary, with every other
-    /// qubit in `|0⟩`. Same algebra as `bell_state_expectations_w1`, but the
-    /// two X-bits and two Z-bits live in different `[u64; 2]` words.
+    /// A Bell pair straddling the 64-qubit word boundary, with every other qubit in `|0⟩`.
+    /// Same algebra as `bell_state_expectations_w1`, but the two X-bits and two Z-bits live in different `[u64; 2]` words.
     #[test]
     fn a_bell_pair_across_the_word_boundary() {
         let n = 66;
@@ -666,8 +571,7 @@ mod tests {
         assert_eq!(st.expectation_of(&PauliString::<2>::identity()), 1.0);
     }
 
-    /// A minus sign on qubit 64's generator: `|0…0 1 0…⟩` with the flip in the
-    /// second word.
+    /// A minus sign on qubit 64's generator: `|0…0 1 0…⟩` with the flip in the second word.
     #[test]
     fn a_minus_generator_in_the_second_word() {
         let n = 70;
@@ -685,8 +589,7 @@ mod tests {
 
     // ---- differential tests against the product-state path ----
 
-    /// Diagonal generators `+Z_q` describe `|0…0⟩`, whose expectation the
-    /// existing product-state scan already computes — an independent oracle.
+    /// Diagonal generators `+Z_q` describe `|0…0⟩`, whose expectation the existing product-state scan already computes — an independent oracle.
     fn product_generators<const W: usize>(num_qubits: usize, axis: char) -> StabilizerState<W> {
         let gens: Vec<(PauliString<W>, bool)> = (0..num_qubits as u32)
             .map(|q| {
@@ -737,9 +640,7 @@ mod tests {
         }
     }
 
-    /// The contraction is a per-bucket parallel reduction, so it must agree
-    /// across partitions (to floating-point tolerance — partials are summed in
-    /// bucket order, per the crate's determinism policy).
+    /// The contraction is a per-bucket parallel reduction, so it must agree across partitions (to floating-point tolerance — partials are summed in bucket order, per the crate's determinism policy).
     #[test]
     fn the_contraction_is_partition_independent() {
         let sum = rand_sum::<1>(5000, 20, 0xB2);
@@ -752,8 +653,7 @@ mod tests {
         }
     }
 
-    /// Linear in the coefficients, imaginary parts included: the Bell state
-    /// picks out `XX` (`+1`), `ZZ` (`+1`) and `YY` (`-1`) and drops `ZI`.
+    /// Linear in the coefficients, imaginary parts included: the Bell state picks out `XX` (`+1`), `ZZ` (`+1`) and `YY` (`-1`) and drops `ZI`.
     #[test]
     fn the_contraction_is_linear_and_keeps_the_imaginary_part() {
         let sum = PauliSum::<1>::from_strings(&[
@@ -780,12 +680,8 @@ mod tests {
 
     // ---- brute-force oracle for entangled states ----
 
-    /// Enumerate all `2ⁿ` group elements by multiplying out every subset of
-    /// the generators, and return `key -> sign` — an oracle that shares no code
-    /// with the echelon reduction under test.
-    ///
-    /// Exponential in `n` by construction, which is exactly the thing
-    /// [`StabilizerState`] exists to avoid; only usable at `n ≲ 12`.
+    /// Enumerate all `2ⁿ` group elements by multiplying out every subset of the generators, and return `key -> sign` — an oracle that shares no code with the echelon reduction under test.
+    /// Exponential in `n` by construction, which is exactly the thing [`StabilizerState`] exists to avoid; only usable at `n ≲ 12`.
     fn brute_force_group<const W: usize>(
         gens: &[(PauliString<W>, bool)],
     ) -> std::collections::HashMap<([u64; W], [u64; W]), f64> {
@@ -834,12 +730,8 @@ mod tests {
         acc
     }
 
-    /// A 1-D cluster state: `K_q = Z_{q-1} X_q Z_{q+1}` (open boundaries),
-    /// with the sign of generator `q` taken from `signs`.
-    ///
-    /// Genuinely entangled and not a Bell/GHZ special case, and every
-    /// generator has both X- and Z-support, so the query-side reduction hits
-    /// mixed products.
+    /// A 1-D cluster state: `K_q = Z_{q-1} X_q Z_{q+1}` (open boundaries), with the sign of generator `q` taken from `signs`.
+    /// Genuinely entangled and not a Bell/GHZ special case, and every generator has both X- and Z-support, so the query-side reduction hits mixed products.
     fn cluster_generators<const W: usize>(
         num_qubits: usize,
         signs: &[bool],
@@ -862,8 +754,7 @@ mod tests {
     fn cluster_state_contraction_matches_the_brute_force_group_w1() {
         let n = 8;
         for seed in [0xC0u64, 0xC1, 0xC2] {
-            // Signs derived from the seed's bits, so all-plus and mixed-sign
-            // states are both covered.
+            // Signs derived from the seed's bits, so all-plus and mixed-sign states are both covered.
             let signs: Vec<bool> = (0..n).map(|q| seed >> q & 1 == 1).collect();
             let gens = cluster_generators::<1>(n, &signs);
             let stab = StabilizerState::<1>::from_generators(n, &gens).unwrap();
@@ -889,8 +780,7 @@ mod tests {
         assert!((got - want).norm() < 1e-12, "{got} vs {want}");
     }
 
-    /// GHZ, sign-randomized, against the same oracle — the state the hand
-    /// computations above pin, checked over a whole random sum.
+    /// GHZ, sign-randomized, against the same oracle — the state the hand computations above pin, checked over a whole random sum.
     #[test]
     fn ghz_contraction_matches_the_brute_force_group() {
         let n = 7;
@@ -912,9 +802,7 @@ mod tests {
         assert!((got - want).norm() < 1e-12, "{got} vs {want}");
     }
 
-    /// Every one of the `2ⁿ` group elements must be reported with the sign the
-    /// enumeration assigns it, and every non-member with `0` — a direct check
-    /// of `sign_of` over the *whole* Pauli group at small `n`.
+    /// Every one of the `2ⁿ` group elements must be reported with the sign the enumeration assigns it, and every non-member with `0` — a direct check of `sign_of` over the whole Pauli group at small `n`.
     #[test]
     fn sign_of_agrees_with_the_brute_force_group_over_every_pauli() {
         let n = 4;

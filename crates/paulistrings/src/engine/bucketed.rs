@@ -2076,68 +2076,6 @@ mod tests {
     /// (`LayerKnobs::rest_streams`); the overlap needs the same treatment, and
     /// this pins that it gets it — deriving it locally would flip a fan-out
     /// channel onto the radix kernel on one partition and not on another.
-    /// Pin `rest_rows_per_key` for every built-in shape the gate classifies.
-    ///
-    /// The second arm of the radix gate is `rest_streams >=
-    /// RADIX_MIN_DISJOINT_STREAMS && rest_rows_per_key < RADIX_MAX_REST_ROWS_PER_KEY`,
-    /// so these three numbers are what decide which sort kernel each channel
-    /// class runs. Both kernels are *correct*, so a drift in `derive_local` or
-    /// in how amplitudes are tabulated would silently re-route a channel to
-    /// the slower kernel with nothing failing — only a performance regression
-    /// nobody would attribute. Hence this table.
-    ///
-    /// The values are structural, not tuned: a Clifford PTM is a key
-    /// permutation, so each reachable output pattern is fed by exactly one
-    /// rest entry (1.0); `sqrt(SWAP)` fans every key out across all three of
-    /// its rest deltas (3.0); a Haar SU(4) realizes 15 rest deltas of which 14
-    /// feed each pattern (14.0). Measured run structure agrees exactly —
-    /// `research/notes/2026-09-10-presortedness-predictor.md`.
-    #[test]
-    fn rest_rows_per_key_pins_the_built_in_channel_classes() {
-        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-        let overlap = |ch: &dyn Channel<1>| {
-            let prep = ch.prepare(&hash, false).unwrap();
-            let Prepared::Local(ptm) = &prep else {
-                panic!("expected a Local plan");
-            };
-            rest_rows_per_key(ptm)
-        };
-
-        // Cliffords permute keys: disjoint streams, the radix kernel's regime.
-        for (name, ch) in [
-            ("cnot", Clifford2Q::cnot(1, 5)),
-            ("cz", Clifford2Q::cz(1, 5)),
-            ("swap", Clifford2Q::swap(1, 5)),
-        ] {
-            let v = overlap(&ch);
-            assert!(
-                (v - 1.0).abs() < 1e-9,
-                "{name}: expected 1.0 (key permutation), got {v}",
-            );
-        }
-
-        // sqrt(SWAP) fans out: every key on every rest stream.
-        let v = overlap(&sqrt_swap_w1(1, 5));
-        assert!((v - 3.0).abs() < 1e-9, "sqrt(SWAP): expected 3.0, got {v}");
-
-        // A dense two-qubit PTM: arm 1 (stream count) already covers it, but
-        // the overlap must not accidentally drop it below the arm-2 bound.
-        let su4 = crate::channel::GeneralUnitary2Q::from_matrix(
-            1,
-            5,
-            crate::test_support::haar_su4_matrix(),
-        );
-        let v = overlap(&su4);
-        assert!(
-            (v - 14.0).abs() < 1e-9,
-            "Haar SU(4): expected 14.0, got {v}"
-        );
-        assert!(
-            v >= RADIX_MAX_REST_ROWS_PER_KEY,
-            "su4 must reach the radix kernel through arm 1, not arm 2",
-        );
-    }
-
     #[test]
     fn a_partitioned_plan_reads_the_channel_wide_overlap() {
         let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);

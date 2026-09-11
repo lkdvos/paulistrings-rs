@@ -66,7 +66,7 @@ Options:
                             H's rows, which changes the rank of the layer's
                             bucket-delta span and therefore the coset
                             dimension `r` — see
-                            research/notes/2026-09-01-bucket-cliff.md.
+                            research/FINDINGS.md.
   --bucket-bits <u8>       Pre-refine the input sum to this many bucket bits
                             (B = 2^bits) before propagating. 0 (default)
                             leaves the sum as built, i.e. the engine's own
@@ -1473,7 +1473,7 @@ fn reseed_hash_until_independent<const W: usize>(
              fewer bits than it claims and the split would be unbalanced. Re-seeded the hash to \
              {candidate:#x} (attempt {attempt}). This changes the coset dimension too, so do not \
              compare this cell's phase timings against a differently seeded one \
-             (research/notes/2026-09-01-bucket-cliff.md).",
+             (research/FINDINGS.md).",
             cfg.partition_rows.label(),
             layer.name(),
         );

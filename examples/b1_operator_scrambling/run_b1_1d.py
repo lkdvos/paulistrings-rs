@@ -1,6 +1,6 @@
 """Showcase B1, phase 1 — real-time operator scrambling on a 1D chain.
 
-Handoff item B1 (1D half); see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B1 (1D half); see `examples/README.md`
 §6 Part B and global rule 4 ("every real-time-dynamics or truncated result
 ships with a convergence panel"). Analysis helpers: `scrambling.py`, next to
 this file. CI-safe correctness gate:

@@ -1,6 +1,6 @@
 """``PauliSum.expectation_stabilizer`` and ``interop.stabilizers_from_stim``.
 
-Design source: ``research/notes/2026-09-01-python-api-extensions.md`` §A8-ii.
+Design source: ``research/FINDINGS.md`` §A8-ii.
 The core's own hand-computed cases live in
 ``crates/paulistrings/src/stabilizer.rs``; what is added here is the *string*
 surface (signed generator specs, their error messages) plus two independent

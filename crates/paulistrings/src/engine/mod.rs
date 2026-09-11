@@ -367,7 +367,7 @@ where
                      propagated. The engine tabulates channels of support ≤ \
                      {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a \
                      channel must not write outside its declared support. See \
-                     research/notes/2026-08-31-local-ptm-generalization.md",
+                     research/FINDINGS.md",
                 );
             }
         }

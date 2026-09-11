@@ -1,7 +1,7 @@
 """Showcase B7 -- stabilizer preparation in stim, estimation by Pauli propagation.
 
 Handoff item B7; adapted spec in
-`research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part B (decision
+`examples/README.md` §6 Part B (decision
 D13: the generator-membership contraction is an *expectation* feature, not
 stabilizer simulation, so it does not conflict with the `lib.rs` non-goal).
 Narrative: `README.md` next to this file. Shared helpers:

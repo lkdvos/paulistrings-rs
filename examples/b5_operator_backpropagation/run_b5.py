@@ -1,8 +1,8 @@
 """Showcase B5 — hybrid depth reduction via operator backpropagation.
 
-Handoff item B5; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B5; see `examples/README.md`
 §6 Part B for the adapted specification and
-`research/notes/2026-09-01-python-api-extensions.md` §A3/§A5 for the
+`research/FINDINGS.md` §A3/§A5 for the
 `paulistrings.io` / `paulistrings.interop` surface this script exercises.
 
 The idea: split a circuit at layer `k` from the end. Instead of running the

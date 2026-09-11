@@ -25,7 +25,7 @@ single-threaded, and the `stim_clifford_exact` cross-check over the same
 plus the stim cross-checks) is well under one second, so nothing here needs
 the ~60 s skip-unless-env-var escape hatch the plan reserves for a slow case --
 that budget is spent by the *untruncated* configuration, which this file does
-not exercise (see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+not exercise (see `examples/README.md`
 Benchmark A's setup note, and `test_benchmark_a_headline_case_is_fast` below,
 which pins the cheap case as a tripwire against a future regression that makes
 it expensive again).

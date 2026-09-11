@@ -102,7 +102,7 @@ Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's
 workstation (ccqlin038, Cascade Lake): the
 JCC erratum (SKX102) excludes any 32-byte fetch window whose jump crosses or ends on the boundary
 from the decoded-uop cache, and the padding takes DSB residency from 45.8% to 98.0%
-(`research/notes/2026-09-10-hot-path-code-size.md`).
+(`research/FINDINGS.md`).
 
 **The erratum is Skylake-derived Intel only**, and the campaign settled it: across rome (Zen2),
 genoa (Zen4) and icelake (Ice Lake-SP), **13 of 13 direction-consistent phase results at 1 thread

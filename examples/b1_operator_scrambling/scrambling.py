@@ -1,6 +1,6 @@
 """Operator-spreading diagnostics read off a truncated `PauliSum`.
 
-Handoff item B1; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item B1; see `examples/README.md`
 §6 Part B ("B1 scrambling/OTOC"). Consumed by `run_b1_1d.py`, `run_b1_2d.py`
 and `python/paulistrings/tests/test_showcase_b1.py`.
 

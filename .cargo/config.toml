@@ -20,5 +20,5 @@ RUST_MIN_STACK = "16777216"
 # Measurement scripts source `scripts/jcc-rustflags.sh`, which detects the
 # erratum from /proc/cpuinfo and appends the flag, so the reference host cannot
 # silently lose 9-13% mid-campaign. Anything else that benchmarks must do the
-# same. See research/notes/2026-09-10-jcc-portability.md.
+# same. See research/HARDWARE.md.
 

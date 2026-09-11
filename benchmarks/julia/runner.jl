@@ -4,7 +4,7 @@
 # ===================================
 #
 # Reads a task-JSON file (schema v1, frozen in
-# research/notes/2026-09-01-python-api-extensions.md §A5), builds the circuit
+# research/FINDINGS.md §A5), builds the circuit
 # and observable in PauliPropagation.jl, propagates, and emits a result JSON.
 #
 #     julia --project=benchmarks/julia benchmarks/julia/runner.jl task.json

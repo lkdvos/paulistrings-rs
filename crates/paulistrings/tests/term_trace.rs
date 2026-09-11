@@ -3,7 +3,7 @@
 //! Cross-module: the trace lives on `engine::bucketed::LayerScratch` but is
 //! written by `engine::propagate_with_scratch`'s per-layer epilogue, and its
 //! counts are a property of the layer loop (fanout, then the policy's
-//! per-term filter). Design: `research/notes/2026-09-01-python-api-extensions.md`
+//! per-term filter). Design: `research/FINDINGS.md`
 //! §A2. This trace is always compiled — unlike `PhaseStats`, which stays
 //! behind the `phase-timing` feature.
 

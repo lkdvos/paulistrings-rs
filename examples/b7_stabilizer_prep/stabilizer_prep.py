@@ -1,7 +1,7 @@
 """Reusable pieces for showcase B7 -- stabilizer preparation, then estimation.
 
 Handoff item B7; adapted spec in
-`research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part B (decision
+`examples/README.md` §6 Part B (decision
 D13, and §3's A8-ii row). The narrative lives in `README.md` next to this file
 and the driver in `run_b7.py`; this module holds everything both the driver and
 the CI gate (`python/paulistrings/tests/test_showcase_b7.py`) need, so neither

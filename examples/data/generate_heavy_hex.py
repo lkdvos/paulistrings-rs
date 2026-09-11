@@ -2,7 +2,7 @@
 """Regenerate ``heavy_hex_127.edges`` from a real IBM Eagle coupling map.
 
 The 127-qubit heavy-hex edge list is *generated*, never hand-typed
-(``research/plans/2026-08-31-examples-benchmarks-suite.md`` §6, Part 0.1): a
+(``examples/README.md`` §6, Part 0.1): a
 144-entry adjacency list transcribed by hand is a silent-wrong-answer waiting
 to happen, and the generated file carries its own provenance header so a reader
 can tell exactly which device map it came from.

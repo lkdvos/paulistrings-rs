@@ -1,6 +1,6 @@
 """Results schema, JSON writer, and plot helpers for the examples/benchmarks suite.
 
-Per `research/plans/2026-08-31-examples-benchmarks-suite.md` Part 0.5. This module
+Per `examples/README.md` Part 0.5. This module
 defines the machine-readable record a benchmark or showcase run produces
 (`RunRecord`, wrapping a `Provenance` block), a JSON writer that appends into a
 `benchmarks/results/<date>-<host>/`-style directory, and a set of matplotlib plot
@@ -48,8 +48,7 @@ the provenance headers `scripts/bench-campaign.sh` writes into
   adapted plan's D9 rule that every suite call passes ``direction=`` explicitly).
 - ``truncation`` — the truncation parameters actually used, as a plain dict (e.g.
   ``{"max_weight": 6, "min_abs_coeff": 1e-6}`` or ``{}`` for no truncation) —
-  mirrors `harness.py`'s planned `make_policy` aliases (research/notes/
-  2026-09-01-python-api-extensions.md, A7), not the policy object itself.
+  mirrors `harness.py`'s `make_policy` aliases, not the policy object itself.
 - ``propagation_time_s`` — warm wall time for the propagation step alone.
 - ``contraction_time_s`` — warm wall time for the contraction/expectation step
   alone (``None`` when not measured separately, e.g. a run that only reports

@@ -1,6 +1,6 @@
 """Benchmark E -- random SU(4) brickwork, CI-safe correctness gates.
 
-`research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part A, row "E".
+`examples/README.md` §6 Part A, row "E".
 The full sweep (term-count explosion at n=36, error-vs-runtime, size scaling,
 the PauliPropagation.jl comparison) lives in the manual driver script
 `benchmarks/python/bench_e_su4.py` -- this file is the fast, CI-visible

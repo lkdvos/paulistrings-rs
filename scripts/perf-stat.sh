@@ -30,7 +30,7 @@ set -euo pipefail
 # ~1% tax on every part without the erratum, which is all of `ccq`. Measurement
 # builds opt in, so the reference host cannot silently lose 9-13% mid-campaign.
 # Append: an exported RUSTFLAGS replaces the config's rustflags wholesale.
-# See scripts/jcc-rustflags.sh and research/notes/2026-09-10-jcc-portability.md.
+# See scripts/jcc-rustflags.sh and research/HARDWARE.md.
 . "$(dirname "$0")/jcc-rustflags.sh"
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
 
@@ -137,10 +137,8 @@ awk -F, '
         idle_s = idle_ns / 1e9
         idle_rate = idle_mib / idle_s                   # MiB/s, whole box, both dirs
 
-        # ccqlin038-specific one-socket ceilings (best measured GB/s), from
-        # research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md -- update
-        # these two constants (or move them behind a host check) before
-        # trusting the "% of per-socket ceiling" figures on another host.
+        # ccqlin038-specific one-socket ceilings (best measured GB/s), from research/HARDWARE.md.
+        # Update these two constants, or move them behind a host check, before trusting the "% of per-socket ceiling" figures on another host.
         RD_CEIL_1S = 39.0
         WR_CEIL_1S = 18.6
 

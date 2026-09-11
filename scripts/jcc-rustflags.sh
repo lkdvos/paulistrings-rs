@@ -25,8 +25,8 @@
 # would otherwise create. Detection reads /proc/cpuinfo rather than a hostname,
 # so it is correct on any node, including ones nobody has calibrated.
 #
-# Full data: research/notes/2026-09-10-hot-path-code-size.md (the mechanism)
-# and research/notes/2026-09-10-jcc-portability.md (the cross-node campaign).
+# Full data: research/FINDINGS.md (the mechanism)
+# and research/HARDWARE.md (the cross-node campaign).
 #
 # NOTE: an exported RUSTFLAGS **replaces** cargo's config rustflags wholesale.
 # Append, never assign:  RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"

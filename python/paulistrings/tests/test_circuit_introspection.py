@@ -3,7 +3,7 @@
 Follow-ups named in PR #1. Four capabilities, one test section each:
 
 1. ``Circuit.gates`` — the channel list as JSON-native dicts in task-JSON
-   schema v1's gate vocabulary (``research/notes/2026-09-01-python-api-extensions.md``
+   schema v1's gate vocabulary (``research/FINDINGS.md``
    §A5), so ``Circuit(...)`` -> ``.gates`` -> task JSON -> ``Circuit`` closes.
 2. ``sdg`` — the named ``S^dagger`` spelling, an addition to that vocabulary
    and the one gate ``adjoint()`` could not otherwise express.

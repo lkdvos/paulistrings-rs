@@ -1,6 +1,6 @@
 """Ground-truth oracles for the `examples/` benchmark & showcase suite.
 
-Handoff item P0c; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item P0c; see `examples/README.md`
 §6 Part 0.3, and global rule 1 in §7: *"every numeric claim is computed by an
 oracle or loaded from a provenance-tagged reference file. Only Clifford-point
 integers and oracle outputs may be asserted directly."* This module is the

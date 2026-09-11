@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark D -- 1D Trotterized XXZ chain: scaling, growth law, self-check.
 
-Adapted plan `research/plans/2026-08-31-examples-benchmarks-suite.md` §6 Part A
+Adapted plan `examples/README.md` §6 Part A
 row **D**: `n = 20..100`, `Jz in {0, 0.5}`, a central `Z` and a weight-2
 `Z_c Z_{c+1}`, statevector reference for `n <= 26`, the analytic term-growth law
 at `Jz = 0`, and time/memory-vs-`n` for both engines.

@@ -1,6 +1,6 @@
 """Parameterized circuit builders for the `examples/` showcase suite.
 
-Handoff item P0a; see `research/plans/2026-08-31-examples-benchmarks-suite.md`
+Handoff item P0a; see `examples/README.md`
 §6 Part 0.1 for the adapted specification.
 
 Two rules govern everything in this module.

@@ -1,7 +1,7 @@
 # Findings
 
 One entry per experiment: the question, the verdict, the number that matters.
-Full write-ups — protocols, raw A/B tables, reproduction commands — are in git history under the deleted `research/README.md`, `research/notes/YYYY-MM-DD-*.md` and `research/plans/YYYY-MM-DD-*.md`, recoverable across `9107bf7..2b95210` (`git log --diff-filter=D -- research/`).
+Full write-ups — protocols, raw A/B tables, reproduction commands — are in git history under the deleted `research/README.md`, `research/notes/YYYY-MM-DD-*.md` and `research/plans/YYYY-MM-DD-*.md`; recover them with `git log --diff-filter=D -- research/`.
 Measured host facts live in `HARDWARE.md`.
 
 ## Rejected

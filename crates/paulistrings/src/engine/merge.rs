@@ -213,18 +213,76 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// | 16 | nobody; radix off | `su4` **+17.20%** (sort +31.4%) |
 ///
 /// The `su4` justification reproduces intact (radix is −14.7% wall / −23.9%
-/// sort there, against the original −15.2% / −25.4%). What does *not* survive
-/// is the assumption behind the shape of the gate: **`cnot` and `gu2q` both
-/// have exactly 3 rest streams and want opposite kernels**, by −5.5% and
-/// +13.2%. The rest-stream count is therefore not a predictor at all in this
-/// band — it is only a proxy for how presorted the concatenated stream is, and
-/// the two layers differ there (`gu2q`'s three Pauli-structured deltas each
-/// own a coset coordinate and arrive as clean ascending blocks; `cnot`'s do
-/// not). No threshold on *this* quantity can take `cnot`'s win without taking
-/// `gu2q`'s loss, so 8 stands and the open question moves to finding a
-/// plan-time presortedness predictor.
-/// `research/notes/2026-09-10-constant-recalibration.md`.
+/// sort there, against the original −15.2% / −25.4%), and this constant keeps
+/// its value as **that** arm of the gate. What did not survive is the idea
+/// that it is the *only* arm: `cnot` and `gu2q` both have exactly 3 rest
+/// streams and want opposite kernels, by −5.5% and +13.2%, so no threshold on
+/// the stream count alone can take `cnot`'s win.
+///
+/// # 2026-09-10, second pass: the second arm, and what the stream count is a
+/// proxy for
+///
+/// The separating quantity is **not** presortedness, which the
+/// 2026-09-10 note conjectured and which is measurably constant: instrumenting
+/// the engine's own gather runs shows every built-in `Local` layer arrives as
+/// *exactly* `k` maximal ascending runs for `k` rest streams — zero inversions,
+/// on `cnot`, `gu2q`, `su4` and `rotation_zz` alike. That is forced: a stream
+/// `{v ⊕ d}` inverts an adjacent pair only where the pair's highest differing
+/// bit is set in `d`, and a two-qubit gate's masks touch only bits 0–1 of
+/// `x[0]`/`z[0]` while a bucket's adjacent keys first differ in the *top* bits
+/// of `x[0]`. Comparisons per row are likewise equal on the two 3-stream
+/// layers (2.65 both, against the `log2(k) + 1` floor).
+///
+/// What differs is **nanoseconds per comparison** — 4.23 on `cnot` against
+/// 2.74 on `gu2q` — and it is branch misprediction in the `k`-way merge.
+/// `cnot` is a *key permutation*: its rest streams are pairwise disjoint key
+/// sets drawn from three different source buckets, so "which stream is next"
+/// is a coin flip. `gu2q` fans out: every output key is produced by all three
+/// streams, which therefore step in lock-step and predict perfectly. Measured
+/// (`perf stat`, 10 layers, `--n 1000000`), radix minus comparison:
+///
+/// | layer | Δ branch-misses / row sorted | Δ instructions / row | wall Δ% |
+/// |---|---:|---:|---:|
+/// | `cnot` | **−1.46** (≈0.55 per comparison) | +70 | **−5.26** (14/14) |
+/// | `gu2q` | −0.28 (≈0.11 per comparison) | +88 | **+12.43** (14/14) |
+///
+/// The radix kernel's cost is flat in both (its passes are counting sorts, so
+/// it has no data-dependent branch to miss); the comparison kernel's is not.
+/// Hence the gate has two arms, and the plan-time quantity behind the second
+/// is [`RADIX_MAX_REST_ROWS_PER_KEY`] — computed by
+/// `bucketed::rest_rows_per_key` straight out of the PTM's amplitude support,
+/// 1.00 for `cnot`, 3.00 for `gu2q` and 14.00 for `su4`, equal to the digit to
+/// the `rows_sorted / distinct keys` measured inside the gather runs.
+/// `research/notes/2026-09-10-presortedness-predictor.md`.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
+
+/// Second arm of the radix gate: the largest `rest_rows_per_key` a layer may
+/// have and still be treated as *disjoint*-streamed.
+///
+/// `bucketed::rest_rows_per_key` estimates, from the prepared PTM alone, how
+/// many rest rows land on one output key — `rows_sorted / distinct keys` in a
+/// gather run. Exactly `1.0` means the streams are pairwise disjoint and the
+/// `k`-way merge's branch is a coin flip, which is the regime the radix kernel
+/// wins (see [`RADIX_MIN_REST_STREAMS`]'s second 2026-09-10 section). The only
+/// values the built-ins take are **1.00** (every Clifford: a key permutation)
+/// and **3.00** (`sqrt(SWAP)`) / **14.00** (Haar SU(4)), so this sits at the
+/// midpoint of the one measured gap. Deliberately a hard floor rather than a
+/// tuned curve: the two arms cover the two mechanisms, and nothing between
+/// them has ever been measured.
+pub(crate) const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
+
+/// Second arm of the radix gate: the minimum rest-stream count for the
+/// *disjoint*-streams arm.
+///
+/// The arm exists because a disjoint `k`-way merge mispredicts about once per
+/// two comparisons, and comparisons per row are `≈ log2(k) + 1` — so the
+/// comparison kernel's cost grows with `k` while the radix's does not. At
+/// `k = 3` (`cnot`, `cz`) the crossover has been passed: measured −5.66% wall,
+/// −22.58% sort, 14/14 pairs. At `k = 2` it has not been measured — no
+/// built-in channel realizes exactly two rest deltas — and `log2(2) + 1 = 2`
+/// comparisons per row puts it on the wrong side of the estimate, so the arm
+/// starts at 3 and a two-stream layer keeps the comparison kernel.
+pub(crate) const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 
 /// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
 ///

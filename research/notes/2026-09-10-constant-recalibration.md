@@ -273,16 +273,19 @@ phase it does not measure is the phase that moves. §1.2's own first bullet says
 
 ## 6. What to do next
 
-1. **A presortedness predictor at plan time.** `cnot` at −5.5% is a real, reproducible win that the
-   current gate cannot express. The quantity that separates it from `gu2q` is how many maximal
-   ascending runs a gather run arrives as, which is a deterministic function of the plan: the
-   multiset of coset coordinates the rest deltas map to (`coords[e]` for `e ≥ rest_start`). If
-   every delta owns a distinct coordinate, each run is a `k`-way merge of `k` clean blocks and the
-   comparison sort is near its floor; if `d` deltas share a coordinate, their rows interleave row
-   by row and it is not. `examples/delta_span_diagnostics.rs` already computes the run counts
-   offline — the work is confirming the correspondence and then computing the same thing in
-   `DeltaPlan::new`, which is once per layer. Gate on that instead of on the stream count, and
-   `cnot` and `su4` both take the radix while `gu2q` and the 1-stream layers do not.
+1. ~~**A presortedness predictor at plan time.**~~ **Done, and this item was wrong in two ways**
+   — see `2026-09-10-presortedness-predictor.md`. Presortedness does not vary: every built-in
+   `Local` layer's gather run arrives as *exactly* `k` ascending runs for `k` rest streams, zero
+   inversions, `cnot` and `gu2q` alike, because a two-qubit gate's delta masks sit far below the
+   bit positions at which a bucket's adjacent keys first differ. Nor do `cnot`'s deltas share a
+   coset coordinate: at `r = 2` three distinct nonzero bucket deltas span the coset space, so both
+   channels' coords are `{1, 2, 3}` and each delta owns one. The separating quantity is
+   **nanoseconds per comparison** — 4.23 on `cnot` against 2.74 on `gu2q`, from branch
+   misprediction in a merge of *disjoint* streams (a key permutation) versus overlapping ones (a
+   fan-out) — and the plan-time proxy is `bucketed::rest_rows_per_key`, read out of the PTM's
+   amplitude support: 1.00 / 3.00 / 14.00 for `cnot` / `gu2q` / `su4` against a measured 1.00 /
+   3.00 / 14.00. Shipped as a second arm on the gate; `cnot` **−5.26% wall / −21.67% sort,
+   14/14**, every other layer's kernel unchanged.
 2. **The remaining `Vec::push` sites in the gather.** §2.1's win was capacity checks on a path
    where nothing is filtered. The rotation gather (`DeltaPlan::Rotation`, three `push` /
    `id_coeff.push` sites) has the same structure and covers `rotation_zz`, `trotter`, `tfim_step`
@@ -295,7 +298,8 @@ phase it does not measure is the phase that moves. §1.2's own first bullet says
    alongside, per that note's own instruction.
 4. **Nothing further on either constant.** Both are now bracketed by measurement on every side
    they have. Re-open only if a new channel shape lands outside {1, 3, 15} rest streams or
-   {1, 2, 4} coset rank.
+   {1, 2, 4} coset rank. `RADIX_MIN_REST_STREAMS` keeps its value and its meaning under the
+   two-arm gate: item 1 added an arm beside it rather than moving it.
 
 ## 7. Reproduction
 

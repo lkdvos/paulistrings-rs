@@ -29,7 +29,8 @@ use crate::bucket::hash::PartitionRows;
 use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
-    apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
+    apply_layer_bucketed, apply_layer_bucketed_with, rest_rows_per_key, ExtraRows, LayerKnobs,
+    LayerScratch,
 };
 use crate::engine::coset::Gf2Span;
 use crate::truncation::TruncationPolicy;
@@ -352,6 +353,16 @@ where
     let knobs = LayerKnobs {
         bucket_deltas: Some(&plan.local_bucket_deltas),
         rest_streams: Some(plan.rest_streams_total),
+        // From `prep`, not `local_prep`: `retain_entries` drops the entries
+        // that leave this partition, and a cut-down delta set always looks at
+        // least as disjoint as the channel. Asking the restricted PTM could
+        // put one partition on the radix kernel for a fan-out channel the
+        // unpartitioned run keeps on the comparison kernel — see
+        // `LayerKnobs::rows_per_key`.
+        rows_per_key: match prep {
+            Prepared::Local(ptm) => Some(rest_rows_per_key(ptm)),
+            Prepared::Rotation(_) => None,
+        },
         gen_local: match prep {
             // Entry 1 is the generator pass (`plan`'s numbering).
             Prepared::Rotation(_) => plan.local_entries[1],

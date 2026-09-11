@@ -41,7 +41,7 @@ use rayon::prelude::*;
 use super::coset::Gf2Span;
 use super::merge::{
     merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
-    RADIX_MIN_REST_STREAMS,
+    RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
 };
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
@@ -395,12 +395,16 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
         /// measured +15–30% on cnot/h (`research/notes/2026-08-31-v0.6-results.md`).
         dense_identity: bool,
         /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch`
-        /// instead of the comparison kernel — true exactly when the plan has
-        /// at least `merge::RADIX_MIN_REST_STREAMS` rest streams, i.e. a dense
-        /// two-qubit PTM. Decided once per layer, so the kernel choice costs
-        /// nothing per run and every sparse-PTM layer keeps the code path it
-        /// had. See `RADIX_MIN_REST_STREAMS` for the measurements behind the
-        /// threshold.
+        /// instead of the comparison kernel. Two arms, both plan-time and both
+        /// measured: at least `merge::RADIX_MIN_REST_STREAMS` rest streams
+        /// (a dense two-qubit PTM, where comparisons per row are high), or at
+        /// least `merge::RADIX_MIN_DISJOINT_STREAMS` rest streams whose
+        /// [`rest_rows_per_key`] is below
+        /// `merge::RADIX_MAX_REST_ROWS_PER_KEY` (a key-permuting gate, where
+        /// comparisons per row are ordinary but each one mispredicts). Decided
+        /// once per layer, so the kernel choice costs nothing per run and every
+        /// sparse-PTM layer keeps the code path it had. See
+        /// `RADIX_MIN_REST_STREAMS` for the measurements behind both.
         radix_sort: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
@@ -439,6 +443,16 @@ pub(crate) struct LayerKnobs<'k> {
     /// is a property of the channel, not of how one partition happens to see
     /// it, so every partition picks the same kernel as the unpartitioned run.
     pub rest_streams: Option<usize>,
+    /// Rest-stream overlap driving the sort-kernel choice, as
+    /// [`rest_streams`](Self::rest_streams) does for the count. `None` — the
+    /// default — derives it from the plan's own PTM. The partitioned layer
+    /// passes the **unrestricted** channel's [`rest_rows_per_key`], because
+    /// the PTM it hands `DeltaPlan::new` is cut down to the entries that stay
+    /// local and a cut-down delta set can only look more disjoint than the
+    /// channel is — so deriving it locally could switch one partition onto
+    /// the radix kernel for a fan-out channel that the unpartitioned run
+    /// keeps on the comparison kernel.
+    pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here (see
     /// [`DeltaPlan::Rotation::gen_local`]). `true` by default.
     pub gen_local: bool,
@@ -449,8 +463,62 @@ impl Default for LayerKnobs<'_> {
         Self {
             bucket_deltas: None,
             rest_streams: None,
+            rows_per_key: None,
             gen_local: true,
         }
+    }
+}
+
+/// Rest rows landing on one output key, averaged over the output keys that
+/// get at least one — the plan-time estimate of `rows_sorted / distinct keys`
+/// in a gather run, and the second arm of the radix gate
+/// (`merge::RADIX_MAX_REST_ROWS_PER_KEY`).
+///
+/// `1.0` says the rest streams are pairwise **disjoint**: no output key is
+/// reachable by two deltas at once, so the per-run `k`-way merge has to pick
+/// between `k` unrelated key sets and its branch is a coin flip. Anything
+/// above says the streams overlap and the merge steps through them in
+/// lock-step, which the branch predictor learns. Which regime a layer is in
+/// decides the sort kernel, and this is the only quantity that tells the two
+/// 3-stream built-ins apart — see `merge::RADIX_MIN_REST_STREAMS`.
+///
+/// Read straight out of the PTM's amplitude *support*, so it is exact for the
+/// locally-closed sum a steady-state layer sees: `amp[s]` weights
+/// `s -> s ^ local_delta`, hence output pattern `o` takes a row from entry `e`
+/// exactly when `amp_e[o ^ local_delta_e] != 0`. Cost is `|D| · 4^k` — 240
+/// amplitude tests for the densest two-qubit channel — once per layer.
+///
+/// Values for the built-ins: **1.00** for every Clifford (a key permutation
+/// sends each source row to exactly one output row), **3.00** for
+/// `sqrt(SWAP)`, **14.00** for a Haar SU(4) — equal, to the digit, to the
+/// `rows_sorted / distinct keys` measured inside the engine's own gather runs
+/// (`research/notes/2026-09-10-presortedness-predictor.md` §3).
+///
+/// **Must be asked of the channel's own PTM, never a restricted one.** A
+/// partitioned layer hands [`DeltaPlan::new`] a PTM cut down to its local
+/// entries, and dropping entries can only make the remainder look *more*
+/// disjoint — one surviving stream reads 1.0 whatever the channel is. That is
+/// why [`LayerKnobs::rows_per_key`] exists, exactly as
+/// [`LayerKnobs::rest_streams`] does for the count.
+pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
+    // Entry 0 is the identity delta when present (ascending `local_delta`
+    // construction order), and its stream is the pre-sorted `id` columns —
+    // never part of the sorted rest stream.
+    let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
+    let dim = 1usize << (2 * ptm.k());
+    let (mut rows, mut keys) = (0u32, 0u32);
+    for o in 0..dim {
+        let n = ptm.deltas()[rest_start..]
+            .iter()
+            .filter(|d| d.amp[o ^ d.local_delta as usize] != ZERO)
+            .count() as u32;
+        rows += n;
+        keys += u32::from(n > 0);
+    }
+    if keys == 0 {
+        0.0
+    } else {
+        f64::from(rows) / f64::from(keys)
     }
 }
 
@@ -479,12 +547,22 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
+                // Both arms read channel-wide quantities, never this
+                // partition's view of them — `LayerKnobs` overrides both
+                // under a partitioning, for the same reason in both cases —
+                // so every partition picks the kernel the unpartitioned run
+                // would. The overlap arm is evaluated only when the count arm
+                // has already declined and the count clears its own floor.
+                let radix_sort = rest_streams >= RADIX_MIN_REST_STREAMS
+                    || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
+                        && knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
+                            < RADIX_MAX_REST_ROWS_PER_KEY);
                 DeltaPlan::Local {
                     ptm,
                     coords,
                     has_identity,
                     dense_identity,
-                    radix_sort: rest_streams >= RADIX_MIN_REST_STREAMS,
+                    radix_sort,
                 }
             }
             Prepared::Rotation(r) => DeltaPlan::Rotation {
@@ -1872,19 +1950,26 @@ mod tests {
         check(&Clifford1Q::h(3), false, "h");
     }
 
-    /// Which sort kernel each built-in's layer gets.
+    /// Which sort kernel each built-in's layer gets, and the two plan-time
+    /// quantities that decide it.
     ///
-    /// The radix kernel wins on many-stream, high-duplicate runs and loses
-    /// badly (+130–165 %) on a single nearly-sorted stream, so the gate must
-    /// fire for dense two-qubit PTMs and *only* those. Pinned per channel
-    /// because the trigger is the realized delta-set size, which a PTM change
-    /// could move silently in either direction — a gate that quietly stopped
-    /// firing would look like nothing more than a lost speedup, and one that
-    /// started firing on `rotation_zz` would be a large regression.
+    /// The radix kernel wins where the comparison merge is expensive per row —
+    /// either because there are many streams to merge (`su4`) or because the
+    /// streams are disjoint and every comparison mispredicts (`cnot`, `cz`,
+    /// `swap`: key permutations) — and loses badly (+130–165 %) on a single
+    /// nearly-sorted stream. Both triggers are pinned per channel, values and
+    /// all, because a PTM change could move either silently in either
+    /// direction: a gate that quietly stopped firing would look like nothing
+    /// more than a lost speedup, and one that started firing on `rotation_zz`
+    /// would be a large regression. `rest_rows_per_key` is pinned exactly
+    /// because it is *measurably* the engine's own `rows_sorted / distinct
+    /// keys` — 1.00 / 3.00 / 14.00 in the instrumented gather runs, matching
+    /// these three values to two decimals
+    /// (`research/notes/2026-09-10-presortedness-predictor.md`).
     #[test]
     fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool) {
+        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool, f64) {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 8);
             match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
@@ -1893,7 +1978,11 @@ mod tests {
                     has_identity,
                     radix_sort,
                     ..
-                } => (ptm.deltas().len() - has_identity as usize, radix_sort),
+                } => (
+                    ptm.deltas().len() - has_identity as usize,
+                    radix_sort,
+                    rest_rows_per_key(ptm),
+                ),
                 // A wide rotation has one rest stream by construction and no
                 // `radix_sort` field: `fill_coset` reads `false` for it.
                 DeltaPlan::Rotation { .. } => {
@@ -1901,10 +1990,22 @@ mod tests {
                         label.starts_with("rot"),
                         "{label}: unexpected Rotation plan"
                     );
-                    (1, false)
+                    (1, false, 0.0)
                 }
             }
         };
+        // (label, rest streams, rest_rows_per_key, radix).
+        let expect: &[(&str, usize, f64, bool)] = &[
+            ("haar_su4", 15, 14.0, true),
+            ("gu2q_sqrt_swap", 3, 3.0, false),
+            ("cnot", 3, 1.0, true),
+            ("cz", 3, 1.0, true),
+            ("swap", 3, 1.0, true),
+            ("h", 1, 1.0, false),
+            ("s", 1, 1.0, false),
+            ("rot_zz", 1, 1.0, false),
+            ("depolarizing", 0, 0.0, false),
+        ];
         let mut selected = Vec::new();
         let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
             ("haar_su4", Box::new(haar_su4(1, 5))),
@@ -1933,23 +2034,97 @@ mod tests {
                 }),
             ),
         ];
-        for (label, ch) in &cases {
-            let (streams, radix) = rest_streams(ch.as_ref(), label);
+        assert_eq!(cases.len(), expect.len());
+        for ((label, ch), &(want_label, want_streams, want_rpk, want_radix)) in
+            cases.iter().zip(expect)
+        {
+            assert_eq!(*label, want_label);
+            let (streams, radix, rpk) = rest_streams(ch.as_ref(), label);
+            assert_eq!(streams, want_streams, "{label}: rest streams");
+            assert!(
+                (rpk - want_rpk).abs() < 1e-9,
+                "{label}: rest_rows_per_key {rpk}, want {want_rpk}",
+            );
             assert_eq!(
-                radix,
-                streams >= RADIX_MIN_REST_STREAMS,
-                "{label}: {streams} rest streams but radix_sort = {radix}",
+                radix, want_radix,
+                "{label}: {streams} rest streams, {rpk} rows per key, radix_sort = {radix}",
             );
             if radix {
                 selected.push(*label);
             }
         }
-        // The dense SU(4) realizes all 16 deltas; nothing else here comes
-        // close (sqrt(SWAP) is the runner-up at 3).
+        // Arm one: the dense SU(4) realizes all 16 deltas; nothing else here
+        // comes close (sqrt(SWAP) is the runner-up at 3). Arm two: the three
+        // two-qubit Cliffords, whose rest streams are disjoint. `sqrt(SWAP)`
+        // has the same stream count as `cnot` and is deliberately *not*
+        // selected — the whole point of the second arm's quantity.
         assert_eq!(
             selected,
-            vec!["haar_su4"],
+            vec!["haar_su4", "cnot", "cz", "swap"],
             "the radix gate fired on an unexpected set of channels",
+        );
+    }
+
+    /// A partitioned layer must pick the kernel the unpartitioned run picks,
+    /// on *both* arms of the gate.
+    ///
+    /// `partitioned::layer` hands `DeltaPlan::new` a PTM restricted to the
+    /// entries that stay local, and a restriction can only look more disjoint
+    /// than the channel: drop two of `sqrt(SWAP)`'s three rest deltas and the
+    /// survivor reads `rest_rows_per_key == 1.0`, which is `cnot`'s value. The
+    /// stream count is already overridden for exactly this reason
+    /// (`LayerKnobs::rest_streams`); the overlap needs the same treatment, and
+    /// this pins that it gets it — deriving it locally would flip a fan-out
+    /// channel onto the radix kernel on one partition and not on another.
+    #[test]
+    fn a_partitioned_plan_reads_the_channel_wide_overlap() {
+        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
+        let gu2q = sqrt_swap_w1(1, 5);
+        let prep = gu2q.prepare(&hash, false).unwrap();
+        let Prepared::Local(full) = &prep else {
+            panic!("sqrt(SWAP) prepares to a Local plan");
+        };
+        assert!(
+            (rest_rows_per_key(full) - 3.0).abs() < 1e-9,
+            "the channel-wide value is the one the gate must see",
+        );
+
+        // Keep the identity entry and one rest entry: the partition whose
+        // local view is most misleading.
+        let mut keep = vec![false; full.deltas().len()];
+        keep[0] = true;
+        keep[1] = true;
+        let local = Prepared::Local(full.retain_entries(&keep));
+        let Prepared::Local(restricted) = &local else {
+            unreachable!()
+        };
+        assert!(
+            (rest_rows_per_key(restricted) - 1.0).abs() < 1e-9,
+            "the restricted view must be the misleading one, or this test is vacuous",
+        );
+
+        let span = Gf2Span::new(&local.bucket_deltas(), 8);
+        let radix = |knobs: LayerKnobs<'_>| match DeltaPlan::new(&local, &span, knobs) {
+            DeltaPlan::Local { radix_sort, .. } => radix_sort,
+            DeltaPlan::Rotation { .. } => unreachable!(),
+        };
+        // What the partitioned layer actually passes.
+        assert!(
+            !radix(LayerKnobs {
+                rest_streams: Some(3),
+                rows_per_key: Some(rest_rows_per_key(full)),
+                ..LayerKnobs::default()
+            }),
+            "a partition of a fan-out channel must keep the comparison kernel",
+        );
+        // And the failure mode, spelled out: the count override alone is not
+        // enough once the gate has a second arm.
+        assert!(
+            radix(LayerKnobs {
+                rest_streams: Some(3),
+                ..LayerKnobs::default()
+            }),
+            "the restricted PTM really does mislead the overlap arm",
         );
     }
 

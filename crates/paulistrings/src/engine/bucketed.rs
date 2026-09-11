@@ -1,37 +1,6 @@
 //! The bucketed layer engine. See ARCHITECTURE.md §Engine.
 //!
-//! The unit of work is one **coset** of `span(h(D))` in the bucket-index space
-//! (`Gf2Span`): every output bucket in a coset reads only input buckets in
-//! that same coset, so a coset is a closed task that can work **in place** —
-//! its `2^r` bucket columns are swapped into thread scratch, and the emptied
-//! (capacity-retaining) slots become the write destinations. One layer:
-//!
-//! 1. **Permute** the bucket *handles* into coset-contiguous order
-//!    (`Gf2Span::perm_index`); two `O(B)` handle moves bracket the layer.
-//! 2. Per coset: **swap** the member columns into scratch, **size** each
-//!    per-member gather run exactly from the swapped-out lengths, **gather**
-//!    input-member-major — each term is loaded once and its whole fanout is
-//!    scattered to runs by the O(1) index identity
-//!    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — then per run **sort** by key
-//!    alone and **merge** straight into the member's live slot. When the
-//!    identity delta's amplitude never vanishes (dense: every rotation and
-//!    general unitary) the id stream's keys are the source bucket's keys row
-//!    for row, so the gather materializes only the 16-byte coefficients and
-//!    the merge borrows the key columns in place.
-//! 3. Un-permute the handles, recount, assert invariants.
-//!
-//! The gather visits each input term exactly once, and there is no second
-//! full-size buffer: peak memory is `n` plus per-worker scratch of one
-//! coset's working set.
-//!
-//! Determinism (ARCHITECTURE.md §Determinism): cosets are write-disjoint and
-//! work within one is sequential, so output is bitwise identical across
-//! thread counts *and* across repeat runs at a fixed bucket count and hash
-//! seed — `sort_rows_with_scratch`'s key-only sort is a deterministic
-//! function of its input, even though equal-key order is unspecified.
-//! Across bucket counts or hash seeds, output agrees only to
-//! floating-point tolerance: a different partition can gather equal-key
-//! contributions in a different order, and `f64` addition is not associative.
+//! Applies one prepared channel to a `PauliSum` one coset of `span(h(D))` at a time: cosets are write-disjoint, so each is gathered, sorted and merged in place with no cross-task synchronization. `LayerScratch` holds the reusable per-layer working set.
 
 use std::sync::Mutex;
 
@@ -54,50 +23,26 @@ use super::stats::{CosetStats, PhaseStats, Stamp};
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
-/// Reusable per-layer scratch.
+/// Reusable per-layer scratch, held by the caller across layers so a layer allocates nothing after the first call: every field retains its high-water capacity across cosets and layers.
+/// The serial path uses this instance directly; the parallel path gives each Rayon worker its own slot in `workers`, so capacity is bounded by `threads × coset working set`.
 ///
-/// Held by the caller across layers because a layer must allocate nothing
-/// after the first: every field retains its high-water capacity
-/// across cosets and layers. The serial path uses the caller's instance
-/// directly; the parallel path takes one slot of `workers` per Rayon worker
-/// thread, so scratch capacity is bounded by `threads × coset working set`
-/// and survives across cosets, layers, and `propagate` calls. (Rayon's
-/// `for_each_init` would instead construct its init value once per *split* —
-/// many times per layer — which reallocated these MB-scale buffers over and
-/// over; that churn measured as a 20–50% per-layer regression.)
-///
-/// A task's output cannot depend on which scratch slot it drew: the swap
-/// site clears every write destination before use, and gather runs reset on
-/// take — so worker→slot assignment varying run to run is unobservable,
-/// which is what keeps output byte-identical across thread counts.
+/// A task's output cannot depend on which scratch slot it drew: the swap site clears every write destination before use, so worker-to-slot assignment varying run to run is unobservable — which is what keeps output byte-identical across thread counts.
 #[derive(Debug, Default)]
 pub struct LayerScratch<const W: usize> {
     /// The per-coset working set (serial path).
     pub(super) task: CosetScratch<W>,
     /// The layer's handle permutation, `perm[β] = span.perm_index(β)`.
     pub(super) perm: Vec<u32>,
-    /// The inverse of [`Self::perm`], `inv_perm[perm[β]] = β`, so a coset
-    /// member's *original* bucket index is recoverable from its permuted
-    /// position. Filled only when the layer's [`ExtraRows`] source asks for
-    /// it ([`ExtraRows::NEEDS_BETA`]); left empty otherwise, which
-    /// [`fill_coset`] reads as "the permutation is the identity".
+    /// The inverse of [`Self::perm`], `inv_perm[perm[β]] = β`, so a coset member's *original* bucket index is recoverable from its permuted position. Filled only when the layer's [`ExtraRows`] source asks for it ([`ExtraRows::NEEDS_BETA`]); left empty otherwise, which [`fill_coset`] reads as "the permutation is the identity".
     pub(super) inv_perm: Vec<u32>,
-    /// Staging area the bucket handles are permuted into. Holds handles only
-    /// while a layer runs; its elements carry no capacity of their own.
+    /// Staging area the bucket handles are permuted into. Holds handles only while a layer runs; its elements carry no capacity of their own.
     pub(super) staging: Vec<BucketCols<W>>,
-    /// Worker-persistent coset working sets for the parallel path, one slot
-    /// per Rayon worker, indexed by `rayon::current_thread_index()`. Each
-    /// worker locks only its own slot, so the mutexes are uncontended; they
-    /// exist to make the shared borrow safe, not to arbitrate.
+    /// Worker-persistent coset working sets for the parallel path, one slot per Rayon worker, indexed by `rayon::current_thread_index()`. Each worker locks only its own slot, so the mutexes are uncontended.
     pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
-    /// Layer-level (wall-clock) phase counters; the per-coset busy-time
-    /// counters live in each `CosetScratch`.
+    /// Layer-level (wall-clock) phase counters; the per-coset busy-time counters live in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
-    /// The opt-in per-layer term-count trace, `None` unless
-    /// [`Self::enable_term_trace`] was called. Written only by
-    /// `propagate_with_scratch`'s per-layer epilogue — nothing in this module
-    /// touches it, so it costs the layer nothing.
+    /// The opt-in per-layer term-count trace, `None` unless [`Self::enable_term_trace`] was called.
     pub(crate) term_trace: Option<TermTrace>,
 }
 
@@ -107,14 +52,8 @@ impl<const W: usize> LayerScratch<W> {
         Self::default()
     }
 
-    /// Drain and return the accumulated phase counters: the layer-level
-    /// wall-clock fields plus every worker's busy-time counters, all zeroed
-    /// afterwards.
-    ///
-    /// Call between measured regions; counters accumulate across layers and
-    /// `propagate_with_scratch` calls until drained. Caveat: the defensive
-    /// fresh-scratch arm of the parallel coset loop (a worker with no pool
-    /// index) drops its counters — that arm is unreachable in practice.
+    /// Drain and return the accumulated phase counters (layer-level wall-clock fields plus every worker's busy-time counters), zeroing them.
+    /// Counters accumulate across layers and `propagate_with_scratch` calls until drained.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PhaseStats {
         let mut total = std::mem::take(&mut self.stats);
@@ -126,66 +65,31 @@ impl<const W: usize> LayerScratch<W> {
         total
     }
 
-    /// Start recording a [`TermTrace`] on every subsequent
-    /// [`propagate_with_scratch`](crate::propagate_with_scratch) call driven
-    /// by this scratch. Idempotent, and it never discards counts already
-    /// recorded.
-    ///
-    /// Unlike `take_stats` this is always compiled: the
-    /// counts come from the `sum.len()` reads the layer loop already performs,
-    /// so recording them is two `usize` pushes per *layer* on the calling
-    /// thread — no clock, no per-term work, nothing inside the coset loop.
+    /// Start recording a [`TermTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards counts already recorded. Always compiled: the counts come from `sum.len()` reads the layer loop already performs.
     pub fn enable_term_trace(&mut self) {
         self.term_trace.get_or_insert_with(TermTrace::default);
     }
 
-    /// Drain and return the per-layer term counts, or `None` if tracing was
-    /// never enabled (`Some` ⟺ tracing is on).
-    ///
-    /// Draining leaves tracing *enabled* with empty vectors, so a scratch
-    /// reused across calls (a Trotter driver stepping an observable) reports
-    /// each call separately without re-enabling; counts accumulate across
-    /// layers and calls until drained.
+    /// Drain and return the per-layer term counts, or `None` if tracing was never enabled.
+    /// Draining leaves tracing enabled with empty vectors, so a reused scratch reports each call separately without re-enabling.
     pub fn take_term_trace(&mut self) -> Option<TermTrace> {
         self.term_trace.as_mut().map(std::mem::take)
     }
 }
 
-/// Per-layer resident term counts, recorded by
-/// [`propagate_with_scratch`](crate::propagate_with_scratch) when the
-/// driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace)
-/// set. Both vectors have one entry per layer applied, in application order
-/// (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)).
-///
-/// Always compiled — the `phase-timing` feature gates the *timing* counters
-/// (`PhaseStats`), not these counts.
-///
-/// # What is *not* here
-///
-/// These are the counts of the sum as it rests between layers: `terms_in[k]`
-/// is read before layer `k` starts, `terms_out[k]` after that layer's
-/// `finalize_layer`, i.e. **post-truncation**. The transient in-layer
-/// expansion — the sum after a channel's fanout but before the merge
-/// deduplicates and the policy filters — is deliberately not captured:
-/// observing it would mean instrumenting the coset loop, which is where the
-/// engine's time goes. Peak *memory* is a harness-level measurement
-/// (`/proc/self/status`), not this struct's job.
+/// Per-layer resident term counts, recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace) set.
+/// Both vectors have one entry per layer applied, in application order (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)). Always compiled — the `phase-timing` feature gates only the timing counters.
+/// These are counts of the sum as it rests between layers, post-truncation; the transient in-layer expansion is not captured, since observing it would mean instrumenting the coset loop.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TermTrace {
-    /// Resident term count before each layer. `terms_in[k + 1]` equals
-    /// `terms_out[k]`, so the whole trace is the sequence
-    /// `terms_in[0], terms_out[0], terms_out[1], …`.
+    /// Resident term count before each layer. `terms_in[k + 1]` equals `terms_out[k]`.
     pub terms_in: Vec<usize>,
-    /// Resident term count after each layer, i.e. after the truncation
-    /// policy's `finalize_layer`.
+    /// Resident term count after each layer, i.e. after the truncation policy's `finalize_layer`.
     pub terms_out: Vec<usize>,
 }
 
 impl TermTrace {
-    /// Peak *resident* term count: `max(terms_in[0], terms_out…)` — the
-    /// largest the sum ever was between layers (see the type's "What is not
-    /// here"). `None` for a zero-layer trace, where the resident count never
-    /// changed and only the caller knows it.
+    /// Peak resident term count between layers, or `None` for a zero-layer trace.
     pub fn peak_terms(&self) -> Option<usize> {
         self.terms_in
             .first()
@@ -196,46 +100,29 @@ impl TermTrace {
     }
 }
 
-/// One coset task's working set: the swapped-out input columns and the
-/// per-output-member gather runs.
+/// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
 #[derive(Clone, Debug, Default)]
 pub(super) struct CosetScratch<const W: usize> {
-    /// The coset's input columns, one slot per member, `mem::swap`ped with the
-    /// live bucket slots. After the swap the live slots hold these slots'
-    /// previous — cleared, capacity-retaining — columns, which is what makes
-    /// the layer in-place: bucket capacity circulates through here instead of
-    /// through a second full-sum copy.
+    /// The coset's input columns, `mem::swap`ped with the live bucket slots so the layer runs in place: bucket capacity circulates through here instead of through a second full-sum copy.
     old: Vec<BucketCols<W>>,
     /// Per-output-member gather runs.
     runs: Vec<GatherRun<W>>,
-    /// Scratch for `sort_rows_with_scratch`'s per-run sort, reused across
-    /// every run in every coset this scratch instance handles.
+    /// Scratch for `sort_rows_with_scratch`'s per-run sort, reused across every run in every coset this scratch instance handles.
     sort: SortScratch<W>,
-    /// This slot's busy-time phase counters, drained by
-    /// `LayerScratch::take_stats`.
+    /// This slot's busy-time phase counters, drained by `LayerScratch::take_stats`.
     #[cfg(feature = "phase-timing")]
     stats: CosetStats,
 }
 
 /// One output member's gather run: key columns and coefficients.
-///
-/// Equal-key summation order is not pinned by a sort tiebreak — see the
-/// module doc and `merge::sort_rows_with_scratch`.
+/// Equal-key summation order is not pinned by a sort tiebreak — see the module doc and `merge::sort_rows_with_scratch`.
 #[derive(Clone, Debug, Default)]
 pub(super) struct GatherRun<const W: usize> {
-    /// The identity-delta stream: keys untouched, so it inherits the
-    /// source bucket's strictly-ascending, duplicate-free order and is never
-    /// sorted. `H·0 = 0` puts this stream in the member's own run, in source
-    /// position order. Under a **dense** identity plan only
-    /// `id_coeff` is populated — one coefficient per source row, aligned 1:1
-    /// with `old[j]`, whose key columns the merge borrows in place — and
-    /// `id_x`/`id_z` stay empty. Under a sparse plan all three columns are
-    /// filled with the zero-amplitude rows filtered out.
+    /// The identity-delta stream: keys untouched, so it inherits the source bucket's strictly-ascending, duplicate-free order and is never sorted. Under a dense identity plan only `id_coeff` is populated, aligned 1:1 with `old[j]` whose keys the merge borrows in place; under a sparse plan all three columns are filled.
     id_x: Vec<[u64; W]>,
     id_z: Vec<[u64; W]>,
     id_coeff: Vec<Complex64>,
-    /// Every other delta's rows — keys XOR'd by a constant mask, so generally
-    /// unsorted; canonicalized per run by `sort_rows_with_scratch`.
+    /// Every other delta's rows — keys XOR'd by a constant mask, so generally unsorted; canonicalized per run by `sort_rows_with_scratch`.
     x: Vec<[u64; W]>,
     z: Vec<[u64; W]>,
     coeff: Vec<Complex64>,
@@ -256,11 +143,9 @@ impl<const W: usize> GatherRun<W> {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        // One slot past the exact capacity, and `reserve` on an empty `Vec`
-        // (so `additional` *is* the capacity asked for). The spare slot is
-        // what `push_if` writes into when it discards a row: the row is
-        // materialized at `len` and only published by the `set_len`, so the
-        // write must be in bounds even when every countable row is kept.
+        // One slot past the exact capacity: `push_if` writes a discarded row at `len` before
+        // deciding not to publish it via `set_len`, so the write must stay in bounds even when
+        // every countable row is kept.
         self.id_x.reserve(cap_id_keys + 1);
         self.id_z.reserve(cap_id_keys + 1);
         self.id_coeff.reserve(cap_id_coeff + 1);
@@ -269,23 +154,14 @@ impl<const W: usize> GatherRun<W> {
         self.coeff.reserve(cap_rest + 1);
     }
 
-    /// Write one row at `len` in a three-column stream and publish it iff
-    /// `keep`.
-    ///
-    /// The single unsafe block behind every gather append. Both streams and
-    /// both the conditional and unconditional forms funnel through here, so
-    /// there is one invariant to audit rather than four copies of it that
-    /// drift apart.
-    ///
-    /// `[u64; W]` and `Complex64` are `Copy` with no `Drop`, so overwriting a
-    /// slot that a previous discarded row wrote is a plain store, not a leak.
+    /// Write one row at `len` in a three-column stream and publish it iff `keep`.
+    /// The single unsafe block behind every gather append, so there is one invariant to audit
+    /// rather than several copies of it that drift apart.
     ///
     /// # Safety
     ///
-    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller
-    /// gets this from [`GatherRun::reset`], which reserves one slot past the
-    /// plan's exact per-run capacity precisely so the discarded-row write is
-    /// in bounds even when every countable row is kept.
+    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller gets this from
+    /// [`GatherRun::reset`], which reserves one slot past the plan's exact per-run capacity.
     #[inline]
     unsafe fn append_if(
         xs: &mut Vec<[u64; W]>,
@@ -314,14 +190,12 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the rest stream.
     #[inline]
     fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and
-        // `cap_rest` counts every row the plan's deltas can emit into this
-        // run, so `len <= cap_rest < capacity` holds at every call.
+        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and `cap_rest` bounds
+        // every row the plan's deltas can emit into this run.
         unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
     }
 
-    /// Unconditional append to the rest stream — [`Self::push_if`] with the
-    /// predicate known true, which is what the rotation generator pass wants.
+    /// Unconditional append to the rest stream — [`Self::push_if`] with the predicate known true, which is what the rotation generator pass wants.
     #[inline]
     fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.push_if(true, x, z, c);
@@ -330,8 +204,7 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the identity stream.
     #[inline]
     fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding
-        // the identity stream's rows.
+        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding the identity stream's rows.
         unsafe {
             Self::append_if(
                 &mut self.id_x,
@@ -346,26 +219,15 @@ impl<const W: usize> GatherRun<W> {
     }
 
     /// Unchecked unconditional append to the identity *coefficient* column.
-    ///
-    /// The dense-identity plans (all rotations, and every `Local` plan whose
-    /// identity amplitude never vanishes) emit exactly one identity row per
-    /// source row and borrow the keys from the source bucket, so this is the
-    /// only column materialized — hence its own helper rather than
-    /// [`Self::push_id_if`].
-    ///
-    /// Like the others this drops `Vec::push`'s capacity check, not a branch:
-    /// the check is perfectly predicted here and contributes no mispredicts,
-    /// but it is still instructions in the hottest loop of every rotation
-    /// layer. Measured on the output-major gather: `su4` −3.83% wall /
-    /// −10.00% gather at flat IPC (2b949e6); on the rotation path, −1.18% of
-    /// all instructions on `rotation_zz` (4e1eea2).
+    /// The dense-identity plans emit exactly one identity row per source row and borrow the
+    /// keys from the source bucket, so this is the only column materialized — hence its own
+    /// helper rather than [`Self::push_id_if`].
     #[inline]
     fn push_id_coeff(&mut self, c: Complex64) {
         let n = self.id_coeff.len();
         debug_assert!(n < self.id_coeff.capacity());
-        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is
-        // the source bucket's length — exactly the number of calls this loop
-        // makes — so `n <= cap_id_coeff < capacity` at every call.
+        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is the source
+        // bucket's length — exactly the number of calls this loop makes.
         unsafe {
             self.id_coeff.as_mut_ptr().add(n).write(c);
             self.id_coeff.set_len(n + 1);
@@ -379,93 +241,41 @@ impl<const W: usize> GatherRun<W> {
     }
 }
 
-/// A prepared channel's delta set, annotated with each entry's coset
-/// coordinate (`span.coord_of(bucket_delta)`), computed once per layer.
+/// A prepared channel's delta set, annotated with each entry's coset coordinate
+/// (`span.coord_of(bucket_delta)`), computed once per layer.
 pub(super) enum DeltaPlan<'p, const W: usize> {
     /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`.
     Local {
         ptm: &'p LocalPtm<W>,
         coords: Vec<u32>,
-        /// Whether `deltas()[0]` is the identity delta (`local_delta == 0` —
-        /// entry 0 by the ascending construction order), whose stream the
-        /// gather routes into the run's pre-sorted `id` columns.
-        /// True for every built-in channel; a custom channel without it
-        /// gathers everything into the sorted rest stream.
+        /// Whether `deltas()[0]` is the identity delta (entry 0 by construction order), whose stream the gather routes into the run's pre-sorted `id` columns. True for every built-in channel.
         has_identity: bool,
-        /// Whether the identity entry's amplitude is nonzero for **every**
-        /// active support pattern. Dense means each source row
-        /// emits exactly one id row with its key untouched — the id stream's
-        /// keys *are* the source bucket's key columns, row for row — so the
-        /// gather materializes only the 16-byte coefficient into `id_coeff`
-        /// and the merge borrows the keys from `old[j]` in place, saving the
-        /// 32-byte-per-row key write + re-read. True for
-        /// `GeneralUnitary1Q/2Q` and weight-≤2 rotations; false for
-        /// Cliffords (e.g. CNOT's id amp is nonzero on 4 of 16 patterns),
-        /// which keep the pre-filtered key+coeff materialization —
-        /// borrowing there would make the merge scan mostly-skipped rows,
-        /// measured +15–30% on cnot/h (`research/notes/2026-08-31-v0.6-results.md`).
+        /// Whether the identity entry's amplitude is nonzero for every active support pattern. Dense means each source row emits exactly one id row with its key untouched, so the gather materializes only the coefficient and the merge borrows the keys from `old[j]` in place. True for `GeneralUnitary1Q/2Q` and weight-≤2 rotations; false for Cliffords (e.g. CNOT), which keep the materialized key+coeff form (see `research/FINDINGS.md`).
         dense_identity: bool,
-        /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch`
-        /// instead of the comparison kernel. Two arms, both plan-time and both
-        /// measured: at least `merge::RADIX_MIN_REST_STREAMS` rest streams
-        /// (a dense two-qubit PTM, where comparisons per row are high), or at
-        /// least `merge::RADIX_MIN_DISJOINT_STREAMS` rest streams whose
-        /// [`rest_rows_per_key`] is below
-        /// `merge::RADIX_MAX_REST_ROWS_PER_KEY` (a key-permuting gate, where
-        /// comparisons per row are ordinary but each one mispredicts). Decided
-        /// once per layer, so the kernel choice costs nothing per run and every
-        /// sparse-PTM layer keeps the code path it had. See
-        /// `RADIX_MIN_REST_STREAMS` for the measurements behind both.
+        /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch` instead of the comparison kernel: at least `merge::RADIX_MIN_REST_STREAMS` rest streams, or at least `merge::RADIX_MIN_DISJOINT_STREAMS` streams whose [`rest_rows_per_key`] is below `merge::RADIX_MAX_REST_ROWS_PER_KEY`. Decided once per layer; see `RADIX_MIN_REST_STREAMS`.
         radix_sort: bool,
     },
-    /// Wide rotation: two implicit entries, the identity pass and the
-    /// generator pass.
+    /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
         prep: &'p RotationPrep<W>,
         coord_identity: u32,
         coord_gen: u32,
-        /// Whether the generator pass emits *here*. False only under a
-        /// partitioning whose partition rows see the generator, where every
-        /// generator row belongs to a partner and this partition ships it
-        /// instead ([`LayerKnobs::gen_local`]); the identity pass still runs.
-        /// `coord_gen` is then meaningless (the generator's bucket delta is
-        /// not in this layer's span) and set to 0.
+        /// Whether the generator pass emits here. False only under a partitioning whose partition rows see the generator, where every generator row belongs to a partner instead ([`LayerKnobs::gen_local`]); `coord_gen` is then meaningless and set to 0.
         gen_local: bool,
     },
 }
 
 /// Per-layer overrides the partitioned engine hands the coset loop.
-///
-/// [`Default`] is the non-partitioned answer to all three, so
-/// `apply_layer_bucketed` passes it and nothing about the single-partition
-/// path changes.
+/// [`Default`] is the non-partitioned answer to all three, so `apply_layer_bucketed` passes it and nothing about the single-partition path changes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayerKnobs<'k> {
-    /// Bucket deltas to build the coset span from. `None` — the default —
-    /// means the prepared channel's own [`Prepared::bucket_deltas`]. The
-    /// partitioned layer passes its plan's *local* bucket deltas: the deltas
-    /// that stay inside this partition are the only ones its coset loop
-    /// gathers.
+    /// Bucket deltas to build the coset span from. `None` (default) means the prepared channel's own [`Prepared::bucket_deltas`]; the partitioned layer passes its plan's local bucket deltas.
     pub bucket_deltas: Option<&'k [u32]>,
-    /// Rest-stream count driving the sort-kernel choice. `None` — the
-    /// default — derives it from the plan, which is the same thing whenever
-    /// the plan is the whole channel. The partitioned layer passes the
-    /// channel's *total* stream count (local + remote): how wide a fanout is
-    /// is a property of the channel, not of how one partition happens to see
-    /// it, so every partition picks the same kernel as the unpartitioned run.
+    /// Rest-stream count driving the sort-kernel choice. `None` (default) derives it from the plan. The partitioned layer passes the channel's total stream count (local + remote), so every partition picks the kernel the unpartitioned run would.
     pub rest_streams: Option<usize>,
-    /// Rest-stream overlap driving the sort-kernel choice, as
-    /// [`rest_streams`](Self::rest_streams) does for the count. `None` — the
-    /// default — derives it from the plan's own PTM. The partitioned layer
-    /// passes the **unrestricted** channel's [`rest_rows_per_key`], because
-    /// the PTM it hands `DeltaPlan::new` is cut down to the entries that stay
-    /// local and a cut-down delta set can only look more disjoint than the
-    /// channel is — so deriving it locally could switch one partition onto
-    /// the radix kernel for a fan-out channel that the unpartitioned run
-    /// keeps on the comparison kernel.
+    /// Rest-stream overlap driving the sort-kernel choice, as [`rest_streams`](Self::rest_streams) does for the count. `None` (default) derives it from the plan's own PTM. The partitioned layer passes the unrestricted channel's [`rest_rows_per_key`]: a PTM cut down to local entries can only look more disjoint than the channel is, which could otherwise switch one partition onto the radix kernel that the unpartitioned run keeps on the comparison kernel.
     pub rows_per_key: Option<f64>,
-    /// Whether a wide rotation's generator pass emits here (see
-    /// [`DeltaPlan::Rotation::gen_local`]). `true` by default.
+    /// Whether a wide rotation's generator pass emits here (see [`DeltaPlan::Rotation::gen_local`]). `true` by default.
     pub gen_local: bool,
 }
 
@@ -480,41 +290,16 @@ impl Default for LayerKnobs<'_> {
     }
 }
 
-/// Rest rows landing on one output key, averaged over the output keys that
-/// get at least one — the plan-time estimate of `rows_sorted / distinct keys`
-/// in a gather run, and the second arm of the radix gate
-/// (`merge::RADIX_MAX_REST_ROWS_PER_KEY`).
-///
-/// `1.0` says the rest streams are pairwise **disjoint**: no output key is
-/// reachable by two deltas at once, so the per-run `k`-way merge has to pick
-/// between `k` unrelated key sets and its branch is a coin flip. Anything
-/// above says the streams overlap and the merge steps through them in
-/// lock-step, which the branch predictor learns. Which regime a layer is in
-/// decides the sort kernel, and this is the only quantity that tells the two
-/// 3-stream built-ins apart — see `merge::RADIX_MIN_REST_STREAMS`.
-///
-/// Read straight out of the PTM's amplitude *support*, so it is exact for the
-/// locally-closed sum a steady-state layer sees: `amp[s]` weights
-/// `s -> s ^ local_delta`, hence output pattern `o` takes a row from entry `e`
-/// exactly when `amp_e[o ^ local_delta_e] != 0`. Cost is `|D| · 4^k` — 240
-/// amplitude tests for the densest two-qubit channel — once per layer.
-///
-/// Values for the built-ins: **1.00** for every Clifford (a key permutation
-/// sends each source row to exactly one output row), **3.00** for
-/// `sqrt(SWAP)`, **14.00** for a Haar SU(4) — equal, to the digit, to the
-/// `rows_sorted / distinct keys` measured inside the engine's own gather runs
-/// (`research/notes/2026-09-10-presortedness-predictor.md` §3).
-///
-/// **Must be asked of the channel's own PTM, never a restricted one.** A
-/// partitioned layer hands [`DeltaPlan::new`] a PTM cut down to its local
-/// entries, and dropping entries can only make the remainder look *more*
-/// disjoint — one surviving stream reads 1.0 whatever the channel is. That is
-/// why [`LayerKnobs::rows_per_key`] exists, exactly as
-/// [`LayerKnobs::rest_streams`] does for the count.
+/// Rest rows landing on one output key, averaged over the output keys that get at least one —
+/// the plan-time estimate of `rows_sorted / distinct keys`, and the second arm of the radix
+/// gate (`merge::RADIX_MAX_REST_ROWS_PER_KEY`). `1.0` means the rest streams are pairwise
+/// disjoint, so the per-run merge's branch is a coin flip; higher means the streams overlap
+/// and the merge steps through them in lock-step, which the branch predictor learns.
+/// Must be asked of the channel's own PTM, never a restricted one: a partitioned layer hands
+/// [`DeltaPlan::new`] a PTM cut down to its local entries, and a cut-down delta set can only
+/// look more disjoint than the channel is — see [`LayerKnobs::rows_per_key`].
 pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
-    // Entry 0 is the identity delta when present (ascending `local_delta`
-    // construction order), and its stream is the pre-sorted `id` columns —
-    // never part of the sorted rest stream.
+    // Entry 0 is the identity delta when present, and its stream is the pre-sorted `id` columns — never part of the sorted rest stream.
     let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
     let dim = 1usize << (2 * ptm.k());
     let (mut rows, mut keys) = (0u32, 0u32);
@@ -543,27 +328,17 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     .map(|d| span.coord_of(d.bucket_delta))
                     .collect();
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
-                // The identity delta hashes to bucket delta 0, whose coset
-                // coordinate is 0 — the id stream stays in its own member.
+                // The identity delta hashes to bucket delta 0, so the id stream stays in its own member.
                 debug_assert!(!has_identity || coords[0] == 0);
-                // Dense over the *active* patterns only: `amp` is sized
-                // LOCAL_DIM but the channel populates `4^k` entries.
+                // Dense over the active patterns only: `amp` is sized LOCAL_DIM but the channel populates `4^k` entries.
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
                     has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
-                // `deltas()` is the *realized* delta set (§Bucketing), so its
-                // length minus the identity entry is exactly the number of
-                // streams the gather concatenates into a run's rest columns —
-                // the quantity the two sort kernels' crossover turns on.
+                // `deltas()` is the realized delta set (§Bucketing), so its length minus the identity entry is the stream count the sort-kernel crossover turns on.
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
-                // Both arms read channel-wide quantities, never this
-                // partition's view of them — `LayerKnobs` overrides both
-                // under a partitioning, for the same reason in both cases —
-                // so every partition picks the kernel the unpartitioned run
-                // would. The overlap arm is evaluated only when the count arm
-                // has already declined and the count clears its own floor.
+                // Both arms read channel-wide quantities, never this partition's view of them, so every partition picks the kernel the unpartitioned run would.
                 let radix_sort = rest_streams >= RADIX_MIN_REST_STREAMS
                     || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
                         && knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
@@ -592,46 +367,30 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
     }
 }
 
-/// Extra **rest-stream** rows for an output bucket, supplied by the
-/// partitioned engine.
-///
-/// A partition generates rows whose output bucket lives on another partition;
-/// they arrive here and are appended to that bucket's gather run after the
-/// local gather and before the per-run sort. Going into the *rest* stream
-/// (never the pre-sorted id stream) is what makes them safe: the rest stream
-/// is sorted anyway, so a received row may duplicate a local key, and
-/// `merge2_into` then sees the complete sum before `keep_term` runs
+/// Extra rest-stream rows for an output bucket, supplied by the partitioned engine.
+/// A partition generates rows whose output bucket lives on another partition; they arrive here
+/// and are appended to that bucket's gather run after the local gather and before the per-run
+/// sort. Going into the rest stream (never the pre-sorted id stream) is what makes them safe:
+/// it is sorted anyway, so `merge2_into` sees the complete sum before `keep_term` runs
 /// (ARCHITECTURE.md §Truncation).
-///
-/// Zero-cost when [`NoExtra`]: [`NEEDS_BETA`](Self::NEEDS_BETA) is a `const
-/// false` that deletes every call site, along with the inverse-permutation
-/// pass that exists only to answer them.
+/// Zero-cost when [`NoExtra`]: [`NEEDS_BETA`](Self::NEEDS_BETA) is a `const false` that deletes
+/// every call site, along with the inverse-permutation pass that exists only to answer them.
 ///
 /// # Contract
 ///
-/// An implementation that can return rows **must** set `NEEDS_BETA = true`.
-/// It is what makes `beta` the bucket's original index rather than its
-/// coset-permuted position, and the engine skips `count`/`append_into`
-/// entirely when it is `false`.
+/// An implementation that can return rows must set `NEEDS_BETA = true`.
 pub(crate) trait ExtraRows<const W: usize> {
-    /// Whether the engine must recover each coset member's original bucket
-    /// index (an `O(B)` inverse-permutation pass per layer) before calling
-    /// this source. `false` — the default — also means the engine never
-    /// calls [`count`](Self::count) or [`append_into`](Self::append_into).
+    /// Whether the engine must recover each coset member's original bucket index before calling this source. `false` (default) also means the engine never calls [`count`](Self::count) or [`append_into`](Self::append_into).
     const NEEDS_BETA: bool = false;
 
-    /// How many rows are destined for output bucket `beta` — the bucket's
-    /// ORIGINAL index, not its coset-permuted position. Used to size the
-    /// gather run exactly, so it must agree with what
-    /// [`append_into`](Self::append_into) pushes.
+    /// How many rows are destined for output bucket `beta` (its original index). Used to size the gather run exactly, so it must agree with what [`append_into`](Self::append_into) pushes.
     #[inline]
     fn count(&self, beta: u32) -> usize {
         let _ = beta;
         0
     }
 
-    /// Append bucket `beta`'s rows onto the run's rest columns, all three in
-    /// step. `beta` is the bucket's ORIGINAL index.
+    /// Append bucket `beta`'s rows onto the run's rest columns, all three in step. `beta` is the bucket's original index.
     #[inline]
     fn append_into(
         &self,
@@ -651,10 +410,8 @@ pub(crate) struct NoExtra;
 impl<const W: usize> ExtraRows<W> for NoExtra {}
 
 /// Apply one prepared channel to a bucketed sum.
-///
-/// `policy`'s `keep_term` is folded into the per-bucket merge, so it sees fully
-/// **summed** coefficients (ARCHITECTURE.md §Truncation).
-/// `finalize_layer` is *not* called here; `propagate` owns that.
+/// `policy`'s `keep_term` is folded into the per-bucket merge, so it sees fully summed coefficients (ARCHITECTURE.md §Truncation).
+/// `finalize_layer` is not called here; `propagate` owns that.
 pub fn apply_layer_bucketed<const W: usize, T>(
     sum: &mut PauliSum<W>,
     prep: &Prepared<W>,
@@ -666,14 +423,8 @@ pub fn apply_layer_bucketed<const W: usize, T>(
     apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra, LayerKnobs::default())
 }
 
-/// [`apply_layer_bucketed`] with an [`ExtraRows`] source feeding each output
-/// bucket's rest stream and the partitioned engine's per-layer
-/// [`LayerKnobs`] — the entry point the partitioned engine drives.
-///
-/// Identical to [`apply_layer_bucketed`] in every other respect; under
-/// [`NoExtra`] and default knobs it *is* [`apply_layer_bucketed`], with the
-/// hook's two call sites and the inverse-permutation pass behind a `const
-/// false`.
+/// [`apply_layer_bucketed`] with an [`ExtraRows`] source feeding each output bucket's rest stream and the partitioned engine's per-layer [`LayerKnobs`] — the entry point the partitioned engine drives.
+/// Under [`NoExtra`] and default knobs it is [`apply_layer_bucketed`], with the hook's call sites and the inverse-permutation pass behind a `const false`.
 pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     sum: &mut PauliSum<W>,
     prep: &Prepared<W>,
@@ -688,15 +439,10 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     let mut st = Stamp::now();
 
-    // Key-preserving channels (identity, depolarizing, dephasing, Pauli gates)
-    // leave every key bitwise unchanged, so the output is already sorted and
-    // duplicate-free: multiplying each coefficient by a scalar is an
-    // in-place filter, with no sort needed.
-    // `!X::NEEDS_BETA` is a `const true` on the unpartitioned path, so the
-    // condition is unchanged there. It has to be asked: a partitioned layer
-    // hands this function the *local* delta table, and a channel whose every
-    // non-identity delta is remote leaves a table that looks key-preserving
-    // while received rows still have to be merged in.
+    // Key-preserving channels leave every key bitwise unchanged, so the output is already
+    // sorted and duplicate-free: rescaling each coefficient is an in-place filter, no sort needed.
+    // `!X::NEEDS_BETA` must still be asked: a partitioned layer's local delta table can look
+    // key-preserving while received rows still have to be merged in.
     if let Prepared::Local(ptm) = prep {
         if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
@@ -706,9 +452,8 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         }
     }
 
-    // The coset structure of this layer's bucket-delta set. `span(h(D))`
-    // rather than `h(D)` itself: an open-trait channel's delta set need not be
-    // XOR-closed, and only the span's cosets are guaranteed to partition.
+    // The coset structure of this layer's bucket-delta set: `span(h(D))` rather than `h(D)`
+    // itself, since an open-trait channel's delta set need not be XOR-closed.
     let own_deltas;
     let deltas: &[u32] = match knobs.bucket_deltas {
         Some(d) => d,
@@ -724,12 +469,10 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.stats.span_plan_ns);
 
-    // Permute the bucket *handles* into coset-contiguous order: coset `c`
-    // owns `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis
-    // coordinate. Handles are three `Vec` headers; the term data never moves.
-    // At `r = 0` every coset is a single bucket and `perm_index` is the
-    // identity (`rank_of_rep` compresses over every bit), so the two handle
-    // passes are skipped and the chunk loop runs on the buckets directly.
+    // Permute the bucket handles into coset-contiguous order: coset `c` owns
+    // `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis coordinate. Handles are three
+    // `Vec` headers; the term data never moves. At `r = 0` `perm_index` is the identity, so
+    // both handle passes are skipped and the chunk loop runs on the buckets directly.
     let identity_perm = span.r() == 0;
     if !identity_perm {
         let buckets = sum.buckets_mut();
@@ -744,11 +487,9 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
         }
     }
-    // The inverse handle permutation, so `fill_coset` can name a member's
-    // *original* bucket. Under `NoExtra` this is a `const false` branch the
-    // compiler deletes and `inv_perm` stays empty — which `fill_coset` reads
-    // as "the permutation is the identity", the same answer it gets at
-    // `r = 0`.
+    // The inverse handle permutation, so `fill_coset` can name a member's original bucket.
+    // Under `NoExtra` this is a `const false` branch the compiler deletes and `inv_perm` stays
+    // empty, which `fill_coset` reads as "the permutation is the identity".
     if X::NEEDS_BETA {
         scratch.inv_perm.clear();
         if !identity_perm {
@@ -761,15 +502,12 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.stats.permute_ns);
 
-    // Each coset is a closed task: it reads and writes only its own chunk, so
-    // the chunk loop needs no atomics, no cross-task locks, and no
-    // reconciliation pass. Work within a task is sequential and deterministic
-    // (the per-run key-only sort is a deterministic function of its input),
-    // so output is byte-identical across thread counts
-    // (ARCHITECTURE.md §Determinism).
+    // Each coset is a closed task: it reads and writes only its own chunk, so the chunk loop
+    // needs no atomics, no cross-task locks, and no reconciliation pass, and output is
+    // byte-identical across thread counts (ARCHITECTURE.md §Determinism).
     {
-        // Size the worker pool before `staging` is borrowed below; keeping
-        // existing slots preserves their high-water capacity.
+        // Size the worker pool before `staging` is borrowed below; keeping existing slots
+        // preserves their high-water capacity.
         if num_cosets >= MIN_COSETS_FOR_PARALLEL {
             let pool = rayon::current_num_threads().max(1);
             if scratch.workers.len() < pool {
@@ -777,8 +515,8 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
         let workers = &scratch.workers;
-        // Empty unless this layer's `ExtraRows` asked for it; `fill_coset`
-        // takes empty to mean the identity permutation.
+        // Empty unless this layer's `ExtraRows` asked for it; `fill_coset` takes empty to
+        // mean the identity permutation.
         let inv_perm: &[u32] = &scratch.inv_perm;
         let chunks: &mut [BucketCols<W>] = if identity_perm {
             sum.buckets_mut()
@@ -804,9 +542,9 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                 .enumerate()
                 .for_each(|(ci, chunk)| {
                     let base = ci * m;
-                    // Inside `par_chunks_mut` the body always runs on a pool
-                    // worker, so the index is present and below the pool size;
-                    // the fresh-scratch arm is a defensive fallback only.
+                    // Inside `par_chunks_mut` the body always runs on a pool worker, so the
+                    // index is present and below the pool size; the fresh-scratch arm is a
+                    // defensive fallback only.
                     match rayon::current_thread_index() {
                         Some(i) if i < workers.len() => {
                             let mut ws = workers[i].lock().unwrap();
@@ -827,8 +565,8 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut scratch.stats.coset_loop_ns);
 
-    // Un-permute: every handle goes back to its bucket index, leaving the
-    // staging slots as empty, capacity-free defaults.
+    // Un-permute: every handle goes back to its bucket index, leaving the staging slots as
+    // empty, capacity-free defaults.
     if !identity_perm {
         let buckets = sum.buckets_mut();
         for (beta, cols) in buckets.iter_mut().enumerate() {
@@ -845,25 +583,18 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     sum.assert_invariants();
 }
 
-/// Below this many cosets there is nothing to spread, so skip Rayon entirely.
-///
-/// `desired_bits` already gives a small sum few buckets, so this mostly catches
-/// the `bits = 0` case (or `r = bits`), where one coset spans every bucket and
-/// the layer degenerates to a single whole-sum task on the same code path.
+/// Below this many cosets there is nothing to spread, so skip Rayon entirely — mostly the
+/// `bits = 0` / `r = bits` case, where one coset spans every bucket and the layer degenerates
+/// to a single whole-sum task on the same code path.
 pub(super) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
 /// Gather, sort and merge one coset, in place. The unit of parallel work.
-///
-/// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis
-/// coordinate, serving as both input source and output destination.
-///
-/// `extra` supplies rows generated elsewhere (the partitioned engine); they
-/// join each member's **rest** stream between the gather and the sort, so the
-/// merge sees the complete sum. Naming their destination needs the member's
-/// *original* bucket index, which `chunk_base` (the chunk's first slot in the
-/// permuted array) and `inv_perm` (`inv_perm[permuted] = original`, empty when
-/// the permutation is the identity) recover. Under [`NoExtra`] all of that is
-/// behind `X::NEEDS_BETA == false` and compiles away.
+/// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis coordinate,
+/// serving as both input source and output destination.
+/// `extra` supplies rows generated elsewhere (the partitioned engine); they join each member's
+/// rest stream between the gather and the sort, so the merge sees the complete sum. Naming
+/// their destination needs the member's original bucket index, recovered from `chunk_base` and
+/// `inv_perm`. Under [`NoExtra`] all of that is behind `X::NEEDS_BETA == false` and compiles away.
 pub(super) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketCols<W>],
     plan: &DeltaPlan<'_, W>,
@@ -877,9 +608,8 @@ pub(super) fn fill_coset<const W: usize, T, X>(
     X: ExtraRows<W>,
 {
     let m = chunk.len();
-    // Member `j`'s ORIGINAL bucket index. An empty `inv_perm` means the layer
-    // skipped the handle permutation (`r = 0`), where the permuted slot *is*
-    // the bucket. Reached only from the `X::NEEDS_BETA` sites below.
+    // Member `j`'s original bucket index. An empty `inv_perm` means the layer skipped the
+    // handle permutation (`r = 0`), where the permuted slot is the bucket.
     let beta_of = |j: usize| -> u32 {
         if inv_perm.is_empty() {
             (chunk_base + j) as u32
@@ -901,10 +631,9 @@ pub(super) fn fill_coset<const W: usize, T, X>(
     old.resize_with(m, BucketCols::default);
     runs.resize_with(m, GatherRun::default);
 
-    // Swap the coset's columns out. The chunk slots inherit this scratch's
-    // cleared, capacity-retaining columns and become the write destinations —
-    // capacities circulate between buckets across cosets, which holds the
-    // steady state allocation-free in aggregate.
+    // Swap the coset's columns out. The chunk slots inherit this scratch's cleared,
+    // capacity-retaining columns and become the write destinations — capacities circulate
+    // between buckets across cosets, which holds the steady state allocation-free in aggregate.
     for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
         std::mem::swap(slot, cols);
         slot.clear();
@@ -912,14 +641,10 @@ pub(super) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.swap_ns);
 
-    // Exact per-run capacity, counted once per delta entry — two entries
-    // colliding on one bucket delta count twice, matching the rows they can
-    // emit. Split by destination stream: the identity entry feeds the
-    // pre-sorted `id` columns, everything else the sorted rest.
-    // Under a dense identity the id *key* columns stay empty —
-    // the merge borrows the source bucket's keys — so only `id_coeff` needs
-    // capacity; a rotation's id stream is dense by construction (every row
-    // emits exactly one id row).
+    // Exact per-run capacity, counted once per delta entry, split by destination stream: the
+    // identity entry feeds the pre-sorted `id` columns, everything else the sorted rest. Under
+    // a dense identity the id key columns stay empty since the merge borrows the source
+    // bucket's keys, so only `id_coeff` needs capacity.
     for (j, run) in runs.iter_mut().enumerate() {
         let (cap_id_keys, cap_id_coeff, mut cap_rest): (usize, usize, usize) = match plan {
             DeltaPlan::Local {
@@ -948,8 +673,8 @@ pub(super) fn fill_coset<const W: usize, T, X>(
             } => (
                 0,
                 old[j ^ *coord_identity as usize].len(),
-                // A remote generator emits nothing here, so the rest stream
-                // is whatever `extra` adds below and nothing else.
+                // A remote generator emits nothing here, so the rest stream is whatever
+                // `extra` adds below and nothing else.
                 if *gen_local {
                     old[j ^ *coord_gen as usize].len()
                 } else {
@@ -957,8 +682,8 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                 },
             ),
         };
-        // Received rows land in the rest stream, so they belong to its exact
-        // capacity. `const false` under `NoExtra`.
+        // Received rows land in the rest stream, so they belong to its exact capacity.
+        // `const false` under `NoExtra`.
         if X::NEEDS_BETA {
             cap_rest += extra.count(beta_of(j));
         }
@@ -967,17 +692,10 @@ pub(super) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.size_ns);
 
-    // Gather. Two visit orders produce the same multiset of rows per run —
-    // only their arrival order differs, which the key-only sort below erases
-    // up to floating-point tolerance on any equal-key summation (see
-    // `local_gather_orders_agree_to_fp_tolerance`). Which order is *faster*
-    // depends on `r`: input-major loads each term once but keeps `2^r` write
-    // streams open per task, and at `r = 4` those streams plus the swapped
-    // coset no longer fit L2 — measured +48% on a 32-thread
-    // `GeneralUnitary2Q` layer at 10⁶ terms. Output-major re-reads each input
-    // bucket `2^r` times but the reads stay coset-local, with a single write
-    // stream. Only `Local` plans can reach `r ≥ 3` (a wide rotation has at
-    // most two bucket deltas).
+    // Gather. Two visit orders produce the same multiset of rows per run, differing only in
+    // arrival order, which the key-only sort erases up to floating-point tolerance (see
+    // `local_gather_orders_agree_to_fp_tolerance`). Which order is faster depends on `r`; see
+    // `GATHER_OUTPUT_MAJOR_MIN_R`.
     match plan {
         DeltaPlan::Local {
             ptm,
@@ -998,16 +716,11 @@ pub(super) fn fill_coset<const W: usize, T, X>(
             coord_gen,
             gen_local,
         } => {
-            // The identity pass and the generator pass. `cos`/`sin` stay
-            // hoisted; the `i^k` phase depends on 2w support bits and is
-            // computed per anticommuting term, exactly as before. Every term
-            // emits exactly one identity-pass row (full coefficient when it
-            // commutes, `cos`-scaled when it doesn't — kept even when
-            // `cos == 0`, see `merge2_into` on signed zeros), so the id
-            // stream is the whole source bucket in order: sorted, unique —
-            // and its keys are the source keys row for row, so only the
-            // coefficient is materialized; the merge borrows the keys from
-            // the source bucket in place.
+            // The identity pass and the generator pass. Every term emits exactly one
+            // identity-pass row (full coefficient when it commutes, `cos`-scaled when it
+            // doesn't, kept even when `cos == 0` — see `merge2_into` on signed zeros), so the
+            // id stream is the whole source bucket in order and only the coefficient is
+            // materialized; the merge borrows the keys from the source bucket in place.
             for (i, src) in old.iter().enumerate() {
                 for t in 0..src.len() {
                     let v = PauliString::<W> {
@@ -1018,11 +731,9 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                         runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
                     } else {
                         runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
-                        // Loop-invariant, `true` on every unpartitioned
-                        // layer, and asked before any of the generator
-                        // arithmetic: under a partitioning that sees the
-                        // generator, these rows belong to a partner and the
-                        // export pass has already shipped them.
+                        // `true` on every unpartitioned layer; under a partitioning that sees
+                        // the generator, these rows belong to a partner and the export pass
+                        // has already shipped them.
                         if *gen_local {
                             let mut prod = v;
                             let phase = prod.mul_assign(&prep.gen);
@@ -1038,10 +749,9 @@ pub(super) fn fill_coset<const W: usize, T, X>(
             }
         }
     }
-    // Rows generated on other partitions whose output bucket lives here. The
-    // rest stream only: it is sorted below, so a received row may duplicate a
-    // local key and `merge2_into` still sees the complete sum before
-    // `keep_term` runs. `const false` under `NoExtra`.
+    // Rows generated on other partitions whose output bucket lives here. The rest stream only:
+    // it is sorted below, so a received row may duplicate a local key and `merge2_into` still
+    // sees the complete sum before `keep_term` runs. `const false` under `NoExtra`.
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
             extra.append_into(beta_of(j), &mut run.x, &mut run.z, &mut run.coeff);
@@ -1050,15 +760,12 @@ pub(super) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.gather_ns);
 
-    // Sort each run's rest stream by key alone, then fuse the two-stream
-    // merge with the segmented reduction into the member's live slot: the id
-    // stream never moves through the sort at all. Under a dense
-    // identity plan the id stream's *keys* were never materialized either —
-    // they are the source bucket's own key columns, borrowed here, with the
-    // gathered `id_coeff` aligned to them row for row; `H·0 = 0`
-    // means member `j`'s id source is `old[j]`.
-    // Which sort kernel this layer uses, hoisted out of the run loop: a
-    // per-layer property of the plan, never a per-run one.
+    // Sort each run's rest stream by key alone, then fuse the two-stream merge with the
+    // segmented reduction into the member's live slot: the id stream never moves through the
+    // sort. Under a dense identity plan the id stream's keys were never materialized either —
+    // they are the source bucket's own key columns, borrowed here.
+    // Which sort kernel this layer uses, hoisted out of the run loop: a per-layer property of
+    // the plan, never a per-run one.
     let radix = matches!(
         plan,
         DeltaPlan::Local {
@@ -1119,8 +826,8 @@ pub(super) fn fill_coset<const W: usize, T, X>(
         st.lap(&mut stats.merge_ns);
     }
 
-    // Leave `old` cleared so the next coset's swap hands its chunk clean,
-    // capacity-retaining columns. Runs are cleared by their own `reset`.
+    // Leave `old` cleared so the next coset's swap hands its chunk clean, capacity-retaining
+    // columns. Runs are cleared by their own `reset`.
     for cols in old.iter_mut() {
         cols.clear();
     }
@@ -1134,82 +841,24 @@ pub(super) fn fill_coset<const W: usize, T, X>(
 
 /// Coset dimension at or above which the gather switches to output-major.
 ///
-/// Measured at `r = 2` (both `Clifford2Q` and `GeneralUnitary2Q` — a 2Q
-/// channel whose delta masks have Pauli structure, like sqrt-SWAP's
-/// `{XX, ZZ, YY}`, spans only rank 2): output-major *loses* 14–22% at 10⁶
-/// terms, because re-reading each input bucket `2^r` times costs more than
-/// input-major's `2^r` open write streams. Input-major at `r = 4` was measured
-/// the other way — +48% on a 32-thread `GeneralUnitary2Q` layer at 10⁶ terms,
-/// where sixteen open write streams plus the swapped coset no longer fit L2 —
-/// so the threshold sits between them.
-///
-/// **This branch is not a guard for an exotic channel.** A generic SU(4)'s PTM
-/// is dense, so its delta set spans the full rank 4 and its bucket-delta span
-/// does too at the default bucket-count floor: `r = 4` is the *hot path* for
-/// every matrix-gate layer at `B ≥ 128`, and the choice between the two orders
-/// is worth much less there than the choice of `r` itself. At `r = 4` each
-/// delta owns a coset coordinate, so *both* orders emit one contiguous
-/// (already ascending) block per delta and the per-run sort makes the same
-/// 4.9 comparisons per row either way; at `r < 4` deltas share coordinates and
-/// input-major interleaves their streams row by row, costing 12–16 comparisons
-/// per row against output-major's 7.7–14.5. See
-/// `research/notes/2026-09-01-bucket-cliff.md`, which counts both orders. Both paths
-/// gather the identical multiset of rows in different orders; the key-only
-/// sort does not canonicalize that to a bitwise-identical sequence
-/// (equal-key order can differ between the two), so the two orders
-/// agree only to floating-point tolerance — pinned by
-/// `local_gather_orders_agree_to_fp_tolerance` — and the threshold remains a
-/// pure performance knob, not a correctness one.
-///
-/// **Re-measured 2026-09-10** on the JCC-padded build, with both arms carrying
-/// the branchless filter (the asymmetry `4ee8033` introduced is gone), and
-/// **the value is unchanged**. Only three built-in layers take a `Local` plan
-/// that reaches this branch, at `r = 1` (`trotter`, `tfim_step`), `r = 2`
-/// (`cnot`, `gu2q`) and `r = 4` (`su4`), so the constant has exactly four
-/// distinct settings; all four were measured, 7 pairs, `--n 1000000`,
-/// 1 thread, `taskset -c 6`:
-///
-/// | value | who changes order | wall Δ% vs 3 |
-/// |---|---|---|
-/// | 1 | `trotter` → output-major | **+4.61** (7/7), gather +11.39 |
-/// | 2 | `cnot`, `gu2q` → output-major | **+23.31 / +15.53** (7/7), gather +43 / +48 |
-/// | **3** | — | incumbent |
-/// | 5 | `su4` → input-major | ns at 1 thread (−0.31%, 4/7); gather **+69%** (7/7) at 16 threads |
-///
-/// The `r = 2` row reproduces the original −14…−22% the other way round and
-/// then some. The `r = 4` row is the one worth knowing: at one thread the two
-/// orders are indistinguishable, and the whole justification for keeping
-/// `su4` on output-major is the multi-threaded gather, where input-major's
-/// sixteen open write streams plus the swapped coset overflow L2 exactly as
-/// recorded. `research/notes/2026-09-10-constant-recalibration.md`.
+/// Input-major loads each term once but keeps `2^r` write streams open per task; at large `r`
+/// those streams plus the swapped coset no longer fit L2. Output-major re-reads each input
+/// bucket `2^r` times but keeps a single write stream, trading re-reads (coset-local, cheap)
+/// for write-stream pressure. Below this threshold the extra re-reads cost more than the write
+/// streams save; above it, the reverse. Both orders gather the same multiset of rows, so the
+/// choice is a pure performance knob, never a correctness one — pinned by
+/// `local_gather_orders_agree_to_fp_tolerance`. See `research/FINDINGS.md` for the measurements
+/// behind the current value.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
-/// Input-major gather for a tabulated (`Local`) plan: each term is loaded
-/// once and its whole fanout is scattered by
-/// `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
+/// Input-major gather for a tabulated (`Local`) plan: each term is loaded once and its whole
+/// fanout is scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
 /// (input member, input position, delta) order.
 ///
-/// **The zero-amplitude filter is branchless.** A `if a == ZERO { continue }`
-/// here was the single largest source of branch mispredictions in the engine:
-/// which entries of a PTM row vanish is a property of the term's support
-/// pattern, so the test is a data-dependent near-coin-flip taken tens of
-/// millions of times a second — 39% of all mispredicts on `rotation_zz` and
-/// 43% on `cnot`, one instruction. The row is now always materialized and
-/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, so
-/// the branch is gone and the discarded rows cost only the emit body.
-/// Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs:
-///
-/// | layer | wall Δ% | gather Δ% | `br_misp_retired` |
-/// |---|---:|---:|---:|
-/// | `rotation_zz` | −10.71 | −19.48 | 55.4M → 33.7M |
-/// | `cnot` | −7.91 | −14.37 | 76.7M → 44.2M |
-/// | `gu2q` | −4.11 | −11.93 | |
-/// | `su4` | ns | ns | (dense PTM: nothing to filter) |
-///
-/// `cnot` retires 22% *more* instructions and is still 7.9% faster — the
-/// wasted emit work is much cheaper than the mispredicts it removes. Work
-/// counters are bit-identical throughout, and so is the emitted row
-/// sequence. `research/notes/2026-09-10-branch-misprediction.md`.
+/// The zero-amplitude filter is branchless: the row is always materialized and
+/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, avoiding a
+/// data-dependent branch on which PTM entries vanish for a given support pattern (see
+/// `research/FINDINGS.md`).
 fn gather_local_input_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1223,14 +872,12 @@ fn gather_local_input_major<const W: usize>(
         for t in 0..src.len() {
             let s = ptm.support_bits(&src.x[t], &src.z[t]);
             if has_identity {
-                // Entry 0 is the identity delta: masks are zero and
-                // `coords[0] == 0`, so the row lands in this member's own run
-                // with its key untouched — the pre-sorted id stream.
+                // Entry 0 is the identity delta: masks are zero, so the row lands in this
+                // member's own run with its key untouched — the pre-sorted id stream.
                 let a = ptm.deltas()[0].amp[s];
                 if dense_identity {
-                    // Dense: `a` never vanishes and the stream is 1:1 with
-                    // the source rows, so only the coefficient is stored —
-                    // the merge borrows the keys from `old[i]`.
+                    // Dense: `a` never vanishes and the stream is 1:1 with the source rows,
+                    // so only the coefficient is stored — the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
                     runs[i].push_id_coeff(src.coeff[t] * a);
                 } else {
@@ -1251,30 +898,15 @@ fn gather_local_input_major<const W: usize>(
     }
 }
 
-/// Output-major gather for a tabulated (`Local`) plan: for each output member,
-/// stream the one input bucket per delta entry and append to that member's run
-/// only. Rows land in (delta, input position) order — the same *multiset* as
-/// [`gather_local_input_major`] in a different order. The per-run sort is
-/// key-only, so it does not canonicalize the two orders to an identical
-/// sequence; they agree only up to floating-point tolerance on
-/// any equal-key summation (see `local_gather_orders_agree_to_fp_tolerance`).
+/// Output-major gather for a tabulated (`Local`) plan: for each output member, stream the one
+/// input bucket per delta entry and append to that member's run only. Rows land in (delta,
+/// input position) order — the same multiset as [`gather_local_input_major`] in a different
+/// order; they agree only up to floating-point tolerance (see
+/// `local_gather_orders_agree_to_fp_tolerance`).
 ///
-/// **The zero-amplitude filter is branchless**, as in
-/// [`gather_local_input_major`]. `4ee8033` converted only the input-major arm,
-/// which left the two sides of [`GATHER_OUTPUT_MAJOR_MIN_R`] measuring
-/// different code; this arm was converted 2026-09-10. The interesting part is
-/// that it wins on the layer where the *filter* cannot possibly help:
-/// output-major is only reached at `r >= 3`, i.e. by a dense two-qubit PTM,
-/// whose amplitudes never vanish, so no row is ever discarded. What
-/// [`GatherRun::push_if`] removes there is the three `Vec::push` capacity
-/// checks and length increments per row. Measured `su4`, `--n 1000000`,
-/// 1 thread, `taskset -c 6`, work counters bit-identical, over three
-/// independent campaigns (7, 7 and 11 pairs; medians −3.38 / −4.22 / −4.22):
-/// **wall −4.22% (11/11), gather −10.68% (11/11)**, instructions −3.9%,
-/// `br_misp_retired` 28.8M → 14.7M, DSB 97.6% both sides. The layers that keep input-major
-/// (`cnot`, `gu2q`, `rotation_zz`) are a clean null, 4/7–5/7 either way, which
-/// is also the layout control.
-/// `research/notes/2026-09-10-constant-recalibration.md`.
+/// The zero-amplitude filter is branchless, as in [`gather_local_input_major`], and helps here
+/// even though output-major is only reached on a dense PTM with nothing to filter: what
+/// [`GatherRun::push_if`] removes is the `Vec::push` capacity check and length increment per row.
 fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1286,9 +918,8 @@ fn gather_local_output_major<const W: usize>(
     let rest_start = has_identity as usize;
     for (j, run) in runs.iter_mut().enumerate() {
         if has_identity {
-            // Entry 0: masks zero, `coords[0] == 0` — the member's own bucket
-            // streams into the pre-sorted id columns; coefficient
-            // only when the identity is dense (keys borrowed).
+            // Entry 0: masks zero — the member's own bucket streams into the pre-sorted id
+            // columns; coefficient only when the identity is dense (keys borrowed).
             let d = &ptm.deltas()[0];
             let src = &old[j];
             for t in 0..src.len() {
@@ -1425,15 +1056,8 @@ mod tests {
     pub(super) struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-    /// One Haar-random SU(4) block — the *dense*-PTM two-qubit gate.
-    ///
-    /// The matrix is the shared canonical dense-PTM fixture
-    /// [`crate::test_support::haar_su4_matrix`] (see its doc for provenance),
-    /// so the differential net and the `phase_breakdown` `su4` cell exercise
-    /// the same matrix. Every PTM entry is nonzero, so all 16 bucket deltas
-    /// are realized: the gather run is 15 concatenated rest streams with
-    /// ~15-fold duplicate keys, which is the shape the radix sort kernel is
-    /// chosen for.
+    /// One Haar-random SU(4) block — the dense-PTM two-qubit gate, using the shared canonical fixture [`crate::test_support::haar_su4_matrix`].
+    /// Every PTM entry is nonzero, so all 16 bucket deltas are realized: the gather run is 15 concatenated rest streams with ~15-fold duplicate keys, the shape the radix sort kernel is chosen for.
     pub(super) fn haar_su4(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
         crate::channel::GeneralUnitary2Q::from_matrix(
             q0,
@@ -1442,10 +1066,7 @@ mod tests {
         )
     }
 
-    /// The term trace's state machine, independent of any propagation:
-    /// `None` ⟺ off, `enable` is idempotent and non-destructive, `take`
-    /// drains but stays on. What the counts *mean* is pinned by
-    /// `tests/term_trace.rs`, which drives the layer loop that writes them.
+    /// The term trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
     #[test]
     fn term_trace_is_opt_in_and_drains_on_take() {
         let mut scratch = LayerScratch::<1>::new();
@@ -1564,12 +1185,8 @@ mod tests {
 
     // ---- the differential test against the naive oracle ----
 
-    /// Every built-in channel, over both occupancy regimes, several bucket
-    /// counts, forward and adjoint, against three policies.
-    ///
-    /// This is the primary correctness net for the engine: `naive_apply_layer`
-    /// (`crate::test_support`) is the oracle. A disagreement is a bug in the
-    /// bucketed engine until proven otherwise.
+    /// Every built-in channel, over both occupancy regimes, several bucket counts, forward and adjoint, against three policies.
+    /// The primary correctness net for the engine: `naive_apply_layer` (`crate::test_support`) is the oracle, and a disagreement is a bug here until proven otherwise.
     #[test]
     fn differential_against_the_naive_oracle_w1_dense_collisions() {
         // Only 8 qubits, so 2000 random terms collide heavily under a rotation
@@ -1745,14 +1362,8 @@ mod tests {
 
     #[test]
     fn output_agrees_across_bucket_counts_to_fp_tolerance() {
-        // A different bucket count can gather a duplicate key's
-        // contributions in a different order, and `f64` addition is not
-        // associative, so only floating-point-tolerance agreement is
-        // expected (ARCHITECTURE.md §Determinism). The GeneralUnitary2Q
-        // case is load-bearing: rotations and Cliffords merge at most two
-        // contributions per key, where any order is bitwise-equal by
-        // commutativity, so only a wide-delta channel can exercise the
-        // relaxed axis at all (see `sqrt_swap_w1`).
+        // A different bucket count can gather a duplicate key's contributions in a different order, so only floating-point-tolerance agreement is expected (ARCHITECTURE.md §Determinism).
+        // GeneralUnitary2Q is load-bearing: rotations and Cliffords merge at most two contributions per key, where any order is bitwise-equal by commutativity, so only a wide-delta channel exercises the relaxed axis (see `sqrt_swap_w1`).
         let input = rand_sum::<1>(2000, 8, 0x9001);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let cnot = Clifford2Q::cnot(1, 5);
@@ -1772,11 +1383,7 @@ mod tests {
 
     #[test]
     fn output_agrees_across_hash_seeds_to_fp_tolerance() {
-        // A different `H` permutes which terms share a bucket but must not
-        // change the arithmetic beyond floating-point tolerance (see
-        // `output_agrees_across_bucket_counts_to_fp_tolerance` above). The
-        // GeneralUnitary2Q case is load-bearing for the same reason as in
-        // the bucket-count test above.
+        // A different `H` permutes which terms share a bucket but must not change the arithmetic beyond floating-point tolerance (see the bucket-count test above); GeneralUnitary2Q is load-bearing for the same reason.
         let input = rand_sum::<1>(2000, 8, 0x9002);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let gu2q = sqrt_swap_w1(1, 5);
@@ -1791,19 +1398,9 @@ mod tests {
 
     #[test]
     fn local_gather_orders_agree_to_fp_tolerance() {
-        // The r-threshold hybrid ships output-major gathering for wide spans
-        // (GeneralUnitary2Q) and input-major below the threshold. The two
-        // visit orders emit the same *multiset* of rows per run in different
-        // sequences. The key-only sort makes no promise about a duplicate
-        // key's relative row order, so the two orders can gather a duplicate
-        // key's contributions in different orders and their *unmerged* rows
-        // need not line up element-wise. What must still hold: merging each
-        // run's rows (summing duplicate keys) gives the same keys with the
-        // same totals, to floating-point tolerance. Note sqrt-SWAP's nonzero
-        // delta masks are {XX, ZZ, YY}-shaped, so its span has rank exactly
-        // 2 under any hash —
-        // the property pinned here is rank-independent (the argument never
-        // mentions r), so a rank-2 coset of four members exercises it fully.
+        // The r-threshold hybrid ships output-major gathering for wide spans and input-major below the threshold; the two visit orders emit the same multiset of rows per run in different sequences.
+        // The key-only sort makes no promise about a duplicate key's relative row order, so unmerged rows need not line up element-wise; what must still hold is that merging each run's rows gives the same keys with the same totals, to floating-point tolerance.
+        // sqrt-SWAP's nonzero delta masks are {XX, ZZ, YY}-shaped, so its span has rank exactly 2 under any hash, and a rank-2 coset of four members exercises the (rank-independent) property fully.
         let input = rand_sum::<1>(2000, 8, 0xAB12);
         let gu2q = sqrt_swap_w1(1, 5);
         let hash = Gf2Hash::<1>::new(8, 5, 0x77);
@@ -1960,22 +1557,8 @@ mod tests {
         check(&Clifford1Q::h(3), false, "h");
     }
 
-    /// Which sort kernel each built-in's layer gets, and the two plan-time
-    /// quantities that decide it.
-    ///
-    /// The radix kernel wins where the comparison merge is expensive per row —
-    /// either because there are many streams to merge (`su4`) or because the
-    /// streams are disjoint and every comparison mispredicts (`cnot`, `cz`,
-    /// `swap`: key permutations) — and loses badly (+130–165 %) on a single
-    /// nearly-sorted stream. Both triggers are pinned per channel, values and
-    /// all, because a PTM change could move either silently in either
-    /// direction: a gate that quietly stopped firing would look like nothing
-    /// more than a lost speedup, and one that started firing on `rotation_zz`
-    /// would be a large regression. `rest_rows_per_key` is pinned exactly
-    /// because it is *measurably* the engine's own `rows_sorted / distinct
-    /// keys` — 1.00 / 3.00 / 14.00 in the instrumented gather runs, matching
-    /// these three values to two decimals
-    /// (`research/notes/2026-09-10-presortedness-predictor.md`).
+    /// Which sort kernel each built-in's layer gets, and the two plan-time quantities that decide it.
+    /// The radix kernel wins where the comparison merge is expensive per row (many streams, as in `su4`, or disjoint streams that mispredict, as in the key-permuting Cliffords) and loses badly on a single nearly-sorted stream. Both triggers are pinned per channel, values and all, so a PTM change that silently flips either direction shows up here (see `research/FINDINGS.md`).
     #[test]
     fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
@@ -2075,17 +1658,8 @@ mod tests {
         );
     }
 
-    /// A partitioned layer must pick the kernel the unpartitioned run picks,
-    /// on *both* arms of the gate.
-    ///
-    /// `partitioned::layer` hands `DeltaPlan::new` a PTM restricted to the
-    /// entries that stay local, and a restriction can only look more disjoint
-    /// than the channel: drop two of `sqrt(SWAP)`'s three rest deltas and the
-    /// survivor reads `rest_rows_per_key == 1.0`, which is `cnot`'s value. The
-    /// stream count is already overridden for exactly this reason
-    /// (`LayerKnobs::rest_streams`); the overlap needs the same treatment, and
-    /// this pins that it gets it — deriving it locally would flip a fan-out
-    /// channel onto the radix kernel on one partition and not on another.
+    /// A partitioned layer must pick the kernel the unpartitioned run picks, on both arms of the gate.
+    /// `partitioned::layer` hands `DeltaPlan::new` a PTM restricted to local entries, and a restriction can only look more disjoint than the channel: drop two of `sqrt(SWAP)`'s three rest deltas and the survivor reads `rest_rows_per_key == 1.0`, `cnot`'s value. `LayerKnobs::rows_per_key` exists so deriving it locally cannot flip a fan-out channel onto the radix kernel on one partition and not another.
     #[test]
     fn a_partitioned_plan_reads_the_channel_wide_overlap() {
         let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
@@ -2223,14 +1797,8 @@ mod tests {
         h
     }
 
-    /// A u64 digest of the sum's *exact bits*, in canonical key order.
-    ///
-    /// Goes through [`canonical_triples`], hence only through the public
-    /// `iter()`, so it is blind to how the sum is partitioned or stored: the
-    /// digest depends on the term set and the coefficient bit patterns, and on
-    /// nothing else. Coefficients are folded as `f64::to_bits`, so a change of
-    /// one ULP — a different summation order for duplicate keys, say — moves
-    /// the digest.
+    /// A u64 digest of the sum's exact bits, in canonical key order.
+    /// Goes through [`canonical_triples`] (the public `iter()`), so it is blind to how the sum is partitioned or stored: the digest depends only on the term set and the coefficient bit patterns, moving on any ULP change.
     fn layer_fingerprint<const W: usize>(s: &PauliSum<W>) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         h = fnv_fold(h, s.len() as u64);
@@ -2244,13 +1812,7 @@ mod tests {
         h
     }
 
-    /// The channels in the fingerprint net: one per prepared-path shape.
-    ///
-    /// `Clifford1Q::h` (2 deltas), `Clifford2Q::cnot` and `::swap` (4 deltas,
-    /// different tables), `GeneralUnitary2Q` (up to 16 deltas — the case the
-    /// coset walk affects most), a weight-2 `PauliRotation` (local PTM path), a
-    /// weight-4 `PauliRotation` (the `RotationPrep` path), `Depolarizing` (the
-    /// key-preserving `rescale_in_place` path) and `AmplitudeDamping`.
+    /// The channels in the fingerprint net: one per prepared-path shape (Cliffords, a dense two-qubit unitary, weight-2 and weight-4 rotations, the key-preserving rescale path, and amplitude damping).
     fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
         vec![
             ("clifford1q_h", Box::new(Clifford1Q::h(3))),
@@ -2350,28 +1912,14 @@ mod tests {
         ("depolarizing", false, 5, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 2, 0x0c2d_0f88_a7cb_3051),
         ("depolarizing", true, 5, 0x0c2d_0f88_a7cb_3051),
-        // Re-pinned: `AmplitudeDamping`'s `apply`/`apply_adjoint` were swapped,
-        // so these two rows exchanged values (nothing else moved).
         ("amp_damping", false, 2, 0x8b0f_59fb_c452_c0bf),
         ("amp_damping", false, 5, 0x8b0f_59fb_c452_c0bf),
         ("amp_damping", true, 2, 0xd3cf_d844_cd3d_2be8),
         ("amp_damping", true, 5, 0xd3cf_d844_cd3d_2be8),
     ];
 
-    /// Exact-bit characterization of one bucketed layer, across every
-    /// prepared-path shape, both directions and two bucket counts.
-    ///
-    /// A convenience tripwire, not a correctness requirement
-    /// (ARCHITECTURE.md §Determinism): a red fingerprint means the engine's
-    /// output bits moved and should be looked at, but when the change is
-    /// correct to floating-point tolerance the fix is to regenerate the
-    /// literals below in the same commit, not to preserve the old bits.
-    ///
-    /// The differential tests above compare against the naive oracle to a
-    /// tolerance, which is the right net for "is the answer correct". This one
-    /// is the complementary net: it says nothing about correctness and
-    /// everything about *stability*, catching a reordered gather that stays
-    /// within tolerance but silently changes what users get.
+    /// Exact-bit characterization of one bucketed layer, across every prepared-path shape, both directions and two bucket counts.
+    /// A convenience tripwire, not a correctness requirement (ARCHITECTURE.md §Determinism): a red fingerprint means output bits moved and should be looked at, but when the change is correct to tolerance the fix is to regenerate the literals below, not to preserve the old bits.
     #[test]
     fn layer_fingerprints_are_stable() {
         let input = rand_sum::<2>(2000, 10, 0xC05E7);
@@ -2446,14 +1994,8 @@ mod tests {
         }
     }
 
-    /// A wide rotation whose generator hashes to bucket delta 0: the span is
-    /// trivial (`r = 0`), each coset is a single bucket, and both passes gather
-    /// the same swapped-out bucket. A rotation merges at most two
-    /// contributions per output key (see the doc on
-    /// `output_agrees_across_bucket_counts_to_fp_tolerance`), so float
-    /// addition is commutative here regardless of gather or sort order — this
-    /// stays a bitwise check even under the relaxed determinism policy
-    /// (ARCHITECTURE.md §Determinism).
+    /// A wide rotation whose generator hashes to bucket delta 0: the span is trivial (`r = 0`), each coset is a single bucket, and both passes gather the same swapped-out bucket.
+    /// A rotation merges at most two contributions per output key, so float addition is commutative regardless of gather or sort order — this stays a bitwise check even under the relaxed determinism policy (ARCHITECTURE.md §Determinism).
     #[test]
     fn wide_rotation_with_colliding_bucket_delta() {
         // Weight-4 generator, wider than MAX_LOCAL_SUPPORT, so it prepares as
@@ -2649,14 +2191,11 @@ mod extra_rows_tests {
 
     const TOL: f64 = 1e-11;
 
-    /// Rows to inject, keyed by their **original** output bucket index — the
-    /// quantity `fill_coset` has to reconstruct from `chunk_base` + the
-    /// inverse permutation. Built through [`Self::push`], which derives the
-    /// bucket from the layer's own hash, so a row can never be filed under a
-    /// bucket it does not belong to.
     /// One row to inject: key columns plus coefficient.
     type Row<const W: usize> = ([u64; W], [u64; W], Complex64);
 
+    /// Rows to inject, keyed by their original output bucket index — the quantity `fill_coset` reconstructs from `chunk_base` plus the inverse permutation.
+    /// Built through [`Self::push`], which derives the bucket from the layer's own hash, so a row can never be filed under a bucket it does not belong to.
     #[derive(Default)]
     struct Injected<const W: usize> {
         rows: HashMap<u32, Vec<Row<W>>>,
@@ -2728,9 +2267,7 @@ mod extra_rows_tests {
         b
     }
 
-    /// The oracle: the naive layer plus the injected rows, summed per key and
-    /// only then filtered — which is what "the merge sees the complete sum
-    /// before `keep_term`" means.
+    /// The oracle: the naive layer plus the injected rows, summed per key and only then filtered.
     fn expected<const W: usize, T>(
         input: &PauliSum<W>,
         ch: &dyn Channel<W>,
@@ -2758,9 +2295,7 @@ mod extra_rows_tests {
         acc.finalize()
     }
 
-    /// A handful of rows for a layer: some on keys the fixture already
-    /// carries (so they collide with the local output and must be *summed*
-    /// with it), some on keys it does not.
+    /// A handful of rows for a layer: some on keys the fixture already carries (colliding with the local output, so they must be summed), some on keys it does not.
     fn injection_for(input: &PauliSum<1>, hash: &Gf2Hash<1>) -> Injected<1> {
         let mut injected = Injected::<1>::default();
         let mut seen: HashSet<([u64; 1], [u64; 1])> = HashSet::new();
@@ -2780,15 +2315,7 @@ mod extra_rows_tests {
         injected
     }
 
-    /// Injected rows reach the output bucket named by their **original**
-    /// index, under both the permuted (`bits > 0`) and the identity
-    /// (`bits = 0`) handle layouts, and are deduplicated against the local
-    /// output rather than appended beside it.
-    ///
-    /// Misreading `beta` as the coset-permuted position files a row in the
-    /// wrong bucket, which shows up twice over: the debug invariant check
-    /// inside the layer rejects it, and a key already produced locally then
-    /// appears twice in the term list.
+    /// Injected rows reach the output bucket named by their original index, under both the permuted and the identity handle layouts, and are deduplicated against the local output rather than appended beside it.
     #[test]
     fn injected_rows_land_in_their_original_bucket_and_are_summed() {
         let input = rand_sum::<1>(600, 8, 0xE47A);
@@ -2866,10 +2393,7 @@ mod extra_rows_tests {
         }
     }
 
-    /// `keep_term` runs on the **sum** of the local and the injected
-    /// contribution, not on either alone: two coefficients that each clear
-    /// the threshold by five orders of magnitude cancel to below it, and the
-    /// term is dropped.
+    /// `keep_term` runs on the sum of the local and the injected contribution, not on either alone: two coefficients that each clear the threshold can cancel to below it.
     #[test]
     fn keep_term_sees_local_plus_injected() {
         let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
@@ -3087,10 +2611,7 @@ mod finalize_tests {
 
 #[cfg(test)]
 mod tie_tests {
-    /// The C.1 determinism contract: byte-identical output across thread counts,
-    /// with the *engine* parallel. `apply_layer_bucketed` fixes the bucket count
-    /// here, so this isolates thread count from partition (the propagate-level
-    /// test in tests/propagate_bucketed.rs exercises the public entry point).
+    /// Byte-identical output across thread counts with the engine parallel. `apply_layer_bucketed` fixes the bucket count here, isolating thread count from partition.
     #[test]
     fn parallel_output_is_byte_identical_across_thread_counts() {
         use crate::channel::rotation::PauliRotation;
@@ -3241,15 +2762,8 @@ mod tie_tests {
         }
     }
 
-    /// `finalize_layer` must agree with the `TopN` tie-group rule computed
-    /// the obvious way, on tie-dense data and across partitions. This is the
-    /// semantics test: it
-    /// pins *which* terms survive, not merely that all partitions agree.
-    ///
-    /// The `n` sweep mixes arbitrary cut points (which straddle a group, since
-    /// there are only four magnitudes) with the *exact* group boundaries read
-    /// off the fixture (which fit). The assertions at the end fail the test if
-    /// it ever stops exercising one of the two branches.
+    /// `finalize_layer` must agree with the `TopN` tie-group rule computed the obvious way, pinning which terms survive rather than merely that all partitions agree.
+    /// The `n` sweep mixes arbitrary cut points that straddle a group with the exact group boundaries that fit; the assertions at the end fail the test if it ever stops exercising one of the two branches.
     #[test]
     fn top_n_matches_the_reference_rule_on_tied_magnitudes() {
         let input = tie_heavy_sum::<1>(2000, 8, 0x7136);
@@ -3334,14 +2848,8 @@ mod tie_tests {
         }
     }
 
-    /// `ApproxTopN`'s threshold is a function of the octave histogram, which
-    /// is a function of the magnitude multiset — so, exactly like `TopN`, the
-    /// retained set cannot depend on the bucket count or the hash seed. The
-    /// per-bucket `retain` is where a partition-sensitive drop would hide.
-    ///
-    /// `tie_heavy_sum`'s four magnitudes (1, ½, ¼, ⅛) square into four
-    /// distinct octaves with equal populations, so `n = 700` of 2000 terms
-    /// cuts between the first and second: 500 terms fit, 1000 do not.
+    /// `ApproxTopN`'s threshold is a function of the magnitude multiset, so, exactly like `TopN`, the retained set cannot depend on the bucket count or the hash seed.
+    /// `tie_heavy_sum`'s four magnitudes square into four distinct octaves with equal populations, so `n = 700` of 2000 terms cuts between the first and second.
     #[test]
     fn approx_top_n_is_partition_independent_on_tied_magnitudes() {
         use crate::truncation::builtin::ApproxTopN;

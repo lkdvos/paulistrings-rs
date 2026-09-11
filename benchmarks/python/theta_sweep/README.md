@@ -1,13 +1,6 @@
 # Benchmark B — Kick-angle sweep
 
-Heavy-hex kicked Ising, 127 qubits, 5 Trotter steps, six kick angles
-θ_h ∈ {0, 0.2, π/8, π/4, 3π/8, π/2}, three observables from the utility
-experiment (`Z_62`, a weight-10 operator, a weight-17 operator). Heisenberg
-picture against `|0…0⟩`, single-threaded, warm timings. Scores truncated
-Pauli-sum accuracy against the tightest exact or self-converged reference
-reachable at each point, and checks per-layer term-count parity against
-`PauliPropagation.jl`.
-
+Heavy-hex kicked Ising, 127 qubits, 5 Trotter steps, swept over six kick angles and three observables, scored against the tightest exact or self-converged reference reachable at each point.
 Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/b-theta-sweep.html
 
 ## Run it
@@ -15,7 +8,7 @@ Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/b-theta-sweep.
 ```bash
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_b_theta_sweep.py --validate-convergence
-pytest python/paulistrings/tests/test_benchmark_b_sweep.py    # CI gate, 20-qubit sublattice
+pytest benchmarks/python/tests/test_benchmark_b_sweep.py    # CI gate, 20-qubit sublattice
 ```
 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts.

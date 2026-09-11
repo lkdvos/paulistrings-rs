@@ -262,7 +262,7 @@ crossover properly.
 ```bash
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_c_deep_trotter.py --validate-convergence
-pytest python/paulistrings/tests/test_benchmark_c_deep.py    # the CI gate: 25 tests, ~50 s
+pytest benchmarks/python/tests/test_benchmark_c_deep.py    # the CI gate: 25 tests, ~50 s
 ```
 
 ## Caveats

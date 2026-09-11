@@ -19,22 +19,13 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 
 ## Highlights
 
-- **Operator-basis Pauli propagation at 10⁶–10⁸ terms** — evolve the
-  observable, not the wavefunction, in either the forward or Heisenberg
-  picture.
-- **GF(2)-bucketed, write-disjoint parallel engine** — layers are
-  partitioned by a GF(2)-linear hash, so output buckets are statically
-  predictable and never collide across threads. No global sort.
-- **Partitioned across NUMA domains and MPI ranks** — split the sum by
-  GF(2) partition rows, one pinned thread pool or one process per
-  partition, with only the rows a layer moves across a boundary
-  exchanged and the transfer pipelined under the layer.
-- **Open extension traits for research** — plug in a custom `Channel`
-  (gate or noise model) or `TruncationPolicy` without touching the engine.
-- **One core, two front ends** — the pure-Rust crate, or Python bindings
-  installed via `maturin`/`pip`.
-- **GPU-ready data layout** — `#[repr(C)]`, `Pod` types, fixed-fanout
-  output buffers; a future GPU backend is an added kernel, not a rewrite.
+- **Operator-basis Pauli propagation at 10⁶–10⁸ terms** — evolve the observable, not the wavefunction, in either the forward or Heisenberg picture.
+- **GF(2)-bucketed, write-disjoint parallel engine** — layers are partitioned by a GF(2)-linear hash, so output buckets are statically predictable and never collide across threads.
+  No global sort.
+- **Partitioned across NUMA domains and MPI ranks** — split the sum by GF(2) partition rows, one pinned thread pool or one process per partition, with only the rows a layer moves across a boundary exchanged and the transfer pipelined under the layer.
+- **Open extension traits for research** — plug in a custom `Channel` (gate or noise model) or `TruncationPolicy` without touching the engine.
+- **One core, two front ends** — the pure-Rust crate, or Python bindings installed via `maturin`/`pip`.
+- **GPU-ready data layout** — `#[repr(C)]`, `Pod` types, fixed-fanout output buffers; a future GPU backend is an added kernel, not a rewrite.
 
 ## Python quickstart
 
@@ -63,9 +54,8 @@ print(evolved.expectation("x+").real)
 
 ## Rust quickstart
 
-The crate is [`paulistrings`](https://docs.rs/paulistrings) on crates.io;
-see its [README](crates/paulistrings/README.md) and rustdoc for the full
-API. The same idea, directly against the core:
+The crate is [`paulistrings`](https://docs.rs/paulistrings) on crates.io; see its [README](crates/paulistrings/README.md) and rustdoc for the full API.
+The same idea, directly against the core:
 
 ```rust
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, Phase, propagate};
@@ -91,22 +81,15 @@ truncation finishes in seconds to minutes.
 
 Full walkthrough: [`crates/paulistrings/docs/examples/ising_2d_quench.md`](crates/paulistrings/docs/examples/ising_2d_quench.md).
 
-A larger Python examples & benchmarks suite lives under [`examples/`](examples/):
-a 127-qubit heavy-hex kicked-Ising cross-check against `PauliPropagation.jl` and
-`stim`, operator-scrambling/OTOC diagnostics, noisy utility verification, and
-operator-backpropagation depth reduction. Start at
-[`examples/README.md`](examples/README.md).
+A larger Python examples & benchmarks suite lives under [`examples/`](examples/): a 127-qubit heavy-hex kicked-Ising cross-check against `PauliPropagation.jl` and `stim`, operator-scrambling/OTOC diagnostics, noisy utility verification, operator-backpropagation depth reduction, and stabilizer-state preparation.
+Start at [`examples/README.md`](examples/README.md).
 
 ## Documentation
 
-- Documentation site — showcases, benchmarks and cross-engine comparisons,
-  rebuilt on every push to `main`:
-  [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
+- Documentation site — showcases, benchmarks and cross-engine comparisons, rebuilt on every push to `main`: [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
   Source and local build instructions: [`docs/`](docs/README.md).
-- API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the
-  rustdoc rendered alongside the site at
-  [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/)
-- System design and the propagation engine: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the rustdoc rendered alongside the site at [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/).
+- System design and the propagation engine: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Repository layout
 
@@ -116,6 +99,7 @@ crates/
     benches/            # criterion microbenchmarks
     examples/           # runnable end-to-end simulations
     docs/examples/      # narrative walkthroughs embedded into rustdoc
+    tests/              # cross-module and differential test nets
   paulistrings-py/      # PyO3 bindings (cdylib `_paulistrings`)
   membench/             # memory-bandwidth roofline probe
 python/
@@ -123,18 +107,22 @@ python/
 examples/
   common/               # circuit builders, oracles, timing harness, report plots
   data/                 # checked-in, provenance-tagged inputs (127q coupling map, published observables)
-  <slug>/               # one Part-B showcase per directory (scrambling, noisy verification,
-                        #   operator backpropagation, resource probes) — see examples/README.md
+  tests/                # showcase and example test suites
+  b1_operator_scrambling/, b2_noisy_verification/, b5_operator_backpropagation/,
+  b6_resource_probes/, b7_stabilizer_prep/  # one Part-B showcase per directory — see examples/README.md
+  xxz_chain/            # Benchmark D — Part A's fourth benchmark lives here, not under benchmarks/
 benchmarks/
-  python/               # pytest-benchmark suites + cross-library comparisons (Part A benchmarks)
+  python/               # pytest-benchmark suites + cross-library comparisons (Part A benchmarks), tests/ alongside
   julia/                # subprocess-driven PauliPropagation.jl baseline
   results/              # raw benchmark output (gitignored)
 docs/
   book/                 # mdBook source for the documentation site (showcases, benchmarks,
                         #   comparisons); rendered to docs/book/site/ (gitignored)
+  figures/              # source figures the book's assets are synced from
   sync-assets.sh        # links the site's figures to the committed SVGs they came from
 research/
-  plans/  notes/        # execution plans, negative-result notes, hardware fact sheets, design notes
+  FINDINGS.md           # one entry per experiment: question, verdict, the number that matters
+  HARDWARE.md           # measured host facts (bandwidth ceilings, roofline tables, node types)
 ```
 
 ## Development

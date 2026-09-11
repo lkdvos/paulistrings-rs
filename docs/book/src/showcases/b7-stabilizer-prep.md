@@ -146,7 +146,7 @@ the stabilizer group contribute at all.
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py          # 116 s, 10.2 GiB peak RSS
 RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py --quick  #  40 s,  1.5 GiB peak RSS
-pytest python/paulistrings/tests/test_showcase_b7.py                        # 0.5 s
+pytest examples/tests/test_showcase_b7.py                        # 0.5 s
 ```
 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts; the

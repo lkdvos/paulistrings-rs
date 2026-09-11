@@ -103,7 +103,7 @@ python examples/b6_resource_probes/run_b6.py
 The CI gate is 18 tests, numpy-only, under a second:
 
 ```bash
-pytest python/paulistrings/tests/test_showcase_b6.py
+pytest examples/tests/test_showcase_b6.py
 ```
 
 ## References

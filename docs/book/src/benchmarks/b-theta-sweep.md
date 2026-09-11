@@ -190,7 +190,7 @@ the jl timings are a single warm repeat on a loaded machine.
 ```bash
 source .venv/bin/activate
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_b_theta_sweep.py --validate-convergence
-pytest python/paulistrings/tests/test_benchmark_b_sweep.py    # the CI gate, on a 20-qubit sublattice
+pytest benchmarks/python/tests/test_benchmark_b_sweep.py    # the CI gate, on a 20-qubit sublattice
 ```
 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts; the

@@ -14,7 +14,8 @@ python benchmarks/python/julia_baseline.py --self-test                        # 
 pytest benchmarks/python/test_julia_parity.py -q                              # parity gate
 ```
 
-`runner.jl` reads a task JSON (schema v1) and emits one result JSON line on stdout (or to `-o path`); diagnostics go to stderr.
+`runner.jl` reads a task JSON (schema v1) and emits one result JSON line on stdout (or to `-o path`).
+Diagnostics go to stderr.
 `../python/julia_baseline.py` is the `subprocess` wrapper other benchmarks call: it builds/validates the task JSON, invokes the runner, parses the result, and skips cleanly with no `julia` on `PATH`.
 `probes.jl` prints the semantics-probe table (qubit indexing, Hermitian-Y convention, truncation-boundary agreement) to stdout; each probe's expected value is hand-derived in a comment in that file.
 The first Julia run precompiles (~30 s at first use, then cached).

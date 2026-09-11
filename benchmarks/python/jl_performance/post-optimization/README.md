@@ -117,5 +117,5 @@ python benchmarks/python/jl_performance_figures.py \
     benchmarks/python/jl_performance/post-optimization/summary.json
 
 # the CI protocol gate (no julia, no timing, < 1 s)
-pytest python/paulistrings/tests/test_jl_performance_protocol.py
+pytest benchmarks/python/tests/test_jl_performance_protocol.py
 ```

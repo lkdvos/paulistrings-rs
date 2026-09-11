@@ -402,10 +402,26 @@ cost it carries.
    That is a deliberate omission, not an oversight: the crossover between the two kernels is steep and nothing
    in this experiment locates it.
 
+   > **Correction, 2026-09-10** (`research/notes/2026-09-10-constant-recalibration.md`). Measured. Every
+   > built-in `Local` plan has 1, 3 or 15 rest streams, so the "`2..8` band" is the single step 3→4, and it
+   > **splits**: `cnot` and `sqrt(SWAP)` (`gu2q`) both have exactly **3** rest streams and want opposite
+   > kernels — radix is `cnot` −5.48 % wall / −22.66 % sort and `gu2q` **+13.20 % / +34.27 %**, 7/7 pairs each.
+   > The rest-stream count carries no signal in that band; it is only a proxy for presortedness, and at
+   > `m = 4` the two layers sort at 11.4 and 7.2 ns/row respectively. `RADIX_MIN_REST_STREAMS = 8` is
+   > therefore kept, but as "the only value that works", not as "conservative pending measurement". The
+   > §3 `su4` gate itself reproduces intact on the JCC-padded build (radix −14.7 % wall / −23.9 % sort against
+   > the −15.2 % / −25.4 % recorded here).
+
 **Deliberately not done.**
 
 - **No unconditional replacement.** The radix costs +130…+165 % on a sparse-PTM run; a single kernel for both
   regimes is not available.
+
+  > **Correction, 2026-09-10.** That figure is the §1.2/§2.2 microbench on a large synthetic single-stream run
+  > and does not reproduce as a *layer* effect. On the engine's actual 1-stream `Local` layers — whose gather
+  > runs are 23 rows (`tfim_step`) and 116 rows (`trotter`) — forcing the radix on costs +6.14 % of the sort
+  > phase (`tfim_step`, 7/7) and nothing measurable in wall. The conclusion stands; the margin behind it is
+  > an order of magnitude smaller than stated.
 - **No `std::simd`** (nightly, toolchain pinned 1.94.0) and **no stable intrinsics** — no `_pext_u64` for a
   compacted multi-word surrogate. The portable contiguous window is enough for every measured cell, and PEXT
   would only help runs whose discriminating bits are scattered across words, which none of the dense-PTM shapes

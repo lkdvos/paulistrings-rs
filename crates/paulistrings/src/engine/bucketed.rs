@@ -41,7 +41,7 @@ use rayon::prelude::*;
 use super::coset::Gf2Span;
 use super::merge::{
     merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
-    RADIX_MIN_REST_STREAMS,
+    RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
 };
 use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
@@ -241,6 +241,12 @@ pub(super) struct GatherRun<const W: usize> {
     coeff: Vec<Complex64>,
 }
 
+/// `a != ZERO`, without the `||` short-circuit — one flag, no branch.
+#[inline(always)]
+fn nonzero(a: Complex64) -> bool {
+    (a.re != 0.0) | (a.im != 0.0)
+}
+
 impl<const W: usize> GatherRun<W> {
     #[inline]
     fn reset(&mut self, cap_id_keys: usize, cap_id_coeff: usize, cap_rest: usize) {
@@ -250,35 +256,120 @@ impl<const W: usize> GatherRun<W> {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        if self.id_x.capacity() < cap_id_keys {
-            let extra = cap_id_keys - self.id_x.capacity();
-            self.id_x.reserve(extra);
-            self.id_z.reserve(extra);
-        }
-        if self.id_coeff.capacity() < cap_id_coeff {
-            self.id_coeff
-                .reserve(cap_id_coeff - self.id_coeff.capacity());
-        }
-        if self.x.capacity() < cap_rest {
-            let extra = cap_rest - self.x.capacity();
-            self.x.reserve(extra);
-            self.z.reserve(extra);
-            self.coeff.reserve(extra);
+        // One slot past the exact capacity, and `reserve` on an empty `Vec`
+        // (so `additional` *is* the capacity asked for). The spare slot is
+        // what `push_if` writes into when it discards a row: the row is
+        // materialized at `len` and only published by the `set_len`, so the
+        // write must be in bounds even when every countable row is kept.
+        self.id_x.reserve(cap_id_keys + 1);
+        self.id_z.reserve(cap_id_keys + 1);
+        self.id_coeff.reserve(cap_id_coeff + 1);
+        self.x.reserve(cap_rest + 1);
+        self.z.reserve(cap_rest + 1);
+        self.coeff.reserve(cap_rest + 1);
+    }
+
+    /// Write one row at `len` in a three-column stream and publish it iff
+    /// `keep`.
+    ///
+    /// The single unsafe block behind every gather append. Both streams and
+    /// both the conditional and unconditional forms funnel through here, so
+    /// there is one invariant to audit rather than four copies of it that
+    /// drift apart.
+    ///
+    /// `[u64; W]` and `Complex64` are `Copy` with no `Drop`, so overwriting a
+    /// slot that a previous discarded row wrote is a plain store, not a leak.
+    ///
+    /// # Safety
+    ///
+    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller
+    /// gets this from [`GatherRun::reset`], which reserves one slot past the
+    /// plan's exact per-run capacity precisely so the discarded-row write is
+    /// in bounds even when every countable row is kept.
+    #[inline]
+    unsafe fn append_if(
+        xs: &mut Vec<[u64; W]>,
+        zs: &mut Vec<[u64; W]>,
+        cs: &mut Vec<Complex64>,
+        keep: bool,
+        x: [u64; W],
+        z: [u64; W],
+        c: Complex64,
+    ) {
+        let n = xs.len();
+        debug_assert!(n < xs.capacity());
+        debug_assert!(n < zs.capacity());
+        debug_assert!(n < cs.capacity());
+        unsafe {
+            xs.as_mut_ptr().add(n).write(x);
+            zs.as_mut_ptr().add(n).write(z);
+            cs.as_mut_ptr().add(n).write(c);
+            let m = n + keep as usize;
+            xs.set_len(m);
+            zs.set_len(m);
+            cs.set_len(m);
         }
     }
 
+    /// Branchless filtered append to the rest stream.
     #[inline]
-    fn push_id(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.id_x.push(x);
-        self.id_z.push(z);
-        self.id_coeff.push(c);
+    fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and
+        // `cap_rest` counts every row the plan's deltas can emit into this
+        // run, so `len <= cap_rest < capacity` holds at every call.
+        unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
     }
 
+    /// Unconditional append to the rest stream — [`Self::push_if`] with the
+    /// predicate known true, which is what the rotation generator pass wants.
     #[inline]
-    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.x.push(x);
-        self.z.push(z);
-        self.coeff.push(c);
+    fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+        self.push_if(true, x, z, c);
+    }
+
+    /// Branchless filtered append to the identity stream.
+    #[inline]
+    fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding
+        // the identity stream's rows.
+        unsafe {
+            Self::append_if(
+                &mut self.id_x,
+                &mut self.id_z,
+                &mut self.id_coeff,
+                keep,
+                x,
+                z,
+                c,
+            )
+        }
+    }
+
+    /// Unchecked unconditional append to the identity *coefficient* column.
+    ///
+    /// The dense-identity plans (all rotations, and every `Local` plan whose
+    /// identity amplitude never vanishes) emit exactly one identity row per
+    /// source row and borrow the keys from the source bucket, so this is the
+    /// only column materialized — hence its own helper rather than
+    /// [`Self::push_id_if`].
+    ///
+    /// Like the others this drops `Vec::push`'s capacity check, not a branch:
+    /// the check is perfectly predicted here and contributes no mispredicts,
+    /// but it is still instructions in the hottest loop of every rotation
+    /// layer. Measured on the output-major gather: `su4` −3.83% wall /
+    /// −10.00% gather at flat IPC (2b949e6); on the rotation path, −1.18% of
+    /// all instructions on `rotation_zz` (4e1eea2).
+    #[inline]
+    fn push_id_coeff(&mut self, c: Complex64) {
+        let n = self.id_coeff.len();
+        debug_assert!(n < self.id_coeff.capacity());
+        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is
+        // the source bucket's length — exactly the number of calls this loop
+        // makes — so `n <= cap_id_coeff < capacity` at every call.
+        unsafe {
+            self.id_coeff.as_mut_ptr().add(n).write(c);
+            self.id_coeff.set_len(n + 1);
+        }
     }
 
     #[cfg(any(test, feature = "phase-timing"))]
@@ -315,12 +406,16 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
         /// measured +15–30% on cnot/h (`research/notes/2026-08-31-v0.6-results.md`).
         dense_identity: bool,
         /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch`
-        /// instead of the comparison kernel — true exactly when the plan has
-        /// at least `merge::RADIX_MIN_REST_STREAMS` rest streams, i.e. a dense
-        /// two-qubit PTM. Decided once per layer, so the kernel choice costs
-        /// nothing per run and every sparse-PTM layer keeps the code path it
-        /// had. See `RADIX_MIN_REST_STREAMS` for the measurements behind the
-        /// threshold.
+        /// instead of the comparison kernel. Two arms, both plan-time and both
+        /// measured: at least `merge::RADIX_MIN_REST_STREAMS` rest streams
+        /// (a dense two-qubit PTM, where comparisons per row are high), or at
+        /// least `merge::RADIX_MIN_DISJOINT_STREAMS` rest streams whose
+        /// [`rest_rows_per_key`] is below
+        /// `merge::RADIX_MAX_REST_ROWS_PER_KEY` (a key-permuting gate, where
+        /// comparisons per row are ordinary but each one mispredicts). Decided
+        /// once per layer, so the kernel choice costs nothing per run and every
+        /// sparse-PTM layer keeps the code path it had. See
+        /// `RADIX_MIN_REST_STREAMS` for the measurements behind both.
         radix_sort: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the
@@ -359,6 +454,16 @@ pub(crate) struct LayerKnobs<'k> {
     /// is a property of the channel, not of how one partition happens to see
     /// it, so every partition picks the same kernel as the unpartitioned run.
     pub rest_streams: Option<usize>,
+    /// Rest-stream overlap driving the sort-kernel choice, as
+    /// [`rest_streams`](Self::rest_streams) does for the count. `None` — the
+    /// default — derives it from the plan's own PTM. The partitioned layer
+    /// passes the **unrestricted** channel's [`rest_rows_per_key`], because
+    /// the PTM it hands `DeltaPlan::new` is cut down to the entries that stay
+    /// local and a cut-down delta set can only look more disjoint than the
+    /// channel is — so deriving it locally could switch one partition onto
+    /// the radix kernel for a fan-out channel that the unpartitioned run
+    /// keeps on the comparison kernel.
+    pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here (see
     /// [`DeltaPlan::Rotation::gen_local`]). `true` by default.
     pub gen_local: bool,
@@ -369,8 +474,62 @@ impl Default for LayerKnobs<'_> {
         Self {
             bucket_deltas: None,
             rest_streams: None,
+            rows_per_key: None,
             gen_local: true,
         }
+    }
+}
+
+/// Rest rows landing on one output key, averaged over the output keys that
+/// get at least one — the plan-time estimate of `rows_sorted / distinct keys`
+/// in a gather run, and the second arm of the radix gate
+/// (`merge::RADIX_MAX_REST_ROWS_PER_KEY`).
+///
+/// `1.0` says the rest streams are pairwise **disjoint**: no output key is
+/// reachable by two deltas at once, so the per-run `k`-way merge has to pick
+/// between `k` unrelated key sets and its branch is a coin flip. Anything
+/// above says the streams overlap and the merge steps through them in
+/// lock-step, which the branch predictor learns. Which regime a layer is in
+/// decides the sort kernel, and this is the only quantity that tells the two
+/// 3-stream built-ins apart — see `merge::RADIX_MIN_REST_STREAMS`.
+///
+/// Read straight out of the PTM's amplitude *support*, so it is exact for the
+/// locally-closed sum a steady-state layer sees: `amp[s]` weights
+/// `s -> s ^ local_delta`, hence output pattern `o` takes a row from entry `e`
+/// exactly when `amp_e[o ^ local_delta_e] != 0`. Cost is `|D| · 4^k` — 240
+/// amplitude tests for the densest two-qubit channel — once per layer.
+///
+/// Values for the built-ins: **1.00** for every Clifford (a key permutation
+/// sends each source row to exactly one output row), **3.00** for
+/// `sqrt(SWAP)`, **14.00** for a Haar SU(4) — equal, to the digit, to the
+/// `rows_sorted / distinct keys` measured inside the engine's own gather runs
+/// (`research/notes/2026-09-10-presortedness-predictor.md` §3).
+///
+/// **Must be asked of the channel's own PTM, never a restricted one.** A
+/// partitioned layer hands [`DeltaPlan::new`] a PTM cut down to its local
+/// entries, and dropping entries can only make the remainder look *more*
+/// disjoint — one surviving stream reads 1.0 whatever the channel is. That is
+/// why [`LayerKnobs::rows_per_key`] exists, exactly as
+/// [`LayerKnobs::rest_streams`] does for the count.
+pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
+    // Entry 0 is the identity delta when present (ascending `local_delta`
+    // construction order), and its stream is the pre-sorted `id` columns —
+    // never part of the sorted rest stream.
+    let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
+    let dim = 1usize << (2 * ptm.k());
+    let (mut rows, mut keys) = (0u32, 0u32);
+    for o in 0..dim {
+        let n = ptm.deltas()[rest_start..]
+            .iter()
+            .filter(|d| d.amp[o ^ d.local_delta as usize] != ZERO)
+            .count() as u32;
+        rows += n;
+        keys += u32::from(n > 0);
+    }
+    if keys == 0 {
+        0.0
+    } else {
+        f64::from(rows) / f64::from(keys)
     }
 }
 
@@ -399,12 +558,22 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
+                // Both arms read channel-wide quantities, never this
+                // partition's view of them — `LayerKnobs` overrides both
+                // under a partitioning, for the same reason in both cases —
+                // so every partition picks the kernel the unpartitioned run
+                // would. The overlap arm is evaluated only when the count arm
+                // has already declined and the count clears its own floor.
+                let radix_sort = rest_streams >= RADIX_MIN_REST_STREAMS
+                    || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
+                        && knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
+                            < RADIX_MAX_REST_ROWS_PER_KEY);
                 DeltaPlan::Local {
                     ptm,
                     coords,
                     has_identity,
                     dense_identity,
-                    radix_sort: rest_streams >= RADIX_MIN_REST_STREAMS,
+                    radix_sort,
                 }
             }
             Prepared::Rotation(r) => DeltaPlan::Rotation {
@@ -846,13 +1015,9 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                         z: src.z[t],
                     };
                     if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize]
-                            .id_coeff
-                            .push(src.coeff[t]);
+                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
                     } else {
-                        runs[i ^ *coord_identity as usize]
-                            .id_coeff
-                            .push(src.coeff[t] * prep.cos);
+                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
                         // Loop-invariant, `true` on every unpartitioned
                         // layer, and asked before any of the generator
                         // arithmetic: under a partitioning that sees the
@@ -862,7 +1027,7 @@ pub(super) fn fill_coset<const W: usize, T, X>(
                             let mut prod = v;
                             let phase = prod.mul_assign(&prep.gen);
                             let total = Phase::I + phase;
-                            runs[i ^ *coord_gen as usize].push(
+                            runs[i ^ *coord_gen as usize].push_row(
                                 prod.x,
                                 prod.z,
                                 total.apply(src.coeff[t]) * prep.sin,
@@ -996,12 +1161,56 @@ pub(super) fn fill_coset<const W: usize, T, X>(
 /// agree only to floating-point tolerance — pinned by
 /// `local_gather_orders_agree_to_fp_tolerance` — and the threshold remains a
 /// pure performance knob, not a correctness one.
+///
+/// **Re-measured 2026-09-10** on the JCC-padded build, with both arms carrying
+/// the branchless filter (the asymmetry `4ee8033` introduced is gone), and
+/// **the value is unchanged**. Only three built-in layers take a `Local` plan
+/// that reaches this branch, at `r = 1` (`trotter`, `tfim_step`), `r = 2`
+/// (`cnot`, `gu2q`) and `r = 4` (`su4`), so the constant has exactly four
+/// distinct settings; all four were measured, 7 pairs, `--n 1000000`,
+/// 1 thread, `taskset -c 6`:
+///
+/// | value | who changes order | wall Δ% vs 3 |
+/// |---|---|---|
+/// | 1 | `trotter` → output-major | **+4.61** (7/7), gather +11.39 |
+/// | 2 | `cnot`, `gu2q` → output-major | **+23.31 / +15.53** (7/7), gather +43 / +48 |
+/// | **3** | — | incumbent |
+/// | 5 | `su4` → input-major | ns at 1 thread (−0.31%, 4/7); gather **+69%** (7/7) at 16 threads |
+///
+/// The `r = 2` row reproduces the original −14…−22% the other way round and
+/// then some. The `r = 4` row is the one worth knowing: at one thread the two
+/// orders are indistinguishable, and the whole justification for keeping
+/// `su4` on output-major is the multi-threaded gather, where input-major's
+/// sixteen open write streams plus the swapped coset overflow L2 exactly as
+/// recorded. `research/notes/2026-09-10-constant-recalibration.md`.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
 /// Input-major gather for a tabulated (`Local`) plan: each term is loaded
 /// once and its whole fanout is scattered by
 /// `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
 /// (input member, input position, delta) order.
+///
+/// **The zero-amplitude filter is branchless.** A `if a == ZERO { continue }`
+/// here was the single largest source of branch mispredictions in the engine:
+/// which entries of a PTM row vanish is a property of the term's support
+/// pattern, so the test is a data-dependent near-coin-flip taken tens of
+/// millions of times a second — 39% of all mispredicts on `rotation_zz` and
+/// 43% on `cnot`, one instruction. The row is now always materialized and
+/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, so
+/// the branch is gone and the discarded rows cost only the emit body.
+/// Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs:
+///
+/// | layer | wall Δ% | gather Δ% | `br_misp_retired` |
+/// |---|---:|---:|---:|
+/// | `rotation_zz` | −10.71 | −19.48 | 55.4M → 33.7M |
+/// | `cnot` | −7.91 | −14.37 | 76.7M → 44.2M |
+/// | `gu2q` | −4.11 | −11.93 | |
+/// | `su4` | ns | ns | (dense PTM: nothing to filter) |
+///
+/// `cnot` retires 22% *more* instructions and is still 7.9% faster — the
+/// wasted emit work is much cheaper than the mispredicts it removes. Work
+/// counters are bit-identical throughout, and so is the emitted row
+/// sequence. `research/notes/2026-09-10-branch-misprediction.md`.
 fn gather_local_input_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1024,23 +1233,20 @@ fn gather_local_input_major<const W: usize>(
                     // the source rows, so only the coefficient is stored —
                     // the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
-                    runs[i].id_coeff.push(src.coeff[t] * a);
-                } else if a != ZERO {
-                    runs[i].push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                    runs[i].push_id_coeff(src.coeff[t] * a);
+                } else {
+                    runs[i].push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
             for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
                 let a = d.amp[s];
-                if a == ZERO {
-                    continue;
-                }
                 let mut kx = src.x[t];
                 let mut kz = src.z[t];
                 for w in 0..W {
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                runs[i ^ coords[e] as usize].push(kx, kz, src.coeff[t] * a);
+                runs[i ^ coords[e] as usize].push_if(nonzero(a), kx, kz, src.coeff[t] * a);
             }
         }
     }
@@ -1053,6 +1259,23 @@ fn gather_local_input_major<const W: usize>(
 /// key-only, so it does not canonicalize the two orders to an identical
 /// sequence; they agree only up to floating-point tolerance on
 /// any equal-key summation (see `local_gather_orders_agree_to_fp_tolerance`).
+///
+/// **The zero-amplitude filter is branchless**, as in
+/// [`gather_local_input_major`]. `4ee8033` converted only the input-major arm,
+/// which left the two sides of [`GATHER_OUTPUT_MAJOR_MIN_R`] measuring
+/// different code; this arm was converted 2026-09-10. The interesting part is
+/// that it wins on the layer where the *filter* cannot possibly help:
+/// output-major is only reached at `r >= 3`, i.e. by a dense two-qubit PTM,
+/// whose amplitudes never vanish, so no row is ever discarded. What
+/// [`GatherRun::push_if`] removes there is the three `Vec::push` capacity
+/// checks and length increments per row. Measured `su4`, `--n 1000000`,
+/// 1 thread, `taskset -c 6`, work counters bit-identical, over three
+/// independent campaigns (7, 7 and 11 pairs; medians −3.38 / −4.22 / −4.22):
+/// **wall −4.22% (11/11), gather −10.68% (11/11)**, instructions −3.9%,
+/// `br_misp_retired` 28.8M → 14.7M, DSB 97.6% both sides. The layers that keep input-major
+/// (`cnot`, `gu2q`, `rotation_zz`) are a clean null, 4/7–5/7 either way, which
+/// is also the layout control.
+/// `research/notes/2026-09-10-constant-recalibration.md`.
 fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -1074,9 +1297,9 @@ fn gather_local_output_major<const W: usize>(
                 let a = d.amp[s];
                 if dense_identity {
                     debug_assert!(a != ZERO);
-                    run.id_coeff.push(src.coeff[t] * a);
-                } else if a != ZERO {
-                    run.push_id(src.x[t], src.z[t], src.coeff[t] * a);
+                    run.push_id_coeff(src.coeff[t] * a);
+                } else {
+                    run.push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
                 }
             }
         }
@@ -1085,16 +1308,13 @@ fn gather_local_output_major<const W: usize>(
             for t in 0..src.len() {
                 let s = ptm.support_bits(&src.x[t], &src.z[t]);
                 let a = d.amp[s];
-                if a == ZERO {
-                    continue;
-                }
                 let mut kx = src.x[t];
                 let mut kz = src.z[t];
                 for w in 0..W {
                     kx[w] ^= d.mask_x[w];
                     kz[w] ^= d.mask_z[w];
                 }
-                run.push(kx, kz, src.coeff[t] * a);
+                run.push_if(nonzero(a), kx, kz, src.coeff[t] * a);
             }
         }
     }
@@ -1154,6 +1374,52 @@ mod tests {
     pub(super) use crate::test_support::{
         assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
     };
+
+    /// `push_if` publishes a row exactly when `keep`, and a discarded row
+    /// leaves the columns' lengths — and every already-published row —
+    /// untouched, even when it is the last countable row (the `+ 1` slot
+    /// `reset` reserves is the one it writes into).
+    #[test]
+    fn push_if_publishes_only_kept_rows_and_never_overruns() {
+        let mut run: GatherRun<1> = GatherRun::default();
+        // Exactly two countable rows for the rest stream.
+        run.reset(0, 0, 2);
+        let c = |v: f64| Complex64::new(v, 0.0);
+        run.push_if(false, [7], [7], c(9.0)); // discarded at len 0
+        assert_eq!(run.x.len(), 0);
+        run.push_if(true, [1], [2], c(1.0));
+        run.push_if(false, [7], [7], c(9.0)); // discarded at len 1
+        run.push_if(true, [3], [4], c(2.0)); // the last countable row
+        assert_eq!(run.x.as_slice(), &[[1], [3]]);
+        assert_eq!(run.z.as_slice(), &[[2], [4]]);
+        assert_eq!(run.coeff.as_slice(), &[c(1.0), c(2.0)]);
+        // The identity stream answers the same contract.
+        run.reset(1, 1, 0);
+        run.push_id_if(false, [5], [6], c(3.0));
+        assert_eq!(run.id_x.len(), 0);
+        run.push_id_if(true, [5], [6], c(3.0));
+        assert_eq!(run.id_x.as_slice(), &[[5]]);
+        assert_eq!(run.id_coeff.as_slice(), &[c(3.0)]);
+    }
+
+    /// The zero test `push_if` is handed must agree with `Complex64`'s own
+    /// `!= ZERO`, signed zeros and NaN included.
+    #[test]
+    fn nonzero_agrees_with_complex_inequality() {
+        for a in [
+            Complex64::new(0.0, 0.0),
+            Complex64::new(-0.0, 0.0),
+            Complex64::new(0.0, -0.0),
+            Complex64::new(-0.0, -0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(0.0, 1.0),
+            Complex64::new(f64::NAN, 0.0),
+            Complex64::new(0.0, f64::NAN),
+            Complex64::new(f64::MIN_POSITIVE, 0.0),
+        ] {
+            assert_eq!(nonzero(a), a != ZERO, "disagreement at {a}");
+        }
+    }
 
     const TOL: f64 = 1e-11;
 
@@ -1695,19 +1961,26 @@ mod tests {
         check(&Clifford1Q::h(3), false, "h");
     }
 
-    /// Which sort kernel each built-in's layer gets.
+    /// Which sort kernel each built-in's layer gets, and the two plan-time
+    /// quantities that decide it.
     ///
-    /// The radix kernel wins on many-stream, high-duplicate runs and loses
-    /// badly (+130–165 %) on a single nearly-sorted stream, so the gate must
-    /// fire for dense two-qubit PTMs and *only* those. Pinned per channel
-    /// because the trigger is the realized delta-set size, which a PTM change
-    /// could move silently in either direction — a gate that quietly stopped
-    /// firing would look like nothing more than a lost speedup, and one that
-    /// started firing on `rotation_zz` would be a large regression.
+    /// The radix kernel wins where the comparison merge is expensive per row —
+    /// either because there are many streams to merge (`su4`) or because the
+    /// streams are disjoint and every comparison mispredicts (`cnot`, `cz`,
+    /// `swap`: key permutations) — and loses badly (+130–165 %) on a single
+    /// nearly-sorted stream. Both triggers are pinned per channel, values and
+    /// all, because a PTM change could move either silently in either
+    /// direction: a gate that quietly stopped firing would look like nothing
+    /// more than a lost speedup, and one that started firing on `rotation_zz`
+    /// would be a large regression. `rest_rows_per_key` is pinned exactly
+    /// because it is *measurably* the engine's own `rows_sorted / distinct
+    /// keys` — 1.00 / 3.00 / 14.00 in the instrumented gather runs, matching
+    /// these three values to two decimals
+    /// (`research/notes/2026-09-10-presortedness-predictor.md`).
     #[test]
     fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool) {
+        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool, f64) {
             let prep = ch.prepare(&hash, false).unwrap();
             let span = Gf2Span::new(&prep.bucket_deltas(), 8);
             match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
@@ -1716,7 +1989,11 @@ mod tests {
                     has_identity,
                     radix_sort,
                     ..
-                } => (ptm.deltas().len() - has_identity as usize, radix_sort),
+                } => (
+                    ptm.deltas().len() - has_identity as usize,
+                    radix_sort,
+                    rest_rows_per_key(ptm),
+                ),
                 // A wide rotation has one rest stream by construction and no
                 // `radix_sort` field: `fill_coset` reads `false` for it.
                 DeltaPlan::Rotation { .. } => {
@@ -1724,10 +2001,22 @@ mod tests {
                         label.starts_with("rot"),
                         "{label}: unexpected Rotation plan"
                     );
-                    (1, false)
+                    (1, false, 0.0)
                 }
             }
         };
+        // (label, rest streams, rest_rows_per_key, radix).
+        let expect: &[(&str, usize, f64, bool)] = &[
+            ("haar_su4", 15, 14.0, true),
+            ("gu2q_sqrt_swap", 3, 3.0, false),
+            ("cnot", 3, 1.0, true),
+            ("cz", 3, 1.0, true),
+            ("swap", 3, 1.0, true),
+            ("h", 1, 1.0, false),
+            ("s", 1, 1.0, false),
+            ("rot_zz", 1, 1.0, false),
+            ("depolarizing", 0, 0.0, false),
+        ];
         let mut selected = Vec::new();
         let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
             ("haar_su4", Box::new(haar_su4(1, 5))),
@@ -1756,23 +2045,97 @@ mod tests {
                 }),
             ),
         ];
-        for (label, ch) in &cases {
-            let (streams, radix) = rest_streams(ch.as_ref(), label);
+        assert_eq!(cases.len(), expect.len());
+        for ((label, ch), &(want_label, want_streams, want_rpk, want_radix)) in
+            cases.iter().zip(expect)
+        {
+            assert_eq!(*label, want_label);
+            let (streams, radix, rpk) = rest_streams(ch.as_ref(), label);
+            assert_eq!(streams, want_streams, "{label}: rest streams");
+            assert!(
+                (rpk - want_rpk).abs() < 1e-9,
+                "{label}: rest_rows_per_key {rpk}, want {want_rpk}",
+            );
             assert_eq!(
-                radix,
-                streams >= RADIX_MIN_REST_STREAMS,
-                "{label}: {streams} rest streams but radix_sort = {radix}",
+                radix, want_radix,
+                "{label}: {streams} rest streams, {rpk} rows per key, radix_sort = {radix}",
             );
             if radix {
                 selected.push(*label);
             }
         }
-        // The dense SU(4) realizes all 16 deltas; nothing else here comes
-        // close (sqrt(SWAP) is the runner-up at 3).
+        // Arm one: the dense SU(4) realizes all 16 deltas; nothing else here
+        // comes close (sqrt(SWAP) is the runner-up at 3). Arm two: the three
+        // two-qubit Cliffords, whose rest streams are disjoint. `sqrt(SWAP)`
+        // has the same stream count as `cnot` and is deliberately *not*
+        // selected — the whole point of the second arm's quantity.
         assert_eq!(
             selected,
-            vec!["haar_su4"],
+            vec!["haar_su4", "cnot", "cz", "swap"],
             "the radix gate fired on an unexpected set of channels",
+        );
+    }
+
+    /// A partitioned layer must pick the kernel the unpartitioned run picks,
+    /// on *both* arms of the gate.
+    ///
+    /// `partitioned::layer` hands `DeltaPlan::new` a PTM restricted to the
+    /// entries that stay local, and a restriction can only look more disjoint
+    /// than the channel: drop two of `sqrt(SWAP)`'s three rest deltas and the
+    /// survivor reads `rest_rows_per_key == 1.0`, which is `cnot`'s value. The
+    /// stream count is already overridden for exactly this reason
+    /// (`LayerKnobs::rest_streams`); the overlap needs the same treatment, and
+    /// this pins that it gets it — deriving it locally would flip a fan-out
+    /// channel onto the radix kernel on one partition and not on another.
+    #[test]
+    fn a_partitioned_plan_reads_the_channel_wide_overlap() {
+        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
+        let gu2q = sqrt_swap_w1(1, 5);
+        let prep = gu2q.prepare(&hash, false).unwrap();
+        let Prepared::Local(full) = &prep else {
+            panic!("sqrt(SWAP) prepares to a Local plan");
+        };
+        assert!(
+            (rest_rows_per_key(full) - 3.0).abs() < 1e-9,
+            "the channel-wide value is the one the gate must see",
+        );
+
+        // Keep the identity entry and one rest entry: the partition whose
+        // local view is most misleading.
+        let mut keep = vec![false; full.deltas().len()];
+        keep[0] = true;
+        keep[1] = true;
+        let local = Prepared::Local(full.retain_entries(&keep));
+        let Prepared::Local(restricted) = &local else {
+            unreachable!()
+        };
+        assert!(
+            (rest_rows_per_key(restricted) - 1.0).abs() < 1e-9,
+            "the restricted view must be the misleading one, or this test is vacuous",
+        );
+
+        let span = Gf2Span::new(&local.bucket_deltas(), 8);
+        let radix = |knobs: LayerKnobs<'_>| match DeltaPlan::new(&local, &span, knobs) {
+            DeltaPlan::Local { radix_sort, .. } => radix_sort,
+            DeltaPlan::Rotation { .. } => unreachable!(),
+        };
+        // What the partitioned layer actually passes.
+        assert!(
+            !radix(LayerKnobs {
+                rest_streams: Some(3),
+                rows_per_key: Some(rest_rows_per_key(full)),
+                ..LayerKnobs::default()
+            }),
+            "a partition of a fan-out channel must keep the comparison kernel",
+        );
+        // And the failure mode, spelled out: the count override alone is not
+        // enough once the gate has a second arm.
+        assert!(
+            radix(LayerKnobs {
+                rest_streams: Some(3),
+                ..LayerKnobs::default()
+            }),
+            "the restricted PTM really does mislead the overlap arm",
         );
     }
 

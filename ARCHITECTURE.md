@@ -315,13 +315,20 @@ layer), then each coset task, independently:
    empty, capacity-retaining columns as write destinations — the layer is
    in-place: peak memory is `n` plus per-worker scratch of one coset's working
    set, not a second full-size copy.
-2. **Size** each per-member gather run exactly from the swapped-out lengths.
+2. **Size** each per-member gather run exactly from the swapped-out lengths,
+   plus one spare slot per column — the slot the gather's branchless
+   zero-amplitude filter writes a discarded row into.
 3. **Gather input-major**: each term is loaded once and its whole fanout
    scattered to runs via the O(1) index identity
    `member(i) ⊕ δ = member(i ⊕ coord(δ))` — so the gather visits each input
-   term exactly once, with no read amplification. (An output-major variant
-   guards rank ≥ 3 custom channels, selected by `GATHER_OUTPUT_MAJOR_MIN_R`;
-   no built-in reaches it.)
+   term exactly once, with no read amplification. Rows whose PTM amplitude is
+   exactly zero are filtered **branchlessly** — always materialized, published
+   only by `len += (amp != 0)` — because which entries vanish depends on the
+   term's support pattern, making the test the engine's single largest source
+   of branch mispredictions when written as a branch
+   (`research/notes/2026-09-10-branch-misprediction.md`). (An output-major
+   variant guards rank ≥ 3 custom channels, selected by
+   `GATHER_OUTPUT_MAJOR_MIN_R`; no built-in reaches it.)
 4. Per run, **sort the rest stream and merge**, straight into the member's
    live slot.
 
@@ -346,11 +353,16 @@ bitwise. `merge::tests::assert_sort_contract` holds both to it.
 ever sees — is a permutation sort over the run.
 
 > Its comparison sort **must remain the standard library's stable adaptive
-> `sort_by`**. A gather run is a concatenation of per-delta streams, each
-> drawn from one sorted bucket — piecewise-sorted data whose natural runs the
-> adaptive driftsort detects and merges nearly for free. Switching to
-> `sort_unstable_by` (pdqsort, no run detection) measured **+77%** on a
-> rotation layer. Stability per se is irrelevant; adaptivity is the point.
+> `sort_by`** wherever a gather run holds more than one stream. A gather run
+> is a concatenation of per-delta streams, each drawn from one sorted bucket —
+> piecewise-sorted data whose natural runs the adaptive driftsort detects and
+> merges nearly for free. Switching to `sort_unstable_by` (pdqsort, no run
+> detection) costs **+44% wall / +189% sort** on a 10⁶ CNOT layer, whose run
+> is 4 streams per coset (2026-09-10, JCC-padded build, 7/7 pairs). It costs
+> **nothing** on `rotation_zz`, whose run is a single already-ascending
+> stream that pdqsort's presorted fast path handles just as cheaply — the
+> earlier "+77% on a rotation layer" was measured pre-padding and does not
+> reproduce. Stability per se is irrelevant; adaptivity is the point.
 > Recorded on the function's doc — do not "simplify" it.
 
 `sort_rows_radix_with_scratch` serves the dense-PTM path, where the sort is
@@ -385,7 +397,13 @@ accumulator — the only zero test is on the final sum (the signed-zero
 contract, pinned by test). A segment-copy variant (gallop + bulk copy of
 id segments) was measured and rejected: real stream densities make the
 average segment 1–2 rows, and it cost +20–35% merge time — recorded on the
-function's doc.
+function's doc. The walk is written as three loops — both streams live, then
+one drain each — so the hot loop tests neither stream's bound and a channel
+with no identity delta runs a single-stream reduction with no `a`-side test at
+all (−1.96..−4.80% wall, 7/7 pairs). Making the *comparison* branchless was
+measured and rejected: the mispredicts simply move to the equal-key drain test
+and the merge gets 10–12% slower
+(`research/notes/2026-09-10-branch-misprediction.md`).
 
 After the coset loop the handles are un-permuted, the length recounted, and
 invariants asserted (debug builds).
@@ -917,7 +935,13 @@ way:
 2. **The signed-zero contract** (§Engine): exact-zero id rows flow to the
    accumulator; the only zero test is on the final sum.
 3. **The stable adaptive sort** (§Engine): the per-run sort exploits
-   piecewise-sortedness; replacing it with an unstable sort measured +77%.
+   piecewise-sortedness; replacing it with an unstable sort costs +44% wall
+   (+189% sort) on CNOT, and nothing on a single-stream run such as
+   `rotation_zz` — the constraint binds wherever a coset gathers ≥2 streams.
+   It is *not* accompanied by an `#[inline]` constraint: the `engine/merge.rs`
+   hint set was re-A/B'd on the JCC-padded build (2026-09-10) and every one of
+   its recorded effects is gone — see
+   `research/notes/2026-09-10-inline-set-repost.md`.
 4. **Measurement discipline:** release builds only, seeded inputs outside the
    timed region, the reference host, and the campaign workflow in
    `benchmarks/PROFILING.md`. Single-shot campaign noise on the reference host
@@ -941,4 +965,7 @@ re-attempting the corresponding ideas: static coset→worker placement (slower
 than work-stealing), recompute-in-merge id-stream borrowing for sparse
 streams, segment-copy merging, and interleaved transient key layouts (all
 measured and rejected — see `research/notes/2026-08-31-v0.6-results.md` and
-the static-coset-placement note).
+the static-coset-placement note). The 2026-09-10 front-end campaign adds
+three more — SIMD kernels and a word-planar layout, a branchless
+`merge2_into`, and presortedness as the radix gate's predictor — and is
+indexed with its reading order in `research/README.md`.

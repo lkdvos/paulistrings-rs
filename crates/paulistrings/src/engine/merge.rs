@@ -75,9 +75,19 @@ impl<const W: usize> SortScratch<W> {
 /// bucket — the identity stream arrives fully sorted, and an XOR-by-constant
 /// stream is piecewise sorted (order survives wherever the mask's high bits
 /// don't flip) — and Rust's stable driftsort detects and merges those natural
-/// ascending runs while the unstable pdqsort does not. Measured: switching
-/// this line to `sort_unstable_by` cost +77% on a 10⁶ `rotation_zz` layer
-/// and +43% on CNOT.
+/// ascending runs while the unstable pdqsort does not.
+///
+/// Re-measured 2026-09-10 on the JCC-padded build (`.cargo/config.toml`),
+/// 7 pairs, bit-identical work counters: switching this line to
+/// `sort_unstable_by` costs **+44.3% wall / +189% sort** on a 10⁶ CNOT layer
+/// (7/7) and **nothing at all** on `rotation_zz` (median −0.43%, 5/7 vs 2/7 —
+/// no consistent change). The difference is the run count, not the layer:
+/// CNOT gathers 4 streams per coset, `rotation_zz` exactly *one* non-identity
+/// stream, and on a single already-ascending run pdqsort's presorted-input
+/// fast path is as cheap as driftsort's run detection. The requirement is
+/// real and it is *conditional on there being ≥2 streams to merge*. The older
+/// "+77% on `rotation_zz`" figure was taken pre-padding and does not
+/// reproduce; see `research/notes/2026-09-10-inline-set-repost.md`.
 ///
 /// **When those streams are ascending is a partition property, not a given.**
 /// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of
@@ -112,11 +122,16 @@ impl<const W: usize> SortScratch<W> {
 /// columns' storage (cleared next call) as its own scratch capacity — so
 /// capacity circulates between the live columns and the scratch instead of
 /// either side ever growing past its high-water mark.
-// `#[inline]` is load-bearing: without it, moving this function between
-// modules measured ~6% slower single-threaded on the rotation family
-// (interleaved A/B, 3/3 pairs) — an LTO code-layout effect, not logic.
-// Hint the sort ONLY: adding `#[inline]` to `merge2_into` as well measured
-// +20-34% on criterion's apply_layer_bucketed/rotation_zz.
+// `#[inline]` here is **codegen-inert under the shipping profile** and is kept
+// only as a hint for builds that are not `lto = "fat"` + `codegen-units = 1`.
+// Re-measured 2026-09-10, after the JCC-erratum branch padding landed (6f7c66c):
+// removing it leaves `.text` **byte-identical** (the only bytes that move are
+// panic-location line numbers), and the paired A/B is pure noise —
+// `rotation_zz` median +0.01%, `cnot` +0.35%, 3/7 pairs negative in both.
+// The recorded "~6% and load-bearing" predates the padding, when any code
+// motion re-rolled every branch against the 32-byte boundary; it does not
+// reproduce. Do not treat this attribute as a performance constraint.
+// `research/notes/2026-09-10-inline-set-repost.md`.
 #[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
@@ -171,15 +186,103 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
 /// The sparse-PTM row is why this is a gate and not a replacement: with one
 /// nearly-sorted stream the comparison sort costs about one comparison per row
 /// and the radix's fixed passes are pure overhead. `2..8` rest streams —
-/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — is **unmeasured**
-/// and deliberately left on the comparison kernel.
+/// `sqrt(SWAP)`'s regime, whose sort is 33 % of its layer — was **unmeasured**
+/// when the gate was set; it is measured now, and the answer is in the
+/// 2026-09-10 section below.
 ///
 /// Both `W = 1` rows above are favourable, and by a similar margin, in *both*
 /// delta-span rank regimes (`r = 3` and `r = 4`, see
 /// `research/notes/2026-09-01-bucket-cliff.md`): this kernel is
 /// order-oblivious, so it does not repair a deficient rank draw — it removes
 /// the sort's sensitivity to one.
+///
+/// # 2026-09-10: the `2..8` gap is measured, and the value stands — but not
+/// for the recorded reason
+///
+/// Re-measured on the JCC-padded build (`2026-09-10-hot-path-code-size.md`),
+/// after the gather and merge rewrites of `06777e3` / `4ee8033` changed the
+/// phase mix. Every built-in `Local` plan has 1, 3 or 15 rest streams, so this
+/// constant has three distinct settings, not fourteen; all three were measured
+/// at `--n 1000000`, 1 thread, `taskset -c 6`, 7 pairs:
+///
+/// | value | effect | wall Δ% vs 8 |
+/// |---|---|---|
+/// | 1 | 1-stream `Local` layers join | `trotter` ns, `tfim_step` ns (sort **+6.1%**, 7/7) |
+/// | 2 or 3 | `cnot`, `gu2q` join | `cnot` **−5.48%** (sort −22.7%), `gu2q` **+13.20%** (sort +34.3%) |
+/// | **4..=15** | incumbent | — |
+/// | 16 | nobody; radix off | `su4` **+17.20%** (sort +31.4%) |
+///
+/// The `su4` justification reproduces intact (radix is −14.7% wall / −23.9%
+/// sort there, against the original −15.2% / −25.4%), and this constant keeps
+/// its value as **that** arm of the gate. What did not survive is the idea
+/// that it is the *only* arm: `cnot` and `gu2q` both have exactly 3 rest
+/// streams and want opposite kernels, by −5.5% and +13.2%, so no threshold on
+/// the stream count alone can take `cnot`'s win.
+///
+/// # 2026-09-10, second pass: the second arm, and what the stream count is a
+/// proxy for
+///
+/// The separating quantity is **not** presortedness, which the
+/// 2026-09-10 note conjectured and which is measurably constant: instrumenting
+/// the engine's own gather runs shows every built-in `Local` layer arrives as
+/// *exactly* `k` maximal ascending runs for `k` rest streams — zero inversions,
+/// on `cnot`, `gu2q`, `su4` and `rotation_zz` alike. That is forced: a stream
+/// `{v ⊕ d}` inverts an adjacent pair only where the pair's highest differing
+/// bit is set in `d`, and a two-qubit gate's masks touch only bits 0–1 of
+/// `x[0]`/`z[0]` while a bucket's adjacent keys first differ in the *top* bits
+/// of `x[0]`. Comparisons per row are likewise equal on the two 3-stream
+/// layers (2.65 both, against the `log2(k) + 1` floor).
+///
+/// What differs is **nanoseconds per comparison** — 4.23 on `cnot` against
+/// 2.74 on `gu2q` — and it is branch misprediction in the `k`-way merge.
+/// `cnot` is a *key permutation*: its rest streams are pairwise disjoint key
+/// sets drawn from three different source buckets, so "which stream is next"
+/// is a coin flip. `gu2q` fans out: every output key is produced by all three
+/// streams, which therefore step in lock-step and predict perfectly. Measured
+/// (`perf stat`, 10 layers, `--n 1000000`), radix minus comparison:
+///
+/// | layer | Δ branch-misses / row sorted | Δ instructions / row | wall Δ% |
+/// |---|---:|---:|---:|
+/// | `cnot` | **−1.46** (≈0.55 per comparison) | +70 | **−5.26** (14/14) |
+/// | `gu2q` | −0.28 (≈0.11 per comparison) | +88 | **+12.43** (14/14) |
+///
+/// The radix kernel's cost is flat in both (its passes are counting sorts, so
+/// it has no data-dependent branch to miss); the comparison kernel's is not.
+/// Hence the gate has two arms, and the plan-time quantity behind the second
+/// is [`RADIX_MAX_REST_ROWS_PER_KEY`] — computed by
+/// `bucketed::rest_rows_per_key` straight out of the PTM's amplitude support,
+/// 1.00 for `cnot`, 3.00 for `gu2q` and 14.00 for `su4`, equal to the digit to
+/// the `rows_sorted / distinct keys` measured inside the gather runs.
+/// `research/notes/2026-09-10-presortedness-predictor.md`.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
+
+/// Second arm of the radix gate: the largest `rest_rows_per_key` a layer may
+/// have and still be treated as *disjoint*-streamed.
+///
+/// `bucketed::rest_rows_per_key` estimates, from the prepared PTM alone, how
+/// many rest rows land on one output key — `rows_sorted / distinct keys` in a
+/// gather run. Exactly `1.0` means the streams are pairwise disjoint and the
+/// `k`-way merge's branch is a coin flip, which is the regime the radix kernel
+/// wins (see [`RADIX_MIN_REST_STREAMS`]'s second 2026-09-10 section). The only
+/// values the built-ins take are **1.00** (every Clifford: a key permutation)
+/// and **3.00** (`sqrt(SWAP)`) / **14.00** (Haar SU(4)), so this sits at the
+/// midpoint of the one measured gap. Deliberately a hard floor rather than a
+/// tuned curve: the two arms cover the two mechanisms, and nothing between
+/// them has ever been measured.
+pub(crate) const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
+
+/// Second arm of the radix gate: the minimum rest-stream count for the
+/// *disjoint*-streams arm.
+///
+/// The arm exists because a disjoint `k`-way merge mispredicts about once per
+/// two comparisons, and comparisons per row are `≈ log2(k) + 1` — so the
+/// comparison kernel's cost grows with `k` while the radix's does not. At
+/// `k = 3` (`cnot`, `cz`) the crossover has been passed: measured −5.66% wall,
+/// −22.58% sort, 14/14 pairs. At `k = 2` it has not been measured — no
+/// built-in channel realizes exactly two rest deltas — and `log2(2) + 1 = 2`
+/// comparisons per row puts it on the wrong side of the estimate, so the arm
+/// starts at 3 and a two-stream layer keeps the comparison kernel.
+pub(crate) const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 
 /// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
 ///
@@ -281,11 +384,12 @@ fn discriminating_window<const W: usize>(
 /// key column (the permutation sort's whole cost, ~10–13 cycles), whereas a
 /// radix pass streams 8-byte records sequentially at ~2 cycles each. Two
 /// passes plus the fixup replace 4.9 such comparisons with ~1.
-// No `#[inline]` hint, deliberately: the one on `sort_rows_with_scratch` is
-// A/B-verified worth ~6% and the one tried on `merge2_into` cost +20-34%
-// (both recorded on those items), so the attribute is load-bearing in both
-// directions here and this function has no measurement either way yet. Leave
-// it at the default and A/B the hint as its own change.
+// No `#[inline]` hint. Measured for the first time 2026-09-10 on the
+// JCC-padded build (this comment used to say it had never been A/B'd either
+// way): adding one leaves `.text` byte-identical, and the paired A/B is noise
+// on both dense-PTM layers this kernel serves — `gu2q` median +0.01%, `su4`
+// median +0.03%, 3/7 pairs negative in each. Nothing to gain; nothing to
+// protect. `research/notes/2026-09-10-inline-set-repost.md`.
 pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -402,6 +506,20 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
 /// whole story for a channel with no identity delta: everything is gathered
 /// into `b`.
 ///
+/// **Written as three loops, not one.** The main walk runs only while both
+/// streams are live, so its per-row test is the key comparison alone; the two
+/// drains then run with no test for the exhausted side at all. The single
+/// combined loop this replaces spent two extra conditional branches per output
+/// row on `j >= bn` and `i < an`, and made the `a`-empty case (every Clifford
+/// layer: `rows_id == 0`) run the two-stream loop with both short-circuits
+/// live. Measured 2026-09-10, JCC-padded build, 1 thread, 7/7 pairs: merge
+/// busy −11.8% / −7.9% / −6.6% and wall −4.80% / −1.96% / −3.09% on
+/// `rotation_zz` / `cnot` / `trotter`, at bit-identical work counters. The
+/// mechanism is instruction and branch *count* — retired conditional branches
+/// −11.9%, instructions −3.9% on `rotation_zz` — not misprediction, which
+/// barely moves (−2.3%). See
+/// `research/notes/2026-09-10-branch-misprediction.md`.
+///
 /// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits
 /// `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip
 /// the sign of a zero sum, so the only zero test is on the final accumulator.
@@ -412,9 +530,18 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
 /// rows (gu2q: mostly empty) — per-segment overhead swamps the per-row
 /// compare it saves. Full data in `research/notes/2026-08-31-v0.6-results.md`.
 #[allow(clippy::too_many_arguments)]
-// Deliberately NOT `#[inline]`: hinting this function measured +20-34% on
-// criterion's apply_layer_bucketed/rotation_zz (layout/icache), while the
-// `sort_rows_with_scratch` hint alone already recovers the probe path.
+// No `#[inline]` hint, and none is needed. Re-measured 2026-09-10 on the
+// JCC-padded build: adding `#[inline]` leaves `.text` byte-identical — at
+// `codegen-units = 1` + fat LTO this function's monomorphizations are
+// 1 095-1 379 bytes each, far past any inline threshold, so the hint changes
+// nothing — and the A/B is noise (`rotation_zz` median −1.02%, `cnot` +0.08%,
+// both sign-inconsistent). The recorded "+20-34%" was a pre-padding layout
+// coin flip and is void. `#[inline(never)]`, which *does* change codegen, is
+// also nearly free now: wall shows no consistent change (median +0.02%
+// `rotation_zz`, +0.33% `cnot`) at an unmoved 97.9%/98.4% DSB share, where the
+// same experiment on the unpadded build cost +5.7% cycles at 31.5% DSB. The
+// only surviving signal is merge busy +1.68% (7/7) on `cnot`.
+// `research/notes/2026-09-10-inline-set-repost.md`.
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
     a_z: &[[u64; W]],
@@ -434,12 +561,14 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     debug_assert_eq!(bn, b_x.len());
     debug_assert_eq!(bn, b_z.len());
     let (mut i, mut j) = (0usize, 0usize);
-    while i < an || j < bn {
+    // Main walk: both streams live, so the "which side" test is a pure key
+    // comparison with no bounds short-circuit.
+    while i < an && j < bn {
         // Take the smaller next key; on a tie the `a` row seeds the sum. After
         // an `a` seed there is no second `a` row for the key (`a` is unique),
         // and after a `b` seed every equal-key `a` row would have compared
         // `<=`, so only `b` rows can extend the segment either way.
-        let take_a = j >= bn || (i < an && (a_x[i], a_z[i]) <= (b_x[j], b_z[j]));
+        let take_a = (a_x[i], a_z[i]) <= (b_x[j], b_z[j]);
         let (key_x, key_z, mut acc) = if take_a {
             debug_assert!(
                 i == 0 || (a_x[i - 1], a_z[i - 1]) < (a_x[i], a_z[i]),
@@ -457,6 +586,34 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             j += 1;
             t
         };
+        while j < bn && b_x[j] == key_x && b_z[j] == key_z {
+            acc += b_c[j];
+            j += 1;
+        }
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
+        }
+    }
+    // `b` exhausted: every remaining `a` key is unique, so each is its own
+    // segment.
+    while i < an {
+        let (key_x, key_z, acc) = (a_x[i], a_z[i], a_c[i]);
+        i += 1;
+        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+            dst_x.push(key_x);
+            dst_z.push(key_z);
+            dst_coeff.push(acc);
+        }
+    }
+    // `a` exhausted — which for a channel with no identity delta is the whole
+    // call: the plain single-stream segmented reduction, with no `a`-side
+    // test in the loop at all.
+    while j < bn {
+        let (key_x, key_z) = (b_x[j], b_z[j]);
+        let mut acc = b_c[j];
+        j += 1;
         while j < bn && b_x[j] == key_x && b_z[j] == key_z {
             acc += b_c[j];
             j += 1;

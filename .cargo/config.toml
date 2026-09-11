@@ -8,3 +8,17 @@
 # changes (a virtual reservation); release codegen is untouched.
 [env]
 RUST_MIN_STACK = "16777216"
+
+# The JCC-erratum branch padding is deliberately NOT here.
+#
+# `-Cllvm-args=-x86-branches-within-32B-boundaries` is worth -9..-13% on the
+# Cascade Lake reference host and a ~1% tax on every part without the erratum
+# (AMD Zen, Ice Lake and later) — which is all of `ccq`. Measured across three
+# node types: 13 of 13 direction-consistent phase results say slower. So the
+# shipped default is the portable one and the hosts that benefit opt in.
+#
+# Measurement scripts source `scripts/jcc-rustflags.sh`, which detects the
+# erratum from /proc/cpuinfo and appends the flag, so the reference host cannot
+# silently lose 9-13% mid-campaign. Anything else that benchmarks must do the
+# same. See research/notes/2026-09-10-jcc-portability.md.
+

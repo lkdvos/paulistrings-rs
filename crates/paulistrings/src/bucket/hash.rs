@@ -235,16 +235,25 @@ impl<const W: usize> Gf2Hash<W> {
     /// a caller that needs only the *new* bit a [`Self::refine`] just
     /// introduced — [`crate::bucket::sum::PauliSum::refine`] — can get it in
     /// `O(2W)` instead of paying `O(bits · 2W)` for the whole prefix.
+    ///
+    /// Only the low bit of the popcount survives, and popcount parity is
+    /// GF(2)-linear — `parity(a) ^ parity(b) == parity(a ^ b)`, since
+    /// `popcount(a) + popcount(b) = popcount(a ^ b) + 2·popcount(a & b)`. So
+    /// the masked words are XOR-folded first and reduced by a **single**
+    /// `count_ones`, rather than one per word: `2W` popcounts become 1, and
+    /// [`Self::bucket_of`] over `bits` rows goes from `bits · 2W` to `bits`.
+    /// This also makes the function insensitive to whether the target enables
+    /// a hardware `popcnt` — without one, `count_ones` lowers to a ~12-op SWAR
+    /// sequence, and this fold pays `2W` times over.
     #[inline]
     pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
         let rx = &self.rows_x[row as usize];
         let rz = &self.rows_z[row as usize];
-        let mut parity: u32 = 0;
+        let mut acc: u64 = 0;
         for w in 0..W {
-            parity ^= (x[w] & rx[w]).count_ones();
-            parity ^= (z[w] & rz[w]).count_ones();
+            acc ^= (x[w] & rx[w]) ^ (z[w] & rz[w]);
         }
-        parity & 1
+        acc.count_ones() & 1
     }
 
     /// `h(v)` for a [`PauliString`]. Convenience wrapper over [`Self::bucket_of`].
@@ -597,12 +606,12 @@ impl<const W: usize> PartitionRows<W> {
         for i in 0..self.bits as usize {
             let rx = &self.rows_x[i];
             let rz = &self.rows_z[i];
-            let mut parity: u32 = 0;
+            // XOR-fold then one popcount; see `Gf2Hash::row_parity`.
+            let mut fold: u64 = 0;
             for w in 0..W {
-                parity ^= (x[w] & rx[w]).count_ones();
-                parity ^= (z[w] & rz[w]).count_ones();
+                fold ^= (x[w] & rx[w]) ^ (z[w] & rz[w]);
             }
-            acc |= (parity & 1) << i;
+            acc |= (fold.count_ones() & 1) << i;
         }
         acc
     }
@@ -856,6 +865,44 @@ mod tests {
     }
 
     // ---- row_parity ----
+
+    /// The XOR-fold in `row_parity` / `partition_of` must agree **bitwise**
+    /// with the naive one-popcount-per-word form it replaced.
+    ///
+    /// This is an independent oracle: `row_parity` and `bucket_of` were folded
+    /// in the same change, so checking them against each other would not catch
+    /// a fold that is wrong in the same way twice.
+    #[test]
+    fn xor_fold_parity_matches_per_word_popcount() {
+        fn naive<const W: usize>(x: &[u64; W], z: &[u64; W], rx: &[u64; W], rz: &[u64; W]) -> u32 {
+            let mut parity: u32 = 0;
+            for w in 0..W {
+                parity ^= (x[w] & rx[w]).count_ones();
+                parity ^= (z[w] & rz[w]).count_ones();
+            }
+            parity & 1
+        }
+
+        fn check<const W: usize>(num_qubits: usize, seed: u64) {
+            let h = Gf2Hash::<W>::new(num_qubits, B_MAX_BITS, seed);
+            let mut rng = Xs64::new(seed ^ 0x5EED);
+            for _ in 0..500 {
+                let p = rand_key::<W>(&mut rng, num_qubits);
+                for row in 0..B_MAX_BITS {
+                    assert_eq!(
+                        h.row_parity(&p.x, &p.z, row),
+                        naive(&p.x, &p.z, &h.rows_x[row as usize], &h.rows_z[row as usize]),
+                        "W={W} row={row}: XOR-fold disagrees with per-word popcount"
+                    );
+                }
+            }
+        }
+
+        check::<1>(64, 0xA11CE);
+        check::<2>(128, 0xB0B);
+        check::<4>(256, 0xC0FFEE);
+        check::<8>(512, 0xD00D);
+    }
 
     #[test]
     fn row_parity_matches_bucket_of_bit_extraction() {

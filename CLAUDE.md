@@ -178,9 +178,18 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   lists the fields, and it is the thing to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh`; the reference host's measured ceiling is the
   fact sheet `research/notes/2026-08-30-bandwidth-ceiling-ccqlin038.md`.
-- LTO code-layout effects are real: the `#[inline]` set in `engine/merge.rs` is A/B-verified load-bearing in both directions
-  (the hint on `sort_rows_with_scratch` is worth ~6%; adding one to `merge2_into` cost +20–34%). Read the comments there
-  before adding or removing an attribute.
+- LTO code-layout effects **were** the JCC erratum (SKX102). `-Cllvm-args=-x86-branches-within-32B-boundaries`
+  takes DSB residency 45.8% → 98.0% on the Cascade Lake reference host, worth −9..−13% wall — but it is a ~1% tax on
+  every part *without* the erratum (AMD Zen, Ice Lake and later), i.e. all of `ccq`: 13 of 13 direction-consistent
+  phase results across rome/genoa/icelake say slower. **So it is not in `.cargo/config.toml`**; the shipped default is
+  the portable one and hosts that benefit opt in. Every measurement script sources `scripts/jcc-rustflags.sh`, which
+  detects the erratum from `/proc/cpuinfo` and appends the flag — **anything else that benchmarks must do the same, or
+  the reference host silently measures a 9-13% slower binary.** The `#[inline]` folklore
+  in `engine/merge.rs` was re-A/B'd on the padded build (2026-09-10) and **none of it survives** — the hints are
+  codegen-inert at `lto = "fat"` + `codegen-units = 1` and every recorded effect was branch-alignment noise
+  (`research/notes/2026-09-10-inline-set-repost.md`). Adding or removing an attribute there is no longer a hazard; the
+  sort *algorithm* choice still is (see `sort_rows_with_scratch`'s doc). An exported `RUSTFLAGS` replaces the config's
+  list wholesale — re-append the padding flag or you benchmark a different binary.
 
 ## Known gaps
 
@@ -244,4 +253,9 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   (support-bit bucket concatenation cannot replace a sort), `2026-08-31-v0.6-results.md` (three rejected gather/merge
   variants — recompute-in-merge borrowing, segment-copy merging, interleaved transient key layout),
   `2026-08-30-static-coset-placement.md` (static coset→worker placement, 1.25–1.9× slower than work-stealing), and the
-  bandwidth-ceiling fact sheet above.
+  bandwidth-ceiling fact sheet above. The **2026-09-10 front-end campaign** is seven notes forming one chain, indexed
+  with its reading order in `research/README.md`; its rejections are SIMD kernels and a word-planar layout, a
+  branchless `merge2_into`, and presortedness as the radix gate's predictor. Two rules from it apply to any
+  measurement here: a direction-consistent *phase* delta is not an effect if the total is flat (let instruction count
+  settle it), and **any constant tuned by wall-clock A/B before 2026-09-10 is suspect** — four recorded conclusions
+  dissolved on re-measurement, all the same branch-alignment artifact.

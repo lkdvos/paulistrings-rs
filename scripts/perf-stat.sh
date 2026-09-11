@@ -25,6 +25,15 @@
 # write stream's NUMA locality is visible only in pass B's per-socket IMC
 # breakdown, never per-process.
 set -euo pipefail
+
+# The JCC-erratum padding is deliberately not in .cargo/config.toml — it is a
+# ~1% tax on every part without the erratum, which is all of `ccq`. Measurement
+# builds opt in, so the reference host cannot silently lose 9-13% mid-campaign.
+# Append: an exported RUSTFLAGS replaces the config's rustflags wholesale.
+# See scripts/jcc-rustflags.sh and research/notes/2026-09-10-jcc-portability.md.
+. "$(dirname "$0")/jcc-rustflags.sh"
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
+
 cd "$(dirname "$0")/.."
 
 # A caller-supplied prebuilt probe (PROBE=/path/to/binary, already built and

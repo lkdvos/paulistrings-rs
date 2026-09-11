@@ -1083,8 +1083,7 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
 /// distinct off-support key patterns.
 ///
 /// The matrix is `test_support::haar_su4_matrix` — shared with the crate's
-/// tests and `examples/delta_span_diagnostics.rs`, which need the same dense
-/// PTM. See its doc comment for provenance.
+/// tests, which need the same dense PTM. See its doc comment for provenance.
 fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
     GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }

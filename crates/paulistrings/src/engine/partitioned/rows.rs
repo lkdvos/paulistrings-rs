@@ -1,5 +1,4 @@
-//! The circuit's generator masks and the per-layer locality a row set gives
-//! them.
+//! The circuit's generator masks.
 //!
 //! A partitioning splits keys by `part(v) = R·v` over GF(2), one bit per row
 //! `r = (rx, rz)` of `R` (ARCHITECTURE.md §Partitioning). A prepared channel
@@ -9,16 +8,15 @@
 //! ⟨r, d⟩ = parity(rx & dx) ^ parity(rz & dz) = 0     for every row r,
 //! ```
 //!
-//! which is [`PartitionRows::partition_of`] returning 0. Remoteness is a
+//! which is `PartitionRows::partition_of` returning 0. Remoteness is a
 //! property of the mask alone, so a row set is judged by which of the circuit's
 //! delta masks it is orthogonal to. [`circuit_generators`] lists those masks
-//! with the number of layers carrying each; [`layer_locality`] is the
-//! per-layer verdict for a given row set.
+//! with the number of layers carrying each.
 //!
 //! For 1- and 2-local generators a good row set is a graph cut: a z-only row
 //! makes every single-qubit `X` rotation local (its mask has no z-bits), and a
 //! bond `ZZ(i, j)` is remote exactly when the edge crosses the cut. That row
-//! set is [`PartitionRows::cut`]. A row orthogonal to *every* mask is a
+//! set is `PartitionRows::cut`. A row orthogonal to *every* mask is a
 //! conserved quantity — no term ever changes partition and the other
 //! partitions stay empty — so a useful row set always leaves some generator
 //! remote. (A greedy weighted MAX-XOR-SAT selector for circuits without a known
@@ -28,11 +26,9 @@
 
 use std::collections::HashMap;
 
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
+use crate::bucket::hash::Gf2Hash;
 use crate::channel::prepared::Prepared;
 use crate::circuit::Circuit;
-
-use super::plan::count_remote_deltas;
 
 /// One key delta mask the circuit produces, with how much of the circuit
 /// carries it.
@@ -120,30 +116,6 @@ pub fn circuit_generators<const W: usize>(
     out
 }
 
-/// Per layer, `true` if the layer moves nothing across a partition boundary
-/// under `rows`.
-///
-/// The boolean form of [`count_remote_deltas`]: layers in application order
-/// (circuit order forward, reverse order adjoint), one flag each, `true` when
-/// the layer's every delta has `part(mask) == 0` and the layer therefore runs
-/// with no exchange at all.
-///
-/// # Panics
-///
-/// Panics if any channel declines
-/// [`Channel::prepare`](crate::Channel::prepare).
-pub fn layer_locality<const W: usize>(
-    circuit: &Circuit<W>,
-    rows: &PartitionRows<W>,
-    hash: &Gf2Hash<W>,
-    adjoint: bool,
-) -> Vec<bool> {
-    count_remote_deltas(circuit, hash, rows, adjoint)
-        .into_iter()
-        .map(|(_, remote)| remote == 0)
-        .collect()
-}
-
 /// `(x, z)` halves of a key delta, as `PartitionRows` numbers the columns.
 type Mask<const W: usize> = ([u64; W], [u64; W]);
 
@@ -163,21 +135,6 @@ mod tests {
 
     fn hash(num_qubits: usize) -> Gf2Hash<1> {
         Gf2Hash::<1>::new(num_qubits, 4, 0xB00C)
-    }
-
-    /// One TFIM Trotter step on an **open** chain: an `X` rotation on every
-    /// qubit, then a `ZZ` bond rotation on every edge. The open chain has one
-    /// fewer bond than qubits, which is what makes a single cut able to leave
-    /// exactly one bond remote.
-    fn tfim_open_chain(num_qubits: usize) -> Circuit<1> {
-        let mut c = Circuit::<1>::new(num_qubits);
-        for q in 0..num_qubits {
-            c.push(PauliRotation::new(PauliString::<1>::x(q as u32), 0.3));
-        }
-        for q in 0..num_qubits - 1 {
-            c.push(zz_rotation::<1>(q as u32, q as u32 + 1, 0.2));
-        }
-        c
     }
 
     #[test]
@@ -219,37 +176,6 @@ mod tests {
     #[test]
     fn circuit_generators_of_an_empty_circuit_is_empty() {
         assert!(circuit_generators(&Circuit::<1>::new(4), &hash(4), false).is_empty());
-    }
-
-    #[test]
-    fn layer_locality_is_count_remote_deltas_as_a_predicate() {
-        const N: usize = 8;
-        let c = tfim_open_chain(N);
-        let h = hash(N);
-        // A z-only cut between qubits 3 and 4: every `X` rotation is local
-        // and the one bond crossing it is the only remote layer.
-        let rows = PartitionRows::<1>::cut(N, &[vec![0, 1, 2, 3], vec![4, 5, 6, 7]]);
-
-        for adjoint in [false, true] {
-            let want: Vec<bool> = count_remote_deltas(&c, &h, &rows, adjoint)
-                .into_iter()
-                .map(|(_, remote)| remote == 0)
-                .collect();
-            let got = layer_locality(&c, &rows, &h, adjoint);
-            assert_eq!(got, want, "adjoint {adjoint}");
-            assert_eq!(got.len(), c.channels.len());
-            // Exactly one layer — the bond crossing the cut — is remote.
-            assert_eq!(got.iter().filter(|b| !**b).count(), 1, "adjoint {adjoint}");
-        }
-    }
-
-    #[test]
-    fn layer_locality_without_rows_is_all_local() {
-        let c = tfim_open_chain(6);
-        let rows = PartitionRows::<1>::none(6);
-        assert!(layer_locality(&c, &rows, &hash(6), false)
-            .into_iter()
-            .all(|b| b));
     }
 
     // ---- property: the reported split is the rows' own verdict ----

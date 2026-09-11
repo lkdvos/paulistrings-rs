@@ -93,9 +93,9 @@ pub enum EngineSelection {
 /// *per-term* cost that rises as its map leaves cache, where the sorting engine's
 /// is flat in `m` to ±10% over three decades (same sheet, §1). So there is a
 /// crossover, and it is workload-dependent: measured on the head-to-head study's
-/// own circuits (`examples/small_m_ab.rs`) it is **≈ 1.5 × 10²** resident terms
-/// for kicked-Ising and **≈ 2 × 10³** for XXZ — a 14× spread, in keeping with the
-/// 4.4–21× spread of the study's own cross-engine crossovers. A threshold also
+/// own circuits (`research/notes/2026-09-01-small-m-path.md`) it is **≈ 1.5 × 10²**
+/// resident terms for kicked-Ising and **≈ 2 × 10³** for XXZ — a 14× spread, in
+/// keeping with the 4.4–21× spread of the study's own cross-engine crossovers. A threshold also
 /// acts through a second channel: setting it above a workload's *peak* keeps the
 /// whole run on one path, and being undivided is itself worth something.
 ///

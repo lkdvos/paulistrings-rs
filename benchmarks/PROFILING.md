@@ -125,9 +125,6 @@ that configuration measures this host's own noise floor, not a code change.
   `target/criterion/` to JSON. `--merge` loads an existing `out.json` and updates it with new entries instead
   of overwriting, so multiple `--filter`-scoped snapshots accumulate.
 - `python3 scripts/criterion-report.py compare old.json new.json` — markdown Δ-table between two snapshots.
-- `python3 scripts/fit_scaling.py [--group <name>|all] [--snapshot FILE...]` — Amdahl/USL fits over one or
-  every `thread_scaling*` criterion group (default: every group). `--snapshot` reads one or more
-  `criterion-report.py snapshot` files instead of `target/criterion` directly (later files win on collisions).
 - `python3 scripts/perf-viz.py benchmarks/results/<date>-<host>/<campaign> [--compare OLD.json]` — render
   one campaign's data (`.txt`, `.json`, `-probe.json`, `-scaling-*.json`, plus the directory's
   `bandwidth.txt`) into a self-contained `<campaign>-report.html`; `--compare` adds Δ% columns to the
@@ -224,10 +221,10 @@ count, so appending `partitions=` does not break it. Change the line's fields or
 
 **(c) Criterion snapshot JSON.** `criterion-report.py snapshot` and `bench-campaign.sh`'s
 `criterion:`/`scaling:` items write `{full_id: {median_ns, mean_ns, stddev_ns, throughput_elems,
-melem_per_s}}`, consumed by `compare`, `fit_scaling.py --snapshot`, and `perf-viz.py`'s criterion and
+melem_per_s}}`, consumed by `compare` and `perf-viz.py`'s criterion and
 scaling sections. Thread-scaling groups additionally rely on a naming contract: a `BenchmarkId` of
 `<group>/<threads>` where `<group>` starts with `thread_scaling` and `<threads>` is a bare integer —
-`fit_scaling.py` and `perf-viz.py` both split on the last `/` and parse the tail as an int; anything else is
+`perf-viz.py` splits on the last `/` and parses the tail as an int; anything else is
 silently skipped.
 
 **(d) `bandwidth.txt`**, written by `bandwidth.sh` and read by `perf-viz.py`'s bandwidth section and
@@ -498,12 +495,6 @@ deriving `P` and the lists from the node's sysfs.
 physical + 8 HT, one socket) isolates hyperthread yield against cross-socket cost; `node0` scaled 1→8
 threads is pure core scaling, useful for Amdahl/USL fits since it has no NUMA or HT crossover to confound
 the fit.
-
-`scripts/fit_scaling.py --group <name>` (or `--group all`, the default) fits Amdahl's law and the Universal
-Scalability Law to a `thread_scaling*` criterion group and reports the serial fraction / σ,κ with R².
-Cross-check the fitted serial fraction against the probe's own measured serial share (wall-clock phases
-minus the coset loop, over total wall time) — the two should roughly agree; if not, something outside the
-modeled coset loop is eating parallelism.
 
 ## Host caveats
 

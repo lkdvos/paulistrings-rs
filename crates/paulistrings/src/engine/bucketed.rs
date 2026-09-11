@@ -1153,8 +1153,7 @@ pub(super) fn fill_coset<const W: usize, T, X>(
 /// 4.9 comparisons per row either way; at `r < 4` deltas share coordinates and
 /// input-major interleaves their streams row by row, costing 12–16 comparisons
 /// per row against output-major's 7.7–14.5. See
-/// `research/notes/2026-09-01-bucket-cliff.md` and
-/// `examples/delta_span_diagnostics.rs`, which counts both orders. Both paths
+/// `research/notes/2026-09-01-bucket-cliff.md`, which counts both orders. Both paths
 /// gather the identical multiset of rows in different orders; the key-only
 /// sort does not canonicalize that to a bitwise-identical sequence
 /// (equal-key order can differ between the two), so the two orders

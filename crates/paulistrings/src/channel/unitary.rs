@@ -154,14 +154,6 @@ pub struct GeneralUnitary1Q {
 }
 
 impl GeneralUnitary1Q {
-    /// From an explicit Pauli-transfer matrix.
-    pub fn from_ptm(qubit: u32, table: [[Complex64; 4]; 4]) -> Self {
-        Self {
-            support: [qubit],
-            table,
-        }
-    }
-
     /// From a 2x2 unitary `u`, computing
     /// `table[s][t] = tr(P_t · U P_s U†) / 2`.
     pub fn from_matrix(qubit: u32, u: [[Complex64; 2]; 2]) -> Self {
@@ -278,14 +270,6 @@ pub struct GeneralUnitary2Q {
 }
 
 impl GeneralUnitary2Q {
-    /// From an explicit Pauli-transfer matrix.
-    pub fn from_ptm(q0: u32, q1: u32, table: Box<[[Complex64; 16]; 16]>) -> Self {
-        Self {
-            support: [q0, q1],
-            table,
-        }
-    }
-
     /// From a 4x4 unitary `u` acting on `|q0 q1⟩`, computing
     /// `table[s][t] = tr(P_t · U P_s U†) / 4`.
     pub fn from_matrix(q0: u32, q1: u32, u: [[Complex64; 4]; 4]) -> Self {

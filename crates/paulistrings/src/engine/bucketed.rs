@@ -269,27 +269,79 @@ impl<const W: usize> GatherRun<W> {
         self.coeff.reserve(cap_rest + 1);
     }
 
+    /// Write one row at `len` in a three-column stream and publish it iff
+    /// `keep`.
+    ///
+    /// The single unsafe block behind every gather append. Both streams and
+    /// both the conditional and unconditional forms funnel through here, so
+    /// there is one invariant to audit rather than four copies of it that
+    /// drift apart.
+    ///
+    /// `[u64; W]` and `Complex64` are `Copy` with no `Drop`, so overwriting a
+    /// slot that a previous discarded row wrote is a plain store, not a leak.
+    ///
+    /// # Safety
+    ///
+    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller
+    /// gets this from [`GatherRun::reset`], which reserves one slot past the
+    /// plan's exact per-run capacity precisely so the discarded-row write is
+    /// in bounds even when every countable row is kept.
+    #[inline]
+    unsafe fn append_if(
+        xs: &mut Vec<[u64; W]>,
+        zs: &mut Vec<[u64; W]>,
+        cs: &mut Vec<Complex64>,
+        keep: bool,
+        x: [u64; W],
+        z: [u64; W],
+        c: Complex64,
+    ) {
+        let n = xs.len();
+        debug_assert!(n < xs.capacity());
+        debug_assert!(n < zs.capacity());
+        debug_assert!(n < cs.capacity());
+        unsafe {
+            xs.as_mut_ptr().add(n).write(x);
+            zs.as_mut_ptr().add(n).write(z);
+            cs.as_mut_ptr().add(n).write(c);
+            let m = n + keep as usize;
+            xs.set_len(m);
+            zs.set_len(m);
+            cs.set_len(m);
+        }
+    }
+
     /// Branchless filtered append to the rest stream.
     #[inline]
     fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        let n = self.x.len();
-        debug_assert!(n < self.x.capacity());
-        debug_assert!(n < self.z.capacity());
-        debug_assert!(n < self.coeff.capacity());
         // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and
         // `cap_rest` counts every row the plan's deltas can emit into this
-        // run, so `len <= cap_rest < capacity` holds at every call. The three
-        // writes therefore land in allocated storage, and `set_len` publishes
-        // the row only when `keep` — the discarded row stays in the spare
-        // slot, overwritten by the next call.
+        // run, so `len <= cap_rest < capacity` holds at every call.
+        unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
+    }
+
+    /// Unconditional append to the rest stream — [`Self::push_if`] with the
+    /// predicate known true, which is what the rotation generator pass wants.
+    #[inline]
+    fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+        self.push_if(true, x, z, c);
+    }
+
+    /// Branchless filtered append to the identity stream.
+    #[inline]
+    fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding
+        // the identity stream's rows.
         unsafe {
-            self.x.as_mut_ptr().add(n).write(x);
-            self.z.as_mut_ptr().add(n).write(z);
-            self.coeff.as_mut_ptr().add(n).write(c);
-            let m = n + keep as usize;
-            self.x.set_len(m);
-            self.z.set_len(m);
-            self.coeff.set_len(m);
+            Self::append_if(
+                &mut self.id_x,
+                &mut self.id_z,
+                &mut self.id_coeff,
+                keep,
+                x,
+                z,
+                c,
+            )
         }
     }
 
@@ -297,14 +349,16 @@ impl<const W: usize> GatherRun<W> {
     ///
     /// The dense-identity plans (all rotations, and every `Local` plan whose
     /// identity amplitude never vanishes) emit exactly one identity row per
-    /// source row and borrow the keys from the source bucket, so only this
-    /// column is materialized and `reset` sized it exactly.
+    /// source row and borrow the keys from the source bucket, so this is the
+    /// only column materialized — hence its own helper rather than
+    /// [`Self::push_id_if`].
     ///
-    /// This exists to drop `Vec::push`'s capacity check, not a branch: the
-    /// check is perfectly predicted here and contributes no mispredicts, but
-    /// it is still instructions in the hottest loop of every rotation layer.
-    /// The same removal on the output-major gather measured `su4` −3.83% wall
-    /// / −10.00% gather at flat IPC (2b949e6).
+    /// Like the others this drops `Vec::push`'s capacity check, not a branch:
+    /// the check is perfectly predicted here and contributes no mispredicts,
+    /// but it is still instructions in the hottest loop of every rotation
+    /// layer. Measured on the output-major gather: `su4` −3.83% wall /
+    /// −10.00% gather at flat IPC (2b949e6); on the rotation path, −1.18% of
+    /// all instructions on `rotation_zz` (4e1eea2).
     #[inline]
     fn push_id_coeff(&mut self, c: Complex64) {
         let n = self.id_coeff.len();
@@ -315,49 +369,6 @@ impl<const W: usize> GatherRun<W> {
         unsafe {
             self.id_coeff.as_mut_ptr().add(n).write(c);
             self.id_coeff.set_len(n + 1);
-        }
-    }
-
-    /// Unchecked unconditional append to the rest stream.
-    ///
-    /// As [`Self::push_id_coeff`]: `reset` sized the run exactly, so the
-    /// capacity check `Vec::push` emits can never fire.
-    #[inline]
-    fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        let n = self.x.len();
-        debug_assert!(n < self.x.capacity());
-        debug_assert!(n < self.z.capacity());
-        debug_assert!(n < self.coeff.capacity());
-        // SAFETY: `reset` reserved `cap_rest + 1`, and `cap_rest` counts every
-        // row the plan's deltas can emit into this run, so `n <= cap_rest <
-        // capacity` holds at every call.
-        unsafe {
-            self.x.as_mut_ptr().add(n).write(x);
-            self.z.as_mut_ptr().add(n).write(z);
-            self.coeff.as_mut_ptr().add(n).write(c);
-            self.x.set_len(n + 1);
-            self.z.set_len(n + 1);
-            self.coeff.set_len(n + 1);
-        }
-    }
-
-    /// Branchless filtered append to the identity stream.
-    #[inline]
-    fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        let n = self.id_x.len();
-        debug_assert!(n < self.id_x.capacity());
-        debug_assert!(n < self.id_z.capacity());
-        debug_assert!(n < self.id_coeff.capacity());
-        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding
-        // the identity stream's rows.
-        unsafe {
-            self.id_x.as_mut_ptr().add(n).write(x);
-            self.id_z.as_mut_ptr().add(n).write(z);
-            self.id_coeff.as_mut_ptr().add(n).write(c);
-            let m = n + keep as usize;
-            self.id_x.set_len(m);
-            self.id_z.set_len(m);
-            self.id_coeff.set_len(m);
         }
     }
 

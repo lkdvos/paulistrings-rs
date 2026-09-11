@@ -8,8 +8,9 @@ concurrently with any timed run).
 
 Follow-up item 1 of `2026-09-10-hot-path-code-size.md` §7. That note established that the
 repo's long-standing "adding code moves untouched hot paths ±4–7%" folklore was the **JCC erratum**
-(SKX102), and that `-Cllvm-args=-x86-branches-within-32B-boundaries` — now in
-`.cargo/config.toml` — pins it (45.8% → 98% DSB residency). It flagged the `engine/merge.rs`
+(SKX102), and that `-Cllvm-args=-x86-branches-within-32B-boundaries` pins it
+(45.8% → 98% DSB residency; applied by `scripts/jcc-rustflags.sh` since 2026-09-11, in
+`.cargo/config.toml` when these measurements were taken). It flagged the `engine/merge.rs`
 `#[inline]` comments as measured in that confounded regime and therefore suspect.
 
 **They are worse than suspect: three of the four are measuring nothing at all.** Under the

@@ -965,4 +965,7 @@ re-attempting the corresponding ideas: static coset→worker placement (slower
 than work-stealing), recompute-in-merge id-stream borrowing for sparse
 streams, segment-copy merging, and interleaved transient key layouts (all
 measured and rejected — see `research/notes/2026-08-31-v0.6-results.md` and
-the static-coset-placement note).
+the static-coset-placement note). The 2026-09-10 front-end campaign adds
+three more — SIMD kernels and a word-planar layout, a branchless
+`merge2_into`, and presortedness as the radix gate's predictor — and is
+indexed with its reading order in `research/README.md`.

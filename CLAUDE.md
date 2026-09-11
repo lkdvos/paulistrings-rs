@@ -253,4 +253,9 @@ reject an optimization to keep output bits stable. The partitioned engine adds o
   (support-bit bucket concatenation cannot replace a sort), `2026-08-31-v0.6-results.md` (three rejected gather/merge
   variants — recompute-in-merge borrowing, segment-copy merging, interleaved transient key layout),
   `2026-08-30-static-coset-placement.md` (static coset→worker placement, 1.25–1.9× slower than work-stealing), and the
-  bandwidth-ceiling fact sheet above.
+  bandwidth-ceiling fact sheet above. The **2026-09-10 front-end campaign** is seven notes forming one chain, indexed
+  with its reading order in `research/README.md`; its rejections are SIMD kernels and a word-planar layout, a
+  branchless `merge2_into`, and presortedness as the radix gate's predictor. Two rules from it apply to any
+  measurement here: a direction-consistent *phase* delta is not an effect if the total is flat (let instruction count
+  settle it), and **any constant tuned by wall-clock A/B before 2026-09-10 is suspect** — four recorded conclusions
+  dissolved on re-measurement, all the same branch-alignment artifact.

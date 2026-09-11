@@ -220,13 +220,14 @@ separate codegen unit for the kernels (breaking the fat-LTO assumption the whole
 built on) or a global build flag — and §2 already showed the global flag is net negative
 on two of three priority layers.
 
-## 3c. The mechanism: uop-cache (DSB) eviction, and the engine is already frontend-bound
+## 3c. The mechanism: uop-cache (DSB) eviction — right symptom, wrong cause
 
 > **Superseded 2026-09-10 by `2026-09-10-hot-path-code-size.md`.** The observations below
 > stand; the diagnosis does not. The cause is not hot-path code *size* but the **JCC erratum**
 > (SKX102): with the mitigating microcode loaded, a 32-byte window whose jump touches the
 > 32-byte boundary is excluded from the DSB outright. One build flag
-> (`-Cllvm-args=-x86-branches-within-32B-boundaries`, now in `.cargo/config.toml`) takes DSB
+> (`-Cllvm-args=-x86-branches-within-32B-boundaries`, applied by
+> `scripts/jcc-rustflags.sh` on hosts with the erratum) takes DSB
 > residency from 45.8% to **97.9%** and wall time down **7.5–12.6%** on all three priority
 > layers, 7/7 pairs, at bit-identical work counters.
 
@@ -267,9 +268,16 @@ re-decoded essentially every iteration. That is the +34.66%.
 
 **The baseline is itself only 45.8% DSB.** This is the more consequential finding: the
 engine already delivers less than half its uops from the uop cache, i.e. it is
-substantially front-end bound before anything is added. The reason is code size — the DSB
-is 32 sets × 8 ways × 6 uops, and a 32-byte window that needs more than ~3 ways cannot be
-cached at all, while `fill_coset` monomorphizations run to 0x13d0 (5 072) bytes.
+substantially front-end bound before anything is added.
+
+~~The reason is code size — the DSB is 32 sets × 8 ways × 6 uops, and a 32-byte window
+that needs more than ~3 ways cannot be cached at all, while `fill_coset` monomorphizations
+run to 0x13d0 (5 072) bytes.~~ **Wrong, and struck rather than deleted because it is the
+inference the next reader will also reach for.** Per-symbol attribution falsifies it
+directly: the 5 072-byte `fill_coset` sits at 53% DSB while the *small*, branch-dense
+`gather_local_input_major` sits at 20.8% and produces 62% of all MITE uops. Size does not
+predict residency here; branch placement against the 32-byte boundary does — the JCC
+erratum. See `2026-09-10-hot-path-code-size.md`.
 
 **Two obvious remedies were measured and both made it worse:**
 

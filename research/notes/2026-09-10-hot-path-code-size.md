@@ -99,11 +99,17 @@ At 16 threads (`taskset -c 0-15`, same 7-pair protocol) the effect is real but s
 `rotation_zz` −3.53% (7/7), `cnot` −13.33% (7/7), `trotter` ns (6/7) — as expected once the
 workload is bandwidth- rather than front-end-bound. No regression anywhere.
 
-**Shipped** in `.cargo/config.toml` under `[target.'cfg(target_arch = "x86_64")']`. Cost is
-~2% more instructions and ~2% larger binaries. `scripts/profile.sh` and `benchmarks/PROFILING.md`
-were updated in the same commit: an exported `RUSTFLAGS` **replaces** the config's `rustflags`
-wholesale, so anything setting `RUSTFLAGS` for a benchmark build must re-append the flag or it
-will silently profile a different binary from the one that ships.
+Cost is ~2% more instructions and ~2% larger binaries.
+
+> **Superseded 2026-09-11 as to where the flag lives.** It shipped in
+> `.cargo/config.toml` for `all` `x86_64`, which is what the measurements here were taken
+> under. The cross-node campaign (`2026-09-10-jcc-portability.md`) then found it is a ~1%
+> tax on every part *without* the erratum — all of `ccq` — so it is **no longer in the
+> config**. The default build is now the portable one and hosts with the erratum opt in via
+> `scripts/jcc-rustflags.sh`, which every measurement script sources. Nothing in the numbers
+> below changes; only the mechanism that delivers the flag. An exported `RUSTFLAGS` still
+> **replaces** cargo's list wholesale, so anything that benchmarks must append
+> `$JCC_RUSTFLAGS`.
 
 ## 4. What this retracts and what it explains
 

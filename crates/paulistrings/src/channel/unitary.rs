@@ -1,24 +1,6 @@
-//! General unitaries, stored as local Pauli-transfer matrices. See
-//! ARCHITECTURE.md §Channels and §Prepared-Channels.
+//! General unitaries, stored as local Pauli-transfer matrices. See ARCHITECTURE.md §Channels and §Prepared-Channels.
 //!
-//! A bounded-support channel *is* its local Pauli-transfer matrix, which is
-//! exactly the form the bucketed engine consumes — so these types need no
-//! `prepare` override: the default derivation (which probes `apply` on the local
-//! basis) recovers the table it was built from.
-//!
-//! # Conventions
-//!
-//! * A single-qubit Pauli is indexed `idx = x | (z << 1)`, i.e.
-//!   `I = 0, X = 1, Z = 2, Y = 3`, matching [`Clifford1Q`]. Two-qubit Paulis pack
-//!   as `x0 | (z0 << 1) | (x1 << 2) | (z1 << 3)`, matching [`Clifford2Q`].
-//! * `table[s][t]` is the coefficient of output Pauli `t` when the input is
-//!   Pauli `s`. `apply` therefore computes `P_s ↦ Σ_t table[s][t] · P_t`, the
-//!   Heisenberg conjugation `P ↦ U P U†` — the same direction `Clifford1Q`
-//!   documents.
-//! * `apply_adjoint` reads the table **transposed**, which is the
-//!   Hilbert-Schmidt adjoint. For a unitary the entries are real, so this is
-//!   also the conjugate transpose and the two round-trip to the identity. The
-//!   same rule governs [`AmplitudeDamping`](super::noise::AmplitudeDamping).
+//! Pauli indexing matches [`Clifford1Q`]/[`Clifford2Q`] (`idx = x | (z << 1)`, two-qubit packs `x0 | (z0 << 1) | (x1 << 2) | (z1 << 3)`). `table[s][t]` is the coefficient of output Pauli `t` for input Pauli `s` (the Heisenberg conjugation `P ↦ U P U†`); `apply_adjoint` reads the table transposed (the Hilbert-Schmidt adjoint — [`AmplitudeDamping`](super::noise::AmplitudeDamping) follows the same rule).
 //!
 //! [`Clifford1Q`]: super::clifford::Clifford1Q
 //! [`Clifford2Q`]: super::clifford::Clifford2Q
@@ -60,8 +42,7 @@ fn dagger<const N: usize>(a: &[[Complex64; N]; N]) -> [[Complex64; N]; N] {
     let mut out = [[ZERO; N]; N];
     for (i, row) in out.iter_mut().enumerate() {
         for (j, slot) in row.iter_mut().enumerate() {
-            // A transpose: `j` indexes rows of `a` while `i` indexes its columns,
-            // so neither loop can be turned into an iterator over `a`.
+            // A transpose: `j` indexes rows of `a` while `i` indexes its columns, so neither loop can be turned into an iterator over `a`.
             *slot = a[j][i].conj();
         }
     }
@@ -89,10 +70,7 @@ fn kron2(a: &[[Complex64; 2]; 2], b: &[[Complex64; 2]; 2]) -> [[Complex64; 4]; 4
 
 /// Round a PTM entry that is within `eps` of zero down to exactly zero.
 ///
-/// Without this, a Clifford built via [`GeneralUnitary1Q::from_matrix`] carries
-/// `~1e-17` entries where it should carry exact zeros, and every one of them
-/// becomes a spurious output term with a denormal coefficient. The engine drops
-/// only *exact* zeros, deliberately, so the cleanup has to happen here.
+/// Without this, a Clifford built via [`GeneralUnitary1Q::from_matrix`] carries `~1e-17` entries where it should carry exact zeros, each becoming a spurious output term; the engine only drops exact zeros, deliberately, so the cleanup has to happen here.
 fn clean(v: Complex64, eps: f64) -> Complex64 {
     let re = if v.re.abs() < eps { 0.0 } else { v.re };
     let im = if v.im.abs() < eps { 0.0 } else { v.im };
@@ -102,12 +80,8 @@ fn clean(v: Complex64, eps: f64) -> Complex64 {
 /// Tolerance below which a derived PTM entry is treated as an exact zero.
 const PTM_EPS: f64 = 1e-12;
 
-/// Materialize the effective PTM row for input index `s`: `table[s]`
-/// normally, or its transpose column `[table[t][s] for t]` when `transpose`
-/// is set (the Hilbert-Schmidt adjoint — see the module docs). Shared by
-/// [`apply_1q`] (`N = 4`) and [`apply_2q`] (`N = 16`); hoisting this out of
-/// the per-output loop means the transpose flag is tested once per call
-/// instead of once per emitted term.
+/// Materialize the effective PTM row for input index `s`: `table[s]` normally, or its transpose column when `transpose` is set (the Hilbert-Schmidt adjoint).
+/// Shared by [`apply_1q`] (`N = 4`) and [`apply_2q`] (`N = 16`), so the transpose flag is tested once per call instead of once per emitted term.
 #[inline]
 fn effective_row<const N: usize>(
     table: &[[Complex64; N]; N],
@@ -121,14 +95,9 @@ fn effective_row<const N: usize>(
     }
 }
 
-/// Generic 1-qubit unitary, stored as the Pauli expansion of its
-/// Heisenberg-picture action on `{I, X, Z, Y}` at the support qubit.
+/// Generic 1-qubit unitary, stored as the Pauli expansion of its Heisenberg-picture action on `{I, X, Z, Y}` at the support qubit.
 ///
-/// `MAX_FANOUT = 4`, since an input Pauli on the support can map to a sum over
-/// all four basis Paulis. The *bucket* fan-in is `2^rank(H|_D)` where `D` is the
-/// realized delta set, which is at most 4 but often smaller — a `T` gate, for
-/// instance, only ever mixes `X` with `Y`, so its delta set is one-dimensional
-/// and it reads just 2 input buckets.
+/// `MAX_FANOUT = 4`, since an input Pauli on the support can map to a sum over all four basis Paulis; the bucket fan-in is `2^rank(H|_D)` for the realized delta set `D`, which is at most 4 but often smaller (a `T` gate only ever mixes `X` with `Y`, so it reads just 2 input buckets).
 ///
 /// # Examples
 ///
@@ -191,8 +160,7 @@ fn apply_1q<const W: usize>(
     let (word, bit, mask) = qubit_loc(q);
     let s = read_pauli(input_x, input_z, word, bit);
 
-    // Materialize the effective row once, so the transpose branch is hoisted out
-    // of the loop instead of being retested per output.
+    // Materialize the effective row once, so the transpose branch is hoisted out of the loop instead of being retested per output.
     let row = effective_row(table, transpose, s);
 
     for (t, &c) in row.iter().enumerate() {
@@ -256,11 +224,7 @@ impl<const W: usize> Channel<W> for GeneralUnitary1Q {
 
 /// Generic 2-qubit unitary, stored as a 16x16 Pauli-expansion table.
 ///
-/// Packing is `x0 | (z0 << 1) | (x1 << 2) | (z1 << 3)`, with `support[0]`
-/// contributing bits 0-1 and `support[1]` bits 2-3 — the same convention
-/// [`Clifford2Q`](super::clifford::Clifford2Q) uses. In the matrix passed to
-/// [`Self::from_matrix`], `support[0]` is the **more significant** tensor factor,
-/// i.e. the matrix acts on `|q0 q1⟩`.
+/// Packing is `x0 | (z0 << 1) | (x1 << 2) | (z1 << 3)`, `support[0]` in bits 0-1 and `support[1]` in bits 2-3 — the same convention [`Clifford2Q`](super::clifford::Clifford2Q) uses. In the matrix passed to [`Self::from_matrix`], `support[0]` is the more significant tensor factor, i.e. the matrix acts on `|q0 q1⟩`.
 #[derive(Clone, Debug)]
 pub struct GeneralUnitary2Q {
     /// The two qubits this gate acts on.
@@ -514,9 +478,7 @@ mod tests {
 
     // ---- non-Clifford ----
 
-    /// The `T` gate mixes `X` with `Y` and fixes `I` and `Z`, so it is a genuine
-    /// fanout-2 non-Clifford — and its delta set is only *one*-dimensional, so it
-    /// reads 2 buckets rather than the 4 a dense 1Q unitary would.
+    /// The `T` gate mixes `X` with `Y` and fixes `I` and `Z`, so it is a genuine fanout-2 non-Clifford whose delta set is only one-dimensional, reading 2 buckets rather than the 4 a dense 1Q unitary would.
     #[test]
     fn t_gate_expansion_and_bucket_fanin() {
         let t = GeneralUnitary1Q::from_matrix(
@@ -549,8 +511,7 @@ mod tests {
         );
     }
 
-    /// A dense 1Q unitary does reach the 4-bucket upper bound, and a dense 2Q one
-    /// reaches 16 (see ARCHITECTURE.md §Bucketing).
+    /// A dense 1Q unitary does reach the 4-bucket upper bound, and a dense 2Q one reaches 16 (ARCHITECTURE.md §Bucketing).
     #[test]
     fn dense_unitaries_reach_the_quoted_bucket_fanin() {
         // A rotation about an axis with all three components mixes everything.
@@ -650,8 +611,7 @@ mod tests {
 
     // ---- prepared-form round trip ----
 
-    /// The derivation must recover exactly the table it was built from — a
-    /// bounded-support channel *is* its local PTM.
+    /// The derivation must recover exactly the table it was built from — a bounded-support channel *is* its local PTM.
     #[test]
     fn derive_local_recovers_the_table() {
         let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);

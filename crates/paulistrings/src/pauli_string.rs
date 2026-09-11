@@ -1,14 +1,6 @@
-//! [`PauliString<W>`] — symplectic-encoded Pauli operator on up to `64·W` qubits.
+//! [`PauliString<W>`] — symplectic-encoded Pauli operator on up to `64·W` qubits. See ARCHITECTURE.md §Data-Model and §Width.
 //!
-//! Encoding: `I = (0, 0)`, `X = (1, 0)`, `Z = (0, 1)`, `Y = (1, 1)`.
-//! Multiplication XORs the `(x, z)` parts and returns the `i^k` phase factor
-//! — for `k ∈ 0..4` — that arises where X- and Z-bits coincide. The phase is
-//! not stored on the type; callers fold it into a `Complex64` coefficient at
-//! the boundary ([`PauliSum`], [`BuildAccumulator`], or [`Channel::apply`]).
-//!
-//! The load-bearing trait is [`Ord`] — the propagation engine is sort-based,
-//! not hashmap-based. `Hash` is implemented as an auxiliary for
-//! [`BuildAccumulator`].
+//! Multiplication XORs the `(x, z)` parts and returns the `i^k` phase factor as a [`Phase`]; the phase is not stored on the type, callers fold it into a coefficient at the boundary.
 //!
 //! # Examples
 //!
@@ -35,15 +27,9 @@ use std::hash::{Hash, Hasher};
 
 use crate::phase::Phase;
 
-/// A Pauli operator on up to `64 · W` qubits.
+/// A Pauli operator on up to `64 · W` qubits. See ARCHITECTURE.md §Data-Model.
 ///
-/// Layout is `#[repr(C)]` so the type is `Pod` and can be reinterpreted as
-/// bytes for serialization or upload to a GPU device. There is no stored
-/// phase: multiplication returns the `i^k` phase as a separate [`Phase`]
-/// and callers fold it into their coefficient at the boundary.
-///
-/// [`Ord`] is the load-bearing trait (the engine is sort-based, not
-/// hashmap-based).
+/// `#[repr(C)]` so the type is `Pod` and can be reinterpreted as bytes for serialization or GPU upload. [`Ord`] is the load-bearing trait — the engine is sort-based, not hashmap-based.
 ///
 /// # Examples
 ///
@@ -57,11 +43,9 @@ use crate::phase::Phase;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(C)]
 pub struct PauliString<const W: usize> {
-    /// X-part bitmask: bit `q` is set iff the Pauli on qubit `q` has an
-    /// X-component (i.e. is `X` or `Y`).
+    /// X-part bitmask: bit `q` set iff qubit `q` is `X` or `Y`.
     pub x: [u64; W],
-    /// Z-part bitmask: bit `q` is set iff the Pauli on qubit `q` has a
-    /// Z-component (i.e. is `Z` or `Y`).
+    /// Z-part bitmask: bit `q` set iff qubit `q` is `Z` or `Y`.
     pub z: [u64; W],
 }
 
@@ -109,9 +93,7 @@ impl<const W: usize> PauliString<W> {
         p
     }
 
-    /// Canonical Pauli `Y = (1, 1)` on `qubit`. The `i` factor in `Y = i · X · Z`
-    /// is the caller's concern — fold it into a [`Phase`] or coefficient at
-    /// the boundary.
+    /// Canonical Pauli `Y = (1, 1)` on `qubit`. The `i` factor in `Y = i · X · Z` is the caller's concern.
     ///
     /// # Panics
     ///
@@ -156,8 +138,7 @@ impl<const W: usize> PauliString<W> {
         (0..W).map(|i| (self.x[i] | self.z[i]).count_ones()).sum()
     }
 
-    /// Multiply `self * other` in place. Returns the `i^k` phase factor such
-    /// that the true product is `phase · self_after_xor`.
+    /// Multiply `self * other` in place. Returns the `i^k` phase factor such that the true product is `phase · self_after_xor`.
     ///
     /// # Examples
     ///
@@ -198,9 +179,7 @@ impl<const W: usize> PauliString<W> {
 
     /// Value-returning multiply: `(self * other, phase)`.
     ///
-    /// Not implemented as `std::ops::Mul` because the operation also
-    /// returns a `Phase` — calling sites need both the bits and the phase
-    /// to fold into a `Complex64` coefficient at the boundary.
+    /// Not `std::ops::Mul` because the operation also returns a `Phase`, which calling sites need to fold into a coefficient at the boundary.
     #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn mul(mut self, other: &Self) -> (Self, Phase) {
@@ -210,12 +189,7 @@ impl<const W: usize> PauliString<W> {
 
     /// `true` iff every set bit lies on a qubit index `< num_qubits`.
     ///
-    /// The engine and built-in channels preserve this bound by construction
-    /// (a channel only flips bits inside [`Channel::support`], which is
-    /// bounded at [`Circuit`] build time), so this check is not on the hot
-    /// path. Use it in `debug_assert!` at boundaries with custom [`Channel`]
-    /// impls, in `PauliSum::assert_invariants`, and in tests that exercise
-    /// the invariant directly.
+    /// The engine and built-in channels preserve this bound by construction, so this check is not on the hot path; used in `debug_assert!` at boundaries with custom [`Channel`] impls, in `PauliSum::assert_invariants`, and in tests.
     ///
     /// # Panics
     ///
@@ -255,14 +229,7 @@ impl<const W: usize> PauliString<W> {
     /// assert!(PauliString::<1>::x(0).commutes_with(&PauliString::<1>::z(1)));
     /// ```
     ///
-    /// Only the low bit of the symplectic form survives, and popcount parity
-    /// is GF(2)-linear — `parity(a) ^ parity(b) == parity(a ^ b)`, since
-    /// `popcount(a) + popcount(b) = popcount(a ^ b) + 2·popcount(a & b)`. So
-    /// the masked words are XOR-folded first and reduced by a **single**
-    /// `count_ones` instead of one per word: `2W` popcounts become 1. Measured
-    /// in isolation on low-weight keys: 1.9-2.1x at `W = 1`, 1.5-3.6x at
-    /// `W >= 8`, neutral at `W ∈ {2, 4}`. It also makes the function
-    /// insensitive to whether the target enables a hardware `popcnt`.
+    /// Only the low bit of the symplectic form survives, and popcount parity is GF(2)-linear (`parity(a) ^ parity(b) == parity(a ^ b)`), so the masked words are XOR-folded first and reduced by a single `count_ones` instead of one per word.
     #[inline]
     pub fn commutes_with(&self, other: &Self) -> bool {
         let mut acc: u64 = 0;
@@ -280,8 +247,7 @@ impl<const W: usize> Default for PauliString<W> {
 }
 
 impl<const W: usize> Ord for PauliString<W> {
-    /// Lexicographic compare on the concatenation `(x, z)` interpreted as an
-    /// unsigned-integer array, low-to-high word order.
+    /// Lexicographic compare on `(x, z)`, low-to-high word order.
     fn cmp(&self, other: &Self) -> Ordering {
         for i in 0..W {
             match self.x[i].cmp(&other.x[i]) {

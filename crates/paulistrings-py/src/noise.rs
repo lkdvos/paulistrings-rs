@@ -19,13 +19,7 @@ fn amplitude_damping(gamma: f64, qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::AmplitudeDamping { gamma, qubit })
 }
 
-/// Shared by `noise.pauli_channel` and `Circuit.pauli_channel`.
-///
-/// The three probabilities must be a sub-probability distribution: the fourth
-/// weight is `1 - px - py - pz`, the "no error" branch, so a negative one would
-/// make the channel non-physical and its Heisenberg dual a rescale by a factor
-/// outside `[-1, 1]` — coefficients would grow layer over layer with nothing to
-/// flag it.
+/// Shared by `noise.pauli_channel` and `Circuit.pauli_channel`. The three probabilities must be a sub-probability distribution (fourth weight `1 - px - py - pz` is the "no error" branch); otherwise the channel is non-physical and coefficients would grow layer over layer unflagged.
 pub(crate) fn pauli_channel_spec(px: f64, py: f64, pz: f64, qubit: u32) -> PyResult<ChannelSpec> {
     for (name, p) in [("px", px), ("py", py), ("pz", pz)] {
         if p < 0.0 {
@@ -50,9 +44,7 @@ pub(crate) fn depolarize2_spec(p: f64, q0: u32, q1: u32) -> PyResult<ChannelSpec
             "depolarize2: p must be between 0 and 1 (got {p})"
         )));
     }
-    // An overlapping pair would declare a two-qubit support over one qubit,
-    // which the engine's local-PTM derivation mis-tabulates rather than
-    // rejecting.
+    // An overlapping pair would declare a two-qubit support over one qubit, which the engine's local-PTM derivation mis-tabulates rather than rejecting.
     if q0 == q1 {
         return Err(PyValueError::new_err(format!(
             "depolarize2: the two qubit indices must differ (both are {q0})"

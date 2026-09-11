@@ -1,15 +1,7 @@
 //! Per-layer prepared form of a channel. See ARCHITECTURE.md §Prepared-Channels.
 //!
-//! Calling [`Channel::apply`] once per input term through a vtable would redo
-//! each channel's setup every time — `PauliRotation` would recompute
-//! `theta.cos()/sin()` per term, `Clifford1Q::apply_adjoint` would rebuild its
-//! inverse table per term. The bucketed engine instead *prepares* a channel
-//! once per layer into the form below, reducing the inner loop to one table
-//! lookup on ≤ 4 extracted bits, one XOR with a precomputed mask, and one
-//! complex multiply.
-//!
-//! The prepared form also carries what the engine needs to know *which buckets to
-//! read*: for each possible key delta `d`, the bucket delta `δ = H·d`.
+//! Prepares a channel once per layer into a table, reducing the inner loop to one lookup on ≤ 4 extracted bits, one XOR with a precomputed mask, and one complex multiply — instead of redoing the channel's setup (e.g. `theta.cos()/sin()`) per term through a vtable call.
+//! The prepared form also carries, for each key delta `d`, the bucket delta `δ = H·d` the engine needs to know which buckets to read.
 
 use num_complex::Complex64;
 
@@ -20,9 +12,7 @@ use crate::phase::Phase;
 
 /// Largest support size handled by [`Prepared::Local`].
 ///
-/// The dense local Pauli-transfer matrix is `4^k × 4^k`, so `k = 2` is 16×16 =
-/// 4 KB of `Complex64` per layer. `k = 3` would be 64 KB, which stops being a
-/// per-layer table worth building.
+/// The dense local Pauli-transfer matrix is `4^k × 4^k`, so `k = 2` is 4 KB of `Complex64` per layer; `k = 3` would be 64 KB, too large to be worth building per layer.
 pub const MAX_LOCAL_SUPPORT: usize = 2;
 
 /// `4^MAX_LOCAL_SUPPORT` — the number of local Pauli basis elements.
@@ -33,20 +23,11 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 /// One key delta, with the amplitude it carries for each input support pattern.
 #[derive(Clone, Debug)]
 pub struct DeltaEntry<const W: usize> {
-    /// `δ = H·d`. Output bucket `β'` reads input bucket `β' ^ bucket_delta` for
-    /// this delta.
-    ///
-    /// Several entries may share a `bucket_delta`: with a dense random `H`,
-    /// `rank(H|_D) = dim D` and each is unique, but a collision is a
-    /// performance wart, not a correctness problem, and is handled by simply
-    /// having two entries name the same input bucket.
+    /// `δ = H·d`. Output bucket `β'` reads input bucket `β' ^ bucket_delta` for this delta.
+    /// Several entries may share a `bucket_delta` (a hash collision); it costs a wasted read, never correctness.
     pub bucket_delta: u32,
-    /// The delta in local support coordinates: bit `2j` is the x-bit of support
-    /// qubit `j`, bit `2j+1` its z-bit.
-    ///
-    /// This is the **canonical ordering key**: it does not depend on the
-    /// bucket count (`δ = H·d` does), which is why deltas are constructed in
-    /// ascending `local_delta` order rather than by `bucket_delta`.
+    /// The delta in local support coordinates: bit `2j` is the x-bit of support qubit `j`, bit `2j+1` its z-bit.
+    /// The canonical ordering key, since unlike `bucket_delta` it does not depend on the bucket count.
     pub local_delta: u8,
     /// `d` lifted to a full-width XOR mask.
     pub mask_x: [u64; W],
@@ -58,15 +39,9 @@ pub struct DeltaEntry<const W: usize> {
 }
 
 impl<const W: usize> DeltaEntry<W> {
-    /// The output row this entry emits for a term with support pattern `s`, or
-    /// `None` when the amplitude is exactly zero.
+    /// The output row this entry emits for a term with support pattern `s`, or `None` when the amplitude is exactly zero.
     ///
-    /// This is the row-level form of the engine's gather inner loop
-    /// (`engine::bucketed::gather_local_input_major`): the same amplitude
-    /// lookup, the same XOR with the lifted mask, and the same `coeff * amp`
-    /// multiply in the same order — so the partitioned export pass
-    /// (ARCHITECTURE.md §Engine) produces bitwise the rows a local gather
-    /// would have.
+    /// The row-level form of the engine's gather inner loop (`engine::bucketed::gather_local_input_major`): same lookup, same mask XOR, same multiply, in the same order, so the partitioned export pass produces bitwise the rows a local gather would have.
     #[inline]
     pub(crate) fn emit(
         &self,
@@ -90,9 +65,7 @@ impl<const W: usize> DeltaEntry<W> {
 
     /// The entry's key delta as a full-width XOR mask pair, `(mask_x, mask_z)`.
     ///
-    /// The quantity a partitioning reads to classify the entry: `part(mask)`
-    /// is the partition delta and `h(mask)` the (already stored)
-    /// [`bucket_delta`](Self::bucket_delta).
+    /// What a partitioning reads to classify the entry: `part(mask)` is the partition delta, `h(mask)` the (already stored) [`bucket_delta`](Self::bucket_delta).
     #[inline]
     pub(crate) fn mask(&self) -> ([u64; W], [u64; W]) {
         (self.mask_x, self.mask_z)
@@ -107,12 +80,7 @@ pub struct LocalPtm<const W: usize> {
     qubits: [u32; MAX_LOCAL_SUPPORT],
     /// Number of support qubits, `0 ≤ k ≤ MAX_LOCAL_SUPPORT`.
     k: u8,
-    /// The delta set, **ascending by `local_delta`**.
-    ///
-    /// Ascending `local_delta` is the canonical construction order: index 0
-    /// is the identity entry when present. The engine's per-run sort is
-    /// key-only, so this order does not define summation order — see
-    /// ARCHITECTURE.md §Determinism.
+    /// The delta set, **ascending by `local_delta`** — the canonical construction order (index 0 is the identity entry when present). Does not define summation order; see ARCHITECTURE.md §Determinism.
     deltas: Vec<DeltaEntry<W>>,
 }
 
@@ -177,14 +145,10 @@ impl<const W: usize> LocalPtm<W> {
         self.deltas.len() == 1 && self.deltas[0].local_delta == 0
     }
 
-    /// A copy keeping only the entries with `keep[e] == true`, in order, with
-    /// the same support qubits and `k`.
+    /// A copy keeping only the entries with `keep[e] == true`, in order, with the same support qubits and `k`.
     ///
-    /// Used at prepare time to split a partitioned layer's table into a
-    /// local-only one, so the gather loops keep running over a plain
-    /// `deltas()` slice with no per-entry predicate in the inner loop. The
-    /// result is still ascending by `local_delta` — a subsequence of an
-    /// ascending sequence — so every invariant `deltas()` documents survives.
+    /// Used at prepare time to split a partitioned layer's table into a local-only one, so the gather loops keep running over a plain `deltas()` slice with no per-entry predicate in the inner loop.
+    /// The result is still ascending by `local_delta`, a subsequence of an ascending sequence.
     ///
     /// # Panics
     ///
@@ -229,10 +193,7 @@ impl<const W: usize> LocalPtm<W> {
 
 /// A rotation with support wider than [`MAX_LOCAL_SUPPORT`].
 ///
-/// The delta set is `{0, P}` for *any* generator weight, so only two buckets
-/// are ever read — but the amplitude's `i^k` phase depends on `2w` support
-/// bits, which stops being tabulable. Amplitudes are computed per term
-/// instead, with `cos`/`sin` hoisted out of the loop.
+/// The delta set is `{0, P}` for any generator weight, so only two buckets are ever read — but the amplitude's `i^k` phase depends on `2w` support bits, which stops being tabulable, so amplitudes are computed per term instead, with `cos`/`sin` hoisted out of the loop.
 #[derive(Clone, Debug)]
 pub struct RotationPrep<const W: usize> {
     /// The generator `P`.
@@ -248,20 +209,11 @@ pub struct RotationPrep<const W: usize> {
 }
 
 impl<const W: usize> RotationPrep<W> {
-    /// The generator-pass row for a term, or `None` if it commutes with the
-    /// generator (in which case the rotation leaves the term alone and only
-    /// the identity pass emits).
+    /// The generator-pass row for a term, or `None` if it commutes with the generator (in which case the rotation leaves the term alone and only the identity pass emits).
     ///
-    /// The arithmetic is copied verbatim from the `DeltaPlan::Rotation` arm of
-    /// `engine::bucketed::fill_coset`: `mul_assign` returns the `i^k` of the
-    /// Pauli product, the leading `i` of `i · Q · P` is folded in as
-    /// `Phase::I + phase`, the phase is applied to the *coefficient* and the
-    /// hoisted `sin` multiplies last. Operand order matters — this has to be
-    /// bitwise-equal to the gather.
+    /// Copied verbatim from the `DeltaPlan::Rotation` arm of `engine::bucketed::fill_coset` so it stays bitwise-equal to the gather: `mul_assign` returns the `i^k` of the Pauli product, the leading `i` of `i · Q · P` folds in as `Phase::I + phase`, applied to the coefficient before the hoisted `sin` multiplies last.
     ///
-    /// The identity pass has no emitter: every term contributes one identity
-    /// row unconditionally (full coefficient when it commutes, `cos`-scaled
-    /// when it does not), so there is nothing to decide per row.
+    /// The identity pass has no emitter: every term contributes one identity row unconditionally, so there is nothing to decide per row.
     #[inline]
     pub(crate) fn emit_gen(
         &self,
@@ -315,26 +267,14 @@ impl<const W: usize> Prepared<W> {
         }
     }
 
-    /// Derive the prepared form of a bounded-support channel by probing its own
-    /// [`Channel::apply`].
+    /// Derive the prepared form of a bounded-support channel by probing its own [`Channel::apply`].
     ///
-    /// Returns `None` when the channel's support is wider than
-    /// [`MAX_LOCAL_SUPPORT`], or when it writes outside its declared support.
-    /// In both cases `propagate` panics rather than proceeding with an
-    /// unsound preparation (see ARCHITECTURE.md §Prepared-Channels).
+    /// Returns `None` when the channel's support is wider than [`MAX_LOCAL_SUPPORT`], or when it writes outside its declared support; in both cases `propagate` panics rather than proceeding with an unsound preparation (see ARCHITECTURE.md §Prepared-Channels).
     ///
     /// # The soundness precondition
     ///
-    /// This is exact **iff** the channel honours the bounded-support contract:
-    /// the output amplitude may depend on the input only through its support
-    /// bits. Probing cannot fully verify that — a channel that *reads* qubit 5
-    /// while declaring support `[0]` would produce a table that is wrong for
-    /// inputs this function never tried. Two things mitigate it:
-    ///
-    /// * Debug builds re-derive with an all-ones background outside the support
-    ///   and assert the two tables agree, which catches the common case.
-    /// * A property test checks every built-in's derived table against `apply`
-    ///   on randomized full-width inputs.
+    /// Exact iff the channel honours the bounded-support contract: the output amplitude may depend on the input only through its support bits.
+    /// Probing cannot fully verify that — a channel reading qubit 5 while declaring support `[0]` would produce a table wrong for inputs never tried — so debug builds re-derive with an all-ones background outside the support and assert the two tables agree, and a property test checks every built-in against `apply` on randomized full-width inputs.
     pub fn derive_local<C>(channel: &C, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
     where
         C: Channel<W> + ?Sized,
@@ -421,8 +361,7 @@ impl<const W: usize> Prepared<W> {
 
 /// Probe `channel.apply` on every local basis Pauli and read off `amp[s][t]`.
 ///
-/// With `background`, every non-support bit of the probe is set — used in debug
-/// builds to detect a channel that reads outside its support.
+/// With `background`, every non-support bit of the probe is set — used in debug builds to detect a channel that reads outside its support.
 fn probe_table<const W: usize, C>(
     channel: &C,
     ptm: &LocalPtm<W>,
@@ -607,9 +546,7 @@ mod tests {
         }
     }
 
-    /// The derived table must reproduce `apply` on **randomized full-width**
-    /// inputs, not just on the basis probes prepare-time derivation reads.
-    /// This is what catches a channel reading outside its declared support.
+    /// The derived table must reproduce `apply` on randomized full-width inputs, not just the basis probes prepare-time derivation reads — this catches a channel reading outside its declared support.
     fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
         ch: &C,
         num_qubits: usize,
@@ -731,16 +668,10 @@ mod tests {
         check_agrees_on_random_inputs::<2, _>(&rot, 128, "rot_weight4");
     }
 
-    // ---- the per-entry emitters agree with `Channel::apply` ----
-    //
-    // `DeltaEntry::emit` / `RotationPrep::emit_gen` are the row-level form the
-    // partitioned export pass uses in place of the engine's gather loops. They
-    // must produce exactly what the gather would have produced, which is what
-    // these check — against `Channel::apply` itself, not against the gather.
+    // `DeltaEntry::emit` / `RotationPrep::emit_gen` are the row-level form the partitioned export pass uses in place of the engine's gather loops; these check them against `Channel::apply` itself, not against the gather.
 
-    /// The same outputs, reconstructed one entry at a time through the
-    /// emitters. Mirrors `via_prepared`, but routes every row through
-    /// [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
+    /// The same outputs, reconstructed one entry at a time through the emitters.
+    /// Mirrors `via_prepared`, but routes every row through [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
     fn via_emit<const W: usize>(
         prep: &Prepared<W>,
         x: &[u64; W],

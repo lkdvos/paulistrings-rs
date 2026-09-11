@@ -4,11 +4,8 @@
 use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer};
 use num_complex::Complex64;
 
-/// Shared body of `Depolarizing::apply` and `Dephasing::apply`: both are pure
-/// coefficient rescalings on the support qubit that leave the key unchanged.
-/// They differ only in which local Pauli indices (`I=0, X=1, Z=2, Y=3`) are
-/// `affected` and in the `scale` applied to those — read the support qubit's
-/// packed Pauli index once and push the (possibly) rescaled coefficient.
+/// Shared body of `Depolarizing::apply` and `Dephasing::apply`: both are pure coefficient rescalings on the support qubit that leave the key unchanged.
+/// They differ only in which local Pauli indices (`I=0, X=1, Z=2, Y=3`) are `affected` and in the `scale` applied to those.
 #[inline]
 fn rescale_on_support<const W: usize>(
     support: u32,
@@ -29,10 +26,8 @@ fn rescale_on_support<const W: usize>(
 
 /// Single-qubit depolarizing noise with error probability `p`.
 ///
-/// In the Heisenberg picture this is just a coefficient rescaling: the
-/// identity on the support qubit is preserved unchanged; every non-identity
-/// Pauli on the support is multiplied by `1 - 4p/3`. Self-adjoint, so the
-/// default `apply_adjoint` from the trait is correct.
+/// In the Heisenberg picture this is just a coefficient rescaling: the identity on the support qubit is preserved unchanged, every non-identity Pauli on the support is multiplied by `1 - 4p/3`.
+/// Self-adjoint, so the default `apply_adjoint` from the trait is correct.
 ///
 /// # Examples
 ///
@@ -81,9 +76,7 @@ impl<const W: usize> Channel<W> for Depolarizing {
 
 /// Single-qubit dephasing noise with error probability `p`.
 ///
-/// Heisenberg dual: `E*(P) = (1-p) P + p Z P Z`. So I and Z are preserved;
-/// X and Y are scaled by `1 - 2p` (`Z·X·Z = -X`, `Z·Y·Z = -Y`). Equivalently,
-/// the scale fires iff the support qubit's `x_bit` is set. Self-adjoint.
+/// Heisenberg dual: `E*(P) = (1-p) P + p Z P Z`, so I and Z are preserved and X and Y are scaled by `1 - 2p` (`Z·X·Z = -X`, `Z·Y·Z = -Y`); equivalently, the scale fires iff the support qubit's `x_bit` is set. Self-adjoint.
 pub struct Dephasing {
     /// The single qubit this channel acts on.
     pub support: [u32; 1],
@@ -124,25 +117,13 @@ impl<const W: usize> Channel<W> for Dephasing {
 
 /// A general single-qubit Pauli channel with independent error probabilities.
 ///
-/// `E(ρ) = (1-px-py-pz)ρ + px·XρX + py·YρY + pz·ZρZ`. Like [`Depolarizing`] and
-/// [`Dephasing`] this is a pure coefficient rescaling in the Heisenberg picture
-/// — fanout 1, key-preserving, self-adjoint — so the engine takes the in-place
-/// rescale path (`engine/bucketed.rs::rescale_in_place`) rather than a
-/// gather/sort/merge.
+/// `E(ρ) = (1-px-py-pz)ρ + px·XρX + py·YρY + pz·ZρZ`.
+/// Like [`Depolarizing`] and [`Dephasing`] this is a pure coefficient rescaling in the Heisenberg picture (fanout 1, key-preserving, self-adjoint), so the engine takes the in-place rescale path (`engine/bucketed.rs::rescale_in_place`) rather than a gather/sort/merge.
 ///
 /// # Dual scales
 ///
-/// Each Pauli anticommutes with exactly the other two, so `P_k Q P_k = ±Q` with
-/// the sign negative for the two terms that anticommute with `Q`:
-///
-/// - `I → 1` (the four probabilities sum to one, so `E†` is unital)
-/// - `X → 1 - 2(py + pz)`
-/// - `Y → 1 - 2(px + pz)`
-/// - `Z → 1 - 2(px + py)`
-///
-/// The two consistency checks worth remembering: `(p/3, p/3, p/3)` reproduces
-/// `Depolarizing { p }` (`1 - 4p/3` on every non-identity Pauli) and `(0, 0, p)`
-/// reproduces `Dephasing { p }` (`1 - 2p` on X and Y, `1` on Z).
+/// Each Pauli anticommutes with exactly the other two, so `P_k Q P_k = ±Q` with the sign negative for the two terms that anticommute with `Q`: `I → 1` (the probabilities sum to one, so `E†` is unital), `X → 1 - 2(py + pz)`, `Y → 1 - 2(px + pz)`, `Z → 1 - 2(px + py)`.
+/// `(p/3, p/3, p/3)` reproduces `Depolarizing { p }` and `(0, 0, p)` reproduces `Dephasing { p }`.
 ///
 /// # Examples
 ///
@@ -198,26 +179,14 @@ impl<const W: usize> Channel<W> for PauliChannel {
     }
 }
 
-/// Uniform two-qubit depolarizing noise: probability `p` spread evenly over the
-/// 15 non-identity two-qubit Paulis.
+/// Uniform two-qubit depolarizing noise: probability `p` spread evenly over the 15 non-identity two-qubit Paulis.
 ///
-/// `E(ρ) = (1-p)ρ + (p/15)·Σ_k P_k ρ P_k`. Fanout 1, key-preserving,
-/// self-adjoint, like its single-qubit siblings; the support weight of 2 is
-/// exactly [`MAX_LOCAL_SUPPORT`](super::prepared::MAX_LOCAL_SUPPORT), so the
-/// default `prepare` derivation applies.
+/// `E(ρ) = (1-p)ρ + (p/15)·Σ_k P_k ρ P_k`. Fanout 1, key-preserving, self-adjoint, like its single-qubit siblings; the support weight of 2 is exactly [`MAX_LOCAL_SUPPORT`](super::prepared::MAX_LOCAL_SUPPORT), so the default `prepare` derivation applies.
 ///
 /// # Dual scales
 ///
-/// For a `Q` that is the identity on both support qubits, every `P_k Q P_k = Q`
-/// and the scale is 1. Otherwise exactly 8 of the 16 two-qubit Paulis
-/// anticommute with `Q`, so among the 15 error terms 7 commute and 8
-/// anticommute:
-///
-/// `(1-p)Q + (p/15)(7 - 8)Q = (1 - 16p/15)·Q`.
-///
-/// Note this is the same factor whether `Q` is non-identity on one support
-/// qubit or on both — the count of anticommuting two-qubit Paulis does not
-/// depend on `Q`'s weight.
+/// For `Q` the identity on both support qubits, every `P_k Q P_k = Q` and the scale is 1.
+/// Otherwise exactly 8 of the 16 two-qubit Paulis anticommute with `Q`, so among the 15 error terms 7 commute and 8 anticommute: `(1-p)Q + (p/15)(7 - 8)Q = (1 - 16p/15)·Q` — the same factor whether `Q` is non-identity on one support qubit or on both.
 ///
 /// # Examples
 ///
@@ -277,40 +246,12 @@ impl<const W: usize> Channel<W> for Depolarizing2Q {
 
 /// Single-qubit amplitude damping with parameter `gamma`.
 ///
-/// The only noise in the built-in set with genuine fan-out > 1, and the only
-/// one that is **not** self-adjoint — so it is the only built-in for which the
-/// `apply` / `apply_adjoint` orientation is observable.
+/// The only built-in noise with fan-out > 1, and the only one that is not self-adjoint, so it is the one built-in where the `apply` / `apply_adjoint` orientation is observable.
+/// Kraus operators `K_0 = |0⟩⟨0| + √(1-γ)|1⟩⟨1|`, `K_1 = √γ |0⟩⟨1|`, trace-preserving (`K_0†K_0 + K_1†K_1 = I`).
 ///
-/// Kraus operators `K_0 = |0⟩⟨0| + √(1-γ)|1⟩⟨1|`, `K_1 = √γ |0⟩⟨1|`, and
-/// `K_0†K_0 + K_1†K_1 = I` (trace-preserving).
-///
-/// [`Self::apply`] is the **Schrödinger** map `Φ(ρ) = K_0 ρ K_0† + K_1 ρ K_1†`,
-/// which is what `direction = "forward"` runs — the same orientation as every
-/// other channel, where `apply` is the conjugation `U P U†`:
-///
-/// - `I → I + γ Z`   (the only fanout-2 case)
-/// - `X → √(1-γ) X`
-/// - `Y → √(1-γ) Y`
-/// - `Z → (1-γ) Z`
-///
-/// [`Self::apply_adjoint`] is the **Heisenberg** dual
-/// `Φ†(O) = K_0† O K_0 + K_1† O K_1`, which is what `direction = "heisenberg"`
-/// runs — the map for evolving an observable. It is the transpose of `Φ`'s
-/// Pauli-transfer matrix (all four Paulis share a Hilbert-Schmidt norm, so the
-/// Gram matrix is a multiple of the identity and the adjoint is the plain
-/// transpose):
-///
-/// - `I → I`
-/// - `X → √(1-γ) X`
-/// - `Y → √(1-γ) Y`
-/// - `Z → (1-γ) Z + γ I`   (now the only fanout-2 case)
-///
-/// Note the fan-out moves from `I` to `Z`. Structurally: `Φ†` is unital
-/// (`Φ†(I) = I`, because `Φ` is trace-preserving), and `Φ` is trace-preserving
-/// (the `I` coefficient of `Φ(P)` depends only on the `I` coefficient of `P`),
-/// which are transposed statements of each other. A non-unital Heisenberg map
-/// would be unphysical: `⟨Z⟩` for a qubit already in `|0⟩` would decay instead
-/// of staying at 1 (see the tests below for the hand derivation).
+/// [`Self::apply`] is the Schrödinger map `Φ(ρ) = K_0 ρ K_0† + K_1 ρ K_1†` (`direction = "forward"`, the same orientation as every other channel): `I → I + γ Z` (the only fanout-2 case), `X → √(1-γ) X`, `Y → √(1-γ) Y`, `Z → (1-γ) Z`.
+/// [`Self::apply_adjoint`] is the Heisenberg dual `Φ†(O) = K_0† O K_0 + K_1† O K_1` (`direction = "heisenberg"`), the transpose of `Φ`'s Pauli-transfer matrix: `I → I`, `X → √(1-γ) X`, `Y → √(1-γ) Y`, `Z → (1-γ) Z + γ I` (now the fanout-2 case).
+/// The fan-out moves from `I` to `Z` because `Φ†` is unital and `Φ` is trace-preserving — transposed statements of each other. A non-unital Heisenberg map would be unphysical: `⟨Z⟩` for a qubit already in `|0⟩` would decay instead of staying at 1.
 pub struct AmplitudeDamping {
     /// The single qubit this channel acts on.
     pub support: [u32; 1],
@@ -414,42 +355,7 @@ mod tests {
     use crate::phase::Phase;
     use crate::test_support::{alloc_bufs, approx_eq};
 
-    // ---- AmplitudeDamping: which map is `apply`, which is `apply_adjoint` ----
-    //
-    // Hand-derived from the Kraus operators, writing `s = √(1-γ)`:
-    //
-    //     K₀ = [[1, 0], [0, s]],   K₁ = [[0, √γ], [0, 0]] = √γ·|0⟩⟨1|
-    //
-    // Completeness (so Φ is trace-preserving):
-    //     K₀†K₀ + K₁†K₁ = diag(1, 1-γ) + diag(0, γ) = I.
-    //
-    // Schrödinger map Φ(ρ) = K₀ρK₀† + K₁ρK₁†, on the Pauli basis, using
-    // diag(a, b) = ((a+b)/2)·I + ((a-b)/2)·Z:
-    //
-    //     Φ(I) = K₀K₀† + K₁K₁† = diag(1, 1-γ) + diag(γ, 0)
-    //          = diag(1+γ, 1-γ) = I + γ Z
-    //     Φ(Z) = diag(1, -(1-γ)) + γ·⟨1|Z|1⟩·|0⟩⟨0|
-    //          = diag(1, -(1-γ)) + diag(-γ, 0) = (1-γ) Z
-    //     Φ(X) = s X + γ·⟨1|X|1⟩·|0⟩⟨0| = s X        (⟨1|X|1⟩ = 0)
-    //     Φ(Y) = s Y                                 (same, ⟨1|Y|1⟩ = 0)
-    //
-    // Heisenberg dual Φ†(O) = K₀†OK₀ + K₁†OK₁:
-    //
-    //     Φ†(I) = K₀†K₀ + K₁†K₁ = I                  (unital, by completeness)
-    //     Φ†(Z) = diag(1, -(1-γ)) + γ·⟨0|Z|0⟩·|1⟩⟨1|
-    //           = diag(1, 2γ-1) = γ I + (1-γ) Z
-    //     Φ†(X) = s X + γ·⟨0|X|0⟩·|1⟩⟨1| = s X
-    //     Φ†(Y) = s Y
-    //
-    // `apply` is **Φ** — what `direction="forward"` runs — and `apply_adjoint`
-    // is **Φ†** — what `direction="heisenberg"` runs. That is the orientation
-    // every other channel already uses (`apply` is the Schrödinger conjugation
-    // `U P U†`, `apply_adjoint` the Heisenberg dual `U† P U`). The two are
-    // Pauli-transfer-matrix transposes of each other: all four Paulis share a
-    // Hilbert-Schmidt norm, so the Gram matrix is a multiple of the identity and
-    // the adjoint is the plain transpose. Note the fan-out sits on **I** for Φ
-    // and on **Z** for Φ†; swapping the two makes Heisenberg observable
-    // evolution non-unital, which is unphysical.
+    // AmplitudeDamping: `apply` is Φ (Schrödinger, `direction="forward"`), `apply_adjoint` is Φ† (Heisenberg, `direction="heisenberg"`) — see the type doc for the derivation and the four scale factors each way.
 
     /// Collect the outputs of `apply` or `apply_adjoint` on one input.
     ///
@@ -497,10 +403,7 @@ mod tests {
         t
     }
 
-    /// Both PTM rows of a damping channel on qubit `q`, checked against the
-    /// hand derivation at the top of this section. Generic in `W` so the
-    /// const-generic surface (and the word-boundary bit arithmetic) is
-    /// exercised at both widths.
+    /// Both PTM rows of a damping channel on qubit `q`, checked against the type doc's derivation. Generic in `W` so the word-boundary bit arithmetic is exercised at both widths.
     fn check_both_maps<const W: usize>(q: u32, g: f64) {
         let ch = AmplitudeDamping {
             support: [q],
@@ -566,19 +469,8 @@ mod tests {
         check_both_maps::<2>(64, 0.4);
     }
 
-    /// The physics the orientation is *for*: Heisenberg-evolve `Z` through the
-    /// damping channel, then contract against a computational basis state.
-    ///
-    /// `⟨Z⟩_after = tr[Z Φ(ρ)] = tr[Φ†(Z) ρ]` with `Φ†(Z) = γ I + (1-γ) Z`:
-    ///
-    /// * `ρ = |0⟩⟨0|`  →  `γ·1 + (1-γ)·1 = 1` for every γ. A qubit already in
-    ///   `|0⟩` is the fixed point of amplitude damping and stays there.
-    /// * `ρ = |1⟩⟨1|`  →  `γ·1 + (1-γ)·(-1) = 2γ - 1`, rising from `-1` at
-    ///   `γ = 0` to `+1` at `γ = 1`: the excited state decays toward `|0⟩`.
-    ///
-    /// Under the swapped orientation the Heisenberg direction would apply Φ
-    /// instead, giving `(1-γ)·⟨Z⟩` — which sends `|0⟩` to `⟨Z⟩ = 1-γ < 1`,
-    /// i.e. a ground-state qubit spontaneously depolarizing.
+    /// The physics the orientation is for: `⟨Z⟩_after = tr[Φ†(Z) ρ]` with `Φ†(Z) = γ I + (1-γ) Z` gives `⟨Z⟩ = 1` for `ρ = |0⟩⟨0|` (fixed point) and `2γ - 1` for `ρ = |1⟩⟨1|` (decay toward `|0⟩`).
+    /// The swapped orientation would instead give `(1-γ)·⟨Z⟩`, a ground-state qubit spontaneously depolarizing.
     #[test]
     fn heisenberg_z_reproduces_the_damped_qubit_expectation() {
         // `⟨b|P|b⟩` for a computational state whose qubits-in-|1⟩ are `ones`:
@@ -621,9 +513,7 @@ mod tests {
         }
     }
 
-    /// The structural statement: the adjoint's PTM is the forward PTM
-    /// transposed. This is the property the fix is *for*, and it fails outright
-    /// under the old `apply_adjoint = apply` default.
+    /// The structural statement: the adjoint's PTM is the forward PTM transposed.
     #[test]
     fn adjoint_ptm_is_the_transpose_of_the_forward_ptm() {
         for &g in &[0.0, 0.15, 0.5, 0.99, 1.0] {
@@ -646,9 +536,7 @@ mod tests {
         }
     }
 
-    /// `Φ†` is unital and `Φ` is trace-preserving — transposed statements of
-    /// each other, and both are physical requirements. Which map carries which
-    /// property is exactly what the orientation fixes.
+    /// `Φ†` is unital and `Φ` is trace-preserving — transposed statements of each other, both physical requirements.
     #[test]
     fn adjoint_is_unital_and_forward_is_trace_preserving() {
         for &g in &[0.0, 0.3, 1.0] {
@@ -885,15 +773,7 @@ mod tests {
         }
     }
 
-    // ---- PauliChannel ----
-    //
-    // Dual scales, hand-derived: each Pauli anticommutes with exactly the other
-    // two, so `X → 1 - 2(py + pz)`, `Y → 1 - 2(px + pz)`, `Z → 1 - 2(px + py)`,
-    // and `I → 1` because the four Kraus probabilities sum to one.
-
-    /// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`, each computed
-    /// by hand: `I → 1`, `X → 1 - 2(0.5) = 0`, `Y → 1 - 2(0.4) = 0.2`,
-    /// `Z → 1 - 2(0.3) = 0.4`.
+    /// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`, per the type doc's dual scales: `I → 1`, `X → 0`, `Y → 0.2`, `Z → 0.4`.
     #[test]
     fn pauli_channel_scales_are_hand_computed_w1() {
         let ch = PauliChannel {
@@ -1109,18 +989,8 @@ mod tests {
         }
     }
 
-    // ---- Depolarizing2Q ----
-    //
-    // Uniform two-qubit depolarizing, probability `p` spread over the 15
-    // non-identity two-qubit Paulis. Dual scale, hand-derived: for a Pauli `Q`
-    // that is non-identity on the pair, exactly 8 of the 16 two-qubit Paulis
-    // anticommute with it, so 7 of the 15 error terms commute and 8 anticommute:
-    // `(1-p)Q + (p/15)(7 - 8)Q = (1 - 16p/15) Q`. `I⊗I` is fixed.
-
-    /// `p = 0.3`: the scale is `1 - 16(0.3)/15 = 1 - 0.32 = 0.68` for all 15
-    /// non-identity restrictions, and exactly 1 for `I⊗I`. Enumerated over the
-    /// full 4x4 local basis so the weight-1 restrictions are covered too — they
-    /// take the *same* factor, which is the easy thing to get wrong.
+    /// `p = 0.3`: the scale is `0.68` for all 15 non-identity restrictions, `1` for `I⊗I`, per the type doc's dual scale.
+    /// Enumerated over the full 4x4 local basis so weight-1 restrictions are covered too — they take the same factor, which is the easy thing to get wrong.
     #[test]
     fn depolarize2_scale_is_hand_computed_w1() {
         let ch = Depolarizing2Q {
@@ -1159,9 +1029,7 @@ mod tests {
         }
     }
 
-    /// At `p = 15/16` the scale is exactly zero (`1 - 16·(15/16)/15 = 0`, and
-    /// every step is exact in binary floating point), so any Pauli touching the
-    /// pair is annihilated while `I⊗I` is untouched.
+    /// At `p = 15/16` the scale is exactly zero, so any Pauli touching the pair is annihilated while `I⊗I` is untouched.
     #[test]
     fn depolarize2_at_fifteen_sixteenths_annihilates_the_pair() {
         let ch = Depolarizing2Q {

@@ -1,25 +1,7 @@
 //! [`TruncationPolicy<W>`] — composable per-term and per-layer term filters.
 //!
-//! The split between [`TruncationPolicy::keep_term`] (hot, per-output, must
-//! inline) and [`TruncationPolicy::finalize_layer`] (cold, once per layer,
-//! may be non-local) is performance-critical: `keep_term` runs millions of
-//! times per layer, `finalize_layer` runs once.
-//!
-//! Both methods have default no-op implementations, so a policy only needs
-//! to override the one it uses. Compose two policies with [`And`] (both must
-//! accept) or [`Or`] (either accepts).
-//!
-//! Built-ins: [`CoefficientThreshold`] drops terms below a magnitude;
-//! [`WeightCutoff`] drops terms above a Pauli weight; [`TopN`] keeps **at
-//! most** `n` largest-magnitude terms via a layer-finalization partial
-//! selection, never splitting a group of equal magnitudes (see [`TopN`] for
-//! the rule and its degenerate case); [`ApproxTopN`] trades the exact count
-//! for a histogram threshold — cheaper, still bounded by `n`, and short of it
-//! by at most one octave's population.
-//!
-//! Both magnitude-comparing policies work on `|c|²` rather than `|c|`, since
-//! `Complex64::norm()` is a `hypot` call; [`TopN`]'s "Ranked on `|c|²`" has
-//! the equivalence argument and its two floating-point riders.
+//! Built-ins: [`CoefficientThreshold`] drops terms below a magnitude, [`WeightCutoff`] drops terms above a Pauli weight, [`TopN`] keeps at most `n` largest-magnitude terms without splitting a tie group, and [`ApproxTopN`] trades the exact count for a cheaper histogram threshold.
+//! Compose with [`And`] (both must accept) or [`Or`] (either accepts).
 //!
 //! # Examples
 //!
@@ -49,11 +31,8 @@ use num_complex::Complex64;
 ///
 /// # Implementing
 ///
-/// Override [`keep_term`](Self::keep_term) for per-output decisions (runs
-/// inside the merge phase, must inline). Override
-/// [`finalize_layer`](Self::finalize_layer) for global decisions that
-/// depend on the whole layer's output (e.g. partial sort for selecting the
-/// top `n` terms).
+/// Override [`keep_term`](Self::keep_term) for per-output decisions (runs inside the merge phase, must inline).
+/// Override [`finalize_layer`](Self::finalize_layer) for global decisions that depend on the whole layer's output (e.g. partial sort for selecting the top `n` terms).
 ///
 /// ```
 /// use paulistrings::TruncationPolicy;
@@ -71,44 +50,25 @@ use num_complex::Complex64;
 pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// Cheap per-term filter applied during the merge phase. Must inline.
     ///
-    /// `c` is the **summed** coefficient at the key `(x, z)` — i.e.
-    /// `keep_term` runs after all scratch entries with this key have been
-    /// reduced, not on individual scratch entries.
+    /// `c` is the summed coefficient at the key `(x, z)`: `keep_term` runs after all scratch entries with this key have been reduced, not on individual scratch entries.
     #[inline]
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: Complex64) -> bool {
         true
     }
 
-    /// Optional global pass after each circuit layer. May be non-local
-    /// (e.g. partial sort for [`TopN`]).
+    /// Optional global pass after each circuit layer. May be non-local (e.g. partial sort for [`TopN`]).
     ///
-    /// The sum arrives in its bucketed working form. A filter-shaped policy is
-    /// easiest written with [`PauliSum::retain`], which is per-bucket parallel,
-    /// in place, and preserves every invariant; policies that need a global
-    /// view first (like [`TopN`]'s selection) can read terms via
-    /// [`PauliSum::iter`] or per bucket via [`PauliSum::bucket`].
+    /// The sum arrives in its bucketed working form.
+    /// A filter-shaped policy is easiest written with [`PauliSum::retain`] (per-bucket parallel, in place, preserves every invariant); a policy needing a global view first can read terms via [`PauliSum::iter`] or per bucket via [`PauliSum::bucket`].
     fn finalize_layer(&self, _sum: &mut PauliSum<W>) {}
 
     /// Whether [`finalize_layer`](Self::finalize_layer) does anything at all.
     ///
-    /// Purely an optimization hint, and only the engine reads it: it never
-    /// changes what a policy *means*. The engine's small-sum direct path holds
-    /// the sum in a hash map between layers, so honouring a layer pass there
-    /// costs a full materialize → finalize → re-ingest round trip per layer.
-    /// This method lets a policy say that round trip is pointless.
+    /// Purely an optimization hint read only by the engine: it never changes what a policy means.
+    /// The engine's small-sum direct path holds the sum in a hash map between layers, so honouring a layer pass there costs a full materialize → finalize → re-ingest round trip; this method lets a policy say that round trip is pointless.
     ///
-    /// **The default is `true`, the conservative answer**, so a policy that
-    /// overrides `finalize_layer` and never thinks about this method still gets
-    /// its layer pass run on every layer, on every path. Override it with
-    /// `false` only if `finalize_layer` is genuinely a no-op — returning
-    /// `false` while `finalize_layer` does something makes the direct path skip
-    /// it, which is a wrong answer, not a slow one.
-    ///
-    /// The built-ins answer for themselves: [`CoefficientThreshold`] and
-    /// [`WeightCutoff`] are `false` (they filter per term), [`TopN`] is `true`,
-    /// [`And`] is the disjunction of its two sides, and [`Or`] is `false`
-    /// because its `finalize_layer` is this trait's no-op default rather than
-    /// either child's.
+    /// The default is `true`, the conservative answer.
+    /// Override with `false` only if `finalize_layer` is genuinely a no-op: returning `false` while `finalize_layer` does something makes the direct path skip it, which is a wrong answer, not a slow one.
     ///
     /// ```
     /// use paulistrings::TruncationPolicy;

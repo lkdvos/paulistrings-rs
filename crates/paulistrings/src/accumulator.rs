@@ -1,13 +1,8 @@
 //! [`BuildAccumulator<W>`] — hashmap-based ingestion path.
 //!
-//! Used to incrementally build a [`PauliSum`] from unsorted inputs
-//! (Hamiltonian parsing, Python dict construction, etc.). The accumulator is
-//! **not** used during propagation — that path is sort-merge only (see
-//! [`engine`]).
+//! Used to incrementally build a [`PauliSum`] from unsorted inputs (Hamiltonian parsing, Python dict construction, etc.); not used during propagation, which is sort-merge only (see [`engine`]).
 //!
-//! See the [`PauliSum`] module for a worked example that walks
-//! [`BuildAccumulator::new`] → [`BuildAccumulator::add_term`] →
-//! [`BuildAccumulator::finalize`].
+//! See the [`PauliSum`] module for a worked example: [`BuildAccumulator::new`] → [`BuildAccumulator::add_term`] → [`BuildAccumulator::finalize`].
 //!
 //! [`PauliSum`]: crate::PauliSum
 //! [`engine`]: crate::engine
@@ -48,9 +43,7 @@ impl<const W: usize> BuildAccumulator<W> {
         }
     }
 
-    /// Add `phase · c · p` to the accumulator. The phase factor is folded
-    /// into `c` before the upsert. `p` is taken as-is and used as the map
-    /// key.
+    /// Add `phase · c · p` to the accumulator. The phase factor is folded into `c` before the upsert; `p` is taken as-is and used as the map key.
     ///
     /// # Examples
     ///
@@ -59,10 +52,7 @@ impl<const W: usize> BuildAccumulator<W> {
     /// use num_complex::Complex64;
     ///
     /// let mut acc = BuildAccumulator::<1>::new(2);
-    /// // Fold a product phase into the stored coefficient: Z·X = +i·Y, so a
-    /// // caller that multiplied Z by X passes the `Phase::I` that
-    /// // `mul_assign` returned, and the stored coefficient at the Y key
-    /// // (x=1, z=1) comes out as i — i.e. the term i·Y, which is Z·X.
+    /// // Fold a product phase into the stored coefficient: Z·X = +i·Y, so the Y key (x=1, z=1) gets coefficient i.
     /// acc.add_term(
     ///     PauliString::<1> { x: [1], z: [1] },
     ///     Phase::I,
@@ -79,14 +69,9 @@ impl<const W: usize> BuildAccumulator<W> {
             .or_insert(contribution);
     }
 
-    /// Sort, deduplicate, and emit a `PauliSum`. Entries whose accumulated
-    /// coefficient is exactly `0+0i` are dropped.
+    /// Sort, deduplicate, and emit a `PauliSum`. Entries whose accumulated coefficient is exactly `0+0i` are dropped.
     ///
-    /// The partition is chosen here, by [`desired_bits`] under the default
-    /// seed — so a sum of at most 1024 terms gets a single bucket (plain lex
-    /// canonical order), and a larger one starts out already sized for the
-    /// engine. The sort is by key only; each bucket then inherits key order
-    /// from the sorted stream during the scatter.
+    /// The partition is chosen here, by [`desired_bits`] under the default seed, so a sum of at most 1024 terms gets a single bucket (plain lex canonical order) and a larger one starts out already sized for the engine.
     pub fn finalize(self) -> PauliSum<W> {
         let zero = Complex64::new(0.0, 0.0);
         let mut entries: Vec<(PauliString<W>, Complex64)> =
@@ -183,9 +168,7 @@ mod tests {
 
     #[test]
     fn finalize_sorts_by_lex_key() {
-        // Insert keys out of order and confirm finalize emits them sorted by
-        // (x, z) lex. Use Z(0), X(0), X(1) — sorted: Z(0)=(0,1), X(0)=(1,0),
-        // X(1)=(2,0) (lex on x first, then z).
+        // Insert keys out of order and confirm finalize emits them sorted by (x, z) lex: Z(0)=(0,1), X(0)=(1,0), X(1)=(2,0).
         let mut acc = BuildAccumulator::<1>::new(4);
         acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(3.0, 0.0));
         acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
@@ -233,8 +216,7 @@ mod tests {
 
     #[test]
     fn finalize_gives_one_bucket_at_or_below_1024_terms() {
-        // 1024 distinct single-qubit-word keys on 11 qubits (2^11 = 2048 ≥ 1024
-        // keys exist; use x-patterns 1..=1024).
+        // 1024 distinct single-qubit-word keys on 11 qubits (x-patterns 1..=1024).
         let mut acc = BuildAccumulator::<1>::new(11);
         for k in 1..=1024u64 {
             acc.add_term(

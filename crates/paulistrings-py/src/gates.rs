@@ -6,12 +6,8 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-/// Read an `n x n` complex matrix from a NumPy array, checking shape and
-/// unitarity.
-///
-/// The unitarity check is not pedantry: a non-unitary matrix silently produces a
-/// non-physical channel whose Pauli-transfer matrix is not norm-preserving, and
-/// the error would only show up as drifting coefficients many layers later.
+/// Read an `n x n` complex matrix from a NumPy array, checking shape and unitarity.
+/// The unitarity check is not pedantry: a non-unitary matrix silently produces a non-physical channel, and the error would only show up as drifting coefficients many layers later.
 fn read_unitary<const N: usize>(
     a: PyReadonlyArray2<'_, Complex64>,
     what: &str,
@@ -64,11 +60,7 @@ fn s(qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::S { qubit })
 }
 
-/// `S^dagger = diag(1, -i)`, the phase gate's inverse.
-///
-/// The one named single-qubit Clifford here that is not self-adjoint, so this is
-/// what `Circuit.adjoint()` emits in place of an `s`. Hand-derivable action:
-/// `S^dagger X S = -Y` and `S^dagger Y S = X` (against `S X S^dagger = +Y`).
+/// `S^dagger = diag(1, -i)`, the phase gate's inverse. The one named single-qubit Clifford here that is not self-adjoint, so this is what `Circuit.adjoint()` emits in place of an `s`.
 #[pyfunction]
 fn sdg(qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::Sdg { qubit })
@@ -89,12 +81,7 @@ fn z(qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::Z { qubit })
 }
 
-/// Reject a two-qubit gate whose two indices coincide.
-///
-/// Such a "gate" is not a typo the core can absorb: the prepared local
-/// Pauli-transfer matrix would be derived over a one-qubit support declared as
-/// two, so the result is silently wrong rather than merely odd. `unitary_2q` has
-/// always refused it; the named Clifford pairs now do too.
+/// Reject a two-qubit gate whose two indices coincide: the prepared local PTM would be derived over a one-qubit support declared as two, silently wrong rather than merely odd.
 fn distinct_pair(name: &str, q0: u32, q1: u32) -> PyResult<()> {
     if q0 == q1 {
         return Err(PyValueError::new_err(format!(
@@ -152,12 +139,7 @@ fn ry(theta: f64, qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::Ry { theta, qubit })
 }
 
-/// Shared by `gates.pauli_rotation` and `Circuit.pauli_rotation`.
-///
-/// The compact form: `pauli[k]` is the Pauli acting on `qubits[k]`, identity
-/// everywhere else. Full-length `IXYZ` strings are deliberately not accepted —
-/// the suite circuits address 127-qubit lattices, where a full-length string is
-/// unreadable and a miscount is silent.
+/// Shared by `gates.pauli_rotation` and `Circuit.pauli_rotation`. The compact form: `pauli[k]` is the Pauli acting on `qubits[k]`, identity everywhere else — full-length `IXYZ` strings are deliberately not accepted (unreadable at 127+ qubits, and a miscount would be silent).
 pub(crate) fn pauli_rotation_spec(
     pauli: &str,
     qubits: &[u32],
@@ -178,9 +160,7 @@ pub(crate) fn pauli_rotation_spec(
     }
     let mut paulis = Vec::with_capacity(qubits.len());
     for (ch, &qubit) in pauli.chars().zip(qubits.iter()) {
-        // 'I' is rejected along with everything else: an identity position is
-        // expressed by leaving the qubit out, so allowing it would give two
-        // spellings of the same channel.
+        // 'I' is rejected: an identity position is expressed by leaving the qubit out, so allowing it would give two spellings of the same channel.
         let axis = match ch {
             'X' => Axis::X,
             'Y' => Axis::Y,
@@ -194,9 +174,7 @@ pub(crate) fn pauli_rotation_spec(
         };
         paulis.push((qubit, axis));
     }
-    // Quadratic, but the generator is a handful of qubits and this runs once per
-    // circuit push, never per term. A repeated index would silently halve the
-    // generator's weight (the two bit-plane writes would collide).
+    // Quadratic, but the generator is a handful of qubits and this runs once per circuit push, never per term. A repeated index would silently halve the generator's weight.
     for i in 0..paulis.len() {
         for j in (i + 1)..paulis.len() {
             if paulis[i].0 == paulis[j].0 {
@@ -212,17 +190,9 @@ pub(crate) fn pauli_rotation_spec(
 
 /// A rotation `exp(-i·θ·P/2)` about a Pauli string of any weight.
 ///
-/// `P` is `pauli[0]` on `qubits[0]`, `pauli[1]` on `qubits[1]`, ..., identity
-/// elsewhere. `pauli_rotation("X", [q], theta)` is `rx(theta, q)`;
-/// `pauli_rotation("ZZ", [i, j], -pi/2)` is the kicked-Ising Clifford-point bond.
-///
-/// The argument order is `(what, where, how much)`, which diverges from
-/// `rz(theta, qubit)` on purpose: for a multi-qubit generator it reads correctly,
-/// and putting the two string-ish arguments first makes an accidental
-/// transposition a `TypeError` instead of a silent angle/qubit swap.
-///
-/// Qubit indices are checked against the circuit width when the channel is
-/// appended, not here — a factory-made `Channel` is width-agnostic by design.
+/// `P` is `pauli[0]` on `qubits[0]`, `pauli[1]` on `qubits[1]`, ..., identity elsewhere. `pauli_rotation("X", [q], theta)` is `rx(theta, q)`; `pauli_rotation("ZZ", [i, j], -pi/2)` is the kicked-Ising Clifford-point bond.
+/// Argument order is `(what, where, how much)`, diverging from `rz(theta, qubit)` on purpose: it reads correctly for a multi-qubit generator, and makes an accidental transposition a `TypeError` instead of a silent angle/qubit swap.
+/// Qubit indices are checked against the circuit width when appended, not here — a factory-made `Channel` is width-agnostic by design.
 #[pyfunction]
 fn pauli_rotation(pauli: &str, qubits: Vec<u32>, theta: f64) -> PyResult<PyChannel> {
     Ok(PyChannel::new(pauli_rotation_spec(pauli, &qubits, theta)?))

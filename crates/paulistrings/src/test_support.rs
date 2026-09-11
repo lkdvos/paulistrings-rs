@@ -1,15 +1,7 @@
 //! Shared fixtures for the crate's own tests, benches and examples.
 //!
-//! Compiled only under `cfg(test)` or the `test-utils` feature, which the
-//! crate turns on for its own dev builds via a self-dev-dependency. Nothing
-//! here is part of the public API — the module is `#[doc(hidden)]` and may
-//! change without notice.
-//!
-//! It exists so the differential oracle and the random-sum fixtures have one
-//! canonical implementation instead of a copy per test file. In particular
-//! [`naive_apply_layer`] is the **oracle** the bucketed engine is tested
-//! against, and deliberately shares no code with the thing it checks — one
-//! `Channel::apply` call per input term, a hashmap accumulation, and a sort.
+//! Compiled only under `cfg(test)` or the `test-utils` feature (the crate's self-dev-dependency); `#[doc(hidden)]`, not public API.
+//! [`naive_apply_layer`] is the oracle the bucketed engine is tested against — one `Channel::apply` call per term, a hashmap accumulation, and a sort — and shares no code with the thing it checks.
 
 use hashbrown::HashMap;
 use num_complex::Complex64;
@@ -26,20 +18,9 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Apply one channel layer the obvious way, as a differential oracle.
 ///
-/// For every input term, call [`Channel::apply`] (or
-/// [`Channel::apply_adjoint`] when `adjoint`) into a `max_fanout`-sized
-/// [`OutputBuffer`], accumulate the emitted rows into a hashmap keyed by
-/// `(x, z)`, then filter the *summed* coefficients through
-/// [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, and rebuild
-/// a [`PauliSum`] under the input's own hash.
-///
-/// Deliberately naive: no bucketing, no coset structure, no parallelism, and
-/// no shared code with `engine::bucketed` beyond the `Channel` trait itself.
-/// Equal keys are summed in hashmap iteration order, which is unspecified, so
-/// results agree with the engine only to floating-point tolerance — compare
-/// with [`assert_terms_close`], never bitwise. Dropping exact zeros matches the
-/// engine's own zero-drop, and near-zero terms present on one side only are
-/// tolerated by `assert_terms_close`.
+/// For every input term: [`Channel::apply`] (or `apply_adjoint` when `adjoint`) into a `max_fanout`-sized [`OutputBuffer`], accumulate into a hashmap keyed by `(x, z)`, filter the summed coefficients through [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, rebuild a [`PauliSum`].
+/// Deliberately naive: no bucketing, no coset structure, no parallelism, no code shared with `engine::bucketed` beyond the `Channel` trait itself.
+/// Hashmap summation order is unspecified, so compare with [`assert_terms_close`], never bitwise.
 pub fn naive_apply_layer<const W: usize>(
     input: &PauliSum<W>,
     ch: &dyn Channel<W>,
@@ -129,12 +110,8 @@ pub fn word_mask(num_qubits: usize, word: usize) -> u64 {
     }
 }
 
-/// `n` random dense terms on `num_qubits` qubits, deduplicated by
-/// [`BuildAccumulator`] — so the realized length can be below `n` at small
-/// qubit counts.
-///
-/// The RNG draw order is `(x[0], z[0], x[1], z[1], …, re, im)` per term; keep
-/// it stable, because every fixture seed in the test suite encodes it.
+/// `n` random dense terms on `num_qubits` qubits, deduplicated by [`BuildAccumulator`] (realized length can be below `n` at small qubit counts).
+/// Draw order per term is `(x[0], z[0], x[1], z[1], …, re, im)` — keep it stable, every fixture seed in the suite encodes it.
 pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
@@ -155,13 +132,8 @@ pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> Pauli
     acc.finalize()
 }
 
-/// As [`rand_sum`], but coefficients are **real** — one draw per term instead
-/// of two.
-///
-/// A separate generator rather than a flag because the draw order differs
-/// (`…, re` versus `…, re, im`), so the two produce completely different
-/// streams from the same seed. Fixtures seeded through this one are pinned to
-/// it; do not "unify" the two.
+/// As [`rand_sum`], but coefficients are real — one draw per term instead of two.
+/// A separate function rather than a flag: the draw order differs (`…, re` vs `…, re, im`), so the two streams disagree from the same seed. Do not unify them.
 pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
@@ -181,13 +153,8 @@ pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     acc.finalize()
 }
 
-/// A dense random key with **no** masking: all `W` `x` words first, then all
-/// `W` `z` words.
-///
-/// Valid only when `num_qubits` is a multiple of 64 — every bit it sets must be
-/// a live qubit or `BuildAccumulator` will reject the term. The draw order is
-/// word-major (`x[0..W]` then `z[0..W]`), *not* the per-word interleave
-/// [`rand_sum`] uses, so the two disagree from `W = 2` up.
+/// A dense random key with no masking: all `W` `x` words first, then all `W` `z` words.
+/// Valid only when `num_qubits` is a multiple of 64 (every bit set must be a live qubit or `BuildAccumulator` rejects the term); word-major draw order disagrees with [`rand_sum`]'s per-word interleave from `W = 2` up.
 pub fn rand_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
     PauliString::<W> {
         x: rng.next_array::<W>(),
@@ -195,10 +162,7 @@ pub fn rand_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
     }
 }
 
-/// `n` dense random terms built from [`rand_pauli`] — the benchmark input
-/// recipe, whose seeds are pinned by the committed criterion baselines.
-///
-/// Distinct stream from [`rand_sum`]; see [`rand_pauli`] for why.
+/// `n` dense random terms built from [`rand_pauli`] — the benchmark input recipe, seeds pinned by the committed criterion baselines. Distinct stream from [`rand_sum`]; see [`rand_pauli`] for why.
 pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
@@ -213,13 +177,8 @@ pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64)
 
 /// A Pauli string of Hamming weight `weight` over `num_qubits` qubits.
 ///
-/// This is the *realistic* occupancy regime: physical Hamiltonians are
-/// low-weight, and `WeightCutoff` truncation keeps them that way. The dense
-/// [`rand_pauli`] is the opposite extreme. Any bucketing scheme derived from
-/// key bits behaves very differently on the two, so both are benched.
-///
-/// Index-bounded by construction (`q` is drawn `mod num_qubits`), so — unlike
-/// [`rand_pauli`] — it needs no masking pass and is safe at any qubit count.
+/// The realistic occupancy regime (physical Hamiltonians are low-weight); [`rand_pauli`] is the dense opposite extreme, and both get benched since bucketing behaves very differently on the two.
+/// Index-bounded by construction (`q` drawn `mod num_qubits`), so unlike [`rand_pauli`] it needs no masking pass.
 pub fn low_weight_pauli<const W: usize>(
     rng: &mut Xs64,
     num_qubits: usize,
@@ -246,9 +205,7 @@ pub fn low_weight_pauli<const W: usize>(
     p
 }
 
-/// As [`rand_sum_unmasked`], but with low-weight keys from
-/// [`low_weight_pauli`]. Collisions are far more likely here, so the realized
-/// length can be noticeably below `n`.
+/// As [`rand_sum_unmasked`], but with low-weight keys from [`low_weight_pauli`]; collisions are far more likely, so realized length can be noticeably below `n`.
 pub fn low_weight_sum<const W: usize>(
     n: usize,
     num_qubits: usize,
@@ -266,13 +223,8 @@ pub fn low_weight_sum<const W: usize>(
     acc.finalize()
 }
 
-/// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any
-/// cut through the sum lands inside a tie group spanning a quarter of it.
-///
-/// Not a contrived case: a symmetric Hamiltonian on a periodic lattice
-/// produces many terms related by lattice symmetry with *exactly* equal
-/// coefficients, which is why the 2D Ising example hits it — and why `TopN`
-/// has a tie rule at all (ARCHITECTURE.md §Truncation).
+/// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any cut through the sum lands inside a tie group spanning a quarter of it.
+/// Not contrived: lattice-symmetric Hamiltonians produce exactly-equal-coefficient terms this way, which is why `TopN` has a tie rule at all (ARCHITECTURE.md §Truncation).
 pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let base = rand_sum::<W>(n, num_qubits, seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
@@ -287,11 +239,7 @@ pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     acc.finalize()
 }
 
-/// [`tie_heavy_sum`] over [`rand_pauli`] keys instead of [`rand_sum`] ones —
-/// the benchmark variant, whose seeds are pinned by the criterion baselines.
-///
-/// Same tie structure, different key stream (and no coefficient draws at all,
-/// so it is not merely a re-magnituded [`rand_sum_unmasked`]).
+/// [`tie_heavy_sum`] over [`rand_pauli`] keys instead of [`rand_sum`] ones — the benchmark variant, seeds pinned by the criterion baselines. Same tie structure, different key stream, no coefficient draws.
 pub fn tie_heavy_sum_unmasked<const W: usize>(
     n: usize,
     num_qubits: usize,
@@ -308,10 +256,7 @@ pub fn tie_heavy_sum_unmasked<const W: usize>(
 }
 
 /// Output-buffer columns plus a zeroed cursor, sized for `n` rows.
-///
-/// Returned as a tuple rather than an [`OutputBuffer`] because the buffer
-/// borrows its columns: the caller has to own them, then build the borrow in a
-/// narrower scope.
+/// A tuple, not an [`OutputBuffer`], because the buffer borrows its columns — the caller owns them, then builds the borrow in a narrower scope.
 #[allow(clippy::type_complexity)]
 pub fn alloc_bufs<const W: usize>(
     n: usize,
@@ -329,12 +274,8 @@ pub fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
     (a - b).norm() <= tol
 }
 
-/// One channel application, normalized the way the merge phase would leave it:
-/// exact-ish zeros dropped and rows sorted by key.
-///
-/// Use this to compare two channels' *mathematical* action. When the emission
-/// order or the presence of a zero row is itself the thing under test, use
-/// [`raw_outputs`] instead.
+/// One channel application, normalized the way the merge phase would leave it: exact-ish zeros dropped, rows sorted by key.
+/// Use this to compare two channels' mathematical action; when emission order or a zero row is itself under test, use [`raw_outputs`] instead.
 pub fn outputs<const W: usize, C: Channel<W> + ?Sized>(
     ch: &C,
     adjoint: bool,
@@ -378,11 +319,7 @@ pub fn raw_outputs<const W: usize, C: Channel<W> + ?Sized>(
 }
 
 /// `(x, z, coeff)` triples sorted by the `(x, z)` key.
-///
-/// Keys are globally unique (the `PauliSum` invariant forbids duplicates), so
-/// this is a canonical, storage-order-independent view: two sums with the same
-/// terms produce the same triples regardless of which order their backing
-/// engine happened to store them in.
+/// Keys are globally unique (the `PauliSum` invariant forbids duplicates), so this is a canonical, storage-order-independent view.
 pub fn canonical_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
     let mut v: Vec<([u64; W], [u64; W], Complex64)> =
         s.iter().map(|(x, z, c)| (*x, *z, c)).collect();
@@ -391,10 +328,7 @@ pub fn canonical_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64
 }
 
 /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
-///
-/// Only appropriate between two computations that sum equal keys in the same
-/// order. Anything compared against [`naive_apply_layer`] wants
-/// [`assert_terms_close`] instead.
+/// Only appropriate between two computations that sum equal keys in the same order; anything compared against [`naive_apply_layer`] wants [`assert_terms_close`] instead.
 pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: term count");
     let got = canonical_triples(got);
@@ -409,10 +343,7 @@ pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, 
     }
 }
 
-/// Same keys; coefficients within `tol`, because two implementations can sum
-/// duplicate keys in different orders and floating-point addition is not
-/// associative. This is the correctness bar per the crate's determinism
-/// policy.
+/// Same keys; coefficients within `tol`, since two implementations can sum duplicate keys in different orders and floating-point addition is not associative — the correctness bar per the crate's determinism policy.
 pub fn assert_terms_close<const W: usize>(
     got: &PauliSum<W>,
     want: &PauliSum<W>,
@@ -436,14 +367,8 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
-/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for
-/// [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
-///
-/// The canonical **sparse but wide** two-qubit fixture: its delta set spans
-/// more than one bucket bit, yet its PTM is far from dense (steady-state
-/// fanout 3.65 against a dense PTM's 14.94), so it exercises multi-delta
-/// behaviour without the all-sixteen-entries cost of
-/// [`haar_su4_matrix`].
+/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
+/// The canonical sparse-but-wide two-qubit fixture: its delta set spans more than one bucket bit, yet its PTM is far from dense (steady-state fanout 3.65 vs. a dense PTM's 14.94), exercising multi-delta behaviour without [`haar_su4_matrix`]'s all-sixteen-entries cost.
 pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
@@ -459,21 +384,9 @@ pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
 
 /// One draw of Haar-random SU(4), as a 4×4 unitary in the computational basis.
 ///
-/// The entries come from `examples/common/circuits.py::haar_su4` (Mezzadri
-/// phase-fixed QR of a complex Ginibre matrix, then divided by `det^(1/4)`)
-/// under `numpy.random.default_rng(0xC0FFEE)`, transcribed via Python `repr`
-/// (shortest round-tripping `f64` literals) — i.e. one draw of exactly the
-/// distribution `benchmarks/python/bench_jl_performance.py::su4_gates` and
-/// benchmark E's `random_su4_staircase` sample. Unitary to 2.5e-16;
-/// `GeneralUnitary2Q::from_matrix` does not check, and a non-unitary matrix
-/// would silently give a non-physical PTM.
+/// Transcribed from `examples/common/circuits.py::haar_su4` under `numpy.random.default_rng(0xC0FFEE)` — the same distribution `bench_jl_performance.py::su4_gates` and benchmark E's `random_su4_staircase` draw from. Unitary to 2.5e-16; `GeneralUnitary2Q::from_matrix` does not check.
 ///
-/// Shared because it is the canonical **dense-PTM** fixture: a generic SU(4)
-/// gives all sixteen local delta entries a nonzero amplitude, which is what
-/// makes the sort dominate the layer and what
-/// `research/notes/2026-09-01-bucket-cliff.md` is about. `sqrt(SWAP)` and the
-/// Cliffords are not substitutes — their PTMs are sparse (steady-state fanout
-/// 3.65 and 1.0 against a dense PTM's 14.94).
+/// The canonical dense-PTM fixture: a generic SU(4) gives all sixteen local delta entries a nonzero amplitude, which is what makes the sort dominate the layer (research/FINDINGS.md). `sqrt(SWAP)` and the Cliffords are not substitutes — their PTMs are sparse.
 pub fn haar_su4_matrix() -> [[Complex64; 4]; 4] {
     [
         [
@@ -505,15 +418,8 @@ pub fn haar_su4_matrix() -> [[Complex64; 4]; 4] {
 
 /// GF(2) rank of a set of bucket indices, by Gaussian elimination.
 ///
-/// One pivot slot per bit position, so each vector is either absorbed by an
-/// existing pivot or becomes a new one. (The naive "reduce against a `Vec` of
-/// vectors" version overcounts unless that `Vec` is kept *reduced* — the same
-/// subtlety `engine::coset::Gf2Span::new` handles by back-substituting.)
-///
-/// Used to reason about the **coset dimension** the engine gets for a layer:
-/// `Gf2Span::r()` is exactly this rank applied to the prepared channel's
-/// `bucket_deltas()`, and it is the quantity the dense-PTM sort's cost turns
-/// on (`research/notes/2026-09-01-bucket-cliff.md`).
+/// One pivot slot per bit position, so each vector is either absorbed by an existing pivot or becomes a new one — the same reduced-basis subtlety `engine::coset::Gf2Span::new` handles by back-substituting.
+/// `Gf2Span::r()` is exactly this rank applied to a prepared channel's `bucket_deltas()`, the coset dimension the engine gets for a layer (research/FINDINGS.md).
 pub fn gf2_rank(vs: &[u32]) -> usize {
     let mut pivot = [0u32; 32];
     let mut r = 0usize;
@@ -534,13 +440,8 @@ pub fn gf2_rank(vs: &[u32]) -> usize {
 
 /// Rank of `h` restricted to the key-delta space of a support.
 ///
-/// A channel supported on `qubits` can only change those qubits' `x` and `z`
-/// bits, so its key-delta set lies in `span{X_q, Z_q : q ∈ qubits}` — dimension
-/// `2·|qubits|`. Its *bucket*-delta span is the image of that space under `h`,
-/// and this returns that image's dimension. Full rank (`2·|qubits|`) means `h`
-/// separates every local delta; anything less means two distinct local deltas
-/// share one bucket delta, which is the rank deficiency the note above
-/// diagnoses.
+/// A channel on `qubits` can only change those qubits' `x`/`z` bits, so its key-delta set lies in `span{X_q, Z_q : q ∈ qubits}` (dimension `2·|qubits|`); this returns the dimension of that space's image under `h`.
+/// Full rank means `h` separates every local delta; anything less means two distinct local deltas share one bucket delta.
 pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits: &[u32]) -> usize {
     let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
     for &q in qubits {
@@ -550,16 +451,10 @@ pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits:
     gf2_rank(&imgs)
 }
 
-/// The engine's differential channel net at `W = 1`: every built-in channel
-/// class, on an 8-qubit key space.
+/// The engine's differential channel net at `W = 1`: every built-in channel class, on an 8-qubit key space.
 ///
-/// One list, shared by `engine::bucketed`'s differential net and the
-/// partitioned engine's, so the two cover exactly the same channels and a
-/// channel added here is exercised by both. Supports are chosen to spread over
-/// the key space (`h` at 3, two-qubit gates at 1 and 5, noise at 2) and the
-/// list ends with the three shapes that are structurally distinct for the
-/// gather: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and
-/// a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
+/// Shared by `engine::bucketed`'s differential net and the partitioned engine's, so both exercise exactly the same channels.
+/// Ends with three structurally distinct gather shapes: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
 pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::identity::IdentityChannel;
@@ -614,8 +509,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
             )),
         ),
         (
-            // General unitaries: a non-Clifford T gate (fanout 2) and a
-            // dense 2Q unitary (fanout up to 16), both as local PTMs.
+            // A non-Clifford T gate (fanout 2), as a local PTM.
             "t_gate",
             Box::new(GeneralUnitary1Q::from_matrix(
                 2,
@@ -634,9 +528,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
             Box::new(GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix())),
         ),
         (
-            // A *dense* SU(4): every PTM entry nonzero, so all 16 bucket
-            // deltas are realized (fanout ~15) — the shape the per-run sort
-            // kernel is selected on (see `merge::sort_rows_radix_with_scratch`).
+            // A dense SU(4): every PTM entry nonzero (fanout ~15) — the shape the per-run sort kernel is selected on (`merge::sort_rows_radix_with_scratch`).
             "haar_su4",
             Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
         ),
@@ -657,12 +549,8 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
     ]
 }
 
-/// The engine's differential channel net at `W = 2`: the other occupancy
-/// regime — 128 qubits, wide keys, supports straddling the 64-bit word
-/// boundary.
-///
-/// Shared by `engine::bucketed`'s differential net and the partitioned
-/// engine's, as [`differential_channels_w1`] is.
+/// The engine's differential channel net at `W = 2`: the other occupancy regime — 128 qubits, wide keys, supports straddling the 64-bit word boundary.
+/// Shared by `engine::bucketed`'s differential net and the partitioned engine's, as [`differential_channels_w1`] is.
 pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::noise::AmplitudeDamping;
@@ -696,8 +584,7 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
                 0.33,
             )),
         ),
-        // Dense SU(4), support straddling the word boundary — the dense-PTM
-        // run shape at `W = 2`.
+        // Dense SU(4), support straddling the word boundary — the dense-PTM run shape at `W = 2`.
         (
             "haar_su4_cross_word",
             Box::new(GeneralUnitary2Q::from_matrix(60, 70, haar_su4_matrix())),
@@ -707,18 +594,11 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
 
 // ---- partitioned-engine fixtures -------------------------------------------
 //
-// The partitioned nets (`tests/propagate_partitioned.rs`,
-// `tests/propagate_distributed.rs`, `tests/mpi_ranks.rs`,
-// `tests/partitioned_*.rs`, `tests/phase_timing.rs`) all need the same three
-// things: a policy with no layer pass, a `ZZ` rotation, and a placement with no
-// placement. They live here so a change to any of them is one edit.
+// Shared by the partitioned/distributed/MPI test nets, which all need the same three things: a policy with no layer pass, a `ZZ` rotation, and a placement with no placement.
 
 /// Keep every term, with no layer finalization at all.
 ///
-/// [`TruncationPolicy::finalizes_layer`]'s default is the conservative `true`,
-/// which [`PartitionedTruncation`]'s default body rejects — a policy with no
-/// layer pass has to say so, since the trait cannot know that skipping a
-/// collective is safe.
+/// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which [`PartitionedTruncation`]'s default body rejects — a policy with no layer pass has to say so explicitly.
 ///
 /// [`PartitionedTruncation`]: crate::PartitionedTruncation
 pub struct KeepAll;
@@ -731,8 +611,7 @@ impl<const W: usize> TruncationPolicy<W> for KeepAll {
 
 impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
 
-/// A weight-2 `ZZ` rotation — the TFIM bond term, and the smallest layer whose
-/// generator can cross a partition boundary.
+/// A weight-2 `ZZ` rotation — the TFIM bond term, the smallest layer whose generator can cross a partition boundary.
 pub fn zz_rotation<const W: usize>(
     q0: u32,
     q1: u32,
@@ -748,11 +627,8 @@ pub fn zz_rotation<const W: usize>(
     crate::channel::rotation::PauliRotation::new(gen, theta)
 }
 
-/// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that
-/// many transverse-field `X` rotations, all at angle `2 · theta`.
-///
-/// `2 · num_qubits` layers, enough that the term count — and with it the bucket
-/// count the group agrees on every layer — grows across the run.
+/// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that many transverse-field `X` rotations, all at angle `2 · theta`.
+/// `2 · num_qubits` layers, enough that the term count grows across the run.
 pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::Circuit<W> {
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     for q in 0..num_qubits {
@@ -768,12 +644,8 @@ pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::
     circuit
 }
 
-/// A partitioned placement with no placement: `partitions` unpinned pools of
-/// `threads` workers each, drawing partition rows from `row_seed`.
-///
-/// Every partitioned test uses this rather than `Placement::Auto`, so the suite
-/// runs on a one-node box or a `taskset`ed CI container; placement itself is
-/// covered by `engine::partitioned::topology`'s own tests.
+/// A partitioned placement with no placement: `partitions` unpinned pools of `threads` workers each, drawing partition rows from `row_seed`.
+/// Every partitioned test uses this rather than `Placement::Auto`, so the suite runs on a one-node box or a `taskset`ed CI container.
 pub fn unpinned_partitions(
     partitions: usize,
     threads: usize,
@@ -789,19 +661,9 @@ pub fn unpinned_partitions(
     }
 }
 
-/// The 127-qubit heavy-hex coupling map (IBM Eagle r3), 144 undirected edges
-/// as `(lo, hi)` pairs in sorted order.
+/// The 127-qubit heavy-hex coupling map (IBM Eagle r3), 144 undirected edges as `(lo, hi)` pairs in sorted order.
 ///
-/// A verbatim copy of the checked-in, provenance-tagged edge list
-/// `examples/data/heavy_hex_127.edges` (generated from
-/// `qiskit-ibm-runtime`'s `FakeSherbrooke().coupling_map` by
-/// `examples/data/generate_heavy_hex.py`; qubit indices are the device's own
-/// numbering `0..126`). It lives here as a constant so the Rust probes can
-/// build the presentation's kicked-Ising workload with no file I/O and no
-/// path resolution (`presentation/bench/src/workload.rs` reads the same list
-/// from disk instead). `heavy_hex_127_edges_match_the_source_lattice` pins the
-/// transcription against the invariants that file's header records.
-///
+/// A verbatim copy of `examples/data/heavy_hex_127.edges`, kept here as a constant so Rust probes need no file I/O; `heavy_hex_127_edges_match_the_source_lattice` pins the transcription.
 /// Degree histogram: 2 qubits of degree 1, 89 of degree 2, 36 of degree 3.
 #[rustfmt::skip]
 pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
@@ -840,9 +702,7 @@ pub fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
 mod tests {
     use super::HEAVY_HEX_127_EDGES;
 
-    /// Pins the transcribed copy against the invariants the source file's own
-    /// header records: 144 undirected edges over qubits `0..126`, sorted and
-    /// unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
+    /// Pins the transcribed copy: 144 undirected edges over qubits `0..126`, sorted and unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
     #[test]
     fn heavy_hex_127_edges_match_the_source_lattice() {
         assert_eq!(HEAVY_HEX_127_EDGES.len(), 144);

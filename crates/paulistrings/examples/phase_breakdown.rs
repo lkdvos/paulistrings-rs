@@ -1,233 +1,13 @@
 //! Per-phase timing / memory probe for the bucketed propagation engine.
 //!
-//! Drives [`propagate_with_scratch_and_options`] over a small menu of single-channel
-//! circuits (plus a multi-channel Trotter step) at a matrix of thread
-//! counts, and prints the [`PhaseStats`] breakdown the `phase-timing`
-//! feature exposes: per-layer wall-clock phases, per-coset worker busy
-//! time, and derived throughput / overhead / memory figures.
-//!
-//! This binary only builds with `--features phase-timing` (see the
-//! `required-features` entry in `Cargo.toml`); without the feature,
-//! [`LayerScratch::take_stats`] does not exist, so there would be nothing
-//! to read.
-//!
-//! Run with:
-//! ```bash
-//! cargo run --release --features phase-timing --example phase_breakdown -- \
-//!     [--n 1000000] [--qubits 128] [--threads 1,8,16,32] \
-//!     [--layers rotation_zz,cnot,gu2q,su4,depolarizing,trotter] [--reps 8] \
-//!     [--seed 0xC0FFEE] [--truncation keep] [--format table|json|tsv] \
-//!     [--partitions 1,2] [--partition-cpus '0-7,16-23;8-15,24-31'] \
-//!     [--bind-memory 1] [--partition-seed <u64>] \
-//!     [--partition-rows random|cut] [--initial random|z0] [--mpi]
-//! ```
-//!
-//! `--qubits` picks the const-generic width `W` by `ceil(qubits / 64)`;
-//! this probe only supports `W ∈ {1, 2}` (qubits ≤ 128), which is the same
-//! set the crate's Python bindings restrict to for the smallest two
-//! widths. Wider requests fail with a clear message rather than silently
-//! truncating.
-//!
-//! Every layer except `trotter` is a single-channel circuit repeated
-//! `--reps` times; `trotter` is a fixed 64-channel TFIM Trotter step (32
-//! `ZZ` bond rotations + 32 transverse-field `X` rotations, copied from
-//! `benches/pauli_ops.rs::bench_propagate_trotter`) and ignores `--reps`.
-//! It also ignores `--n` above [`TROTTER_MAX_N`]: 64 *distinct* generators
-//! under `AlwaysKeep` (no truncation) grow combinatorially rather than
-//! closing to a bounded key set, and this was measured driving RSS into the
-//! tens of GB well before `--n`'s default of 1,000,000 — see
-//! `TROTTER_MAX_N`'s doc comment for the measurement. A capped cell prints
-//! a note to stderr.
-//!
-//! # The Trotter-step workloads
-//!
-//! `tfim_step` and `heavyhex_step` are the partitioned engine's **primary**
-//! workload: rotation-only kicked-Ising circuits, one channel per gate, whose
-//! two-qubit generators live on a fixed qubit graph — which is what makes the
-//! partition rows a graph cut rather than a free draw (`ARCHITECTURE.md
-//! §Partitioning`, `research/plans/2026-09-09-partition-row-tuning.md`). Both
-//! take `--reps` as the number of **Trotter steps**, and both use the
-//! presentation workload's angles: `theta_zz = -pi/2`, `theta_h = 5·pi/16`
-//! (the notes give no chain-specific recipe, so the chain reuses the
-//! heavy-hex one and the two sit on the same physical point).
-//!
-//! - `tfim_step` — a 1D **open chain** of `--qubits` qubits. A step is the
-//!   `ZZ(i, i+1)` layer then the `X(q)` layer, so `2·qubits - 1` channels.
-//! - `heavyhex_step` — the fixed **127-qubit heavy-hex** lattice
-//!   (`test_support::HEAVY_HEX_127_EDGES`, i.e. IBM Eagle r3). A step is the
-//!   `X` layer then the `ZZ` layer in hardware-colored order, so 271
-//!   channels. `--qubits` must be at least 127; anything above is a spectator.
-//!
-//! Unlike every other layer they default to `--initial z0`: a single-term
-//! `Z` observable on qubit `--qubits / 2`, whose term count then **grows** step
-//! by step. That growth, not a fixed `--n`, is the capacity-relevant dynamics,
-//! and it is also the only input under which a partition imbalance means
-//! anything — a dense random sum is balanced under any row by construction.
-//! `--initial random` puts them back on the shared `rand_sum` input.
-//!
-//! Being growth workloads they need a truncation policy or they do not
-//! converge: a step is a fresh set of distinct generators, so under
-//! `--truncation keep` the term count rises without bound (the probe warns).
-//! `--truncation coeff:1.220703125e-4` is `2^-13`, the presentation's working
-//! point (~1.16e6 peak terms on the heavy-hex circuit); `coeff:3.90625e-3`
-//! (`2^-8`) is the quick, few-thousand-term version.
-//!
-//! `--initial random` on these two layers is a different measurement, not a
-//! bigger one: a `theta_zz = -pi/2` rotation multiplies every anticommuting
-//! term by `cos(pi/4)`, so a *dense* input decays uniformly and a run of any
-//! depth under a coefficient threshold truncates it to nothing (a 254-channel
-//! chain cell reports `n = 0`). Use it with `--truncation keep` and a small
-//! `--reps`, or read the `z0` cells.
-//!
-//! `--truncation` selects the [`TruncationPolicy`] every cell runs under,
-//! statically (one monomorphization per spec, so `keep_term` inlines into the
-//! merge exactly as it does in a real caller — a `dyn` policy would change the
-//! thing being measured):
-//!
-//! - `keep` (default) — `AlwaysKeep`, no filter and no finalize pass.
-//! - `coeff:<t>` — [`CoefficientThreshold`]`(t)`: a `keep_term` filter inside
-//!   the merge, and *no* `finalize_layer` work at all.
-//! - `topn:<N>` — [`TopN`]`(N)`: no `keep_term`, all the cost in
-//!   `finalize_layer` (three O(m) passes + a `select_nth_unstable`), which
-//!   lands in the probe's `finalize` row. `N` is absolute, so pick it *below*
-//!   the cell's steady-state term count — `TopN` returns immediately when
-//!   `len <= N` and would otherwise be measured as free. Pairing a `coeff:0.0`
-//!   run with a `topn:<N>` run at the same `--n` isolates the selection cost:
-//!   the former's `finalize` is zero by construction.
-//! - `atopn:<N>` — [`ApproxTopN`]`(N)`: the same shape of work as `topn`, but
-//!   an octave histogram and a threshold instead of a candidate array and a
-//!   selection, so `topn:<N>` versus `atopn:<N>` at one `--n` is the two
-//!   policies' `finalize` cost side by side *on the same binary*. Note the two
-//!   do not keep the same number of terms (`ApproxTopN` keeps `<= N`, short by
-//!   at most one octave's population), so the steady-state `m` differs a
-//!   little between the pair and the per-term figures are the ones to compare.
-//!
-//! Each `(layer, thread count)` cell runs the circuit twice inside a
-//! dedicated Rayon thread pool of that width: an untimed warm-up call
-//! (which, for the fanout-bounded channels, drives the input to its closed
-//! key set so the timed call measures steady-state cost, not first-layer
-//! growth), then the timed call whose input is the warm-up's output. Its
-//! `PhaseStats` are read via [`LayerScratch::take_stats`] and its
-//! `/proc/self/status` `VmRSS` / `VmHWM` are sampled right after.
-//!
-//! # Partitioned cells
-//!
-//! `--partitions <csv>` (default `1`) adds a partition axis to the matrix. A
-//! cell with `P > 1` runs the same circuit through
-//! [`PartitionedSum`] on a [`PartitionRuntime`] of `P` pinned pools instead of
-//! one Rayon pool: the sum is scattered once *outside* the timed region, the
-//! warm-up and the timed call are the same two calls as above, and the
-//! per-partition [`PartitionTrace`] and [`PhaseStats`] are drained after each.
-//!
-//! **`--threads` stays the TOTAL thread count**: each partition's pool gets
-//! `threads / P` workers (`PartitionRuntime::with_threads_per_partition`
-//! overrides the width the placement would derive, leaving the CPU sets
-//! alone), so `--threads 32 --partitions 1` and `--threads 32 --partitions 2`
-//! put the same number of workers on the machine. A `--threads` value not
-//! divisible by every `--partitions` value is an error, not a rounding.
-//!
-//! `P = 1` runs the *unpartitioned* path — today's `propagate_with_scratch_
-//! and_options`, byte for byte. `PartitionedSum` with one partition was
-//! measured byte-identical and equal in wall, and the driver's tests pin the
-//! identity, so the classic path is the only `P = 1` path here.
-//!
-//! Placement comes from `--partition-cpus`:
-//!
-//! - absent (default) — `Placement::Auto { max_partitions: Some(P) }`: one
-//!   partition per NUMA node in the affinity mask, rounded down to `P`.
-//! - `'<list>;<list>;...'` — `Placement::Explicit`, one Linux cpulist per
-//!   partition (`scripts/host-topology.sh`'s `PARTITION_CPUS` writes exactly
-//!   this string). The list count must equal every `P > 1` in `--partitions`.
-//! - `unpinned` — `Placement::Unpinned`: the shape of a partitioned run with
-//!   no pinning at all, for a laptop or a shared box.
-//!
-//! `--bind-memory 0` drops the per-partition `set_mempolicy` binding (pinning
-//! stays); `--partition-seed <u64>` fixes the partition rows instead of
-//! letting the driver derive them from the sum's hash seed.
-//!
-//! ## Choosing the partition rows
-//!
-//! `--partition-rows` decides the `log2(P)` GF(2) rows the split is named by.
-//! A generator `g` is local exactly when `R·g = 0`, so the rows decide how
-//! many layers pay an export and an exchange at all:
-//!
-//! - `random` (default) — [`PartitionRows::from_seed`], the draw the driver
-//!   makes on its own. Roughly half of a two-qubit generator's deltas cross at
-//!   `P = 2`, and *which* half is a property of the draw.
-//! - `cut` — `log2(P)` **z-only** rows labelling `P` contiguous qubit blocks
-//!   (see [`cut_rows`]). No x-bits means every single-qubit rotation is local;
-//!   a `ZZ(i, j)` is remote exactly when the edge `(i, j)` crosses the cut, so
-//!   a chain at `P = 2` has one remote layer per step and the heavy-hex
-//!   lattice four. The blocks come from an exact DP ([`cut_blocks`]) over the
-//!   layer's own graph — a chain for `tfim_step`, the heavy-hex map for
-//!   `heavyhex_step`, and no edges at all (hence an even index split) for
-//!   every other layer — minimising crossed edges subject to ±25% block-size
-//!   balance. The blocks and the crossing count go to stderr.
-//!
-//! `cut` rows are **low weight** by construction, which makes them far
-//! likelier than a random draw to lie inside the span of `H`'s own active
-//! rows — dependence costs load balance exactly where a cut row is already at
-//! risk. They are therefore checked with
-//! [`PartitionRows::is_independent_of`] against the first
-//! [`INDEPENDENCE_PROBE_BITS`] rows `H` will grow into (all of `H`'s rows are
-//! drawn from the seed up front, so the look-ahead is exact), and the hash is
-//! re-seeded until they pass. That moves the coset dimension as well, so the
-//! cell says so on stderr and its row reports the seed it ended up with.
-//!
-//! The rows are built from the layer, the qubit count, the partition count and
-//! the seed alone, by the one function [`choose_partition_rows`], so an `--mpi`
-//! run derives identical rows on every rank with nothing agreed at run time.
-//! Every partitioned cell also reports what its rows cost the circuit —
-//! `rows_remote_gens` and `rows_remote_weight` in the sidecar — on the same
-//! scale for all three policies.
-//!
-//! # Distributed cells (`--mpi`, needs the `mpi` feature)
-//!
-//! `--mpi` swaps the in-process partition axis for ranks: every process holds
-//! **one** partition (`D = 1`) and the group is `MPI_COMM_WORLD`, so
-//! `--partitions` must stay at its default of 1. The cell shape is otherwise
-//! `run_cell_partitioned`'s — scatter outside the timed region, one warm-up,
-//! one timed call — and `--threads` is this rank's pool width, not a total,
-//! because the placement comes from the launcher:
+//! Drives [`propagate_with_scratch_and_options`] over a menu of layers (rotation, Clifford,
+//! general-unitary, noise, Trotter, and partitioned/distributed variants) across a matrix of
+//! thread and partition counts, and prints the [`PhaseStats`] breakdown the `phase-timing`
+//! feature exposes.
 //!
 //! ```bash
-//! cargo build --release --features phase-timing,mpi --example phase_breakdown
-//! mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
-//!     target/release/examples/phase_breakdown --mpi --threads 16 \
-//!     --layers su4 --json-out results/mpi.jsonl
+//! cargo run --release --features phase-timing --example phase_breakdown -- --help
 //! ```
-//!
-//! Every rank runs the whole matrix and reports **its own** numbers: one `cell`
-//! line and one JSON object per rank per cell, each carrying `rank` and `ranks`
-//! fields, and each rank appending to its own `--json-out` sidecar suffixed
-//! `.rank<N>` (separate processes have no shared file position). The headline
-//! is `vmhwm_kb` — peak resident set per rank, including the export and receive
-//! transients, which is the capacity metric the distributed engine exists to
-//! report; `partition_terms_in` and `partition_coset_loop_ns` have a single
-//! entry (this rank's), and comparing ranks is the caller's job.
-//!
-//! Without `--mpi` nothing about the output changes, so a `--mpi`-capable
-//! binary is still the binary for every other cell.
-//!
-//! The two partition-aware layers are `rotation_local` and `rotation_remote`:
-//! a `ZZ` rotation on `(0, q)` where `q` is the smallest qubit in
-//! `1..--qubits` whose layer has, respectively, no remote delta and at least
-//! one — decided once per cell by [`count_remote_deltas`] against the hash the
-//! sum carries and the partition rows the scatter will use (remoteness is a
-//! property of the delta's key mask and those rows alone, so the bucket bits
-//! the run later grows to do not enter). Both collapse to `rotation_zz`'s
-//! `(0, 1)` at `P = 1`, where nothing is remote. The chosen pair is echoed to
-//! stderr and recorded as `gen_qubits` in the JSON/TSV rows.
-//!
-//! `--truncation topn:<N>` is rejected for a partitioned cell: `TopN`'s exact
-//! selection has no [`PartitionedTruncation`] impl (the bound rejects it at
-//! compile time), and `atopn:<N>` is the collective form of the same policy.
-//!
-//! The input generators (`Xs64`, `rand_sum`, `low_weight_sum`) come from
-//! `paulistrings::test_support`, shared with `benches/pauli_ops.rs` and the
-//! crate's own tests. The per-layer channel recipes below are still duplicated
-//! from the bench, since they are bench-shaped fixtures rather than fixtures
-//! the library's tests use.
 
 use std::time::Instant;
 
@@ -250,10 +30,6 @@ use paulistrings::{
     LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
     TruncationPolicy,
 };
-
-// ---------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
@@ -398,28 +174,20 @@ Options:
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerKind {
     RotationZz,
-    /// A `ZZ` rotation chosen so the layer's deltas all stay inside their
-    /// partition: the partitioned engine's best case, and at `P = 1` the same
-    /// cell as [`LayerKind::RotationZz`].
+    /// A `ZZ` rotation whose deltas all stay inside their partition; the same cell as `RotationZz` at `P = 1`.
     RotationLocal,
-    /// A `ZZ` rotation chosen so at least one delta crosses partitions: the
-    /// cell that pays for an export + exchange every layer.
+    /// A `ZZ` rotation with at least one delta crossing partitions every layer.
     RotationRemote,
     Cnot,
     Gu2q,
     Su4,
-    /// Haar SU(4) on a pair whose 15 non-identity deltas are all local under the
-    /// partition rows: the dense, bandwidth-bound class with zero exchange.
+    /// Haar SU(4) on a pair whose deltas are all local under the partition rows.
     Su4Local,
     Depolarizing,
     Trotter,
-    /// One kicked-Ising Trotter step on a 1D **open chain** of `--qubits`
-    /// qubits, `--reps` steps: `ZZ(i, i+1)` on every bond then `X(q)` on every
-    /// qubit, one channel each. See [`tfim_step_circuit`].
+    /// One kicked-Ising Trotter step on an open chain; see [`tfim_step_circuit`].
     TfimStep,
-    /// One kicked-Ising Trotter step on the **127-qubit heavy-hex** lattice,
-    /// `--reps` steps: `X(q)` on every qubit then `ZZ` on every edge in
-    /// hardware-colored order. See [`heavy_hex_step_circuit`].
+    /// One kicked-Ising Trotter step on the 127-qubit heavy-hex lattice; see [`heavy_hex_step_circuit`].
     HeavyHexStep,
 }
 
@@ -461,17 +229,12 @@ impl LayerKind {
         }
     }
 
-    /// The two rotation-only Trotter workloads, whose default input is a
-    /// single-site `Z` observable rather than a random dense sum, and whose
-    /// two-qubit generators define the qubit graph `--partition-rows cut`
-    /// bisects.
+    /// The two Trotter-step workloads, whose input grows from a single-site `Z` observable.
     fn is_trotter_step(self) -> bool {
         matches!(self, LayerKind::TfimStep | LayerKind::HeavyHexStep)
     }
 
-    /// The layer's two-qubit generator graph, i.e. the edges a
-    /// `--partition-rows cut` should avoid crossing. Empty for a layer with no
-    /// lattice of its own, where a cut is just an even index split.
+    /// The layer's two-qubit generator graph for `--partition-rows cut`; empty when it has none.
     fn cut_edges(self, num_qubits: usize) -> Vec<(u32, u32)> {
         match self {
             LayerKind::TfimStep => chain_edges(num_qubits),
@@ -480,8 +243,7 @@ impl LayerKind {
         }
     }
 
-    /// Whether the layer's generator qubits are chosen per cell from the
-    /// partition rows ([`choose_generator`]) rather than fixed at `(0, 1)`.
+    /// Whether the layer's generator qubits are chosen per cell ([`choose_generator`]) rather than fixed at `(0, 1)`.
     fn picks_generator(self) -> bool {
         matches!(
             self,
@@ -507,10 +269,7 @@ enum Format {
     Tsv,
 }
 
-/// Which [`TruncationPolicy`] every cell runs under. Kept as a *spec* rather
-/// than a boxed policy so `run` can dispatch it into one monomorphization per
-/// variant: `keep_term` has to inline into the merge for the measurement to
-/// mean anything.
+/// Which [`TruncationPolicy`] every cell runs under, kept as a spec so `run` dispatches it into one monomorphization per variant.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TruncSpec {
     Keep,
@@ -520,8 +279,7 @@ enum TruncSpec {
 }
 
 impl TruncSpec {
-    /// The spec as it was written on the command line — echoed into every
-    /// output format so a raw log identifies its own policy.
+    /// The spec as it was written on the command line, echoed into every output format.
     fn label(self) -> String {
         match self {
             TruncSpec::Keep => "keep".to_string(),
@@ -562,10 +320,7 @@ impl TruncSpec {
     }
 }
 
-/// `--partition-cpus`, kept as the *spec* the command line carried so it can
-/// be echoed verbatim into the sidecar (`partition_cpus`, machine contract (a)
-/// in `benchmarks/PROFILING.md`) and turned into a [`Placement`] once per
-/// cell, where the partition count and the thread budget are known.
+/// `--partition-cpus`, kept as the spec so it can be echoed into the sidecar and turned into a [`Placement`] once per cell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PartitionCpus {
     /// One partition per NUMA node in the mask, capped at the cell's `P`.
@@ -613,11 +368,7 @@ impl PartitionCpus {
         Ok(PartitionCpus::Explicit(lists))
     }
 
-    /// The [`Placement`] for one cell: `partitions` partitions sharing
-    /// `threads` workers in total.
-    ///
-    /// The caller has already checked the list count against `partitions`
-    /// (see [`parse_args`]), so the `Explicit` arm cannot mismatch here.
+    /// The [`Placement`] for one cell: `partitions` partitions sharing `threads` workers in total.
     fn placement(&self, partitions: usize, threads: usize) -> Placement {
         match self {
             PartitionCpus::Auto => Placement::Auto {
@@ -637,25 +388,12 @@ impl PartitionCpus {
     }
 }
 
-/// What a cell's input sum is, before the warm-up call.
-///
-/// The two shapes measure different things. [`Initial::Random`] is a dense
-/// sum of `--n` terms spread over every qubit — the steady-state, capacity-
-/// bound picture, and what every layer but the two Trotter steps has always
-/// used. [`Initial::Z0`] is the *observable* picture: one term, `Z` on the
-/// middle qubit, whose support and term count then grow step by step. That
-/// growth is the capacity-relevant dynamics for a Heisenberg-picture
-/// simulation, and it is also the only input under which the partition
-/// imbalance of a cut row means anything — a dense random sum is balanced by
-/// construction under any row (half its terms have odd parity on any mask),
-/// whereas a growing light cone need not be.
+/// What a cell's input sum is, before the warm-up call: a dense steady-state sum, or a single observable that grows step by step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Initial {
     /// `test_support::rand_sum(--n, --qubits, --seed)`.
     Random,
-    /// A single `Z` on qubit `--qubits / 2`, coefficient 1. `--n` is then not
-    /// a size at all (it is still echoed, and the reported `n` is the
-    /// warm-up's output like every other cell).
+    /// A single `Z` on qubit `--qubits / 2`, coefficient 1. `--n` is then not a size at all.
     Z0,
 }
 
@@ -675,8 +413,7 @@ impl Initial {
         }
     }
 
-    /// The input a layer takes when `--initial` is absent: an observable for
-    /// the two Trotter-step workloads, a dense random sum for everything else.
+    /// The input a layer takes when `--initial` is absent.
     fn default_for(layer: LayerKind) -> Self {
         if layer.is_trotter_step() {
             Initial::Z0
@@ -686,23 +423,12 @@ impl Initial {
     }
 }
 
-/// `--partition-rows`: how the `log2(P)` GF(2) partition rows are chosen.
-///
-/// The rows are a free parameter of the split — `part(v) = R·v` for any `R` —
-/// and a channel's generator `g` is *local* exactly when `R·g = 0`, so the
-/// choice decides how many layers pay an export and an exchange
-/// (`ARCHITECTURE.md §Partitioning`, and
-/// `research/plans/2026-09-09-partition-row-tuning.md` for why it is a
-/// max-weighted XOR-SAT problem).
+/// `--partition-rows`: how the `log2(P)` GF(2) partition rows are chosen (`ARCHITECTURE.md §Partitioning`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PartitionRowSpec {
-    /// `PartitionRows::from_seed` — the driver's own default, and what every
-    /// measurement before this flag existed used. Roughly half of a
-    /// two-qubit generator's deltas cross at `P = 2`.
+    /// `PartitionRows::from_seed`, the driver's own default.
     Random,
-    /// `log2(P)` z-only rows labelling `P` contiguous qubit blocks, so every
-    /// single-qubit `X` rotation is local and a `ZZ(i, j)` rotation is remote
-    /// exactly when the edge `(i, j)` crosses the cut. See [`cut_rows`].
+    /// `log2(P)` z-only rows labelling `P` contiguous qubit blocks. See [`cut_rows`].
     Cut,
 }
 
@@ -730,22 +456,18 @@ struct Config {
     qubits: usize,
     /// Seed for the partitioning hash `H`. See `--hash-seed`.
     hash_seed: u64,
-    /// Bucket bits to pre-refine the input sum to; 0 = leave it to the
-    /// engine's own `desired_bits` policy. See `--bucket-bits`.
+    /// Bucket bits to pre-refine the input sum to; 0 = leave it to the engine's own policy.
     bucket_bits: u8,
     /// Engine's per-layer target terms per bucket. See `--target-bucket-len`.
     target_bucket_len: usize,
     /// Engine's per-layer bucket-count floor. See `--min-buckets`.
     min_buckets: usize,
-    /// TOTAL thread counts; a partitioned cell splits one of these over its
-    /// partitions. See `--threads` / `--partitions`.
+    /// TOTAL thread counts; a partitioned cell splits one of these over its partitions.
     threads: Vec<usize>,
     /// Partition counts to sweep. See `--partitions`.
     partitions: Vec<usize>,
-    /// `--mpi`: run each cell on the distributed driver, one partition per
-    /// rank of `MPI_COMM_WORLD`. Only settable when the `mpi` feature is on —
-    /// `parse_args` rejects the flag otherwise, so without the feature the
-    /// field is always false and nothing reads it.
+    /// `--mpi`: run each cell on the distributed driver, one partition per rank. Only settable
+    /// when the `mpi` feature is on.
     #[cfg_attr(not(feature = "mpi"), allow(dead_code))]
     mpi: bool,
     /// Placement spec for the partitioned cells. See `--partition-cpus`.
@@ -756,16 +478,14 @@ struct Config {
     partition_seed: Option<u64>,
     /// How the partition rows are chosen. See `--partition-rows`.
     partition_rows: PartitionRowSpec,
-    /// `--initial`, or `None` for each layer's own default
-    /// ([`Initial::default_for`]).
+    /// `--initial`, or `None` for each layer's own default ([`Initial::default_for`]).
     initial: Option<Initial>,
     layers: Vec<LayerKind>,
     reps: usize,
     seed: u64,
     truncation: TruncSpec,
     format: Format,
-    /// Sidecar file that gets one JSON line appended per cell, regardless of
-    /// the stdout `--format` — the input `scripts/perf-viz.py` renders.
+    /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     json_out: Option<String>,
 }
 
@@ -910,9 +630,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     if target_bucket_len == 0 {
         return Err("--target-bucket-len must be at least 1".to_string());
     }
-    // `desired_bits`'s "worth splitting" gate is non-monotone below 16
-    // (crates/paulistrings/src/bucket/sum.rs), so the core documents the same
-    // bound on `PropagateOptions::min_buckets`.
+    // `desired_bits`'s "worth splitting" gate is non-monotone below 16.
     if min_buckets < 16 {
         return Err(format!(
             "--min-buckets must be at least 16, got {min_buckets}"
@@ -922,8 +640,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         return Err("--partitions must list at least one partition count".to_string());
     }
 
-    // The two Trotter-step workloads run on a lattice of their own, so their
-    // qubit count is a property of the circuit rather than of the sum.
+    // The two Trotter-step workloads run on a lattice of their own.
     if layers.contains(&LayerKind::HeavyHexStep) && qubits < HEAVY_HEX_QUBITS {
         return Err(format!(
             "--layers heavyhex_step needs --qubits >= {HEAVY_HEX_QUBITS} (the Eagle r3 lattice \
@@ -937,9 +654,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         ));
     }
 
-    // The partition axis, checked against everything it interacts with before
-    // a single cell runs: a campaign that dies on its fourth cell wastes the
-    // three that ran.
+    // The partition axis, checked before a single cell runs.
     let explicit = match &partition_cpus {
         PartitionCpus::Explicit(lists) => Some(lists.len()),
         _ => None,
@@ -979,10 +694,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
         }
     }
-    // `TopN`'s exact selection needs a global view of the coefficients and has
-    // no `PartitionedTruncation` impl — the bound rejects it at compile time,
-    // so the probe has to reject it here rather than dispatch into a
-    // partitioned cell that cannot exist.
+    // `TopN` has no `PartitionedTruncation` impl, so reject it here.
     let any_partitioned = partitions.iter().any(|&p| p > 1);
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
@@ -995,8 +707,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
-    // `--mpi` is the distributed shape: the rank *is* the partition (D = 1), so
-    // the in-process axis has to stay at one.
+    // `--mpi` is the distributed shape: the rank is the partition (D = 1).
     if mpi && partitions != vec![1] {
         return Err(
             "--mpi runs one partition per rank (D = 1), so --partitions must stay at its default \
@@ -1037,10 +748,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     })
 }
 
-// ---------------------------------------------------------------------
-// Per-layer channel recipes (duplicated from benches/pauli_ops.rs)
-// ---------------------------------------------------------------------
-
 /// A weight-2 `ZZ` rotation, verbatim from `benches/pauli_ops.rs::zz_rotation`.
 fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
@@ -1070,52 +777,23 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
     )
 }
 
-/// One fixed Haar-random SU(4) block on `(q0, q1)` — the probe's stand-in for
-/// the *general matrix-gate* path.
+/// One fixed Haar-random SU(4) block on `(q0, q1)`, the probe's stand-in for the general matrix-gate path.
 ///
-/// [`sqrt_swap`] is a poor proxy for that path in two ways, both measured: its
-/// PTM is sparse (steady-state fanout 3.65 rows gathered per input term at
-/// `--qubits 128`, against a dense PTM's 16), and `sqrt(SWAP)^2 = SWAP` is
-/// Clifford, so repeating it drives the term count into a **period-2 cycle**
-/// (10 000 -> 32 503 -> 10 000 ... at `--n 10000`) rather than to a fixed
-/// point. A generic SU(4) has neither property: every `U^k` stays generic, so
-/// the PTM stays dense and the closed key set is a fixed ~16x the number of
-/// distinct off-support key patterns.
-///
-/// The matrix is `test_support::haar_su4_matrix` — shared with the crate's
-/// tests, which need the same dense PTM. See its doc comment for provenance.
+/// Unlike [`sqrt_swap`], a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
 fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
     GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }
 
-/// Qubit count of the fixed [`trotter_circuit`] chain — also the qubit
-/// count `run_cell` uses when building `trotter`'s low-weight input, so
-/// every weight-3 excitation lands inside the circuit's actual support.
+/// Qubit count of the fixed [`trotter_circuit`] chain.
 const TROTTER_QUBITS: usize = 32;
 
-/// Safety cap on `trotter`'s own input size, overriding `--n`.
-///
-/// `trotter` chains two full 64-layer circuit applications (the warm-up and
-/// the timed call — see the "chain them" step in `run_cell`) under
-/// `AlwaysKeep`, i.e. no truncation. Unlike rotation_zz/cnot/gu2q (a single
-/// generator repeated, which provably closes to a bounded key set — see
-/// `run_cell`), trotter is 64 *distinct* generators, and per-pass growth is a
-/// roughly n-independent multiplicative factor
-/// (measured ~600-700x per pass at `weight = 3`, `TROTTER_QUBITS = 32`, so
-/// ~4-5×10^5x over the two chained passes). Left uncapped, `--n`'s default
-/// of 1_000_000 would try to materialize on the order of 10^11 terms.
-/// Measured directly at this cap: ~1×10^7 output terms, ~1 GB peak RSS,
-/// finishes in single-digit seconds — see `run_cell` for the warning this
-/// triggers when `--n` requests more.
+/// Safety cap on `trotter`'s own input size, overriding `--n`: 64 distinct generators under no
+/// truncation grow combinatorially rather than closing to a bounded key set, so an uncapped `--n`
+/// would try to materialize far too many terms.
 const TROTTER_MAX_N: usize = 100;
 
-/// The 64-channel TFIM Trotter step from
-/// `benches/pauli_ops.rs::bench_propagate_trotter`: 32 `ZZ` bond rotations
-/// (periodic boundary conditions) followed by 32 transverse-field `X`
-/// rotations. Fixed shape ([`TROTTER_QUBITS`] qubits), independent of
-/// `--qubits`/`--reps` — `--qubits` only sizes the input sum for every other
-/// layer; `trotter`'s own input is sized off `TROTTER_QUBITS` instead (see
-/// `run_cell`).
+/// The 64-channel TFIM Trotter step: 32 `ZZ` bond rotations (periodic boundary) then 32
+/// transverse-field `X` rotations, fixed at [`TROTTER_QUBITS`] qubits regardless of `--qubits`.
 fn trotter_circuit<const W: usize>() -> Circuit<W> {
     let num_qubits = TROTTER_QUBITS;
     let theta = 0.1;
@@ -1133,21 +811,13 @@ fn trotter_circuit<const W: usize>() -> Circuit<W> {
     circuit
 }
 
-// ---------------------------------------------------------------------
-// The kicked-Ising Trotter-step workloads (`tfim_step`, `heavyhex_step`)
-// ---------------------------------------------------------------------
-
 /// Qubits in the heavy-hex lattice [`heavy_hex_127_edges`] describes.
 const HEAVY_HEX_QUBITS: usize = 127;
 
-/// The `ZZ` angle of the presentation's kicked-Ising workload: `-pi/2`, the
-/// utility experiment's Clifford entangler `exp(+i·(pi/4)·Z_i Z_j)`.
+/// The `ZZ` angle of the kicked-Ising workload: `-pi/2`, a Clifford entangler.
 const THETA_ZZ: f64 = -std::f64::consts::FRAC_PI_2;
 
-/// The transverse-field kick angle of the same workload, `5·pi/16` — the
-/// non-Clifford point (`presentation/bench/src/workload.rs::THETA_H`, itself a
-/// copy of `examples/common/circuits.py`'s default for
-/// `heavy_hex_kicked_ising`).
+/// The transverse-field kick angle of the same workload: `5·pi/16`, the non-Clifford point.
 const THETA_H: f64 = 5.0 * std::f64::consts::PI / 16.0;
 
 /// The bonds of a 1D **open** chain: `n - 1` edges `(i, i+1)`.
@@ -1157,20 +827,13 @@ fn chain_edges(num_qubits: usize) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The 127-qubit heavy-hex coupling map, from `test_support` (which carries the
-/// provenance of `examples/data/heavy_hex_127.edges`).
+/// The 127-qubit heavy-hex coupling map, from `test_support`.
 fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
     paulistrings::test_support::heavy_hex_127_edges()
 }
 
-/// Greedy first-fit edge coloring in sorted edge order, copied verbatim from
-/// `presentation/bench/src/workload.rs::edge_coloring` (itself the port of
-/// `examples/common/circuits.py::heavy_hex_edge_coloring`).
-///
-/// A color is a set of disjoint-support edges, i.e. one hardware layer. All
-/// `ZZ` rotations commute, so the grouping cannot change the exact result — it
-/// changes only the order in which per-channel truncation sees the sum, and
-/// the colored order is the physically faithful one.
+/// Greedy first-fit edge coloring in sorted edge order; a color is a set of disjoint-support
+/// edges, i.e. one hardware layer.
 fn edge_coloring(edges: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
     let n = edges
         .iter()
@@ -1199,27 +862,10 @@ fn x_rotation<const W: usize>(q: u32, theta: f64) -> PauliRotation<W> {
     PauliRotation::new(PauliString::<W>::x(q), theta)
 }
 
-/// `steps` Trotter steps of the kicked transverse-field Ising model on an open
-/// chain of `num_qubits` qubits, one channel per gate.
-///
-/// A step is the `ZZ` layer **then** the `X` layer:
-///
-/// ```text
-/// prod_{i}   exp(-i · THETA_ZZ · Z_i Z_{i+1} / 2)     (n - 1 channels)
-/// prod_{q}   exp(-i · THETA_H  · X_q         / 2)     (n     channels)
-/// ```
-///
-/// so a step is `2n - 1` channels and the whole cell is `steps · (2n - 1)`.
-/// The angles are the presentation workload's ([`THETA_ZZ`], [`THETA_H`]);
-/// there is no chain-specific recipe in the notes, and reusing them keeps the
-/// chain and [`heavy_hex_step_circuit`] on the same physical point, which is
-/// what makes their exchange volumes comparable.
-///
-/// The `ZZ`-then-`X` order is the one this probe was asked for and is *not*
-/// the heavy-hex builder's `X`-then-`ZZ`: from a `Z`-type observable the
-/// leading `ZZ` layer is a no-op (every `ZZ` commutes with `Z`), so a
-/// `--reps r` chain cell is effectively half a step shallower than a heavy-hex
-/// cell at the same `r`. Nothing downstream compares the two step-for-step.
+/// `steps` Trotter steps of the kicked transverse-field Ising model on an open chain of
+/// `num_qubits` qubits, one channel per gate: the `ZZ` layer then the `X` layer, `2n - 1`
+/// channels per step. Uses [`THETA_ZZ`] / [`THETA_H`]; not step-comparable with
+/// [`heavy_hex_step_circuit`], whose `X`-then-`ZZ` order differs.
 fn tfim_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit<W> {
     let mut c = Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
@@ -1233,25 +879,9 @@ fn tfim_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit
     c
 }
 
-/// `steps` Trotter steps of the 127-qubit heavy-hex kicked-Ising circuit, one
-/// channel per gate — the presentation's fixed workload
-/// (`presentation/bench/src/workload.rs::kicked_ising`, gate for gate).
-///
-/// A step is the `X` layer **then** the `ZZ` layer, in
-/// [`edge_coloring`] order:
-///
-/// ```text
-/// prod_{q in 0..127}    exp(-i · THETA_H  · X_q       / 2)     (127 channels)
-/// prod_{(i,j) in E}     exp(-i · THETA_ZZ · Z_i Z_j   / 2)     (144 channels)
-/// ```
-///
-/// so a step is 271 channels. `X`-then-`ZZ` is Kim et al. (2023) SI Eq. (4)'s
-/// ordering and the one `examples/common/circuits.py` defaults to; the
-/// published weight-10 and weight-17 operators only come out under it.
-///
-/// `num_qubits` sizes the `Circuit` (it must be at least
-/// [`HEAVY_HEX_QUBITS`]); any qubit above the lattice is a spectator no
-/// channel touches.
+/// `steps` Trotter steps of the 127-qubit heavy-hex kicked-Ising circuit, one channel per gate:
+/// the `X` layer then the `ZZ` layer in [`edge_coloring`] order, 271 channels per step.
+/// `num_qubits` must be at least [`HEAVY_HEX_QUBITS`]; anything above is a spectator.
 fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit<W> {
     assert!(
         num_qubits >= HEAVY_HEX_QUBITS,
@@ -1280,20 +910,15 @@ fn z_observable<const W: usize>(num_qubits: usize, q: u32) -> PauliSum<W> {
     acc.finalize()
 }
 
-/// A truncation policy that never drops anything — mirrors the `AlwaysKeep`
-/// helper used throughout the engine's own tests and `benches/pauli_ops.rs`.
+/// A truncation policy that never drops anything.
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 /// [`AlwaysKeep`] for a partitioned cell.
 ///
-/// A separate type rather than an impl on `AlwaysKeep`, because
-/// [`PartitionedTruncation`]'s default body rejects a policy whose
-/// `finalizes_layer()` is the trait's conservative `true`, and flipping that
-/// on `AlwaysKeep` would change what the *unpartitioned* cell measures: the
-/// engine reads `finalizes_layer` when it decides between the bucketed and the
-/// small-sum direct path (`PropagateOptions::starts_direct`). The two policies
-/// mean the same thing — keep every term, do nothing per layer.
+/// A separate type rather than an impl on `AlwaysKeep`: flipping `finalizes_layer()` to `false`
+/// on `AlwaysKeep` itself would change what the unpartitioned cell measures
+/// (`PropagateOptions::starts_direct` reads it).
 struct AlwaysKeepPartitioned;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
     fn finalizes_layer(&self) -> bool {
@@ -1302,9 +927,7 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
 }
 impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
 
-/// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the
-/// `rotation_*` layers rotate about — `(0, 1)` for `rotation_zz`, and whatever
-/// [`choose_generator`] picked for `rotation_local` / `rotation_remote`.
+/// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the `rotation_*` layers rotate about.
 fn build_circuit<const W: usize>(
     layer: LayerKind,
     qubits: usize,
@@ -1336,9 +959,6 @@ fn build_circuit<const W: usize>(
             c
         }
         LayerKind::Su4 | LayerKind::Su4Local => {
-            // `su4` acts on (0, 1); `su4_local` on the pair `choose_generator`
-            // picked so that all 15 non-identity deltas are local — the dense,
-            // bandwidth-bound class with zero exchange, i.e. the pure NUMA cell.
             let (q0, q1) = gen_qubits;
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
@@ -1362,10 +982,6 @@ fn build_circuit<const W: usize>(
     }
 }
 
-// ---------------------------------------------------------------------
-// Measurement
-// ---------------------------------------------------------------------
-
 struct CellResult {
     layer: &'static str,
     truncation: String,
@@ -1379,9 +995,7 @@ struct CellResult {
     target_bucket_len: usize,
     min_buckets: usize,
     wall_ns: u64,
-    /// The cell's phase breakdown. For a partitioned cell this is
-    /// [`fold_partition_stats`]'s cell-level view of the per-partition
-    /// counters, not any one partition's.
+    /// The cell's phase breakdown; for a partitioned cell, [`fold_partition_stats`]'s cell-level view.
     stats: PhaseStats,
     vmrss_kb: u64,
     vmhwm_kb: u64,
@@ -1393,21 +1007,15 @@ struct CellResult {
     pin_memory: bool,
     /// The `(q0, q1)` the `rotation_*` layers rotated about.
     gen_qubits: (u32, u32),
-    /// `--initial` as it applied to *this* layer (each layer has its own
-    /// default, so the effective value is per cell, not per run).
+    /// `--initial` as it applied to this layer (each layer has its own default).
     initial: &'static str,
-    /// `--partition-rows` echoed back. Meaningless for an unpartitioned cell,
-    /// written on every row anyway so a campaign has one schema.
+    /// `--partition-rows` echoed back; written on every row for a single schema.
     partition_rows: &'static str,
-    /// What those rows cost this cell's circuit ([`RowChoiceStats`]); all-zero
-    /// on an unpartitioned row, where there are no rows to cost.
+    /// What those rows cost this cell's circuit; all-zero on an unpartitioned row.
     row_stats: RowChoiceStats,
     /// Everything only a partitioned cell has, `None` at `P = 1` classic.
     partitioned: Option<PartitionCellStats>,
-    /// `(rank, ranks)` for a `--mpi` cell, `None` otherwise. Every field above
-    /// is then **this rank's**: the numbers are per process, not per group, and
-    /// `vmhwm_kb` in particular is the capacity metric a distributed run exists
-    /// to report. `None` keeps the non-MPI output byte-identical.
+    /// `(rank, ranks)` for a `--mpi` cell; every field above is then this rank's own.
     mpi: Option<(u32, u32)>,
 }
 
@@ -1418,38 +1026,25 @@ struct PartitionCellStats {
     local_layers: usize,
     /// Layers with at least one remote delta.
     remote_layers: usize,
-    /// Collective calls over the timed run, summed over layers — the
-    /// bucket-count all-reduces the schedule kept plus whatever the policy's
-    /// collective finalization ran, *not* the exchanges. One per layer was the
-    /// old unconditional cost; `remote_layers + layers/BITS_AGREE_EVERY` is
-    /// roughly the new one.
+    /// Collective calls over the timed run, summed over layers, excluding the exchanges.
     collectives: u64,
     /// Rows moved across partitions, summed over layers and senders.
     rows_exported: u64,
     /// Wire bytes for those rows.
     bytes_exported: u64,
-    /// Σ over layers of each partition's input term count, by rank.
+    /// Sum over layers of each partition's input term count, by rank.
     terms_in: Vec<usize>,
     /// `max / mean` of [`Self::terms_in`]: 1.0 is a perfectly even split.
     imbalance: f64,
-    /// The same ratio **per layer**, in application order
-    /// ([`PartitionTrace::imbalance`]). The cell-level [`Self::imbalance`]
-    /// above sums the layers first and so hides the dynamics; this is the
-    /// series that says how fast terms mix between partitions, which for
-    /// cut-like rows is the quantity in tension with the exchange volume they
-    /// save.
+    /// The same ratio per layer, in application order: shows how fast terms mix between partitions.
     imbalance_by_layer: Vec<f64>,
-    /// Total terms in, per layer, over the whole group — the growth curve the
-    /// imbalance series has to be read against.
+    /// Total terms in, per layer, over the whole group.
     terms_by_layer: Vec<usize>,
-    /// Each partition's `coset_loop_ns`, by rank — the spread that says
-    /// whether the exchange waits are imbalance or traffic.
+    /// Each partition's `coset_loop_ns`, by rank.
     coset_loop_ns: Vec<u64>,
 }
 
-/// Read `VmRSS`/`VmHWM` (kB) from `/proc/self/status`. Linux-only, like the
-/// rest of this crate's deployment targets; returns `0` for either field it
-/// cannot find (e.g. running the example on a non-Linux host).
+/// Read `VmRSS`/`VmHWM` (kB) from `/proc/self/status`; `0` for either field not found.
 fn read_proc_status_kb() -> (u64, u64) {
     let mut rss = 0u64;
     let mut hwm = 0u64;
@@ -1472,12 +1067,9 @@ fn parse_kb_field(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// The cell's input sum, before any propagation: the seeded generator the
-/// layer asks for, re-hashed and pre-refined per `--hash-seed` /
-/// `--bucket-bits`.
-///
-/// Shared by the unpartitioned and the partitioned path, so a `P = 1` and a
-/// `P = 2` cell of the same `(layer, --n, --seed)` propagate the same terms.
+/// The cell's input sum, before any propagation: the seeded generator the layer asks for,
+/// re-hashed and pre-refined per `--hash-seed` / `--bucket-bits`. Shared by the unpartitioned
+/// and the partitioned path, so a `P = 1` and a `P = 2` cell propagate the same terms.
 fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W> {
     if layer.is_trotter_step() && cfg.truncation == TruncSpec::Keep {
         eprintln!(
@@ -1489,16 +1081,9 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
             layer.name(),
         );
     }
-    // `trotter` is 64 *distinct* generators applied once each, not one
-    // generator repeated — the latter provably closes to a bounded key set,
-    // which is what keeps rotation_zz/cnot/gu2q/su4 bounded here. A dense input
-    // can anticommute with most of 64 distinct generators and blow up
-    // combinatorially (`benches/pauli_ops.rs` puts it at "up to 2^64", and
-    // benches only low-weight inputs for that reason): a dense `rand_sum`
-    // input was measured driving this layer past 50 GB of RSS in well under a
-    // minute at only n = 2000. So trotter alone gets a low-weight input sized
-    // to its own fixed qubit count instead of `--qubits`, and its own `--n`
-    // cap (see `TROTTER_MAX_N`).
+    // `trotter` is 64 distinct generators, unlike the other layers' one generator repeated, so a
+    // dense input can blow up combinatorially. It gets a low-weight input sized to its own fixed
+    // qubit count instead of `--qubits`, and its own `--n` cap (see `TROTTER_MAX_N`).
     let base = match layer {
         LayerKind::Trotter => {
             if cfg.n > TROTTER_MAX_N {
@@ -1512,20 +1097,14 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
             }
             low_weight_sum::<W>(cfg.n.min(TROTTER_MAX_N), TROTTER_QUBITS, 3, cfg.seed)
         }
-        // Everything else takes `--initial`, defaulting per layer: a dense
-        // random sum, or the single-site observable the two Trotter steps grow
-        // from.
+        // Everything else takes `--initial`, defaulting per layer.
         _ => match cfg.initial.unwrap_or_else(|| Initial::default_for(layer)) {
             Initial::Random => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
             Initial::Z0 => z_observable::<W>(cfg.qubits, (cfg.qubits / 2) as u32),
         },
     };
-    // `--hash-seed` re-draws H's rows. It is *not* cosmetic: the rank of the
-    // layer's bucket-delta span `h(D)` — hence the coset dimension `r`, hence
-    // the sort's comparison count — depends on which rows H happens to have
-    // (research/notes/2026-09-01-bucket-cliff.md). `with_hash` rescatters at
-    // zero bucket bits; `--bucket-bits` then refines, and the engine's
-    // grow-only `rebucket` keeps whatever it finds.
+    // `--hash-seed` re-draws H's rows, which changes the coset dimension `r` (research/FINDINGS.md).
+    // `with_hash` rescatters at zero bucket bits; `--bucket-bits` then refines.
     let mut base = if cfg.hash_seed == DEFAULT_HASH_SEED {
         base
     } else {
@@ -1548,9 +1127,7 @@ where
     P: TruncationPolicy<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
-    // Nothing is remote without partitions, so `rotation_local` and
-    // `rotation_remote` are both `rotation_zz` here (documented at the top of
-    // the file, and echoed in the cell's `gen_qubits`).
+    // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
     let gen_qubits = (0u32, 1u32);
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
@@ -1559,9 +1136,7 @@ where
         .build()
         .expect("failed to build a rayon thread pool");
 
-    // The engine's per-layer bucket policy for both the warm-up and the timed
-    // call: `rebucket` is grow-only, so a coarse policy only means anything if
-    // the warm-up never grew the partition past it.
+    // `rebucket` is grow-only, so this only means anything if the warm-up never grew past it.
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
@@ -1571,11 +1146,7 @@ where
     let (steady_n, wall_ns, stats) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
-        // Untimed warm-up: for rotation_zz/cnot/gu2q/su4 this drives the input
-        // to its closed key set (or, under a truncating policy, to the
-        // steady state that policy admits), so the timed call below measures
-        // steady-state cost rather than first-layer growth; for
-        // depolarizing/trotter it just warms scratch/buffer capacity.
+        // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
         let warmed = propagate_with_scratch_and_options(
             &circuit,
             base.clone(),
@@ -1631,30 +1202,20 @@ where
             .label(),
         partition_rows: cfg.partition_rows.label(),
         row_stats: RowChoiceStats::default(),
-        // No split, so no partition numbers: the sidecar's partition fields
-        // stay zero/empty on this row (machine contract (a)).
+        // No split, so no partition numbers on this row.
         partitioned: None,
         mpi: None,
     }
 }
 
-/// The `(q0, q1)` a `rotation_local` / `rotation_remote` cell rotates about:
-/// the smallest `q1 > 0` whose one-channel `ZZ(0, q1)` layer has no remote
-/// delta (`local`), respectively at least one (`remote`), under `rows`.
-///
-/// [`count_remote_deltas`] does the deciding, on a one-channel circuit and the
-/// hash the sum currently carries. The verdict does not depend on the bucket
-/// count: a delta is remote when the *partition rows* map its key mask off
-/// zero, and those rows are fixed before the scatter, so a hash that later
-/// grows bucket bits reclassifies nothing. The scan is `O(qubits)` prepares of
-/// a single channel, once per cell, entirely outside the timed region.
+/// The `(q0, q1)` a `rotation_local` / `rotation_remote` cell rotates about: the smallest `q1 > 0`
+/// whose one-channel `ZZ(0, q1)` layer has no remote delta (`local`), respectively at least one
+/// (`remote`), under `rows`.
 ///
 /// # Panics
 ///
-/// If no qubit in `1..qubits` gives the requested class — impossible for
-/// `local` (the rows have `log2(P)` rows over `qubits` coordinates, so most
-/// pairs are local) and possible in principle for `remote` on a pathological
-/// row draw, in which case the message names `--partition-seed` as the knob.
+/// If no qubit in `1..qubits` gives the requested class (possible for `remote` on a pathological
+/// row draw); the message names `--partition-seed` as the knob.
 fn choose_generator<const W: usize>(
     layer: LayerKind,
     qubits: usize,
@@ -1665,10 +1226,7 @@ fn choose_generator<const W: usize>(
         return (0, 1);
     }
     let want_remote = layer == LayerKind::RotationRemote;
-    // A rotation's single non-identity delta is local for most pairs, so `(0, q)`
-    // suffices. A dense SU(4) needs all 15 deltas on the pair local, i.e. the
-    // partition rows zero on both qubits' x and z columns (1 in 16 pairs under
-    // one random row), so it scans every pair — including ones not touching 0.
+    // A dense SU(4) needs all 15 deltas local, so it scans every pair, not just those touching 0.
     let pairs: Vec<(u32, u32)> = if layer == LayerKind::Su4Local {
         (0..qubits as u32)
             .flat_map(|q0| ((q0 + 1)..qubits as u32).map(move |q1| (q0, q1)))
@@ -1700,36 +1258,17 @@ fn choose_generator<const W: usize>(
     );
 }
 
-// ---------------------------------------------------------------------
-// Partition rows (`--partition-rows`)
-// ---------------------------------------------------------------------
-
-/// `P` contiguous qubit blocks cutting as few of `edges` as possible.
+/// `P` contiguous qubit blocks cutting as few of `edges` as possible; returns the blocks' end
+/// positions.
 ///
-/// Returns the blocks' **end** positions, `partitions` of them, the last being
-/// `num_qubits`. Blocks are contiguous index ranges because that is what the
-/// two workloads' numbering makes meaningful: a chain's index *is* its
-/// position, and the heavy-hex edge list numbers the lattice row by row, so an
-/// index range is a band of rows.
-///
-/// Exact, by the obvious dynamic program: an edge is cut exactly when its two
-/// endpoints fall in different blocks, so *cut* edges are the complement of
-/// the edges internal to some block, and internal edges decompose over blocks.
-/// The objective is lexicographic — fewest cut edges first, then the most even
-/// block sizes — implemented as one scalar with the edge term weighted above
-/// the largest possible size term. Block sizes are additionally held inside
-/// ±25% of `num_qubits / partitions`, without which the minimum for the
-/// heavy-hex lattice is a 4/123 split (2 cut edges) whose smaller half holds
-/// almost nothing.
-///
-/// `O(num_qubits² · partitions)` on a table of `(num_qubits + 1)²` counts,
-/// once per cell, outside the timed region.
+/// Exact by dynamic program, minimizing cut edges first and then size imbalance, with block
+/// sizes additionally held within ±25% of `num_qubits / partitions` (without that bound, the
+/// heavy-hex lattice's minimum is a 4/123 split whose smaller half holds almost nothing).
 fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec<usize> {
     let n = num_qubits;
     assert!(partitions >= 1 && partitions <= n);
 
-    // internal[l * (n + 1) + r] = edges with l <= a and b < r, i.e. edges with
-    // both endpoints inside the block [l, r).
+    // internal[l * (n + 1) + r] = edges with both endpoints inside the block [l, r).
     let mut internal = vec![0i64; (n + 1) * (n + 1)];
     let mut row = vec![0i64; n + 1];
     for l in (0..n).rev() {
@@ -1746,9 +1285,7 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
         }
     }
 
-    // Fewest cut edges dominates; evenness breaks the ties. A block's size term
-    // is |size · P - n| (the deviation from the ideal, scaled to stay integral),
-    // which sums to at most n · P over the whole partition.
+    // Fewest cut edges dominates; evenness breaks the ties.
     let weight = 4 * (n as i64) * (partitions as i64) + 1;
     let target = n as f64 / partitions as f64;
     let lo = ((target * 0.75).floor() as usize).max(1);
@@ -1792,17 +1329,9 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
     ends
 }
 
-/// The `log2(P)` z-only "cut" rows labelling the blocks [`cut_blocks`] found,
-/// plus the number of `edges` the cut crosses.
-///
-/// Block `b` gets partition label `b`, so row `i` carries z-bits on the qubits
-/// of every block whose label has bit `i` set. With no x-bits at all,
-/// `R·g = 0` for every single-qubit `X` rotation — every transverse-field
-/// channel is local — and a `ZZ(i, j)` rotation is remote exactly when
-/// `label(block(i)) != label(block(j))`, i.e. when the edge crosses the cut.
-///
-/// The cut construction itself is [`PartitionRows::cut`]; this wraps it with
-/// the block choice and the crossing count.
+/// The `log2(P)` z-only "cut" rows labelling the blocks [`cut_blocks`] found, plus the number of
+/// `edges` the cut crosses. Every single-qubit rotation is then local, and a `ZZ(i, j)` rotation
+/// is remote exactly when the edge crosses the cut.
 fn cut_rows<const W: usize>(
     num_qubits: usize,
     partitions: usize,
@@ -1810,7 +1339,7 @@ fn cut_rows<const W: usize>(
 ) -> (PartitionRows<W>, Vec<usize>, usize) {
     let ends = cut_blocks(num_qubits, partitions, edges);
 
-    // label[q] = the block q lives in, which is also its partition label.
+    // label[q] = the partition label of q's block.
     let mut label = vec![0u32; num_qubits];
     let mut blocks: Vec<Vec<u32>> = Vec::with_capacity(partitions);
     let mut start = 0usize;
@@ -1832,54 +1361,27 @@ fn cut_rows<const W: usize>(
 }
 
 /// What the chosen rows cost the circuit, for the sidecar.
-///
-/// Computed for every partitioned cell, whatever `--partition-rows` says, so a
-/// `random` row and a `cut` row are read on the same scale: one
-/// [`circuit_generators`] pass (one `prepare` per layer, outside the timed
-/// region) and a `part(mask)` test per distinct mask.
 #[derive(Clone, Copy, Debug, Default)]
 struct RowChoiceStats {
     /// Distinct key-delta masks the rows leave remote.
     remote_gens: usize,
-    /// Their total weight, i.e. the number of *layers* carrying a remote mask
-    /// — the export-and-exchange count a run of this circuit will pay.
+    /// Their total weight: the export-and-exchange count a run of this circuit will pay.
     remote_weight: f64,
 }
 
-/// How many bucket bits [`choose_partition_rows`] checks row independence at.
-///
-/// The driver checks `is_independent_of` against the rows `H` has *at scatter*
-/// (ARCHITECTURE.md §Partitioning), which for this probe is `--bucket-bits`,
-/// zero by default — a vacuous check, since a sum with no active hash rows
-/// makes any independent row set independent. `Gf2Hash` pre-draws all
-/// `B_MAX_BITS` rows from the seed and `refine` only activates more of them, so
-/// the rows the run will *grow into* are known in advance: this is the count to
-/// look ahead by. Ten bits is 1024 buckets, roughly where the target of 1024
-/// terms per bucket puts a million-term sum.
+/// How many bucket bits [`choose_partition_rows`] checks row independence at (ten bits is 1024
+/// buckets, roughly where the default target puts a million-term sum).
 const INDEPENDENCE_PROBE_BITS: u8 = 10;
 
 /// Fresh hash seeds tried when the chosen rows are dependent on `H`'s.
 const INDEPENDENCE_RETRIES: usize = 16;
 
-/// The partition rows one cell runs under, the sum they will be scattered from,
-/// and what they cost the circuit.
+/// The partition rows one cell runs under, the sum they will be scattered from, and what they
+/// cost the circuit.
 ///
-/// The single place `--partition-rows` is interpreted, called identically by
-/// the in-process and the distributed cell so every rank of an `--mpi` run
-/// derives the same rows — and, when the check below re-draws it, the same hash
-/// — from the same inputs, with nothing agreed at run time.
-///
-/// Takes the base sum by value and gives it back because of that re-draw:
-/// `cut` rows are *low weight* by construction (a cut row is one contiguous
-/// run of z-bits), and a low-weight row is far likelier than a
-/// random one to fall inside the span of `H`'s active rows. Dependence costs
-/// load balance rather than correctness, but it costs it exactly where a cut
-/// row is already at risk, so a non-random row set that fails
-/// [`PartitionRows::is_independent_of`] at [`INDEPENDENCE_PROBE_BITS`] gets the
-/// hash re-seeded until it passes. That is not free: `--hash-seed` changes the
-/// rank of the layer's bucket-delta span and therefore the coset dimension
-/// (`research/notes/2026-09-01-bucket-cliff.md`), so the cell says so on
-/// stderr and reports the seed it ended up with.
+/// A non-random row set that is dependent on `H`'s active rows costs load balance, so it gets the
+/// hash re-seeded until [`PartitionRows::is_independent_of`] at [`INDEPENDENCE_PROBE_BITS`]
+/// passes; this changes the coset dimension too, so the cell reports the seed it ended up with.
 fn choose_partition_rows<const W: usize>(
     layer: LayerKind,
     cfg: &Config,
@@ -1917,9 +1419,7 @@ fn choose_partition_rows<const W: usize>(
         }
     };
 
-    // Independence against the rows `H` will grow into, and the re-seed that
-    // buys it. `random` rows are dense and effectively never dependent, and
-    // re-seeding them would only perturb a measurement, so they skip it.
+    // `random` rows are effectively never dependent, so they skip the re-seed check.
     let base = if cfg.partition_rows == PartitionRowSpec::Random || bits == 0 {
         base
     } else {
@@ -1937,13 +1437,9 @@ fn choose_partition_rows<const W: usize>(
     (base, rows, stats)
 }
 
-/// Re-seed the sum's hash until `rows` is independent of the rows `H` will have
-/// at [`INDEPENDENCE_PROBE_BITS`], or until the tries run out.
-///
-/// `Gf2Hash::new` draws every row from the seed and `refine` only activates
-/// more of them, so the look-ahead hash is exact rather than a guess. Re-hashing
-/// rescatters the sum at zero bucket bits, so `--bucket-bits`'s pre-refinement
-/// is re-applied afterwards.
+/// Re-seed the sum's hash until `rows` is independent of the rows `H` will have at
+/// [`INDEPENDENCE_PROBE_BITS`], or until the tries run out. Re-hashing rescatters the sum at
+/// zero bucket bits, so `--bucket-bits`'s pre-refinement is re-applied afterwards.
 fn reseed_hash_until_independent<const W: usize>(
     cfg: &Config,
     base: PauliSum<W>,
@@ -1952,9 +1448,7 @@ fn reseed_hash_until_independent<const W: usize>(
     partitions: usize,
 ) -> PauliSum<W> {
     let num_qubits = base.num_qubits();
-    // `p + b` rows can only be independent while they fit in the `2n` key
-    // columns, so a small qubit count caps the look-ahead — without which a
-    // handful of qubits would report a dependence no seed could ever fix.
+    // Rows can only be independent while they fit in the `2n` key columns.
     let headroom = (2 * num_qubits).saturating_sub(rows.bits() as usize);
     let probe_bits = INDEPENDENCE_PROBE_BITS
         .min(B_MAX_BITS)
@@ -1966,8 +1460,7 @@ fn reseed_hash_until_independent<const W: usize>(
         return base;
     }
 
-    // Splitmix64's increment: any full-period walk over the seed space does,
-    // and this one is deterministic and identical on every rank.
+    // Splitmix64's increment: a deterministic full-period walk, identical on every rank.
     let mut candidate = seed;
     for attempt in 1..=INDEPENDENCE_RETRIES {
         candidate = candidate.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -2000,14 +1493,9 @@ fn reseed_hash_until_independent<const W: usize>(
     base
 }
 
-/// One partitioned cell: scatter (untimed), warm up, drain, time one
-/// `propagate`, and read the trace and the per-partition counters.
-///
-/// The shape mirrors [`run_cell`] exactly — same input sum, same warm-up
-/// rationale, same `PropagateOptions` — so the two differ only in the engine
-/// underneath. Everything outside the timed call (building the runtime and its
-/// `P` pinned pools, deriving the partition rows, choosing the generator,
-/// scattering) happens before the clock starts.
+/// One partitioned cell: scatter (untimed), warm up, drain, time one `propagate`, and read the
+/// trace and the per-partition counters. Mirrors [`run_cell`]'s shape; the two differ only in
+/// the engine underneath.
 fn run_cell_partitioned<const W: usize, P>(
     layer: LayerKind,
     threads: usize,
@@ -2025,18 +1513,13 @@ where
         bind_memory: cfg.bind_memory,
         partition_row_seed: cfg.partition_seed,
     };
-    // `--threads` is the TOTAL: the placement decides *where* each partition
-    // runs, this decides how many workers it gets, so P pools of threads/P
-    // compare against one pool of threads on the same machine.
+    // `--threads` is the TOTAL, so P pools of threads/P compare against one pool of threads.
     let runtime = PartitionRuntime::with_threads_per_partition(&config, Some(threads / partitions))
         .unwrap_or_else(|err| {
             eprintln!("phase_breakdown: cannot resolve the partition placement: {err}");
             std::process::exit(2);
         });
-    // `Auto` reads the machine: it rounds the NUMA node count down to a power
-    // of two and caps it at `max_partitions`, so asking for more partitions
-    // than the host has nodes silently gets fewer. Fewer partitions than the
-    // cell claims would mislabel every row, so refuse instead.
+    // `Auto` can silently resolve to fewer partitions than the host has NUMA nodes; refuse rather than mislabel every row.
     if runtime.num_partitions() != partitions {
         eprintln!(
             "phase_breakdown: --partitions {partitions} resolved to {} partitions: an `auto` \
@@ -2048,10 +1531,7 @@ where
         std::process::exit(2);
     }
 
-    // The rows the run will use — `--partition-rows random` reproduces the
-    // draw the scatter would have made on its own. Built here so the generator
-    // scan below sees exactly the split the run will use; the sum comes back
-    // because a non-random row set may have needed a re-seeded hash.
+    // Built here so the generator scan below sees exactly the split the run will use.
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() {
@@ -2085,8 +1565,7 @@ where
     let mut split = PartitionedSum::scatter_with_rows(base, rows, runtime);
     split.enable_trace();
 
-    // Untimed warm-up, then its counters discarded — same contract as the
-    // unpartitioned cell.
+    // Untimed warm-up, then its counters discarded — same contract as the unpartitioned cell.
     split.propagate_with_options(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
@@ -2111,8 +1590,7 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        // The seed actually used, which `choose_partition_rows` may have
-        // re-drawn to keep the rows independent of `H`'s.
+        // The seed actually used, which `choose_partition_rows` may have re-drawn.
         hash_seed: split_hash_seed,
         bucket_bits: cfg.bucket_bits,
         target_bucket_len: cfg.target_bucket_len,
@@ -2136,23 +1614,11 @@ where
     }
 }
 
-/// One cell on the **distributed** driver: this process is one rank's
-/// partition, and the numbers it reports are its own.
-///
-/// The MPI counterpart of [`run_cell_partitioned`], and deliberately the same
-/// shape — one untimed warm-up, one timed call, the counters drained between —
-/// so a rank's row is comparable with an in-process partition's. What differs
-/// is what a "partition" is: the runtime holds exactly one, placed by the
-/// launcher's affinity mask (`mpirun --map-by ppr:1:numa --bind-to numa`), and
-/// the group is the world communicator.
-///
-/// **Collective.** Every rank runs the identical cell matrix in the identical
-/// order; the input comes from the same seed on every rank and the partition
-/// rows from the same draw, so nothing here needs to be agreed at run time.
-///
-/// The headline is `vmhwm_kb`: peak resident set **per rank, including the
-/// export and receive transients**, which is the capacity metric a multi-node
-/// run exists to report.
+/// One cell on the distributed driver: this process is one rank's partition, and the numbers it
+/// reports are its own. The MPI counterpart of [`run_cell_partitioned`] — same shape, but the
+/// runtime holds exactly one partition, placed by the launcher's affinity mask, over the world
+/// communicator. Collective: every rank runs the identical cell matrix in the identical order.
+/// The headline is `vmhwm_kb`, peak resident set per rank including the export/receive transients.
 #[cfg(feature = "mpi")]
 fn run_cell_mpi<const W: usize, P>(
     layer: LayerKind,
@@ -2182,8 +1648,7 @@ where
 
     let base = build_base_sum::<W>(layer, cfg);
 
-    // D = 1: one partition over whatever CPUs the launcher left us. `Auto`
-    // reads that mask, so `--bind-to numa` is what places this rank.
+    // D = 1: one partition over whatever CPUs the launcher left us.
     let config = PartitionConfig {
         placement: cfg.partition_cpus.placement(1, threads),
         bind_memory: cfg.bind_memory,
@@ -2195,10 +1660,7 @@ where
             std::process::exit(2);
         });
 
-    // The rows every rank derives, built here so the generator scan below sees
-    // the split the run will use. Same inputs on every rank — the same layer,
-    // qubit count, rank count and seed — so the same rows, whatever
-    // `--partition-rows` says; nothing is agreed at run time.
+    // Same inputs on every rank, so every rank derives the same rows with nothing agreed at run time.
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, ranks as usize);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     if layer.picks_generator() && rank == 0 {
@@ -2222,9 +1684,7 @@ where
     let mut split = DistributedSum::scatter_with_rows(base, transport, runtime, rows);
     split.enable_trace();
 
-    // Untimed warm-up, counters discarded — the same contract as every other
-    // cell. A barrier after it so the timed call starts together and
-    // `exchange_ns` measures traffic rather than a straggling warm-up.
+    // Untimed warm-up, counters discarded; a barrier so the timed call starts together.
     split.propagate_with_options(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
@@ -2240,8 +1700,7 @@ where
 
     let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
     let stats = fold_partition_stats(&per_partition);
-    // One "partition" here: this rank. The trace's per-layer vectors carry a
-    // single entry for the same reason.
+    // One "partition" here: this rank.
     let summary = summarize_partitions(1, &trace, &per_partition, &stats);
 
     CellResult {
@@ -2252,8 +1711,7 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        // The seed actually used, which `choose_partition_rows` may have
-        // re-drawn to keep the rows independent of `H`'s.
+        // The seed actually used, which `choose_partition_rows` may have re-drawn.
         hash_seed: split_hash_seed,
         bucket_bits: cfg.bucket_bits,
         target_bucket_len: cfg.target_bucket_len,
@@ -2277,17 +1735,9 @@ where
     }
 }
 
-/// The cell-level [`PhaseStats`] of a partitioned run: **wall-clock fields are
-/// the maximum over partitions** (the critical path — the group is only as
-/// fast as its slowest partition, and a partition's own wall phases already
-/// sum to about its layer time), **busy-time and counter fields are sums**
-/// (they are per-worker or per-term totals, and the cell's total work is the
-/// group's).
-///
-/// `layers` is the *driver's* layer count, not a sum: every partition drove
-/// the same layers, so summing would report `P × n` and break the per-layer
-/// figures (and the `layers=` field of the `cell` line, which
-/// `scripts/perf-stat.sh` reads).
+/// The cell-level [`PhaseStats`] of a partitioned run: wall-clock fields are the maximum over
+/// partitions (the critical path), busy-time and counter fields are sums. `layers` is the
+/// driver's layer count, not a sum — every partition drove the same layers.
 fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
     let mut out = PhaseStats::default();
     for s in &stats.per_partition {
@@ -2327,12 +1777,8 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
     out
 }
 
-/// The partition-axis summary of one timed call.
-///
-/// `rows_exported` comes from the folded counters and `bytes_exported` from
-/// the trace's `bytes_sent`; the two are the send side of the same traffic
-/// counted in rows and in wire bytes, by the export pass and the trace
-/// respectively.
+/// The partition-axis summary of one timed call. `rows_exported` and `bytes_exported` are the
+/// same send traffic counted in rows and in wire bytes, respectively.
 fn summarize_partitions(
     partitions: usize,
     trace: &PartitionTrace,
@@ -2380,17 +1826,10 @@ fn summarize_partitions(
     }
 }
 
-// ---------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------
-
-/// Always printed first for every cell, in every format: `n=` and
-/// `layers=` are a contract other scripts grep for (`scripts/perf-stat.sh`'s
-/// awk; machine contract (b) in `benchmarks/PROFILING.md`). `trunc=` and then
-/// `partitions=` are appended last so those greps keep matching unchanged.
+/// Always printed first for every cell, in every format: `n=` and `layers=` are a contract other
+/// scripts grep for (machine contract (b) in `benchmarks/PROFILING.md`).
 fn print_cell_line(cell: &CellResult) {
-    // The MPI suffix is empty for every non-`--mpi` cell, so the line is
-    // byte-identical to what it was before the flag existed.
+    // Empty for every non-`--mpi` cell, so the line is byte-identical to before the flag existed.
     let mpi = match cell.mpi {
         Some((rank, ranks)) => format!(" rank={rank}/{ranks} vmhwm_kb={}", cell.vmhwm_kb),
         None => String::new(),
@@ -2515,9 +1954,7 @@ fn print_table(cell: &CellResult) {
     println!();
 }
 
-/// The partition block of the table format, printed only for a cell that ran
-/// through the partitioned engine — an unpartitioned cell's table is exactly
-/// what it was before the partition axis existed.
+/// The partition block of the table format, printed only for a cell that ran through the partitioned engine.
 fn print_partition_block(cell: &CellResult) {
     let Some(p) = cell.partitioned.as_ref() else {
         return;
@@ -2571,9 +2008,7 @@ fn print_partition_block(cell: &CellResult) {
         "    coset_loop ms per partition = [{}]",
         coset_ms.join(", ")
     );
-    // The per-layer series are long (a heavy-hex step alone is 271 layers), so
-    // the human format prints their shape rather than their contents — the
-    // full arrays are in the JSON/TSV row.
+    // The human format prints the per-layer series' shape; the full arrays are in the JSON/TSV row.
     if let (Some(first), Some(last)) = (p.imbalance_by_layer.first(), p.imbalance_by_layer.last()) {
         let worst = p
             .imbalance_by_layer
@@ -2620,15 +2055,10 @@ fn tsv_array<T: std::fmt::Display>(values: &[T]) -> String {
     items.join("|")
 }
 
-/// One cell as a single JSON line — shared by `--format json` (stdout) and
-/// `--json-out` (sidecar file for `scripts/perf-viz.py`).
-///
-/// The partition fields are written on **every** row, `partitions` included, so
-/// a campaign mixing partitioned and unpartitioned cells has one schema; an
-/// unpartitioned row carries `partitions: 1`, zero counters and empty arrays.
-/// `barrier_ns` is the sidecar's name for the engine's `collective_ns` — the
-/// driver's per-layer bucket-count all-reduce, the one unconditional collective
-/// a layer makes. See machine contract (a) in `benchmarks/PROFILING.md`.
+/// One cell as a single JSON line, shared by `--format json` (stdout) and `--json-out` (sidecar).
+/// The partition fields are written on every row so a campaign has one schema; `barrier_ns` is
+/// the sidecar's name for the engine's `collective_ns`. See machine contract (a) in
+/// `benchmarks/PROFILING.md`.
 fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
     let empty = Vec::new();
@@ -2820,17 +2250,10 @@ fn print_tsv_row(cell: &CellResult) {
     );
 }
 
-/// Dispatch `--truncation` into exactly one monomorphization of
-/// [`run_cells`], so the policy's `keep_term` inlines into the merge the way a
-/// real caller's does. A `&dyn TruncationPolicy` would be one line shorter and
-/// would change the thing being measured.
-///
-/// Each spec supplies two policy values: the one an unpartitioned cell runs
-/// under, and its [`PartitionedTruncation`] form for a partitioned cell. They
-/// are the same value for every spec that has both — only `keep` needs a
-/// separate type (see [`AlwaysKeepPartitioned`]) — and `topn` has no
-/// partitioned form at all, which [`parse_args`] has already rejected by the
-/// time this runs.
+/// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
+/// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
+/// values: the unpartitioned one and its [`PartitionedTruncation`] form (`topn` has none, already
+/// rejected by [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
@@ -2854,10 +2277,7 @@ where
     }
 
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
-        // Under `--mpi` every rank writes its own file: the ranks are separate
-        // processes with no shared file position, and appending to one path
-        // would interleave partial lines. The suffix is the rank, so a harness
-        // globs `<path>.rank*` and each line carries its own `rank` field.
+        // Under `--mpi` every rank writes its own file, suffixed by rank, to avoid interleaving.
         let path = mpi_sidecar_path(path, cfg);
         std::fs::OpenOptions::new()
             .create(true)
@@ -2968,15 +2388,12 @@ fn main() {
         }
     };
 
-    // The universe outlives every cell: the transports hold duplicates of its
-    // communicator, and `Universe`'s drop is `MPI_Finalize`. The library never
-    // creates one (see `paulistrings::mpi`), so the probe does it here.
+    // The universe outlives every cell; `Universe`'s drop is `MPI_Finalize`. The library never
+    // creates one, so the probe does it here.
     #[cfg(feature = "mpi")]
     let _universe = cfg.mpi.then(|| {
         use paulistrings::mpi::rsmpi;
-        // SERIALIZED, not FUNNELED: the layer loop runs inside a Rayon pool, so
-        // the thread issuing MPI calls is a pool worker — one at a time, but
-        // not the main thread.
+        // SERIALIZED, not FUNNELED: the layer loop runs inside a Rayon pool.
         let (universe, threading) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized)
             .unwrap_or_else(|| {
                 eprintln!("phase_breakdown: MPI is already initialized in this process");

@@ -8,9 +8,7 @@ use num_complex::Complex64;
 
 /// A channel that maps every input Pauli to itself with the same coefficient.
 ///
-/// `support()` is empty, so the engine's bucket layout collapses to a single
-/// bucket and the only effect is to copy the input through. `max_fanout()`
-/// is `1`.
+/// `support()` is empty, so the engine's bucket layout collapses to a single bucket and the only effect is to copy the input through. `max_fanout()` is `1`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IdentityChannel;
 

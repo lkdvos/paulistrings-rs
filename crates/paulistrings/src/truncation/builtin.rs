@@ -7,53 +7,16 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 
 thread_local! {
-    /// Reusable squared-magnitude buffer for [`TopN::finalize_layer`], the
-    /// one place in the crate that needs an array of the whole layer's
-    /// coefficients. At `m = 1.5e6` terms a fresh one is 12 MB of allocation,
-    /// first-touch page faults and (via rayon's unindexed `collect`) a double
-    /// write — **per layer**, against a `finalize_layer` already measured at
-    /// 61-71% of layer wall time
-    /// (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6).
-    ///
-    /// `finalize_layer` runs on whichever thread drives `propagate`, so this
-    /// is one buffer per such thread. It is **borrowed out with `take()` and
-    /// returned at the end**, never held across the parallel sections: rayon
-    /// work-steals on a blocked thread, so a nested `propagate` (several
-    /// observables under one `par_iter`) can re-enter `finalize_layer` on this
-    /// very thread. Re-entering then finds an empty slot and allocates, which
-    /// is correct and merely unoptimized; a held `RefCell` borrow would
-    /// instead panic.
-    ///
-    /// The buffer is never shrunk, so a thread retains 8 B per term of the
-    /// largest layer it has ever finalized until it exits — small against the
-    /// ~100 B/term the sum itself costs, and it is the point of the cache.
+    /// Reusable squared-magnitude scratch buffer for [`TopN::finalize_layer`], pooled per thread to avoid a per-layer allocation.
+    /// Borrowed out with `take()` and returned after use, never held across a parallel section: rayon can work-steal a nested `propagate` onto this thread, which would re-enter `finalize_layer` and panic on a held `RefCell` borrow instead of just allocating a fresh buffer.
+    /// Never shrunk, so a thread retains a buffer sized to the largest layer it has finalized.
     static MAGS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Drop terms whose coefficient magnitude is at most `epsilon`.
 ///
-/// # The test is `|c|² > ε²`, not `|c| > ε`
-///
-/// `Complex64::norm()` is `hypot`, a libm call that measured at **11.8–14.4
-/// ns per merged term** on the reference host — nearly doubling the cost of
-/// the merge phase all by itself
-/// (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6). Since
-/// `x ↦ x²` is strictly increasing on `[0, ∞)`, comparing squares decides
-/// the same predicate for a few arithmetic instructions instead, and
-/// `norm_sqr()` is `re·re + im·im`.
-///
-/// Two riders follow from working in squared space, both accepted rather
-/// than guarded (the correctness bar is floating-point tolerance):
-///
-/// - **Underflow.** `|c|² ` loses precision below `|c| ≈ 1.49e-154` and
-///   rounds to `0.0` below `|c| ≈ 1.57e-162`. So `CoefficientThreshold(0.0)`
-///   — "drop only the exact zeros" — also drops magnitudes under
-///   `≈1.57e-162`, and any `ε` in the subnormal-square band resolves
-///   coarsely. Every such coefficient is numerically zero.
-/// - **Overflow.** `ε > ≈1.34e154` squares to `+∞`, so nothing is kept; the
-///   unsquared test kept only `|c| > ε`, which for a finite sum is also
-///   nothing.
-///
+/// Compares `|c|² > ε²` rather than `|c| > ε`: `Complex64::norm()` is a `hypot` call, and squaring is strictly increasing on `[0, ∞)` so it decides the same predicate for a few arithmetic instructions instead.
+/// Two riders follow from working in squared space, both accepted rather than guarded since the correctness bar is floating-point tolerance: `|c|²` rounds to `0.0` below `|c| ≈ 1.57e-162`, so `CoefficientThreshold(0.0)` also drops magnitudes under that bound (all numerically zero); and `ε > ≈1.34e154` squares to `+∞`, keeping nothing, which agrees with the unsquared test on a finite sum.
 /// A negative `ε` still keeps everything, as `|c| > ε` does.
 ///
 /// # Examples
@@ -72,12 +35,8 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     #[inline]
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
         let eps = self.0;
-        // `|c| > ε ⟺ |c|² > ε²` for ε >= 0; see the type docs for why the
-        // squared form is the one that ships. A negative ε keeps everything,
-        // which squaring would otherwise invert. Both `eps` and the loop-
-        // invariant `eps * eps` hoist out of the merge's inner loop: `&self`
-        // is `noalias readonly` and `CoefficientThreshold` has no interior
-        // mutability. NaN drops everything either way.
+        // `|c| > ε ⟺ |c|² > ε²` for ε >= 0, guarded so a negative ε still keeps everything.
+        // NaN drops everything either way.
         eps < 0.0 || c.norm_sqr() > eps * eps
     }
 
@@ -114,77 +73,31 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     }
 }
 
-/// Retain **at most** `n` terms by coefficient magnitude, never splitting a
-/// group of exactly equal magnitudes. Implemented as a `finalize_layer`
-/// partial selection (no per-term filter).
+/// Retain **at most** `n` terms by coefficient magnitude, never splitting a group of exactly equal magnitudes.
+/// Implemented as a `finalize_layer` partial selection; there is no per-term filter.
 ///
 /// # Semantics
 ///
 /// Let `t` be the `n`-th largest magnitude in a sum of more than `n` terms.
-///
-/// 1. Every term with `|c| > t` is kept.
-/// 2. The tie group at `|c| == t` is kept **iff it fits entirely**, i.e. iff
-///    `count(|c| > t) + count(|c| == t) <= n`. Otherwise the *whole* group is
-///    discarded.
-///
-/// So `TopN(n)` retains exactly `n` terms whenever the cut lands on a group
-/// boundary — in particular whenever all magnitudes are distinct, which is the
-/// generic case — and fewer than `n` when a group straddles the cut. It never
-/// retains more than `n`, so the memory bound it exists to provide still
-/// holds. `len <= n` is a no-op.
+/// Every term with `|c| > t` is kept, and the tie group at `|c| == t` is kept iff it fits entirely, i.e. `count(|c| > t) + count(|c| == t) <= n` — otherwise the whole group is discarded.
+/// So `TopN(n)` retains exactly `n` terms when the cut lands on a group boundary (the generic case, since magnitudes are usually distinct), fewer when a group straddles the cut, and never more. `len <= n` is a no-op.
 ///
 /// # Why whole groups
 ///
-/// Terms related by a symmetry of the Hamiltonian carry *exactly* equal
-/// coefficients. Keeping an arbitrary subset of such a multiplet — which is
-/// what any tiebreak on the Pauli key does, since lexicographic key order has
-/// nothing to do with the symmetry — yields a truncated operator that is no
-/// longer symmetric. Discarding the multiplet whole keeps the symmetry intact.
-/// This is not a corner case: the 2D Ising example cuts through large tie
-/// groups on essentially every layer.
-///
-/// Because the rule reads magnitudes only, the retained *set* is a pure
-/// function of the magnitude multiset — independent of the bucket partition,
-/// the hash seed, and the thread count.
+/// Terms related by a symmetry of the Hamiltonian carry exactly equal coefficients — a multiplet.
+/// Keeping an arbitrary subset of a multiplet, which is what any tiebreak on the Pauli key does since key order has nothing to do with the symmetry, yields a truncated operator that is no longer symmetric — so the whole group is discarded instead.
+/// Because the rule reads magnitudes only, the retained set is a pure function of the magnitude multiset, independent of the bucket partition, the hash seed, and the thread count.
 ///
 /// # Ranked on `|c|²`
 ///
-/// The implementation never computes `|c|`: it selects and compares
-/// `norm_sqr()` against `t²`, because `Complex64::norm()` is `hypot` and
-/// `finalize_layer` called it **twice per candidate** — ~24 of its ~56
-/// ns/term (`research/notes/2026-09-01-large-m-phase-breakdown.md` §6).
-/// Squaring preserves the order of finite magnitudes, so ranks 1..n are the
-/// same ranks; what shifts slightly is which magnitudes count as *equal*,
-/// i.e. the boundaries of the tie group:
-///
-/// - A symmetry multiplet — the thing the tie rule exists for — stays intact.
-///   Its members differ by a sign or a power of `i`, and `re² + im²` is
-///   invariant under both (negation is exact, and swapping the two squares
-///   is exact because addition commutes), so bitwise-equal magnitudes remain
-///   bitwise-equal squares.
-/// - Two magnitudes that differ by ~1 ulp *may* square to the same `f64` and
-///   so be treated as one group, or (with different `re`/`im` splits) tie
-///   under `hypot` yet differ by an ulp when squared. Both are inside
-///   floating-point tolerance and neither can break the `≤ n` bound: `t²` is
-///   the `n`-th largest square, so `count(> t²) ≤ n - 1` by construction.
-/// - **Underflow.** `|c|² ` rounds to `0.0` below `|c| ≈ 1.57e-162` (and is
-///   subnormal below `≈1.49e-154`), so magnitudes in that band collapse into
-///   one tie group. Consequences: a sum whose magnitudes *all* underflow is
-///   wiped (it is zero to any tolerance — see the degenerate case below), and
-///   a cut landing inside an underflowing *tail* drops that tail whole and
-///   keeps the representable terms, which is the better of the two outcomes.
-///   Overflow (`|c| > ≈1.34e154`) collapses the same way at `+∞`.
+/// Selection compares `norm_sqr()` against `t²` rather than `norm()` against `t`, since `Complex64::norm()` is a `hypot` call.
+/// Squaring preserves the order of finite magnitudes and preserves bitwise-equal magnitudes as bitwise-equal squares, so a symmetry multiplet stays intact; magnitudes below `|c| ≈ 1.57e-162` all square to `0.0` and so collapse into one tie group, and magnitudes above `≈1.34e154` collapse the same way at `+∞`.
 ///
 /// # ⚠ A fully degenerate sum is wiped to empty
 ///
-/// **If every candidate ties at the threshold, truncation keeps nothing.**
-/// With all magnitudes equal, `t` is the maximum, step 1 keeps zero terms, and
-/// the single group of size `len > n` cannot fit — so `TopN(n)` empties the
-/// sum. This is deliberate: the alternative (keeping the group anyway) would
-/// let `TopN(n)` retain unboundedly more than `n`, destroying its purpose as a
-/// memory bound. Pair `TopN` with [`CoefficientThreshold`] via [`And`], or
-/// pick `n` at least as large as the expected multiplet size, if that outcome
-/// would be wrong for your workload.
+/// If every candidate ties at the threshold, truncation keeps nothing: `t` is the maximum, no term beats it, and the one tie group of size `len > n` cannot fit.
+/// The alternative — keeping the group anyway — would let `TopN(n)` retain unboundedly more than `n`, destroying its purpose as a memory bound.
+/// Pair `TopN` with [`CoefficientThreshold`] via [`And`], or pick `n` at least as large as the expected multiplet size, if that outcome would be wrong for your workload.
 ///
 /// # Examples
 ///
@@ -203,25 +116,10 @@ pub struct TopN(
 impl<const W: usize> TruncationPolicy<W> for TopN {
     /// Bucket-native top-`n` selection; see the type docs for the rule.
     ///
-    /// Three `O(n)` passes and one `select_nth_unstable`: gather the squared
-    /// magnitudes, select the threshold `t²` at rank `n`, count the terms
-    /// above and at `t²`, then compact each bucket in place against the
-    /// resulting predicate. Per-bucket filtering preserves within-bucket order
-    /// automatically, so the canonical-order invariant holds with no re-sort.
-    /// At a single bucket this degenerates to a plain partial selection over
-    /// the lex-sorted sum.
-    ///
-    /// The predicate is `|c|² > t² || (fits && |c|² == t²)`, so no keys are
-    /// read during selection or compaction at all — which is both why the
-    /// result is partition-independent and why there is no comparator to pay
-    /// for on tie-dense data. Squares rather than magnitudes because `norm()`
-    /// is `hypot`; see the type docs' "Ranked on `|c|²`".
-    ///
-    /// Exact `f64` equality against `t²` is the right test here rather than a
-    /// tolerance: a symmetry multiplet's magnitudes are bitwise equal, having
-    /// been produced by the same arithmetic, and squaring preserves that.
-    /// Two coefficients that merely round to nearby values are different
-    /// magnitudes and are ranked as such.
+    /// Three `O(n)` passes and one `select_nth_unstable`: gather the squared magnitudes, select the threshold `t²` at rank `n`, count the terms above and at `t²`, then compact each bucket in place against the resulting predicate.
+    /// Per-bucket filtering preserves within-bucket order automatically, so the canonical-order invariant holds with no re-sort.
+    /// The predicate `|c|² > t² || (fits && |c|² == t²)` reads no keys, which is why the result is partition-independent.
+    /// Exact `f64` equality against `t²` is the right test here rather than a tolerance: a symmetry multiplet's magnitudes are bitwise equal, and squaring preserves that.
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
         if sum.len() <= n {
@@ -232,11 +130,8 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             return;
         }
 
-        // Squared magnitudes only; `select_nth_unstable` permutes them, which
-        // is fine because every later step reads this as a multiset. The
-        // buffer is borrowed out of the thread-local pool rather than
-        // allocated per layer (see `MAGS`), and only `[..total]` of it is
-        // ever live — the tail is the previous, larger layer's stale data.
+        // `select_nth_unstable` permutes the squared magnitudes, which is fine since every later step reads this as a multiset.
+        // The buffer is pooled (see `MAGS`); only `[..total]` is ever live, the tail is stale data from a previous, larger layer.
         let total = sum.len();
         let mut buf = MAGS.take();
         if buf.len() < total {
@@ -244,13 +139,7 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
         let mags = &mut buf[..total];
         {
-            // One `&mut [f64]` per bucket, carved off in bucket order, so the
-            // fill writes each square exactly once. (`collect()` on an
-            // unindexed parallel iterator cannot: rayon has to build a
-            // per-thread `Vec` per split and concatenate, which writes every
-            // magnitude twice and reallocates as it grows.) The handle vector
-            // is 16 B per bucket against the buffer's 8 B per *term*, i.e.
-            // ~1/500 of it at the default 1024-term bucket target.
+            // One `&mut [f64]` per bucket, carved off in bucket order, so the fill writes each square exactly once.
             let view = &*sum;
             let nb = view.num_buckets();
             let mut handles: Vec<&mut [f64]> = Vec::with_capacity(nb);
@@ -274,17 +163,8 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         });
         let t2 = mags[n - 1];
 
-        // The tie group fits **iff no element after the pivot equals `t2`**,
-        // which is the stated `count(> t2) + count(== t2) <= n` rule with the
-        // selection's own partition substituted in. Writing `e_pre`/`e_suf`
-        // for the count of elements equal to `t2` before/after index `n - 1`:
-        // everything before is `>= t2` and everything after is `<= t2`, so
-        // `count_gt = (n - 1) - e_pre` and `count_eq = e_pre + 1 + e_suf`,
-        // whose sum is `n + e_suf`. So the two forms agree exactly, and this
-        // one reads the `len - n` suffix instead of all `len` elements and
-        // stops at the first tie it finds. `top_n_matches_the_reference_rule_
-        // on_tied_magnitudes` checks the equivalence against the literal rule
-        // across straddling and fitting cuts.
+        // The tie group fits iff no element after the pivot equals `t2` — equivalent to `count(> t2) + count(== t2) <= n` but only reads the `len - n` suffix.
+        // `top_n_matches_the_reference_rule_on_tied_magnitudes` checks the equivalence against the literal rule.
         let keep_tied = !mags[n..].par_iter().any(|&m| m == t2);
 
         MAGS.set(buf);
@@ -311,73 +191,28 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
     }
 }
 
-/// Number of bins in [`ApproxTopN`]'s histogram: one per `f64` binade, i.e.
-/// the full range of the 11-bit biased exponent. `+∞` and `NaN` share the top
-/// bin; every subnormal and `0.0` share bin 0.
-///
-/// `2048 × 4 B = 8 KB`, so a bin counter array is L1-resident and the
-/// histogram pass costs one L1 increment per term. Adding mantissa bits for a
-/// finer threshold would leave L1 (3 bits → 64 KB) and turn that increment
-/// into an L2 access — the resolution/cost trade-off is documented on
-/// [`ApproxTopN`] and deliberately settled in favour of the cache.
+/// Number of bins in [`ApproxTopN`]'s histogram: one per `f64` binade, the full range of the 11-bit biased exponent.
+/// `+∞` and `NaN` share the top bin; every subnormal and `0.0` share bin 0.
+/// Sized so the bin counter array (`2048 × 4 B = 8 KB`) is L1-resident; adding mantissa bits for a finer threshold would push it out of L1.
 pub(crate) const APPROX_BINS: usize = 2048;
 
-/// Retain **approximately** `n` terms: at most `n`, and more than `n - p`
-/// where `p` is the population of the coarsest octave that did not fit. The
-/// cheap sibling of [`TopN`] — no selection, no candidate array, no tie rule.
+/// Retain **approximately** `n` terms: at most `n`, and more than `n - p` where `p` is the population of the coarsest octave that did not fit.
+/// The cheap sibling of [`TopN`] — no selection, no candidate array, no tie rule.
 ///
 /// # Semantics
 ///
-/// Bin every term by the binade (octave) of `|c|²` — a factor of 2 in `|c|²`,
-/// i.e. `√2` in `|c|` — and let `S_k` be the number of terms in bin `k` and
-/// above. The kept set is `{ |c|² ≥ 2^(k*-1023) }` for the **lowest** `k*`
-/// with `S_k* ≤ n`, so:
+/// Bins every term by the octave of `|c|²` (a factor of 2 in `|c|²`, `√2` in `|c|`) and lets `S_k` be the population of bin `k` and above.
+/// The kept set is `{ |c|² ≥ 2^(k*-1023) }` for the lowest `k*` with `S_k* ≤ n`, so `kept ≤ n` always, `kept > n - p` for `p` the next octave's population, and the retained set is a union of whole octaves.
+/// The shortfall against `n` is thus bounded by how many terms sit inside one `√2`-wide band around the cut.
 ///
-/// 1. `kept = S_k* ≤ n` — the bound [`TopN`] exists to provide still holds
-///    exactly, which is why the rounding goes this way.
-/// 2. `kept > n - p` with `p = S_{k*-1} - S_k*` the population of the next
-///    octave down: including it would have overshot `n`.
-/// 3. Every kept magnitude is ≥ every dropped one, and the retained set is a
-///    union of *whole* octaves.
-///
-/// So the shortfall against `n` is bounded by how many terms sit inside one
-/// `√2`-wide magnitude band around the cut. On a magnitude distribution spread
-/// over many octaves that is a small fraction of `n`; on a tightly clustered
-/// one it is not, and the degenerate case is item 4 below.
-///
-/// # `ApproxTopN` versus `TopN`
-///
-/// | | [`TopN`] | `ApproxTopN` |
-/// |---|---|---|
-/// | retained | exactly `n`, or fewer if a tie group straddles | `(n - p, n]` |
-/// | work | fill an `8 B/term` array, `select_nth_unstable`, suffix scan, compact | histogram (8 KB, L1), compact |
-/// | per-layer allocation | one pooled buffer, `8 B/term` | none |
-/// | tie groups | kept whole *iff they fit*, else dropped whole | always kept whole |
-/// | threshold | the exact `n`-th largest `\|c\|²` | an octave edge |
-///
-/// [`TopN`] remains the default and the one to use when the retained count
-/// matters. Reach for this when `n` is a *memory budget* and a few percent of
-/// slack in the term count is cheaper than the selection.
-///
-/// Like [`TopN`], the retained set is a pure function of the magnitude
-/// multiset: independent of the bucket partition, the hash seed and the thread
-/// count. Unlike [`TopN`], it needs no tie rule to get there — equal
-/// magnitudes have equal squares and therefore share an octave, so a symmetry
-/// multiplet can never be split, whatever `n` is.
+/// Cheaper than [`TopN`] — a histogram pass plus a compaction, no per-layer allocation, no selection — at the cost of retaining `(n - p, n]` terms instead of exactly `n`.
+/// [`TopN`] remains the default and the one to use when the retained count matters; reach for this when `n` is a memory budget and a little slack in the term count is cheaper than the selection.
+/// Like [`TopN`] it needs no tie rule: equal magnitudes share an octave, so a symmetry multiplet can never be split.
 ///
 /// # ⚠ A sum inside a single octave is wiped to empty
 ///
-/// **If every magnitude lands in one octave of `|c|²` and `len > n`, nothing
-/// is kept.** `S_k*` can only be `0` or `len`, and `len > n`. This is
-/// [`TopN`]'s all-tied wipe with a wider notion of "tied" (a factor of `√2`
-/// in `|c|` rather than bitwise equality), and it resolves the same way for
-/// the same reason: keeping the octave anyway would let the policy retain
-/// unboundedly more than `n`. Pair with [`CoefficientThreshold`] via [`And`],
-/// or use [`TopN`], if that outcome would be wrong for your workload.
-///
-/// Squares underflow to `0.0` below `|c| ≈ 1.57e-162`, which lumps that band
-/// into bin 0 along with the exact zeros — see [`TopN`]'s "Ranked on `|c|²`"
-/// for why that is accepted.
+/// If every magnitude lands in one octave of `|c|²` and `len > n`, nothing is kept — [`TopN`]'s all-tied wipe, with "tied" widened to a factor of `√2` in `|c|`.
+/// Pair with [`CoefficientThreshold`] via [`And`], or use [`TopN`], if that outcome would be wrong for your workload.
 ///
 /// # Examples
 ///
@@ -394,39 +229,26 @@ pub struct ApproxTopN(
 
 /// What [`octave_edge`] decided a layer's histogram means for the terms.
 ///
-/// The three cases are [`ApproxTopN`]'s three outcomes, factored out so the
-/// single-partition and the partitioned paths share one decision rule: the
-/// histogram they feed it is local in the first case and all-reduced in the
-/// second, and everything downstream of the decision is a per-sum
-/// [`retain_at_or_above`] that needs no further communication.
+/// Factored out so the single-partition and partitioned paths share one decision rule; the histogram fed to it is local in one case and all-reduced in the other, and downstream is always a per-sum [`retain_at_or_above`] needing no further communication.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum EdgeDecision {
     /// The whole sum fits within `n`: nothing is dropped.
     KeepAll,
-    /// Nothing fits — `n == 0`, or the top octave alone overshoots `n` (the
-    /// single-octave wipe documented on [`ApproxTopN`]).
+    /// Nothing fits — `n == 0`, or the top octave alone overshoots `n`.
     Clear,
     /// Keep the terms with `norm_sqr() >= threshold`.
     AtOrAbove {
         /// The lower edge of the lowest octave of `|c|²` that still fits.
         threshold: f64,
-        /// How many terms survive **across the whole sum** — the cumulative
-        /// octave population the walk stopped at. In partitioned mode this is
-        /// the global count, not any one partition's.
+        /// How many terms survive across the whole sum (global, in partitioned mode).
         kept: usize,
     },
 }
 
 /// Population of each octave of `|c|²` over the whole sum.
 ///
-/// The bin index is `norm_sqr().to_bits() >> 52`: the `f64` bit pattern of a
-/// non-negative number is monotone in its value, so the high 12 bits (sign
-/// always 0, then the exponent) are a `log₂` bucketing.
-///
-/// Accumulated in a fixed number of tasks (four per worker) rather than
-/// through a `fold`-per-split, so the number of 8 KB accumulators and
-/// elementwise reductions is bounded by the thread count instead of by rayon's
-/// splitting.
+/// The bin index is `norm_sqr().to_bits() >> 52`: the high 12 bits of a non-negative `f64`'s bit pattern are a `log₂` bucketing.
+/// Accumulated over a fixed number of tasks (four per worker) so the number of accumulators is bounded by the thread count rather than by rayon's splitting.
 pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPROX_BINS] {
     // A bin counter is `u32`; a sum of 2^32 terms is >100 GB of columns.
     debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
@@ -454,18 +276,10 @@ pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPRO
         )
 }
 
-/// The octave edge [`ApproxTopN`] retains against, from a histogram of the
-/// whole sum.
+/// The octave edge [`ApproxTopN`] retains against, from a histogram of the whole sum.
 ///
-/// `hist` is [`octave_histogram`]'s output — locally, or summed across
-/// partitions, in which case `total_len` is the summed length too. Generic in
-/// the counter type so an all-reduced `[u64]` needs no narrowing copy.
-///
-/// Walks down from the top bin while the running count still fits: `S_k` is
-/// non-increasing in `k`, so the first overshoot is the boundary.
-/// `f64::from_bits(k << 52)` inverts the bin index to the bin's lower edge, and
-/// comparing `norm_sqr() >= edge` is then the same predicate as `bin >= k` for
-/// one `f64` compare — and drops `NaN`, which the bin index would keep.
+/// `hist` is [`octave_histogram`]'s output, locally or summed across partitions (`total_len` summed to match); generic in the counter type so an all-reduced `[u64]` needs no narrowing copy.
+/// Walks down from the top bin while the running count still fits, since `S_k` is non-increasing in `k` so the first overshoot is the boundary.
 pub(crate) fn octave_edge<C>(hist: &[C], total_len: usize, n: usize) -> EdgeDecision
 where
     C: Copy + Into<u64>,
@@ -500,10 +314,7 @@ where
 
 /// Apply an [`EdgeDecision`] to one sum — the only step that touches terms.
 ///
-/// Per-sum and communication-free by construction: every partition holding a
-/// slice of a distributed sum applies the *same* decision to its own terms and
-/// the union is the single-partition answer, because the predicate reads only
-/// a term's own coefficient.
+/// Per-sum and communication-free: every partition of a distributed sum applies the same decision to its own terms since the predicate reads only a term's own coefficient.
 pub(crate) fn retain_at_or_above<const W: usize>(sum: &mut PauliSum<W>, edge: EdgeDecision) {
     match edge {
         EdgeDecision::KeepAll => {}
@@ -515,17 +326,8 @@ pub(crate) fn retain_at_or_above<const W: usize>(sum: &mut PauliSum<W>, edge: Ed
 }
 
 impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
-    /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²`
-    /// (`octave_histogram`), walk the 2048 bins down to the last edge that
-    /// still fits in `n` (`octave_edge`), then [`PauliSum::retain`] against
-    /// that edge (`retain_at_or_above`).
-    ///
-    /// The two early exits are taken before the histogram rather than left to
-    /// `octave_edge`, which decides them too: there is no point walking the
-    /// terms to answer a question their count already settles. The partitioned
-    /// sibling, whose global length is not known locally, does go through the
-    /// histogram — see
-    /// [`PartitionedTruncation`](crate::PartitionedTruncation).
+    /// Two `O(n)` passes and no selection: histogram the octaves of `|c|²` (`octave_histogram`), walk the bins down to the last edge that still fits in `n` (`octave_edge`), then [`PauliSum::retain`] against it (`retain_at_or_above`).
+    /// The two early exits below skip the histogram when the term count already settles the answer; the partitioned sibling, whose global length is not known locally, goes through the histogram regardless — see [`PartitionedTruncation`](crate::PartitionedTruncation).
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         let n = self.0;
         let total = sum.len();
@@ -658,9 +460,7 @@ mod tests {
         ));
     }
 
-    /// A negative threshold keeps *everything*, including an exact zero —
-    /// `|c| > ε` is vacuously true for `ε < 0` and the squared form must not
-    /// silently invert that (`ε² > 0` would drop the zero).
+    /// A negative threshold keeps everything, including an exact zero: the squared form must not invert `|c| > ε`'s vacuous truth for `ε < 0`.
     #[test]
     fn coefficient_threshold_negative_epsilon_keeps_everything() {
         let policy = CoefficientThreshold(-1.0);
@@ -676,10 +476,7 @@ mod tests {
         }
     }
 
-    /// The layer-finalization hint must agree with which builtins actually
-    /// override `finalize_layer`: only `TopN` does, and `And` inherits it from
-    /// either side while `Or` — whose `finalize_layer` is the trait's no-op
-    /// default — never does.
+    /// `finalizes_layer` must agree with which builtins override `finalize_layer`: only `TopN`, plus `And` inheriting from either side; `Or` never does.
     #[test]
     fn layer_finalize_hint_matches_the_builtins() {
         assert!(
@@ -705,9 +502,7 @@ mod tests {
         assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&ored));
     }
 
-    /// The hint defaults to `true` — the conservative answer — so a policy that
-    /// overrides `finalize_layer` and forgets the hint still gets its layer
-    /// pass run.
+    /// The hint defaults to the conservative `true`, so a forgotten override still gets its layer pass run.
     #[test]
     fn layer_finalize_hint_defaults_to_conservative_true() {
         struct Silent;
@@ -802,14 +597,10 @@ mod tests {
         ));
     }
 
-    /// ten distinct keys with decreasing |coeff| (10, 9, …, 1);
-    /// `TopN(3)` keeps the three with magnitudes 10, 9, 8.
+    /// Ten distinct keys with decreasing |coeff| (10, 9, …, 1); `TopN(3)` keeps the three with magnitudes 10, 9, 8.
     #[test]
     fn top_n_keeps_largest_three_of_ten() {
-        // Ten distinct (x, z) keys: x ∈ {0..10}, z=0. Sorted by x ascending.
-        // Magnitudes 10, 9, 8, ... in same order, so the largest sit at the
-        // *front* of the sort order; back-loaded magnitudes are exercised in a
-        // separate test.
+        // Largest magnitudes sit at the front of the sort order; back-loaded magnitudes are exercised separately.
         let mut sum = PauliSum::<1>::from_sorted_columns(
             (1u64..=10).map(|i| [i]).collect(),
             vec![[0u64]; 10],
@@ -822,8 +613,7 @@ mod tests {
         sum.assert_invariants();
         TopN(3).finalize_layer(&mut sum);
         assert_eq!(sum.len(), 3);
-        // Survivors are the keys whose original magnitudes were 10, 9, 8 →
-        // they sat at indices 0, 1, 2 → x = [1], [2], [3].
+        // Survivors: original magnitudes 10, 9, 8 → x = [1], [2], [3].
         let (x, _, c) = sum.to_arrays();
         assert_eq!(x, vec![[1u64], [2u64], [3u64]]);
         let mags: Vec<f64> = c.iter().map(|c| c.norm()).collect();
@@ -831,11 +621,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// `TopN(N) where N >= len` is a no-op.
-    ///
-    /// Checked at `N > len` *and* at `N == len`, because the tie rule only
-    /// engages on the `len > n` path — an all-tied sum of exactly `n` terms
-    /// must survive untouched rather than being wiped.
+    /// `TopN(N) where N >= len` is a no-op, checked at both `N > len` and `N == len` since the tie rule only engages on the `len > n` path.
     #[test]
     fn top_n_at_or_above_len_is_a_no_op() {
         let mut sum = PauliSum::<1>::from_sorted_columns(
@@ -869,10 +655,7 @@ mod tests {
         tied.assert_invariants();
     }
 
-    /// With all magnitudes distinct, the tie group at rank `n` has size one
-    /// and therefore always fits — so `TopN(n)` retains **exactly** `n`. This
-    /// is the property that keeps every generic workload's behaviour matching
-    /// a naive top-`n` selection.
+    /// With all magnitudes distinct, the tie group at rank `n` has size one and always fits, so `TopN(n)` retains exactly `n`.
     #[test]
     fn top_n_all_distinct_retains_exactly_n() {
         let mags = [7.0f64, 1.0, 5.0, 3.0, 9.0, 2.0, 8.0, 4.0];
@@ -892,13 +675,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// A tie group straddling the cut is discarded **whole**, so fewer than
-    /// `n` terms survive and the retained count equals `count(|c| > t)`.
-    ///
-    /// Magnitudes 5, 4, 3, 3, 3, 2 with `n = 3`: the threshold `t` is 3, two
-    /// terms beat it, and the three-member group at 3 does not fit in the one
-    /// remaining slot. Splitting it would keep an arbitrary member — the
-    /// symmetry-breaking this rule exists to prevent.
+    /// A tie group straddling the cut is discarded whole: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps only 5 and 4, since the three-member group at 3 does not fit in the one remaining slot.
     #[test]
     fn top_n_discards_a_straddling_tie_group_entirely() {
         let mags = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
@@ -922,11 +699,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// A tie group that ends exactly at rank `n` fits, so it is kept in
-    /// full and exactly `n` terms survive.
-    ///
-    /// Magnitudes 5, 4, 3, 3, 2, 1 with `n = 4`: `t = 3`, `count(> t) = 2`,
-    /// `count(== t) = 2`, and `2 + 2 <= 4`.
+    /// A tie group that ends exactly at rank `n` fits and is kept whole: magnitudes 5, 4, 3, 3, 2, 1 with `n = 4` keeps all four of 5, 4, 3, 3.
     #[test]
     fn top_n_keeps_a_tie_group_that_fits_exactly() {
         let mags = [5.0f64, 4.0, 3.0, 3.0, 2.0, 1.0];
@@ -946,17 +719,13 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// The loud edge case: if **every** candidate ties at the threshold,
-    /// the group cannot fit and the whole sum is discarded. Documented on
-    /// [`TopN`] itself; pinned here so it can never regress silently.
+    /// If every candidate ties at the threshold, the group cannot fit and the whole sum is discarded — the case documented on [`TopN`] itself.
     #[test]
     fn top_n_wipes_an_all_tied_sum_to_empty() {
         let mut sum = PauliSum::<1>::from_sorted_columns(
             (0u64..6).map(|i| [i]).collect(),
             vec![[0u64]; 6],
-            // Same magnitude, different phases: a multiplet, not duplicates.
-            // Phases are the fourth roots of unity so every norm is *bitwise*
-            // 2.0 — `from_polar` at a generic angle would not be.
+            // Same magnitude, different phases (fourth roots of unity so every norm is bitwise 2.0): a multiplet, not duplicates.
             vec![
                 Complex64::new(2.0, 0.0),
                 Complex64::new(-2.0, 0.0),
@@ -977,15 +746,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// Selection ranks on `|c|²`, so magnitudes below the square-underflow
-    /// floor (`≈1.57e-162`) all collapse to `0.0` and become **one tie
-    /// group** however distinct they were.
-    ///
-    /// Magnitudes 1e-200, 2e-200, …, 6e-200 with `n = 3`: every square is
-    /// `0.0`, so `t² = 0`, nothing exceeds it, and the single group of six
-    /// does not fit in three — the documented all-tied wipe. Such a sum is
-    /// zero to any tolerance, which is why this is accepted rather than
-    /// guarded.
+    /// Magnitudes below the square-underflow floor (`≈1.57e-162`) collapse to one tie group: six terms at 1e-200..6e-200 with `n = 3` all square to `0.0` and the group of six does not fit in three, so the sum is wiped.
     #[test]
     fn top_n_wipes_a_sum_whose_squares_all_underflow() {
         let mut sum = PauliSum::<1>::from_sorted_columns(
@@ -1005,15 +766,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// The useful half of the same edge: when the cut falls *inside* an
-    /// underflowing tail, the tail is dropped whole and the representable
-    /// terms are kept — a strictly better outcome than padding the result
-    /// with numerical noise.
-    ///
-    /// Magnitudes 3, 2, 1 and then five terms at 1e-200 with `n = 5`: the
-    /// 5th largest square is `0.0`, `count(> 0) = 3`, `count(== 0) = 5`, and
-    /// `3 + 5 > 5`, so the underflow group is discarded whole and exactly the
-    /// three representable terms survive.
+    /// When the cut falls inside an underflowing tail, the tail is dropped whole and the representable terms are kept: magnitudes 3, 2, 1 plus five terms at 1e-200 with `n = 5` keeps only the three representable terms.
     #[test]
     fn top_n_drops_an_underflowing_tail_and_keeps_the_rest() {
         let mut sum = PauliSum::<1>::from_sorted_columns(
@@ -1091,16 +844,7 @@ mod tests {
         );
     }
 
-    /// `finalize_layer` must work when it is itself called from inside a
-    /// rayon job — the shape a caller propagating several observables in
-    /// parallel produces. Its own `par_iter` sections then run nested, and a
-    /// blocked worker may steal a sibling task, re-entering `finalize_layer`
-    /// on a thread that is already inside one.
-    ///
-    /// This cannot *force* that interleaving, so it is a smoke test, not a
-    /// proof: what it does pin is that the magnitude buffer is pooled in a
-    /// form that tolerates it (borrowed out with `take`, never held as a live
-    /// `RefCell` borrow across a parallel section, which would panic).
+    /// Smoke test for `finalize_layer` called from inside a rayon job (a caller propagating several observables in parallel), where a blocked worker may re-enter `finalize_layer` via work-stealing.
     #[test]
     fn finalize_layer_runs_inside_a_rayon_job() {
         use crate::test_support::rand_sum;
@@ -1133,8 +877,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// largest coefficients sit at the *end* of the sort order;
-    /// the survivors must still be in (x, z) sort order, not magnitude order.
+    /// Largest coefficients sit at the end of the sort order; survivors must still come back in (x, z) sort order, not magnitude order.
     #[test]
     fn top_n_preserves_sort_order() {
         // Five keys, magnitudes 1, 2, 3, 4, 5 (back-loaded).
@@ -1153,8 +896,7 @@ mod tests {
         sum.assert_invariants();
         TopN(3).finalize_layer(&mut sum);
         assert_eq!(sum.len(), 3);
-        // Survivors: magnitudes 5, 4, 3 — keys x=[5], [4], [3] in the
-        // original. Sort-order preservation means [3], [4], [5].
+        // Survivors: magnitudes 5, 4, 3, i.e. keys [5], [4], [3]; sort order preservation means they come back as [3], [4], [5].
         let (x, _, c) = sum.to_arrays();
         assert_eq!(x, vec![[3u64], [4u64], [5u64]]);
         assert_eq!(
@@ -1194,14 +936,7 @@ mod tests {
         (c.norm_sqr().to_bits() >> 52) as usize
     }
 
-    /// The threshold can only land on an octave boundary of `|c|²`, so the
-    /// retained count is a *cumulative octave population*, not `n`.
-    ///
-    /// Magnitudes 8, 4, 4, 2, 2, 2, 1, 1, 1, 1 — squares 64, 16, 16, 4, 4, 4,
-    /// 1, 1, 1, 1, each a power of two, so the four magnitudes sit in four
-    /// distinct octaves with populations 1, 2, 3, 4 and cumulative counts
-    /// 1, 3, 6, 10 from the top. `ApproxTopN(n)` keeps the largest cumulative
-    /// count that is `<= n`, hand-tabulated below.
+    /// The threshold can only land on an octave boundary of `|c|²`, so the retained count is a cumulative octave population, not `n` — hand-tabulated here for the four-octave fixture below (populations 1, 2, 3, 4; cumulative 1, 3, 6, 10 from the top).
     #[test]
     fn approx_top_n_keeps_a_cumulative_octave_population() {
         let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
@@ -1233,12 +968,7 @@ mod tests {
         assert_eq!(sum.len(), 10);
     }
 
-    /// When the cut lands exactly on an octave boundary, the approximation is
-    /// no approximation: the same set [`TopN`] would keep.
-    ///
-    /// `1, 3, 6` are the cumulative octave populations of the fixture above
-    /// (10 is the no-op case). `TopN`'s tie group at each of those `n` fits
-    /// exactly, so both policies return the top `n`.
+    /// When the cut lands exactly on an octave boundary (`n` = 1, 3, or 6, the fixture's cumulative populations), the approximation is no approximation: both policies return the same top `n`.
     #[test]
     fn approx_top_n_matches_top_n_when_the_histogram_resolves_exactly() {
         let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
@@ -1256,9 +986,7 @@ mod tests {
         }
     }
 
-    /// Larger `n` keeps a superset. The threshold is an octave edge that can
-    /// only move *down* as `n` grows, so the retained sets are nested — the
-    /// property that makes the policy safe to tune.
+    /// Larger `n` keeps a superset: the octave edge can only move down as `n` grows, so retained sets nest.
     #[test]
     fn approx_top_n_is_monotone_in_n() {
         let input = crate::test_support::rand_sum::<1>(2000, 10, 0xA9C7);
@@ -1294,9 +1022,7 @@ mod tests {
             let kept = sum.len();
             assert!(kept <= n, "n={n}: kept {kept} exceeds the bound");
 
-            // The highest excluded octave: the largest octave of a *dropped*
-            // term. Its population in the *input* is the slack. `(x, z)` is
-            // the key — `rand_sum` draws both.
+            // The highest excluded octave's population in the input is the slack.
             let survivors: std::collections::HashSet<(u64, u64)> =
                 sum.iter().map(|(x, z, _)| (x[0], z[0])).collect();
             let dropped_octaves: Vec<usize> = input
@@ -1316,13 +1042,7 @@ mod tests {
         }
     }
 
-    /// Equal magnitudes share an octave, so `ApproxTopN` cannot split a
-    /// symmetry multiplet — no tie rule, no fits-or-not test, no degenerate
-    /// tie case beyond the one every bound-preserving policy has.
-    ///
-    /// The fixture's magnitudes are 1, ½, ¼, ⅛ (`tie_heavy_sum`), whose
-    /// squares are one per octave, so every retained set must be a union of
-    /// whole magnitude groups.
+    /// Equal magnitudes share an octave, so `ApproxTopN` cannot split a symmetry multiplet: `tie_heavy_sum`'s magnitudes (1, ½, ¼, ⅛) each land in their own octave, so every retained set must be a union of whole magnitude groups.
     #[test]
     fn approx_top_n_never_splits_a_tie_group() {
         let input = crate::test_support::tie_heavy_sum::<1>(2000, 8, 0x7135);
@@ -1341,10 +1061,7 @@ mod tests {
         }
     }
 
-    /// One octave holding everything is the degenerate case, and it resolves
-    /// the way [`TopN`]'s all-tied sum does: the bound wins and the sum is
-    /// wiped. Magnitudes 1, 1⅛, 1¼, 1⅜ square to 1, 1.265625, 1.5625 and
-    /// 1.890625 — all inside the single octave `[1, 2)`.
+    /// One octave holding everything resolves like [`TopN`]'s all-tied sum: the bound wins and the sum is wiped.
     #[test]
     fn approx_top_n_wipes_a_single_octave_sum() {
         let mags = [1.0f64, 1.125, 1.25, 1.375];
@@ -1370,9 +1087,7 @@ mod tests {
         sum.assert_invariants();
     }
 
-    /// `W = 2`: the const-generic surface, on keys that straddle the word
-    /// boundary. Magnitudes 4, 2, 2, 1 — squares 16, 4, 4, 1, three octaves
-    /// with cumulative counts 1, 3, 4 — so `n = 2` keeps 1 and `n = 3` keeps 3.
+    /// `W = 2`: the const-generic surface, on keys that straddle the word boundary.
     #[test]
     fn approx_top_n_w2() {
         let build = || {
@@ -1400,8 +1115,6 @@ mod tests {
     }
 
     /// A complex coefficient is ranked by `re² + im²` like everywhere else.
-    /// Octaves, from the top: `36 ∈ [32, 64)`, `25 ∈ [16, 32)`, `4 ∈ [4, 8)`,
-    /// so the cumulative counts are 1, 2, 3.
     #[test]
     fn approx_top_n_ranks_complex_coefficients_by_squared_magnitude() {
         let build = || {
@@ -1433,14 +1146,8 @@ mod tests {
     }
 
     proptest! {
-        /// The whole contract, over tie-dense magnitude multisets: `kept <= n`,
-        /// the kept set is a *union of whole octaves* of `|c|²`, and those are
-        /// the top ones — plus the shortfall bound, `kept + p > n` for `p` the
-        /// population of the highest excluded octave.
-        ///
-        /// Magnitudes are small integers so that squares collide into few
-        /// octaves and the interesting branches (a straddling octave, an
-        /// all-one-octave sum) are hit often.
+        /// The whole contract over tie-dense magnitude multisets: `kept <= n`, the kept set is a union of whole top octaves, and the shortfall bound `kept + p > n` holds for `p` the population of the highest excluded octave.
+        /// Magnitudes are small integers so squares collide into few octaves and the interesting branches are hit often.
         #[test]
         fn approx_top_n_thresholds_on_an_octave_edge(
             values in proptest::collection::vec(1u32..40u32, 1..48),

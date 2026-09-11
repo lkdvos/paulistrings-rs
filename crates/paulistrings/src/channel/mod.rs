@@ -1,31 +1,10 @@
 //! [`Channel<W>`] — unified abstraction for gates and noise.
 //!
-//! Every operation on a [`PauliSum`] (Clifford gate, Pauli rotation,
-//! arbitrary unitary, noise channel) maps a single Pauli string to a small
-//! weighted sum of Pauli strings. The trait formalizes that mapping; the
-//! engine consumes it via the sort-merge pipeline (see [`engine`]).
-//!
-//! Built-ins in this module:
-//!
-//! - [`Clifford1Q`], [`Clifford2Q`] — table-driven Clifford gates with
-//!   `MAX_FANOUT = 1`.
-//! - [`PauliRotation`] — `exp(-i·θ·P/2)` with `MAX_FANOUT = 2` (commuting
-//!   inputs collapse to fanout-1 at runtime).
-//! - [`GeneralUnitary1Q`], [`GeneralUnitary2Q`] — generic unitaries stored
-//!   as Pauli-expansion tables.
-//! - [`Depolarizing`], [`Dephasing`], [`PauliChannel`], [`Depolarizing2Q`] —
-//!   coefficient-rescaling noise (`MAX_FANOUT = 1`).
-//! - [`AmplitudeDamping`] — the one built-in with `MAX_FANOUT = 2`.
-//! - [`IdentityChannel`] — pass-through, used in tests and as a neutral
-//!   composition element.
-//!
-//! See ARCHITECTURE.md §Channels.
+//! Built-ins: [`Clifford1Q`], [`Clifford2Q`], [`PauliRotation`], [`GeneralUnitary1Q`], [`GeneralUnitary2Q`], [`Depolarizing`], [`Dephasing`], [`PauliChannel`], [`Depolarizing2Q`], [`AmplitudeDamping`], [`IdentityChannel`]. See ARCHITECTURE.md §Channels.
 //!
 //! # Implementing a custom channel
 //!
-//! Implement the trait directly; the engine treats your type as just another
-//! `Box<dyn `[`Channel<W>`]`>` inside a [`Circuit`]. Three required methods
-//! plus an optional [`Channel::apply_adjoint`] override.
+//! Implement the trait directly; the engine treats your type as just another `Box<dyn `[`Channel<W>`]`>` inside a [`Circuit`].
 //!
 //! ```
 //! use paulistrings::{Channel, OutputBuffer};
@@ -80,9 +59,7 @@ use prepared::Prepared;
 
 /// Pre-allocated, fixed-capacity SoA scratch buffer for channel outputs.
 ///
-/// Sized by the engine to `n_in · channel.max_fanout()` so that `apply` can
-/// write without dynamic growth. Required for GPU correctness and for CPU
-/// hot-loop performance. Channel impls write via [`OutputBuffer::push`].
+/// Sized by the engine to `n_in · channel.max_fanout()` so `apply` writes without dynamic growth. Channel impls write via [`OutputBuffer::push`].
 pub struct OutputBuffer<'a, const W: usize> {
     /// X-part column. Length equals the buffer's capacity.
     pub x: &'a mut [[u64; W]],
@@ -97,11 +74,7 @@ pub struct OutputBuffer<'a, const W: usize> {
 impl<'a, const W: usize> OutputBuffer<'a, W> {
     /// Append one term to the buffer at the current cursor.
     ///
-    /// Capacity is `self.x.len()`; the engine sizes the slices to
-    /// `channel.max_fanout()` per input term, so a `Channel::apply` body
-    /// must not push more than its declared `max_fanout`. Out-of-range
-    /// writes are caught by slice bounds-checking (and, in debug builds,
-    /// by an explicit assertion with a clearer message).
+    /// Capacity is `self.x.len()`; a `Channel::apply` body must not push more than its declared `max_fanout`. Out-of-range writes are caught by slice bounds-checking (and, in debug builds, an explicit assertion).
     #[inline]
     pub fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         debug_assert!(
@@ -117,8 +90,7 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
         *self.len = i + 1;
     }
 
-    /// Reset the cursor to zero so the same backing storage can be reused
-    /// for the next input term without reallocation.
+    /// Reset the cursor to zero so the same backing storage can be reused for the next input term without reallocation.
     #[inline]
     pub fn clear(&mut self) {
         *self.len = 0;
@@ -127,8 +99,7 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
 
 /// Pack a list of qubit indices into a [`Channel::support`] bitmask.
 ///
-/// Bit `q % 64` of word `q / 64` is set for each `q` in `qubits`. Order and
-/// duplicates in `qubits` do not matter — the result is a plain set.
+/// Bit `q % 64` of word `q / 64` is set for each `q` in `qubits`; order and duplicates do not matter.
 #[inline]
 pub fn support_mask<const W: usize>(qubits: &[u32]) -> [u64; W] {
     let mut mask = [0u64; W];
@@ -141,16 +112,9 @@ pub fn support_mask<const W: usize>(qubits: &[u32]) -> [u64; W] {
 
 // ---- Shared per-qubit bit extract/insert idiom ----
 //
-// Every built-in `Channel::apply`/`apply_adjoint` reads and/or overwrites the
-// two bit-planes (`x`, `z`) at one or two support qubits. These four helpers
-// are the common core of that idiom; private (not `pub`) so they're visible
-// to this module and its descendants (`clifford`, `unitary`, `noise`,
-// `identity`) but nowhere else — there's no reason for a custom `Channel`
-// impl outside this crate to reach for them, since `apply` only needs the
-// public `PauliString`/bit-array API.
+// Every built-in `Channel::apply`/`apply_adjoint` reads and/or overwrites the two bit-planes (`x`, `z`) at one or two support qubits; these four helpers are the common core, private to this module and its descendants.
 
-/// Decompose qubit index `q` into `(word, bit, mask)`: the index into a
-/// `[u64; W]` array, the bit position within that word, and `1u64 << bit`.
+/// Decompose qubit index `q` into `(word, bit, mask)`: the index into a `[u64; W]` array, the bit position within that word, and `1u64 << bit`.
 #[inline(always)]
 fn qubit_loc(q: usize) -> (usize, usize, u64) {
     let word = q / 64;
@@ -158,9 +122,7 @@ fn qubit_loc(q: usize) -> (usize, usize, u64) {
     (word, bit, 1u64 << bit)
 }
 
-/// Read the packed single-qubit Pauli index (`x | (z << 1)`, i.e.
-/// `I=0, X=1, Z=2, Y=3` — the convention [`Clifford1Q`] and
-/// [`GeneralUnitary1Q`] both document) of the qubit at `(word, bit)`.
+/// Read the packed single-qubit Pauli index (`x | (z << 1)`, i.e. `I=0, X=1, Z=2, Y=3` — the convention [`Clifford1Q`] and [`GeneralUnitary1Q`] both document) of the qubit at `(word, bit)`.
 #[inline(always)]
 fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usize) -> usize {
     let x_bit = (x[word] >> bit) & 1;
@@ -168,8 +130,7 @@ fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usiz
     (x_bit | (z_bit << 1)) as usize
 }
 
-/// Overwrite the qubit at `(word, bit, mask)` of `(nx, nz)` with the packed
-/// Pauli index `p` (same `x | (z << 1)` encoding as [`read_pauli`]).
+/// Overwrite the qubit at `(word, bit, mask)` of `(nx, nz)` with the packed Pauli index `p` (same `x | (z << 1)` encoding as [`read_pauli`]).
 #[inline(always)]
 fn write_pauli<const W: usize>(
     nx: &mut [u64; W],
@@ -185,9 +146,7 @@ fn write_pauli<const W: usize>(
     nz[word] = (nz[word] & !mask) | (oz << bit);
 }
 
-/// Set (`value = true`) or clear (`value = false`) the single bit at
-/// `(word, mask)` of one bit-plane array. Used where only one of `x`/`z`
-/// changes, e.g. amplitude damping's `I ↔ Z` fan-out.
+/// Set (`value = true`) or clear (`value = false`) the single bit at `(word, mask)` of one bit-plane array. Used where only one of `x`/`z` changes, e.g. amplitude damping's `I ↔ Z` fan-out.
 #[inline(always)]
 fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bool) {
     if value {
@@ -199,47 +158,21 @@ fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bo
 
 /// Anything that maps a Pauli string to a small weighted sum of Pauli strings.
 ///
-/// [`Channel::max_fanout`] is a method (not an associated `const`) so the
-/// trait stays `dyn`-compatible — [`Circuit`](crate::Circuit) stores
-/// `Box<dyn Channel<W>>` to keep the channel set open for user extensions.
-/// For built-in channels the returned value is a compile-time constant so
-/// the engine still gets constant-folded buffer sizing once the concrete
-/// type is in hand.
+/// [`Channel::max_fanout`] is a method, not an associated `const`, so the trait stays `dyn`-compatible — [`Circuit`](crate::Circuit) stores `Box<dyn Channel<W>>` to keep the channel set open for user extensions.
 ///
 /// See the [module-level docs](self) for an `impl Channel` example.
 pub trait Channel<const W: usize>: Send + Sync {
-    /// Maximum number of output terms produced per input term. Used by the
-    /// engine to size the scratch buffer up-front.
+    /// Maximum number of output terms produced per input term. Used by the engine to size the scratch buffer up-front.
     fn max_fanout(&self) -> usize;
 
-    /// Qubits this channel acts on, packed as one combined per-qubit bitmask
-    /// (bit `q` set iff qubit `q` is in the support), one word per `W`.
-    /// Outputs differ from inputs only at these bit positions; the engine
-    /// uses this for bucket layout (see ARCHITECTURE.md §Bucketing).
-    ///
-    /// Build one with [`support_mask`] from a list of qubit indices.
+    /// Qubits this channel acts on, packed as one combined per-qubit bitmask (bit `q` set iff qubit `q` is in the support), one word per `W`.
+    /// Outputs differ from inputs only at these bit positions; the engine uses this for bucket layout (ARCHITECTURE.md §Bucketing). Build one with [`support_mask`].
     fn support(&self) -> [u64; W];
 
-    /// Short human-readable name, used only in the engine's per-layer progress
-    /// log (see [`propagate`](crate::propagate)). Never parsed, never part of
-    /// any output.
+    /// Short human-readable name, used only in the engine's per-layer progress log (see [`propagate`](crate::propagate)). Never parsed, never part of any output.
     ///
-    /// The default returns [`core::any::type_name`] of the concrete type,
-    /// trimmed to its last path segment — `Clifford1Q`, `PauliRotation`,
-    /// `Depolarizing`. `type_name` takes `T: ?Sized`, so this default body
-    /// needs no `Self: Sized` bound and the method stays callable through
-    /// `dyn Channel<W>`: the vtable slot is instantiated for the concrete
-    /// type, so a `Box<dyn Channel<W>>` inside a
-    /// [`Circuit`](crate::Circuit) still logs that type's name.
-    ///
-    /// **Limitation.** The trimming is deliberately textual and simple: cut at
-    /// the first `<`, then keep everything after the last `::`. That is right
-    /// for a plain (possibly generic) named type, but a type whose name is not
-    /// of that shape — a tuple, a reference, a `Box<...>`, a closure, or one
-    /// whose generic arguments carry the interesting part of the name — trims
-    /// to something unhelpful or empty. `type_name` output is also explicitly
-    /// not guaranteed stable across compiler versions. Override this method if
-    /// you want a name you can rely on.
+    /// The default returns [`core::any::type_name`] of the concrete type, trimmed to its last path segment — `Clifford1Q`, `PauliRotation`, `Depolarizing`.
+    /// The trim is textual (cut at the first `<`, keep everything after the last `::`), so a type whose name is not a plain (possibly generic) named path — a tuple, a closure, a `Box<...>` — trims to something unhelpful; override if you need a name you can rely on.
     fn debug_name(&self) -> &'static str {
         let full = core::any::type_name::<Self>();
         let head = match full.find('<') {
@@ -261,13 +194,9 @@ pub trait Channel<const W: usize>: Send + Sync {
         out: &mut OutputBuffer<'_, W>,
     );
 
-    /// Apply the channel's *adjoint* to a single input term, writing outputs
-    /// to `out`. Used by the engine in `Direction::Heisenberg` mode for
-    /// backpropagating observables.
+    /// Apply the channel's adjoint to a single input term, writing outputs to `out`. Used by the engine in `Direction::Heisenberg` mode for backpropagating observables.
     ///
-    /// The default implementation is `self.apply(...)`, i.e. assumes the
-    /// channel is self-adjoint. Channels that are not self-adjoint
-    /// (`PauliRotation`, `Clifford1Q::s`) override this.
+    /// The default is `self.apply(...)`, i.e. assumes the channel is self-adjoint. Channels that are not (`PauliRotation`, `Clifford1Q::s`) override this.
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],
@@ -280,25 +209,14 @@ pub trait Channel<const W: usize>: Send + Sync {
 
     /// Prepare this channel for one layer of the bucketed engine.
     ///
-    /// The default derives a dense local Pauli-transfer matrix by probing
-    /// `apply` on the `4^|support|` local basis Paulis, so **a channel that
-    /// implements `apply` gets the bucketed engine for free** — the research
-    /// extensibility surface (ARCHITECTURE.md §Channels) does not grow.
-    /// Override only when the support is wider than
-    /// [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description exists;
-    /// among the built-ins, only `PauliRotation` above generator weight 2
-    /// needs to.
-    ///
-    /// `None` means "this channel cannot be bucketed": `propagate` panics
-    /// rather than proceeding with an unsound preparation (see
-    /// ARCHITECTURE.md §Prepared-Channels).
+    /// The default derives a dense local Pauli-transfer matrix by probing `apply` on the `4^|support|` local basis Paulis, so a channel that implements `apply` gets the bucketed engine for free.
+    /// Override only when the support is wider than [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description exists (only `PauliRotation` above generator weight 2 does among the built-ins).
+    /// `None` means "cannot be bucketed": `propagate` panics rather than proceed with an unsound preparation (ARCHITECTURE.md §Prepared-Channels).
     ///
     /// # Contract
     ///
-    /// Implementors must honour bounded support: the output amplitude may depend
-    /// on the input only through its bits at [`Channel::support`] positions.
-    /// Deriving assumes it; debug builds check it against an all-ones background,
-    /// and a property test checks it against randomized full-width inputs.
+    /// Implementors must honour bounded support: the output amplitude may depend on the input only through its bits at [`Channel::support`] positions.
+    /// Deriving assumes it; debug builds check it against an all-ones background, and a property test checks it against randomized full-width inputs.
     fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
         Prepared::derive_local(self, hash, adjoint)
     }
@@ -328,9 +246,7 @@ mod tests {
 
     // ---- debug_name (progress logging) ----
 
-    /// The default `debug_name` must survive erasure to `dyn Channel<W>` —
-    /// that is how the engine sees every channel — and must trim both the
-    /// module path and any generic arguments.
+    /// The default `debug_name` must survive erasure to `dyn Channel<W>` — that is how the engine sees every channel — and must trim both the module path and any generic arguments.
     #[test]
     fn debug_name_through_dyn_trims_path_and_generics() {
         use crate::pauli_string::PauliString;

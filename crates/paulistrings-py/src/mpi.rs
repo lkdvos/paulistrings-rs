@@ -1,27 +1,8 @@
-//! The MPI surface of the bindings: `comm=` / `result=` on the two propagate
-//! entry points. Compiled only with `--features mpi`.
+//! The MPI surface of the bindings: `comm=` / `result=` on the two propagate entry points. Compiled only with `--features mpi`.
 //!
-//! The library never calls `MPI_Init`. `mpi4py` owns initialization and
-//! finalization, and this module only *adopts* a communicator the interpreter
-//! already has: [`transport_from_comm`] reads the raw `MPI_Comm` out of an
-//! mpi4py communicator and hands it to
-//! [`MpiTransport::from_raw_handle`](paulistrings::mpi::MpiTransport::from_raw_handle),
-//! which duplicates it. Two consequences shape everything here:
-//!
-//! - **The adoption is collective**, so it happens with the GIL held and
-//!   *before* `allow_threads`, after every cheap check that could raise. A
-//!   rank that raises before the duplicate is a rank that never entered a
-//!   collective, so the group stays in step.
-//! - **The duplicate must not outlive `MPI_Finalize`.** [`MpiRun`] owns the
-//!   transport, moves it into the `DistributedSum` and drops both before it
-//!   returns, so nothing MPI-shaped survives the call — a module-level global
-//!   holding one would be finalized in the wrong order at interpreter
-//!   teardown.
-//!
-//! The thread level is the other non-obvious requirement: the layer loop runs
-//! inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker
-//! rather than the main thread. That is exactly `MPI_THREAD_SERIALIZED`, and
-//! [`transport_from_comm`] refuses anything weaker.
+//! The library never calls `MPI_Init`; `mpi4py` owns init/finalize, and this module only adopts a communicator the interpreter already has via [`transport_from_comm`], which duplicates it.
+//! The adoption is collective (happens with the GIL held, before `allow_threads`, after every check that could raise), and the duplicate must not outlive `MPI_Finalize` — [`MpiRun`] drops both the transport and the `DistributedSum` before returning.
+//! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::{
@@ -50,15 +31,8 @@ fn mpi_error(err: MpiError) -> PyErr {
     }
 }
 
-/// Adopt an mpi4py communicator as an [`MpiTransport`].
-///
-/// **Collective** over `comm`: every rank must reach this call, because
-/// `MPI_Comm_dup` is collective. Every check that can raise happens before the
-/// duplicate, so a rejected call rejects on all ranks alike.
-///
-/// `comm` is duck-typed — anything mpi4py's `_sizeof` / `_handleof` accept, so
-/// `MPI.COMM_WORLD`, a `Split()`, a `Create_cart()` and a subclass all work.
-/// The handle is duplicated, so ownership stays with Python.
+/// Adopt an mpi4py communicator as an [`MpiTransport`]. Collective over `comm`, since `MPI_Comm_dup` is collective; every check that can raise happens before the duplicate, so a rejected call rejects on all ranks alike.
+/// `comm` is duck-typed — anything mpi4py's `_sizeof`/`_handleof` accept. The handle is duplicated, so ownership stays with Python.
 pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<MpiTransport> {
     let mpi = py.import_bound("mpi4py.MPI").map_err(|err| {
         PyRuntimeError::new_err(format!(
@@ -74,10 +48,7 @@ pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<
         ));
     }
 
-    // The layer loop runs inside `rayon::ThreadPool::install`, so the thread
-    // that calls MPI is a pool worker and need not be the same one on every
-    // layer. Only ever one at a time, which is MPI_THREAD_SERIALIZED;
-    // FUNNELED would be a false claim and is undefined behaviour here.
+    // The layer loop calls MPI from a pool worker, not necessarily the same one each layer: that is MPI_THREAD_SERIALIZED, not FUNNELED.
     let provided: i32 = mpi.call_method0("Query_thread")?.extract()?;
     let serialized: i32 = mpi.getattr("THREAD_SERIALIZED")?.extract()?;
     if provided < serialized {
@@ -92,10 +63,7 @@ pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<
         )));
     }
 
-    // `_sizeof` is the guard against an ABI mismatch between the mpi4py in
-    // this interpreter and the MPI this extension linked: `_handleof` returns
-    // the handle as a Python int, and reading a 4-byte `int` handle as an
-    // 8-byte pointer (or the reverse) would be silent corruption.
+    // `_sizeof` guards against an ABI mismatch between mpi4py's MPI and this extension's: reading a 4-byte handle as an 8-byte pointer (or the reverse) would be silent corruption.
     let want = std::mem::size_of::<paulistrings::mpi::rsmpi::ffi::MPI_Comm>();
     let got: usize = mpi
         .call_method1("_sizeof", (comm,))
@@ -118,24 +86,15 @@ pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<
     }
     let handle: usize = mpi.call_method1("_handleof", (comm,))?.extract()?;
 
-    // SAFETY: `handle` is the live `MPI_Comm` of an mpi4py communicator the
-    // interpreter holds, of the width just checked, and mpi4py's
-    // communicators are intra-communicators unless the caller built an
-    // inter-communicator (which `scatter` would then reject on its size).
-    // `from_raw_handle` duplicates it and never frees the original.
+    // SAFETY: `handle` is the live `MPI_Comm` of an mpi4py communicator the interpreter holds, of the width just checked; `from_raw_handle` duplicates it and never frees the original.
     unsafe { MpiTransport::from_raw_handle(handle) }.map_err(mpi_error)
 }
 
-/// One distributed propagate: the adopted transport plus what to hand back.
-///
-/// Constructed with the GIL held and consumed inside `allow_threads`, which is
-/// what keeps the collective `MPI_Comm_dup` out of the GIL-released region and
-/// the communicator's lifetime inside the call.
+/// One distributed propagate: the adopted transport plus what to hand back. Constructed with the GIL held and consumed inside `allow_threads`, keeping the communicator's lifetime inside the call.
 pub struct MpiRun {
     /// The duplicated communicator, moved into the `DistributedSum`.
     transport: MpiTransport,
-    /// `true` for `result="gather"` (rank 0 gets the whole sum, everyone else
-    /// an empty one), `false` for `result="local"` (each rank gets its share).
+    /// `true` for `result="gather"`, `false` for `result="local"`.
     gather: bool,
 }
 
@@ -160,8 +119,7 @@ impl MpiRun {
         let mut split = MpiSum::<W>::scatter(sum.clone(), transport, &default_config())?;
         split.propagate_with_options(circuit, policy, direction, options);
         let out = harvest(&split, gather);
-        // Explicit, not incidental: the duplicated communicator is freed here,
-        // inside the call, long before the interpreter finalizes MPI.
+        // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
         Ok(out)
     }
@@ -184,9 +142,7 @@ impl MpiRun {
         split.enable_trace();
         split.propagate_with_options(circuit, policy, direction, options);
         let (rank, size) = (split.rank(), split.size());
-        // `enable_trace` was called before the layer loop, so a `None` here
-        // would be a core bug; an empty trace is the honest fallback either
-        // way (a zero-layer circuit records nothing).
+        // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
         let trace = split.take_trace().unwrap_or_default();
         let out = harvest(&split, gather);
         drop(split);
@@ -194,9 +150,7 @@ impl MpiRun {
     }
 }
 
-/// What this rank returns: the gathered sum on rank 0 (an empty sum of the
-/// same width and qubit count everywhere else, so downstream code still gets a
-/// `PauliSum`), or its own partition.
+/// What this rank returns: the gathered sum on rank 0 (an empty sum elsewhere), or its own partition.
 fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
     if gather {
         // Collective; `Some` on rank 0 only.

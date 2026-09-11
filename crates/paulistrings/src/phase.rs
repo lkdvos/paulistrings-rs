@@ -1,16 +1,10 @@
 //! [`Phase`] — `i^k` factors arising from Pauli algebra, with `k ∈ {0, 1, 2, 3}`.
 //!
-//! Multiplication of two Pauli bitstrings produces an `i^k` factor wherever
-//! X- and Z-bits coincide (see [`PauliString::mul_assign`]); callers fold
-//! this into the relevant `Complex64` coefficient at the boundary
-//! ([`PauliSum`], [`BuildAccumulator`], channel `apply`). [`Phase`]
-//! centralizes that arithmetic so every site uses the same combine/apply
-//! rules instead of open-coded `u8 & 3` masks and four-arm match statements.
+//! Multiplication of two Pauli bitstrings produces an `i^k` factor wherever X- and Z-bits coincide (see [`PauliString::mul_assign`]); callers fold this into the relevant `Complex64` coefficient at the boundary ([`PauliSum`], [`BuildAccumulator`], channel `apply`).
 //!
 //! # Examples
 //!
-//! Combine phases with `+` (mod 4) and fold one into a `Complex64`
-//! coefficient with [`Phase::apply`]:
+//! Combine phases with `+` (mod 4) and fold one into a `Complex64` coefficient with [`Phase::apply`]:
 //!
 //! ```
 //! use paulistrings::Phase;

@@ -1,34 +1,8 @@
-//! Classical simulation of quantum circuits by Pauli propagation.
-//!
-//! The library evolves operators in the Pauli basis under gates and noise
-//! channels, in either the forward or Heisenberg picture. It targets
-//! workloads where state-vector or tensor-network simulators are infeasible
-//! (10⁶–10⁸ terms) but the operator stays sparse in the Pauli basis.
-//!
-//! It is **not** a state-vector, tensor-network, stabilizer, or MPS
-//! simulator — those are explicit non-goals.
-//!
-//! # Design pillars
-//!
-//! In priority order:
-//!
-//! 1. **Correctness** of the Pauli algebra — symplectic encoding, exact
-//!    phase tracking, the bucketed dedup invariant restored after every layer.
-//! 2. **Performance** at 10⁶–10⁸ terms — structure-of-arrays storage, a
-//!    GF(2)-linear bucket partition that keeps layers write-disjoint and
-//!    Rayon-parallel with no global sort.
-//! 3. **Extensibility** for research — open [`Channel`] and
-//!    [`TruncationPolicy`] traits with built-ins for Clifford gates,
-//!    Pauli rotations, depolarizing / dephasing / amplitude-damping noise,
-//!    coefficient and weight cutoffs, and `TopN` selection.
-//! 4. **GPU readiness** — `#[repr(C)]` `Pod` data types, fixed-fanout
-//!    output buffers, shared-nothing parallelism that maps onto CUB
-//!    primitives without restructuring.
+//! Classical simulation of quantum circuits by Pauli propagation: the library evolves operators in the Pauli basis under gates and noise channels, forward or Heisenberg, at the term counts (10⁶–10⁸) where state-vector or tensor-network simulators are infeasible. Not a state-vector, tensor-network, stabilizer, or MPS simulator — see ARCHITECTURE.md.
 //!
 //! # Quick example
 //!
-//! Heisenberg-evolve the observable `Z₀ + 0.5·X₁` through an `H` gate on
-//! qubit 0:
+//! Heisenberg-evolve the observable `Z₀ + 0.5·X₁` through an `H` gate on qubit 0:
 //!
 //! ```
 //! use paulistrings::{
@@ -56,67 +30,17 @@
 //!
 //! # Module map
 //!
-//! - [`PauliString`] — symplectic-encoded Pauli operator on up to `64·W`
-//!   qubits, `Copy + Pod`, `Ord`-comparable.
-//! - [`PauliSum`] — weighted sum of Pauli strings in structure-of-arrays
-//!   form, partitioned by a GF(2)-linear hash. Canonical order is (bucket,
-//!   then lex key) — plain lex for any sum of ≤ 1024 terms — and the
-//!   deduplicated invariant is maintained by every public operation.
-//! - [`BuildAccumulator`] — hashmap-based ingestion path. Used for
-//!   constructing a [`PauliSum`] from unsorted inputs (Hamiltonian
-//!   parsing, dict construction). Not used during propagation.
-//! - [`Phase`] — `i^k` factor (`k ∈ 0..=3`) returned by Pauli
-//!   multiplication and folded into [`PauliSum`] coefficients at the
-//!   boundary.
-//! - [`Circuit`] — ordered, heterogeneous list of channels.
-//! - [`Channel`] — extension trait shared by gates and noise. Built-ins
-//!   in [`channel`]: [`channel::Clifford1Q`], [`channel::Clifford2Q`],
-//!   [`channel::PauliRotation`], [`channel::Depolarizing`],
-//!   [`channel::Dephasing`], [`channel::AmplitudeDamping`].
-//! - [`TruncationPolicy`] — composable per-term and per-layer term
-//!   filters. Built-ins in [`truncation`]: [`truncation::CoefficientThreshold`],
-//!   [`truncation::WeightCutoff`], [`truncation::TopN`], plus the
-//!   [`truncation::And`] / [`truncation::Or`] combinators.
-//! - [`propagate`] / [`Direction`] — the propagation entry point. `sum`
-//!   is a single [`PauliSum`], bucketed for the run and returned bucketed;
-//!   there is no separate flat/working-form conversion to pay.
-//!   [`propagate_with_options`] adds [`PropagateOptions`], whose
-//!   [`EngineSelection`] can put small sums on an additive direct-apply path
-//!   instead of the bucketed engine; the default is the bucketed engine for
-//!   every layer.
-//! - [`ProductBasis`] / [`StabilizerState`] — read-out states for
-//!   [`PauliSum::expectation_product_basis`] and
-//!   [`PauliSum::expectation_stabilizer`]: a single-qubit product state, or any
-//!   stabilizer state given by `n` signed commuting generators. Contraction
-//!   only — neither is ever evolved, so the stabilizer non-goal above stands.
-//! - [`engine`] — the bucketed propagation engine: [`engine::bucketed`] (the
-//!   coset layer loop), `engine::coset` (the GF(2) span and its cosets) and
-//!   `engine::merge` (the per-run sort and fused merge kernels). Most users
-//!   will not call any of them directly; [`propagate`] is the front door.
-//! - [`engine::partitioned`] — the same engine with the sum split across
-//!   `P = 2^p ≤ 16` partitions by designated GF(2) [`PartitionRows`], one
-//!   pinned Rayon pool each, exchanging only the rows a layer moves across a
-//!   partition boundary. [`propagate_partitioned`] and [`PartitionedSum`] run
-//!   `P` NUMA domains inside one process; [`DistributedSum`] is one partition
-//!   per process over a [`Transport`](engine::partitioned::Transport), which
-//!   `paulistrings::mpi` implements over MPI behind the off-by-default `mpi`
-//!   feature. At `P = 1` the output is bitwise [`propagate`]'s.
-//! - [`examples`] — worked-example walkthroughs of full-scale simulations
-//!   (currently: a 2D transverse-field Ising quench on 4×4 and 6×6
-//!   lattices with embedded plot).
+//! - [`PauliString`], [`PauliSum`], [`BuildAccumulator`], [`Phase`] — the data model (ARCHITECTURE.md §Data-Model).
+//! - [`Circuit`], [`Channel`] (built-ins in [`channel`]) — gates and noise.
+//! - [`TruncationPolicy`] (built-ins in [`truncation`]) — composable per-term and per-layer filters.
+//! - [`propagate`] / [`Direction`] / [`propagate_with_options`] — the propagation entry point (ARCHITECTURE.md §Engine).
+//! - [`ProductBasis`] / [`StabilizerState`] — read-out-only contraction states, never evolved.
+//! - [`engine`] / [`engine::partitioned`] — the bucketed engine and its NUMA/distributed partitioning (ARCHITECTURE.md §Engine, §Partitioning); [`propagate`] is the front door for almost all callers.
+//! - [`examples`] — worked-example walkthroughs of full-scale simulations.
 //!
 //! # Choosing `W`
 //!
-//! [`PauliString`] is generic over a const `W: usize` — the number of
-//! 64-bit words used to store each of the `x` and `z` parts. So
-//! `PauliString<W>` covers up to `64·W` qubits, and the engine
-//! monomorphizes the entire pipeline at that `W`.
-//!
-//! For direct Rust use, pick the smallest `W` that fits your problem:
-//! one word per part is dramatically faster than two, and so on. The
-//! Python bindings monomorphize at the fixed set `W ∈ {1, 2, 4, 8, 16}`
-//! (≤ 64, 128, 256, 512, 1024 qubits) and dispatch on `num_qubits` at
-//! the boundary.
+//! [`PauliString`] is generic over a const `W: usize`, the number of 64-bit words per `x`/`z` part; `PauliString<W>` covers up to `64·W` qubits (ARCHITECTURE.md §Width). Pick the smallest `W` that fits; the Python bindings monomorphize at `W ∈ {1, 2, 4, 8, 16}` and dispatch on `num_qubits` at the boundary.
 
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
@@ -141,8 +65,7 @@ pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{LayerScratch, TermTrace};
-// The MPI transport and its distributed driver, behind the `mpi` feature:
-// `paulistrings::mpi::{MpiTransport, propagate_mpi, rsmpi, ...}`.
+// The MPI transport and its distributed driver, behind the `mpi` feature.
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]

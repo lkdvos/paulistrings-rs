@@ -1,11 +1,7 @@
 //! `propagate` on the bucketed engine, through the public API only.
 //!
-//! `tests/propagate.rs` holds the hand-computed algebra expectations. This
-//! file covers the properties specific to the bucketed engine: agreement with
-//! the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`)
-//! over whole circuits, and byte-identical output across thread counts (a
-//! convenience tripwire, not a correctness requirement — see
-//! ARCHITECTURE.md §Determinism).
+//! `tests/propagate.rs` holds the hand-computed algebra expectations; this file covers what is specific to the bucketed engine.
+//! Agreement with the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`) over whole circuits, truncation policies on many-term sums, Heisenberg round trips, and byte-identical output across thread counts (a convenience tripwire, not a correctness requirement — see ARCHITECTURE.md §Determinism).
 
 use num_complex::Complex64;
 use paulistrings::channel::{
@@ -19,8 +15,6 @@ use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
 };
-
-const TOL: f64 = 1e-11;
 
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
@@ -54,65 +48,7 @@ fn single<const W: usize, C: Channel<W> + 'static>(num_qubits: usize, ch: C) -> 
     c
 }
 
-// ---- single-channel circuits: the algebra, through the bucketed path ----
-
-#[test]
-fn h_conjugates_z_to_x() {
-    let input = one_term(PauliString::<1>::z(0), 4, Complex64::new(1.0, 0.0));
-    let out = paulistrings::propagate(
-        &single(4, Clifford1Q::h(0)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.bucket(0).0[0], [1]);
-    assert_eq!(out.bucket(0).1[0], [0]);
-    assert!((out.bucket(0).2[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
-}
-
-#[test]
-fn s_conjugates_x_to_y_with_phase_plus_one() {
-    let input = one_term(PauliString::<1>::x(0), 4, Complex64::new(1.0, 0.0));
-    let out = paulistrings::propagate(
-        &single(4, Clifford1Q::s(0)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.bucket(0).0[0], [1]);
-    assert_eq!(out.bucket(0).1[0], [1]);
-    assert!((out.bucket(0).2[0] - Complex64::new(1.0, 0.0)).norm() < TOL);
-}
-
-#[test]
-fn cnot_propagates_z_on_the_control() {
-    let input = one_term(PauliString::<1>::z(1), 4, Complex64::new(1.0, 0.0));
-    let out = paulistrings::propagate(
-        &single(4, Clifford2Q::cnot(0, 1)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.bucket(0).1[0], [0b11]);
-    assert_eq!(out.bucket(0).0[0], [0]);
-}
-
-#[test]
-fn cnot_propagates_x_on_the_target() {
-    let input = one_term(PauliString::<1>::x(0), 4, Complex64::new(1.0, 0.0));
-    let out = paulistrings::propagate(
-        &single(4, Clifford2Q::cnot(0, 1)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.bucket(0).0[0], [0b11]);
-    assert_eq!(out.bucket(0).1[0], [0]);
-}
+// ---- single-channel circuits on many-term sums ----
 
 #[test]
 fn identity_channel_passes_the_sum_through_unchanged() {
@@ -127,45 +63,6 @@ fn identity_channel_passes_the_sum_through_unchanged() {
     // Whole-slice equality: the bucketed round trip must be exact, not merely
     // order-preserving.
     assert_eq!(out.to_arrays(), expect.to_arrays());
-}
-
-#[test]
-fn word_boundary_qubit_64_w2() {
-    let input = one_term(PauliString::<2>::z(64), 65, Complex64::new(1.0, 0.0));
-    let out = paulistrings::propagate(
-        &single(65, Clifford1Q::h(64)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.bucket(0).0[0], [0, 1]);
-    assert_eq!(out.bucket(0).1[0], [0, 0]);
-}
-
-#[test]
-fn inputs_that_collide_under_the_channel_are_combined_and_resorted() {
-    // X(3.0) and Y(2.0) under S: the channel maps X -> Y and Y -> -X, so the
-    // outputs are (Y, +3) and (X, -2) in that emission order. The result must
-    // come back in lex (x, z) order, i.e. X before Y.
-    let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(3.0, 0.0));
-    acc.add_term(PauliString::<1>::y(0), Phase::ONE, Complex64::new(2.0, 0.0));
-    let input = acc.finalize();
-
-    let out = paulistrings::propagate(
-        &single(4, Clifford1Q::s(0)),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(out.len(), 2);
-    assert_eq!(out.bucket(0).0[0], [1]);
-    assert_eq!(out.bucket(0).1[0], [0]); // X
-    assert!((out.bucket(0).2[0] - Complex64::new(-2.0, 0.0)).norm() < TOL);
-    assert_eq!(out.bucket(0).0[1], [1]);
-    assert_eq!(out.bucket(0).1[1], [1]); // Y
-    assert!((out.bucket(0).2[1] - Complex64::new(3.0, 0.0)).norm() < TOL);
 }
 
 #[test]
@@ -251,38 +148,6 @@ fn residual_growth_without_a_threshold_matches_the_naive_oracle() {
     let want_back = replay_naive(&want_fwd, &chans, &NoTruncation, Direction::Heisenberg);
 
     assert_close(&back, &want_back, "no-threshold round trip");
-}
-
-#[test]
-fn heisenberg_reverses_the_channel_order() {
-    // [H, S] forward on Z gives Y; Heisenberg on Z gives X.
-    let mut circuit = Circuit::<1>::new(4);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford1Q::s(0));
-
-    let fwd = paulistrings::propagate(
-        &circuit,
-        one_term(PauliString::<1>::z(0), 4, Complex64::new(1.0, 0.0)),
-        &NoTruncation,
-        Direction::Forward,
-    );
-    assert_eq!(
-        (fwd.bucket(0).0[0], fwd.bucket(0).1[0]),
-        ([1], [1]),
-        "forward should give Y"
-    );
-
-    let back = paulistrings::propagate(
-        &circuit,
-        one_term(PauliString::<1>::z(0), 4, Complex64::new(1.0, 0.0)),
-        &NoTruncation,
-        Direction::Heisenberg,
-    );
-    assert_eq!(
-        (back.bucket(0).0[0], back.bucket(0).1[0]),
-        ([1], [0]),
-        "heisenberg should give X",
-    );
 }
 
 #[test]

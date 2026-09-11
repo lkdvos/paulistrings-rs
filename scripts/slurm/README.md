@@ -124,5 +124,24 @@ excludes it. There is no cargo cfg for a CPU model, so narrowing means either a 
 profile, a documented per-site `RUSTFLAGS` (remembering that an exported `RUSTFLAGS` **replaces**
 the config's list wholesale), or a `build.rs` that emits the flag conditionally.
 
+### The multi-thread campaign
+
+The same template runs it, via `N_PER_THREAD`, which keeps the per-worker work fixed
+instead of the total. A fixed `--n` across thread counts starves the workers: jobs
+7018021-3 ran that way and produced **zero** direction-consistent multi-thread wall cells,
+with spreads to −33%..+33% at ~10–20k terms per worker.
+
+```bash
+# sparse layers, per-worker work matched to the 1-thread cell
+N_PER_THREAD=1000000 LAYERS="rotation_zz cnot trotter" ISA_TAG=genoa \
+  env -u SBATCH_RESERVATION sbatch --constraint='genoa&rocky9' \
+  scripts/slurm/jcc-portability.sbatch
+
+# su4 separately, unscaled — it closes at ~14x --n, so scaling it asks for ~1.4e9 terms.
+# The job refuses (exit 6) if su4 appears in LAYERS with N_PER_THREAD set.
+LAYERS=su4 NS=1000000 ISA_TAG=genoa env -u SBATCH_RESERVATION sbatch \
+  --constraint='genoa&rocky9' scripts/slurm/jcc-portability.sbatch
+```
+
 Hardware counters do not work on cluster nodes, so this job is wall-clock paired only — no DSB
 share and no branch-miss attribution. Counter work stays on the workstation.

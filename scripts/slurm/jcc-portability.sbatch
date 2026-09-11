@@ -36,13 +36,18 @@
 #   LAYERS    probe layers, space separated (default "rotation_zz cnot trotter su4")
 #   NS        --n values (default "1000000")
 #   THREADS   thread counts (default: "1 <physical cores>")
-#             WARNING: --n is NOT scaled with the thread count, so a multi-thread
-#             cell at the default n=1e6 gives ~10-20k terms per worker and measures
-#             scheduling noise, not the kernel (jobs 7018021-3: zero direction-
-#             consistent multi-thread wall cells, spreads up to -33%..+33%). For a
-#             real multi-thread campaign pass NS scaled with the cores, e.g.
-#             NS=30000000 on a 96-core node. su4 is the exception: it closes at
-#             ~1.4e7 from n=1e6 and stays informative.
+#   N_PER_THREAD  if set, --n becomes N_PER_THREAD x threads for each cell,
+#             overriding NS. This is what a multi-thread campaign wants: a fixed
+#             --n across thread counts starves the workers and measures
+#             scheduling noise, not the kernel. Jobs 7018021-3 ran that way and
+#             produced ZERO direction-consistent multi-thread wall cells, with
+#             spreads to -33%..+33%, at ~10-20k terms per worker.
+#             1000000 reproduces the 1-thread cell's per-worker work.
+#             DO NOT use it with su4: su4 closes at ~14x its --n, so
+#             N_PER_THREAD=1000000 on a 96-core node asks for ~1.4e9 terms
+#             (tens of GB). Give su4 its own run at a fixed small NS; it is the
+#             one layer that stays informative unscaled, precisely because of
+#             that closure factor.
 #   REPS      --reps (default 20 — the timed region must be >=200ms; the
 #             governor is not pinnable and short regions run downclocked)
 #   PAIRS     pairs per cell (default 7)
@@ -93,6 +98,15 @@ phys=$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)
 : "${ISA_TAG:=$(lscpu | sed -n 's/^Model name: *//p' | tr ' ' '_' | head -c 40)}"
 PS_REV=${PS_REV:-$(git rev-parse HEAD)}
 echo "ISA_TAG=$ISA_TAG phys=$phys threads='$THREADS' rev=$PS_REV"
+if [ -n "${N_PER_THREAD:-}" ]; then
+    echo "N_PER_THREAD=$N_PER_THREAD (--n scales with the thread count; NS ignored)"
+    case " $LAYERS " in
+        *" su4 "*|*" su4_local "*)
+            echo "!! su4 closes at ~14x --n, so N_PER_THREAD would ask for ~$(( N_PER_THREAD * phys * 14 )) terms." >&2
+            echo "!! Run su4 in its own job at a fixed NS instead. Refusing." >&2
+            exit 6 ;;
+    esac
+fi
 
 # Build both arms from a worktree of PS_REV, never the live checkout.
 wt=$(mktemp -d "${TMPDIR:-/tmp}/ps-jcc-wt.XXXXXX")
@@ -149,8 +163,10 @@ if [ "$sz_pad" -le "$sz_raw" ]; then
 fi
 
 for layer in $LAYERS; do
-  for n in $NS; do
+  for n_spec in $NS; do
     for t in $THREADS; do
+      # N_PER_THREAD keeps the per-worker work fixed across thread counts.
+      if [ -n "${N_PER_THREAD:-}" ]; then n=$(( N_PER_THREAD * t )); else n=$n_spec; fi
       a="$out/jcc-${ISA_TAG}-${layer}-n${n}-t${t}-unpadded.jsonl"
       b="$out/jcc-${ISA_TAG}-${layer}-n${n}-t${t}-padded.jsonl"
       rm -f "$a" "$b"

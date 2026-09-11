@@ -1,35 +1,9 @@
-//! The export pass: the rows a layer generates that belong to another
-//! partition, gathered into one [`ExchangeBlock`] per remote delta.
+//! The export pass: rows a layer generates that belong to another partition, gathered into one [`ExchangeBlock`] per remote delta.
 //!
-//! A remote delta `e` (see [`PartitionPlan`]) moves *every* row it produces to
-//! the one partner `rank ^ pd[e]`, from local bucket `β` to that partner's
-//! bucket `β ^ bd[e]`. So the export is a pure per-delta gather, with no
-//! per-term routing decision.
-//!
-//! The block is CSR **in the receiver's destination-coset order**
-//! ([`ChunkMap`](super::transport::ChunkMap)): segment `p` holds the rows for
-//! the receiver's position `p`, generated from source bucket
-//! `map.bucket_at(p) ^ bd[e]`. The permutation costs one pass over the count
-//! array — the fill walks positions instead of buckets and is otherwise
-//! unchanged — and it is what makes a receiving coset's rows contiguous, so
-//! the transfer can be cut into chunks the receiver consumes as they land.
-//!
-//! Two passes over the local buckets, both parallel because a position's rows
-//! occupy one contiguous CSR segment of each block and segments are disjoint:
-//!
-//! 1. **Count** rows per (remote delta, source bucket). An entry whose
-//!    amplitude is nonzero on every active support pattern emits one row per
-//!    term, so its count is the bucket length with no scan at all; a sparse
-//!    entry is counted with one support-bit lookup per term, shared across
-//!    every sparse entry of the layer.
-//! 2. **Fill** each block, position by position, writing straight into
-//!    `offsets[p]..offsets[p + 1]`.
-//!
-//! The row arithmetic is not reimplemented here: it is
-//! [`DeltaEntry::emit`](crate::channel::prepared::DeltaEntry::emit) and
-//! [`RotationPrep::emit_gen`](crate::channel::prepared::RotationPrep::emit_gen),
-//! the row-level forms of the engine's own gather, so an exported row is
-//! bitwise the row a local gather would have produced.
+//! A remote delta (see [`PartitionPlan`]) moves every row it produces to one partner, so export is a pure per-delta gather with no per-term routing decision.
+//! Each block is CSR in the receiver's destination-coset order ([`ChunkMap`](super::transport::ChunkMap)), which is what makes a receiving coset's rows contiguous so the transfer can be cut into chunks.
+//! Two parallel passes over the local buckets: count rows per (remote delta, source bucket), then fill each block position by position.
+//! The row arithmetic itself is not reimplemented here: see [`DeltaEntry::emit`](crate::channel::prepared::DeltaEntry::emit) and [`RotationPrep::emit_gen`](crate::channel::prepared::RotationPrep::emit_gen).
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -44,21 +18,13 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Rows below which a block's fill stays on one thread.
 ///
-/// The fill splits a block's position range in two and hands the halves
-/// to `rayon::join`; the split is exact (the CSR offsets say where the halves
-/// meet), so this threshold is purely about not paying task overhead for a
-/// handful of rows.
+/// The fill splits a block's position range in two and hands the halves to `rayon::join`; this threshold is purely about not paying task overhead for a handful of rows.
 const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 
-/// Reusable scratch for [`export_layer`], held by the caller across layers so
-/// a layer allocates nothing after the first.
+/// Reusable scratch for [`export_layer`], held by the caller across layers so a layer allocates nothing after the first.
 ///
-/// Both buffers are capacity-retaining: [`Self::counts`] is the pass-1 count
-/// table in **bucket-major** order (`counts[β * K + k]` is remote delta `k`'s
-/// row count from source bucket `β`), which is the layout that lets pass 1 run
-/// as one disjoint `par_chunks_mut(K)` over buckets, and
-/// [`Self::block_counts`] is the per-block column that layout is transposed
-/// into for [`ExchangeBlock::set_counts`].
+/// [`Self::counts`] is the pass-1 count table in bucket-major order (`counts[β * K + k]` is remote delta `k`'s row count from source bucket `β`), the layout that lets pass 1 run as one disjoint `par_chunks_mut(K)` over buckets.
+/// [`Self::block_counts`] is that layout transposed into a per-block column for [`ExchangeBlock::set_counts`].
 #[derive(Debug)]
 pub(crate) struct ExportScratch<const W: usize> {
     /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
@@ -72,14 +38,7 @@ pub(crate) struct ExportScratch<const W: usize> {
     src_of: Vec<u32>,
     /// Payloads not currently in flight, with their block columns intact.
     ///
-    /// The layer's own pool
-    /// ([`Transport::exchange_layer`](super::transport::Transport::exchange_layer)):
-    /// the export takes this layer's outgoing payloads from here, a transport
-    /// that materializes the incoming ones takes those from here too, and both
-    /// come back when the layer is done with them. It is what makes a
-    /// steady-state remote layer allocate nothing at all — the alternative is
-    /// faulting in and zeroing the layer's whole export volume, twice, every
-    /// layer.
+    /// The layer's own pool ([`Transport::exchange_layer`](super::transport::Transport::exchange_layer)): both outgoing and incoming payloads are drawn from here and returned when the layer is done with them, so a steady-state remote layer allocates nothing at all.
     pub(crate) pool: Vec<PartnerPayload<W>>,
 }
 
@@ -97,10 +56,8 @@ impl<const W: usize> Default for ExportScratch<W> {
 
 /// What one layer's export costs, by partner rank (length is the group size).
 ///
-/// Rows and bytes are what this partition *sent*; a partner it sent nothing to
-/// has zeros. The bytes are the wire footprint
-/// ([`ExchangeBlock::bytes`]) of the blocks as they stand, so an
-/// in-process transport reports the same number an MPI one would move.
+/// Rows and bytes are what this partition *sent*; a partner it sent nothing to has zeros.
+/// The bytes are the wire footprint ([`ExchangeBlock::bytes`]) of the blocks as they stand, so an in-process transport reports the same number an MPI one would move.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExportCounts {
     /// Rows sent to each partner.
@@ -109,32 +66,24 @@ pub(crate) struct ExportCounts {
     pub bytes_to: Vec<u64>,
 }
 
-/// One remote delta's row-level emitter: the tabulated entry, or the wide
-/// rotation's generator pass.
+/// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
 ///
-/// Exists so the two prepared forms share the count and fill loops. Both arms
-/// delegate to the emitters in `channel::prepared`, which are copies of the
-/// engine's gather arithmetic.
+/// Exists so the two prepared forms share the count and fill loops.
 enum RowEmitter<'p, const W: usize> {
     /// A tabulated delta of a [`Prepared::Local`] layer.
     Tabulated {
         ptm: &'p LocalPtm<W>,
         entry: &'p DeltaEntry<W>,
     },
-    /// The generator pass of a [`Prepared::Rotation`] layer. The identity pass
-    /// is never remote (`part(0) = 0`), so it has no arm here.
+    /// The generator pass of a [`Prepared::Rotation`] layer; the identity pass is never remote.
     Generator { prep: &'p RotationPrep<W> },
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
     /// Whether every term emits a row, so a bucket's count is its length.
     ///
-    /// Dense over the **active** support patterns only: `amp` is sized
-    /// `LOCAL_DIM` but the channel populates `4^k` entries, exactly as
-    /// `engine::bucketed::DeltaPlan::new` reads it. A rotation's generator
-    /// pass is never dense — a commuting term emits nothing — and its count
-    /// path does not consult this at all, counting anticommuting terms
-    /// directly.
+    /// Dense over the *active* support patterns only: `amp` is sized `LOCAL_DIM` but the channel populates `4^k` entries.
+    /// A rotation's generator pass is never dense, since a commuting term emits nothing.
     fn is_dense(&self) -> bool {
         match self {
             RowEmitter::Tabulated { ptm, entry } => {
@@ -162,16 +111,8 @@ impl<const W: usize> RowEmitter<'_, W> {
 
 /// Build this partition's outgoing payloads for one layer.
 ///
-/// Returns one slot per partner rank (`size` of them): `Some(payload)` for
-/// every partner the plan names, `None` for the rest — including this
-/// partition's own slot, which no remote delta can name because a remote
-/// delta's partition delta is nonzero by construction.
-///
-/// A partner's [`PartnerPayload::blocks`] is one block per remote delta
-/// destined for it, in ascending remote-delta index, **including blocks with
-/// no rows**: the receiver indexes blocks positionally, and both sides derive
-/// the same delta list from the same channel and hash, so a block is never
-/// dropped for being empty.
+/// Returns one slot per partner rank: `Some(payload)` for every partner the plan names, `None` for the rest (including this partition's own slot).
+/// A partner's [`PartnerPayload::blocks`] is one block per remote delta destined for it, in ascending remote-delta index, *including blocks with no rows*: the receiver indexes blocks positionally.
 pub(crate) fn export_layer<const W: usize>(
     local: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -210,8 +151,7 @@ pub(crate) fn export_layer<const W: usize>(
         .collect();
     let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
 
-    // Pass 1. Bucket-major counts, so each bucket owns one contiguous chunk
-    // and the pass needs no synchronization.
+    // Pass 1. Bucket-major counts, so each bucket owns one contiguous chunk and the pass needs no synchronization.
     scratch.counts.clear();
     scratch.counts.resize(nb * k, 0);
     scratch
@@ -220,9 +160,7 @@ pub(crate) fn export_layer<const W: usize>(
         .enumerate()
         .for_each(|(b, slot)| count_bucket(local, prep, plan, &dense, b, slot));
 
-    // Pass 2, one block per remote delta, written into payloads taken from the
-    // pool: their blocks already have the columns this layer needs, so the fill
-    // writes by index into storage that is neither allocated nor zeroed here.
+    // Pass 2, one block per remote delta, written into payloads taken from the pool: the fill writes by index into storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
         map.positions(),
         nb,
@@ -234,8 +172,7 @@ pub(crate) fn export_layer<const W: usize>(
     scratch.src_of.resize(nb, 0);
     let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
-        // Destination-coset order: position `p` of the receiver is filled from
-        // this partition's bucket `bucket_at(p) ^ bd`.
+        // Destination-coset order: position `p` of the receiver is filled from this partition's bucket `bucket_at(p) ^ bd`.
         for p in 0..nb {
             let src = map.bucket_at(p as u32) ^ r.bucket_delta;
             scratch.src_of[p] = src;
@@ -271,9 +208,7 @@ pub(crate) fn export_layer<const W: usize>(
         counts.rows_to[q] += rows as u64;
         counts.bytes_to[q] += block.bytes() as u64;
     }
-    // A payload out of the pool may have carried more blocks than this layer
-    // has remote deltas for it; the receiver indexes blocks positionally, so
-    // the extras must not travel.
+    // A payload out of the pool may have carried more blocks than this layer has remote deltas for it; the extras must not travel.
     for (q, payload) in send.iter_mut().enumerate() {
         if let Some(payload) = payload {
             payload.blocks.truncate(blocks_used[q]);
@@ -285,9 +220,7 @@ pub(crate) fn export_layer<const W: usize>(
 
 /// Count one source bucket's exported rows, one slot per remote delta.
 ///
-/// The support pattern is computed once per term and reused across every
-/// sparse entry, matching the engine's input-major gather; dense entries are
-/// filled from the bucket length without touching a term at all.
+/// The support pattern is computed once per term and reused across every sparse entry; dense entries are filled from the bucket length without touching a term at all.
 fn count_bucket<const W: usize>(
     local: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -337,12 +270,8 @@ fn count_bucket<const W: usize>(
 
 /// Fill destination positions `lo..hi` of one block.
 ///
-/// `src_of[p]` is the source bucket position `p` draws from. The column slices
-/// are exactly that range's rows (`offsets[lo]..offsets[hi]`), so splitting the
-/// range at `mid` splits the columns at `offsets[mid] - offsets[lo]` and the
-/// two halves are disjoint by construction — no atomics, no locks, and the same
-/// rows in the same slots however the split falls, which is what keeps a
-/// block's contents independent of the thread count.
+/// `src_of[p]` is the source bucket position `p` draws from.
+/// Splitting the range at `mid` splits the columns at `offsets[mid] - offsets[lo]`, and the two halves are disjoint by construction, so a block's contents are independent of the thread count.
 fn fill_range<const W: usize>(
     local: &PauliSum<W>,
     emitter: &RowEmitter<'_, W>,
@@ -385,9 +314,7 @@ fn fill_range<const W: usize>(
 
 /// One block's three columns, restricted to a source-bucket range.
 ///
-/// A bundle, not an abstraction: it keeps [`fill_range`]'s recursive signature
-/// inside clippy's argument budget and makes the three-way split one call
-/// instead of three.
+/// A bundle, not an abstraction: keeps [`fill_range`]'s recursive signature inside clippy's argument budget.
 struct BlockCols<'a, const W: usize> {
     x: &'a mut [[u64; W]],
     z: &'a mut [[u64; W]],
@@ -422,13 +349,8 @@ impl<'a, const W: usize> BlockCols<'a, W> {
 
 /// Every exported row belongs to the partner it is addressed to.
 ///
-/// Lives here rather than inside [`export_layer`] because the export pass does
-/// not need the partition rows for anything else — it routes by the plan
-/// alone. Called from the partitioned layer, which has them; debug builds
-/// only, and `O(exported rows)`.
-///
-/// A failure means either the plan misclassified a delta or the caller's
-/// `local` sum was not the pure partition it claims to be.
+/// Debug builds only, `O(exported rows)`.
+/// A failure means either the plan misclassified a delta or the caller's `local` sum was not the pure partition it claims to be.
 #[cfg(debug_assertions)]
 pub(super) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],
@@ -466,8 +388,7 @@ mod tests {
 
     const TOL: f64 = 1e-12;
 
-    /// The destination-coset order for `plan` over `num_buckets` buckets, in
-    /// one chunk — the layout every export test compares against.
+    /// The destination-coset order for `plan` over `num_buckets` buckets, in one chunk: the layout every export test compares against.
     fn map_for(plan: &PartitionPlan, num_buckets: usize) -> ChunkMap {
         let mut map = ChunkMap::default();
         map.rebuild(
@@ -548,16 +469,10 @@ mod tests {
         map
     }
 
-    /// The **row-level** oracle: for every input term, the rows
-    /// [`Channel::apply`] emits whose output key lands in a different
-    /// partition than the term itself.
+    /// The **row-level** oracle: for every input term, the rows [`Channel::apply`] emits whose output key lands in a different partition than the term itself.
     ///
-    /// Deliberately not `test_support::naive_apply_layer`: that sums a key's
-    /// contributions from *every* source, and the export carries only the
-    /// partition-crossing ones. Rows are summed per (input term, output key)
-    /// first, which is exactly what the prepared PTM tabulates, and
-    /// exactly-zero results are dropped the way a zero amplitude emits
-    /// nothing.
+    /// Deliberately not `test_support::naive_apply_layer`, which sums a key's contributions from *every* source; the export carries only the partition-crossing ones.
+    /// Rows are summed per (input term, output key) first, and exactly-zero results are dropped the way a zero amplitude emits nothing.
     fn crossing_rows<const W: usize>(
         input: &PauliSum<W>,
         ch: &dyn Channel<W>,
@@ -598,14 +513,10 @@ mod tests {
         out
     }
 
-    /// Two terms, one bucket, one remote delta: the export is hand-checkable
-    /// row for row.
+    /// Two terms, one bucket, one remote delta: the export is hand-checkable row for row.
     ///
-    /// `H` on qubit 0 sends `X₀ → Z₀` and `Z₀ → X₀`, so its non-identity delta
-    /// is the mask `x₀ z₀`. Under a partition row that reads the `x` bit of
-    /// qubit 0, that mask has `part = 1`: the delta is remote, and — because
-    /// `part` is linear — `X₀` and `Z₀` necessarily sit in *different*
-    /// partitions. Each therefore exports its single image to the other.
+    /// `H` on qubit 0 sends `X₀ → Z₀` and `Z₀ → X₀`, so its non-identity delta is the mask `x₀ z₀`.
+    /// Under a partition row that reads the `x` bit of qubit 0, that mask has `part = 1`, so the delta is remote and `X₀`/`Z₀` sit in different partitions; each exports its single image to the other.
     #[test]
     fn a_single_bucket_h_layer_exports_the_swapped_keys() {
         let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
@@ -633,8 +544,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("rank {} sent nothing to {partner}", e.rank));
             assert_eq!(payload.blocks.len(), 1, "one remote delta");
             let block = &payload.blocks[0];
-            // `deltas()` is ascending by `local_delta`, so entry 0 is the
-            // identity and the X↔Z swap (local delta `0b11`) is entry 1.
+            // `deltas()` is ascending by `local_delta`, so entry 0 is the identity and the X↔Z swap (local delta `0b11`) is entry 1.
             assert_eq!(block.header.entry, 1);
             assert_eq!(block.num_buckets(), 1);
             assert_eq!(block.rows(), 1);
@@ -662,8 +572,7 @@ mod tests {
             acc.add_term(p, Phase::ONE, Complex64::new(1.5, 0.0));
         }
         let input = acc.finalize();
-        // A row on the `x` bit of qubit 2 makes `part(gen) = 1`: the generator
-        // pass is remote.
+        // A row on the `x` bit of qubit 2 makes `part(gen) = 1`: the generator pass is remote.
         let rows = PartitionRows::<1>::from_rows(8, vec![[1u64 << 2]], vec![[0u64]]);
         assert_eq!(rows.partition_of(&gen.x, &gen.z), 1);
 
@@ -681,15 +590,10 @@ mod tests {
         }
     }
 
-    /// The CSR is in the *receiver's* order: every row of segment `p` lands in
-    /// the receiver's bucket `map.bucket_at(p)`.
+    /// The CSR is in the *receiver's* order: every row of segment `p` lands in the receiver's bucket `map.bucket_at(p)`.
     ///
-    /// This is the contract `RecvRows` reads the block through
-    /// (`segment(position_of(β′))`), and the only thing that makes a coset's
-    /// rows contiguous — so it is checked directly against the hash rather than
-    /// only end to end through the differential nets. The matrix covers a
-    /// non-trivial permutation (`bits > 0` with a local delta, so the span has
-    /// `r > 0`) and a non-zero bucket delta on the remote entry.
+    /// This is the contract `RecvRows` reads the block through, so it is checked directly against the hash rather than only end to end through the differential nets.
+    /// The matrix covers a non-trivial permutation and a non-zero bucket delta on the remote entry.
     #[test]
     fn every_segment_holds_the_rows_of_its_destination_bucket() {
         let input = rand_sum::<1>(700, 8, 0x9C7);
@@ -732,15 +636,10 @@ mod tests {
         }
     }
 
-    /// Pass 1 sized every block exactly: the counted row total is what pass 2
-    /// wrote, in every block, for every channel class.
+    /// Pass 1 sized every block exactly: the counted row total is what pass 2 wrote, in every block, for every channel class.
     ///
-    /// The two passes agreeing is `fill_range`'s own `debug_assert` (this suite
-    /// runs in debug), which fires unless pass 2 emitted exactly the rows pass 1
-    /// counted for its range. What is checked here is the shape around it: the
-    /// CSR offsets end at `header.rows`, the grow-only columns hold at least
-    /// that many rows — `segment()` would panic on a block that did not — and
-    /// the reported per-partner totals are the blocks' own.
+    /// The two passes agreeing is `fill_range`'s own `debug_assert` (this suite runs in debug).
+    /// What is checked here is the shape around it: the CSR offsets end at `header.rows`, the grow-only columns hold at least that many rows, and the reported per-partner totals are the blocks' own.
     #[test]
     fn the_counted_rows_are_the_filled_rows() {
         let input = rand_sum::<1>(700, 8, 0x9C0);
@@ -760,9 +659,7 @@ mod tests {
                                          rank={} entry={}",
                                         e.rank, block.header.entry,
                                     );
-                                    // Grow-only columns: at least the rows the
-                                    // counts sized, and the CSR offsets end
-                                    // exactly there.
+                                    // Grow-only columns: at least the rows the counts sized, and the CSR offsets end exactly there.
                                     assert!(block.coeff.len() >= block.rows(), "{what}: rows");
                                     assert!(block.x.len() >= block.rows(), "{what}: x");
                                     assert!(block.z.len() >= block.rows(), "{what}: z");
@@ -843,9 +740,7 @@ mod tests {
         }
     }
 
-    /// Every exported row is addressed to the partition it belongs to — the
-    /// property [`debug_assert_exported_partitions`] pins in debug builds,
-    /// asserted here unconditionally.
+    /// Every exported row is addressed to the partition it belongs to — the property [`debug_assert_exported_partitions`] pins in debug builds, asserted here unconditionally.
     #[test]
     fn exported_rows_are_addressed_to_their_own_partition() {
         let input = rand_sum::<1>(400, 8, 0x9C3);
@@ -869,13 +764,11 @@ mod tests {
         }
     }
 
-    /// A partitioning under which no delta crosses exports nothing at all,
-    /// with no blocks and no payload allocated.
+    /// A partitioning under which no delta crosses exports nothing at all, with no blocks and no payload allocated.
     #[test]
     fn a_layer_with_no_remote_delta_exports_nothing() {
         let input = rand_sum::<1>(200, 8, 0x9C4);
-        // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition
-        // row reading qubit 0 alone cannot see it.
+        // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition row reading qubit 0 alone cannot see it.
         let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
         let exports = export_all(&input, &Clifford1Q::h(3), false, 3, 0x55, &rows);
         for e in &exports {

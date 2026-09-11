@@ -1,26 +1,9 @@
-//! One layer of the partitioned engine: export → exchange → coset loop.
+//! One layer of the partitioned engine: export -> exchange -> coset loop.
 //!
-//! A partition holds the terms with `rows.partition_of(v) == rank` and nothing
-//! else. A prepared channel's deltas split into *local* ones, whose rows stay
-//! in this partition, and *remote* ones, whose rows all belong to one partner
-//! ([`PartitionPlan`]). So a layer is:
-//!
-//! 1. [`export_layer`] — build one exchange block per remote delta.
-//! 2. [`Transport::exchange_layer`] — one all-to-all; every partition issues
-//!    it, or none does (see below).
-//! 3. The ordinary bucketed coset loop over the *local* deltas only, with the
-//!    received rows fed into each output bucket's **rest** stream through
-//!    [`ExtraRows`] — so the merge sees a key's complete sum, local plus
-//!    received, before `keep_term` runs (ARCHITECTURE.md §Truncation).
-//!
-//! Whether a delta is remote depends on its mask alone, never on local data,
-//! so every partition reaches the same verdict: either all of them exchange or
-//! none of them does, and the collective-order invariant in
-//! [`transport`](super::transport) holds without a vote.
-//!
-//! This function does not rebucket and does not call
-//! [`TruncationPolicy::finalize_layer`] — the driver owns both, as it does in
-//! the unpartitioned engine.
+//! A partition holds only the terms with `rows.partition_of(v) == rank`.
+//! [`export_layer`] builds one exchange block per remote delta, [`Transport::exchange_layer`] runs the all-to-all, and the bucketed coset loop merges local deltas with received rows via [`ExtraRows`] before `keep_term` runs (ARCHITECTURE.md §Truncation).
+//! Whether a delta is remote depends only on its mask, so every partition reaches the same verdict on whether to exchange.
+//! This function does not rebucket and does not call [`TruncationPolicy::finalize_layer`]; the driver owns both.
 
 use super::export::{export_layer, ExportScratch};
 use super::plan::PartitionPlan;
@@ -38,28 +21,14 @@ use num_complex::Complex64;
 
 /// Chunks a layer's bulk transfer is cut into, by default.
 ///
-/// The receiver consumes chunk `k` as soon as it lands, so the pipeline is
-/// only as deep as the chunk count — but every chunk is three MPI messages per
-/// block per partner, and a chunk under a few megabytes stops amortizing the
-/// per-message cost. Eight is deep enough that the last chunk's coset work is a
-/// small tail behind the transfer and coarse enough that a 384 MB layer still
-/// moves 48 MB per message.
-///
-/// It is **not** derived from the thread count: both sides of an exchange must
-/// cut the same block the same way, and two ranks need not have equal-sized
-/// pools.
+/// The receiver consumes chunk `k` as soon as it lands, so the pipeline depth is the chunk count, traded off against the per-message MPI overhead of a small chunk.
+/// Not derived from the thread count: both sides of an exchange must cut the same block the same way, and two ranks need not have equal-sized pools.
 pub(crate) const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
 /// The chunk count every partition cuts this layer's transfer into.
 ///
-/// [`DEFAULT_EXCHANGE_CHUNKS`], unless the environment names another.
-///
-/// `PAULISTRINGS_EXCHANGE_CHUNKS` is **the** knob, and this is the only place
-/// that reads it: the sweep that chose the default turned it, and
-/// `scripts/mpi-test.sh` runs the whole MPI net a second time at 64 to force
-/// many small batches. `1` is the un-pipelined layout. Read once per process,
-/// so a group launched by one `mpirun -x PAULISTRINGS_EXCHANGE_CHUNKS=...`
-/// agrees — which it must, both sides cutting the same block the same way.
+/// [`DEFAULT_EXCHANGE_CHUNKS`], unless `PAULISTRINGS_EXCHANGE_CHUNKS` names another (`1` is the un-pipelined layout).
+/// Read once per process, so every rank in a group launched with the same environment agrees, which it must since both sides cut the same block the same way.
 pub(crate) fn exchange_chunks() -> usize {
     static CHUNKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CHUNKS.get_or_init(|| {
@@ -71,35 +40,22 @@ pub(crate) fn exchange_chunks() -> usize {
     })
 }
 
-/// The rows this partition received, as an [`ExtraRows`] source for the coset
-/// loop.
+/// The rows this partition received, as an [`ExtraRows`] source for the coset loop.
 ///
-/// One entry per remote delta, in ascending remote-delta index. Output bucket
-/// `β′` reads `segment(map.position_of(β′))` of each — the receive rule from
-/// [`transport`](super::transport)'s module docs. The sender laid its CSR out
-/// in this partition's destination-coset order, so the lookup is a table read
-/// and a coset's rows are contiguous in the block.
-///
-/// Received rows always join the **rest** stream:
-/// [`NEEDS_BETA`](ExtraRows::NEEDS_BETA) is `true`, so the engine names each
-/// coset member by its original bucket index.
+/// One entry per remote delta, in ascending remote-delta index.
+/// Output bucket `β′` reads `segment(map.position_of(β′))` of each, per the receive rule in [`transport`](super::transport)'s module docs.
+/// Received rows always join the **rest** stream: [`NEEDS_BETA`](ExtraRows::NEEDS_BETA) is `true`.
 pub(crate) struct RecvRows<'a, const W: usize> {
     /// The block per remote delta, ascending by entry.
     blocks: Vec<Option<&'a ExchangeBlock<W>>>,
     /// The destination-coset order the blocks are laid out in.
     map: &'a ChunkMap,
-    /// What a coset task blocks on before it reads a chunk's rows. A blocking
-    /// transport's is a no-op; a pipelined one's completes the receive.
+    /// What a coset task blocks on before it reads a chunk's rows; a no-op under a blocking transport.
     wait: &'a dyn ChunkWait,
-    /// Nanoseconds spent in [`append_into`](ExtraRows::append_into), summed
-    /// over every coset task that ran one. Measurement only; the coset loop is
-    /// parallel, so the counter is an atomic, and it is read once after the
-    /// loop has joined.
+    /// Nanoseconds spent in [`append_into`](ExtraRows::append_into), summed across coset tasks. Measurement only.
     #[cfg(feature = "phase-timing")]
     append_ns: std::sync::atomic::AtomicU64,
-    /// The part of [`append_ns`](Self::append_ns) spent blocked in
-    /// [`ChunkWait::wait_chunk`] — how much of the transfer the coset loop
-    /// failed to hide. Measurement only.
+    /// The part of [`append_ns`](Self::append_ns) spent blocked in [`ChunkWait::wait_chunk`]. Measurement only.
     #[cfg(feature = "phase-timing")]
     chunk_wait_ns: std::sync::atomic::AtomicU64,
 }
@@ -107,10 +63,7 @@ pub(crate) struct RecvRows<'a, const W: usize> {
 impl<'a, const W: usize> RecvRows<'a, W> {
     /// Pair each of `plan`'s remote deltas with the block that carries it.
     ///
-    /// A delta is classified from its mask, which does not depend on the rank,
-    /// so partner `q`'s remote deltas addressed here are the same entries, in
-    /// the same order, as this partition's remote deltas addressed to `q`: the
-    /// `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`.
+    /// A delta is classified from its mask, so partner `q`'s remote deltas addressed here are the same entries, in the same order, as this partition's remote deltas addressed to `q`: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`.
     fn new(
         plan: &PartitionPlan,
         recv: &'a [Option<PartnerPayload<W>>],
@@ -177,10 +130,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         #[cfg(feature = "phase-timing")]
         let t0 = std::time::Instant::now();
         let p = self.map.position_of(beta);
-        // The rows for this coset may still be on the wire. Every member of a
-        // coset is in one chunk (`ChunkMap`), so this is one wait per task, not
-        // one per member — and under a blocking transport it is a no-op call
-        // the optimizer keeps but the branch predictor never notices.
+        // Every member of a coset is in one chunk (`ChunkMap`), so this is one wait per task, not one per member.
         self.wait.wait_chunk(self.map.chunk_of_position(p));
         #[cfg(feature = "phase-timing")]
         self.chunk_wait_ns.fetch_add(
@@ -202,26 +152,21 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
     }
 }
 
-/// One partition's reusable per-layer scratch: the coset loop's and the export
-/// pass's, held together so the driver carries one value per partition.
+/// One partition's reusable per-layer scratch: the coset loop's and the export pass's, held together so the driver carries one value per partition.
 #[derive(Debug, Default)]
 pub(crate) struct PartitionState<const W: usize> {
     /// The bucketed engine's layer scratch.
     pub layer: LayerScratch<W>,
     /// The export pass's count buffers and its pool of exchange payloads.
     pub export: ExportScratch<W>,
-    /// The destination-coset order this layer's blocks are laid out in, and
-    /// the chunks its bulk transfer is cut into. Rebuilt per remote layer,
-    /// keeping its permutation buffers.
+    /// The destination-coset order this layer's blocks are laid out in, and the chunks its bulk transfer is cut into.
     pub chunks: ChunkMap,
 }
 
 /// What one layer's exchange moved, from this partition's point of view.
 ///
-/// `rows_sent` and `bytes_sent` are indexed by partner rank (length is the
-/// group size); `rows_received` is a total, since a received row's provenance
-/// stops mattering the moment it is merged. A layer with no remote delta
-/// reports all zeros and issues no transport call at all.
+/// `rows_sent` and `bytes_sent` are indexed by partner rank; `rows_received` is a total, since a received row's provenance stops mattering once merged.
+/// A layer with no remote delta reports all zeros and issues no transport call.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LayerExchangeCounts {
     /// Remote deltas the layer had, i.e. blocks sent per partner-delta pair.
@@ -248,17 +193,9 @@ impl LayerExchangeCounts {
 
 /// Apply one prepared channel to this partition's share of a sum.
 ///
-/// `local` must hold exactly the terms with `rows.partition_of(v) ==
-/// transport.rank()`, under a hash and bucket count every partition agrees on;
-/// it comes back holding this partition's share of the layer's output, merged,
-/// deduplicated and filtered through `policy`'s `keep_term`.
-///
-/// Neither rebuckets nor calls `finalize_layer`: both are collective decisions
-/// the driver makes with the counts this returns.
-///
-/// Classifies `prep`'s deltas itself. The driver needs the classification
-/// *before* it decides whether the layer takes a collective, so it holds the
-/// plan and calls [`apply_layer_partitioned_with_plan`] instead.
+/// `local` must hold exactly the terms with `rows.partition_of(v) == transport.rank()`, under a hash and bucket count every partition agrees on; it comes back holding this partition's share of the layer's output, merged, deduplicated and filtered through `policy`'s `keep_term`.
+/// Neither rebuckets nor calls `finalize_layer`: both are collective decisions the driver makes with the counts this returns.
+/// Classifies `prep`'s deltas itself; the driver needs that classification before it decides whether the layer takes a collective, so it holds the plan and calls [`apply_layer_partitioned_with_plan`] instead.
 #[cfg(test)]
 pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
     local: &mut PauliSum<W>,
@@ -278,10 +215,7 @@ where
 
 /// [`apply_layer_partitioned`] with the delta classification already made.
 ///
-/// `plan` must be `PartitionPlan::new(prep, rows, transport.rank())` — the
-/// driver builds it a step earlier, because `has_remote()` is what decides
-/// whether the layer agrees the bucket count with the group (ARCHITECTURE.md
-/// §Partitioning).
+/// `plan` must be `PartitionPlan::new(prep, rows, transport.rank())`; the driver builds it a step earlier, because `has_remote()` is what decides whether the layer agrees the bucket count with the group (ARCHITECTURE.md §Partitioning).
 pub(crate) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prep: &Prepared<W>,
@@ -333,32 +267,20 @@ where
             );
         }
     }
-    // The layer as this partition sees it: the local delta table (a tabulated
-    // channel keeps only its local entries, so the gather loops stay a plain
-    // `deltas()` walk with no per-entry predicate), the local bucket deltas
-    // for the coset span, the channel's *total* stream count for the sort
-    // kernel, and — for a wide rotation — whether the generator pass emits
-    // here at all.
+    // The local delta table, the local bucket deltas, the channel's total stream count, and — for a wide rotation — whether the generator pass emits here at all.
     let retained;
     let local_prep: &Prepared<W> = match prep {
         Prepared::Local(ptm) => {
             retained = Prepared::Local(ptm.retain_entries(&plan.local_entries));
             &retained
         }
-        // A rotation has two entries and the identity one is always local, so
-        // `has_remote()` means the generator crosses and the prepared form is
-        // used unchanged, with `gen_local` switching its pass off.
+        // The identity entry of a rotation is always local, so `has_remote()` means the generator crosses; `gen_local` switches its pass off instead.
         Prepared::Rotation(_) => prep,
     };
     let knobs = LayerKnobs {
         bucket_deltas: Some(&plan.local_bucket_deltas),
         rest_streams: Some(plan.rest_streams_total),
-        // From `prep`, not `local_prep`: `retain_entries` drops the entries
-        // that leave this partition, and a cut-down delta set always looks at
-        // least as disjoint as the channel. Asking the restricted PTM could
-        // put one partition on the radix kernel for a fan-out channel the
-        // unpartitioned run keeps on the comparison kernel — see
-        // `LayerKnobs::rows_per_key`.
+        // From `prep`, not `local_prep`: asking the restricted PTM could put one partition on a different sort kernel than the unpartitioned run — see `LayerKnobs::rows_per_key`.
         rows_per_key: match prep {
             Prepared::Local(ptm) => Some(rest_rows_per_key(ptm)),
             Prepared::Rotation(_) => None,
@@ -366,14 +288,12 @@ where
         gen_local: match prep {
             // Entry 1 is the generator pass (`plan`'s numbering).
             Prepared::Rotation(_) => plan.local_entries[1],
-            // Meaningless for a tabulated channel; the default keeps it out
-            // of the way.
+            // Meaningless for a tabulated channel.
             Prepared::Local(_) => true,
         },
     };
 
-    // Split the scratch so the exchange can borrow the payload pool while the
-    // coset loop inside it borrows the layer scratch and the chunk map.
+    // Split the scratch so the exchange can borrow the payload pool while the coset loop inside it borrows the layer scratch and the chunk map.
     let PartitionState {
         layer: layer_scratch,
         export: export_scratch,
@@ -384,21 +304,14 @@ where
     #[cfg(feature = "phase-timing")]
     let exchange_start = std::time::Instant::now();
 
-    // Two phases. `exchange_layer` returns once the block headers and CSR
-    // offsets are here — everything `RecvRows::count` needs to size a run —
-    // and the rows themselves may still be in flight; each coset task waits for
-    // its own chunk at the top of `append_into`.
+    // `exchange_layer` returns once the block headers and CSR offsets are here; the rows themselves may still be in flight, and each coset task waits for its own chunk at the top of `append_into`.
     let (recv, rows_received) =
         transport.exchange_layer(send, &mut export_scratch.pool, map, |recv, wait| {
             #[cfg(feature = "phase-timing")]
             let body_start = std::time::Instant::now();
             #[cfg(debug_assertions)]
             for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
-                // The bucket count is a *collective* decision the driver makes
-                // before the layer; a block indexed by a different one would be
-                // read at the wrong offsets. Without this the failure mode is a
-                // garbage segment length — a wild allocation or a silently
-                // wrong answer — rather than an assertion naming the cause.
+                // The bucket count is a collective decision the driver makes before the layer; a block indexed by a different one would be read at the wrong offsets.
                 debug_assert_eq!(
                     block.num_buckets() as usize,
                     local.num_buckets(),
@@ -432,16 +345,12 @@ where
         });
     #[cfg(feature = "phase-timing")]
     {
-        // `exchange_ns` is the exchange minus the layer work it now wraps: the
-        // send posting, the early receives, and whatever transfer the coset
-        // loop did not manage to hide before the closing wait.
+        // `exchange_ns` excludes the layer work it wraps, so it isolates whatever transfer the coset loop did not manage to hide before the closing wait.
         layer_scratch.stats.exchange_ns +=
             exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
         st.rearm();
     }
-    // The received rows are merged; the payloads that carried them go back into
-    // the pool with their columns intact, and the next layer's export — or the
-    // next receive — takes them from there rather than from the allocator.
+    // The payloads that carried the received rows go back into the pool with their columns intact, for the next export or receive to reuse.
     export_scratch.pool.extend(recv.into_iter().flatten());
 
     LayerExchangeCounts {
@@ -486,14 +395,10 @@ mod tests {
         }
     }
 
-    /// `count` and `append_into` read the block at the *destination position*,
-    /// and each waits for exactly the chunk that position falls in.
+    /// `count` and `append_into` read the block at the *destination position*, and each waits for exactly the chunk that position falls in.
     ///
-    /// This is the whole receive-side contract of the pipelined exchange: get
-    /// the position wrong and rows land in the wrong bucket; get the chunk
-    /// wrong and a task reads a column MPI is still writing. The oracle is
-    /// hand-built — one row per position, carrying that position's index — so a
-    /// misread is visible as a wrong number rather than as a wrong sum.
+    /// This is the whole receive-side contract of the pipelined exchange: get the position wrong and rows land in the wrong bucket; get the chunk wrong and a task reads a column MPI is still writing.
+    /// The oracle is hand-built, one row per position carrying that position's index, so a misread shows up as a wrong number rather than a wrong sum.
     #[test]
     fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
         const BITS: u8 = 5;
@@ -554,16 +459,10 @@ mod tests {
         }
     }
 
-    /// Run one layer on every partition of `rows`, each on its own thread with
-    /// its own transport, and give back the parts in rank order with their
-    /// exchange counts.
+    /// Run one layer on every partition of `rows`, each on its own thread with its own transport, and give back the parts in rank order with their exchange counts.
     ///
-    /// `threads`, when given, runs each partition inside a Rayon pool of that
-    /// size — the knob the byte-identity test turns.
-    ///
-    /// Every part is checked on the way out: the bucketed invariants hold, and
-    /// it holds keys of its own partition only (`None` for an empty part,
-    /// which is legal and is what the `P = 4` fixtures produce).
+    /// `threads`, when given, runs each partition inside a Rayon pool of that size, the knob the byte-identity test turns.
+    /// Every part is checked on the way out: the bucketed invariants hold, and it holds keys of its own partition only.
     fn run_parts<const W: usize, T>(
         whole: &PauliSum<W>,
         prep: &Prepared<W>,
@@ -646,22 +545,14 @@ mod tests {
         g
     }
 
-    /// A partitioning that sees exactly the `x` bit of qubit 2, which
-    /// [`wide_gen`] carries: `part(gen) = 1`, so the generator pass is remote
-    /// at every rank.
+    /// A partitioning that sees exactly the `x` bit of qubit 2, which [`wide_gen`] carries: `part(gen) = 1`, so the generator pass is remote at every rank.
     fn rows_seeing_qubit_2_x() -> PartitionRows<1> {
         PartitionRows::<1>::from_rows(8, vec![[1u64 << 2]], vec![[0u64]])
     }
 
-    /// The whole differential net, split every way: merged output against the
-    /// naive oracle *and* against the unpartitioned engine on the same hash.
+    /// The whole differential net, split every way: merged output against the naive oracle *and* against the unpartitioned engine on the same hash.
     ///
-    /// This is the primary correctness net for the partitioned layer. It
-    /// covers both prepared arms, both directions, four bucket counts, one/two/
-    /// four partitions and two independent partition-row draws — so a delta
-    /// that crosses in one draw stays local in another, and the export,
-    /// exchange and receive paths are exercised against the same oracle the
-    /// unpartitioned engine answers to.
+    /// This is the primary correctness net for the partitioned layer: both prepared arms, both directions, four bucket counts, one/two/four partitions, and two independent partition-row draws so a delta that crosses in one draw stays local in another.
     #[test]
     fn partitioned_layer_matches_naive_oracle_w1() {
         let input = rand_sum::<1>(600, 8, 0x9D0);
@@ -764,12 +655,9 @@ mod tests {
         }
     }
 
-    /// A layer whose every delta stays inside its partition issues **no**
-    /// transport call — not an empty one.
+    /// A layer whose every delta stays inside its partition issues **no** transport call, not an empty one.
     ///
-    /// That is what lets a partitioned run skip the collective entirely on the
-    /// many layers that do not cross: the verdict comes from the plan, which
-    /// every partition computes identically, so no vote is needed.
+    /// That is what lets a partitioned run skip the collective entirely on layers that do not cross: the verdict comes from the plan, which every partition computes identically.
     #[test]
     fn no_remote_deltas_means_no_exchange() {
         let input = rand_sum::<1>(300, 8, 0x9D2);
@@ -829,9 +717,7 @@ mod tests {
         assert_terms_close(&got, &want, TOL, "local-only layer");
     }
 
-    /// A wide rotation whose generator crosses: every generator row is
-    /// exported, and the exported total is exactly the number of terms that
-    /// anticommute with the generator.
+    /// A wide rotation whose generator crosses: every generator row is exported, and the exported total is exactly the number of terms that anticommute with the generator.
     #[test]
     fn all_remote_rotation_generator() {
         let gen = wide_gen();
@@ -870,17 +756,11 @@ mod tests {
         assert_terms_close(&got, &want, TOL, "all-remote generator");
     }
 
-    /// A key whose contributions live on two partitions, and the amplitudes
-    /// that bring each of them to it.
+    /// A key whose contributions live on two partitions, and the amplitudes that bring each of them to it.
     ///
-    /// `w` anticommutes with the generator, so it contributes to itself
-    /// through the identity pass with amplitude `alpha = cos θ`, and its
-    /// generator image `u = w · gen` contributes through the generator pass
-    /// with amplitude `beta = i^k sin θ`. `part(u) = part(w) ^ part(gen)`
-    /// differs from `part(w)`, so the two contributions *must* meet across the
-    /// exchange or not at all. Both amplitudes are measured off the oracle
-    /// rather than assumed, and returning them lets the caller pick
-    /// coefficients whose sum at `w` is exactly `beta·alpha − alpha·beta`.
+    /// `w` anticommutes with the generator, so it contributes to itself through the identity pass with amplitude `alpha = cos θ`, and its generator image `u = w · gen` contributes through the generator pass with amplitude `beta = i^k sin θ`.
+    /// `part(u)` differs from `part(w)`, so the two contributions *must* meet across the exchange or not at all.
+    /// Both amplitudes are measured off the oracle rather than assumed, so the caller can pick coefficients whose sum at `w` is exactly `beta·alpha − alpha·beta`.
     fn cancelling_pair(
         rot: &PauliRotation<1>,
         rows: &PartitionRows<1>,
@@ -925,13 +805,9 @@ mod tests {
         acc.finalize()
     }
 
-    /// `keep_term` sees the sum across the partition boundary: two
-    /// contributions that each clear the threshold by five orders of magnitude
-    /// cancel to below it, and the term is dropped — exactly as the oracle,
-    /// which sums before it filters, drops it.
+    /// `keep_term` sees the sum across the partition boundary: two contributions that each clear the threshold by five orders of magnitude cancel to below it, and the term is dropped, exactly as the oracle (which sums before it filters) drops it.
     ///
-    /// Were the received rows merged *after* the policy ran (or into a
-    /// separate bucket), the term would survive with the wrong coefficient.
+    /// Were the received rows merged *after* the policy ran, the term would survive with the wrong coefficient.
     #[test]
     fn keep_term_sees_the_sum_across_partitions() {
         let rot = PauliRotation::new(wide_gen(), 0.41);
@@ -967,13 +843,9 @@ mod tests {
         }
     }
 
-    /// Contributions from two partitions that cancel **exactly** leave no
-    /// term: the merge drops exact zeros, and it can only see the zero because
-    /// the received row was summed with the local one first.
+    /// Contributions from two partitions that cancel **exactly** leave no term: the merge drops exact zeros, and it can only see the zero because the received row was summed with the local one first.
     ///
-    /// The cancellation is exact by construction, not by luck:
-    /// `beta·alpha` and `(−alpha)·beta` round to the same magnitude with
-    /// opposite signs in every component.
+    /// The cancellation is exact by construction: `beta·alpha` and `(−alpha)·beta` round to the same magnitude with opposite signs in every component.
     #[test]
     fn exact_zero_sum_across_partitions_is_dropped() {
         let rot = PauliRotation::new(wide_gen(), 0.41);
@@ -1027,10 +899,7 @@ mod tests {
         let prep = su4.prepare(whole.hash(), false).expect("prepare");
         assert!(PartitionPlan::new(&prep, &rows, 0).has_remote());
 
-        // The fixture property is an empty *input* share — which two terms
-        // over four partitions guarantee by pigeonhole, whatever the row draw.
-        // (It used to be asserted on the outputs, where it depended on the
-        // draw, and `f39341a`'s reseeding made every output share non-empty.)
+        // The fixture property is an empty *input* share, which two terms over four partitions guarantee by pigeonhole, whatever the row draw.
         assert!(
             (0..rows.num_partitions() as u32).any(|r| whole.filter_partition(&rows, r).is_empty()),
             "the fixture must leave a partition's input empty",
@@ -1044,10 +913,7 @@ mod tests {
 
     /// Each partition's output is byte-identical across Rayon pool sizes.
     ///
-    /// The determinism argument of ARCHITECTURE.md §Determinism survives
-    /// partitioning: cosets stay write-disjoint, and the received rows are
-    /// appended to a run in a fixed order (the plan's delta order, then CSR
-    /// order inside a block) that no thread count can perturb.
+    /// The determinism argument of ARCHITECTURE.md §Determinism survives partitioning: cosets stay write-disjoint, and received rows are appended to a run in a fixed order that no thread count can perturb.
     #[test]
     fn partitioned_output_is_byte_identical_across_pool_sizes() {
         let input = rand_sum::<1>(1500, 8, 0x9D6);

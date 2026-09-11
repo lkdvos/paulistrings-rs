@@ -30,7 +30,9 @@ had.
 ## 0. Protocol and provenance
 
 Host ccqlin038 (reference host, 2× Xeon Gold 6244 Cascade Lake-SP, governor `powersave`),
-2026-09-10, rustc 1.94.0, branch `simd` at `4e1eea2`.
+2026-09-10, rustc 1.94.0. Binaries built from `4e1eea2`; the change committed on
+`816aa82`, which landed meanwhile and touches only `scripts/slurm/`, so it cannot
+affect any binary measured here.
 
 - Cell: `--n 1000000 --qubits 128 --threads 1 --reps 20`, `taskset -c 6`, `RUST_LOG` unset.
   Exceptions as in the recalibration note: `su4 --reps 2`, `tfim_step --reps 6 --truncation

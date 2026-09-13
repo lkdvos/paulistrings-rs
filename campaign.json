@@ -1,0 +1,72 @@
+{
+  "campaign_id": "campaign-2026-09-11",
+  "schema_version": 1,
+  "status": "prepared_not_submitted",
+  "hardware_contract": {
+    "node_class": "genoa",
+    "partition": "ccq",
+    "constraint": "genoa&rocky9",
+    "physical_cores_per_node": 96,
+    "ram_gib": 1536,
+    "fallback_classes": ["rome", "icelake"],
+    "verification_note": "Slurm reports ThreadsPerCore=1 for all three classes; jobs/preflight.py re-verifies per-process physical-core-only affinity on the actual allocation rather than trusting that alone. Its CPU fingerprint table is MEDIUM confidence (see decisions.md #12) and needs confirming against a real genoa /proc/cpuinfo before hardware_valid=true is trusted."
+  },
+  "stages": [
+    {
+      "stage_id": "C1_C2_single_node",
+      "script": "jobs/campaign-genoa.sbatch",
+      "submit_command": "env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa.sbatch",
+      "status": "planned",
+      "purpose": "C1 smoke (first cell) + C2 single/multi-thread tolerance sweep, variant_id=bucketed_current only",
+      "matrix": {
+        "theta_h": "7pi/32 (0.6872233929727672)",
+        "trotter_steps": 20,
+        "min_abs_coeff": [1.5258789e-05, 3.8146973e-06, 9.5367432e-07],
+        "threads": [1, 96],
+        "repetition_index": [0, 1, 2],
+        "cells_planned": 18
+      },
+      "resource_bounds": {
+        "nodes": 1,
+        "exclusive": true,
+        "wall_time_cap": "04:00:00",
+        "estimated_node_hours": "up to 4 (one job, one node, time-capped; actual likely lower -- not yet measured on this task/depth)",
+        "max_concurrent_allocations": 1
+      },
+      "known_gaps_before_trusting_output": [
+        "genoa CPU fingerprint MEDIUM confidence (decisions.md #12)",
+        "setup_time_s/scatter_time_s/gather_time_s always null (T07 output note)",
+        "gate records: support_weight/bucket_bits/partner_count always null (T07 output note)"
+      ]
+    },
+    {
+      "stage_id": "C3_thread_ladder",
+      "script": "jobs/campaign-genoa.sbatch (THREADS= override)",
+      "submit_command": "env -u SBATCH_RESERVATION THREADS='1 2 4 8 16 32 48 96' sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa.sbatch",
+      "status": "planned",
+      "purpose": "full physical-core thread ladder at a few fixed min_abs_coeff spanning meaningful working-set sizes (E5, E6 prep)",
+      "matrix": {
+        "min_abs_coeff": "subset of C2's grid, chosen after C2's peak_terms are known",
+        "threads": [1, 2, 4, 8, 16, 32, 48, 96]
+      },
+      "resource_bounds": {
+        "nodes": 1, "exclusive": true, "wall_time_cap": "04:00:00", "max_concurrent_allocations": 1
+      }
+    },
+    {
+      "stage_id": "C4_distributed",
+      "script": "not yet written -- deferred by T07, see decisions.md and tasks.json#T07",
+      "status": "blocked_not_prepared",
+      "purpose": "E6/E7/E8: multi-node MPI capacity extension and hash-comparison (random vs cut partition rows)",
+      "blocking_gap": "partition_row_policy field missing from the run-record schema (T06); no multi-node sbatch template exists yet"
+    },
+    {
+      "stage_id": "historical_variants_E1_E2",
+      "script": "not yet written -- deferred by T07",
+      "status": "blocked_not_prepared",
+      "purpose": "E1 kernel-improvement and E2 attempted-threading isolated A/B against the historical commits in tasks/T01-variants.json",
+      "blocking_gap": "worktree-checkout-and-build machinery for a non-bucketed_current variant_id is not implemented in run_cell.py"
+    }
+  ],
+  "cell_ledger": "see job-ledger.jsonl (empty: no job has been submitted) and job-ledger.md for its schema"
+}

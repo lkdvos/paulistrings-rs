@@ -62,6 +62,28 @@
    basename-based rootdir insertion handles them without a shared package name. Re-verified: 42/42 pass
    together. This is exactly the kind of cross-task integration issue the main agent is responsible for
    catching (handoff: "the main agent integrates T04-T07... runs the required acceptance gates").
+19. **Built the distributed (MPI) campaign path (C4/E6) on 2026-09-13**, at the user's request for
+   distributed data ahead of the "by tomorrow" deadline. New: `jobs/run_cell_distributed.py` (a separate
+   driver, not a branch inside `run_cell.py`, since MPI's startup order — `mpi4py.rc.thread_level` before
+   importing `mpi4py.MPI` — and the "no rank-dependent branch around a collective" rule are load-bearing and
+   easiest to keep correct in one focused file), using `propagate(..., comm=COMM, result="local")` (never
+   gathers the full sum, per the handoff's capacity-demonstration rule) and a sum-of-local-expectations
+   allreduce for a true (not per-rank-partial) observable value. Only rank 0 writes `runs.jsonl` (avoids
+   concurrent writers on one shared file); every rank writes its own `gates.rank-<r>.jsonl`. Built and tested
+   against a real `--features mpi` extension in a new `.venv-mpi` (the documented CLAUDE.md steps needed a
+   module-name correction: `python-mpi/3.12.9` must be loaded via three separate `module load` calls, not one
+   combined command, for Lmod to resolve the extension-provides relationship) at 1, 2, and 4 ranks, with
+   `preflight.run_preflight` monkeypatched to a passing report (this login host is not genoa) — 6/6 new
+   regression tests (`test_run_cell_distributed.py`) pass at every rank count, and `analysis/validate_campaign.py`
+   accepts the real 4-rank output cleanly (0 problems).
+   New Slurm template `jobs/campaign-genoa-distributed.sbatch` mirrors `scripts/slurm/mpi-ranks.sbatch`'s
+   proven multi-node placement (`--cpu-bind=ldoms --mpi=pmix`, shared-filesystem build, ranks rounded to a
+   power of two) but launches the real canonical task instead of the differential-test binary. Defaults to
+   `min_abs_coeff=2^-16` deliberately — the same point already trusted from `campaign-genoa.sbatch`, so the
+   first distributed cell is an apples-to-apples overlap comparison, not a blind leap to an untested tolerance.
+   **Not yet run on the real cluster** — E6 is prepared, not evidenced; E7 (a run that exceeds single-node
+   capacity) and E8 (hash-row comparison, still blocked on the missing `partition_row_policy` schema field)
+   remain out of scope for this pass.
 17. **First real job (7030090) revealed a genuine T06/T07 schema mismatch**, invisible to synthetic-fixture
    tests because both sides' fixtures independently matched their own (slightly wrong) assumptions:
    `run_cell.py` wrote `build_features`/`compiler_version` as `None` (never actually collected),

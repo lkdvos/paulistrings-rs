@@ -55,10 +55,17 @@
     },
     {
       "stage_id": "C4_distributed",
-      "script": "not yet written -- deferred by T07, see decisions.md and tasks.json#T07",
-      "status": "blocked_not_prepared",
-      "purpose": "E6/E7/E8: multi-node MPI capacity extension and hash-comparison (random vs cut partition rows)",
-      "blocking_gap": "partition_row_policy field missing from the run-record schema (T06); no multi-node sbatch template exists yet"
+      "script": "jobs/campaign-genoa-distributed.sbatch",
+      "submit_command": "env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-distributed.sbatch",
+      "status": "planned",
+      "purpose": "E6: multi-node MPI at the same eps campaign-genoa.sbatch already trusts (2^-16), an overlap comparison before any capacity-extension attempt",
+      "matrix": {
+        "theta_h": "7pi/32", "trotter_steps": 20, "min_abs_coeff": 1.5258789e-05,
+        "ranks": "nodes x NUMA domains per node, rounded down to a power of two (2 nodes -> 4 ranks by default)",
+        "repetition_index": [0]
+      },
+      "resource_bounds": {"nodes": 2, "exclusive": true, "wall_time_cap": "04:00:00", "max_concurrent_allocations": 1},
+      "implementation_note": "run_cell_distributed.py (new driver, comm=/result=local, no full-sum gather) built and tested 2026-09-13 at 1/2/4 ranks with a monkeypatched passing preflight (this login host is not genoa) -- see decisions.md. E7 (a lower-tolerance run that exceeds single-node capacity) and E8 (hash-row comparison) are NOT covered by this stage: E8 still needs the partition_row_policy schema field (T06 gap, unchanged)."
     },
     {
       "stage_id": "historical_variants_E1_E2",

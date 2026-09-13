@@ -12,8 +12,8 @@ missing). None is populated with real numbers, and none may be until a real Slur
 | E3 | Memory diagnosis | 13-14 | not started | No task yet drives `crates/membench`/`scripts/bandwidth.sh` for this campaign's host |
 | E4 | Bucketed single-thread gain | 25 | tooling-ready | `campaign-genoa.sbatch` C2 stage (threads=1 cells) |
 | E5 | Bucketed multithread gain | 26-27 | tooling-ready | `campaign-genoa.sbatch` C3 stage (thread ladder) — needs C2's peak_terms first to pick fixed cutoffs |
-| E6 | Multiprocess/distributed behavior | 28 | blocked | No multi-node/MPI sbatch template yet (`campaign.json` stage `C4_distributed`) |
-| E7 | Beyond-single-node capacity | 28 | blocked | Same as E6 |
+| E6 | Multiprocess/distributed behavior | 28 | tooling-ready | `jobs/campaign-genoa-distributed.sbatch` + `jobs/run_cell_distributed.py`, tested at 1/2/4 ranks (2026-09-13); not yet run on the real cluster |
+| E7 | Beyond-single-node capacity | 28 | blocked | Same driver as E6 works, but no lower-tolerance point that actually exceeds single-node capacity has been attempted yet |
 | E8 | Communication-aware hash | 28/28b | blocked | `partition_row_policy` field missing from the run-record schema (`decisions.md` #13); also needs E6's template |
 | E9 | Observable consistency/convergence | 24 | tooling-ready | Live pilot already ran (5 steps, θh=7π/32, ε=2⁻⁶): 1355/1355 per-layer term counts identical, `|Δ⟨O⟩|=0` between engines (`decisions.md` #10) — this is a plumbing validation at shallow depth, not the headline 20-step accuracy claim, which still needs the real campaign |
 

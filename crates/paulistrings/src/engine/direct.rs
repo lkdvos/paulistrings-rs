@@ -190,7 +190,7 @@ impl<const W: usize> DirectSum<W> {
 ///
 /// # Per-layer records
 ///
-/// The `TermTrace` push and the `DEBUG` progress line are emitted here in the same order, with the same fields and the same format string as the sorting loop's epilogue, because downstream tooling parses them: the cross-engine head-to-head driver reads per-layer `terms_in -> terms_out` counts out of exactly these `DEBUG` records to gate term-count parity against PauliPropagation.jl.
+/// The `TermTrace`/`GateTrace` pushes and the `DEBUG` progress line are emitted here in the same order, with the same fields and the same format string as the sorting loop's epilogue, because downstream tooling parses them: the cross-engine head-to-head driver reads per-layer `terms_in -> terms_out` counts out of exactly these `DEBUG` records to gate term-count parity against PauliPropagation.jl.
 #[inline(never)]
 pub(crate) fn run_direct_prefix<const W: usize, T>(
     circuit: &crate::circuit::Circuit<W>,
@@ -206,6 +206,7 @@ where
     let n = circuit.channels.len();
     let adjoint = matches!(direction, super::Direction::Heisenberg);
     let tracing = scratch.term_trace.is_some();
+    let gate_tracing = scratch.gate_trace.is_some();
     // Read once: a policy cannot change its answer mid-circuit, and the branch it guards costs a materialize plus a re-ingest.
     let finalizes = policy.finalizes_layer();
 
@@ -218,9 +219,11 @@ where
             super::Direction::Heisenberg => n - 1 - applied,
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
+        let application_index = applied;
 
-        let layer_t0 = log::log_enabled!(target: super::LOG_TARGET, log::Level::Debug)
-            .then(std::time::Instant::now);
+        let debug_on = log::log_enabled!(target: super::LOG_TARGET, log::Level::Debug);
+        let want_timer = gate_tracing || debug_on;
+        let layer_t0 = want_timer.then(std::time::Instant::now);
         let terms_before = direct.len();
 
         direct.apply_layer(ch, policy, adjoint);
@@ -239,17 +242,33 @@ where
         if tracing {
             super::record_layer_terms(scratch, terms_before, terms_after);
         }
-        if let Some(t0) = layer_t0 {
-            log::debug!(
-                target: super::LOG_TARGET,
-                "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
-                applied,
-                n,
-                ch.debug_name(),
-                terms_before,
-                terms_after,
-                t0.elapsed().as_secs_f64() * 1e3,
-            );
+        if want_timer {
+            let dt = layer_t0
+                .expect("want_timer implies layer_t0 is Some")
+                .elapsed();
+            if gate_tracing {
+                super::record_gate_trace(
+                    scratch,
+                    idx as u32,
+                    application_index as u32,
+                    ch.debug_name(),
+                    terms_before,
+                    terms_after,
+                    dt,
+                );
+            }
+            if debug_on {
+                log::debug!(
+                    target: super::LOG_TARGET,
+                    "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
+                    applied,
+                    n,
+                    ch.debug_name(),
+                    terms_before,
+                    terms_after,
+                    dt.as_secs_f64() * 1e3,
+                );
+            }
         }
 
         if terms_after > options.small_sum_threshold {

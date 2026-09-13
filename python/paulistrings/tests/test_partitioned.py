@@ -352,6 +352,7 @@ def test_partition_stats_are_self_consistent():
         part.terms_in,
         part.terms_out,
         part.imbalance,
+        part.nanos,
     ):
         assert len(field) == stats.layers
 
@@ -368,6 +369,14 @@ def test_partition_stats_are_self_consistent():
         # the bound that always holds is 1 <= imbalance <= P.
         assert 1.0 <= part.imbalance[k] <= part.partitions
         assert part.imbalance[k] < 1.2
+        # The top-level `nanos` is the critical-rank proxy: the max over the
+        # raw per-partition timings this record carries.
+        assert len(part.nanos[k]) == part.partitions
+        assert stats.nanos[k] == max(part.nanos[k])
+        # `circuit_index`/`application_index`/`gate_name` are agreed collective
+        # values, identical on every partition by construction.
+        assert stats.circuit_index[k] == k
+        assert stats.application_index[k] == k
 
     # This circuit does move rows: a partitioned run that never exchanged
     # anything would not be testing the exchange at all.

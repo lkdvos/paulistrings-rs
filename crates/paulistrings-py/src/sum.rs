@@ -12,9 +12,9 @@ use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
     propagate_with_options, propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction,
-    EngineSelection, LayerScratch, PartitionConfig, PartitionRuntime, PartitionTrace,
+    EngineSelection, GateTrace, LayerScratch, PartitionConfig, PartitionRuntime, PartitionTrace,
     PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
-    PropagateOptions, StabilizerState, TermTrace, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
+    PropagateOptions, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -578,8 +578,8 @@ enum RunMode {
 
 /// The per-layer records a run produced, tagged by which engine produced them.
 enum RunTrace {
-    /// The unpartitioned engine's term counts.
-    Term(TermTrace),
+    /// The unpartitioned engine's per-gate trace: term counts, gate identity and elapsed time.
+    Term(GateTrace),
     /// An in-process partitioned run's records, plus the partition count.
     Partition(PartitionTrace, usize),
     /// A distributed run's records — **this rank's only** — plus `(rank, size)`.
@@ -635,7 +635,7 @@ impl RunMode {
         match self {
             RunMode::Classic => {
                 let mut scratch = LayerScratch::<W>::new();
-                scratch.enable_term_trace();
+                scratch.enable_gate_trace();
                 let out = propagate_with_scratch_and_options(
                     circuit,
                     sum.clone(),
@@ -645,7 +645,7 @@ impl RunMode {
                     options,
                 );
                 let trace = scratch
-                    .take_term_trace()
+                    .take_gate_trace()
                     .expect("the trace is enabled before the layer loop runs");
                 Ok((out, RunTrace::Term(trace)))
             }
@@ -754,6 +754,10 @@ pub struct PropagationStats {
     peak_terms: usize,
     final_terms: usize,
     partition: Option<PartitionStats>,
+    circuit_index: Vec<u32>,
+    application_index: Vec<u32>,
+    gate_name: Vec<&'static str>,
+    nanos: Vec<u64>,
 }
 
 #[pymethods]
@@ -797,6 +801,31 @@ impl PropagationStats {
         self.partition.clone()
     }
 
+    /// This layer's position in the circuit as written, independent of `direction`. One entry per layer, in application order.
+    #[getter]
+    fn circuit_index(&self) -> Vec<u32> {
+        self.circuit_index.clone()
+    }
+
+    /// This layer's position in the propagation loop, i.e. the loop counter `k`: always `0..layers` regardless of `direction`. Pair with `circuit_index` to recover the circuit position without knowing the direction or circuit length.
+    #[getter]
+    fn application_index(&self) -> Vec<u32> {
+        self.application_index.clone()
+    }
+
+    /// The applied channel's debug name (its type name, stripped of path and generics) for each layer.
+    #[getter]
+    fn gate_name(&self) -> Vec<&str> {
+        self.gate_name.to_vec()
+    }
+
+    /// Elapsed wall-clock nanoseconds for each layer's complete gate application (rebucket/prepare through merge, truncation, and finalization).
+    /// For an unpartitioned run this is exact. For a `partitions=` or `comm=` run this is the **maximum over partitions/ranks** — a critical-rank proxy, since partitions are not synchronized mid-layer; see `partition.nanos` for the raw per-partition timings that let you compute min/median/max yourself.
+    #[getter]
+    fn nanos(&self) -> Vec<u64> {
+        self.nanos.clone()
+    }
+
     /// The five term-count fields, in getter order, for a readable REPL/log line. `partition` is deliberately not here (the format is pinned by `test_propagation_stats.py`); print `stats.partition` for that.
     fn __repr__(&self) -> String {
         format!(
@@ -808,24 +837,37 @@ impl PropagationStats {
 }
 
 impl PropagationStats {
-    /// Derive the Python-facing record from a core [`TermTrace`] plus the
+    /// Derive the Python-facing record from a core [`GateTrace`] plus the
     /// length of the propagated sum (which is what "peak" falls back to when
     /// no layer ran).
-    fn from_trace(trace: TermTrace, final_terms: usize) -> Self {
+    fn from_trace(trace: GateTrace, final_terms: usize) -> Self {
         debug_assert_eq!(trace.terms_in.len(), trace.terms_out.len());
+        let peak_terms = trace
+            .terms_in
+            .first()
+            .copied()
+            .into_iter()
+            .chain(trace.terms_out.iter().copied())
+            .max()
+            .unwrap_or(final_terms);
         Self {
             layers: trace.terms_out.len(),
-            peak_terms: trace.peak_terms().unwrap_or(final_terms),
+            peak_terms,
             final_terms,
             terms_in: trace.terms_in,
             terms_out: trace.terms_out,
             partition: None,
+            circuit_index: trace.circuit_index,
+            application_index: trace.application_index,
+            gate_name: trace.gate_name,
+            nanos: trace.nanos,
         }
     }
 
     /// The same record from a partitioned run's [`PartitionTrace`], plus the per-partition detail in `partition`.
-    /// The layer-level counts are the per-partition ones summed, matching what the unpartitioned engine would record for the same layer — so a partitioned run is comparable to an unpartitioned one field by field.
-    /// A distributed run's records are this rank's only, so the sum is a sum of one (documented on `PartitionStats.size`).
+    /// The layer-level term counts are the per-partition ones summed, matching what the unpartitioned engine would record for the same layer — so a partitioned run is comparable to an unpartitioned one field by field.
+    /// `nanos` is the **maximum** over partitions per layer (a critical-rank proxy, documented on the getter); `circuit_index`/`application_index`/`gate_name` are single values, identical across partitions by construction (lock-step application).
+    /// A distributed run's records are this rank's only, so the term-count sum is a sum of one (documented on `PartitionStats.size`) and `nanos` is that one rank's own timing.
     fn from_partition_trace(
         trace: &PartitionTrace,
         partitions: usize,
@@ -833,13 +875,21 @@ impl PropagationStats {
         ranks: Option<(u32, u32)>,
     ) -> Self {
         let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
-        let term_trace = TermTrace {
+        let gate_trace = GateTrace {
+            circuit_index: trace.layers.iter().map(|l| l.circuit_index).collect(),
+            application_index: trace.layers.iter().map(|l| l.application_index).collect(),
+            gate_name: trace.layers.iter().map(|l| l.gate_name).collect(),
             terms_in: trace.layers.iter().map(|l| sum_of(&l.terms_in)).collect(),
             terms_out: trace.layers.iter().map(|l| sum_of(&l.terms_out)).collect(),
+            nanos: trace
+                .layers
+                .iter()
+                .map(|l| l.nanos.iter().copied().max().unwrap_or(0))
+                .collect(),
         };
         Self {
             partition: Some(PartitionStats::from_trace(trace, partitions, ranks)),
-            ..Self::from_trace(term_trace, final_terms)
+            ..Self::from_trace(gate_trace, final_terms)
         }
     }
 
@@ -873,6 +923,7 @@ pub struct PartitionStats {
     terms_in: Vec<Vec<usize>>,
     terms_out: Vec<Vec<usize>>,
     imbalance: Vec<f64>,
+    nanos: Vec<Vec<u64>>,
 }
 
 #[pymethods]
@@ -932,6 +983,13 @@ impl PartitionStats {
         self.imbalance.clone()
     }
 
+    /// Each partition's own elapsed wall time for the layer's complete gate, in nanoseconds: `nanos[k][r]` for layer `k`, partition `r`. `PropagationStats.nanos[k]` is `max(nanos[k])`; take `min`/statistics::median yourself for the rest of the skew picture.
+    /// For a distributed (`comm=`) run each entry is this rank's own timing only (one-element per layer, like `terms_in`/`terms_out` above).
+    #[getter]
+    fn nanos(&self) -> Vec<Vec<u64>> {
+        self.nanos.clone()
+    }
+
     /// All nine fields, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
     fn __repr__(&self) -> String {
         // Spelled with Python's `True`/`False`/`None` rather than Rust's `Debug`, so the line pastes back into a REPL.
@@ -973,6 +1031,7 @@ impl PartitionStats {
             terms_in: trace.layers.iter().map(|l| l.terms_in.clone()).collect(),
             terms_out: trace.layers.iter().map(|l| l.terms_out.clone()).collect(),
             imbalance: trace.imbalance(),
+            nanos: trace.layers.iter().map(|l| l.nanos.clone()).collect(),
         }
     }
 }

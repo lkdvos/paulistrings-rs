@@ -313,6 +313,7 @@ where
 
     // Hoisted out of the layer loop: nothing inside it can enable or disable the trace, so the per-layer test is on a register rather than a load through `scratch`.
     let tracing = scratch.term_trace.is_some();
+    let gate_tracing = scratch.gate_trace.is_some();
 
     // The engine choice is made once, here, outside every loop: a layer's own code path cannot change it, and under the default `SortedOnly` this is one not-taken branch before the loop and nothing inside it.
     // `n > 0` keeps a zero-layer call off the direct path entirely, so it stays a no-op rather than an ingest/materialize round trip.
@@ -331,9 +332,10 @@ where
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
 
-        // Per-layer DEBUG progress. `log_enabled!` is a relaxed atomic load plus a compare, so a disabled logger costs one branch per layer and never reads the clock; `terms_before` is the cached length field.
-        let layer_t0 =
-            log::log_enabled!(target: LOG_TARGET, log::Level::Debug).then(std::time::Instant::now);
+        // Per-layer DEBUG progress, and the opt-in gate trace, share one clock read: `log_enabled!` is a relaxed atomic load plus a compare, so a disabled logger and a disabled gate trace together cost one branch per layer and never read the clock; `terms_before` is the cached length field.
+        let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
+        let want_timer = gate_tracing || debug_on;
+        let layer_t0 = want_timer.then(std::time::Instant::now);
         let terms_before = sum.len();
 
         #[cfg(feature = "phase-timing")]
@@ -384,17 +386,25 @@ where
             record_layer_terms(scratch, terms_before, sum.len());
         }
 
-        if let Some(t0) = layer_t0 {
-            log::debug!(
-                target: LOG_TARGET,
-                "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
-                k + 1,
-                n,
-                ch.debug_name(),
-                terms_before,
-                sum.len(),
-                t0.elapsed().as_secs_f64() * 1e3,
-            );
+        if want_timer {
+            let dt = layer_t0
+                .expect("want_timer implies layer_t0 is Some")
+                .elapsed();
+            if gate_tracing {
+                record_gate_trace(scratch, idx as u32, k as u32, ch.debug_name(), terms_before, sum.len(), dt);
+            }
+            if debug_on {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
+                    k + 1,
+                    n,
+                    ch.debug_name(),
+                    terms_before,
+                    sum.len(),
+                    dt.as_secs_f64() * 1e3,
+                );
+            }
         }
     }
 
@@ -427,6 +437,31 @@ fn record_layer_terms<const W: usize>(
     }
 }
 
+/// Append one layer's full [`GateTrace`] record.
+///
+/// Deliberately `#[cold]` + `#[inline(never)]` for the same reason as [`record_layer_terms`]: keeps the trace off the layer's inlined code path.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn record_gate_trace<const W: usize>(
+    scratch: &mut LayerScratch<W>,
+    circuit_index: u32,
+    application_index: u32,
+    gate_name: &'static str,
+    terms_in: usize,
+    terms_out: usize,
+    elapsed: std::time::Duration,
+) {
+    if let Some(trace) = scratch.gate_trace.as_mut() {
+        trace.circuit_index.push(circuit_index);
+        trace.application_index.push(application_index);
+        trace.gate_name.push(gate_name);
+        trace.terms_in.push(terms_in);
+        trace.terms_out.push(terms_out);
+        trace.nanos.push(elapsed.as_nanos() as u64);
+    }
+}
+
 /// Bucket-count floor: enough buckets that Rayon has slack to load-balance.
 ///
 /// Fixed, not derived from `rayon::current_num_threads`: see [`crate::bucket::sum::DEFAULT_MIN_BUCKETS`] for why a thread-independent floor is what we want here (ARCHITECTURE.md §Bucket-Policy).
@@ -440,13 +475,14 @@ mod tests {
     use num_complex::Complex64;
 
     use crate::accumulator::BuildAccumulator;
-    use crate::channel::{support_mask, Channel, OutputBuffer};
+    use crate::channel::{support_mask, Channel, Clifford1Q, OutputBuffer};
     use crate::circuit::Circuit;
+    use crate::engine::bucketed::LayerScratch;
     use crate::pauli_string::PauliString;
     use crate::phase::Phase;
     use crate::truncation::TruncationPolicy;
 
-    use super::{propagate, Direction};
+    use super::{propagate, propagate_with_scratch, Direction};
 
     struct AlwaysKeep;
     impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
@@ -483,5 +519,66 @@ mod tests {
         let mut circuit = Circuit::<1>::new(8);
         circuit.push(ThreeQubits);
         let _ = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
+    }
+
+    /// Under `Direction::Forward`, `application_index` and `circuit_index` agree, both running `0..n`.
+    #[test]
+    fn gate_trace_forward_indices_match_circuit_order() {
+        let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
+        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+        let sum = acc.finalize();
+
+        let mut circuit = Circuit::<1>::new(1);
+        circuit.push(Clifford1Q::h(0));
+        circuit.push(Clifford1Q::s(0));
+
+        let mut scratch = LayerScratch::<1>::new();
+        scratch.enable_gate_trace();
+        let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+        let trace = scratch.take_gate_trace().unwrap();
+
+        assert_eq!(trace.application_index, vec![0, 1]);
+        assert_eq!(trace.circuit_index, vec![0, 1]);
+        assert_eq!(trace.gate_name.len(), 2);
+        assert_eq!(trace.terms_in, vec![1, 1]);
+        assert_eq!(trace.terms_out, vec![1, 1]);
+        assert_eq!(trace.nanos.len(), 2);
+    }
+
+    /// Under `Direction::Heisenberg`, `application_index` still runs `0..n` in the order layers were *applied*, but `circuit_index` is reversed — the pair that keeps a Heisenberg trace from being mislabeled against the circuit as written.
+    #[test]
+    fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
+        let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
+        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+        let sum = acc.finalize();
+
+        let mut circuit = Circuit::<1>::new(1);
+        circuit.push(Clifford1Q::h(0));
+        circuit.push(Clifford1Q::s(0));
+
+        let mut scratch = LayerScratch::<1>::new();
+        scratch.enable_gate_trace();
+        let _ =
+            propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Heisenberg, &mut scratch);
+        let trace = scratch.take_gate_trace().unwrap();
+
+        // Applied in loop order 0, 1, but the circuit ran channel 1 (`s`) first.
+        assert_eq!(trace.application_index, vec![0, 1]);
+        assert_eq!(trace.circuit_index, vec![1, 0]);
+    }
+
+    /// Gate tracing is opt-in: an untraced `propagate_with_scratch` call records nothing, matching [`TermTrace`]'s own default-off contract.
+    #[test]
+    fn gate_trace_stays_empty_when_not_enabled() {
+        let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
+        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+        let sum = acc.finalize();
+
+        let mut circuit = Circuit::<1>::new(1);
+        circuit.push(Clifford1Q::h(0));
+
+        let mut scratch = LayerScratch::<1>::new();
+        let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+        assert!(scratch.take_gate_trace().is_none());
     }
 }

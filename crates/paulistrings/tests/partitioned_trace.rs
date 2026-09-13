@@ -222,3 +222,46 @@ fn bits_are_uniform_and_grow_only() {
     assert!(grew, "the fixture should have grown the bucket count");
     assert_eq!(ps.bits(), prev);
 }
+
+/// The trace's gate-identity fields (`circuit_index`, `application_index`,
+/// `gate_name`) agree across the group by construction (every partition runs
+/// the same channel in lock-step), run `0..n` under `Direction::Forward`, and
+/// `nanos` has one rank-local timing per partition.
+#[test]
+fn gate_identity_and_timing_are_recorded_per_layer() {
+    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
+    let circuit = circuit();
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x4), runtime, &config(4));
+    ps.enable_trace();
+    ps.propagate(&circuit, &KeepAll, Direction::Forward);
+    let trace = ps.take_trace().expect("tracing is on");
+
+    assert_eq!(trace.layers.len(), circuit.channels.len());
+    for (k, layer) in trace.layers.iter().enumerate() {
+        assert_eq!(layer.circuit_index, k as u32, "layer {k}");
+        assert_eq!(layer.application_index, k as u32, "layer {k}");
+        assert!(!layer.gate_name.is_empty(), "layer {k}: empty gate name");
+        assert_eq!(layer.nanos.len(), 4, "layer {k}: one timing per partition");
+    }
+}
+
+/// Under `Direction::Heisenberg`, `application_index` still runs `0..n` in
+/// application order, but `circuit_index` is reversed — the same contract the
+/// unpartitioned engine's `GateTrace` gives, since a distributed consumer
+/// needs it to avoid mislabeling a Heisenberg trace against the circuit as
+/// written.
+#[test]
+fn heisenberg_reverses_circuit_index_not_application_index() {
+    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
+    let circuit = circuit();
+    let n = circuit.channels.len();
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x5), runtime, &config(2));
+    ps.enable_trace();
+    ps.propagate(&circuit, &KeepAll, Direction::Heisenberg);
+    let trace = ps.take_trace().expect("tracing is on");
+
+    for (k, layer) in trace.layers.iter().enumerate() {
+        assert_eq!(layer.application_index, k as u32, "layer {k}");
+        assert_eq!(layer.circuit_index, (n - 1 - k) as u32, "layer {k}");
+    }
+}

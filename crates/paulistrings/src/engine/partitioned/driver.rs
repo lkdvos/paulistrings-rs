@@ -657,7 +657,10 @@ pub(super) fn run_layers<const W: usize, T, X>(
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
 
-        let layer_t0 = log::log_enabled!(target: LOG_TARGET, log::Level::Debug).then(Instant::now);
+        // As in the unpartitioned engine: the per-layer DEBUG log and the opt-in gate trace share one clock read.
+        let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
+        let want_timer = tracing || debug_on;
+        let layer_t0 = want_timer.then(Instant::now);
         let terms_before = local.len();
 
         #[cfg(feature = "phase-timing")]
@@ -738,33 +741,40 @@ pub(super) fn run_layers<const W: usize, T, X>(
         // The counts are moved, not copied — the exchange already allocated them.
         let remote_deltas = counts.remote_deltas;
         let rows_received = counts.rows_received;
+        let dt = layer_t0.map(|t0| t0.elapsed());
         if tracing {
             record_layer_row(
                 &mut work.rows,
                 local.hash().bits(),
                 collectives,
-                terms_before,
-                local.len(),
-                counts,
-            );
-        }
-
-        if let Some(t0) = layer_t0 {
-            log::debug!(
-                target: LOG_TARGET,
-                "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \
-                 {} rows in, {:.1} ms",
-                rank,
-                size,
-                k + 1,
-                n,
+                idx as u32,
+                k as u32,
                 ch.debug_name(),
                 terms_before,
                 local.len(),
-                remote_deltas,
-                rows_received,
-                t0.elapsed().as_secs_f64() * 1e3,
+                counts,
+                dt.unwrap_or_default().as_nanos() as u64,
             );
+        }
+
+        if debug_on {
+            if let Some(dt) = dt {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \
+                     {} rows in, {:.1} ms",
+                    rank,
+                    size,
+                    k + 1,
+                    n,
+                    ch.debug_name(),
+                    terms_before,
+                    local.len(),
+                    remote_deltas,
+                    rows_received,
+                    dt.as_secs_f64() * 1e3,
+                );
+            }
         }
     }
 }

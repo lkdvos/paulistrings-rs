@@ -18,6 +18,12 @@ pub struct PartitionLayerRecord {
     /// Collective calls the layer issued, not counting the exchange itself (`remote_deltas` reports that): the bucket-count all-reduce, when the schedule called for one, plus whatever the policy's collective finalization ran.
     /// One number like the two above — the schedule is a function of the layer index and the plan, both rank-independent, so every partition issues the same calls.
     pub collectives: u32,
+    /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction. One number: every partition runs the same channel in lock-step.
+    pub circuit_index: u32,
+    /// This layer's position in the propagation loop (`k`). One number, for the same reason as `circuit_index`.
+    pub application_index: u32,
+    /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel. One value, for the same reason as `circuit_index`.
+    pub gate_name: &'static str,
     /// Terms each partition held before the layer.
     pub terms_in: Vec<usize>,
     /// Terms each partition held after the layer, i.e. after `keep_term` and the collective finalization.
@@ -28,6 +34,9 @@ pub struct PartitionLayerRecord {
     pub bytes_sent: Vec<Vec<u64>>,
     /// Rows each partition received, summed over its partners.
     pub rows_received: Vec<u64>,
+    /// Each partition's own elapsed wall time for the complete gate, indexed by rank.
+    /// Ranks are not synchronized mid-layer, so `max` is a critical-rank proxy rather than a globally elapsed time, and the spread between `min`/`median`/`max` is the group's timing skew.
+    pub nanos: Vec<u64>,
 }
 
 /// One partitioned propagation's per-layer records, in application order (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)).
@@ -108,6 +117,9 @@ pub(crate) struct PartitionLayerRow {
     /// Collectives this partition issued for the layer; see
     /// [`PartitionLayerRecord::collectives`].
     pub collectives: u32,
+    pub circuit_index: u32,
+    pub application_index: u32,
+    pub gate_name: &'static str,
     pub terms_in: usize,
     pub terms_out: usize,
     /// Rows sent to each partner rank (`P` long, own slot zero).
@@ -115,6 +127,8 @@ pub(crate) struct PartitionLayerRow {
     /// Wire bytes sent to each partner rank.
     pub bytes_sent: Vec<u64>,
     pub rows_received: u64,
+    /// This partition's own elapsed wall time for the complete gate.
+    pub nanos: u64,
 }
 
 /// Append one layer's record to this partition's rows.
@@ -123,23 +137,32 @@ pub(crate) struct PartitionLayerRow {
 /// The counts arrive by value, so the two `Vec`s the exchange already allocated are moved rather than copied.
 #[cold]
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_layer_row(
     rows: &mut Vec<PartitionLayerRow>,
     bits: u8,
     collectives: u32,
+    circuit_index: u32,
+    application_index: u32,
+    gate_name: &'static str,
     terms_in: usize,
     terms_out: usize,
     counts: LayerExchangeCounts,
+    nanos: u64,
 ) {
     rows.push(PartitionLayerRow {
         bits,
         remote_deltas: counts.remote_deltas as u32,
         collectives,
+        circuit_index,
+        application_index,
+        gate_name,
         terms_in,
         terms_out,
         rows_sent: counts.rows_sent,
         bytes_sent: counts.bytes_sent,
         rows_received: counts.rows_received,
+        nanos,
     });
 }
 
@@ -167,11 +190,15 @@ pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<Partit
             bits: head.bits,
             remote_deltas: head.remote_deltas,
             collectives: head.collectives,
+            circuit_index: head.circuit_index,
+            application_index: head.application_index,
+            gate_name: head.gate_name,
             terms_in: Vec::with_capacity(size),
             terms_out: Vec::with_capacity(size),
             rows_sent: Vec::with_capacity(size),
             bytes_sent: Vec::with_capacity(size),
             rows_received: Vec::with_capacity(size),
+            nanos: Vec::with_capacity(size),
         };
         for (rank, rows) in per_partition.iter().enumerate() {
             let row = &rows[k];
@@ -190,11 +217,27 @@ pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<Partit
                 "layer {k}: partition {rank} issued {} collectives, partition 0 issued {}",
                 row.collectives, head.collectives,
             );
+            assert_eq!(
+                row.circuit_index, head.circuit_index,
+                "layer {k}: partition {rank} ran circuit index {}, partition 0 ran {}",
+                row.circuit_index, head.circuit_index,
+            );
+            assert_eq!(
+                row.application_index, head.application_index,
+                "layer {k}: partition {rank} ran application index {}, partition 0 ran {}",
+                row.application_index, head.application_index,
+            );
+            assert_eq!(
+                row.gate_name, head.gate_name,
+                "layer {k}: partition {rank} ran gate {:?}, partition 0 ran {:?}",
+                row.gate_name, head.gate_name,
+            );
             record.terms_in.push(row.terms_in);
             record.terms_out.push(row.terms_out);
             record.rows_sent.push(row.rows_sent.clone());
             record.bytes_sent.push(row.bytes_sent.clone());
             record.rows_received.push(row.rows_received);
+            record.nanos.push(row.nanos);
         }
         trace.layers.push(record);
     }
@@ -210,11 +253,15 @@ mod tests {
             bits,
             remote_deltas: remote,
             collectives: 1,
+            circuit_index: 0,
+            application_index: 0,
+            gate_name: "channel",
             terms_in,
             terms_out: terms_in,
             rows_sent: sent,
             bytes_sent: bytes,
             rows_received: 0,
+            nanos: 0,
         }
     }
 

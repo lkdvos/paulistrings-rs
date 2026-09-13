@@ -141,6 +141,28 @@ def test_qubit_count_mismatch_rejected():
         _x0().propagate_with_stats(Circuit(NUM_QUBITS + 1))
 
 
+def test_gate_trace_fields_forward():
+    _, stats = _x0().propagate_with_stats(_three_layer_circuit())
+
+    assert stats.circuit_index == [0, 1, 2]
+    assert stats.application_index == [0, 1, 2]
+    assert stats.gate_name == ["PauliRotation", "Clifford1Q", "PauliRotation"]
+    assert len(stats.nanos) == 3
+    assert all(n >= 0 for n in stats.nanos)
+
+
+def test_gate_trace_circuit_index_reverses_under_heisenberg():
+    """`application_index` still runs `0, 1, 2` in application order;
+    `circuit_index` is reversed, since Heisenberg applies `rz(θ), h, rz(θ)`
+    from the last channel first."""
+    _, stats = _x0().propagate_with_stats(
+        _three_layer_circuit(), direction="heisenberg"
+    )
+
+    assert stats.application_index == [0, 1, 2]
+    assert stats.circuit_index == [2, 1, 0]
+
+
 def test_stats_repr_names_all_fields():
     circuit = Circuit(NUM_QUBITS)
     circuit.h(0)

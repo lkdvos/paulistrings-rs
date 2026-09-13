@@ -64,7 +64,7 @@ pub use accumulator::BuildAccumulator;
 pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use engine::bucketed::{LayerScratch, TermTrace};
+pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
 // The MPI transport and its distributed driver, behind the `mpi` feature.
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;

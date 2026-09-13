@@ -61,8 +61,9 @@ RUN_FIELDS = (
 #: Field order of one per-gate record.
 GATE_FIELDS = (
     "schema_version", "run_id", "rank_id", "application_index",
-    "circuit_index", "gate_name", "support_weight", "terms_in", "terms_out",
-    "nanos", "bucket_bits", "rows_exported", "bytes_exported", "partner_count",
+    "circuit_index", "trotter_step", "gate_name", "support_weight", "terms_in",
+    "terms_out", "nanos", "bucket_bits", "rows_exported", "bytes_exported",
+    "partner_count",
 )
 
 
@@ -149,6 +150,27 @@ def _runtime_version() -> str | None:
         return None
 
 
+def _compiler_version() -> str | None:
+    """`rustc`'s own version string, or `None` if it's not on `PATH`.
+
+    Genuinely available (the extension was just built with it) but never
+    wired up before this fix; see the campaign's decisions log.
+    """
+    try:
+        out = subprocess.run(
+            ["rustc", "--version"], capture_output=True, text=True, timeout=10, check=True
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+#: `campaign-genoa.sbatch`'s `maturin develop --release` call passes no
+#: `--features`, so the built extension's feature set is always empty today.
+#: Update this alongside the sbatch template if that ever changes.
+BUILD_FEATURES: list[str] = []
+
+
 def _empty_run_record(
     spec: CellSpec,
     run_id: str,
@@ -170,8 +192,8 @@ def _empty_run_record(
         "pair_index": spec.pair_index,
         "source_commit": commit,
         "dirty": dirty,
-        "build_features": None,
-        "compiler_version": None,
+        "build_features": list(BUILD_FEATURES),
+        "compiler_version": _compiler_version(),
         "runtime_version": _runtime_version(),
         "n_qubits": spec.n_qubits,
         "direction": spec.direction,
@@ -179,11 +201,11 @@ def _empty_run_record(
         "min_abs_coeff": spec.min_abs_coeff,
         "max_weight": spec.max_weight,
         "policy": None,
-        "engine": None,
-        "partitions": spec.partitions,
+        "engine": "unpartitioned" if spec.partitions is None else "partitioned",
+        "partitions": spec.partitions if spec.partitions is not None else 1,
         "threads": spec.threads,
         "ranks": 1,
-        "slurm_job_id": None,
+        "slurm_job_id": _slurm_job_id(),
         "node_class": node_class,
         "hardware_contract_id": preflight.HARDWARE_CONTRACT_ID,
         "hardware_valid": hardware_valid,
@@ -204,11 +226,10 @@ def _empty_run_record(
     }
 
 
-def _slurm_job_id() -> int | None:
+def _slurm_job_id() -> str | None:
     import os
 
-    raw = os.environ.get("SLURM_JOB_ID")
-    return int(raw) if raw is not None and raw.isdigit() else None
+    return os.environ.get("SLURM_JOB_ID") or None
 
 
 def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -279,8 +300,8 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
         "pair_index": spec.pair_index,
         "source_commit": commit,
         "dirty": dirty,
-        "build_features": None,
-        "compiler_version": None,
+        "build_features": list(BUILD_FEATURES),
+        "compiler_version": _compiler_version(),
         "runtime_version": _runtime_version(),
         "n_qubits": spec.n_qubits,
         "direction": spec.direction,
@@ -288,8 +309,8 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
         "min_abs_coeff": spec.min_abs_coeff,
         "max_weight": spec.max_weight,
         "policy": repr(policy) if policy is not None else None,
-        "engine": "paulistrings",
-        "partitions": spec.partitions,
+        "engine": "unpartitioned" if spec.partitions is None else "partitioned",
+        "partitions": spec.partitions if spec.partitions is not None else 1,
         "threads": spec.threads,
         "ranks": 1,
         "slurm_job_id": _slurm_job_id(),
@@ -318,14 +339,21 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
     gate_records: list[dict[str, Any]] = []
     layers = stats.layers
     partition = stats.partition
+    # `trotter_step` is never stored by the engine (Circuit has no notion of
+    # steps) -- derived here since this driver knows both circuit length and
+    # `spec.trotter_steps`, and `analysis/schema.py::validate_gate` checks the
+    # derivation itself when given `channels_per_step`.
+    channels_per_step = len(circuit) // spec.trotter_steps
     for k in range(layers):
+        circuit_index = int(stats.circuit_index[k])
         gate_records.append(
             {
                 "schema_version": SCHEMA_VERSION,
                 "run_id": run_id,
                 "rank_id": 0,
                 "application_index": int(stats.application_index[k]),
-                "circuit_index": int(stats.circuit_index[k]),
+                "circuit_index": circuit_index,
+                "trotter_step": circuit_index // channels_per_step,
                 "gate_name": stats.gate_name[k],
                 # Not exposed by PropagationStats/PartitionStats today (no
                 # per-gate support-weight getter on the Python binding) —

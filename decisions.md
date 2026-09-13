@@ -47,10 +47,11 @@
    "genoa"). Consistent with the routing table's cheap/medium tiers for this work and the "don't repeat a
    completed subagent inspection without a concrete inconsistency" rule — a light re-run sufficed, no full
    re-review.
-12. **Open item before trusting real genoa data**: T07's CPU fingerprint table (`jobs/preflight.py`) is MEDIUM
-   confidence from secondary sources and cannot distinguish Genoa from Bergamo (both family 25h). The first
-   real job on a genoa allocation should capture its actual `/proc/cpuinfo` `family`/`model` and either confirm
-   the table or correct it — do not trust `hardware_valid=true` on the real allocation until that's done once.
+12. **RESOLVED 2026-09-13**: job 7030090 landed on `worker7277`, `lscpu` reported `AMD EPYC 9474F` (a real
+   Genoa-generation part) and `preflight.py` independently matched it to the `(AuthenticAMD, family=25,
+   model=17)` table entry, reporting `hardware_valid=true`/`node_class=genoa` — the fingerprint table is now
+   empirically confirmed against a real allocation, not just secondary-source guesswork. (It still cannot
+   distinguish Genoa from Bergamo by construction; no Bergamo allocation has been seen to test that edge.)
 13. **`hash_communication()` (E8) is a documented placeholder**, not a silent gap: the run-record schema has no
    `partition_row_policy` field yet. Needs a schema addition (`"random"`/`"cut"`) before E8 data can be
    collected; deferred rather than bolted on speculatively.
@@ -61,7 +62,19 @@
    basename-based rootdir insertion handles them without a shared package name. Re-verified: 42/42 pass
    together. This is exactly the kind of cross-task integration issue the main agent is responsible for
    catching (handoff: "the main agent integrates T04-T07... runs the required acceptance gates").
-16. **T10 (`campaign.json`/`README.md`/`evidence.md`/`reproduce.sh`) written by the main agent directly**,
+17. **First real job (7030090) revealed a genuine T06/T07 schema mismatch**, invisible to synthetic-fixture
+   tests because both sides' fixtures independently matched their own (slightly wrong) assumptions:
+   `run_cell.py` wrote `build_features`/`compiler_version` as `None` (never actually collected),
+   `engine="paulistrings"` (not in the schema's closed enum), `partitions=None` for an unpartitioned run
+   (schema wants `1`), `slurm_job_id` as an `int` (schema wants `str`), and omitted `trotter_step` from every
+   gate record entirely (the field itself must be present, possibly null — my own T06/T07 dispatch prompts
+   disagreed on this, an error in the handoff, not either subagent's). Fixed in `run_cell.py`: `rustc
+   --version` now captured for real, `build_features=[]` (matches what the sbatch template actually passes to
+   `maturin develop`), `engine`/`partitions` derived from `spec.partitions`, `slurm_job_id` stringified, and
+   `trotter_step` computed as `circuit_index // (len(circuit) // spec.trotter_steps)` since the driver has
+   both quantities in scope. The 6 already-collected real records (~50 min of real compute) were migrated in
+   place rather than re-run — `analysis/validate_campaign.py` now passes clean (0 problems) on the real data.
+18. **T10 (`campaign.json`/`README.md`/`evidence.md`/`reproduce.sh`) written by the main agent directly**,
    not delegated — small, mostly-documentation glue work, and it needed the accumulated context of every
    prior task's exact output paths and caveats, which a fresh agent would have had to re-read anyway.
    `evidence.md` marks every E0-E9 row honestly as `tooling-ready` or `blocked` with its precise prerequisite;

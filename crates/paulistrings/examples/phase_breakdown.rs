@@ -88,13 +88,17 @@ Options:
                             FEWER. Both have to move together: above the
                             floor, raising --target-bucket-len alone is inert.
   --occupancy-at <rep>     0-based rep index to sample bucket occupancy at (diagnostic, opt-in;
-                            absent by default). Splits the cell's timed call into one
-                            propagate_with_scratch_and_options per rep instead of one call over
-                            the whole circuit, so wall_ns/stats are the same total work summed
-                            differently. After the named rep, records num_buckets(), an explicit
-                            empty-bucket count, and median/p95/max bucket_len() over non-empty
-                            buckets, into the JSON sidecar. Not supported for `trotter` (its
-                            circuit ignores --reps). Must be less than --reps.
+                            absent by default). Runs ONE real cfg.reps-deep trajectory from the
+                            cell's built initial sum, one propagate_with_scratch_and_options call
+                            per rep (no untimed warm-up pass first: warm-up-then-repeat would
+                            silently run the dynamics to depth 2 * --reps, which is fine for a
+                            periodic single-gate layer but wrong for a growing Trotter-step
+                            trajectory, since it would decouple the sampled step index from the
+                            requested one). wall_ns/stats sum over that one trajectory via
+                            PhaseStats::add. After the named rep, records num_buckets(), an
+                            explicit empty-bucket count, and median/p95/max bucket_len() over
+                            non-empty buckets, into the JSON sidecar. Not supported for `trotter`
+                            (its circuit ignores --reps). Must be less than --reps.
   --truncation <spec>      Truncation policy for every cell, one of:
                               keep          no truncation (default)
                               coeff:<t>     CoefficientThreshold(t): a
@@ -1218,24 +1222,18 @@ where
     let (steady_n, wall_ns, stats, occupancy) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
-        // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
-        let warmed = propagate_with_scratch_and_options(
-            &circuit,
-            base.clone(),
-            policy,
-            Direction::Forward,
-            &mut scratch,
-            options,
-        );
-        let _ = scratch.take_stats(); // discard warm-up counters
-
-        let steady_n = warmed.len();
-
         if sample_by_step {
-            // One rep's worth of circuit, called cfg.reps times: same total work as the single
-            // whole-circuit call below, just split so the sum after a chosen rep is observable.
+            // Sampling occupancy at rep `k` needs the sum as it actually stood after k reps of
+            // a genuine `cfg.reps`-rep trajectory from `base`. The warm-up-then-repeat scheme
+            // below measures a periodic layer's steady state by applying its circuit twice, which
+            // is fine when repeating the same gate is idempotent-ish (a dense random input stays
+            // in the same statistical shape) — but a Trotter-step layer's z0 input is a growing
+            // light cone with no such periodicity, so "warm up over cfg.reps reps, then apply
+            // another cfg.reps reps" runs the dynamics to depth 2 * cfg.reps, silently doubling
+            // the step index's meaning. This branch runs the one real cfg.reps-deep trajectory
+            // instead, so rep `cfg.occupancy_at` is actually rep `cfg.occupancy_at`.
             let one_rep = build_circuit::<W>(layer, cfg.qubits, 1, gen_qubits);
-            let mut sum = warmed;
+            let mut sum = base.clone();
             let mut wall_ns = 0u64;
             let mut stats = PhaseStats::default();
             let mut occupancy = None;
@@ -1255,9 +1253,22 @@ where
                     occupancy = Some(occupancy_histogram(&sum, step));
                 }
             }
+            let steady_n = sum.len();
             std::hint::black_box(&sum);
             (steady_n, wall_ns, stats, occupancy)
         } else {
+            // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
+            let warmed = propagate_with_scratch_and_options(
+                &circuit,
+                base.clone(),
+                policy,
+                Direction::Forward,
+                &mut scratch,
+                options,
+            );
+            let _ = scratch.take_stats(); // discard warm-up counters
+
+            let steady_n = warmed.len();
             let start = Instant::now();
             let output = propagate_with_scratch_and_options(
                 &circuit,

@@ -7,3 +7,8 @@
 {"ts": "2026-09-13T21:28:58Z", "job_id": "7031791", "sbatch_script": "jobs/campaign-genoa.sbatch", "env_overrides": {"note": "eps20-t1"}, "revision": "cfe3576", "status": "running"}
 {"ts": "2026-09-13T21:28:58Z", "job_id": "7031792", "sbatch_script": "jobs/campaign-genoa.sbatch", "env_overrides": {"note": "eps20-t96"}, "revision": "cfe3576", "status": "running"}
 {"ts": "2026-09-13T21:28:58Z", "job_id": "7031793", "sbatch_script": "jobs/campaign-genoa.sbatch", "env_overrides": {"note": "ladder"}, "revision": "cfe3576", "status": "running"}
+{"ts": "2026-09-13T22:04:18Z", "job_id": "7031873", "sbatch_script": "jobs/campaign-genoa-distributed.sbatch", "env_overrides": {}, "revision": "13ffd06", "status": "running"}
+{"ts": "2026-09-13T23:20:37Z", "job_id": "7032059", "sbatch_script": "jobs/campaign-genoa-distributed.sbatch", "env_overrides": {"MIN_ABS_COEFF": "3.8146973e-06", "nodes": 2}, "revision": "13ffd06", "status": "running"}
+{"ts": "2026-09-13T23:20:37Z", "job_id": "7032060", "sbatch_script": "jobs/campaign-genoa-distributed.sbatch", "env_overrides": {"MIN_ABS_COEFF": "9.5367432e-07", "nodes": 4}, "revision": "13ffd06", "status": "running"}
+{"ts": "2026-09-13T23:52:10Z", "job_id": "7032105", "sbatch_script": "jobs/campaign-genoa.sbatch", "env_overrides": {"THREADS": "64", "REPS": 1}, "revision": "13ffd06", "status": "running"}
+{"ts": "2026-09-14T00:00:00Z", "job_id": "7032179", "sbatch_script": "jobs/campaign-genoa-julia.sbatch", "env_overrides": {}, "revision": "1250820", "status": "pending", "note": "E0 real full-scale Julia PauliPropagation.jl baseline comparison"}

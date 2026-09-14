@@ -1523,7 +1523,7 @@ def make_baseline_eps_scaling_figure(
         ax.set_xticklabels([_eps_label(e) for e in eps_ticks], fontsize=7 if not deck else _DECK_FONT_PT * 0.6)
         ax.minorticks_off()
 
-        ax.set_xlabel(r"$\varepsilon$ (min_abs_coeff)")
+        ax.set_xlabel(r"coefficient tolerance $\varepsilon$")
         ax.set_ylabel("wall time (s)")
         if deck:
             if title:
@@ -1560,7 +1560,7 @@ def make_baseline_eps_scaling_figure(
             ax_speedup.set_xticks(eps_ticks)
             ax_speedup.set_xticklabels([_eps_label(e) for e in eps_ticks], fontsize=7 if not deck else _DECK_FONT_PT * 0.6)
             ax_speedup.minorticks_off()
-            ax_speedup.set_xlabel(r"$\varepsilon$ (min_abs_coeff)")
+            ax_speedup.set_xlabel(r"coefficient tolerance $\varepsilon$")
             # A rotated y-label as long as the full baseline name (e.g. "speedup vs. current
             # engine, 1 bucket") ran past the top of the canvas on an actual render at this
             # figure's height -- real clipping, not theoretical. Just "speedup" keeps the axis

@@ -553,3 +553,13 @@
    (`.venv` with prior campaign packages) is not equivalent to the real job's from-scratch
    environment -- this is exactly the class of gap real Slurm submission has caught before
    (decisions.md #17, #22).
+
+32. **Real genoa historical-variant data achieved on 2026-09-14** (job 7033716, after decision
+   #31's fix): all four historical commits completed on real genoa hardware at the reduced toy
+   scale, 0 schema problems. Generated `figures/real/recurring_stage6.png` (stages 1-6 of the
+   recurring figure) from real `runtime_tolerance()` rows -- the efficiency/left panel is empty
+   for every stage since none of the four historical strategies produces a per-gate trace (module
+   docstring). `bucketed_current`'s reduced-scale cell was run for the sbatch's own fair-comparison
+   purpose but isn't itself one of the 7 `STAGE_VARIANTS` (that slot is `bucketed_engine_parallel`,
+   "the canonical bucketed engine as shipped"), so it's excluded from the figure. `evidence.md`
+   E4/E5-historical-baseline row upgraded from toy-scale-non-genoa to real genoa data.

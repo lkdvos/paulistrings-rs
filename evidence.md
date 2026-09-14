@@ -7,8 +7,9 @@ missing). None is populated with real numbers, and none may be until a real Slur
 | ID | Evidence | Slide use | Status | Blocking on |
 | --- | --- | --- | --- | --- |
 | E0 | Baseline + external libraries | 10, every recurrence | tooling-ready | Rust leg: `jobs/campaign-genoa.sbatch` (bucketed_current only). Julia leg: `jobs/run_cell_julia.py` + `jobs/campaign-genoa-julia.sbatch`, real end-to-end local proof at small scale 2026-09-13 (`decisions.md` #20); real 20-step canonical-depth run not yet submitted |
-| E1 | Actual kernel improvement | 11 | blocked | Historical-revision worktree-checkout build machinery not implemented (`tasks.json#T07`); variant identified in `tasks/T01-variants.json` (`jcc_erratum_and_branch_prediction`) |
-| E2 | Attempted threading approach | 12 | blocked | Same as E1; variant `presentation_bench_crate_variants` |
+| E1 | Actual kernel improvement | 11 | blocked | Variant `jcc_erratum_and_branch_prediction` not attempted this pass -- time-boxed to the four variants named in the historical-variants task instead (see the new row below) |
+| E2 | Attempted threading approach | 12 | blocked | Variant `presentation_bench_crate_variants` is a standalone `presentation/bench/` crate removed from the current tree, own JSON output shape, confirmed out of scope, not attempted |
+| E4/E5 historical baseline | Bucketed single/multithread gain vs. the pre-bucketing/pre-parallel historical commits | 25-27 | **local data, cluster-pending** | `jobs/run_cell_historical.py` + `jobs/campaign-genoa-historical.sbatch` built 2026-09-14: all four historical commits from `tasks/T01-variants.json` (`naive_baseline`, `direct_small_sum_path`, `bucketed_engine_serial`, `bucketed_engine_parallel`) run locally at a reduced scale (n=12, 2 Trotter steps, eps=1e-6) via real worktree checkouts + real `cargo`/`maturin` builds, each producing a `status=completed` record that passed `analysis/schema.py::validate_run` with 0 problems. Real wall times (this non-genoa workstation, not the campaign's frozen hardware class): naive_baseline 1.0e-4s/14 terms, direct_small_sum_path 1.1e-3s/10 terms, bucketed_engine_serial 6.1e-3s/10 terms, bucketed_engine_parallel 3.3e-3s/10 terms, bucketed_current (same scale) 1.5e-4s/10 terms. `naive_baseline`'s higher term count (14 vs. 10 for the other three) is a disclosed confounder, not a bug: it builds the ZZ interaction with the engine's native `PauliRotation` generator directly (no `rx`/`rz`/`cnot` sugar exists at that commit) while the other three use a CNOT-RZ-CNOT sandwich, so per-channel truncation sees a different intermediate circuit. `direct_small_sum_path` ran its default (sorted) engine only -- no `engine=` kwarg exists at that commit, and the backport from current HEAD was ruled out of scope for this pass (see decisions.md). At this toy scale the numbers are not evidence of a real speedup ordering (the reduced-scale run is too small to be dominated by algorithmic cost rather than fixed overhead) -- they demonstrate that all four variants build and run for real, which is what real, cluster-scale, 127-qubit data (not yet collected -- the user's step) needs to build on |
 | E3 | Memory diagnosis | 13-14 | not started | No task yet drives `crates/membench`/`scripts/bandwidth.sh` for this campaign's host |
 | E4 | Bucketed single-thread gain | 25 | tooling-ready | `campaign-genoa.sbatch` C2 stage (threads=1 cells) |
 | E5 | Bucketed multithread gain | 26-27 | tooling-ready | `campaign-genoa.sbatch` C3 stage (thread ladder) — needs C2's peak_terms first to pick fixed cutoffs |
@@ -41,9 +42,14 @@ running `./reproduce.sh submit-c1c2`'s printed command on the real cluster.
   confirm against a real genoa allocation's `/proc/cpuinfo` before trusting `hardware_valid=true` there.
 - `setup_time_s`/`scatter_time_s`/`gather_time_s` and per-gate `support_weight`/`bucket_bits`/`partner_count`
   are always `null` from the current driver — not fabricated, but not available either.
-- E1/E2/E3/E6/E7/E8 need additional implementation (worktree builds, membench wiring, multi-node template,
-  schema field) beyond what T01-T09 built; each is logged as `blocked` above with its specific prerequisite,
+- E1/E2/E3 need additional implementation (jcc_erratum/presentation_bench worktree builds, membench wiring)
+  beyond what this pass and T01-T09 built; each is logged as `blocked` above with its specific prerequisite,
   not silently absent.
+- The E4/E5 historical-baseline row above is real but only at a toy reduced scale on a non-genoa workstation --
+  `jobs/campaign-genoa-historical.sbatch` (not yet submitted) is what turns it into cluster-scale, hardware-valid
+  data. `direct_small_sum_path` never exercises its distinguishing direct-apply engine path (no `engine=` kwarg
+  at that commit); `naive_baseline`'s term counts are not directly comparable to the other three (different ZZ
+  gate decomposition, a disclosed confounder, not a bug -- see the E4/E5 row above and decisions.md).
 - E0's Julia leg (`jobs/run_cell_julia.py`) never emits a per-gate trace: `trace_enabled` is always `False`
   and no `gates.rank-N.jsonl` records are written for it, because PauliPropagation.jl has no per-gate
   wall-time instrumentation (decision #10) and `validate_gate` requires `nanos` as a real, non-null int —

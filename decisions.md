@@ -378,6 +378,119 @@
    single cell (threads=96, eps=2^-16, matching the real Julia point in `raw/2026-09-14-worker7169-julia`)
    is needed to get the first real paired accuracy data point.
 
+28. **Built the historical-variants driver (E1/E2 prep, really E4/E5's historical-baseline
+   comparison) for real on 2026-09-14**: `jobs/run_cell_historical.py`, a separate driver
+   (not folded into `run_cell.py`) because the four historical commits in
+   `tasks/T01-variants.json` drift from the current Python API in four genuinely different
+   ways -- `naive_baseline` (d410f4e) has `todo!()`-stubbed PyO3 bindings entirely,
+   `direct_small_sum_path` (e56f021) has no `engine=` kwarg on `propagate`, and
+   `bucketed_engine_serial`/`bucketed_engine_parallel` (f08db7d/ef03701) predate
+   `examples/common/` entirely. A single shared code path through `run_cell.py`'s existing
+   `CellSpec`/`run_cell` shape was not realistic; a `VARIANT_ENTRY` registry
+   (`VARIANT_REGISTRY: dict[str, VariantEntry]`) maps each `variant_id` to its commit SHA and
+   one of two strategies instead.
+
+   **Reduced scale, chosen and fixed for all five variants (four historical + a same-scale
+   `bucketed_current`)**: n_qubits=12 (a straight 11-edge line on `heavy_hex_sublattice`, well
+   clear of the isolated-qubit sizes CLAUDE.md/circuits.py warn about), 2 Trotter steps,
+   theta_h=7pi/32 (contract.md's primary point, kept for continuity even off the frozen
+   127-qubit task), theta_zz=-pi/2 (contract.md's fixed value), min_abs_coeff=1e-6. Chosen
+   empirically: `naive_baseline`'s unbucketed, single-threaded, no-prepare engine completed
+   this workload in ~1e-4s, comfortably "seconds, not hours" with room to spare, while still
+   producing a real Trotterized circuit (46-90 channels depending on the ZZ-gate decomposition)
+   rather than a degenerate single-gate smoke test. This is explicitly NOT the frozen 127-qubit
+   canonical task (`contract.md`) -- it exists only so all variants can complete and be compared
+   on equal footing; a real cluster-scale comparison still needs the 127-qubit task, which none
+   of these four historical commits can build via `examples/common/heavy_hex_kicked_ising`
+   (three of the four predate that module, and the fourth's PyO3 surface is unusable).
+
+   **Two build/run strategies**, both driven from a throwaway `git worktree add --detach`
+   (never the live checkout, always removed in a `finally`, verified after every run this
+   pass left zero stray worktrees registered against the live repo):
+   - `naive_baseline`: `strategy="rust_harness"`. A small Rust example
+     (`_NAIVE_EXAMPLE_SRC`, templated and written into the worktree's
+     `crates/paulistrings/examples/historical_smoke.rs`) built with
+     `cargo build --release --example`, run as a subprocess, one JSON line of stdout parsed
+     for `wall_time_s`/`initial_terms`/`final_terms`. Because this commit predates
+     `Circuit::rx`/`rz`/`cnot` sugar, the ZZ interaction is built with the engine's native
+     two-qubit `PauliRotation` generator directly (`gen_z` bits at both qubits, `theta_zz`) --
+     not the CNOT-RZ-CNOT sandwich the other three variants use, since that identity requires
+     gate methods this commit doesn't have. This is a disclosed, real confounder: the two
+     decompositions are exactly equivalent unitaries, but per-channel truncation sees a
+     different intermediate circuit, so `naive_baseline`'s final term count (14) is not
+     expected to match the other three's (10) -- not a bug, and not silently glossed over
+     (see the registry entry's `notes` field and `evidence.md`'s new E4/E5 row).
+   - `direct_small_sum_path`/`bucketed_engine_serial`/`bucketed_engine_parallel`:
+     `strategy="pyo3_handrolled"`. Built via `maturin develop --release` into a per-variant
+     venv (created once per variant, reused across reps), then run through
+     `_HANDROLLED_WORKLOAD_SRC`, a hand-built kicked-Ising circuit using only
+     `Circuit.rx`/`.cnot`/`.rz` (all three commits expose exactly this surface, confirmed by
+     inspection before writing the shared template) and the CNOT-RZ-CNOT sandwich for the ZZ
+     interaction. `direct_small_sum_path` runs its default (sorted) engine only -- decisions.md's
+     option (a) backport of current HEAD's `engine=` kwarg into that commit's `sum.rs` was
+     time-boxed out of scope for this pass (real diff inspected, confirmed mechanically
+     straightforward but non-trivial to backport safely without its own test pass); the
+     direct-apply path this variant exists to demonstrate is therefore NOT exercised, and this
+     is stated plainly in the registry entry's `notes` and in `evidence.md`, not silently
+     dropped.
+
+   **Peak RSS**: `resource.getrusage(RUSAGE_CHILDREN).ru_maxrss` before/after each subprocess
+   call, delta reported with `peak_rss_provenance="rusage_children_maxrss_delta"` -- cheap and
+   real, with the same "lower bound, not an exact per-run figure" caveat `harness.py` already
+   documents for `/proc/self/status`'s VmHWM.
+
+   **Preflight gating**: `run_cell_historical.py` calls the same `preflight.run_preflight()`
+   `run_cell.py` does; a non-genoa host gets a real `invalid_hardware` record, no worktree
+   touched. `PS_HIST_SKIP_PREFLIGHT=1` bypasses this for local-dev validation only (documented
+   in the module docstring), mirroring the precedent already set for `run_cell.py`/
+   `run_cell_julia.py` in decisions #17/#19/#20/#21 -- `campaign-genoa-historical.sbatch` never
+   sets it.
+
+   **Real local validation, all four historical variants plus `bucketed_current` at the same
+   scale**: every one of the five cells produced a `status="completed"` record; all five passed
+   `analysis/schema.py::validate_run` with 0 problems (checked directly, and via
+   `analysis/validate_campaign.py` on the combined `runs.jsonl`/`gates.rank-0.jsonl`: "PASS: 6
+   run(s), 46 gate record(s), 0 problems" -- the 6th run and the gate records are from the
+   `bucketed_current` cell, the only one of the five with a gate trace). Real wall times on this
+   non-genoa workstation: naive_baseline 1.04e-4s (14 terms), direct_small_sum_path 1.11e-3s
+   (10 terms), bucketed_engine_serial 6.09e-3s (10 terms), bucketed_engine_parallel 3.31e-3s
+   (10 terms), bucketed_current 1.54e-4s (10 terms). These numbers are NOT evidence of a real
+   speedup ordering -- the reduced scale is dominated by fixed per-call overhead (venv/import,
+   worktree build artifacts already warm from repeated local runs), not algorithmic cost; they
+   demonstrate that all four historical variants build and run for real, which real cluster-scale
+   data (not yet collected) needs as its foundation.
+
+   **Tests**: `jobs/tests/test_run_cell_historical.py`, 11 tests -- registry shape/SHA
+   cross-check against `tasks/T01-variants.json`, `cell.json` unknown-field rejection, the
+   honest real-preflight `invalid_hardware` path on this (non-genoa) host with no monkeypatch,
+   the `PS_HIST_SKIP_PREFLIGHT` bypass exercised with the build strategy monkeypatched out (fast,
+   no real build), and 4 real end-to-end build+run+`validate_run` tests (one per historical
+   variant), gated behind `PYTEST_RUN_SLOW_HISTORICAL_BUILDS=1` (no `slow` pytest marker exists
+   elsewhere in this suite, so a skipif env-var gate matches the existing convention rather than
+   introducing one) since a fresh build can take over a minute -- same spirit as
+   `test_run_cell_distributed.py`'s MPI-build tests. Ran both ways: 7 passed/4 skipped by default
+   (0.45s), and separately with the env var set, all 4 real-build tests passed in 139s. The full
+   existing suite (`analysis/tests`, `jobs/tests`, `figures/tests`) still passes: 67 passed, 5
+   skipped, no regression.
+
+   **New Slurm template** `jobs/campaign-genoa-historical.sbatch`, mirroring
+   `campaign-genoa.sbatch`'s toolchain/module/JCC-rustflags preamble for the `bucketed_current`
+   leg and calling `run_cell_historical.py` directly (module-loaded `python3.11`, no separate
+   venv needed at the driver level -- it manages its own per-variant venvs) for the four
+   historical legs, all writing to one `out_dir`/`runs.jsonl`. `bash -n` syntax-checked clean.
+   Not submitted -- submission is the user's step (decision #2):
+
+   ```
+   env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-historical.sbatch
+   ```
+
+   **Corners cut, given the time budget**: (1) the `engine=` kwarg backport for
+   `direct_small_sum_path` (documented above, not silently dropped); (2) `jcc_erratum_and_
+   branch_prediction` (E1) and `presentation_bench_crate_variants` (E2, already out of scope
+   per the task brief) were not touched this pass -- the task named exactly the four variants
+   built here; (3) no real genoa cluster run yet, only local validation on this workstation
+   (same "local proof, cluster run is the user's step" pattern as decisions #17/#19/#20/#21/#24).
+
 27. **E9 headline accuracy result achieved for real on 2026-09-14** (`raw/2026-09-14-worker7169`
    paired with `raw/2026-09-14-worker7169-julia`): at the full 20-step canonical depth, eps=2^-16,
    `paulistrings`' expectation value (0.39716532998468246) agrees with PauliPropagation.jl's

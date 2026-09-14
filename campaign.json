@@ -121,10 +121,21 @@
     },
     {
       "stage_id": "historical_variants_E1_E2",
-      "script": "not yet written -- deferred by T07",
-      "status": "blocked_not_prepared",
+      "script": "jobs/run_cell_historical.py (four commits) + jobs/campaign-genoa-historical.sbatch",
+      "submit_command": "env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-historical.sbatch",
+      "status": "built_pending_cluster_run",
       "purpose": "E1 kernel-improvement and E2 attempted-threading isolated A/B against the historical commits in tasks/T01-variants.json",
-      "blocking_gap": "worktree-checkout-and-build machinery for a non-bucketed_current variant_id is not implemented in run_cell.py"
+      "matrix": {
+        "n_qubits": 12,
+        "trotter_steps": 2,
+        "theta_h": "7pi/32 (0.6872233929727672)",
+        "theta_zz": "-pi/2 (fixed, not a cell.json field)",
+        "min_abs_coeff": 1e-06,
+        "variants": ["naive_baseline", "direct_small_sum_path", "bucketed_engine_serial", "bucketed_engine_parallel", "bucketed_current"],
+        "repetition_index": [0]
+      },
+      "resource_bounds": {"nodes": 1, "exclusive": true, "wall_time_cap": "01:00:00", "max_concurrent_allocations": 1},
+      "implementation_note": "worktree-checkout-and-build machinery is now implemented (jobs/run_cell_historical.py), NOT inside run_cell.py -- a single shared code path was not realistic given the real API drift across commits (todo!()-stubbed PyO3 at naive_baseline, no engine= kwarg at direct_small_sum_path, no examples/common/ at bucketed_engine_serial/parallel). All four historical variants plus a same-scale bucketed_current cell were run locally on this (non-genoa) workstation, PS_HIST_SKIP_PREFLIGHT=1 for the historical driver's real gate and a monkeypatched preflight.run_preflight for run_cell.py's -- both documented as local-dev-only bypasses, never present in the checked-in sbatch script. All 5 produced status=completed real run records that passed analysis/schema.py::validate_run with 0 problems. direct_small_sum_path's default (sorted) engine only -- the engine= kwarg backport from current HEAD was ruled out of scope for this pass, see decisions.md. Not yet run on a real genoa allocation (that is this stage's remaining gap, and the user's step per org policy)."
     }
   ],
   "cell_ledger": "see job-ledger.jsonl (empty: no job has been submitted) and job-ledger.md for its schema"

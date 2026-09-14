@@ -577,3 +577,238 @@
    expensive Julia runs at the other three cutoffs (not requested, not run). Output renamed
    `figures/real/accuracy.png` -> `convergence.png` to match its actual content. 3 new figure
    tests, all green (19/19).
+
+34. **Quera-talk full-scale historical sweep, 2026-09-14** (per explicit user request: "a full
+   scale 127 qubit version with series for various tolerances, for the expensive versions simply
+   only look at the less strict tolerances"). Real local feasibility investigation on this
+   (non-genoa, 32-core Xeon Gold 6244) workstation before touching the driver, using
+   `run_cell_historical.py`'s own `run_cell()` directly with `PS_HIST_SKIP_PREFLIGHT=1`:
+
+   **Finding #1 (unexpected, changes the plan): at the original `trotter_steps=2`, cost is flat
+   in BOTH n_qubits and min_abs_coeff.** Timed `naive_baseline` at n_qubits in {12, 32, 64, 96,
+   127} at the loosest cutoff (2^-12): wall_time_s stayed in [4.5e-5, 4.1e-4]s and final_terms
+   stayed at exactly 14 for every n_qubits. Then swept the full 4-point cutoff grid at n=127,
+   trotter_steps=2: final_terms stayed at 14 for every cutoff too. Root cause: this is a backward
+   (Heisenberg) propagation of a single local-site observable; after only 2 Trotter layers the
+   operator's light cone has not reached the chain's boundary or grown enough to approach any of
+   the four cutoffs, so scaling n_qubits alone (as literally read from the task) would give every
+   one of the four variants an identical, trivial, cost-flat line -- not the "expensive variants
+   fall behind at tight tolerance" story the recurring figure's cost panel needs. Depth, not
+   qubit count, is the real cost driver for this construction.
+
+   **Finding #2: n_qubits is free at every depth tested** -- re-confirmed at trotter_steps=6:
+   naive_baseline's cost and term count did not move between n=12 and n=127. This means fixing
+   n_qubits=127 for all four variants costs nothing extra relative to a smaller n, so there is no
+   real feasibility tension on the qubit-count axis at all -- the tension is entirely on depth x
+   cutoff.
+
+   **Decision: raise `trotter_steps` from 2 to 10 (real, tractable, cutoff-sensitive) and fix
+   n_qubits=127 for every variant**, extending `run_cell_historical.py`'s `HistoricalCellSpec`
+   with `n_qubits` (default `DEFAULT_N_QUBITS=12`, unchanged) and `trotter_steps` (default
+   `TROTTER_STEPS=2`, unchanged) fields, both threaded into the two build templates (n_qubits was
+   already a template placeholder; trotter_steps needed the same treatment). `min_abs_coeff` was
+   also changed from a single float to a tuple normalized from either a scalar or a list in
+   `HistoricalCellSpec.from_dict`, and `run_cell()` now builds each variant's worktree/venv
+   **once** and loops over every requested cutoff against that one build -- the Rust harness's
+   `MIN_ABS_COEFF` moved from a compile-time const to a runtime CLI arg (`argv[1]`) specifically
+   so a tolerance sweep never pays a second `cargo build` per point. `run_cell()`'s return type
+   changed from a single dict to `list[dict]` (one schema-v1 record per cutoff); `main()` and all
+   of `test_run_cell_historical.py`'s call sites were updated to match, plus new tests for the
+   scalar/list normalization, the n_qubits/trotter_steps defaults, and (mocked, fast) confirmation
+   that a multi-cutoff sweep builds exactly once.
+
+   **Real feasibility table at n_qubits=127, trotter_steps=10, this non-genoa workstation** (the
+   `direct_small_sum_path`/`bucketed_engine_serial`/`bucketed_engine_parallel` circuit is the
+   shared CNOT-RZ-CNOT-sandwich one, so their final_terms agree exactly at each cutoff;
+   `naive_baseline`'s native-generator ZZ decomposition is the pre-existing disclosed confounder,
+   not measured at every cutoff here since it only gets one):
+
+   | variant | eps=2^-12 | eps=2^-14 | eps=2^-16 | eps=2^-18 |
+   | --- | --- | --- | --- | --- |
+   | naive_baseline | 133.4s / 3,018,683 terms | *(not attempted)* | *(not attempted)* | *(not attempted)* |
+   | direct_small_sum_path | 1.11s / 232,432 | 1.72s / 696,172 | 2.76s / 1,791,652 | 4.76s / 3,936,794 |
+   | bucketed_engine_serial | 12.96s / 232,432 | 34.25s / 696,172 | 68.63s / 1,791,652 | 128.14s / 3,936,794 |
+   | bucketed_engine_parallel | 31.45s / 232,432 | 69.76s / 696,172 | 130.34s / 1,791,652 | 240.38s / 3,936,794 |
+
+   (`naive_baseline`'s own decomposition gave 3,018,683 terms at eps=2^-12 vs the other three's
+   232,432 -- consistent with the pre-existing confounder, and also confirms its unbucketed
+   sort-merge engine is doing real, non-trivial work at this scale, not an artifact of the toy
+   circuit.)
+
+   **A genuinely surprising, disclosed result: `bucketed_engine_parallel` was ~2.2-2.4x SLOWER
+   than `bucketed_engine_serial` at every cutoff on this 32-core, single-socket workstation**, not
+   faster. This is real data, not a bug in the driver (both engines produce identical
+   `final_terms` at every cutoff, confirming correctness; only wall-clock differs). Two credible,
+   undistinguished-by-this-pass explanations: (1) this historical commit's Rayon parallelism
+   (`ef03701`, "v0.2 C.1-C.3") may have a genuine per-task overhead issue at this workload's
+   bucket/task granularity that a later commit fixed, consistent with `research/FINDINGS.md`
+   cataloguing several "obviously good" ideas that measured worse; (2) single-socket, 32-thread
+   contention on this workstation is not representative of the frozen 2-socket, 96-core genoa
+   class this campaign targets. Not investigated further (out of scope for a driver/scheduling
+   task) -- flagged here explicitly so the real cluster run is not read as a foregone conclusion
+   for stage 5 -> stage 6 of the recurring figure.
+
+   **Final per-variant plan implemented** (`jobs/campaign-genoa-historical.sbatch`, all at
+   n_qubits=127, trotter_steps=10):
+   - `naive_baseline`: **one point only**, the loosest cutoff (2^-12) -- 133s for that single point
+     already dominates the other three variants' entire 4-point grids combined, and the
+     unbucketed engine's own term generation is not cutoff-sensitive at the depths sampled (an
+     earlier trotter_steps=6 probe showed its term count flat across the whole grid), so a second
+     point would cost roughly the same again for no additional signal.
+   - `direct_small_sum_path`, `bucketed_engine_serial`, `bucketed_engine_parallel`: the full
+     4-point campaign grid {2^-12, 2^-14, 2^-16, 2^-18} -- all comfortably tractable (max single
+     point 240s, max full-grid total ~472s, both well inside the sbatch's wall-time cap).
+   - `bucketed_current` (not itself a `STAGE_VARIANTS` entry, run for a fair current-vs-historical
+     sanity overlay per the task's optional item 3): same n_qubits=127, trotter_steps=10, and the
+     same full 4-point grid as the strongest historical variant, via `run_cell.py`'s existing
+     one-cutoff-per-invocation CLI (bash loop in the sbatch template; that driver was
+     intentionally not touched).
+
+   This directly implements the requested narrative device for
+   `figures/make_recurring_figure.py::_draw_cost_panel` (confirmed by reading it, not modified):
+   it groups `tolerance_rows` by `variant_id` and plots only `status == "completed"` points --
+   `naive_baseline`'s line will have exactly one point where the other three have four, with no
+   failed/OOM record needed for the untried cutoffs, exactly the "this regime didn't exist until
+   the engine improved" visual the user asked for.
+
+   **Validated locally, not yet on a real cluster.** Fast test suite (registry/schema/gating/
+   sweep-builds-once, no real build): `jobs/tests/test_run_cell_historical.py`, 12 passed / 4
+   skipped in 0.22s. Full existing suite (`analysis/`, `jobs/`, `figures/`): 76 passed, 5 skipped,
+   no regression. **Bare-Python import check (decision #31's exact lesson) repeated for this
+   change**: `env -u VIRTUAL_ENV ... module load modules/2.4-20250724 python/3.11.11 && python3.11
+   -c "import run_cell_historical"` with no `.venv` on `sys.path` -- imports cleanly,
+   `"paulistrings" not in sys.modules` confirmed. `bash -n` on the rewritten
+   `campaign-genoa-historical.sbatch` is clean. The feasibility table above and the
+   `bucketed_engine_parallel` anomaly are real numbers from real builds/runs on this workstation,
+   not estimates -- but they are not genoa numbers; a real cluster run at this exact
+   n_qubits=127/trotter_steps=10/per-variant-grid plan is still the user's next step:
+
+   ```
+   env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-historical.sbatch
+   ```
+
+   **Corners cut**: the slow real-build tests (`PYTEST_RUN_SLOW_HISTORICAL_BUILDS=1`) were not
+   re-run end-to-end against the new full-scale defaults in this pass (they still exercise the
+   original small toy scale via `_spec()`'s defaults, which is what they were written to check --
+   the driver's build/run machinery, not a specific scale); the fast suite plus the manual
+   feasibility runs above are the real evidence for the full-scale path specifically.
+   `figures/make_recurring_figure.py` and `figures/make_compact_figures.py` were read (to confirm
+   `_draw_cost_panel`'s missing-point behavior) but deliberately not modified, per the task. The
+   E8/convergence-sweep jobs (7033663, 7033650) were running concurrently in this shared worktree
+   during this work; nothing here touched their scripts, `raw/` output directories, or `cell.json`
+   scratch paths (this driver's scratch lives under a separate `/tmp` prefix).
+
+35. **Real Julia convergence trajectory built and cost-estimated, 2026-09-14**, per user
+   follow-up ("I'm also still missing a figure that contains the comparison with
+   PauliPropagation.jl" -> "make that comparison a real full trajectory, not just one
+   endpoint"). Two real questions had to be answered before writing any code, per the task's
+   explicit instruction not to guess: (a) does PauliPropagation.jl 0.8.2 expose an
+   incremental/checkpointed propagation API that would make a per-step trajectory cheap, and
+   (b) if not, is genuine from-scratch re-propagation of every prefix affordable single-threaded.
+
+   **(a) API investigation, real, not assumed.** Read the installed package source directly
+   (`~/.julia/packages/PauliPropagation/kdA9q` -- confirmed as the 0.8.2/tree-sha
+   `fe2bc2552caf975532a8b1372bd8bde1e1cd3f3f` install by matching `Manifest.toml`'s pinned
+   tree-sha against `Project.toml`'s version field in each of the two locally-installed
+   copies; a second, older 0.3.0 copy at `.../Z3w2l` was NOT the one used). `src/Propagation/
+   generics.jl` and `propagationcache.jl`: `propagate`/`propagate!` and every
+   `AbstractPauliPropagationCache` variant always take the WHOLE given circuit and run it in
+   one call; the cache types (`PauliPropagationCache`, `VectorPauliPropagationCache`) are
+   allocation-reuse buffers, not checkpoints across separate circuit segments.
+
+   More importantly, **this is not an API gap but a mathematical fact about what a growing
+   Heisenberg-picture prefix means**, worked out by hand: for `direction="heisenberg"`,
+   propagating prefix `circuit[:k*cps]` conjugates the observable by gate `k*cps` FIRST
+   (innermost) and gate 1 LAST (outermost) -- `_preparecircuit`'s `toheisenberg` reversal,
+   confirmed in `generics.jl`. Going from step `k` to step `k+1` prepends the new step's gates
+   at the INNERMOST position, ahead of everything already baked into step `k`'s result; the
+   common tail (gates `1..k*cps`, reversed) is the SAME fixed linear operator `T_k` applied to
+   two DIFFERENT starting operands (`O` for step `k`, `O` already conjugated by the new step's
+   gates for step `k+1`) -- `T_k` itself is never stored as a reusable object, only realized by
+   actually running `propagate` over that many gates, so there is no way to reuse step `k`'s
+   result to get step `k+1`'s cheaper. (The reverse pass -- one forward sweep applying gates
+   `N, N-1, ..., 1` once and recording intermediate results -- computes a real but DIFFERENT
+   quantity: Heisenberg conjugation by a circuit SUFFIX of length `j`, not a prefix of length
+   `k`; these coincide only in the trivial `j=k=N` case.) Conclusion: **prefix re-propagation
+   is the only correct approach; there is no incremental shortcut, confirmed rather than
+   assumed.**
+
+   **(b) Real/estimated cost.** Real Rust data from the existing convergence sweep
+   (`raw/2026-09-14-worker7172-convergence/convergence.jsonl`, 96 threads) gives, per cutoff,
+   both the term-count/wall-time growth curve (which saturates by step ~9 for eps in
+   {2^-12,2^-14,2^-16}, so the total-sweep-vs-final-step-alone redundancy ratio is ~6.7-8x, not
+   ~20x) and the final-step (full-circuit) wall time. Combined with the one real single-thread
+   Julia timing point (decisions.md #27: 4874.94s at eps=2^-16) and the real Rust
+   single-thread/96-thread ratio at the same cutoff (~33.6x, from the ~1650s single-thread
+   figure already on record), a same-ratio extrapolation to the other cutoffs plus the
+   Julia/Rust ~2.95x single-thread factor (decisions.md #10/#27) gives: eps=2^-12 ≈ 15 min,
+   eps=2^-14 ≈ 49 min, eps=2^-16 ≈ 9 hours, all single-threaded. eps=2^-18 is excluded: the
+   RUST engine's own single-thread full run at that cutoff has twice failed to finish inside
+   an 8h cap (job-ledger.jsonl 7030090/7031789) with zero completed reps, so a ~3x-slower
+   Julia attempt would almost certainly repeat that failure at higher cost, not merely be
+   slow. **These are estimates, not measurements** -- flagged as such everywhere they appear
+   (`evidence.md`, `campaign.json`'s new stage) -- built from real data on both sides but never
+   validated by an actual Julia run past toy scale.
+
+   **Implementation.** `benchmarks/julia/runner.jl` gained `PP_LAYER_EXPECTATION=0|1` (default
+   0) and `PP_TROTTER_STEPS=N`, following `PP_LAYER_COUNTS`'s exact pattern (documented in the
+   header env-var table): for `step in 1:N`, propagate `circuit[1:step*cps]` fresh from a
+   `deepcopy` of the observable (mirroring `run_convergence_sweep.py`'s
+   `circuit[:k*channels_per_step]` exactly) and record `(trotter_step, re, im, final_terms,
+   wall_time_s)` into a new `result.per_layer_expectation` array, in the same `extra`-shaped
+   output slot as `per_layer_terms`. Requires `task.run.state` (a term count needs none, an
+   expectation does); a clear `TaskError` otherwise. `benchmarks/python/julia_baseline.py`
+   gained a matching `JuliaResult.per_layer_expectation` property; `run_task`'s existing
+   `extra_env` passthrough needed no signature change. Every existing env-var-gated behavior
+   (`PP_LAYER_COUNTS`, `PP_FUSED`, `PP_BACKEND`, etc.) is untouched when
+   `PP_LAYER_EXPECTATION` is left at its default 0.
+
+   **Real correctness check** (the actual trust bar for a comparison figure, mirroring
+   `test_julia_parity.py`'s existing rigor): new
+   `test_per_step_expectation_trajectory_parity` in that same file runs a real
+   `julia` subprocess on a shared 6-qubit/4-step task and a Rust-side prefix trajectory
+   (`run_rust_prefix_trajectory`, mirroring `run_convergence_sweep.py`'s own slicing) and
+   compares every step's `final_terms` exactly and `<O>` to `EXPECTATION_TOL=1e-12`. **Passing,
+   real, on this host** (juliaup, not module-loaded Julia -- acceptable per decisions #17/#19/
+   #20's local-plumbing-validation precedent; a real module-loaded-Julia cluster run is still
+   the confirming step). Also validated end-to-end with a preflight-monkeypatched throwaway
+   script at n=8/2 steps through the new sweep driver directly.
+
+   **New driver**: `jobs/run_convergence_sweep_julia.py` (a separate file from
+   `run_cell_julia.py`, following `run_convergence_sweep.py`'s own precedent of a bespoke
+   sweep driver rather than folding into the single-cell driver) builds the circuit/observable
+   through `run_cell._build_circuit`/`_build_observable` exactly like `run_cell_julia.py`,
+   then calls `julia_baseline.run_task` ONCE PER CUTOFF (not once per step) with
+   `PP_LAYER_EXPECTATION=1`/`PP_TROTTER_STEPS=<n>`/`PP_WARM_REPEATS=0`/`PP_LAYER_COUNTS=0` --
+   the latter two deliberately skip the runner's own redundant full-circuit warm-repeat and
+   per-gate-term-count passes, each costing roughly one more full propagation, which this
+   driver does not need. Writes `JULIA_CONVERGENCE_FIELDS` rows (reusing every field name from
+   `run_convergence_sweep.py`'s `CONVERGENCE_FIELDS` whose meaning matches, plus
+   `engine`/`runtime_version`) to `convergence_julia.jsonl`, one row per `(min_abs_coeff,
+   trotter_step)` point, appended cutoff-by-cutoff so a later cutoff's timeout does not lose
+   earlier real data. New `jobs/campaign-genoa-julia-convergence.sbatch` mirrors
+   `campaign-genoa-julia.sbatch`'s worktree/venv/Julia-project preamble; default grid
+   `{2^-12, 2^-14, 2^-16}` (NOT 2^-18, per the cost estimate above), `--time=16:00:00`. `bash
+   -n` clean. **Not submitted** -- submission is the user's step (decision #2):
+
+   ```
+   env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-julia-convergence.sbatch
+   ```
+
+   **Figure**: `figures/make_compact_figures.py::make_convergence_figure`'s `julia_points=`
+   parameter (a flat list of single points) replaced with `julia_rows=` accepting the SAME row
+   shape as the Rust `rows` argument. A cutoff with more than one Julia row draws a real dashed
+   line in the SAME color as the Rust line at that cutoff (visually paired, distinguished only
+   by linestyle); a cutoff with exactly one row (the existing real eps=2^-16/step-20 endpoint,
+   decisions.md #27/#33, which has no natural multi-point shape) falls back to the original
+   black-star rendering, so the one real data point already in hand keeps rendering exactly as
+   before. Colors are keyed off the UNION of Rust and Julia cutoffs so a Julia-only cutoff
+   cannot crash the lookup. 3 figure tests updated/added (single-point fallback, real dashed
+   line, Julia-only-cutoff color safety); 21/21 green.
+
+   **Not done, and explicitly out of scope for this pass**: the real 127-qubit cluster run at
+   any cutoff -- `campaign-genoa-julia-convergence.sbatch` is prepared and `bash -n`-checked
+   but not submitted, per org policy (decision #2). All cost figures above are estimates from
+   real but indirect data (Rust's own term-growth curve plus one Julia timing point), not
+   measurements of the actual Julia sweep; a real run is needed to confirm them before trusting
+   the estimated ~9-hour eps=2^-16 figure enough to budget cluster time against it.

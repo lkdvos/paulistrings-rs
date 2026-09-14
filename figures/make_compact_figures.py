@@ -107,6 +107,48 @@ def make_hash_communication_figure(rows: Sequence[dict]):
     return fig
 
 
+def make_hash_communication_vs_cutoff_figure(rows: Sequence[dict]):
+    """Export volume vs. `min_abs_coeff`, one line per `partition_row_policy`.
+
+    Same underlying data as `make_hash_communication_figure` (`normalize.
+    hash_communication()`'s output, now carrying `min_abs_coeff` per row) but
+    plotted as a cutoff sweep rather than a per-`config_id` bar chart -- the
+    same "a single point/category is a weak plot" upgrade requested for the
+    accuracy figure (see `make_convergence_figure`), applied to E8: does the
+    cut policy's advantage over random hold, grow, or shrink as the cutoff
+    tightens and the sum grows?
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_hash_communication_vs_cutoff_figure: no rows to plot -- see "
+            "make_hash_communication_figure's docstring for the same underlying "
+            "'no partition_row_policy-tagged data' cause."
+        )
+
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(5.5, 4))
+
+    colors = {"random": _IDEAL, "cut": _ACCENT}
+    policies = sorted({r["partition_row_policy"] for r in rows})
+    for policy in policies:
+        pts = sorted((r["min_abs_coeff"], r["total_rows_exported"]) for r in rows if r["partition_row_policy"] == policy)
+        if not pts:
+            continue
+        xs, ys = zip(*pts)
+        ax.plot(xs, ys, marker="o", markersize=4, linewidth=1.5, color=colors.get(policy, _ACCENT), label=policy)
+
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xlabel("min_abs_coeff")
+    ax.set_ylabel("total rows exported")
+    ax.set_title("Hash communication vs. truncation cutoff")
+    ax.legend(frameon=False)
+    _style_axes(ax)
+    fig.tight_layout()
+    return fig
+
+
 def make_accuracy_figure(rows: Sequence[dict]):
     """Reference vs. observed value scatter, one point per `accuracy()` row.
 

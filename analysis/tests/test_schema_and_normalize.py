@@ -204,7 +204,7 @@ def test_partition_row_policy_missing_field_flagged():
 # hash_communication (E8)
 
 
-def make_partitioned_run(*, run_id, policy, config_id="cfg-e8", rows_exported, bytes_exported):
+def make_partitioned_run(*, run_id, policy, config_id="cfg-e8", rows_exported, bytes_exported, min_abs_coeff=1e-6):
     """A completed partitioned run plus its own gate records, both schema-shaped."""
     run = make_run(
         run_id=run_id,
@@ -212,6 +212,7 @@ def make_partitioned_run(*, run_id, policy, config_id="cfg-e8", rows_exported, b
         engine="partitioned",
         partitions=2,
         partition_row_policy=policy,
+        min_abs_coeff=min_abs_coeff,
     )
     gates = [
         make_gate(
@@ -249,6 +250,23 @@ def test_hash_communication_compares_random_vs_cut_by_config():
     assert by_policy["cut"]["total_bytes_exported"] == 300
     # The whole point of E8: the cut policy exports less than the random draw.
     assert by_policy["cut"]["total_rows_exported"] < by_policy["random"]["total_rows_exported"]
+    assert by_policy["random"]["min_abs_coeff"] == 1e-6
+
+
+def test_hash_communication_sorts_by_cutoff_across_configs():
+    """Rows carry min_abs_coeff so a caller can build a cutoff-sweep figure,
+    not just a per-config_id bar chart (the same "single point is a weak plot"
+    upgrade as accuracy -> convergence)."""
+    loose_run, loose_gates = make_partitioned_run(
+        run_id="r-loose", policy="random", config_id="cfg-loose",
+        rows_exported=[10], bytes_exported=[100], min_abs_coeff=1e-4,
+    )
+    tight_run, tight_gates = make_partitioned_run(
+        run_id="r-tight", policy="random", config_id="cfg-tight",
+        rows_exported=[1000], bytes_exported=[10000], min_abs_coeff=1e-8,
+    )
+    rows = hash_communication([tight_run, loose_run], tight_gates + loose_gates)
+    assert [r["min_abs_coeff"] for r in rows] == [1e-8, 1e-4]
 
 
 def test_rank_scaling_capacity_extension_vs_overlap():

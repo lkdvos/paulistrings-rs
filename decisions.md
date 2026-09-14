@@ -517,3 +517,17 @@
    `figures/make_compact_figures.py::make_convergence_figure` and
    `jobs/campaign-genoa-convergence.sbatch` (mirrors `campaign-genoa.sbatch`'s preamble). Existing
    figures/jobs test suites (23 tests) still pass. Not yet run on the real cluster.
+
+30. **Extended E8 to a cutoff sweep, 2026-09-14**, per user request (same rationale as decision
+   #29's accuracy -> convergence upgrade): a single (eps=2^-16) random-vs-cut point doesn't show
+   whether the cut policy's advantage holds as the sum grows. `campaign-genoa-e8.sbatch` now loops
+   over the same 4-point grid {2^-12, 2^-14, 2^-16, 2^-18} as `campaign-genoa-convergence.sbatch`
+   (both policies at each point) instead of one. `analysis/normalize.py::hash_communication` gained
+   a `min_abs_coeff` field per row (pulled straight from the run record; previously the join had no
+   way to know which cutoff a row came from) and its sort key changed from `config_id` to
+   `min_abs_coeff` to support that. New `figures/make_compact_figures.py::
+   make_hash_communication_vs_cutoff_figure` plots export volume vs. cutoff, one line per policy
+   (log-log), alongside the existing per-`config_id` bar chart (kept, not replaced -- still useful
+   for a single-point comparison). 2 new normalize tests + 2 new figure tests, all green (46/46
+   across analysis/figures/jobs). Not yet run on the real cluster at the extended grid; the
+   eps=2^-16 point already has real data (evidence.md E8).

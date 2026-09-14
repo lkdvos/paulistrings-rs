@@ -86,11 +86,25 @@
       "status": "planned",
       "purpose": "E8: real, hardware-valid random-vs-cut partition_row_policy comparison via the in-process partitioned engine (no MPI needed) -- the comm= path (C4_distributed) still only supports 'random', so this is a single genoa node instead of a multi-node job. Reuses campaign-genoa.sbatch's exact worktree/venv/maturin preamble.",
       "matrix": {
-        "theta_h": "7pi/32", "trotter_steps": 20, "min_abs_coeff": 1.5258789e-05,
+        "theta_h": "7pi/32", "trotter_steps": 20,
+        "min_abs_coeff": [2.44140625e-04, 6.103515625e-05, 1.5258789e-05, 3.8146973e-06],
         "partitions": 2, "partition_row_policy": ["random", "cut"], "repetition_index": [0]
       },
-      "resource_bounds": {"nodes": 1, "exclusive": true, "wall_time_cap": "01:00:00", "max_concurrent_allocations": 1},
-      "implementation_note": "Not yet run on the real cluster. The only prior E8 data (decisions.md #21) came from a preflight-monkeypatched local test at 32 qubits, not a genoa-hardware-valid campaign record -- run_cell.py correctly refuses to run without a real genoa allocation (verified 2026-09-14: attempted locally, got status=invalid_hardware as expected, no bypass exists by design). This stage is real, hardware-valid data or nothing."
+      "resource_bounds": {"nodes": 1, "exclusive": true, "wall_time_cap": "02:00:00", "max_concurrent_allocations": 1},
+      "implementation_note": "Extended 2026-09-14 (decisions.md #30) from a single eps=2^-16 overlap point to the same 4-point cutoff grid as C6_convergence_sweep, per user request: does the cut policy's export-volume advantage hold as the cutoff tightens? First real point (eps=2^-16 only) already showed ~91% reduction / ~2.3x speedup (evidence.md E8). run_cell.py correctly refuses to run without a real genoa allocation (verified 2026-09-14: attempted locally, got status=invalid_hardware as expected, no bypass exists by design)."
+    },
+    {
+      "stage_id": "C6_convergence_sweep",
+      "script": "jobs/campaign-genoa-convergence.sbatch",
+      "submit_command": "env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-convergence.sbatch",
+      "status": "planned",
+      "purpose": "E9: per-Trotter-step <O> trajectory for min_abs_coeff in {2^-12, 2^-14, 2^-16, 2^-18}, replacing a single-point accuracy comparison (decisions.md #29) per user request. jobs/run_convergence_sweep.py propagates circuit[:k*channels_per_step] for every step k -- Circuit's existing slice support, no engine change.",
+      "matrix": {
+        "theta_h": "7pi/32", "trotter_steps": 20,
+        "min_abs_coeff": [2.44140625e-04, 6.103515625e-05, 1.5258789e-05, 3.8146973e-06]
+      },
+      "resource_bounds": {"nodes": 1, "exclusive": true, "wall_time_cap": "03:00:00", "max_concurrent_allocations": 1},
+      "implementation_note": "Job 7033650 submitted 2026-09-14, in progress at time of writing."
     },
     {
       "stage_id": "C1_C2_julia_external_baseline",

@@ -4,7 +4,7 @@
 #SBATCH --constraint=genoa&rocky9
 #SBATCH --nodes=1
 #SBATCH --exclusive
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=quera-talk-data/campaign-2026-09-11/raw/slurm-%j.out
 #
 # Single-node genoa stage for campaign-2026-09-11's E8 (communication-aware
@@ -27,9 +27,10 @@
 # Environment knobs (all optional):
 #   PS_REV          commit to build (default: HEAD when the job starts), via a git worktree.
 #   PARTITIONS      number of in-process partitions (default: 2, one per NUMA domain on genoa).
-#   MIN_ABS_COEFF   ONE dyadic value (default: 2^-16, the point campaign-genoa.sbatch already
-#                    trusts, so this is an apples-to-apples E6-style overlap point, not a blind
-#                    leap to an untested tolerance).
+#   MIN_ABS_COEFF   space-separated dyadic grid, loosest to tightest (default: 2^-12, 2^-14,
+#                    2^-16, 2^-18 -- the same grid as campaign-genoa-convergence.sbatch, so this
+#                    answers "does the cut policy's advantage hold as the cutoff tightens and the
+#                    sum grows", not just a single overlap point).
 #   TROTTER_STEPS   headline depth (default: 20, contract.md).
 #   THETA_H         kick angle (default: 7pi/32, contract.md primary point).
 #   REPS            repetitions per (policy, cell) pair (default: 1 -- this is a mechanism
@@ -79,7 +80,7 @@ pip install --quiet 'maturin>=1.5,<2.0' numpy
 # --- matrix ------------------------------------------------------------
 phys=$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)
 : "${PARTITIONS:=2}"
-: "${MIN_ABS_COEFF:=1.5258789e-05}"   # 2^-16
+: "${MIN_ABS_COEFF:=2.44140625e-04 6.103515625e-05 1.5258789e-05 3.8146973e-06}"   # 2^-12, 2^-14, 2^-16, 2^-18
 : "${TROTTER_STEPS:=20}"
 : "${THETA_H:=0.6872233929727672}"    # 7*pi/32
 : "${REPS:=1}"
@@ -92,18 +93,19 @@ out_dir="quera-talk-data/campaign-2026-09-11/raw/${date_tag}-${node}-e8"
 mkdir -p "$out_dir"
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
-for policy in random cut; do
-  # Shared config_id across policies (only partition_row_policy differs) so
-  # figures/make_compact_figures.py::make_hash_communication_figure groups
-  # the random/cut pair into one x-axis category instead of two singletons.
-  config_id="genoa-e8-eps${MIN_ABS_COEFF}-p${PARTITIONS}"
-  for rep in $(seq 0 $((REPS - 1))); do
-    cat > "$cell_json" <<EOF
+for eps in $MIN_ABS_COEFF; do
+  for policy in random cut; do
+    # Shared config_id across policies (only partition_row_policy differs) so
+    # figures/make_compact_figures.py::make_hash_communication_figure groups
+    # the random/cut pair into one x-axis category instead of two singletons.
+    config_id="genoa-e8-eps${eps}-p${PARTITIONS}"
+    for rep in $(seq 0 $((REPS - 1))); do
+      cat > "$cell_json" <<EOF
 {
   "variant_id": "bucketed_current",
   "theta_h": $THETA_H,
   "trotter_steps": $TROTTER_STEPS,
-  "min_abs_coeff": $MIN_ABS_COEFF,
+  "min_abs_coeff": $eps,
   "direction": "heisenberg",
   "state": "z+",
   "observable": "canonical_z_127",
@@ -115,9 +117,10 @@ for policy in random cut; do
   "partition_row_policy": "$policy"
 }
 EOF
-    echo "== cell $config_id rep=$rep (policy=$policy)"
-    RAYON_NUM_THREADS=$threads_per_partition python quera-talk-data/campaign-2026-09-11/jobs/run_cell.py \
-        "$cell_json" --out-dir "$out_dir" || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+      echo "== cell $config_id rep=$rep (policy=$policy)"
+      RAYON_NUM_THREADS=$threads_per_partition python quera-talk-data/campaign-2026-09-11/jobs/run_cell.py \
+          "$cell_json" --out-dir "$out_dir" || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+    done
   done
 done
 

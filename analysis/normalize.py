@@ -223,6 +223,7 @@ def hash_communication(run_records: list[dict], gate_records: list[dict]) -> lis
             {
                 "run_id": r["run_id"],
                 "config_id": r["config_id"],
+                "min_abs_coeff": r["min_abs_coeff"],
                 "partition_row_policy": r["partition_row_policy"],
                 "partitions": r["partitions"],
                 "layers": len(gates),
@@ -230,7 +231,7 @@ def hash_communication(run_records: list[dict], gate_records: list[dict]) -> lis
                 "total_bytes_exported": total_bytes_exported,
             }
         )
-    rows.sort(key=lambda r: (r["config_id"] or "", r["partition_row_policy"], r["run_id"]))
+    rows.sort(key=lambda r: (r["min_abs_coeff"], r["partition_row_policy"], r["run_id"]))
     return rows
 
 

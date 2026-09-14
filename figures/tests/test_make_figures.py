@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from make_compact_figures import (
+    make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
     make_hash_communication_figure,
     make_thread_scaling_figure,
@@ -195,6 +196,27 @@ def test_hash_communication_figure_plots_random_vs_cut():
     assert fig is not None
     heights = sorted(bar.get_height() for ax in fig.axes for bar in ax.patches)
     assert heights == [30, 300]
+    matplotlib.pyplot.close(fig)
+
+
+def test_hash_communication_vs_cutoff_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="partition_row_policy"):
+        make_hash_communication_vs_cutoff_figure([])
+
+
+def test_hash_communication_vs_cutoff_figure_one_line_per_policy():
+    rows = [
+        {"run_id": "r1", "config_id": "cfg-loose", "min_abs_coeff": 1e-4, "partition_row_policy": "random", "partitions": 2, "layers": 1, "total_rows_exported": 100, "total_bytes_exported": 1000},
+        {"run_id": "r2", "config_id": "cfg-loose", "min_abs_coeff": 1e-4, "partition_row_policy": "cut", "partitions": 2, "layers": 1, "total_rows_exported": 10, "total_bytes_exported": 100},
+        {"run_id": "r3", "config_id": "cfg-tight", "min_abs_coeff": 1e-6, "partition_row_policy": "random", "partitions": 2, "layers": 1, "total_rows_exported": 1000, "total_bytes_exported": 10000},
+        {"run_id": "r4", "config_id": "cfg-tight", "min_abs_coeff": 1e-6, "partition_row_policy": "cut", "partitions": 2, "layers": 1, "total_rows_exported": 100, "total_bytes_exported": 1000},
+    ]
+    fig = make_hash_communication_vs_cutoff_figure(rows)
+    assert fig is not None
+    ax = fig.axes[0]
+    assert len(ax.lines) == 2
+    for line in ax.lines:
+        assert list(line.get_xdata()) == [1e-6, 1e-4]
     matplotlib.pyplot.close(fig)
 
 

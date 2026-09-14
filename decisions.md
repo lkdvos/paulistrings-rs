@@ -498,3 +498,22 @@
    This is the headline claim decision #10's shallow 5-step pilot could only gesture at.
    `figures/real/accuracy.png` generated via the fixed `normalize.accuracy()` (decision #26).
    evidence.md E9 moved from "plumbing validation only" to real headline data.
+
+29. **Replaced the single-point accuracy plot with a convergence-trajectory sweep, 2026-09-14**,
+   per user request: a single (reference, observed) point is a weak figure. New
+   `jobs/run_convergence_sweep.py` propagates `circuit[:k*channels_per_step]` for every
+   `k in 1..trotter_steps` and calls `.expectation(state)` on each prefix -- `Circuit.__getitem__`'s
+   slice support already exists (`crates/paulistrings-py/src/circuit.rs`), so this needed no engine
+   change, only a new driver. A prefix propagation is correctness-preserving (truncation only ever
+   depends on the sum's own history, never on gates not yet applied), at the cost of redoing the
+   shared prefix work once per step -- accepted since there is no incremental/checkpointed propagate
+   call to build on instead. Cutoff grid fixed to {2^-12, 2^-14, 2^-16, 2^-18} per the user's explicit
+   time-budget instruction (avoid tighter cutoffs than what's already been measured). Output is a
+   bespoke `convergence.jsonl` shape (`CONVERGENCE_FIELDS`), not `analysis/schema.py`'s `RUN_FIELDS`
+   -- one row is one (cutoff, step) point on a curve, not a campaign cell, and forcing that shape
+   would have added fields with no meaning here. Smoke-tested locally (n=10, 2 cutoffs, preflight
+   monkeypatched in a throwaway script only): term counts diverge between cutoffs as expected while
+   the two cutoffs still had not visibly diverged in `<O>` at this toy scale/depth. New
+   `figures/make_compact_figures.py::make_convergence_figure` and
+   `jobs/campaign-genoa-convergence.sbatch` (mirrors `campaign-genoa.sbatch`'s preamble). Existing
+   figures/jobs test suites (23 tests) still pass. Not yet run on the real cluster.

@@ -139,3 +139,53 @@ def make_accuracy_figure(rows: Sequence[dict]):
     _style_axes(ax)
     fig.tight_layout()
     return fig
+
+
+def make_convergence_figure(rows: Sequence[dict]):
+    """One line per `min_abs_coeff`: the observable's expectation value at
+    every Trotter step, from `jobs/run_convergence_sweep.py`'s
+    `convergence.jsonl` records.
+
+    `rows` is that file's records directly (not a `normalize.py` function's
+    output -- the sweep driver already writes one row per point, so there is
+    nothing to normalize). Only `status == "completed"` rows are plotted;
+    an `invalid_hardware` sweep raises `NotImplementedError` rather than
+    silently plotting nothing, matching this module's other "real data or an
+    explicit reason" contract.
+    """
+    completed = [r for r in rows if r.get("status") == "completed"]
+    if not completed:
+        raise NotImplementedError(
+            "make_convergence_figure: no completed rows to plot -- the sweep "
+            "either never ran or failed preflight (see the row's status/"
+            "failure_reason)."
+        )
+
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(5.5, 4))
+
+    by_eps: dict[float, list[dict]] = {}
+    for r in completed:
+        by_eps.setdefault(r["min_abs_coeff"], []).append(r)
+
+    cmap = plt.get_cmap("viridis")
+    epsilons = sorted(by_eps)
+    for i, eps in enumerate(epsilons):
+        pts = sorted(by_eps[eps], key=lambda r: r["trotter_step"])
+        xs = [p["trotter_step"] for p in pts]
+        ys = [p["expectation_re"] for p in pts]
+        color = cmap(i / max(len(epsilons) - 1, 1))
+        # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic).
+        import math
+
+        label = f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
+        ax.plot(xs, ys, marker="o", markersize=3, linewidth=1.2, color=color, label=label)
+
+    ax.set_xlabel("Trotter step")
+    ax.set_ylabel("<O>")
+    ax.set_title("Observable trajectory vs. truncation cutoff")
+    ax.legend(frameon=False, fontsize=8)
+    _style_axes(ax)
+    fig.tight_layout()
+    return fig

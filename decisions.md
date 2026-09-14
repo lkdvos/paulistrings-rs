@@ -531,3 +531,25 @@
    for a single-point comparison). 2 new normalize tests + 2 new figure tests, all green (46/46
    across analysis/figures/jobs). Not yet run on the real cluster at the extended grid; the
    eps=2^-16 point already has real data (evidence.md E8).
+
+31. **Real cluster run (job 7033257) exposed a real bug the subagent's local testing missed,
+   2026-09-14**: all four historical-variant cells failed `ModuleNotFoundError: No module named
+   'paulistrings'` (only the `bucketed_current` cell, which builds its own worktree/venv inline in
+   the sbatch script, succeeded). Root cause: `run_cell_historical.py`'s top-level `from run_cell
+   import RUN_FIELDS, ...` eagerly executes all of `run_cell.py`, which imports `examples/common/
+   circuits.py`, which imports `paulistrings` at module scope -- before this driver has built any
+   of its own per-variant throwaway venvs. The subagent's local validation had `.venv` (already
+   containing paulistrings from earlier campaign work) active on `sys.path`, masking this entirely;
+   the real cluster job invokes the bare module Python, which has nothing installed yet. Fixed by
+   duplicating the four small, genuinely paulistrings-independent helpers (`RUN_FIELDS` tuple,
+   `_append_jsonl`, `_compiler_version`, `_slurm_job_id`) directly into `run_cell_historical.py`
+   instead of importing them, removing the eager dependency entirely -- verified by importing the
+   module under the bare `module load python/3.11.11` interpreter (no `.venv`) and confirming no
+   `paulistrings` import is triggered. `RUN_FIELDS` must now be kept in sync with `run_cell.py`'s
+   copy by hand; `analysis/schema.py`'s own `RUN_FIELDS`-equivalent validator is the actual
+   authority either side answers to, so a drift here fails loudly there, not silently. Existing
+   tests (7 passed, 4 skipped -- the slow real-build ones) still pass. Lesson for future delegated
+   work: local validation under an environment that happens to have extra state pre-installed
+   (`.venv` with prior campaign packages) is not equivalent to the real job's from-scratch
+   environment -- this is exactly the class of gap real Slurm submission has caught before
+   (decisions.md #17, #22).

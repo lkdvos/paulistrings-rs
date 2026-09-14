@@ -75,7 +75,54 @@ _REPO_ROOT = _JOBS_DIR.parents[2]
 sys.path.insert(0, str(_JOBS_DIR))
 
 import preflight  # noqa: E402
-from run_cell import RUN_FIELDS, _append_jsonl, _compiler_version, _slurm_job_id  # noqa: E402
+
+# NOT `from run_cell import ...`: run_cell.py's module-level `from common
+# import circuits` chain requires `paulistrings` to already be importable
+# (examples/common/circuits.py imports it at module scope), which is exactly
+# what this driver cannot assume -- it orchestrates its own per-variant
+# throwaway builds and is invoked by the bare interpreter before any of them
+# exist. A real cluster run hit this as `ModuleNotFoundError: No module named
+# 'paulistrings'` on every variant (job 7033257) because subagent-local
+# testing had `.venv` (with paulistrings already installed for
+# `bucketed_current`) active, masking it. These four helpers are pure stdlib
+# and identical to run_cell.py's; RUN_FIELDS must be kept in sync with that
+# module's copy by hand (schema.py's RUN_FIELDS constant is the actual
+# validator both sides answer to, so a drift here fails loudly there).
+RUN_FIELDS = (
+    "schema_version", "campaign_id", "run_id", "task_id", "config_id",
+    "variant_id", "repetition_index", "pair_index", "source_commit", "dirty",
+    "build_features", "compiler_version", "runtime_version", "n_qubits",
+    "direction", "state", "min_abs_coeff", "max_weight", "policy", "engine",
+    "partitions", "threads", "ranks", "slurm_job_id", "node_class",
+    "hardware_contract_id", "hardware_valid", "trace_enabled", "wall_time_s",
+    "setup_time_s", "scatter_time_s", "gather_time_s", "initial_terms",
+    "final_terms", "peak_terms", "peak_rss_kb", "peak_rss_provenance",
+    "status", "failure_reason", "log_path", "gate_trace_path",
+    "partition_row_policy",
+)
+
+
+def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    with path.open("a") as f:
+        for record in records:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _compiler_version() -> str | None:
+    """`rustc`'s own version string, or `None` if it's not on `PATH`."""
+    try:
+        out = subprocess.run(
+            ["rustc", "--version"], capture_output=True, text=True, timeout=10, check=True
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _slurm_job_id() -> str | None:
+    return os.environ.get("SLURM_JOB_ID") or None
 
 SCHEMA_VERSION = 1
 CAMPAIGN_ID = "campaign-2026-09-11"

@@ -7,19 +7,27 @@
 #SBATCH --time=00:45:00
 #SBATCH --output=quera-talk-data/campaign-2026-09-11/raw/slurm-%j.out
 #
-# Supplemental stage for the "baseline" asset (deck page 16): a real,
-# multi-point wall-time-vs-tolerance sweep for naive_baseline, extending
-# campaign-genoa-historical.sbatch's job 7033945, which deliberately ran
-# naive_baseline at only its single loosest point (2^-12) to control cost
+# DO NOT RESUBMIT AS A MULTI-POINT SWEEP -- see job 7035811's real result and
+# decisions.md: naive_baseline's historical commit (d410f4e, "Phase 6:
+# sort-merge engine") never wires truncation into its merge phase at all
+# (crates/paulistrings/src/engine/sort_merge.rs:204-206's own doc comment:
+# "Truncation is not woven in here yet -- that's slice 7.1"). All 9 points of
+# job 7035811's loose-tolerance grid came back bit-identical
+# (final_terms=3018683 at every one of {2^-4..2^-12}), confirmed as a genuine
+# historical-commit limitation, not a driver bug, by an independent small-scale
+# rebuild (thresholds 1e-6 vs 0.5, five+ orders of magnitude apart, still
+# identical final_terms). naive_baseline cannot produce a real tolerance
+# sweep at any commit currently in VARIANT_REGISTRY -- the baseline figure
+# uses job 7033945's single 2^-12 point only, captioned as truncation-inert,
+# not a sweep. This script is kept for provenance, not for reuse.
+#
+# Supplemental stage for the "baseline" asset (deck page 16): was intended as
+# a real, multi-point wall-time-vs-tolerance sweep for naive_baseline,
+# extending campaign-genoa-historical.sbatch's job 7033945, which deliberately
+# ran naive_baseline at only its single loosest point (2^-12) to control cost
 # (see that script's header comment: naive_baseline already costs ~130s
 # locally for that one point, being the unbucketed/serial/non-truncation-aware
 # historical variant).
-#
-# This script does NOT re-run that single point or any other variant --
-# it only adds MORE points, all >= 2^-12 (i.e. looser/cheaper than the one
-# already-measured point), so the added wall-time is bounded by roughly what
-# was already shown to be affordable, never venturing into the tighter
-# cutoffs that made a full grid infeasible for this variant.
 #
 # Writes to its own raw/ subdirectory; the baseline figure script merges this
 # with job 7033945's naive_baseline point and the existing bucketed_current /

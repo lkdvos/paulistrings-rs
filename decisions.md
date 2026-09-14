@@ -909,3 +909,24 @@
    the real data as a regression tripwire and one confirming the empty-bucket fraction is never
    folded into the occupancy percentiles. Full figure suite green: 39/39 passed
    (`.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).
+
+42. **`naive_baseline` cannot produce a tolerance sweep at any commit in `VARIANT_REGISTRY`,
+    2026-09-14.** Job 7035811 (`campaign-genoa-baseline-sweep.sbatch`) swept 9 `min_abs_coeff`
+    values from 2^-4 to 2^-12 for `naive_baseline` and got bit-identical `final_terms=3018683` at
+    every point (user flagged this as suspicious, correctly). Root-caused (not a driver bug):
+    `naive_baseline`'s historical commit `d410f4e` ("Phase 6: sort-merge engine") never wires
+    truncation into its merge phase -- `crates/paulistrings/src/engine/sort_merge.rs:204-206`'s
+    own doc comment: "Truncation is not woven in here yet -- that's slice 7.1", and `merge_phase`
+    takes a `_policy` parameter it never calls `keep_term` on. Confirmed independently at small
+    scale: thresholds `1e-6` vs. `0.5` (five-plus orders of magnitude apart) on an 8-qubit/6-step
+    toy circuit built from that exact commit still gave identical `final_terms=10880`. Contrast:
+    `direct_small_sum_path` (`e56f021`), `bucketed_engine_serial` (`f08db7d`),
+    `bucketed_engine_parallel` (`ef03701`) all DO call `keep_term` in their merge functions
+    (verified via `git show`), matching their real cutoff-sensitive results in job 7033945.
+    `run_cell_historical.py`'s sweep-loop code itself is correct (passes a genuinely different
+    argument per invocation) -- forcing truncation into the frozen `d410f4e` snapshot would mean
+    patching 2026-era behavior into what's supposed to be a historical comparison, so no code fix
+    was made. `jobs/campaign-genoa-baseline-sweep.sbatch` is kept for provenance (header comment
+    updated) but is not to be resubmitted as a multi-point sweep. The baseline figure (page 16)
+    uses job 7033945's single 2^-12 `naive_baseline` point only, captioned as truncation-inert
+    rather than tolerance-sensitive.

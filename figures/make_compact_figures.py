@@ -1498,7 +1498,14 @@ def make_baseline_eps_scaling_figure(
         # rather than plain log-scale number ticks -- there are only ever a handful of distinct
         # eps values actually measured, so labeling exactly those points is more legible than a
         # dense automatic log grid.
-        eps_ticks = sorted({r["min_abs_coeff"] for r in rows})
+        #
+        # Ticks come from `draw_labels` only (which series are ACTUALLY DRAWN this stage), not
+        # every row in `rows` -- per user request: a tighter eps like 2^-18/2^-20 should only
+        # get a tick once some drawn series actually reaches it, not merely because a later
+        # stage's series will. The x-AXIS LIMITS stay keyed off the full `rows` (see above),
+        # so the framing itself still doesn't jump between reveals -- only which positions get
+        # a labeled tick changes.
+        eps_ticks = sorted({r["min_abs_coeff"] for label in draw_labels for r in by_label[label]})
         ax.set_xticks(eps_ticks)
         ax.set_xticklabels([_eps_label(e) for e in eps_ticks], fontsize=7 if not deck else _DECK_FONT_PT * 0.6)
         ax.minorticks_off()

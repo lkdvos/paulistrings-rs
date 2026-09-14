@@ -446,6 +446,7 @@ def make_convergence_figure(
     theme: str = "legacy",
     figsize_pt: tuple[float, float] | None = None,
     title: str | None = None,
+    show_diff: bool = False,
 ):
     """One line per `min_abs_coeff`: the observable's expectation value at
     every Trotter step, from `jobs/run_convergence_sweep.py`'s
@@ -470,6 +471,15 @@ def make_convergence_figure(
     decisions.md #27/#33, which has no `trotter_step` of its own and is
     conventionally given the final step) falls back to a black star, the
     original single-endpoint overlay this function shipped with.
+
+    `show_diff=True` adds a second, shorter panel below the trajectory: the
+    signed difference (Rust `expectation_re` minus Julia's, per matched
+    `(min_abs_coeff, trotter_step)` pair) -- same color per cutoff as the top
+    panel. Two nearly-overlapping lines in the same color are hard to compare
+    by eye; the raw gap between them, on its own axis, is not. Only cutoffs
+    with a REAL multi-point Julia trajectory (not the single-endpoint star)
+    get a diff line, since a single point has no trajectory to difference
+    against meaningfully across steps.
     """
     completed = [r for r in rows if r.get("status") == "completed"]
     if not completed:
@@ -498,11 +508,23 @@ def make_convergence_figure(
     epsilons = sorted(set(by_eps) | set(jl_by_eps))
 
     def _label(eps: float) -> str:
-        # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic).
-        return f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
+        # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic),
+        # rendered as real mathtext rather than plain "eps=2^-16" text.
+        return rf"$\varepsilon=2^{{{round(math.log2(eps))}}}$" if eps > 0 else r"$\varepsilon=0$"
+
+    # A diff panel only makes sense for cutoffs with a REAL multi-point Julia
+    # trajectory (the single-endpoint star has nothing to difference across steps).
+    diff_eps = sorted(eps for eps, pts in jl_by_eps.items() if len(pts) > 1) if show_diff else []
 
     def _build():
-        fig, ax = plt.subplots(figsize=figsize)
+        if diff_eps:
+            fig, (ax, ax_diff) = plt.subplots(
+                2, 1, figsize=figsize, sharex=True,
+                gridspec_kw={"height_ratios": [3, 1], "hspace": 0.08},
+            )
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
+            ax_diff = None
 
         if deck:
             # Deck theme: one (color, marker/linestyle) pair per cutoff from
@@ -552,8 +574,33 @@ def make_convergence_figure(
                 )
                 star_labeled = True
 
-        ax.set_xlabel("Trotter step")
-        ax.set_ylabel("<O>")
+        if ax_diff is not None:
+            for eps in diff_eps:
+                rust_by_step = {p["trotter_step"]: p["expectation_re"] for p in by_eps.get(eps, [])}
+                jl_by_step = {p["trotter_step"]: p["expectation_re"] for p in jl_by_eps[eps]}
+                shared_steps = sorted(set(rust_by_step) & set(jl_by_step))
+                dxs = shared_steps
+                dys = [rust_by_step[s] - jl_by_step[s] for s in shared_steps]
+                if deck:
+                    st = styles[eps]
+                    ax_diff.plot(
+                        dxs, dys, marker=st["marker"], markersize=4, linewidth=1.4,
+                        linestyle=st["linestyle"], color=colors[eps],
+                    )
+                else:
+                    ax_diff.plot(dxs, dys, marker="o", markersize=3, linewidth=1.0, color=colors[eps])
+            ax_diff.axhline(0.0, color=_DECK_NAVY if deck else "#898781", linewidth=0.8, linestyle=":")
+            ax_diff.set_xlabel("Trotter step")
+            ax_diff.set_ylabel("Rust $-$ Julia", fontsize=(_DECK_FONT_PT * 0.7 if deck else 8))
+            if deck:
+                _style_axes_deck(ax_diff)
+            else:
+                _style_axes(ax_diff)
+            ax.set_xlabel("")
+            ax.tick_params(labelbottom=False)
+        else:
+            ax.set_xlabel("Trotter step")
+        ax.set_ylabel(r"$\langle O \rangle$")
         if deck:
             if title:
                 ax.set_title(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
@@ -561,8 +608,23 @@ def make_convergence_figure(
         else:
             ax.set_title("Observable trajectory vs. truncation cutoff")
             _style_axes(ax)
-        ax.legend(frameon=False, fontsize=8 if not deck else _DECK_FONT_PT * 0.75)
-        fig.tight_layout()
+        # A plain loc="best" legend picked a spot that overlapped real plotted data once the
+        # diff panel changed this figure's aspect ratio (caught on an actual exported figure,
+        # not a theoretical concern) -- outside the axes, to the right, is layout-independent.
+        ax.legend(
+            frameon=False, fontsize=8 if not deck else _DECK_FONT_PT * 0.75,
+            loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+        )
+        if ax_diff is not None:
+            # tight_layout() doesn't fully account for a sharex two-row gridspec (it warns
+            # and can under-reserve room for ax_diff's own x-label) -- a real clipped label
+            # was caught on an actual exported figure, not a theoretical concern. An explicit
+            # margin after tight_layout's best-effort pass fixes both that and legend room.
+            fig.tight_layout()
+            fig.subplots_adjust(bottom=0.22, right=0.62, hspace=0.12)
+        else:
+            fig.tight_layout()
+            fig.subplots_adjust(right=0.62)
         return fig
 
     if deck:

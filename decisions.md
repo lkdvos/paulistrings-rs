@@ -1090,3 +1090,17 @@
     to real completed data, with every caveat above stated explicitly. Did not touch in-flight
     jobs 7036526 (single-bucket) or 7033946 (Julia convergence), and ran no Slurm command of any
     kind (only read files already on disk from the completed job 7035691).
+
+46. **`bucketed_1t_v2` figure dropped, page-29 comparison redefined, 2026-09-14.** User pointed
+    out the figure (historical `bucketed_engine_serial` vs. `bucketed_engine_parallel`, two
+    different old commits) doesn't support the claim page 29 is actually meant to make: that the
+    CURRENT engine, single-threaded, performs worse at one bucket than at its default (many-
+    bucket) configuration -- bucket-splitting's benefit isolated from threading entirely, not a
+    historical-commit comparison. The figure and its exported files were removed
+    (`figures/real/bucketed_1t_v2*`); `make_recurring_figure`'s stage-6 historical view stays
+    real and available as backup material (e.g. for the "attempts" story, page 19: a real
+    example of naive threading regressing performance) but is no longer page 29's asset.
+    Page 29's real comparison needs: the current engine's default-bucket single-thread point
+    (already real, job 7030090, eps=2^-16, 1629.9s) vs. the same engine forced to
+    `min_buckets=1` at the same config, single-thread (job 7036526, in flight as of this entry --
+    see the entry that supersedes this one once it lands).

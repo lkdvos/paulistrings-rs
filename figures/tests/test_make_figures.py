@@ -404,7 +404,7 @@ def test_convergence_figure_draws_a_real_julia_line_for_a_full_trajectory():
     ax = fig.axes[0]
     dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
     assert len(dashed) == 1
-    assert dashed[0].get_label() == "PauliPropagation.jl eps=2^-20"
+    assert dashed[0].get_label() == r"PauliPropagation.jl $\varepsilon=2^{-20}$"
     # Same color as the (single) solid Rust line at the same cutoff.
     solid = [ln for ln in ax.lines if ln.get_linestyle() != "--"]
     assert len(solid) == 1

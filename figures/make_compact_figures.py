@@ -627,7 +627,16 @@ def make_distributed_capacity_figure(
     figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (6.5, 4.5)
 
     def _label(eps: float) -> str:
-        return f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
+        return rf"$\varepsilon=2^{{{round(math.log2(eps))}}}$" if eps > 0 else r"$\varepsilon=0$"
+
+    def _sci(n: int) -> str:
+        # 3-significant-figure scientific notation, mathtext content ONLY (no $ delimiters --
+        # callers embed this inside their own math span), e.g. 8923556570 -> "8.92\times10^{9}".
+        # Both shorter (helps the legend actually fit) and matches the "numbers in LaTeX math"
+        # request, rather than a long comma-grouped integer.
+        exp = len(str(n)) - 1
+        mantissa = n / (10**exp)
+        return rf"{mantissa:.2f}\times10^{{{exp}}}"
 
     def _build():
         fig, ax = plt.subplots(figsize=figsize)
@@ -659,23 +668,23 @@ def make_distributed_capacity_figure(
                 n_counts = Counter(r["peak_terms"] for r in completed if r.get("peak_terms"))
                 label = _label(eps)
                 if n_counts:
-                    label = f"{label} (N={n_counts.most_common(1)[0][0]:,})"
+                    label = rf"{label}, $N={_sci(n_counts.most_common(1)[0][0])}$"
+                # Peak memory is reported once, as the series' MAXIMUM, in the legend label --
+                # not per-point -- per the user's explicit call: individual per-point memory
+                # annotations crowded the plot, and the max across the series is the number that
+                # matters for a capacity story anyway.
+                rss_values = [r["peak_rss_kb"] for r in completed if r.get("peak_rss_kb")]
+                if rss_values:
+                    label = f"{label}, max {max(rss_values) / 1e9:.2f} TB"
                 ax.plot(
                     xs, ys, marker=style["marker"], markersize=7, linewidth=1.8,
                     linestyle=style["linestyle"] if len(xs) > 1 else "none",
                     color=style["color"], label=label,
                 )
-                for r in completed:
-                    parts = []
-                    if r.get("peak_rss_kb"):
-                        parts.append(f"{r['peak_rss_kb'] / 1e9:.2f} TB")
-                    if r.get("note"):
-                        parts.append(r["note"])
-                    if parts:
-                        ax.annotate(
-                            "\n".join(parts), (r["ranks"], r["wall_time_s"]), fontsize=7,
-                            color=annotation_color, xytext=(6, 6), textcoords="offset points",
-                        )
+                # No per-point text annotations at all (not even a "note") -- every qualifying
+                # remark (measured vs. inferred, OOM/untested provenance) is stated by the
+                # presenter verbally, per the user's explicit call; the figure shows only the
+                # real plotted points and the legend.
             # Non-completed rows (oom/timeout/untested) are validated above (no fabricated
             # wall_time_s) but deliberately NOT drawn -- the presenter states those verbally
             # rather than having the figure show sentinel markers for unmeasured points.
@@ -702,16 +711,36 @@ def make_distributed_capacity_figure(
                 seen.add(l)
                 dedup_handles.append(h)
                 dedup_labels.append(l)
-            # Point annotations (N=, memory, notes) are dense on a log-log plot with only a
-            # few series -- an in-axes legend collides with them at almost any corner, so the
-            # legend sits outside the plot area entirely (right margin) rather than chasing an
-            # empty spot that may not exist once real annotations are added.
-            ax.legend(
-                dedup_handles, dedup_labels, frameon=False,
-                fontsize=7 if not deck else _DECK_FONT_PT * 0.7,
-                loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+            # Along the bottom, outside the axes: one line if the real rendered width actually
+            # fits the figure, otherwise one entry per line (ncol=1) -- no intermediate column
+            # count, per the user's explicit either/or. matplotlib does NOT auto-wrap a fixed
+            # ncol when it's too wide, it just overflows past the canvas edge (confirmed the
+            # hard way: an earlier version of this code assumed wrapping and clipped real text
+            # off a real exported figure) -- so this measures the legend's actual on-canvas
+            # width after a real draw rather than assuming a fixed ncol will fit.
+            fontsize = 7 if not deck else _DECK_FONT_PT * 0.7
+            legend = ax.legend(
+                dedup_handles, dedup_labels, frameon=False, fontsize=fontsize,
+                loc="upper center", bbox_to_anchor=(0.5, -0.18), borderaxespad=0.0,
+                ncol=len(dedup_labels),
             )
-        fig.tight_layout()
+            fig.canvas.draw()
+            fits_one_line = legend.get_window_extent().width <= fig.get_window_extent().width
+            ncol = len(dedup_labels) if fits_one_line else 1
+            if not fits_one_line:
+                legend.remove()
+                legend = ax.legend(
+                    dedup_handles, dedup_labels, frameon=False, fontsize=fontsize,
+                    loc="upper center", bbox_to_anchor=(0.5, -0.18), borderaxespad=0.0,
+                    ncol=1,
+                )
+            n_rows = math.ceil(len(dedup_labels) / ncol)
+            fig.tight_layout()
+            # tight_layout() doesn't know the legend lives outside the axes -- it would
+            # otherwise shrink the bottom margin back down and reclip the legend it just fit.
+            fig.subplots_adjust(bottom=0.14 + 0.09 * n_rows)
+        else:
+            fig.tight_layout()
         return fig
 
     if deck:

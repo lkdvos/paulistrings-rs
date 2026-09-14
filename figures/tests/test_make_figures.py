@@ -493,6 +493,23 @@ def test_distributed_capacity_figure_omits_oom_and_untested_points():
     matplotlib.pyplot.close(fig)
 
 
+def test_distributed_capacity_figure_states_max_memory_in_legend_not_per_point():
+    rows = [
+        {"ranks": 1, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 482.6, "peak_terms": 635371364, "peak_rss_kb": 1.5e8, "status": "completed"},
+        {"ranks": 4, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 468.77, "peak_terms": 635371364, "peak_rss_kb": 2.0e8, "status": "completed"},
+    ]
+    fig = make_distributed_capacity_figure(rows)
+    ax = fig.axes[0]
+
+    handles, labels = ax.get_legend_handles_labels()
+    assert any("max 0.20 TB" in label for label in labels), labels
+
+    # No per-point "X.XX TB" text annotation near the data -- only the legend states memory.
+    for artist in ax.texts:
+        assert "TB" not in artist.get_text()
+    matplotlib.pyplot.close(fig)
+
+
 def test_distributed_capacity_figure_deck_theme_exports_at_exact_size(tmp_path):
     rows = [
         {"ranks": 1, "min_abs_coeff": 1.5258789e-05, "wall_time_s": 41.6, "peak_terms": 38791220, "peak_rss_kb": 1.5e7, "status": "completed"},

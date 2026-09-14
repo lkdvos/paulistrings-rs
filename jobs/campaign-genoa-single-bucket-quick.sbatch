@@ -4,30 +4,39 @@
 #SBATCH --constraint=genoa&rocky9
 #SBATCH --nodes=1
 #SBATCH --exclusive
-#SBATCH --time=00:30:00
+#SBATCH --time=00:45:00
 #SBATCH --output=quera-talk-data/campaign-2026-09-11/raw/slurm-%j.out
 #
 # Quick companion to campaign-genoa-single-bucket.sbatch (job 7036526, still
 # running as of this writing): the same canonical circuit and single-thread
-# setup, but at a much LOOSER tolerance (2^-8, not 2^-16) so both cells --
-# default bucket config AND min_buckets=1 -- finish fast, giving an early,
-# cheap yes/no signal on whether bucket count matters at all, while the slow
+# setup, but at much LOOSER tolerances (2^-14, 2^-12, not 2^-16) so both
+# cells per eps -- default bucket config AND min_buckets=1 -- finish fast,
+# giving an early signal on whether bucket count matters, while the slow
 # eps=2^-16 pair (this job's real target for the deck) keeps running.
+#
+# 2^-8 (this script's original single point, job 7036821) gave only 363
+# final terms -- too few for bucket count to plausibly matter (real result:
+# single-bucket was FASTER there, likely per-bucket overhead dominating at
+# that scale). 2^-14/2^-12 give a much more realistic term count (job
+# 7033945's bucketed_current rows at the same eps, though a different
+# 10-Trotter-step circuit, saw ~2.27M and ~190K terms respectively) while
+# still being far cheaper than 2^-16's ~38M terms.
 #
 # NOT a replacement for the eps=2^-16 point -- that's still needed for a fair
 # comparison against the two real Julia points at that same eps. This is a
-# fast, independent, same-circuit check of the underlying bucket-count claim.
+# fast, independent, same-circuit check of the underlying bucket-count claim
+# at intermediate scale.
 #
 # Does NOT call sbatch anywhere -- submission is the user's step:
 #
 #   env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-single-bucket-quick.sbatch
 #
 # Environment knobs (all optional):
-#   PS_REV          commit to build (default: HEAD when the job starts).
-#   MIN_ABS_COEFF   truncation threshold (default: 2^-8 -- deliberately loose/cheap,
-#                    NOT the campaign's 2^-16 headline point).
-#   TROTTER_STEPS   circuit depth (default: 20, matching the real single-bucket job).
-#   THETA_H         kick angle (default: 7pi/32, contract.md primary point).
+#   PS_REV               commit to build (default: HEAD when the job starts).
+#   MIN_ABS_COEFF_LIST    space-separated truncation thresholds (default: "2^-14 2^-12",
+#                          deliberately loose/cheap, NOT the campaign's 2^-16 headline point).
+#   TROTTER_STEPS         circuit depth (default: 20, matching the real single-bucket job).
+#   THETA_H               kick angle (default: 7pi/32, contract.md primary point).
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../../..}"
 
@@ -69,10 +78,12 @@ pip install --quiet --upgrade pip
 pip install --quiet 'maturin>=1.5,<2.0' numpy
 (cd "$src" && maturin develop --release -m crates/paulistrings-py/Cargo.toml)
 
-: "${MIN_ABS_COEFF:=3.90625e-03}"   # 2^-8, deliberately loose/cheap
+: "${MIN_ABS_COEFF_LIST:=6.103515625e-05 2.44140625e-04}"   # 2^-14, 2^-12 -- more realistic
+                                                             # term counts than 2^-8's 363, still
+                                                             # far cheaper than the real 2^-16 point
 : "${TROTTER_STEPS:=20}"
 : "${THETA_H:=0.6872233929727672}"  # 7*pi/32
-echo "min_abs_coeff=$MIN_ABS_COEFF trotter_steps=$TROTTER_STEPS theta_h=$THETA_H"
+echo "min_abs_coeff_list='$MIN_ABS_COEFF_LIST' trotter_steps=$TROTTER_STEPS theta_h=$THETA_H"
 
 date_tag=$(date +%Y-%m-%d)
 node=$(hostname -s)
@@ -81,19 +92,20 @@ mkdir -p "$out_dir"
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
 
-for label_bucket in "default:0:0" "onebucket:1000000000:1"; do
-  IFS=':' read -r label target_bucket_len min_buckets <<< "$label_bucket"
-  bucket_json_fields=""
-  if [ "$label" = "onebucket" ]; then
-    bucket_json_fields="\"target_bucket_len\": $target_bucket_len, \"min_buckets\": $min_buckets,"
-  fi
-  config_id="genoa-single-bucket-quick-${label}-eps${MIN_ABS_COEFF}"
-  cat > "$cell_json" <<EOF
+for min_abs_coeff in $MIN_ABS_COEFF_LIST; do
+  for label_bucket in "default:0:0" "onebucket:1000000000:1"; do
+    IFS=':' read -r label target_bucket_len min_buckets <<< "$label_bucket"
+    bucket_json_fields=""
+    if [ "$label" = "onebucket" ]; then
+      bucket_json_fields="\"target_bucket_len\": $target_bucket_len, \"min_buckets\": $min_buckets,"
+    fi
+    config_id="genoa-single-bucket-quick-${label}-eps${min_abs_coeff}"
+    cat > "$cell_json" <<EOF
 {
   "variant_id": "bucketed_current",
   "theta_h": $THETA_H,
   "trotter_steps": $TROTTER_STEPS,
-  "min_abs_coeff": $MIN_ABS_COEFF,
+  "min_abs_coeff": $min_abs_coeff,
   "direction": "heisenberg",
   "state": "z+",
   "observable": "canonical_z_127",
@@ -106,9 +118,10 @@ for label_bucket in "default:0:0" "onebucket:1000000000:1"; do
   "n_qubits": 127
 }
 EOF
-  echo "== cell $config_id ($label)"
-  RAYON_NUM_THREADS=1 python quera-talk-data/campaign-2026-09-11/jobs/run_cell.py \
-      "$cell_json" --out-dir "$out_dir" || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+    echo "== cell $config_id ($label)"
+    RAYON_NUM_THREADS=1 python quera-talk-data/campaign-2026-09-11/jobs/run_cell.py \
+        "$cell_json" --out-dir "$out_dir" || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+  done
 done
 
 echo "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"

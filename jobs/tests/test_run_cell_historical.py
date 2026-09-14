@@ -85,7 +85,9 @@ def test_cell_json_rejects_unknown_fields():
 
 def test_unknown_variant_id_is_recorded_not_raised(tmp_path):
     spec = _spec(variant_id="not_a_real_variant")
-    record = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    records = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    assert len(records) == 1
+    record = records[0]
     assert record["status"] == "other"
     assert "not_a_real_variant" in record["failure_reason"]
     for field in rch.RUN_FIELDS:
@@ -96,23 +98,29 @@ def test_real_preflight_on_this_host_yields_invalid_hardware(tmp_path):
     """No monkeypatch, no PS_HIST_SKIP_PREFLIGHT: this host is not genoa, so
     this is the honest real gating path, not a smoke fixture."""
     spec = _spec()
-    record = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
-    assert record["status"] == "invalid_hardware"
-    assert record["hardware_valid"] is False
+    records = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    assert len(records) == 1
+    assert records[0]["status"] == "invalid_hardware"
+    assert records[0]["hardware_valid"] is False
 
 
 def test_skip_preflight_env_var_bypasses_gate_before_the_build(monkeypatch, tmp_path):
     """PS_HIST_SKIP_PREFLIGHT is documented as local-dev-only; verify it does
     what it claims without actually invoking cargo/maturin (monkeypatch the
-    strategy functions so this test stays fast)."""
+    build/run split so this test stays fast)."""
     monkeypatch.setenv("PS_HIST_SKIP_PREFLIGHT", "1")
     called = {}
 
-    def fake_naive(spec, worktree, scratch):
-        called["ran"] = True
+    def fake_build(spec, worktree, scratch):
+        called["built"] = True
+        return Path("/fake/binary")
+
+    def fake_run_once(binary, min_abs_coeff):
+        called.setdefault("ran", []).append(min_abs_coeff)
         return {"wall_time_s": 0.001, "initial_terms": 1, "final_terms": 3, "peak_rss_kb": 1000}
 
-    monkeypatch.setattr(rch, "_run_naive_rust_harness", fake_naive)
+    monkeypatch.setattr(rch, "_build_naive_rust_harness", fake_build)
+    monkeypatch.setattr(rch, "_run_naive_rust_harness_once", fake_run_once)
     # Avoid a real `git worktree add` against the live repo in a unit test.
     monkeypatch.setattr(
         rch.subprocess,
@@ -120,11 +128,67 @@ def test_skip_preflight_env_var_bypasses_gate_before_the_build(monkeypatch, tmp_
         lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     spec = _spec()
-    record = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
-    assert called.get("ran") is True
+    records = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    assert called.get("built") is True
+    assert called.get("ran") == [1e-6]
+    assert len(records) == 1
+    record = records[0]
     assert record["status"] == "completed"
     assert record["final_terms"] == 3
     assert record["source_commit"] == rch.VARIANT_REGISTRY["naive_baseline"].commit_sha
+
+
+def test_skip_preflight_sweeps_a_tolerance_list_without_rebuilding(monkeypatch, tmp_path):
+    """The whole point of the 2026-09-14 extension: one build, many cutoffs."""
+    monkeypatch.setenv("PS_HIST_SKIP_PREFLIGHT", "1")
+    build_calls = []
+    run_calls = []
+
+    def fake_build(spec, worktree, scratch):
+        build_calls.append(spec.n_qubits)
+        return Path("/fake/binary")
+
+    def fake_run_once(binary, min_abs_coeff):
+        run_calls.append(min_abs_coeff)
+        return {"wall_time_s": 0.001, "initial_terms": 1, "final_terms": 3, "peak_rss_kb": 1000}
+
+    monkeypatch.setattr(rch, "_build_naive_rust_harness", fake_build)
+    monkeypatch.setattr(rch, "_run_naive_rust_harness_once", fake_run_once)
+    monkeypatch.setattr(
+        rch.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    spec = _spec(min_abs_coeff=[2.44140625e-04, 6.103515625e-05], n_qubits=32)
+    records = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    assert build_calls == [32]  # built exactly once
+    assert run_calls == [2.44140625e-04, 6.103515625e-05]
+    assert [r["min_abs_coeff"] for r in records] == [2.44140625e-04, 6.103515625e-05]
+    assert all(r["n_qubits"] == 32 for r in records)
+    assert all(r["status"] == "completed" for r in records)
+
+
+def test_cell_json_normalizes_scalar_min_abs_coeff_to_a_tuple():
+    spec = _spec(min_abs_coeff=1e-6)
+    assert spec.min_abs_coeff == (1e-6,)
+    spec2 = _spec(min_abs_coeff=[1e-6, 2e-6])
+    assert spec2.min_abs_coeff == (1e-6, 2e-6)
+
+
+def test_cell_json_n_qubits_defaults_when_omitted():
+    spec = _spec()
+    assert spec.n_qubits == rch.DEFAULT_N_QUBITS
+
+
+def test_cell_json_trotter_steps_defaults_when_omitted():
+    spec = _spec()
+    assert spec.trotter_steps == rch.TROTTER_STEPS
+
+
+def test_cell_json_accepts_explicit_n_qubits_and_trotter_steps():
+    spec = _spec(n_qubits=127, trotter_steps=10)
+    assert spec.n_qubits == 127
+    assert spec.trotter_steps == 10
 
 
 def test_empty_run_record_has_every_run_field(tmp_path):
@@ -144,7 +208,9 @@ def test_real_historical_build_produces_a_schema_valid_record(variant_id, tmp_pa
 
     monkeypatch.setenv("PS_HIST_SKIP_PREFLIGHT", "1")
     spec = _spec(variant_id=variant_id, config_id=f"slow-test-{variant_id}")
-    record = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    records = rch.run_cell(spec, tmp_path, tmp_path / "scratch")
+    assert len(records) == 1
+    record = records[0]
     assert record["status"] == "completed", record.get("failure_reason")
     assert record["final_terms"] > 0
     assert validate_run(record) == []

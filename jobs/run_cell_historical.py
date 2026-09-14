@@ -32,15 +32,41 @@ historical-variants entry for the full investigation):
   demonstrate is not exercised. All three share one venv-build strategy and
   one workload script.
 
-Every cell here uses a small, fixed reduced scale (n_qubits=12, 2 Trotter
-steps, theta_h=7pi/32, theta_zz=-pi/2 built into the workload, min_abs_coeff
-from cell.json) chosen so even the unbucketed serial `naive_baseline` finishes
-in well under a second -- see decisions.md for the exact rationale. This is
-NOT the frozen 127-qubit canonical task (`contract.md`); it exists only to let
-all variants run to completion for a fair relative comparison.
+Every cell shares theta_h=7pi/32/theta_zz=-pi/2 built into the workload
+(`THETA_H`/`THETA_ZZ` module constants). `n_qubits`, `trotter_steps`, and
+`min_abs_coeff` are per-cell: `cell.json`'s `n_qubits` (default
+`DEFAULT_N_QUBITS=12`), `trotter_steps` (default `TROTTER_STEPS=2`, both kept
+for backward compatibility with the original toy-scale cells), and
+`min_abs_coeff` (a float, or a list of floats to sweep in one invocation --
+see `HistoricalCellSpec`). This linear-chain construction scaled up (not the
+heavy-hex topology) is a deliberate, documented choice for the 2026-09-14
+full-scale extension: it is already how the toy-scale comparison works, just
+bigger, and building the actual heavy-hex 127-qubit task is unavailable to
+three of the four historical commits anyway (see the strategy notes above).
 
-Writes one schema-v1 run record (`analysis/schema.py::validate_run`) per cell
-to `<out-dir>/runs.jsonl` (append). No gate-trace record: none of the four
+**Real feasibility finding (2026-09-14, non-genoa workstation, see
+decisions.md's "quera-talk full-scale historical sweep" entry for the full
+table)**: at the original `trotter_steps=2` depth, wall time and final term
+count are *flat* in `n_qubits` (12 through 127) and in `min_abs_coeff` alike
+-- a backward (Heisenberg) propagation of a local single-site observable has
+a light cone that stays local after only 2 layers, so scaling qubit count
+alone produces a trivial, cost-flat curve for every variant, not the "cost
+grows, weak variants fall behind" story the recurring figure needs. Real
+depth, not qubit count, is what drives cost here. The 2026-09-14 full-scale
+cells therefore fix `n_qubits=127` for every variant (verified free: n_qubits
+doesn't move the needle at any depth tested) and raise `trotter_steps=10` to
+get a real, cutoff-sensitive term-count curve; `naive_baseline`'s unbucketed
+serial engine already costs ~130s locally for its single loosest-cutoff point
+at that depth, so its cutoff list is deliberately just one point while the
+other three (and `bucketed_current`) get the full 4-point grid -- see
+`jobs/campaign-genoa-historical.sbatch` for the exact per-variant plan. This
+is NOT the frozen 127-qubit canonical task (`contract.md`, which is 20 Trotter
+steps on the heavy-hex lattice); it exists to let each variant run to
+completion for a fair relative comparison at the largest scale/depth it can
+actually reach in a bounded Slurm wall-time cap.
+
+Writes one schema-v1 run record (`analysis/schema.py::validate_run`) per
+(cell, cutoff) point to `<out-dir>/runs.jsonl` (append). No gate-trace record: none of the four
 strategies exposes a per-gate `PropagationStats`-equivalent object (the Rust
 harness has none by construction; the three PyO3 builds predate
 `propagate_with_stats`), so `trace_enabled` is always `False` and
@@ -127,13 +153,19 @@ def _slurm_job_id() -> str | None:
 SCHEMA_VERSION = 1
 CAMPAIGN_ID = "campaign-2026-09-11"
 
-# Reduced-scale workload, shared by every historical cell (decisions.md's
-# "historical-variants reduced scale" entry). Not the frozen 127-qubit
-# canonical task -- see module docstring.
-N_QUBITS = 12
+# Default n_qubits for a cell.json that omits the field, kept equal to the
+# original toy scale (decisions.md #28) for backward compatibility. The
+# 2026-09-14 feasibility pass (decisions.md, "quera-talk full-scale historical
+# sweep") picks a real per-variant n_qubits well above this default for three
+# of the four variants -- see that entry for the measured table.
+DEFAULT_N_QUBITS = 12
 TROTTER_STEPS = 2
 THETA_H = 0.6872233929727672  # 7*pi/32, contract.md's primary point
 THETA_ZZ = -1.5707963267948966  # -pi/2, contract.md's fixed value
+
+#: The campaign-wide 4-point cutoff grid (campaign-genoa-convergence.sbatch,
+#: campaign-genoa-e8.sbatch): 2^-12, 2^-14, 2^-16, 2^-18.
+CUTOFF_GRID = (2.44140625e-04, 6.103515625e-05, 1.5258789e-05, 3.8146973e-06)
 
 
 @dataclass(frozen=True)
@@ -184,12 +216,21 @@ _RUN_FIELDS = RUN_FIELDS
 
 @dataclass(frozen=True)
 class HistoricalCellSpec:
-    """One point of the historical-variant matrix, as read from `cell.json`."""
+    """One point of the historical-variant matrix, as read from `cell.json`.
+
+    `min_abs_coeff` is a *list* of cutoffs to sweep -- normalized from either
+    a bare float or a list by `from_dict` -- so one invocation of this driver
+    builds a variant's worktree/venv once and runs it once per cutoff, rather
+    than paying a full rebuild per tolerance point (2026-09-14 full-scale
+    extension; see decisions.md). `run_cell` returns one record per cutoff.
+    """
 
     variant_id: str
-    min_abs_coeff: float
+    min_abs_coeff: tuple[float, ...]
     direction: str
     repetition_index: int
+    n_qubits: int = DEFAULT_N_QUBITS
+    trotter_steps: int = TROTTER_STEPS
     task_id: str = "T02-canonical-historical-reduced"
     config_id: str | None = None
 
@@ -199,6 +240,14 @@ class HistoricalCellSpec:
         unknown = set(data) - known
         if unknown:
             raise ValueError(f"cell.json has unknown fields {sorted(unknown)}")
+        data = dict(data)
+        coeffs = data.get("min_abs_coeff")
+        if coeffs is None:
+            raise ValueError("cell.json must set min_abs_coeff (a float or a list of floats)")
+        if isinstance(coeffs, (int, float)):
+            data["min_abs_coeff"] = (float(coeffs),)
+        else:
+            data["min_abs_coeff"] = tuple(float(c) for c in coeffs)
         return cls(**data)
 
 
@@ -223,7 +272,9 @@ const N_QUBITS: usize = {n_qubits};
 const TROTTER_STEPS: usize = {trotter_steps};
 const THETA_H: f64 = {theta_h};
 const THETA_ZZ: f64 = {theta_zz};
-const MIN_ABS_COEFF: f64 = {min_abs_coeff};
+// min_abs_coeff is a runtime CLI arg (argv[1]), not a compile-time const, so
+// a tolerance sweep reuses one build across every cutoff -- see
+// run_cell_historical.py's HistoricalCellSpec docstring.
 
 fn x_rotation(q: usize) -> PauliRotation<1> {{
     let mut gen_x = [0u64; 1];
@@ -238,6 +289,12 @@ fn zz_rotation(i: usize, j: usize) -> PauliRotation<1> {{
 }}
 
 fn main() {{
+    let min_abs_coeff: f64 = std::env::args()
+        .nth(1)
+        .expect("usage: historical_smoke <min_abs_coeff>")
+        .parse()
+        .expect("min_abs_coeff must parse as f64");
+
     let mut circuit = Circuit::<1>::new(N_QUBITS);
     for _ in 0..TROTTER_STEPS {{
         for q in 0..N_QUBITS {{
@@ -256,7 +313,7 @@ fn main() {{
     let initial = acc.finalize();
     let initial_terms = initial.len();
 
-    let policy = CoefficientThreshold(MIN_ABS_COEFF);
+    let policy = CoefficientThreshold(min_abs_coeff);
     let start = Instant::now();
     let evolved = propagate(&circuit, initial, &policy, Direction::Heisenberg);
     let wall_time_s = start.elapsed().as_secs_f64();
@@ -269,15 +326,18 @@ fn main() {{
 """
 
 
-def _run_naive_rust_harness(spec: HistoricalCellSpec, worktree: Path, scratch: Path) -> dict[str, Any]:
+def _build_naive_rust_harness(spec: HistoricalCellSpec, worktree: Path, scratch: Path) -> Path:
+    """Writes and builds the harness once (n_qubits is compile-time, min_abs_coeff is not).
+
+    Returns the built binary's path so the caller can invoke it once per cutoff.
+    """
     examples_dir = worktree / "crates" / "paulistrings" / "examples"
     examples_dir.mkdir(parents=True, exist_ok=True)
     src = _NAIVE_EXAMPLE_SRC.format(
-        n_qubits=N_QUBITS,
-        trotter_steps=TROTTER_STEPS,
+        n_qubits=spec.n_qubits,
+        trotter_steps=spec.trotter_steps,
         theta_h=THETA_H,
         theta_zz=THETA_ZZ,
-        min_abs_coeff=spec.min_abs_coeff,
     )
     (examples_dir / "historical_smoke.rs").write_text(src)
 
@@ -292,10 +352,12 @@ def _run_naive_rust_harness(spec: HistoricalCellSpec, worktree: Path, scratch: P
         capture_output=True,
         text=True,
     )
+    return target_dir / "release" / "examples" / "historical_smoke"
 
-    binary = target_dir / "release" / "examples" / "historical_smoke"
+
+def _run_naive_rust_harness_once(binary: Path, min_abs_coeff: float) -> dict[str, Any]:
     rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    result = subprocess.run([str(binary), str(min_abs_coeff)], check=True, capture_output=True, text=True)
     rusage_after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     # ru_maxrss is in KB on Linux; RUSAGE_CHILDREN accumulates, so the delta
@@ -357,7 +419,12 @@ def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python3"
 
 
-def _run_pyo3_handrolled(spec: HistoricalCellSpec, worktree: Path, scratch: Path) -> dict[str, Any]:
+def _build_pyo3_handrolled(spec: HistoricalCellSpec, worktree: Path, scratch: Path) -> Path:
+    """Builds the per-variant venv once via `maturin develop --release`.
+
+    Returns the venv's python so the caller can run the (cheap-to-rewrite,
+    no-recompile) workload script once per cutoff.
+    """
     venv_dir = scratch / "venv"
     target_dir = scratch / "target"
     python_bin = shutil.which("python3.11") or sys.executable
@@ -384,23 +451,26 @@ def _run_pyo3_handrolled(spec: HistoricalCellSpec, worktree: Path, scratch: Path
         capture_output=True,
         text=True,
     )
+    return _venv_python(venv_dir)
 
+
+def _run_pyo3_handrolled_once(
+    python_bin: Path, spec: HistoricalCellSpec, scratch: Path, min_abs_coeff: float
+) -> dict[str, Any]:
     script = scratch / "workload.py"
     script.write_text(
         _HANDROLLED_WORKLOAD_SRC.format(
-            n_qubits=N_QUBITS,
-            trotter_steps=TROTTER_STEPS,
+            n_qubits=spec.n_qubits,
+            trotter_steps=spec.trotter_steps,
             theta_h=THETA_H,
             theta_zz=THETA_ZZ,
-            min_abs_coeff=spec.min_abs_coeff,
+            min_abs_coeff=min_abs_coeff,
             direction=spec.direction,
         )
     )
 
     rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    result = subprocess.run(
-        [str(_venv_python(venv_dir)), str(script)], check=True, capture_output=True, text=True
-    )
+    result = subprocess.run([str(python_bin), str(script)], check=True, capture_output=True, text=True)
     rusage_after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     payload["peak_rss_kb"] = max(rusage_after - rusage_before, 0) or rusage_after
@@ -419,6 +489,7 @@ def _empty_run_record(
     failure_reason: str,
     commit_sha: str | None,
     node_class: str = "unknown",
+    min_abs_coeff: float | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -438,10 +509,10 @@ def _empty_run_record(
         # a worktree that's already been removed by the time this record is
         # written on a failure path).
         "runtime_version": "unknown",
-        "n_qubits": N_QUBITS,
+        "n_qubits": spec.n_qubits,
         "direction": spec.direction,
         "state": "z+",
-        "min_abs_coeff": spec.min_abs_coeff,
+        "min_abs_coeff": min_abs_coeff if min_abs_coeff is not None else spec.min_abs_coeff[0],
         "max_weight": None,
         "policy": None,
         "engine": "unpartitioned",
@@ -471,33 +542,45 @@ def _empty_run_record(
     }
 
 
-def run_cell(spec: HistoricalCellSpec, out_dir: Path, scratch_root: Path) -> dict[str, Any]:
-    """Run one historical-variant cell. Never raises for a cell that legitimately
-    cannot run (bad hardware, unknown variant); only a genuine bug propagates.
-    """
-    run_id = str(uuid.uuid4())
+def run_cell(spec: HistoricalCellSpec, out_dir: Path, scratch_root: Path) -> list[dict[str, Any]]:
+    """Run one historical-variant cell across every cutoff in `spec.min_abs_coeff`.
 
+    Builds the variant's worktree/venv exactly once (n_qubits is fixed at
+    build time; min_abs_coeff is a runtime argument on both strategies), then
+    runs once per cutoff. Returns one schema-v1 record per cutoff -- never
+    raises for a cell that legitimately cannot run (bad hardware, unknown
+    variant, a build failure); only a genuine bug propagates. A build failure
+    or hardware-gate failure yields one record per requested cutoff, all
+    carrying the same failure reason, so `len(records) == len(spec.min_abs_coeff)`
+    always holds regardless of outcome.
+    """
     entry = VARIANT_REGISTRY.get(spec.variant_id)
     if entry is None:
-        return _empty_run_record(
-            spec, run_id, "other",
+        reason = (
             f"variant_id={spec.variant_id!r} is not in VARIANT_REGISTRY "
-            f"(known: {sorted(VARIANT_REGISTRY)})",
-            None,
+            f"(known: {sorted(VARIANT_REGISTRY)})"
         )
+        return [
+            _empty_run_record(spec, str(uuid.uuid4()), "other", reason, None, min_abs_coeff=c)
+            for c in spec.min_abs_coeff
+        ]
 
     if os.environ.get("PS_HIST_SKIP_PREFLIGHT"):
         hardware = {"preflight_passed": True, "node_class_guess": "genoa (skip-preflight override)"}
     else:
         hardware = preflight.run_preflight()
     if not hardware["preflight_passed"]:
-        return _empty_run_record(
-            spec, run_id, "invalid_hardware",
+        reason = (
             f"preflight failed: node_class_guess={hardware['node_class_guess']!r} "
-            f"(contract wants {preflight.HARDWARE_CONTRACT_ID!r})",
-            entry.commit_sha,
-            node_class=str(hardware["node_class_guess"]),
+            f"(contract wants {preflight.HARDWARE_CONTRACT_ID!r})"
         )
+        return [
+            _empty_run_record(
+                spec, str(uuid.uuid4()), "invalid_hardware", reason, entry.commit_sha,
+                node_class=str(hardware["node_class_guess"]), min_abs_coeff=c,
+            )
+            for c in spec.min_abs_coeff
+        ]
 
     scratch = scratch_root / spec.variant_id
     scratch.mkdir(parents=True, exist_ok=True)
@@ -514,71 +597,99 @@ def run_cell(spec: HistoricalCellSpec, out_dir: Path, scratch_root: Path) -> dic
     )
     try:
         if entry.strategy == "rust_harness":
-            payload = _run_naive_rust_harness(spec, worktree, scratch)
+            binary = _build_naive_rust_harness(spec, worktree, scratch)
+            run_once = lambda c: _run_naive_rust_harness_once(binary, c)  # noqa: E731
         elif entry.strategy == "pyo3_handrolled":
-            payload = _run_pyo3_handrolled(spec, worktree, scratch)
+            python_bin = _build_pyo3_handrolled(spec, worktree, scratch)
+            run_once = lambda c: _run_pyo3_handrolled_once(python_bin, spec, scratch, c)  # noqa: E731
         else:
             raise ValueError(f"unknown strategy {entry.strategy!r} for variant {spec.variant_id!r}")
     except subprocess.CalledProcessError as exc:
         reason = (
-            f"{entry.strategy} failed for {spec.variant_id}@{entry.commit_sha[:12]}: "
+            f"{entry.strategy} build failed for {spec.variant_id}@{entry.commit_sha[:12]}: "
             f"{exc.cmd} exit={exc.returncode} stderr_tail={exc.stderr[-2000:] if exc.stderr else ''}"
         )
-        return _empty_run_record(spec, run_id, "build_failure", reason, entry.commit_sha)
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=_REPO_ROOT, check=False)
+        return [
+            _empty_run_record(spec, str(uuid.uuid4()), "build_failure", reason, entry.commit_sha, min_abs_coeff=c)
+            for c in spec.min_abs_coeff
+        ]
+
+    records: list[dict[str, Any]] = []
+    try:
+        for min_abs_coeff in spec.min_abs_coeff:
+            run_id = str(uuid.uuid4())
+            try:
+                payload = run_once(min_abs_coeff)
+            except subprocess.CalledProcessError as exc:
+                reason = (
+                    f"{entry.strategy} run failed for {spec.variant_id}@{entry.commit_sha[:12]} "
+                    f"min_abs_coeff={min_abs_coeff}: {exc.cmd} exit={exc.returncode} "
+                    f"stderr_tail={exc.stderr[-2000:] if exc.stderr else ''}"
+                )
+                records.append(
+                    _empty_run_record(
+                        spec, run_id, "build_failure", reason, entry.commit_sha, min_abs_coeff=min_abs_coeff
+                    )
+                )
+                continue
+
+            records.append(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "campaign_id": CAMPAIGN_ID,
+                    "run_id": run_id,
+                    "task_id": spec.task_id,
+                    "config_id": spec.config_id,
+                    "variant_id": spec.variant_id,
+                    "repetition_index": spec.repetition_index,
+                    "pair_index": None,
+                    "source_commit": entry.commit_sha,
+                    "dirty": False,
+                    "build_features": [],
+                    "compiler_version": _compiler_version(),
+                    # The historical Cargo.toml's `version.workspace = true` resolves to
+                    # the same "0.1.0" at every one of these four commits (checked via
+                    # `git show <sha>:crates/paulistrings-py/Cargo.toml`); this is real
+                    # provenance, not a guess, just not independently queryable from this
+                    # process (the built extension lives in a now-removed worktree venv).
+                    "runtime_version": "0.1.0",
+                    "n_qubits": spec.n_qubits,
+                    "direction": spec.direction,
+                    "state": "z+",
+                    "min_abs_coeff": min_abs_coeff,
+                    "max_weight": None,
+                    "policy": f"CoefficientThreshold({min_abs_coeff})",
+                    "engine": "unpartitioned",
+                    "partitions": 1,
+                    "threads": 1,
+                    "ranks": 1,
+                    "slurm_job_id": _slurm_job_id(),
+                    "node_class": hardware["node_class_guess"],
+                    "hardware_contract_id": preflight.HARDWARE_CONTRACT_ID,
+                    "hardware_valid": True,
+                    "trace_enabled": False,
+                    "wall_time_s": payload["wall_time_s"],
+                    "setup_time_s": None,
+                    "scatter_time_s": None,
+                    "gather_time_s": None,
+                    "initial_terms": payload["initial_terms"],
+                    "final_terms": payload["final_terms"],
+                    "peak_terms": None,
+                    "peak_rss_kb": payload.get("peak_rss_kb"),
+                    "peak_rss_provenance": "rusage_children_maxrss_delta",
+                    "status": "completed",
+                    "failure_reason": None,
+                    "log_path": None,
+                    "gate_trace_path": None,
+                    "partition_row_policy": None,
+                    "extra": {"variant_notes": entry.notes},
+                }
+            )
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=_REPO_ROOT, check=False)
 
-    record = {
-        "schema_version": SCHEMA_VERSION,
-        "campaign_id": CAMPAIGN_ID,
-        "run_id": run_id,
-        "task_id": spec.task_id,
-        "config_id": spec.config_id,
-        "variant_id": spec.variant_id,
-        "repetition_index": spec.repetition_index,
-        "pair_index": None,
-        "source_commit": entry.commit_sha,
-        "dirty": False,
-        "build_features": [],
-        "compiler_version": _compiler_version(),
-        # The historical Cargo.toml's `version.workspace = true` resolves to
-        # the same "0.1.0" at every one of these four commits (checked via
-        # `git show <sha>:crates/paulistrings-py/Cargo.toml`); this is real
-        # provenance, not a guess, just not independently queryable from this
-        # process (the built extension lives in a now-removed worktree venv).
-        "runtime_version": "0.1.0",
-        "n_qubits": N_QUBITS,
-        "direction": spec.direction,
-        "state": "z+",
-        "min_abs_coeff": spec.min_abs_coeff,
-        "max_weight": None,
-        "policy": f"CoefficientThreshold({spec.min_abs_coeff})",
-        "engine": "unpartitioned",
-        "partitions": 1,
-        "threads": 1,
-        "ranks": 1,
-        "slurm_job_id": _slurm_job_id(),
-        "node_class": hardware["node_class_guess"],
-        "hardware_contract_id": preflight.HARDWARE_CONTRACT_ID,
-        "hardware_valid": True,
-        "trace_enabled": False,
-        "wall_time_s": payload["wall_time_s"],
-        "setup_time_s": None,
-        "scatter_time_s": None,
-        "gather_time_s": None,
-        "initial_terms": payload["initial_terms"],
-        "final_terms": payload["final_terms"],
-        "peak_terms": None,
-        "peak_rss_kb": payload.get("peak_rss_kb"),
-        "peak_rss_provenance": "rusage_children_maxrss_delta",
-        "status": "completed",
-        "failure_reason": None,
-        "log_path": None,
-        "gate_trace_path": None,
-        "partition_row_policy": None,
-        "extra": {"variant_notes": entry.notes},
-    }
-    return record
+    return records
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -597,11 +708,15 @@ def main(argv: list[str] | None = None) -> int:
     spec = HistoricalCellSpec.from_dict(cell_data)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    record = run_cell(spec, args.out_dir, args.scratch_root)
-    _append_jsonl(args.out_dir / "runs.jsonl", [record])
+    records = run_cell(spec, args.out_dir, args.scratch_root)
+    _append_jsonl(args.out_dir / "runs.jsonl", records)
 
-    print(json.dumps({"run_id": record["run_id"], "status": record["status"]}))
-    return 0 if record["status"] == "completed" else 1
+    print(
+        json.dumps(
+            [{"run_id": r["run_id"], "min_abs_coeff": r["min_abs_coeff"], "status": r["status"]} for r in records]
+        )
+    )
+    return 0 if all(r["status"] == "completed" for r in records) else 1
 
 
 if __name__ == "__main__":

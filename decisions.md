@@ -1036,3 +1036,57 @@
     Did not touch in-flight jobs 7033946 (Julia convergence) or 7034671, and ran no Slurm command
     of any kind (only read `raw/2026-09-14-worker7150-historical/runs.jsonl`, already on disk from
     the completed job).
+
+45. **Memory/bandwidth diagnosis figure for deck page 17, real data from job 7035691,
+    2026-09-14.** New function `make_memory_diagnosis_figure` in `figures/make_compact_figures.py`
+    -- no prior memory/phase figure existed to extend. Two panels: (A) real phase time-share at 1
+    and 96 threads from `raw/2026-09-14-worker7183-memory/memory-diagnosis-eps1.5258789e-05.txt`
+    (`heavyhex_step`, 127 qubits, `coeff:1.5258789e-05`), small serial phases folded into "other"
+    the same way the probe's own HTML report does; (B) three explicitly DISTINCT numbers -- 48
+    B/term fixed payload (`W=2`, `Complex64`), a modeled 1.79 GB/s / 142 B/term-update traffic
+    estimate derived from the probe JSON's real `terms_in`/`rows_sorted`/`terms_out`/
+    `coset_loop_ns` at 96 threads (the ONLY phase/thread-count this campaign treats as a valid
+    rate comparison -- not the serial permute/unpermute phases, not the 1-thread cell), and peak
+    resident memory (`VmHWM=16,806,572 kB ~= 16.81 GB`, identical across both probe rows since
+    it's one process's high-water mark). Panel B is three text "stat tiles", not a shared bar
+    axis, since B/term, GB/s, and kB are not comparable magnitudes.
+
+    Verified directly, not trusted from the task prompt: `bandwidth.txt` for this job has NO
+    measurement of any kind -- `scripts/bandwidth.sh` failed to build `membench` on worker7183
+    (`bandwidth.stderr.log`: `target/release/membench: No such file or directory`), so there is no
+    genoa bandwidth ceiling at 1 or 96 threads, not even a partial one. The probe's own
+    auto-rendered `perf-viz.py` HTML report reaches the same conclusion independently ("Bandwidth
+    ceilings unavailable for this campaign ... DRAM figures below show modeled GB/s only, with no
+    % of ceiling"), which is reassuring cross-confirmation that this isn't a reading error on my
+    part. Per the task's explicit instruction, `research/HARDWARE.md`'s Cascade Lake (`ccqlin038`)
+    ceilings are a different architecture and were NOT substituted in -- the figure renders an
+    explicit `bandwidth_unavailable_reason` string instead, and `bandwidth_ceiling_gbps=None` is a
+    first-class, tested state (`test_memory_diagnosis_figure_states_bandwidth_unavailable_reason_
+    when_ceiling_is_none`), not a missing-data placeholder. `perf-stat.sh` for this job also failed
+    ("Workload failed: No such file or directory", marked non-fatal in the job log) -- perf is
+    blocked on this shared cluster account, so there is no flame graph and no hardware-counter
+    evidence anywhere in this figure; nothing here claims bandwidth saturation from the
+    phase-timing breakdown alone, only that it identifies which phases cost time. Also disclosed,
+    matching the same caveat already accepted for the bucket-size figure (#41): `phase_breakdown`
+    hard-codes `theta_h=5*pi/16` for `heavyhex_step`, not this campaign's primary `theta_h=7*pi/32`
+    working point -- this is the campaign's own synthetic benchmark circuit, not the canonical
+    Python task.
+
+    Files: `figures/real/memory_v2.{svg,pdf,png}` (900x340pt) + `_compact` (900x170pt
+    half-height -- chosen over half-width after an actual half-width export test left both panels
+    illegible; half-height matches this MANIFEST's existing two-panel precedent). The compact
+    variant drops panel B's sub-captions and the bandwidth-unavailable prose note (same
+    "compact drops qualifying detail, presenter states it verbally" precedent
+    `make_distributed_capacity_figure` established) while keeping all three headline numbers.
+
+    Added 9 tests (`test_memory_diagnosis_figure_*`) covering: empty input, two-panel structure,
+    phase shares summing to ~100% per row despite the ~3.4x real wall-time difference between 1
+    and 96 threads, the real ms/layer annotations, the three numbers staying distinct, both the
+    ceiling-unavailable and a hypothetical real-ceiling path, and exact-size exports of both
+    variants. Full figure suite green: **55/55 passed** (46 pre-existing + 9 new,
+    `.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).
+
+    Updated `figures/real/MANIFEST.md` (new entry 8) and `evidence.md`'s E3 row from "not started"
+    to real completed data, with every caveat above stated explicitly. Did not touch in-flight
+    jobs 7036526 (single-bucket) or 7033946 (Julia convergence), and ran no Slurm command of any
+    kind (only read files already on disk from the completed job 7035691).

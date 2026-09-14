@@ -753,6 +753,199 @@ def make_distributed_capacity_figure(
     return fig
 
 
+def make_memory_diagnosis_figure(
+    phase_rows: Sequence[dict],
+    traffic: dict,
+    *,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """Two-panel memory/bandwidth diagnosis view: phase time-share (A) plus a
+    payload/traffic/peak-memory summary (B), for `phase_breakdown --features
+    phase-timing` runs (`ARCHITECTURE.md` `coset_loop` phase names).
+
+    `phase_rows`: one dict per measured thread count, each `{"threads": int,
+    "wall_ms_per_layer": float, "phases": {"permute": float, "coset_loop":
+    float, "unpermute": float, "recount": float, "other": float}}` -- ms/layer
+    values, `"other"` already pre-summed by the caller (rebucket + prepare +
+    span_plan + finalize), the same "small phases folded into one bucket"
+    convention the probe's own `.txt`/HTML report uses. Panel A stacks each
+    row's phases as a time-SHARE bar (`phase / wall_ms_per_layer`), not raw
+    ms, so a 1-thread and a 96-thread row are visually comparable despite a
+    ~3x different wall time per layer; the real per-layer ms total is
+    annotated next to each bar so the absolute magnitude is not lost.
+
+    `traffic` carries the three numbers this figure exists to keep DISTINCT
+    -- never conflated into one metric:
+      - `payload_bytes_per_term` (int): the fixed `T=16W+16` payload fact
+        (48 for W=2, Complex64), independent of any measurement.
+      - `modeled_traffic_gbps` (float) and `modeled_bytes_per_term` (float):
+        a MODELED traffic-per-update estimate -- derived from the probe's
+        real gather/sort/merge/terms counts divided by the real wall time of
+        `traffic_scope_label` -- deliberately larger than the raw payload
+        because it counts gather streams, sort/merge temporaries, and
+        coeff-only metadata rows, not just the final resident term.
+      - `bandwidth_ceiling_gbps` (float or None): the REAL measured ceiling
+        at a matching thread count, from THIS host's own `bandwidth.txt`
+        ONLY -- never a different architecture's number. When `None`,
+        `bandwidth_unavailable_reason` (str) must explain why, and this
+        function renders that reason instead of fabricating a % of ceiling.
+      - `peak_vmhwm_kb` (float): peak resident memory (`VmHWM`), reported
+        on its own, never divided by anything or folded into the traffic
+        number above.
+
+    Panel B is deliberately NOT a bar chart of these three numbers together
+    -- they are different units (bytes/term, GB/s, kB) and plotting them on
+    one shared axis would visually imply they are comparable magnitudes.
+    Instead it renders three text "stat tiles", the same
+    distinct-units-distinct-tiles idea `make_distributed_capacity_figure`
+    uses for its legend-only memory annotation, just made primary here since
+    memory diagnosis IS this figure's subject rather than a footnote.
+
+    `theme="legacy"` (default) vs `theme="deck"` -- see
+    `make_thread_scaling_figure`'s docstring for the shared contract.
+    """
+    if not phase_rows:
+        raise NotImplementedError(
+            "make_memory_diagnosis_figure: no phase rows to plot -- run "
+            "phase_breakdown --features phase-timing for at least one thread count."
+        )
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (9.5, 4)
+    # Below ~250pt tall there is no room for panel B's sub-captions and the
+    # bandwidth-unavailable note without them colliding -- same "compact
+    # drops qualifying detail, presenter states it verbally" precedent as
+    # `make_distributed_capacity_figure`'s half-height compact export.
+    compact = bool(figsize_pt) and figsize_pt[1] < 250
+
+    phase_order = ["permute", "coset_loop", "unpermute", "recount", "other"]
+    phase_labels = {"permute": "permute", "coset_loop": "coset_loop", "unpermute": "unpermute",
+                    "recount": "recount", "other": "other (serial)"}
+
+    def _build():
+        fig, (ax_phase, ax_stats) = plt.subplots(1, 2, figsize=figsize)
+
+        # --- panel A: phase time-share, one stacked bar per thread count ----
+        rows = sorted(phase_rows, key=lambda r: r["threads"])
+        ys = range(len(rows))
+        left = [0.0] * len(rows)
+        for i, phase in enumerate(phase_order):
+            color = _DECK_SERIES[i % len(_DECK_SERIES)]["color"] if deck else None
+            shares = [100.0 * r["phases"].get(phase, 0.0) / r["wall_ms_per_layer"] for r in rows]
+            ax_phase.barh(list(ys), shares, left=left, height=0.55, color=color, label=phase_labels[phase])
+            left = [l + s for l, s in zip(left, shares)]
+
+        text_color = _DECK_NAVY if deck else "#333333"
+        for i, r in enumerate(rows):
+            ax_phase.annotate(
+                f"{r['wall_ms_per_layer']:.2f} ms/layer",
+                (101.0, i), xycoords=("data", "data"), va="center", ha="left",
+                fontsize=8 if not deck else _DECK_FONT_PT * 0.6, color=text_color,
+            )
+        ax_phase.set_yticks(list(ys))
+        ax_phase.set_yticklabels([f"{r['threads']} thread{'s' if r['threads'] != 1 else ''}" for r in rows])
+        ax_phase.set_xlim(0, 100)
+        ax_phase.set_xlabel("share of wall time (%)")
+        ax_phase.legend(frameon=False, fontsize=7 if not deck else _DECK_FONT_PT * 0.55,
+                         loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=len(phase_order))
+
+        # --- panel B: three distinct stat tiles, never one shared axis ------
+        # Manual `textwrap` (not matplotlib's `wrap=True`, which wraps at the
+        # FIGURE edge, not the narrow ~1/3-width column each tile actually
+        # has -- confirmed the hard way, an earlier version left three tiles'
+        # text overlapping into one unreadable smear) at a width tuned to
+        # this panel's column count (3) and font size.
+        import textwrap
+
+        ax_stats.axis("off")
+        navy = _DECK_NAVY if deck else "#1c2954"
+        muted = "#8a8f9c" if deck else "#898781"
+        big_fs = (_DECK_FONT_PT * (0.65 if compact else 0.85)) if deck else 13
+        label_fs = (_DECK_FONT_PT * (0.42 if compact else 0.55)) if deck else 8.5
+        sub_fs = (_DECK_FONT_PT * (0.36 if compact else 0.48)) if deck else 7.5
+        wrap_width = (14 if compact else 20) if deck else 24
+
+        # Sub-captions are single short lines by design -- the fuller prose
+        # (traffic scope, bandwidth-unavailable reasoning) lives in the ONE
+        # shared note below, not repeated per tile, so three short tiles plus
+        # one note fit the 340pt full box without collision.
+        tiles = [
+            ("payload" if compact else "payload (fixed)",
+             f"{traffic['payload_bytes_per_term']:.0f} B/term",
+             "W=2, Complex64"),
+            ("traffic" if compact else "modeled traffic",
+             f"{traffic['modeled_traffic_gbps']:.2f} GB/s",
+             f"{traffic['modeled_bytes_per_term']:.0f} B/term-update"),
+            ("peak RSS" if compact else "peak resident (VmHWM)",
+             f"{traffic['peak_vmhwm_kb'] / 1e6:.2f} GB",
+             f"{traffic['peak_vmhwm_kb']:,.0f} kB"),
+        ]
+        label_y, value_y, sub_y = (0.86, 0.52, 0.18) if compact else (0.92, 0.62, 0.36)
+        for i, (label, value, sub) in enumerate(tiles):
+            x = (i + 0.5) / 3.0
+            ax_stats.text(x, label_y, label, ha="center", va="center",
+                          fontsize=label_fs, color=navy, fontweight="bold",
+                          transform=ax_stats.transAxes)
+            ax_stats.text(x, value_y, value, ha="center", va="center", fontsize=big_fs,
+                          color=navy, transform=ax_stats.transAxes)
+            if not compact:
+                ax_stats.text(x, sub_y, sub, ha="center", va="center", fontsize=sub_fs,
+                              color=muted, transform=ax_stats.transAxes)
+
+        # The bandwidth-unavailable/ceiling caveat is long prose -- in the
+        # compact box it is dropped from the figure itself (same precedent as
+        # above) and belongs in the caption/MANIFEST/presenter's voice instead.
+        if not compact:
+            if traffic.get("bandwidth_ceiling_gbps") is not None:
+                pct = 100.0 * traffic["modeled_traffic_gbps"] / traffic["bandwidth_ceiling_gbps"]
+                ceiling_note = (
+                    f"traffic scope: {traffic.get('traffic_scope_label', '')}. "
+                    f"ceiling {traffic['bandwidth_ceiling_gbps']:.1f} GB/s "
+                    f"({pct:.1f}% of measured ceiling, this host)"
+                )
+            else:
+                ceiling_note = (
+                    f"traffic scope: {traffic.get('traffic_scope_label', '')}. "
+                    + traffic.get(
+                        "bandwidth_unavailable_reason",
+                        "no bandwidth ceiling available for this host/thread count",
+                    )
+                )
+            ax_stats.text(
+                0.5, 0.04, "\n".join(textwrap.wrap(ceiling_note, wrap_width * 3)),
+                ha="center", va="bottom", fontsize=sub_fs, color=muted,
+                transform=ax_stats.transAxes,
+            )
+
+        if deck:
+            if title:
+                fig.suptitle(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+            _style_axes_deck(ax_phase)
+            ax_phase.spines["left"].set_visible(False)
+            ax_phase.grid(axis="y", visible=False)
+        else:
+            ax_phase.set_title("Phase time-share")
+            ax_stats.set_title("Payload / traffic / peak memory", color="#333333")
+            _style_axes(ax_phase)
+            ax_phase.spines["left"].set_visible(False)
+            ax_phase.grid(axis="y", visible=False)
+        fig.tight_layout()
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig
+
+
 def make_bucket_size_figure(
     rows: Sequence[dict],
     *,

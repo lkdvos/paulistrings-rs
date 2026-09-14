@@ -365,3 +365,113 @@ The bucketed-1t figure (section 7 above) added `test_bucketed_1t_parallel_slower
 `test_bucketed_1t_figure_deck_theme_exports_at_exact_size`. Full suite after this addition:
 46 passed (42 pre-existing + 4 new; run via
 `.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).
+
+### 8. memory (deck page 17 — "Memory & bandwidth diagnosis")
+
+No figure previously existed for this asset. New function
+`make_memory_diagnosis_figure(phase_rows, traffic, theme=..., figsize_pt=..., title=...)`
+in `figures/make_compact_figures.py`: two panels — (A) a phase time-SHARE
+horizontal stacked bar at 1 and 96 threads (`permute`/`coset_loop`/`unpermute`/
+`recount`/`other (serial)`, the same "fold small serial phases together"
+convention the probe's own `.txt`/HTML report uses), each bar annotated with
+its real ms/layer total so the ~3.4x absolute-time difference between the two
+thread counts is not lost by normalizing to a 0-100% share; (B) three
+DISTINCT "stat tile" numbers — payload, modeled traffic, peak resident memory
+— deliberately NOT drawn as bars on one shared axis, since they are different
+units (B/term, GB/s, kB) and a shared axis would visually imply comparable
+magnitudes.
+
+- Files: `memory_v2.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi),
+  `memory_v2_compact.{svg,pdf,png}` (900x170pt half-height, 2500x472px
+  @200dpi) — half-height chosen over half-width because this is a two-panel
+  view (a half-width box left neither panel legible in a real export test;
+  the two-panel/annotated-plot half-height precedent this MANIFEST already
+  states for `baseline_v2_compact`/`distributed_capacity_v2_compact` fits
+  here too). The compact variant drops panel B's sub-captions and the
+  bandwidth-unavailable prose note (same "compact drops qualifying detail,
+  presenter states it verbally" precedent `make_distributed_capacity_figure`
+  established) — the three headline numbers themselves stay, only their
+  supporting text is cut for space.
+- Data source: real cluster job **7035691**, `raw/2026-09-14-worker7183-memory/`
+  (host `worker7183.cm.cluster`, AMD EPYC 9474F "Genoa", commit
+  `9bbb65196f40ed809af836fccce93a8e03873c0a`, 2026-09-14). Circuit:
+  `heavyhex_step`, 127 qubits, `--truncation coeff:1.5258789e-05`, `n=229269`,
+  `layers=5420`, threads swept at {1, 96}.
+  - **theta_h caveat, stated here explicitly per the task**: `phase_breakdown`
+    hard-codes `theta_h = 5*pi/16` for its `heavyhex_step` layer, NOT this
+    campaign's primary `theta_h = 7*pi/32` working point — this is this
+    campaign's own synthetic benchmark circuit, not the canonical Python
+    task, and a known, already-accepted gap (same probe used for the earlier
+    bucket-size figure, section 6).
+  - `perf-stat.sh` failed for this job ("Workload failed: No such file or
+    directory") and is marked non-fatal in the job log — perf counters are
+    blocked on this shared cluster account, so there is no flame graph and no
+    hardware-counter evidence anywhere in this figure. Nothing here claims
+    bandwidth saturation from the phase-timing breakdown alone; the breakdown
+    only identifies which phases cost time.
+- **Panel A real numbers** (probe `.txt`, ms/layer and % of that row's own
+  wall time):
+  - 1 thread (wall 51.832 ms/layer): permute 5.9934 (11.6%), coset_loop
+    43.5192 (84.0%), unpermute 1.9688 (3.8%), recount 0.3393 (0.7%), other
+    (serial) 0.0100 (~0.0%).
+  - 96 threads (wall 15.152 ms/layer): permute 7.4094 (48.9%), coset_loop
+    2.2446 (14.8%), unpermute 5.1791 (34.2%), recount 0.3085 (2.0%), other
+    (serial) 0.0090 (~0.0%). Parallel efficiency (busy / (coset_loop ×
+    threads)) drops from 0.89 at 1 thread to 0.33 at 96 -- `coset_loop`
+    itself is no longer the dominant phase at 96 threads, `permute` and
+    `unpermute` (the serial repacking either side of it) are.
+- **Panel B: three DISTINCT numbers, kept separate by construction**:
+  1. **Payload (fixed fact)**: 48 B/term for `W=2`, `Complex64`
+     (`T=16W+16`) — independent of any measurement.
+  2. **Modeled traffic**: **1.79 GB/s**, **142 B/term-update** (~3.0x the raw
+     payload), scoped ONLY to the **96-thread `coset_loop` phase**
+     (`coset_loop_ns=12,165,898,487` at 96 threads) — the one phase/thread
+     count this campaign treats as a genuinely valid rate comparison, since
+     it is the parallel, steady-state region; the serial `permute`/
+     `unpermute` phases and the 1-thread cell are NOT used for this ratio.
+     Derivation (same `T=16W+16` traffic model `perf-viz.py` already
+     implements, confirmed against the probe's own auto-rendered HTML
+     report): `bytes/layer = (terms_in/layers)*48 [gather-in]
+     + 2*(rows_sorted/layers)*48 [gather-w + merge-r]
+     + 2*(terms_in/layers)*16 [coeff-only id rows, keys borrowed]
+     + 2*(rows_sorted/layers)*48 [sort r/w]
+     + (terms_out/layers)*48 [merge-out] = 4,011,262.75 B/layer`, using the
+     probe's real `terms_in=153,312,746`, `rows_sorted=11,083,394`,
+     `terms_out=153,083,599`, `layers=5420`. `GB/s = bytes/layer * layers /
+     (coset_loop_ns/1e9) / 1e9 = 1.787`; `B/term-update = bytes/layer /
+     (terms_out/layers) = 142.02`.
+  3. **Peak resident memory (`VmHWM`)**: **16,806,572 kB ≈ 16.81 GB** —
+     identical in both the 1- and 96-thread probe rows (one process, one
+     high-water mark across both cells of this run); reported on its own,
+     never divided by anything or folded into the traffic number above.
+- **No bandwidth-ceiling comparison is made, and the figure/caption say so
+  explicitly**: `bandwidth.txt` for this job shows the sweep never produced
+  any measurement — `scripts/bandwidth.sh` failed to build `membench` on
+  worker7183 (`bandwidth.stderr.log`: `target/release/membench: No such file
+  or directory`), so there is no genoa ceiling at 1 OR 96 threads. The probe's
+  own auto-rendered HTML report reaches the identical conclusion
+  independently ("Bandwidth ceilings unavailable for this campaign ... DRAM
+  figures below show modeled GB/s only, with no % of ceiling."). Per the
+  task's explicit instruction, `research/HARDWARE.md`'s Cascade Lake
+  (`ccqlin038`) bandwidth ceilings are a **different architecture** and are
+  **not substituted in** — `make_memory_diagnosis_figure` renders the
+  `bandwidth_unavailable_reason` string instead of a fabricated percentage
+  whenever `bandwidth_ceiling_gbps` is `None`, which is the real, honest
+  state for this campaign.
+- Generation script: ad hoc (not checked in, matching this repo's existing
+  precedent for `bucket_size_v2`/`distributed_capacity_v2` — no `jobs/
+  generate_figures.py` exists for any of these); the exact call and traffic
+  derivation above are reproducible from the numbers in this entry.
+
+`quera-talk-data/campaign-2026-09-11/figures/tests/test_make_figures.py` gained (memory
+diagnosis, section 8 above): `test_memory_diagnosis_figure_empty_input_raises_clear_error`,
+`test_memory_diagnosis_figure_builds_two_panels`,
+`test_memory_diagnosis_figure_phase_shares_sum_close_to_100_percent`,
+`test_memory_diagnosis_figure_annotates_real_wall_ms_per_layer`,
+`test_memory_diagnosis_figure_keeps_payload_traffic_peak_rss_as_distinct_numbers`,
+`test_memory_diagnosis_figure_states_bandwidth_unavailable_reason_when_ceiling_is_none`,
+`test_memory_diagnosis_figure_with_real_ceiling_states_percent_of_ceiling`,
+`test_memory_diagnosis_figure_deck_theme_exports_at_exact_size`,
+`test_memory_diagnosis_figure_compact_variant_exports_at_exact_size`. Full suite after this
+addition: **55 passed** (46 pre-existing + 9 new; run via
+`.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).

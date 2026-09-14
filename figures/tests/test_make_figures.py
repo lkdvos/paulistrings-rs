@@ -24,6 +24,7 @@ from make_compact_figures import (
     make_convergence_figure,
     make_distributed_capacity_figure,
     make_hash_communication_figure,
+    make_memory_diagnosis_figure,
     make_thread_scaling_figure,
 )
 from make_recurring_figure import STAGE_VARIANTS, make_recurring_figure
@@ -770,4 +771,145 @@ def test_bucketed_1t_figure_deck_theme_exports_at_exact_size(tmp_path):
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)
+    matplotlib.pyplot.close(fig)
+
+
+# --- memory diagnosis (deck page 17, job 7035691) ----------------------------
+#
+# Real numbers from raw/2026-09-14-worker7183-memory/: the probe's
+# memory-diagnosis-eps1.5258789e-05-probe.json / .txt (heavyhex_step,
+# 127 qubits, eps=2^-16-ish coeff:1.5258789e-05, threads in {1, 96}). The
+# ms/layer phase values are the probe .txt's own table, "other" pre-summed
+# (rebucket + prepare + span_plan + finalize) the same way the probe's HTML
+# report folds small phases together. Traffic numbers are modeled from the
+# probe JSON's real terms_in/rows_sorted/terms_out/coset_loop_ns at 96
+# threads (see figures/real/MANIFEST.md for the full derivation) -- the ONLY
+# scope this campaign treats as valid for a traffic-rate comparison, per the
+# user's own requirement that the timing scope must genuinely support it.
+# `bandwidth_ceiling_gbps=None` is real: `bandwidth.sh` failed to build
+# `membench` on worker7183 (see `bandwidth.stderr.log`), so no genoa ceiling
+# exists at any thread count -- and the Cascade Lake (ccqlin038) numbers in
+# `research/HARDWARE.md` are a different architecture and are never
+# substituted in.
+
+_MEMORY_PHASE_ROWS = [
+    {"threads": 1, "wall_ms_per_layer": 51.832, "phases": {
+        "permute": 5.9934, "coset_loop": 43.5192, "unpermute": 1.9688,
+        "recount": 0.3393, "other": 0.0001 + 0.0084 + 0.0007 + 0.0008,
+    }},
+    {"threads": 96, "wall_ms_per_layer": 15.152, "phases": {
+        "permute": 7.4094, "coset_loop": 2.2446, "unpermute": 5.1791,
+        "recount": 0.3085, "other": 0.0001 + 0.0074 + 0.0009 + 0.0006,
+    }},
+]
+
+_MEMORY_TRAFFIC = {
+    "payload_bytes_per_term": 48,
+    "modeled_traffic_gbps": 1.7870479605950702,
+    "modeled_bytes_per_term": 142.02072738046874,
+    "traffic_scope_label": "96-thread coset_loop phase",
+    "bandwidth_ceiling_gbps": None,
+    "bandwidth_unavailable_reason": (
+        "bandwidth.sh failed to build membench on this host (worker7183, "
+        "AMD Genoa) -- no ceiling captured at 1 or 96 threads. Cascade Lake "
+        "(ccqlin038) numbers in research/HARDWARE.md are a different "
+        "architecture and are not substituted."
+    ),
+    "peak_vmhwm_kb": 16806572,
+}
+
+
+def test_memory_diagnosis_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no phase rows to plot"):
+        make_memory_diagnosis_figure([], _MEMORY_TRAFFIC)
+
+
+def test_memory_diagnosis_figure_builds_two_panels():
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC)
+    assert len(fig.axes) >= 2
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_phase_shares_sum_close_to_100_percent():
+    """Panel A stacks each row's phases as a SHARE of that row's own wall
+    time, so each bar's segments must sum close to 100% regardless of the
+    ~3.4x real difference in absolute ms/layer between 1 and 96 threads.
+    """
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC)
+    ax_phase = fig.axes[0]
+    bars_by_row = {}
+    for container in ax_phase.containers:
+        for i, patch in enumerate(container):
+            bars_by_row.setdefault(i, []).append(patch)
+    for i, patches in bars_by_row.items():
+        total_width = sum(p.get_width() for p in patches)
+        assert total_width == pytest.approx(100.0, abs=1.0), (i, total_width)
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_annotates_real_wall_ms_per_layer():
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC)
+    ax_phase = fig.axes[0]
+    texts = {t.get_text() for t in ax_phase.texts}
+    assert "51.83 ms/layer" in texts
+    assert "15.15 ms/layer" in texts
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_keeps_payload_traffic_peak_rss_as_distinct_numbers():
+    """The three headline numbers must never be conflated -- each is its own
+    stat tile with its own value string, not merged into one metric.
+    """
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC)
+    ax_stats = fig.axes[1]
+    texts = {t.get_text() for t in ax_stats.texts}
+    assert "48 B/term" in texts
+    assert "1.79 GB/s" in texts
+    assert "16.81 GB" in texts
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_states_bandwidth_unavailable_reason_when_ceiling_is_none():
+    """`bandwidth_ceiling_gbps=None` (the real, honest state for this host)
+    must render the disclosed reason, never a fabricated % of ceiling.
+    """
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC)
+    ax_stats = fig.axes[1]
+    full_text = " ".join(t.get_text() for t in ax_stats.texts).replace("\n", " ")
+    assert "failed to build membench" in full_text
+    assert "% of measured ceiling" not in full_text
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_with_real_ceiling_states_percent_of_ceiling():
+    """When a real ceiling IS available, the figure computes and states a
+    genuine % of ceiling rather than omitting the comparison.
+    """
+    traffic = dict(_MEMORY_TRAFFIC, bandwidth_ceiling_gbps=40.0)
+    fig = make_memory_diagnosis_figure(_MEMORY_PHASE_ROWS, traffic)
+    ax_stats = fig.axes[1]
+    full_text = " ".join(t.get_text() for t in ax_stats.texts).replace("\n", " ")
+    assert "% of" in full_text and "measured ceiling" in full_text
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_memory_diagnosis_figure(
+        _MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC, theme="deck", figsize_pt=(900, 340),
+        title="Memory & bandwidth diagnosis",
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "memory_v2"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+def test_memory_diagnosis_figure_compact_variant_exports_at_exact_size(tmp_path):
+    fig = make_memory_diagnosis_figure(
+        _MEMORY_PHASE_ROWS, _MEMORY_TRAFFIC, theme="deck", figsize_pt=(900, 170),
+        title="Memory & bandwidth diagnosis",
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "memory_v2_compact"), 900, 170)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 170 / 72.0))
     matplotlib.pyplot.close(fig)

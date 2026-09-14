@@ -12,9 +12,9 @@ use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
 use paulistrings::{
     propagate_with_options, propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction,
-    EngineSelection, GateTrace, LayerScratch, PartitionConfig, PartitionRuntime, PartitionTrace,
-    PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
-    PropagateOptions, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
+    EngineSelection, GateTrace, LayerScratch, PartitionConfig, PartitionRows, PartitionRuntime,
+    PartitionTrace, PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis,
+    ProductState, PropagateOptions, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -370,12 +370,14 @@ fn parse_engine(
     })
 }
 
-/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
+/// `partitions=` / `pin_memory=` / `partition_row_seed=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
 /// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
+/// `partition_row_seed=None` (the default) reproduces today's behaviour exactly: the engine falls back to the sum's own hash seed, same as before this knob existed.
 /// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
+    partition_row_seed: Option<u64>,
 ) -> PyResult<Option<PartitionConfig>> {
     let Some(obj) = partitions else {
         return Ok(None);
@@ -463,7 +465,7 @@ fn parse_partitions(
     let config = PartitionConfig {
         placement,
         bind_memory: pin_memory,
-        partition_row_seed: None,
+        partition_row_seed,
     };
     let slots = config.resolve().map_err(topology_error)?;
     if slots.len() == 1 && matches!(config.placement, Placement::Auto { .. }) {
@@ -471,6 +473,87 @@ fn parse_partitions(
         return Ok(None);
     }
     Ok(Some(config))
+}
+
+/// `partition_row_blocks=` → an explicit "cut" policy, one disjoint qubit block per partition, fed straight to the core [`PartitionRows::cut`](paulistrings::PartitionRows::cut).
+/// `None` (the default) means no override — the caller's `partition_row_seed`/the sum's own hash seed picks GF(2)-random rows instead, unchanged from before this knob existed.
+fn parse_partition_row_blocks(
+    obj: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Vec<Vec<u32>>>> {
+    let Some(obj) = obj else {
+        return Ok(None);
+    };
+    if obj.is_none() {
+        return Ok(None);
+    }
+    let blocks: Vec<Vec<u32>> = obj.extract().map_err(|_| {
+        PyTypeError::new_err(
+            "partition_row_blocks must be None or a list of disjoint qubit-index lists, one \
+             per partition, e.g. [[0, 1, ..., 63], [64, ..., 126]] for a 2-partition cut",
+        )
+    })?;
+    if blocks.is_empty() {
+        return Err(PyValueError::new_err(
+            "partition_row_blocks=[]: pass one block per partition, or None to use the default \
+             (seeded) rows",
+        ));
+    }
+    Ok(Some(blocks))
+}
+
+/// Validates `partition_row_blocks` against the resolved partition count and qubit count.
+/// Plain Rust (`Result<(), String>`), not `PyResult`, so it — and its `#[cfg(test)]` coverage — never touch the Python C API: this crate is `extension-module`-only (see the `partition_row_knob_tests` module comment), so a test that formats a `PyErr` fails to link.
+/// `validate_partition_row_blocks` (below) is the `PyResult` wrapper `parse_run_mode` actually calls.
+fn validate_partition_row_blocks_impl(
+    blocks: &[Vec<u32>],
+    num_qubits: usize,
+    num_partitions: usize,
+) -> Result<(), String> {
+    if blocks.len() != num_partitions {
+        return Err(format!(
+            "partition_row_blocks has {} block(s), but partitions={num_partitions} needs \
+             exactly one block per partition",
+            blocks.len()
+        ));
+    }
+    let mut seen = vec![false; num_qubits];
+    for (b, qubits) in blocks.iter().enumerate() {
+        for &q in qubits {
+            let qi = q as usize;
+            if qi >= num_qubits {
+                return Err(format!(
+                    "partition_row_blocks[{b}] names qubit {q}, out of range for \
+                     num_qubits={num_qubits}"
+                ));
+            }
+            if seen[qi] {
+                return Err(format!(
+                    "partition_row_blocks: qubit {q} appears in more than one block; \
+                     blocks must be disjoint"
+                ));
+            }
+            seen[qi] = true;
+        }
+    }
+    Ok(())
+}
+
+/// Validates `partition_row_blocks` against the resolved partition count and qubit count, with the GIL held — mirrors `parse_run_mode`'s "raise before the GIL is released" discipline, so a caller mistake surfaces as a `ValueError` rather than a panic inside `allow_threads` (`PartitionRows::cut` itself panics on a malformed block set).
+fn validate_partition_row_blocks(
+    blocks: &[Vec<u32>],
+    num_qubits: usize,
+    num_partitions: usize,
+) -> PyResult<()> {
+    validate_partition_row_blocks_impl(blocks, num_qubits, num_partitions)
+        .map_err(PyValueError::new_err)
+}
+
+/// Build a core [`PartitionRows`] from `parse_partition_row_blocks`'s already-`validate_partition_row_blocks`-checked output.
+fn build_partition_rows<const W: usize>(
+    blocks: &[Vec<u32>],
+    num_qubits: usize,
+) -> PartitionRows<W> {
+    PartitionRows::<W>::cut(num_qubits, blocks)
 }
 
 /// A core [`TopologyError`] as a Python exception: `OSError` for a failed syscall or sysfs read, `ValueError` for everything the caller spelled wrong.
@@ -568,7 +651,8 @@ enum RunMode {
     /// One pool over the whole process — today's path, bit for bit.
     Classic,
     /// One pinned pool per NUMA domain, in this process (`partitions=`).
-    Partitioned(PartitionConfig),
+    /// The second field is `partition_row_blocks`' parsed form: `Some` bypasses the config's seed and uses these explicit rows instead (see `build_partition_rows`), `None` is today's seeded-row path, untouched.
+    Partitioned(PartitionConfig, Option<Vec<Vec<u32>>>),
     /// One partition per MPI rank (`comm=`). Carries the adopted communicator,
     /// so building the mode is the collective step and dropping it frees the
     /// duplicate.
@@ -607,11 +691,17 @@ impl RunMode {
                 direction,
                 options,
             )),
-            RunMode::Partitioned(config) => {
+            RunMode::Partitioned(config, row_blocks) => {
                 // The runtime (and its pinned pools) is cached per config, so
                 // a Trotter loop of many short calls builds it once.
                 let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
-                let mut split = PartitionedSum::<W>::scatter(sum.clone(), runtime, &config);
+                let mut split = match &row_blocks {
+                    Some(rows) => {
+                        let rows = build_partition_rows::<W>(rows, sum.num_qubits());
+                        PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime)
+                    }
+                    None => PartitionedSum::<W>::scatter(sum.clone(), runtime, &config),
+                };
                 split.propagate_with_options(circuit, &policy, direction, options);
                 Ok(split.into_gathered())
             }
@@ -649,9 +739,15 @@ impl RunMode {
                     .expect("the trace is enabled before the layer loop runs");
                 Ok((out, RunTrace::Term(trace)))
             }
-            RunMode::Partitioned(config) => {
+            RunMode::Partitioned(config, row_blocks) => {
                 let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
-                let mut split = PartitionedSum::<W>::scatter(sum.clone(), runtime, &config);
+                let mut split = match &row_blocks {
+                    Some(rows) => {
+                        let rows = build_partition_rows::<W>(rows, sum.num_qubits());
+                        PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime)
+                    }
+                    None => PartitionedSum::<W>::scatter(sum.clone(), runtime, &config),
+                };
                 split.enable_trace();
                 split.propagate_with_options(circuit, &policy, direction, options);
                 // From the runtime, not the trace: a zero-layer circuit
@@ -677,13 +773,17 @@ impl RunMode {
 
 /// Turn the placement kwargs into a [`RunMode`], with the GIL held.
 /// Order matters: everything that can raise on the caller's spelling is decided before the communicator is adopted, since adopting it is collective — a rank that raises early never enters the collective, so the whole group raises together.
+#[allow(clippy::too_many_arguments)]
 fn parse_run_mode(
     py: Python<'_>,
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
+    partition_row_seed: Option<u64>,
+    partition_row_blocks: Option<&Bound<'_, PyAny>>,
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
     spec: &PolicySpec,
+    num_qubits: usize,
 ) -> PyResult<RunMode> {
     let distributed = comm_requested(comm);
     // Before `parse_partitions`, so the conflict is reported as a conflict
@@ -695,13 +795,41 @@ fn parse_run_mode(
              numa) rather than to propagate",
         ));
     }
-    let config = parse_partitions(partitions, pin_memory)?;
+    let row_blocks = parse_partition_row_blocks(partition_row_blocks)?;
+    if partition_row_seed.is_some() && row_blocks.is_some() {
+        return Err(PyValueError::new_err(
+            "partition_row_seed= and partition_row_blocks= are alternatives (a seeded random \
+             draw vs. an explicit locality cut); pass at most one",
+        ));
+    }
+    if distributed && (partition_row_seed.is_some() || row_blocks.is_some()) {
+        // `MpiRun` carries no `PartitionConfig` today — there is nowhere for
+        // either knob to go on the `comm=` path, so silently dropping it
+        // would be exactly the kind of undocumented gap this campaign's E8
+        // work is closing. Raise instead.
+        return Err(PyValueError::new_err(
+            "partition_row_seed= and partition_row_blocks= are not yet supported with comm= \
+             (distributed); use partitions= (the in-process partitioned engine) for a row-policy \
+             comparison",
+        ));
+    }
+    let config = parse_partitions(partitions, pin_memory, partition_row_seed)?;
     if (distributed || config.is_some()) && spec_has_exact_topn(spec) {
         return Err(topn_partitioned_error(if distributed {
             None
         } else {
             partitions
         }));
+    }
+    if let (Some(config), Some(row_blocks)) = (&config, &row_blocks) {
+        // `resolve()` alone (not `PartitionRuntime::new`, which builds pinned
+        // pools) is enough to learn the partition count for validation.
+        let num_partitions = config.resolve().map_err(topology_error)?.len();
+        validate_partition_row_blocks(row_blocks, num_qubits, num_partitions)?;
+    } else if config.is_none() && row_blocks.is_some() {
+        return Err(PyValueError::new_err(
+            "partition_row_blocks= needs partitions= (it has no effect on the unpartitioned path)",
+        ));
     }
     if distributed {
         #[cfg(feature = "mpi")]
@@ -718,7 +846,7 @@ fn parse_run_mode(
         }
     }
     Ok(match config {
-        Some(config) => RunMode::Partitioned(config),
+        Some(config) => RunMode::Partitioned(config, row_blocks),
         None => RunMode::Classic,
     })
 }
@@ -1223,13 +1351,15 @@ impl PauliSum {
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
     /// In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
+    /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other and (for now) with `comm=`.
+    ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
     /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
     ///
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, comm=None, result="gather"))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -1241,6 +1371,8 @@ impl PauliSum {
         small_sum_threshold: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
         pin_memory: bool,
+        partition_row_seed: Option<u64>,
+        partition_row_blocks: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
     ) -> PyResult<Self> {
@@ -1255,7 +1387,17 @@ impl PauliSum {
         };
         // Last, because adopting a communicator is collective: every check
         // above raises on all ranks alike, before any of them has entered MPI.
-        let mode = parse_run_mode(py, partitions, pin_memory, comm, gather, spec)?;
+        let mode = parse_run_mode(
+            py,
+            partitions,
+            pin_memory,
+            partition_row_seed,
+            partition_row_blocks,
+            comm,
+            gather,
+            spec,
+            self.inner.num_qubits(),
+        )?;
         // The whole simulation runs without the GIL: everything the engine
         // touches is plain Rust data (`PauliSumImpl`, `CircuitImpl` and
         // `PolicySpec` are all `Send + Sync`), so nothing here needs Python.
@@ -1287,7 +1429,7 @@ impl PauliSum {
     /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
     /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, comm=None, result="gather"))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -1299,6 +1441,8 @@ impl PauliSum {
         small_sum_threshold: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
         pin_memory: bool,
+        partition_row_seed: Option<u64>,
+        partition_row_blocks: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
     ) -> PyResult<(Self, PropagationStats)> {
@@ -1311,7 +1455,17 @@ impl PauliSum {
             Some(p) => &p.spec,
             None => &no_op,
         };
-        let mode = parse_run_mode(py, partitions, pin_memory, comm, gather, spec)?;
+        let mode = parse_run_mode(
+            py,
+            partitions,
+            pin_memory,
+            partition_row_seed,
+            partition_row_blocks,
+            comm,
+            gather,
+            spec,
+            self.inner.num_qubits(),
+        )?;
         // GIL released for the propagation, as in `propagate` above. The trace
         // is produced inside the closure and moved out with the sum —
         // `LayerScratch` is not `Send`-shared with anything, it is built and
@@ -1341,5 +1495,73 @@ impl PauliSum {
             inner.len(),
         );
         Ok((Self { inner }, stats))
+    }
+}
+
+// `parse_partitions`/`parse_run_mode` themselves are not unit-tested here:
+// exercising the `partitions="auto"`/`int` branches needs a live `Bound<PyAny>`,
+// which needs a real Python runtime linked in — this crate is built
+// `extension-module`-only (loaded *by* Python, never embedding it), so a
+// `Python::with_gil` call in a `cargo test` binary fails to link (undefined
+// `PyErr_*`/`PyUnicode_*` symbols that the embedding interpreter would
+// normally provide). The seed/blocks plumbing itself (`PartitionConfig`
+// construction, `validate_partition_row_blocks`, `build_partition_rows`) is
+// plain Rust and tested below; the end-to-end Python-facing behavior is
+// covered by `python/paulistrings/tests/test_partitioned.py`.
+#[cfg(test)]
+mod partition_row_knob_tests {
+    use super::*;
+
+    /// Explicit "cut" blocks round-trip through `validate_partition_row_blocks` +
+    /// `build_partition_rows` into a `PartitionRows` that actually assigns qubits to the
+    /// blocks named, and two different cuts assign at least one term to different partitions.
+    #[test]
+    fn explicit_cut_blocks_round_trip_and_differ_from_each_other() {
+        use paulistrings::pauli_string::PauliString;
+
+        let num_qubits = 4;
+        let num_partitions = 2;
+
+        let half_low = vec![vec![0u32, 1], vec![2u32, 3]];
+        validate_partition_row_blocks_impl(&half_low, num_qubits, num_partitions)
+            .expect("two disjoint blocks covering all 4 qubits validate cleanly");
+        let rows_low = build_partition_rows::<1>(&half_low, num_qubits);
+
+        let half_alt = vec![vec![0u32, 2], vec![1u32, 3]];
+        validate_partition_row_blocks_impl(&half_alt, num_qubits, num_partitions)
+            .expect("an alternative disjoint cut also validates cleanly");
+        let rows_alt = build_partition_rows::<1>(&half_alt, num_qubits);
+
+        // Round-trip: qubit 2 sits in block 1 under `half_low`, block 0 under `half_alt`.
+        let z2 = PauliString::<1>::z(2);
+        assert_eq!(rows_low.partition_of_pauli(&z2), 1);
+        assert_eq!(rows_alt.partition_of_pauli(&z2), 0);
+
+        // The two cuts disagree on at least this term, so they are genuinely different row
+        // sets, not two spellings of the same partition.
+        assert_ne!(
+            rows_low.partition_of_pauli(&z2),
+            rows_alt.partition_of_pauli(&z2)
+        );
+    }
+
+    /// A block count that doesn't match the partition count is a `ValueError`, not a panic —
+    /// the whole point of validating before `allow_threads` releases the GIL.
+    #[test]
+    fn mismatched_block_count_is_a_value_error_not_a_panic() {
+        let one_block = vec![vec![0u32, 1, 2, 3]];
+        let err = validate_partition_row_blocks_impl(&one_block, 4, 2)
+            .expect_err("1 block for 2 partitions must be rejected");
+        assert!(err.contains("partition_row_blocks"));
+    }
+
+    /// A qubit named in two blocks is rejected before it ever reaches `PartitionRows::cut`
+    /// (which would otherwise panic on the same condition).
+    #[test]
+    fn overlapping_blocks_are_a_value_error() {
+        let overlapping = vec![vec![0u32, 1], vec![1u32, 2]];
+        let err = validate_partition_row_blocks_impl(&overlapping, 3, 2)
+            .expect_err("qubit 1 in two blocks must be rejected");
+        assert!(err.contains("more than one block"));
     }
 }

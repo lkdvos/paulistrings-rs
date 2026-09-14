@@ -117,7 +117,13 @@ echo "target_bucket_lens='$TARGET_BUCKET_LENS' min_buckets=$MIN_BUCKETS min_abs_
 
 date_tag=$(date +%Y-%m-%d)
 node=$(hostname -s)
-bc_out_dir="benchmarks/results/${date_tag}-${node}-bucketsize"
+# scripts/bench-campaign.sh hardcodes its own out_dir as
+# benchmarks/results/<date>-<host> (its line 118) -- it does NOT honor a
+# caller-supplied directory, so bc_out_dir here must match that exactly, not
+# a campaign-specific suffix (job 7035746's real bug: a mismatched suffix
+# left this script copying an empty directory, and the actual results were
+# then deleted by the worktree-removal EXIT trap below before being noticed).
+bc_out_dir="benchmarks/results/${date_tag}-${node}"
 mkdir -p "$bc_out_dir"
 
 for target_len in $TARGET_BUCKET_LENS; do

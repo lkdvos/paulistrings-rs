@@ -17,6 +17,7 @@ from normalize import thread_scaling
 
 from make_compact_figures import (
     export_deck_figure,
+    make_baseline_eps_scaling_figure,
     make_baseline_pivot_figure,
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
@@ -1101,6 +1102,143 @@ def test_single_bucket_comparison_figure_compact_variant_exports_at_exact_size(t
         _SINGLE_BUCKET_ROWS, theme="deck", figsize_pt=(450, 340), title="Bucket config, single thread"
     )
     paths = export_deck_figure(fig, str(tmp_path / "bucketed_1t_v3_compact"), 450, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+# --- baseline eps scaling (deck page 16, pivoted to an eps-sweep, 2026-09-14) ------
+#
+# Supersedes `make_baseline_pivot_figure` (`baseline_v3`) as page 16's figure. Real
+# numbers verified directly against their `raw/*/runs.jsonl` source files: Julia
+# 1/32/96-thread points (raw/2026-09-14-worker7183-julia, -worker7160-julia,
+# -worker7184-julia/runs.jsonl) and the current engine forced to a single bucket
+# (raw/2026-09-14-worker7182-single-bucket/, -worker7182-single-bucket-quick/,
+# -worker7160-single-bucket/runs.jsonl), all at the same 127-qubit canonical
+# circuit. Designed for a progressive reveal via `series_order` (see the
+# function's own docstring) -- these fixtures use all four labels at once, since
+# stage 1 is "all four series real and complete".
+
+_BASELINE_EPS_ROWS = [
+    {"label": "Julia, 1 thread", "min_abs_coeff": 9.765625e-04, "wall_time_s": 1.403596204},
+    {"label": "Julia, 1 thread", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 24.71761761},
+    {"label": "Julia, 1 thread", "min_abs_coeff": 6.103515625e-05, "wall_time_s": 329.513902103},
+    {"label": "Julia, 1 thread", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 4874.939709082},
+    {"label": "Julia, 32 threads", "min_abs_coeff": 9.765625e-04, "wall_time_s": 0.509915765},
+    {"label": "Julia, 32 threads", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 6.49806748},
+    {"label": "Julia, 32 threads", "min_abs_coeff": 6.103515625e-05, "wall_time_s": 50.121502083},
+    {"label": "Julia, 32 threads", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 302.334663506},
+    {"label": "Julia, 96 threads", "min_abs_coeff": 9.765625e-04, "wall_time_s": 0.518920217},
+    {"label": "Julia, 96 threads", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 58.318614334},
+    {"label": "Julia, 96 threads", "min_abs_coeff": 6.103515625e-05, "wall_time_s": 627.504091573},
+    {"label": "Julia, 96 threads", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 974.957910291},
+    {"label": "current engine, 1 bucket", "min_abs_coeff": 9.765625e-04, "wall_time_s": 0.729413764027413},
+    {"label": "current engine, 1 bucket", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 9.825383894029073},
+    {"label": "current engine, 1 bucket", "min_abs_coeff": 6.103515625e-05, "wall_time_s": 160.63228013104526},
+    {"label": "current engine, 1 bucket", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 1967.578165213985},
+]
+
+
+def test_baseline_eps_scaling_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_baseline_eps_scaling_figure([])
+
+
+def test_baseline_eps_scaling_figure_one_line_per_label():
+    fig = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS)
+    ax = fig.axes[0]
+    lines = [line for line in ax.get_lines() if line.get_label() in {
+        "Julia, 1 thread", "Julia, 32 threads", "Julia, 96 threads", "current engine, 1 bucket",
+    }]
+    assert len(lines) == 4
+    for line in lines:
+        label = line.get_label()
+        expected = sorted(
+            (r["min_abs_coeff"], r["wall_time_s"]) for r in _BASELINE_EPS_ROWS if r["label"] == label
+        )
+        xs, ys = zip(*expected)
+        assert tuple(line.get_xdata()) == pytest.approx(xs)
+        assert tuple(line.get_ydata()) == pytest.approx(ys)
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_axes_are_log_scale():
+    fig = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS)
+    ax = fig.axes[0]
+    assert ax.get_xscale() == "log"
+    assert ax.get_yscale() == "log"
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_xtick_labels_use_established_eps_convention():
+    fig = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS)
+    ax = fig.axes[0]
+    texts = {t.get_text() for t in ax.get_xticklabels()}
+    assert r"$\varepsilon=2^{-16}$" in texts
+    assert r"$\varepsilon=2^{-10}$" in texts
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_series_order_none_draws_every_label():
+    fig = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS, series_order=None)
+    ax = fig.axes[0]
+    _, labels = ax.get_legend_handles_labels()
+    assert labels == ["Julia, 1 thread", "Julia, 32 threads", "Julia, 96 threads", "current engine, 1 bucket"]
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_series_order_restricts_and_orders_legend():
+    fig = make_baseline_eps_scaling_figure(
+        _BASELINE_EPS_ROWS, series_order=["current engine, 1 bucket", "Julia, 1 thread"]
+    )
+    ax = fig.axes[0]
+    _, labels = ax.get_legend_handles_labels()
+    assert labels == ["current engine, 1 bucket", "Julia, 1 thread"]
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_series_order_unknown_label_raises():
+    with pytest.raises(ValueError, match="not present in rows"):
+        make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS, series_order=["not a real label"])
+
+
+def test_baseline_eps_scaling_figure_progressive_reveal_keeps_axes_and_colors_stable():
+    """The whole point of `series_order`: a growing prefix must draw MORE lines on the
+    SAME axes, with each already-revealed label keeping its exact color/marker/linestyle --
+    this is what lets a slide deck build the story up one line at a time without the plot
+    jumping around between reveals.
+    """
+    fig1 = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS, series_order=["Julia, 1 thread"])
+    ax1 = fig1.axes[0]
+    xlim1, ylim1 = ax1.get_xlim(), ax1.get_ylim()
+    color1 = ax1.get_lines()[0].get_color()
+    matplotlib.pyplot.close(fig1)
+
+    fig2 = make_baseline_eps_scaling_figure(
+        _BASELINE_EPS_ROWS, series_order=["Julia, 1 thread", "Julia, 32 threads"]
+    )
+    ax2 = fig2.axes[0]
+    assert ax2.get_xlim() == pytest.approx(xlim1)
+    assert ax2.get_ylim() == pytest.approx(ylim1)
+    assert ax2.get_lines()[0].get_color() == color1
+    matplotlib.pyplot.close(fig2)
+
+
+def test_baseline_eps_scaling_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_baseline_eps_scaling_figure(
+        _BASELINE_EPS_ROWS, theme="deck", figsize_pt=(900, 340), title="Baseline: eps scaling"
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "baseline_v4_stage1"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_compact_variant_exports_at_exact_size(tmp_path):
+    fig = make_baseline_eps_scaling_figure(
+        _BASELINE_EPS_ROWS, theme="deck", figsize_pt=(450, 340), title="Baseline: eps scaling"
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "baseline_v4_stage1_compact"), 450, 340)
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)

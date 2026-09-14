@@ -67,3 +67,8 @@
 {"job_id": "7036975", "name": "quera-bucketsize-topn", "purpose": "extended sweep, min_buckets=1 (floor removed), target_bucket_len up to 131072", "submitted_at": "2026-09-14T18:30:08.671052", "status": "PENDING"}
 {"job_id": "7036975", "name": "quera-bucketsize-topn", "status": "FAILED-min-buckets-floor", "note": "CLI enforces --min-buckets>=16; resubmitting with 16 instead of 1", "timestamp": "2026-09-14T18:31:26.740484"}
 {"job_id": "7036979", "name": "quera-bucketsize-topn", "purpose": "extended sweep, min_buckets=16 (CLI floor), target_bucket_len 16384-131072", "submitted_at": "2026-09-14T18:32:12.842427", "status": "PENDING"}
+{"job_id": "7037029", "name": "quera-c1c2", "purpose": "Rust default-bucket 1-thread, eps=2^-10 fill (baseline stage 2)", "submitted_at": "2026-09-14T18:42:06.980580", "status": "PENDING"}
+{"job_id": "7037030", "name": "quera-c1c2", "purpose": "Rust default-bucket 96-thread, eps={2^-10,2^-12,2^-14} (baseline stage 3)", "submitted_at": "2026-09-14T18:42:06.980654", "status": "PENDING"}
+{"job_id": "7037031", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-10 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980679", "status": "PENDING"}
+{"job_id": "7037032", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-12 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980696", "status": "PENDING"}
+{"job_id": "7037033", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-14 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980711", "status": "PENDING"}

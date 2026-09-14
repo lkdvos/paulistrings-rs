@@ -44,6 +44,10 @@ _DECK_SERIES = [
     {"color": "#2f8f7a", "marker": "s", "linestyle": ":"},
     {"color": "#a67c1c", "marker": "D", "linestyle": "-."},
     {"color": "#5b5f97", "marker": "v", "linestyle": "-"},
+    # Added for the baseline-eps-scaling figure's 7-series progressive reveal (page 16) --
+    # additive only, existing figures only ever index 0-4 and are unaffected.
+    {"color": "#8a3b6b", "marker": "P", "linestyle": "--"},
+    {"color": "#3a7ca5", "marker": "X", "linestyle": ":"},
 ]
 
 
@@ -1357,6 +1361,179 @@ def make_baseline_pivot_figure(
             ax.set_title("SYNTHETIC — placeholder: baseline pivot")
             _style_axes(ax)
         ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig
+
+
+def make_baseline_eps_scaling_figure(
+    rows: Sequence[dict],
+    *,
+    series_order: list[str] | None = None,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """One line per named series: wall time (y, log) vs. `min_abs_coeff` (x, log2-spaced), the
+    eps-sweep redesign of the deck page 16 baseline story.
+
+    Supersedes `make_baseline_pivot_figure` (`baseline_v3`, a single-eps 3-bar chart) as page
+    16's figure -- MANIFEST marks `baseline_v3` superseded, not deleted, same as this campaign's
+    other supersessions (`bucketed_1t_v2` -> `bucketed_1t_v3`). Each row: `{"label": str,
+    "min_abs_coeff": float, "wall_time_s": float}`.
+
+    Progressive reveal: `series_order` picks which labels are DRAWN, and in what legend order;
+    `None` draws every label present in `rows`. Unlike `make_recurring_figure`'s `stage=`, which
+    indexes a hardcoded `STAGE_VARIANTS` list, this function has no baked-in knowledge of which
+    labels exist -- the caller passes a growing prefix of the full label list across successive
+    calls as more series land. Two things are deliberately keyed off `rows` (the full label set),
+    NEVER off `series_order` (the subset drawn), so the SAME rows produce the SAME axes/style at
+    every stage and only the drawn lines change:
+      - each label's color/marker/linestyle, fixed by that label's first-appearance position in
+        `rows` -- a label plotted alone at stage 1 keeps the exact same look once stage 2 reveals
+        a second line next to it;
+      - the x/y axis limits, taken from every row in `rows` regardless of `series_order` -- so a
+        caller who always passes the full, current `rows` (trimming only `series_order`) gets a
+        deck build where the axes never jump between reveals, only new lines appear on them.
+    A future stage's caller is expected to pass `rows` containing that stage's new series too;
+    this function does not know or care how many stages there will eventually be.
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_baseline_eps_scaling_figure: no rows to plot -- need at least one "
+            "(label, min_abs_coeff, wall_time_s) series before this figure has anything to show."
+        )
+
+    import math
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (5.5, 4)
+
+    # First-appearance order in `rows`, never `series_order` -- see docstring: this is what
+    # keeps a label's color/marker stable across a growing `series_order` prefix.
+    all_labels: list[str] = []
+    for r in rows:
+        if r["label"] not in all_labels:
+            all_labels.append(r["label"])
+
+    if series_order is None:
+        draw_labels = list(all_labels)
+    else:
+        unknown = [label for label in series_order if label not in all_labels]
+        if unknown:
+            raise ValueError(
+                f"make_baseline_eps_scaling_figure: series_order names label(s) not present in "
+                f"rows: {unknown}"
+            )
+        draw_labels = list(series_order)
+
+    def _eps_label(eps: float) -> str:
+        return rf"$\varepsilon=2^{{{round(math.log2(eps))}}}$" if eps > 0 else r"$\varepsilon=0$"
+
+    legacy_palette = [_ACCENT, "#eb6834", "#5a8f3c", "#a15fb5", "#5b5f97"]
+
+    def _build():
+        fig, ax = plt.subplots(figsize=figsize)
+
+        style_map = {label: _DECK_SERIES[i % len(_DECK_SERIES)] for i, label in enumerate(all_labels)}
+        legacy_color = {label: legacy_palette[i % len(legacy_palette)] for i, label in enumerate(all_labels)}
+
+        by_label: dict[str, list[dict]] = {}
+        for r in rows:
+            by_label.setdefault(r["label"], []).append(r)
+
+        for label in draw_labels:
+            pts = sorted((r["min_abs_coeff"], r["wall_time_s"]) for r in by_label[label])
+            if not pts:
+                continue
+            xs, ys = zip(*pts)
+            if deck:
+                st = style_map[label]
+                ax.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=1.8,
+                         linestyle=st["linestyle"], color=st["color"], label=label)
+            else:
+                ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=legacy_color[label], label=label)
+
+        # Axis range from every row in `rows`, not just `draw_labels` -- see docstring: this is
+        # what keeps the axes from jumping when a later stage's `series_order` grows.
+        all_eps = [r["min_abs_coeff"] for r in rows]
+        all_wall = [r["wall_time_s"] for r in rows]
+        ax.set_xlim(min(all_eps) / 1.6, max(all_eps) * 1.6)
+        ax.set_ylim(min(all_wall) / 1.6, max(all_wall) * 1.6)
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+
+        # Dyadic cutoffs get real mathtext ticks (the established $\varepsilon=2^{-16}$
+        # convention, same `_eps_label` shape `make_convergence_figure` uses for its legend)
+        # rather than plain log-scale number ticks -- there are only ever a handful of distinct
+        # eps values actually measured, so labeling exactly those points is more legible than a
+        # dense automatic log grid.
+        eps_ticks = sorted({r["min_abs_coeff"] for r in rows})
+        ax.set_xticks(eps_ticks)
+        ax.set_xticklabels([_eps_label(e) for e in eps_ticks], fontsize=7 if not deck else _DECK_FONT_PT * 0.6)
+        ax.minorticks_off()
+
+        ax.set_xlabel(r"$\varepsilon$ (min_abs_coeff)")
+        ax.set_ylabel("wall time (s)")
+        if deck:
+            if title:
+                ax.set_title(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+            _style_axes_deck(ax)
+        else:
+            ax.set_title("SYNTHETIC — placeholder: baseline eps scaling")
+            _style_axes(ax)
+
+        if draw_labels:
+            # A `loc="best"` legend sits INSIDE the axes and, with 4 long labels, can overlap
+            # the plotted lines rather than truly clip -- caught on an actual rendered PNG at
+            # the 450x340 compact size, not a theoretical concern. Below the axes, spanning the
+            # full canvas width, is the same layout-independent fix `make_distributed_capacity_
+            # figure` uses: one row if the real rendered width fits, else one entry per row.
+            #
+            # A FIXED bottom-margin fraction (this module's other below-axis legends use one)
+            # turned out not to generalize across this figure's own size range -- caught on an
+            # actual render too: 0.20 + 0.10*n_rows collided with the x-axis label at 900x170,
+            # and starved the plot area at 450x340 once 4 rows were needed. Measuring the
+            # legend's real rendered height and adding it on top of whatever bottom margin
+            # `tight_layout()` already reserved for the x-axis label/ticks (rather than
+            # guessing both from a row count) is what actually holds at every size tried.
+            fontsize = 7 if not deck else _DECK_FONT_PT * 0.6
+            fig.tight_layout()
+            base_bottom = fig.subplotpars.bottom
+            # Jumping straight from "all in one row" to "exactly one column" (as an earlier
+            # version of this code did) makes a 7-entry legend seven rows tall -- real problem
+            # hit at 7 series: it overflowed the bottom-margin cap and overlapped the x-axis
+            # label on an actual rendered figure. Searching downward from ncol=len(labels) for
+            # the widest column count that actually fits keeps the legend far shorter.
+            ncol = len(draw_labels)
+            legend = None
+            while ncol >= 1:
+                if legend is not None:
+                    legend.remove()
+                legend = ax.legend(
+                    frameon=False, fontsize=fontsize, loc="upper center",
+                    bbox_to_anchor=(0.5, -0.22), borderaxespad=0.0, ncol=ncol,
+                )
+                fig.canvas.draw()
+                fig_bbox = fig.get_window_extent()
+                if legend.get_window_extent().width <= fig_bbox.width or ncol == 1:
+                    break
+                ncol -= 1
+            legend_height_frac = legend.get_window_extent().height / fig_bbox.height
+            # No hard cap: a legend that genuinely needs more room gets it, rather than being
+            # silently clipped by an arbitrary ceiling (the earlier 0.85 cap's real failure mode).
+            fig.subplots_adjust(bottom=min(base_bottom + legend_height_frac + 0.03, 0.97))
+            return fig
         fig.tight_layout()
         return fig
 

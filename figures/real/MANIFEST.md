@@ -73,7 +73,11 @@ new "baseline-pivot" entry, `baseline_v3*`, immediately after this one).
     PauliPropagation.jl stays marked missing"), so the external reference appears only on
     the cost panel, never the efficiency panel.
 
-### 1b. baseline-pivot (deck page 16 — real 3-point comparison, 2026-09-14)
+### 1b. baseline-pivot (deck page 16 — superseded 2026-09-14, see "baseline-eps-scaling" below)
+
+**Superseded.** Kept below for provenance only — `baseline_v3*` is no longer page 16's asset;
+the eps-sweep redesign in "1c. baseline-eps-scaling" replaces it, per the user's own pivot
+("now redesigned as an eps-sweep").
 
 New function `make_baseline_pivot_figure(rows, theme=..., figsize_pt=..., title=...)` in
 `figures/make_compact_figures.py`: a plain 3-bar chart, not a sweep — the user's own framing
@@ -112,6 +116,99 @@ share the same `eps=2^-16 (1.5258789e-05)`, 127-qubit canonical config.
   `test_baseline_pivot_figure_annotates_julia_speedup`,
   `test_baseline_pivot_figure_deck_theme_exports_at_exact_size`,
   `test_baseline_pivot_figure_compact_variant_exports_at_exact_size`.
+
+### 1c. baseline-eps-scaling (deck page 16 — real eps-sweep, 2026-09-14)
+
+New function `make_baseline_eps_scaling_figure(rows, series_order=..., theme=..., figsize_pt=...,
+title=...)` in `figures/make_compact_figures.py`, replacing "1b. baseline-pivot" (`baseline_v3`,
+now superseded, see above) as page 16's asset. The single-eps 3-bar comparison is pivoted into a
+4-line log-log sweep over `min_abs_coeff`: x-axis `min_abs_coeff` (eps, log2-spaced, x-ticks
+labeled with the established `$\varepsilon=2^{-16}$` mathtext convention, same `_eps_label` shape
+`make_convergence_figure` uses), y-axis `wall_time_s` (log scale), one line per named series
+(`label`). This stage ("stage 1") plots all four series that exist today: Julia 1/32/96-thread and
+the current engine forced to a single bucket, all sharing the same 127-qubit canonical circuit and
+the same 4-point eps grid `{2^-10, 2^-12, 2^-14, 2^-16}`.
+
+**Real numbers plotted (every value read directly from its source `raw/*/runs.jsonl`, not
+transcribed from anywhere else)**:
+
+| label | eps=2^-10 | eps=2^-12 | eps=2^-14 | eps=2^-16 |
+|---|---|---|---|---|
+| Julia, 1 thread | 1.403596204 | 24.71761761 | 329.513902103 | 4874.939709082 |
+| Julia, 32 threads | 0.509915765 | 6.49806748 | 50.121502083 | 302.334663506 |
+| Julia, 96 threads | 0.518920217 | 58.318614334 | 627.504091573 | 974.957910291 |
+| current engine, 1 bucket | 0.729413764027413 | 9.825383894029073 | 160.63228013104526 | 1967.578165213985 |
+
+Sources: `raw/2026-09-14-worker7183-julia/runs.jsonl` (Julia 1-thread, `dict` backend, eps 2^-10
+through 2^-14) + `raw/2026-09-14-worker7169-julia/runs.jsonl` (Julia 1-thread, eps=2^-16, job
+7033031); `raw/2026-09-14-worker7160-julia/runs.jsonl` (Julia 32-thread `vector` backend, all four
+eps, and Julia 96-thread eps=2^-16); `raw/2026-09-14-worker7184-julia/runs.jsonl` (Julia 96-thread,
+eps 2^-10 through 2^-14); `raw/2026-09-14-worker7182-single-bucket/runs.jsonl` (current engine, 1
+bucket, eps=2^-10, job 7036873); `raw/2026-09-14-worker7182-single-bucket-quick/runs.jsonl`
+(current engine, 1 bucket, eps=2^-12 and 2^-14, job 7036845's `onebucket` rows); `raw/2026-09-14-
+worker7160-single-bucket/runs.jsonl` (current engine, 1 bucket, eps=2^-16, job 7036526).
+
+**Correction against the handoff note this figure was built from**: the handoff's transcribed
+Julia-96-thread/eps=2^-16 value (`899.49`, `decisions.md` #38, job 7034021, no standalone
+`runs.jsonl`) is STALE. The real, standalone-recorded value at that exact cell is `974.957910291`
+(job 7034671, `raw/2026-09-14-worker7160-julia/runs.jsonl`, part of the full Julia thread ladder,
+`decisions.md` #43). This figure plots `974.957910291`, the file's own number, per this campaign's
+"the files are the ground truth" rule -- not the earlier one-off's `899.49`.
+
+- Files: `baseline_v4_stage1.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi),
+  `baseline_v4_stage1_compact.{svg,pdf,png}` (450x340pt half-width, 1250x944px @200dpi). Half-
+  width, not half-height: checked by actually rendering both at 900x170 -- with 4 series and an
+  eps-labeled x-axis, half-height leaves no vertical room for x-tick labels, the axis label, and
+  a legend all at once (they visually collided in the rendered PNG), the same "too short a box"
+  failure mode `make_memory_diagnosis_figure`'s `compact` note already documents. Half-width, with
+  the legend moved below the axes, rendered cleanly at both sizes.
+- Legend: below the axes, one row if the real rendered width fits (all four labels did, at both
+  exported sizes) else one entry per row -- the same measure-don't-assume pattern `make_
+  distributed_capacity_figure` established, extended here to also measure the legend's own
+  rendered height and add it to whatever bottom margin `tight_layout()` already reserved for the
+  x-axis label, rather than a fixed margin fraction (a fixed fraction was tried first and either
+  collided with the x-label at the half-height size or starved the plot area at half-width once a
+  4-row fallback legend was needed -- both caught on actual renders, not assumed).
+- **Progressive-reveal design**: `series_order` (a list of labels to draw, in legend order; `None`
+  = every label present in `rows`) lets a caller build a slide-deck reveal one line at a time.
+  Unlike `make_recurring_figure`'s `stage=`, which indexes a hardcoded `STAGE_VARIANTS` list, this
+  function has no baked-in knowledge of the label set (this dataset's labels differ from, and may
+  outgrow, that one). Two things are keyed off the FULL `rows`, never off the `series_order`
+  subset actually drawn, so revealing more series never moves the earlier ones: each label's
+  color/marker/linestyle (fixed by first-appearance order in `rows`) and the axis limits (min/max
+  over every row in `rows`). Verified directly: drawing `series_order=["Julia, 1 thread"]` then
+  `series_order=["Julia, 1 thread", "Julia, 32 threads"]` against the same `rows` produces
+  identical `xlim`/`ylim` and an identical color for the first line in both figures.
+- **Stages 2-4 built, 2026-09-14** (decisions.md #51): jobs 7037029/7037030 (Rust default-bucket
+  1-thread/96-thread fills) and 7037031/7037032/7037033 (16-rank distributed fills) landed real
+  data for the three remaining series, all at the same 4-point eps grid:
+
+  | label | eps=2^-10 | eps=2^-12 | eps=2^-14 | eps=2^-16 |
+  |---|---|---|---|---|
+  | current engine, default buckets, 1 thread | 0.8103972029639408 | 9.44474236399401 | 129.86703514197143 | 1629.9046 |
+  | current engine, default buckets, 96 threads | 0.7048475859919563 | 1.198537205986213 | 4.070771286031231 | 56.68626811000286 |
+  | current engine, 16 ranks | 0.40382708003744483 | 2.8530670839827508 | 6.4862819139962085 | 35.72522497200407 |
+
+  `_DECK_SERIES` extended from 5 to 7 styles (additive; existing figures unaffected, they only
+  index 0-4). All 4 stages built via `series_order` against the SAME 7-row `rows`: stage1 = the
+  4 labels above this note, stage2 = +bucketed-1-thread, stage3 = +bucketed-96-thread, stage4 =
+  all 7 (+16-rank). A real legend-layout bug was hit and fixed at 7 series: the fallback jumped
+  straight from "all in one row" to "exactly one column" (7 rows tall), which overflowed the
+  0.85 bottom-margin cap and visibly overlapped the x-axis label on an actual render -- fixed by
+  searching downward from `ncol=len(labels)` for the widest fitting column count, and relaxing
+  the cap to 0.97.
+- Files: `baseline_v4_stage{1,2,3,4}.{svg,pdf,png}` and `_compact` variants (28 files total).
+- Test coverage (`figures/tests/test_make_figures.py`):
+  `test_baseline_eps_scaling_figure_empty_input_raises_clear_error`,
+  `test_baseline_eps_scaling_figure_one_line_per_label`,
+  `test_baseline_eps_scaling_figure_axes_are_log_scale`,
+  `test_baseline_eps_scaling_figure_xtick_labels_use_established_eps_convention`,
+  `test_baseline_eps_scaling_figure_series_order_none_draws_every_label`,
+  `test_baseline_eps_scaling_figure_series_order_restricts_and_orders_legend`,
+  `test_baseline_eps_scaling_figure_series_order_unknown_label_raises`,
+  `test_baseline_eps_scaling_figure_progressive_reveal_keeps_axes_and_colors_stable`,
+  `test_baseline_eps_scaling_figure_deck_theme_exports_at_exact_size`,
+  `test_baseline_eps_scaling_figure_compact_variant_exports_at_exact_size`.
 
 ### 2. threads (deck page 31 — Rust-only reveal)
 

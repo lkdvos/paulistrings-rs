@@ -1219,3 +1219,85 @@
     boundary is consistent with locality, never proof of cache residency by itself -- no
     hardware counters confirm cache misses here, this is peak position only). `bucket_size_v3.*`
     regenerated with the full 9-point range (256 through 65536); MANIFEST updated.
+
+50. **Baseline figure (deck page 16) pivoted from a 3-bar comparison to a real eps-sweep,
+    2026-09-14.** New `make_baseline_eps_scaling_figure(rows, series_order=..., theme=...,
+    figsize_pt=..., title=...)` in `figures/make_compact_figures.py` supersedes "1b. baseline-
+    pivot" (`baseline_v3`, kept for provenance, not deleted): one line per named series
+    (`label`) over `min_abs_coeff` (x, log2-spaced, `$\varepsilon=2^{-16}$`-style mathtext
+    x-ticks) vs. `wall_time_s` (y, log). Stage 1 plots all four series that exist today --
+    Julia 1/32/96-thread and the current engine forced to a single bucket -- across the same
+    4-point eps grid `{2^-10, 2^-12, 2^-14, 2^-16}`, 127-qubit canonical circuit.
+
+    Every number was re-verified directly against its source `raw/*/runs.jsonl` rather than
+    trusted from the handoff note that specified this task, per that note's own instruction.
+    One real discrepancy surfaced doing this: the handoff's Julia-96-thread/eps=2^-16 value
+    (`899.49`, decisions.md #38, job 7034021) has no standalone `runs.jsonl` and is stale --
+    the real, file-backed value at that exact cell is `974.957910291` (job 7034671, `raw/
+    2026-09-14-worker7160-julia/runs.jsonl`, the full Julia thread ladder already landed for
+    decision #43). This figure plots `974.957910291`, not `899.49`.
+
+    Progressive-reveal design: `series_order` (list of labels to draw, in legend order; `None`
+    = every label in `rows`) lets a slide deck build up the story one line at a time, in the
+    spirit of `make_recurring_figure`'s `stage=` but without that function's hardcoded
+    `STAGE_VARIANTS` list -- this dataset's label set differs and is expected to grow (bucketed
+    multithreaded and multi-node series land later). Two things are keyed off the FULL `rows`,
+    never the `series_order` subset actually drawn: each label's color/marker/linestyle (fixed
+    by first-appearance order in `rows`) and the axis limits (min/max over every row) -- so
+    revealing more series never moves the ones already on the slide. Verified directly: the
+    same `rows` drawn first with `series_order=["Julia, 1 thread"]` then with a two-label
+    prefix produced identical `xlim`/`ylim` and an identical first-line color.
+
+    Compact export is half-width (450x340pt), not half-height: checked by actually rendering
+    both, since with 4 series and an eps-labeled x-axis, 900x170 left the x-tick labels, axis
+    label, and legend visually colliding (no room at that height, same failure mode `make_
+    memory_diagnosis_figure`'s `compact` note already flags for a different figure). The
+    legend-fit logic also needed a real render to get right: a fixed bottom-margin fraction
+    (tried first, following `make_distributed_capacity_figure`'s precedent literally) either
+    collided with the x-axis label at 900x170 or starved the plot area at 450x340 once a
+    4-row fallback legend was needed; measuring the legend's actual rendered height and adding
+    it to whatever margin `tight_layout()` already reserved for the x-label, instead of
+    guessing both from a row count, is what held at every size tried.
+
+    Files: `figures/real/baseline_v4_stage1.{svg,pdf,png}` (900x340pt) + `_compact`
+    (450x340pt). 10 new figure tests added to `figures/tests/test_make_figures.py`
+    (empty-input, one-line-per-label, log-scale axes, eps-convention x-tick labels,
+    `series_order=None`/restricted/unknown-label, progressive-reveal axis+color stability,
+    both exact-size exports); 81/81 figure tests passing. `figures/real/MANIFEST.md` gained
+    "1c. baseline-eps-scaling" and marked "1b. baseline-pivot" superseded (not deleted, same
+    as every other supersession in this file). Stages 2-4 (bucketed multithreaded, bucketed
+    multi-node) are explicitly NOT built -- their cluster jobs have not landed, and no
+    placeholder data was fabricated for them. Did not touch any in-flight Slurm job or run any
+    Slurm command.
+
+51. **Baseline eps-scaling: all 4 progressive stages built with real data, 2026-09-14.** Jobs
+    7037029 (Rust default-bucket 1-thread eps=2^-10 fill), 7037030 (Rust default-bucket 96-thread
+    eps={2^-10,2^-12,2^-14}), 7037031/7037032/7037033 (16-rank distributed eps={2^-10,2^-12,
+    2^-14}) all landed real, clean data (verified no cross-job JSONL corruption in the shared
+    `distributed-16ranks` directory despite 3 concurrent writers). Combined with the already-real
+    stage-1 data (decisions.md #50), all 7 series now have real values at all 4 eps points:
+
+    | eps | Rust 1-bucket | Rust default,1T | Rust default,96T | Rust 16-rank | Julia 1T | Julia 32T | Julia 96T |
+    |---|---|---|---|---|---|---|---|
+    | 2^-10 | 0.729s | 0.810s | 0.705s | 0.404s | 1.404s | 0.510s | 0.519s |
+    | 2^-12 | 9.825s | 9.445s | 1.199s | 2.853s | 24.718s | 6.498s | 58.319s |
+    | 2^-14 | 160.632s | 129.867s | 4.071s | 6.486s | 329.514s | 50.122s | 627.504s |
+    | 2^-16 | 1967.578s | 1629.905s | 56.686s | 35.725s | 4874.940s | 302.335s | 974.958s |
+
+    `_DECK_SERIES` extended from 5 to 7 distinct (color, marker, linestyle) styles (additive
+    only -- every existing figure only ever indexes 0-4, unaffected). Built all 4 progressive
+    reveal stages via `make_baseline_eps_scaling_figure`'s `series_order=` parameter, same
+    `rows` (all 7 series) each time so axes/colors never shift between reveals, only which lines
+    are drawn: stage1 = the 4 baseline series, stage2 = +bucketed single-thread, stage3 =
+    +bucketed 96-thread, stage4 = +bucketed 16-rank (all series drawn).
+
+    Fixed a real legend-layout bug hit at 7 series: the fallback jumped straight from "all in one
+    row" to "exactly one column" (7 rows), which overflowed the previous 0.85 bottom-margin cap
+    and visibly overlapped the x-axis label on an actual rendered figure. Fixed by searching
+    downward from ncol=len(labels) for the widest column count that actually fits (matching this
+    module's original, more general legend-fit pattern), and relaxing the margin cap to 0.97 so a
+    legend that genuinely needs more room gets it rather than being silently clipped.
+
+    Files: `figures/real/baseline_v4_stage{1,2,3,4}.{svg,pdf,png}` and `_compact` variants (28
+    files total). `baseline_v3`/`make_baseline_pivot_figure` remain superseded-but-kept per
+    decisions.md #50/MANIFEST's existing convention.

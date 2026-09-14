@@ -710,7 +710,10 @@ def make_distributed_capacity_figure(
                 seen.add(l)
                 dedup_handles.append(h)
                 dedup_labels.append(l)
-            ax.legend(dedup_handles, dedup_labels, frameon=False, fontsize=7 if not deck else _DECK_FONT_PT * 0.7)
+            ax.legend(
+                dedup_handles, dedup_labels, frameon=False,
+                fontsize=7 if not deck else _DECK_FONT_PT * 0.7, loc="lower right",
+            )
         fig.tight_layout()
         return fig
 

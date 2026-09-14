@@ -60,6 +60,12 @@ _PALETTE = [
     "#e34948",
 ]
 
+# Deck-theme marker/linestyle cycle, keyed the same way as _color_for_variant
+# below -- distinguishes series by shape as well as by the deck palette's
+# colors (imported from make_compact_figures at call time to avoid a
+# module-load-order dependency between the two sibling figure modules).
+_DECK_MARKERS = ["o", "^", "s", "D", "v", "P", "X", "*"]
+
 
 def _color_for_variant(variant_id: str) -> str:
     """Stable palette slot keyed by position in `STAGE_VARIANTS`, not first-seen order.
@@ -72,6 +78,13 @@ def _color_for_variant(variant_id: str) -> str:
     except ValueError:
         idx = hash(variant_id) % len(_PALETTE)
     return _PALETTE[idx % len(_PALETTE)]
+
+
+def _variant_index(variant_id: str) -> int:
+    try:
+        return STAGE_VARIANTS.index(variant_id)
+    except ValueError:
+        return hash(variant_id) % len(_DECK_MARKERS)
 
 
 def _style_axes(ax) -> None:
@@ -91,7 +104,11 @@ def _group_by(rows: Sequence[dict], key: str) -> dict[Any, list[dict]]:
     return grouped
 
 
-def _draw_efficiency_panel(ax, efficiency_rows, visible_variants, highlight_variant) -> None:
+def _draw_efficiency_panel(ax, efficiency_rows, visible_variants, highlight_variant, theme="legacy") -> None:
+    deck = theme == "deck"
+    if deck:
+        from make_compact_figures import _DECK_NAVY, _DECK_SERIES, _style_axes_deck
+
     grouped = _group_by(efficiency_rows, "variant_id")
     highlighted_points = None
     for variant_id in visible_variants:
@@ -109,21 +126,29 @@ def _draw_efficiency_panel(ax, efficiency_rows, visible_variants, highlight_vari
             continue
         points.sort()
         is_highlight = variant_id == highlight_variant
-        color = _color_for_variant(variant_id)
         alpha = 1.0 if is_highlight else _MUTED_ALPHA
         zorder = 3 if is_highlight else 1
         xs, ys = zip(*points)
-        ax.plot(
-            xs,
-            ys,
-            marker="o",
-            markersize=5,
-            linewidth=1.5,
-            color=color,
-            alpha=alpha,
-            zorder=zorder,
-            label=variant_id,
-        )
+        if deck:
+            st = _DECK_SERIES[_variant_index(variant_id) % len(_DECK_SERIES)]
+            ax.plot(
+                xs, ys, marker=st["marker"], markersize=6, linewidth=1.8,
+                linestyle=st["linestyle"], color=st["color"], alpha=alpha, zorder=zorder,
+                label=variant_id,
+            )
+        else:
+            color = _color_for_variant(variant_id)
+            ax.plot(
+                xs,
+                ys,
+                marker="o",
+                markersize=5,
+                linewidth=1.5,
+                color=color,
+                alpha=alpha,
+                zorder=zorder,
+                label=variant_id,
+            )
         if is_highlight:
             highlighted_points = rows
 
@@ -143,37 +168,58 @@ def _draw_efficiency_panel(ax, efficiency_rows, visible_variants, highlight_vari
             annotation,
             transform=ax.transAxes,
             fontsize=8,
-            color="#898781",
+            color=_DECK_NAVY if deck else "#898781",
             va="bottom",
             ha="left",
+        )
+
+    if not any(grouped.get(v) for v in visible_variants):
+        # Several historical variants (naive_baseline included) predate the
+        # engine's per-gate stats plumbing and genuinely expose no efficiency
+        # data (evidence.md's own disclosure for figures/real/recurring_stage6.png)
+        # -- say so explicitly rather than leaving unexplained empty axes.
+        ax.text(
+            0.5, 0.5, "no per-gate efficiency data\nfor this variant",
+            transform=ax.transAxes, fontsize=9,
+            color=_DECK_NAVY if deck else "#898781", ha="center", va="center",
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("strings entering gate")
     ax.set_ylabel("input-string updates / sec")
-    ax.set_title("Efficiency")
-    _style_axes(ax)
+    if deck:
+        _style_axes_deck(ax)
+    else:
+        ax.set_title("Efficiency")
+        _style_axes(ax)
     if grouped:
         ax.legend(frameon=False, fontsize=7)
 
 
-def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, stage) -> None:
+def _draw_cost_panel(
+    ax, tolerance_rows, visible_variants, highlight_variant, stage, theme="legacy", external_points=()
+) -> None:
     import matplotlib.transforms as mtransforms
+
+    deck = theme == "deck"
+    if deck:
+        from make_compact_figures import _DECK_NAVY, _DECK_SERIES, _style_axes_deck
 
     grouped = _group_by(tolerance_rows, "variant_id")
     any_series = False
     any_oom = False
     blended = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    annotation_color = _DECK_NAVY if deck else "#898781"
 
     for variant_id in visible_variants:
         rows = grouped.get(variant_id)
         if not rows:
             continue
         is_highlight = variant_id == highlight_variant
-        color = _color_for_variant(variant_id)
         alpha = 1.0 if is_highlight else _MUTED_ALPHA
         zorder = 3 if is_highlight else 1
+        color = _DECK_SERIES[_variant_index(variant_id) % len(_DECK_SERIES)]["color"] if deck else _color_for_variant(variant_id)
 
         completed = sorted(
             (r["min_abs_coeff"], r["wall_time_s"])
@@ -183,17 +229,25 @@ def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, st
         if completed:
             any_series = True
             xs, ys = zip(*completed)
-            ax.plot(
-                xs,
-                ys,
-                marker="o",
-                markersize=5,
-                linewidth=1.5,
-                color=color,
-                alpha=alpha,
-                zorder=zorder,
-                label=variant_id,
-            )
+            if deck:
+                st = _DECK_SERIES[_variant_index(variant_id) % len(_DECK_SERIES)]
+                ax.plot(
+                    xs, ys, marker=st["marker"], markersize=6,
+                    linewidth=1.8, linestyle=st["linestyle"] if len(xs) > 1 else "none",
+                    color=st["color"], alpha=alpha, zorder=zorder, label=variant_id,
+                )
+            else:
+                ax.plot(
+                    xs,
+                    ys,
+                    marker="o",
+                    markersize=5,
+                    linewidth=1.5,
+                    color=color,
+                    alpha=alpha,
+                    zorder=zorder,
+                    label=variant_id,
+                )
             if is_highlight:
                 for x, y, r in zip(xs, ys, [r for r in rows if r["status"] == "completed"]):
                     if x in (xs[0], xs[-1]):
@@ -204,7 +258,7 @@ def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, st
                             note,
                             (x, y),
                             fontsize=7,
-                            color="#898781",
+                            color=annotation_color,
                             xytext=(0, 8),
                             textcoords="offset points",
                             ha="center",
@@ -226,12 +280,37 @@ def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, st
                 label=f"{variant_id} ({r['status']})",
             )
 
+    # External-library reference points: single (min_abs_coeff, wall_time_s)
+    # measurements from a DIFFERENT circuit scale/engine than the Rust
+    # variant lines above (e.g. a canonical-scale single-thread comparison
+    # vs. this stage's toy-scale internal-baseline sweep) -- drawn as
+    # distinctly-shaped stars, each annotated with its own config, never
+    # implied to be part of the same tolerance sweep. See callers/MANIFEST.md
+    # for exactly which real runs each point comes from.
+    any_external = False
+    for i, pt in enumerate(external_points):
+        any_external = True
+        star_color = "#000000" if not deck else _DECK_SERIES[(i + 3) % len(_DECK_SERIES)]["color"]
+        ax.scatter(
+            [pt["min_abs_coeff"]], [pt["wall_time_s"]], marker="*", s=160,
+            color=star_color, zorder=6, edgecolors="white", linewidths=0.6,
+            label=pt["label"],
+        )
+        if pt.get("config_note"):
+            ax.annotate(
+                pt["config_note"], (pt["min_abs_coeff"], pt["wall_time_s"]), fontsize=6,
+                color=annotation_color, xytext=(6, -10), textcoords="offset points",
+            )
+
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("coefficient tolerance")
     ax.set_ylabel("wall time (s)")
-    ax.set_title("Calculation cost")
-    _style_axes(ax)
+    if deck:
+        _style_axes_deck(ax)
+    else:
+        ax.set_title("Calculation cost")
+        _style_axes(ax)
     ax.invert_xaxis()
 
     if stage == 7:
@@ -239,7 +318,7 @@ def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, st
         # Widen visibly to show the distributed extension reaching tighter tolerances.
         ax.set_xlim(xlim[0], xlim[1] / 100)
 
-    if any_series or any_oom:
+    if any_series or any_oom or any_external:
         handles, labels = ax.get_legend_handles_labels()
         seen = set()
         dedup_handles, dedup_labels = [], []
@@ -249,7 +328,7 @@ def _draw_cost_panel(ax, tolerance_rows, visible_variants, highlight_variant, st
             seen.add(l)
             dedup_handles.append(h)
             dedup_labels.append(l)
-        ax.legend(dedup_handles, dedup_labels, frameon=False, fontsize=7)
+        ax.legend(dedup_handles, dedup_labels, frameon=False, fontsize=7, loc="lower left")
 
 
 def make_recurring_figure(
@@ -258,6 +337,10 @@ def make_recurring_figure(
     *,
     highlight_variant: str,
     stage: int,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+    external_points: Sequence[dict] = (),
 ):
     """Build the recurring two-panel figure (Efficiency | Calculation cost).
 
@@ -268,6 +351,21 @@ def make_recurring_figure(
     this stage is a story error, not a rendering choice.
     Returns the `Figure`; callers save or embed it (SYNTHETIC placeholder
     figures render under `figures/_synth/`, never committed as real data).
+
+    `theme="legacy"` (default) is this function's original styling, unchanged
+    byte-for-byte, and ignores `figsize_pt`/`title`. `theme="deck"` switches
+    to the v2 deck theme from `make_compact_figures` (imported lazily to
+    avoid a hard import-time dependency between the two sibling modules) and
+    honors `figsize_pt` (exact deck-point sizing, see `export_deck_figure`)
+    and `title` (a small, optional in-figure caption -- the deck slide itself
+    carries the real title, per the deck spec's "no duplicate titles" rule).
+
+    `external_points` -- see `_draw_cost_panel`'s docstring -- overlays one or
+    more external-library single-tolerance reference measurements on the cost
+    panel, each a distinctly-shaped star with its own config annotation. This
+    is the "plus external libraries" half of the baseline figure; it is
+    plotted only on the cost panel because no external engine in this
+    campaign exposes comparable per-gate efficiency data (`decisions.md` #10).
     """
     import matplotlib.pyplot as plt
 
@@ -280,9 +378,32 @@ def make_recurring_figure(
             f"(visible variants: {visible_variants!r})"
         )
 
-    fig, (ax_eff, ax_cost) = plt.subplots(1, 2, figsize=(10, 4))
-    _draw_efficiency_panel(ax_eff, efficiency_rows, visible_variants, highlight_variant)
-    _draw_cost_panel(ax_cost, tolerance_rows, visible_variants, highlight_variant, stage)
-    fig.suptitle(f"SYNTHETIC — placeholder (stage {stage}/{len(STAGE_VARIANTS)})", fontsize=9, color="#898781")
-    fig.tight_layout()
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (10, 4)
+
+    def _build():
+        fig, (ax_eff, ax_cost) = plt.subplots(1, 2, figsize=figsize)
+        _draw_efficiency_panel(ax_eff, efficiency_rows, visible_variants, highlight_variant, theme=theme)
+        _draw_cost_panel(
+            ax_cost, tolerance_rows, visible_variants, highlight_variant, stage,
+            theme=theme, external_points=external_points,
+        )
+        if deck:
+            if title:
+                from make_compact_figures import _DECK_NAVY
+
+                fig.suptitle(title, fontsize=14, color=_DECK_NAVY)
+        else:
+            fig.suptitle(f"SYNTHETIC — placeholder (stage {stage}/{len(STAGE_VARIANTS)})", fontsize=9, color="#898781")
+        fig.tight_layout()
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+        from make_compact_figures import _deck_rc_params
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
     return fig

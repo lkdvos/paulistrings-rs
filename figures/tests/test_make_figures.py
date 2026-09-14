@@ -12,10 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from make_compact_figures import (
+    export_deck_figure,
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
     make_attempts_figure,
     make_convergence_figure,
+    make_distributed_capacity_figure,
     make_hash_communication_figure,
     make_thread_scaling_figure,
 )
@@ -375,4 +377,123 @@ def test_convergence_figure_julia_line_only_cutoff_still_gets_a_color():
     ]
     fig = make_convergence_figure(rows, julia_rows=julia_rows)
     assert fig is not None
+    matplotlib.pyplot.close(fig)
+
+
+# --- deck v2 theme -------------------------------------------------------------
+
+
+def test_thread_scaling_deck_theme_uses_navy_spines_and_exact_size(tmp_path):
+    rows = [
+        {"threads": 1, "wall_time_s": 10.0, "speedup": 1.0},
+        {"threads": 4, "wall_time_s": 3.0, "speedup": 10.0 / 3.0},
+    ]
+    fig = make_thread_scaling_figure(rows, theme="deck", figsize_pt=(450, 340), title="Thread scaling")
+    ax = fig.axes[0]
+    assert ax.spines["bottom"].get_edgecolor()[:3] == pytest.approx((0x1c / 255, 0x29 / 255, 0x54 / 255), abs=1e-6)
+    paths = export_deck_figure(fig, str(tmp_path / "thread_scaling_v2"), 450, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    for p in paths.values():
+        assert os.path.exists(p)
+    # inches = points / 72, the sizing contract export_deck_figure documents.
+    assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+def test_hash_communication_vs_cutoff_deck_theme_distinguishes_series_by_marker_too():
+    rows = [
+        {"run_id": "r1", "config_id": "cfg-loose", "min_abs_coeff": 1e-4, "partition_row_policy": "random", "partitions": 2, "layers": 1, "total_rows_exported": 100, "total_bytes_exported": 1000},
+        {"run_id": "r2", "config_id": "cfg-loose", "min_abs_coeff": 1e-4, "partition_row_policy": "cut", "partitions": 2, "layers": 1, "total_rows_exported": 10, "total_bytes_exported": 100},
+    ]
+    fig = make_hash_communication_vs_cutoff_figure(rows, theme="deck", figsize_pt=(450, 340))
+    ax = fig.axes[0]
+    markers = {line.get_label(): line.get_marker() for line in ax.lines}
+    linestyles = {line.get_label(): line.get_linestyle() for line in ax.lines}
+    assert markers["random"] != markers["cut"]
+    assert linestyles["random"] != linestyles["cut"]
+    matplotlib.pyplot.close(fig)
+
+
+def test_convergence_deck_theme_still_builds_and_omits_default_legacy_title():
+    rows = [
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 2, "expectation_re": 0.8},
+    ]
+    fig = make_convergence_figure(rows, theme="deck", figsize_pt=(450, 340), title="Consistency")
+    ax = fig.axes[0]
+    assert ax.get_title() == "Consistency"
+    matplotlib.pyplot.close(fig)
+
+
+def test_recurring_figure_deck_theme_with_external_points_draws_stars():
+    tolerance_rows = [
+        {"run_id": "naive-1", "variant_id": "naive_baseline", "min_abs_coeff": 1e-6, "wall_time_s": 2.9561e-05, "peak_terms": 14, "peak_rss_kb": 426248, "status": "completed"},
+    ]
+    external_points = [
+        {"label": "bucketed_current (Rust)", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 1629.9, "config_note": "n=127 canonical, threads=1"},
+        {"label": "PauliPropagation.jl", "min_abs_coeff": 1.5258789e-05, "wall_time_s": 4874.94, "config_note": "n=127 canonical, threads=1"},
+    ]
+    fig = make_recurring_figure(
+        [], tolerance_rows, highlight_variant="naive_baseline", stage=1,
+        theme="deck", figsize_pt=(900, 340), external_points=external_points,
+    )
+    _, ax_cost = fig.axes
+    star_labels = {c.get_label() for c in ax_cost.collections}
+    assert "bucketed_current (Rust)" in star_labels
+    assert "PauliPropagation.jl" in star_labels
+    matplotlib.pyplot.close(fig)
+
+
+# --- distributed capacity ------------------------------------------------------
+
+
+def test_distributed_capacity_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_distributed_capacity_figure([])
+
+
+def test_distributed_capacity_figure_rejects_fabricated_runtime_on_failed_row():
+    rows = [
+        {"ranks": 8, "min_abs_coeff": 9.5367432e-07, "wall_time_s": 123.0, "peak_terms": None, "peak_rss_kb": None, "status": "oom"},
+    ]
+    with pytest.raises(ValueError, match="fabricated runtime"):
+        make_distributed_capacity_figure(rows)
+
+
+def test_distributed_capacity_figure_marks_completed_oom_and_untested_distinctly():
+    rows = [
+        {"ranks": 1, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 470.9, "peak_terms": 635371364, "peak_rss_kb": 1.5e8, "status": "completed"},
+        {"ranks": 4, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 468.77, "peak_terms": 635371364, "peak_rss_kb": 2.0e8, "status": "completed"},
+        {"ranks": 1, "min_abs_coeff": 9.5367432e-07, "wall_time_s": None, "peak_terms": None, "peak_rss_kb": None, "status": "untested", "note": "never submitted"},
+        {"ranks": 8, "min_abs_coeff": 9.5367432e-07, "wall_time_s": None, "peak_terms": None, "peak_rss_kb": 1.2e9, "status": "oom", "note": "measured OOM, job 7032060"},
+        {"ranks": 16, "min_abs_coeff": 9.5367432e-07, "wall_time_s": 1658.8, "peak_terms": 8923556570, "peak_rss_kb": 3.04e9, "status": "completed"},
+    ]
+    fig = make_distributed_capacity_figure(rows)
+    ax = fig.axes[0]
+
+    # The completed 4-rank/eps=2^-18 point must appear on a real connected line.
+    completed_lines = [ln for ln in ax.get_lines() if ln.get_linestyle() != "None" and 4 in list(ln.get_xdata())]
+    assert completed_lines and 468.77 in list(completed_lines[0].get_ydata())
+
+    # OOM and untested rows are drawn at the axes-fraction sentinel (y=0.95),
+    # never at a real/fabricated wall-time value, and with distinct markers.
+    sentinel_markers = {
+        ln.get_marker(): ln
+        for ln in ax.get_lines()
+        if ln.get_linestyle() == "None" and list(ln.get_ydata()) == [0.95]
+    }
+    assert "X" in sentinel_markers  # oom
+    assert "$?$" in sentinel_markers  # untested
+    matplotlib.pyplot.close(fig)
+
+
+def test_distributed_capacity_figure_deck_theme_exports_at_exact_size(tmp_path):
+    rows = [
+        {"ranks": 1, "min_abs_coeff": 1.5258789e-05, "wall_time_s": 41.6, "peak_terms": 38791220, "peak_rss_kb": 1.5e7, "status": "completed"},
+        {"ranks": 4, "min_abs_coeff": 1.5258789e-05, "wall_time_s": 69.5, "peak_terms": 45418768, "peak_rss_kb": 1.4e7, "status": "completed"},
+    ]
+    fig = make_distributed_capacity_figure(rows, theme="deck", figsize_pt=(900, 340), title="Distributed capacity")
+    paths = export_deck_figure(fig, str(tmp_path / "distributed_capacity_v2"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)

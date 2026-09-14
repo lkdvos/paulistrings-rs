@@ -619,20 +619,18 @@ def make_distributed_capacity_figure(
             )
 
     import math
+    from collections import Counter
 
     import matplotlib.pyplot as plt
-    import matplotlib.transforms as mtransforms
 
     deck = theme == "deck"
     figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (6.5, 4.5)
-    _STATUS_MARKER = {"oom": "X", "timeout": "P", "untested": "$?$"}
 
     def _label(eps: float) -> str:
         return f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
 
     def _build():
         fig, ax = plt.subplots(figsize=figsize)
-        blended = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
 
         by_eps: dict[float, list[dict]] = {}
         for r in rows:
@@ -653,17 +651,15 @@ def make_distributed_capacity_figure(
                 any_plotted = True
                 xs = [r["ranks"] for r in completed]
                 ys = [r["wall_time_s"] for r in completed]
-                # peak_terms is a property of the tolerance, not the rank count, for every
-                # real series measured so far -- stating it once in the legend label (when it's
-                # genuinely constant across the series) instead of at every point avoids
-                # repeating the same "N=..." annotation densely along a short log-log line.
-                # Falls back to per-point annotation if a real series ever DOES show variation
-                # (e.g. a future capacity-extension series with rank-dependent term counts),
-                # so this never hides a real difference.
-                distinct_n = {r["peak_terms"] for r in completed if r.get("peak_terms")}
+                # peak_terms is stated once in the legend label rather than at every point, to
+                # avoid repeating "N=..." densely along a short log-log line. Uses the most
+                # common value across the series (a single-rank reference point can legitimately
+                # report final_terms rather than peak_terms and disagree slightly -- accepted
+                # per the user's explicit call, not hidden as if it matched).
+                n_counts = Counter(r["peak_terms"] for r in completed if r.get("peak_terms"))
                 label = _label(eps)
-                if len(distinct_n) == 1:
-                    label = f"{label} (N={next(iter(distinct_n)):,})"
+                if n_counts:
+                    label = f"{label} (N={n_counts.most_common(1)[0][0]:,})"
                 ax.plot(
                     xs, ys, marker=style["marker"], markersize=7, linewidth=1.8,
                     linestyle=style["linestyle"] if len(xs) > 1 else "none",
@@ -671,8 +667,6 @@ def make_distributed_capacity_figure(
                 )
                 for r in completed:
                     parts = []
-                    if len(distinct_n) != 1 and r.get("peak_terms"):
-                        parts.append(f"N={r['peak_terms']:,}")
                     if r.get("peak_rss_kb"):
                         parts.append(f"{r['peak_rss_kb'] / 1e9:.2f} TB")
                     if r.get("note"):
@@ -682,22 +676,9 @@ def make_distributed_capacity_figure(
                             "\n".join(parts), (r["ranks"], r["wall_time_s"]), fontsize=7,
                             color=annotation_color, xytext=(6, 6), textcoords="offset points",
                         )
-
-            for r in series_rows:
-                if r["status"] == "completed":
-                    continue
-                any_plotted = True
-                marker = _STATUS_MARKER.get(r["status"], "X")
-                ax.plot(
-                    [r["ranks"]], [0.95], marker=marker, markersize=10,
-                    color=style["color"], linestyle="none", transform=blended,
-                    label=f"{_label(eps)} ({r['status']})",
-                )
-                if r.get("note"):
-                    ax.annotate(
-                        r["note"], (r["ranks"], 0.95), xycoords=blended, fontsize=7,
-                        color=annotation_color, xytext=(6, -12), textcoords="offset points",
-                    )
+            # Non-completed rows (oom/timeout/untested) are validated above (no fabricated
+            # wall_time_s) but deliberately NOT drawn -- the presenter states those verbally
+            # rather than having the figure show sentinel markers for unmeasured points.
 
         ax.set_xscale("log", base=2)
         ax.set_yscale("log")

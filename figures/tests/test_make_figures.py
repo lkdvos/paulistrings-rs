@@ -461,7 +461,7 @@ def test_distributed_capacity_figure_rejects_fabricated_runtime_on_failed_row():
         make_distributed_capacity_figure(rows)
 
 
-def test_distributed_capacity_figure_marks_completed_oom_and_untested_distinctly():
+def test_distributed_capacity_figure_omits_oom_and_untested_points():
     rows = [
         {"ranks": 1, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 470.9, "peak_terms": 635371364, "peak_rss_kb": 1.5e8, "status": "completed"},
         {"ranks": 4, "min_abs_coeff": 3.8146973e-06, "wall_time_s": 468.77, "peak_terms": 635371364, "peak_rss_kb": 2.0e8, "status": "completed"},
@@ -472,19 +472,24 @@ def test_distributed_capacity_figure_marks_completed_oom_and_untested_distinctly
     fig = make_distributed_capacity_figure(rows)
     ax = fig.axes[0]
 
-    # The completed 4-rank/eps=2^-18 point must appear on a real connected line.
+    # The completed 4-rank/eps=2^-18 point must still appear on a real connected line.
     completed_lines = [ln for ln in ax.get_lines() if ln.get_linestyle() != "None" and 4 in list(ln.get_xdata())]
     assert completed_lines and 468.77 in list(completed_lines[0].get_ydata())
 
-    # OOM and untested rows are drawn at the axes-fraction sentinel (y=0.95),
-    # never at a real/fabricated wall-time value, and with distinct markers.
-    sentinel_markers = {
-        ln.get_marker(): ln
+    # oom/untested rows draw nothing at all -- per the user's explicit call, the presenter
+    # states unmeasured points verbally rather than the figure showing sentinel markers for
+    # them. No line's x-data may include ranks=1 (untested) or ranks=8 (oom) for eps=2^-20.
+    eps20_xs = {
+        x
         for ln in ax.get_lines()
-        if ln.get_linestyle() == "None" and list(ln.get_ydata()) == [0.95]
+        for x in ln.get_xdata()
     }
-    assert "X" in sentinel_markers  # oom
-    assert "$?$" in sentinel_markers  # untested
+    # ranks=16 (the one real completed eps=2^-20 point) is allowed to appear; ranks=1/8
+    # only appear here via the eps=2^-18 series (different tolerance), never eps=2^-20's.
+    assert 16 in eps20_xs
+    for artist in ax.texts:
+        assert "never submitted" not in artist.get_text()
+        assert "measured OOM" not in artist.get_text()
     matplotlib.pyplot.close(fig)
 
 

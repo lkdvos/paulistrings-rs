@@ -170,6 +170,34 @@ def test_hash_communication_empty_input_raises_clear_error():
         make_hash_communication_figure([])
 
 
+def test_hash_communication_figure_plots_random_vs_cut():
+    rows = [
+        {
+            "run_id": "r-random",
+            "config_id": "cfg-e8",
+            "partition_row_policy": "random",
+            "partitions": 2,
+            "layers": 4,
+            "total_rows_exported": 300,
+            "total_bytes_exported": 3000,
+        },
+        {
+            "run_id": "r-cut",
+            "config_id": "cfg-e8",
+            "partition_row_policy": "cut",
+            "partitions": 2,
+            "layers": 4,
+            "total_rows_exported": 30,
+            "total_bytes_exported": 300,
+        },
+    ]
+    fig = make_hash_communication_figure(rows)
+    assert fig is not None
+    heights = sorted(bar.get_height() for ax in fig.axes for bar in ax.patches)
+    assert heights == [30, 300]
+    matplotlib.pyplot.close(fig)
+
+
 # --- accuracy ------------------------------------------------------------------
 
 

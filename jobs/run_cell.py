@@ -357,8 +357,10 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
     start = time.perf_counter()
     evolved = observable.propagate(circuit, policy, direction=spec.direction, **propagate_kwargs)
     wall_time_s = time.perf_counter() - start
-    if spec.state:
-        evolved.expectation(spec.state)
+    # `expectation_re`/`expectation_im` match run_cell_julia.py's `extra` shape
+    # (decisions.md #20) so analysis/normalize.py::accuracy can pair a Rust and
+    # a Julia run of the same cell without a schema-specific special case.
+    expectation = evolved.expectation(spec.state) if spec.state else None
 
     # A second, separately timed call for the per-gate trace; its own wall
     # time is diagnostic only and is not written into `wall_time_s`.
@@ -413,6 +415,11 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
         "log_path": None,
         "gate_trace_path": str(gate_trace_path),
         "partition_row_policy": row_policy,
+        "extra": (
+            {"expectation_re": expectation.real, "expectation_im": expectation.imag}
+            if expectation is not None
+            else None
+        ),
     }
 
     gate_records: list[dict[str, Any]] = []

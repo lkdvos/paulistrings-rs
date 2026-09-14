@@ -362,3 +362,18 @@
    have defeated `make_hash_communication_figure`'s per-`config_id` grouping; fixed to share one
    `config_id` across both policies (only `partition_row_policy` differs) before generating the real
    figure at `figures/real/hash_communication.png`. `evidence.md` E8 moved tooling-ready to real data.
+
+26. **Found and fixed a real gap while wiring E9's accuracy figure, 2026-09-14**: `run_cell.py`
+   called `evolved.expectation(spec.state)` and discarded the result -- a real computation thrown
+   away every run, and the exact value `analysis/normalize.py::accuracy` needs. Also found
+   `accuracy()` itself was unusable for a real cross-engine comparison: it expected one run record
+   to carry both a `reference_value` and an `observed_value` in its own `extra` field, but the Rust
+   and Julia drivers each write their own engine's `expectation_re`/`expectation_im` to their own,
+   separate run record (decisions.md #20) -- no single record ever has both. Fixed: `run_cell.py`
+   now stores `extra.expectation_re`/`expectation_im` (matching the Julia driver's shape exactly);
+   `accuracy()` rewritten to pair a `pauli_propagation_jl` run against every other completed run
+   sharing `(min_abs_coeff, n_qubits)`, emitting `reference_value`/`observed_value`/`abs_delta`.
+   34/34 analysis+jobs tests still pass. No existing Rust run record has `expectation_re` (all
+   predate this fix, including the 2026-09-13 `worker7277`/`worker7327` data) -- a fresh, cheap
+   single cell (threads=96, eps=2^-16, matching the real Julia point in `raw/2026-09-14-worker7169-julia`)
+   is needed to get the first real paired accuracy data point.

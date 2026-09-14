@@ -235,17 +235,47 @@ def hash_communication(run_records: list[dict], gate_records: list[dict]) -> lis
 
 
 def accuracy(run_records: list[dict]) -> list[dict]:
-    """One row per run carrying a reference/observed value pair from the open-ended 'extra' field."""
-    rows = []
-    for r in run_records:
+    """One row per (Rust, Julia) pair of completed runs of the same cell.
+
+    Neither driver's own record holds both a "reference" and an "observed"
+    value -- `jobs/run_cell.py` and `jobs/run_cell_julia.py` each write
+    `extra.expectation_re`/`expectation_im` for their own engine's run only
+    (decisions.md #20). This pairs a `pauli_propagation_jl` run (the external
+    reference) with every other completed run sharing its `(min_abs_coeff,
+    n_qubits)` -- the two campaign quantities that change the observable's
+    true value; `theta_h`/`trotter_steps` are fixed campaign-wide -- and
+    reports the observed-minus-reference delta. Runs with no matching partner
+    on either side are silently skipped, not padded with `None`s: a lone
+    Rust or Julia run proves nothing about accuracy by itself.
+    """
+    def _exp(r: dict) -> complex | None:
         extra = r.get("extra") or {}
-        rows.append(
-            {
-                "run_id": r["run_id"],
-                "reference_value": extra.get("reference_value"),
-                "observed_value": extra.get("observed_value"),
-            }
-        )
+        re, im = extra.get("expectation_re"), extra.get("expectation_im")
+        return None if re is None else complex(re, im or 0.0)
+
+    completed = [r for r in run_records if r["status"] == "completed" and _exp(r) is not None]
+    references = [r for r in completed if r["engine"] == "pauli_propagation_jl"]
+    observed = [r for r in completed if r["engine"] != "pauli_propagation_jl"]
+
+    rows = []
+    for ref in references:
+        key = (ref["min_abs_coeff"], ref["n_qubits"])
+        for obs in observed:
+            if (obs["min_abs_coeff"], obs["n_qubits"]) != key:
+                continue
+            ref_val, obs_val = _exp(ref), _exp(obs)
+            rows.append(
+                {
+                    "run_id": obs["run_id"],
+                    "reference_run_id": ref["run_id"],
+                    "min_abs_coeff": key[0],
+                    "n_qubits": key[1],
+                    "reference_value": ref_val.real,
+                    "observed_value": obs_val.real,
+                    "abs_delta": abs(obs_val - ref_val),
+                }
+            )
+    rows.sort(key=lambda r: (r["min_abs_coeff"], r["run_id"]))
     return rows
 
 

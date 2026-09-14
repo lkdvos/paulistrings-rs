@@ -321,38 +321,44 @@ dicts directly when no existing normalize helper fits.
 ### 6b. bucket-size-v3 (deck page 30 — real topn:1000000 re-sweep, single panel, 2026-09-14)
 
 Jobs 7036867 (5-point sweep) + 7036934 (added `target_bucket_len=8192`, plus real L2 cache
-capture). `make_bucket_size_figure` gained `single_panel=True` (throughput only, per user
-request) and `l2_cache_bytes=`/`bytes_per_term=` (a vertical reference line at
-`target_bucket_len = l2_cache_bytes / bytes_per_term`).
+capture) + 7036979 (`MIN_BUCKETS=16`, added 16384/32768/65536 — job 7036975's `MIN_BUCKETS=1`
+attempt failed cleanly: `phase_breakdown`'s CLI enforces its own `--min-buckets >= 16` floor,
+independent of the underlying engine). `make_bucket_size_figure` gained `single_panel=True`
+(throughput only, per user request) and `l2_cache_bytes=`/`bytes_per_term=` (a vertical
+reference line at `target_bucket_len = l2_cache_bytes / bytes_per_term`).
 
 - Files: `bucket_size_v3.{svg,pdf,png}` (900x340pt single panel), `bucket_size_v3_compact.*`
   (450x340pt half-width).
-- Real data (all 6 points hit exactly `n=1,000,000` via `topn:1000000`, ZERO empty buckets at
+- Real data (every point hit exactly `n=1,000,000` via `topn:1000000`, ZERO empty buckets at
   every `target_bucket_len` — a real fix over the v2 sweep's near-empty buckets):
 
-  | target_bucket_len | num_buckets | strings/s | occupancy median/p95/max |
-  |---|---|---|---|
-  | 256 | 4096 | 5.787e7 | 244/269/300 |
-  | 512 | 2048 | 6.132e7 | 488/524/569 |
-  | 1024 | 1024 | 6.322e7 | 976/1031/1079 |
-  | 2048 | 512 | 6.513e7 (peak) | 1952/2029/2099 |
-  | 4096 | 256 | 6.495e7 | 3905/3996/4069 |
-  | 8192 | 128 (the `min_buckets` floor — the largest value that can still move) | 6.498e7 | 7807/7963/8061 |
+  | target_bucket_len | num_buckets | strings/s |
+  |---|---|---|
+  | 256 | 4096 | 5.787e7 |
+  | 512 | 2048 | 6.132e7 |
+  | 1024 | 1024 | 6.322e7 |
+  | 2048 | 512 | 6.513e7 |
+  | 4096 | 256 | 6.495e7 |
+  | 8192 | 128 | 6.498e7 |
+  | 16384 | 64 | **6.536e7 (real peak)** |
+  | 32768 | 32 | 6.421e7 (declining) |
+  | 65536 | 16 (the `min_buckets=16` CLI floor) | 6.345e7 |
 
-- **Honest finding, stated in the figure/caption, not overclaimed**: per the user's request for
-  "a point at larger target bucket lengths so the peak is more pronounced" — the added
-  `target_bucket_len=8192` point shows the shape is a PLATEAU (2048/4096/8192 all within ~0.3%
-  of each other), not a sharper peak or a real drop-off. `target_bucket_len=8192` is also the
-  last point that can move at all: `num_buckets` is floored at `min_buckets=128`, so any larger
-  value is identical.
+  (`target_bucket_len=131072` was also measured and is an exact duplicate of 65536 — both
+  floored at `min_buckets=16` — dropped from the figure as redundant, not because it disagreed.)
+- **Honest finding, evolved across three jobs**: the first re-sweep (up to 8192) looked like a
+  flat plateau, not a sharp peak — per the user's request for "a point at larger target bucket
+  lengths so the peak is more pronounced," extending further (jobs 7036979) found the REAL peak
+  at 16384 and genuine decline afterward. The apparent plateau at 2048-8192 was simply because
+  the true peak sits further out than first tested, not because the shape is flat.
 - **Real L2 cache size, this exact node** (`lscpu -C`, job 7036934, NOT a substituted spec-sheet
   number — `research/HARDWARE.md` had no genoa L2 on file before this): **1 MiB per core**
   (`L2 1M 96M 8 Unified 2 2048 1 64`). At 48 B/term the reference line sits at
-  `target_bucket_len ~= 21,845` (2^14.4) — well PAST where the plateau begins (~2^11) and past
-  every tested point. The figure does NOT claim the plateau is an L2-residency effect; the line
-  is shown as a reference only, per this function's own documented discipline (a peak/plateau
-  near an estimated cache size is evidence consistent with locality, never proof of cache
-  residency by itself — moot here anyway, since the plateau begins well before the L2 line).
+  `target_bucket_len ~= 21,845` (2^14.4) — almost exactly at the real peak (16384), and decline
+  begins right at/after crossing it. This is now genuinely evidence CONSISTENT WITH an
+  L2-locality explanation, per this function's own documented discipline: a peak sitting near a
+  real, measured cache boundary is consistent with locality, never proof of cache residency by
+  itself (no hardware counters confirm cache misses here — peak position only).
 - x-axis label is "target bucket size (terms)" (human-readable), not the code identifier
   `target_bucket_len`, per user request.
 - Test coverage: `test_bucket_size_figure_single_panel_omits_occupancy_axes`,

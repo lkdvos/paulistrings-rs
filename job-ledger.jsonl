@@ -63,3 +63,7 @@
 {"job_id": "7036874", "name": "quera-c1c2-julia", "purpose": "Julia single-thread dict, eps={2^-10,2^-12,2^-14} (baseline plot)", "submitted_at": "2026-09-14T18:03:36.004632", "status": "PENDING"}
 {"job_id": "7036875", "name": "quera-c1c2-julia", "purpose": "Julia multithreaded (96t) vector, eps={2^-10,2^-12,2^-14} (baseline plot)", "submitted_at": "2026-09-14T18:03:36.004641", "status": "PENDING"}
 {"job_id": "7036887", "name": "quera-c1c2-julia", "purpose": "Julia 32-thread vector, eps={2^-10,2^-12,2^-14} (baseline plot)", "node": "worker7160", "submitted_at": "2026-09-14T18:05:55.756379", "status": "RUNNING"}
+{"job_id": "7036934", "name": "quera-bucketsize-topn", "purpose": "target_bucket_len=8192 point + real L2/L3 cache size capture", "submitted_at": "2026-09-14T18:25:37.423299", "status": "PENDING"}
+{"job_id": "7036975", "name": "quera-bucketsize-topn", "purpose": "extended sweep, min_buckets=1 (floor removed), target_bucket_len up to 131072", "submitted_at": "2026-09-14T18:30:08.671052", "status": "PENDING"}
+{"job_id": "7036975", "name": "quera-bucketsize-topn", "status": "FAILED-min-buckets-floor", "note": "CLI enforces --min-buckets>=16; resubmitting with 16 instead of 1", "timestamp": "2026-09-14T18:31:26.740484"}
+{"job_id": "7036979", "name": "quera-bucketsize-topn", "purpose": "extended sweep, min_buckets=16 (CLI floor), target_bucket_len 16384-131072", "submitted_at": "2026-09-14T18:32:12.842427", "status": "PENDING"}

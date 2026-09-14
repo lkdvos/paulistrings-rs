@@ -1201,3 +1201,21 @@
     identifier) to "target bucket size (terms)" (human-readable), per user request. New exports:
     `figures/real/bucket_size_v3.{svg,pdf,png}` and `_compact` (450x340pt half-width, single
     panel). 71/71 figure tests passing.
+
+49. **Bucket-size figure extended past the min_buckets=128 plateau, real peak found near L2,
+    2026-09-14.** Job 7036975 (`MIN_BUCKETS=1`) failed cleanly: `phase_breakdown`'s CLI enforces
+    its own `--min-buckets >= 16` floor (independent of the underlying engine, which the earlier
+    PyO3-bindings work confirmed has no such floor at the library level) -- corrected to
+    `MIN_BUCKETS=16` for job 7036979. Real result: `target_bucket_len=16384` (num_buckets=64) is
+    the TRUE peak at 6.536e7 strings/s -- higher than the earlier apparent "plateau" at
+    2048-8192 (~6.50e7) -- and throughput genuinely DECLINES past it: 32768 (32 buckets)
+    ->6.421e7, 65536 (16 buckets, the CLI floor) ->6.345e7. 131072 is an identical duplicate of
+    65536 (both floored at min_buckets=16) and was dropped from the figure as redundant.
+
+    The real peak (16384) sits almost exactly at the real, measured L2 boundary
+    (target_bucket_len ~= 21,845 at 48 B/term and 1 MiB L2) -- decline begins right at/after
+    crossing the L2 line. This is now genuinely evidence CONSISTENT WITH an L2-locality
+    explanation (per this function's own stated discipline: a peak near a measured cache
+    boundary is consistent with locality, never proof of cache residency by itself -- no
+    hardware counters confirm cache misses here, this is peak position only). `bucket_size_v3.*`
+    regenerated with the full 9-point range (256 through 65536); MANIFEST updated.

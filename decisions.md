@@ -812,3 +812,10 @@
    real but indirect data (Rust's own term-growth curve plus one Julia timing point), not
    measurements of the actual Julia sweep; a real run is needed to confirm them before trusting
    the estimated ~9-hour eps=2^-16 figure enough to budget cluster time against it.
+
+36. **E8 cutoff sweep completed for real on 2026-09-14** (job 7033663, all 8 cells, 0 schema
+   problems): the `"cut"` partition-row policy's export-volume advantage over `"random"` holds
+   consistently at ~11x across the full {2^-12, 2^-14, 2^-16, 2^-18} grid (10.7x, 10.8x, 11.1x,
+   11.2x respectively) -- the advantage does not erode, and if anything grows slightly, as the sum
+   grows by 4 orders of magnitude. `figures/real/hash_communication.png` regenerated as the real
+   cutoff-sweep line plot (superseding the single-point eps=2^-16 bar chart).

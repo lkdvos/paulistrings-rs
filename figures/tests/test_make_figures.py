@@ -256,14 +256,63 @@ def test_convergence_figure_one_line_per_cutoff():
     matplotlib.pyplot.close(fig)
 
 
-def test_convergence_figure_overlays_julia_reference_points():
+def test_convergence_figure_overlays_single_julia_point_as_star():
+    """A single Julia point per cutoff (e.g. one endpoint run record) still
+    falls back to the original star-overlay rendering, not a degenerate line.
+    """
     rows = [
         {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.9},
         {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.7},
     ]
-    julia_points = [{"min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.701}]
-    fig = make_convergence_figure(rows, julia_points=julia_points)
+    julia_rows = [{"min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.701}]
+    fig = make_convergence_figure(rows, julia_rows=julia_rows)
     assert fig is not None
     ax = fig.axes[0]
     assert any(c.get_label() == "PauliPropagation.jl" for c in ax.collections)
+    matplotlib.pyplot.close(fig)
+
+
+def test_convergence_figure_draws_a_real_julia_line_for_a_full_trajectory():
+    """More than one Julia point at a cutoff draws a dashed line, in the same
+    color as the Rust line at that cutoff -- the real per-cutoff trajectory
+    case `run_convergence_sweep_julia.py`'s `PP_LAYER_EXPECTATION` sweep
+    produces, not just a single endpoint.
+    """
+    rows = [
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.7},
+    ]
+    julia_rows = [
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.901},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.699},
+    ]
+    fig = make_convergence_figure(rows, julia_rows=julia_rows)
+    assert fig is not None
+    ax = fig.axes[0]
+    dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
+    assert len(dashed) == 1
+    assert dashed[0].get_label() == "PauliPropagation.jl eps=2^-20"
+    # Same color as the (single) solid Rust line at the same cutoff.
+    solid = [ln for ln in ax.lines if ln.get_linestyle() != "--"]
+    assert len(solid) == 1
+    assert dashed[0].get_color() == solid[0].get_color()
+    # No leftover star overlay from the single-point fallback path.
+    assert not ax.collections
+    matplotlib.pyplot.close(fig)
+
+
+def test_convergence_figure_julia_line_only_cutoff_still_gets_a_color():
+    """A cutoff present only on the Julia side (no matching Rust line) must
+    not crash the shared color lookup.
+    """
+    rows = [
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 2, "expectation_re": 0.7},
+    ]
+    julia_rows = [
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.7},
+    ]
+    fig = make_convergence_figure(rows, julia_rows=julia_rows)
+    assert fig is not None
     matplotlib.pyplot.close(fig)

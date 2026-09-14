@@ -183,7 +183,7 @@ def make_accuracy_figure(rows: Sequence[dict]):
     return fig
 
 
-def make_convergence_figure(rows: Sequence[dict], julia_points: Sequence[dict] = ()):
+def make_convergence_figure(rows: Sequence[dict], julia_rows: Sequence[dict] = ()):
     """One line per `min_abs_coeff`: the observable's expectation value at
     every Trotter step, from `jobs/run_convergence_sweep.py`'s
     `convergence.jsonl` records.
@@ -195,14 +195,18 @@ def make_convergence_figure(rows: Sequence[dict], julia_points: Sequence[dict] =
     silently plotting nothing, matching this module's other "real data or an
     explicit reason" contract.
 
-    `julia_points` optionally overlays PauliPropagation.jl reference points
-    (`{"min_abs_coeff", "trotter_step", "expectation_re"}` dicts, e.g. built
-    from `jobs/run_cell_julia.py`'s run records) as black stars -- Julia's
-    `runner.jl` only computes the observable's expectation once, at the end
-    of the whole circuit (see its `PP_LAYER_COUNTS` docs: per-layer *term
-    counts* are available, per-layer *expectation values* are not), so this
-    is real endpoint(s), not a Julia trajectory line. Each point is matched
-    to the Rust line of the same `min_abs_coeff` when one exists.
+    `julia_rows` optionally overlays PauliPropagation.jl data in the SAME row
+    shape as `rows` -- one row per `(min_abs_coeff, trotter_step)`, e.g. from
+    `jobs/run_convergence_sweep_julia.py`'s `convergence_julia.jsonl`
+    (`runner.jl`'s `PP_LAYER_EXPECTATION` diagnostic; see its module header
+    for why this needed a genuine per-step re-propagation, not a cheap
+    per-gate hook like `PP_LAYER_COUNTS`). A cutoff with more than one Julia
+    point gets a real dashed line, in the SAME color as the Rust line at that
+    cutoff so the pair reads as one comparison; a cutoff with exactly one
+    point (e.g. `jobs/run_cell_julia.py`'s single final-step run record,
+    decisions.md #27/#33, which has no `trotter_step` of its own and is
+    conventionally given the final step) falls back to a black star, the
+    original single-endpoint overlay this function shipped with.
     """
     completed = [r for r in rows if r.get("status") == "completed"]
     if not completed:
@@ -222,24 +226,51 @@ def make_convergence_figure(rows: Sequence[dict], julia_points: Sequence[dict] =
     for r in completed:
         by_eps.setdefault(r["min_abs_coeff"], []).append(r)
 
+    jl_completed = [r for r in julia_rows if r.get("status", "completed") == "completed"]
+    jl_by_eps: dict[float, list[dict]] = {}
+    for r in jl_completed:
+        jl_by_eps.setdefault(r["min_abs_coeff"], []).append(r)
+
+    # One color per cutoff, shared between the Rust line and its Julia overlay
+    # (if any) -- the union of both sides' cutoffs, so a Julia-only cutoff
+    # (no matching Rust line) still gets a stable color instead of collapsing
+    # onto whatever color index it would otherwise land on.
     cmap = plt.get_cmap("viridis")
-    epsilons = sorted(by_eps)
-    for i, eps in enumerate(epsilons):
+    epsilons = sorted(set(by_eps) | set(jl_by_eps))
+    colors = {eps: cmap(i / max(len(epsilons) - 1, 1)) for i, eps in enumerate(epsilons)}
+
+    def _label(eps: float) -> str:
+        # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic).
+        return f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
+
+    for eps in sorted(by_eps):
         pts = sorted(by_eps[eps], key=lambda r: r["trotter_step"])
         xs = [p["trotter_step"] for p in pts]
         ys = [p["expectation_re"] for p in pts]
-        color = cmap(i / max(len(epsilons) - 1, 1))
-        # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic).
-        label = f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
-        ax.plot(xs, ys, marker="o", markersize=3, linewidth=1.2, color=color, label=label)
-
-    if julia_points:
-        jxs = [p["trotter_step"] for p in julia_points]
-        jys = [p["expectation_re"] for p in julia_points]
-        ax.scatter(
-            jxs, jys, marker="*", s=140, color="black", zorder=5,
-            label="PauliPropagation.jl", edgecolors="white", linewidths=0.5,
+        ax.plot(
+            xs, ys, marker="o", markersize=3, linewidth=1.2, color=colors[eps],
+            label=_label(eps),
         )
+
+    star_labeled = False
+    for eps in sorted(jl_by_eps):
+        jl_pts = sorted(jl_by_eps[eps], key=lambda r: r["trotter_step"])
+        if len(jl_pts) > 1:
+            jxs = [p["trotter_step"] for p in jl_pts]
+            jys = [p["expectation_re"] for p in jl_pts]
+            ax.plot(
+                jxs, jys, linestyle="--", marker="^", markersize=4, linewidth=1.2,
+                color=colors[eps], label=f"PauliPropagation.jl {_label(eps)}",
+            )
+        else:
+            p = jl_pts[0]
+            ax.scatter(
+                [p["trotter_step"]], [p["expectation_re"]], marker="*", s=140,
+                color="black", zorder=5,
+                label=None if star_labeled else "PauliPropagation.jl",
+                edgecolors="white", linewidths=0.5,
+            )
+            star_labeled = True
 
     ax.set_xlabel("Trotter step")
     ax.set_ylabel("<O>")

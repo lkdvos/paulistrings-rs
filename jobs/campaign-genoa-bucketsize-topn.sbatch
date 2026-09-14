@@ -68,6 +68,15 @@ module load modules/2.4-20250724
 echo "== node $(hostname -s), job ${SLURM_JOB_ID:-?}, $(date -Is)"
 lscpu | grep -E 'Model name|Socket|NUMA|Thread|^CPU\(s\)'
 lscpu | grep -E 'Thread\(s\) per core'
+# Real L2/L3 cache size for THIS node, not a substituted general Zen4 spec --
+# research/HARDWARE.md has no recorded L2 size for genoa, and past job logs
+# only ever captured a filtered lscpu subset. lscpu -C is the authoritative,
+# node-local source; /sys is a fallback if -C is unsupported on this util-linux.
+echo "== cache sizes (real, this node)"
+lscpu -C 2>&1 || true
+for f in /sys/devices/system/cpu/cpu0/cache/index*/{level,type,size}; do
+    [ -f "$f" ] && echo "$f: $(cat "$f")"
+done
 echo "load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/quera-campaign-bucketsize-topn-target-${SLURM_JOB_ID:-local}"

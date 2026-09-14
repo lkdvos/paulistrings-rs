@@ -9,7 +9,12 @@ import math
 SCHEMA_VERSION = 1
 
 _DIRECTIONS = {"forward", "heisenberg"}
-_ENGINES = {"unpartitioned", "partitioned", "distributed"}
+# The first three describe this engine's own run topology; "pauli_propagation_jl"
+# is the external-baseline leg (E0, jobs/run_cell_julia.py) -- a genuinely
+# different axis (which software, not how this engine partitioned its work),
+# admitted here rather than overloaded onto "unpartitioned" so a query over
+# `engine` can tell the legs apart (decisions.md, run_cell_julia.py entry).
+_ENGINES = {"unpartitioned", "partitioned", "distributed", "pauli_propagation_jl"}
 _STATUSES = {
     "completed",
     "invalid_hardware",
@@ -113,8 +118,13 @@ def validate_run(record: dict) -> list[str]:
             f"schema_version must be {SCHEMA_VERSION}, got {record.get('schema_version')!r}"
         )
 
-    for field in ("campaign_id", "run_id", "task_id", "config_id", "variant_id"):
+    for field in ("campaign_id", "run_id", "task_id", "variant_id"):
         _check_type(record, field, str, problems)
+    # config_id is optional grouping metadata (CellSpec.config_id defaults to
+    # None for an ad hoc cell), unlike the always-real identifiers above --
+    # nullable, not required, per the real invalid_hardware records this
+    # caught it on (decisions.md).
+    _check_nullable_type(record, "config_id", str, problems)
 
     _check_type(record, "repetition_index", int, problems)
     if isinstance(record.get("repetition_index"), int) and record["repetition_index"] < 0:
@@ -150,7 +160,10 @@ def validate_run(record: dict) -> list[str]:
 
     _check_nullable_type(record, "max_weight", int, problems)
 
-    _check_type(record, "policy", str, problems)
+    # policy is a description of the actual truncation policy object built for
+    # a real attempt; a cell that never got that far (invalid_hardware,
+    # skipped_variant, a pre-run failure) has none to describe -- nullable.
+    _check_nullable_type(record, "policy", str, problems)
 
     if _check_type(record, "engine", str, problems) and record["engine"] not in _ENGINES:
         problems.append(f"engine must be one of {_ENGINES}, got {record['engine']!r}")

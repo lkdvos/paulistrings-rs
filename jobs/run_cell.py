@@ -211,6 +211,9 @@ def _empty_run_record(
         "hardware_valid": hardware_valid,
         "trace_enabled": False,
         "wall_time_s": None,
+        # validate_run requires a "<field>_reason" string whenever wall_time_s
+        # is null; the cell never ran, so the reason is the same failure_reason.
+        "wall_time_s_reason": failure_reason,
         "setup_time_s": None,
         "scatter_time_s": None,
         "gather_time_s": None,

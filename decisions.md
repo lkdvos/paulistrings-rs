@@ -105,6 +105,55 @@
    across files already in this agent's context (T04's engine changes) plus the newly-delegated T06/T07 output,
    so a fresh subagent would cost more in context-transfer than it saved. No correctness issues found beyond
    the two gaps already logged (genoa fingerprint confidence, hash_communication placeholder).
+20. **Built the E0 external-baseline campaign glue for real, on 2026-09-13**: `jobs/run_cell_julia.py`, given
+    the same `cell.json` shape `run_cell.py` consumes, builds the circuit/observable through
+    `run_cell._build_circuit`/`_build_observable` (real `paulistrings` objects, not a second construction
+    path), converts them to task-JSON schema v1 via `common.oracles.as_circuit_spec`/`pauli_terms`, and drives
+    `benchmarks/julia/runner.jl` through the existing `benchmarks/python/julia_baseline.py` wrapper
+    (`make_task`/`run_task`) — no new task-JSON construction, per the handoff's explicit instruction. Preflight-
+    gated exactly like `run_cell.py` (same hardware contract, same node in a real run). Writes one run record
+    per cell to `runs.jsonl`, `engine="pauli_propagation_jl"`, `variant_id="external_pauli_propagation_jl"`
+    (a cell's own `variant_id`, a Rust-commit-registry label, is meaningless for this leg and is ignored for
+    that purpose — only `config_id` is preserved, so a Rust cell and its Julia counterpart join on it). Never
+    writes a gate record: `validate_gate` requires `nanos` as a real non-null int and PauliPropagation.jl has
+    no per-gate wall-time instrumentation (decision #10), so `trace_enabled` is always `False` and there is no
+    honest per-gate record to produce. Real per-layer term counts (`PP_LAYER_COUNTS=1`, on by default) go into
+    the run record's `extra.per_layer_terms` instead, since gate records have no home for them.
+
+    **Real schema mismatches found and fixed** (`analysis/validate_campaign.py` run against real local output,
+    same pattern as decision #17): (a) `schema.py`'s `_ENGINES` enum had no value for an external-library leg
+    at all — `unpartitioned`/`partitioned`/`distributed` describe this engine's own run topology, not which
+    software produced the run — fixed by adding `"pauli_propagation_jl"` as a fourth, distinct value rather
+    than overloading `"unpartitioned"` onto a different axis of meaning. (b) `config_id` and `policy` were
+    required non-null `str` in `validate_run`, but a cell that never gets far enough to build a policy object
+    (`invalid_hardware`, or any pre-run failure) genuinely has neither — both are real optional fields
+    (`CellSpec.config_id` already defaults to `None`), so both were changed to nullable. This also fixed a
+    latent bug in `run_cell.py`'s own `invalid_hardware` path, discovered incidentally: it already emitted
+    `config_id=None`/`policy=None` and was already failing `validate_run` on those two fields before this fix,
+    just never caught because no test called `validate_run` on that path. (c) `validate_run` requires a
+    `"wall_time_s_reason"` string whenever `wall_time_s` is null, on *any* status, but neither driver's
+    `RUN_FIELDS`/`_empty_run_record` ever populated that key — fixed in both `run_cell.py` and
+    `run_cell_julia.py` by setting `wall_time_s_reason` to the same `failure_reason` text on every
+    non-completed record.
+
+    **Real data generated and validated**: an 8-qubit, 1-Trotter-step smoke cell ran end-to-end through the
+    real `julia`/PauliPropagation.jl installation on this host (juliaup, `julia 1.12.6`, already-instantiated
+    `benchmarks/julia` project — `Manifest.toml` pins `PauliPropagation.jl 0.8.2`, tree-sha
+    `fe2bc2552caf975532a8b1372bd8bde1e1cd3f3f`, matching `contract.md`'s pin) and its `runs.jsonl` record passed
+    `analysis/validate_campaign.py` with 0 problems. `quera-talk-data/campaign-2026-09-11/jobs/tests/
+    test_run_cell_julia.py` adds 4 tests (2 real `julia` subprocess invocations, skipped cleanly if `julia`
+    is unavailable), including a cross-engine term-count check against `run_cell.run_cell` on the identical
+    tiny circuit — the miniature version of decision #10's pilot, cheap enough to run on every test invocation.
+    All 46 pre-existing tests under `quera-talk-data/campaign-2026-09-11/` still pass (no regression from the
+    schema changes above).
+
+    **Not done, and explicitly out of scope for this pass**: the real 20-step canonical-depth Julia run —
+    `jobs/campaign-genoa-julia.sbatch` is prepared (mirrors `campaign-genoa.sbatch`'s worktree/venv/maturin
+    preamble, since this leg still needs `paulistrings` importable to build the circuit, plus `module load
+    julia` and `Pkg.instantiate()` on the shared filesystem) but **not submitted** — that is the user's step,
+    per org policy (decision #2). E1/E2 (historical Rust commit variants) were not touched, per this task's
+    explicit scope boundary.
+
 9. **Caught and fixed a real regression before it shipped**: the direct/small-sum path (`engine::direct`) has
    its own layer loop, separate from the sorted engine's, and initially had no gate-trace wiring at all — so
    `engine="auto"`/`"direct"` runs recorded only the sorted-suffix layers, truncating `PropagationStats.layers`

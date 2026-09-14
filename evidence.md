@@ -6,7 +6,7 @@ missing). None is populated with real numbers, and none may be until a real Slur
 
 | ID | Evidence | Slide use | Status | Blocking on |
 | --- | --- | --- | --- | --- |
-| E0 | Baseline + external libraries | 10, every recurrence | tooling-ready | `jobs/campaign-genoa.sbatch` (bucketed_current only); Julia leg verified working (`decisions.md` #10) |
+| E0 | Baseline + external libraries | 10, every recurrence | tooling-ready | Rust leg: `jobs/campaign-genoa.sbatch` (bucketed_current only). Julia leg: `jobs/run_cell_julia.py` + `jobs/campaign-genoa-julia.sbatch`, real end-to-end local proof at small scale 2026-09-13 (`decisions.md` #20); real 20-step canonical-depth run not yet submitted |
 | E1 | Actual kernel improvement | 11 | blocked | Historical-revision worktree-checkout build machinery not implemented (`tasks.json#T07`); variant identified in `tasks/T01-variants.json` (`jcc_erratum_and_branch_prediction`) |
 | E2 | Attempted threading approach | 12 | blocked | Same as E1; variant `presentation_bench_crate_variants` |
 | E3 | Memory diagnosis | 13-14 | not started | No task yet drives `crates/membench`/`scripts/bandwidth.sh` for this campaign's host |
@@ -41,3 +41,10 @@ running `./reproduce.sh submit-c1c2`'s printed command on the real cluster.
 - E1/E2/E3/E6/E7/E8 need additional implementation (worktree builds, membench wiring, multi-node template,
   schema field) beyond what T01-T09 built; each is logged as `blocked` above with its specific prerequisite,
   not silently absent.
+- E0's Julia leg (`jobs/run_cell_julia.py`) never emits a per-gate trace: `trace_enabled` is always `False`
+  and no `gates.rank-N.jsonl` records are written for it, because PauliPropagation.jl has no per-gate
+  wall-time instrumentation (decision #10) and `validate_gate` requires `nanos` as a real, non-null int —
+  there is no honest per-gate record this leg could produce. Real per-layer term counts are captured instead,
+  in the run record's `extra.per_layer_terms`, since gate records have no home for them without `nanos`.
+- The real 20-step canonical-depth Julia run (`jobs/campaign-genoa-julia.sbatch`) has not been submitted;
+  only a small local proof (8 qubits, 1 Trotter step) has actually executed end-to-end and validated clean.

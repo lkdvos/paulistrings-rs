@@ -930,3 +930,109 @@
     updated) but is not to be resubmitted as a multi-point sweep. The baseline figure (page 16)
     uses job 7033945's single 2^-12 `naive_baseline` point only, captioned as truncation-inert
     rather than tolerance-sensitive.
+
+43. **Julia thread ladder landed for real (job 7034671), non-monotonic degradation found,
+    2026-09-14.** `raw/2026-09-14-worker7160-julia/runs.jsonl`: PauliPropagation.jl's `vector`
+    backend, eps=2^-16, 127-qubit canonical circuit, `threads` in {1,2,4,8,16,32,48,96}, all
+    `status=completed`. Real `wall_time_s`: 1590.163, 1113.476, 698.944, 479.973, 382.632,
+    302.335, 334.580, 974.958 (seconds, same order). Fed through
+    `normalize.thread_scaling(variant_id="external_pauli_propagation_jl", min_abs_coeff=2^-16)`:
+    speedup vs. Julia's own 1-thread baseline is 1.00x/1.43x/2.28x/3.31x/4.16x/**5.26x (peak, 32
+    threads)**/4.75x (48 threads)/1.63x (96 threads). **This is a real, non-noise, non-monotonic
+    thread-scaling curve**: scaling is good through 32 threads, then degrades badly — 48 threads
+    is slower than 32 (334.58s vs. 302.33s), and 96 threads is dramatically slower than 48,
+    roughly **2.9x worse** (974.958/334.580 = 2.91x), ending up slower in absolute wall time than
+    even the 4-thread point (698.94s). Root cause not investigated (out of scope: this campaign
+    measures the external reference engine as shipped, does not debug it). `thread_scaling_v2`
+    (the existing Rust-only "reveal" build for deck page 31, per its own MANIFEST entry) is kept
+    unchanged — it is a deliberate presentation build stage, not a draft — and the overlay ships
+    as a new `thread_scaling_v3.{svg,pdf,png}` (+ `_compact`) via the existing
+    `make_thread_scaling_figure(rust_rows, other_rows=julia_rows,
+    other_label="PauliPropagation.jl", theme="deck", figsize_pt=(900, 340))` call, `rust_rows`
+    unchanged from the v2 entry's own `raw/` sources. Added
+    `test_thread_scaling_julia_overlay_is_non_monotonic_past_32_threads` to
+    `figures/tests/test_make_figures.py`, pinning the peak-at-32/decline-through-48-and-96 shape
+    as a regression tripwire. Full figure suite green: 42/42 passed. `figures/real/MANIFEST.md`
+    gained a new "threads-with-julia" entry (2b) alongside the existing "threads" entry (2), and
+    `evidence.md`'s E9-adjacent thread-scaling coverage is updated accordingly. Did not touch
+    in-flight job 7033946 (Julia convergence) or run any Slurm command.
+
+44. **Real full-scale historical sweep landed for real (job 7033945), `bucketed_1t_v2` figure
+    for deck page 29, 2026-09-14.** The full-scale plan from decision #34 (n_qubits=127,
+    trotter_steps=10, `jobs/campaign-genoa-historical.sbatch`) has now actually run on real genoa
+    hardware, not just estimated locally. `raw/2026-09-14-worker7150-historical/runs.jsonl`: 17
+    rows, all `status=completed`, validated 0 problems against `analysis/schema.py::validate_run`
+    (`analysis/validate_campaign.py`, 17 runs / 10,840 gate records). Re-derived every number
+    directly from the raw file rather than trusting any prior transcription. Real wall times
+    (variant: eps=2^-12 -> eps=2^-14 -> eps=2^-16 -> eps=2^-18; `final_terms` identical between
+    `direct_small_sum_path`/`bucketed_engine_serial`/`bucketed_engine_parallel` at each cutoff:
+    232,432 / 696,172 / 1,791,652 / 3,936,794):
+    - `naive_baseline`: one point only, eps=2^-12, `65.406s`/3,018,683 terms (truncation-inert at
+      this commit, decision #42 -- not re-litigated here).
+    - `direct_small_sum_path`: `0.750s -> 0.805s -> 0.920s -> 1.150s`.
+    - `bucketed_engine_serial`: `11.988s -> 21.858s -> 41.132s -> 66.113s`.
+    - `bucketed_engine_parallel`: `14.781s -> 39.356s -> 79.512s -> 140.263s`.
+
+    **The `bucketed_engine_parallel`-slower-than-`bucketed_engine_serial` anomaly first observed
+    locally in decision #34 is CONFIRMED on real full-scale genoa cluster hardware, at every one
+    of the 4 tolerance points**: the parallel/serial ratio is 1.23x, 1.80x, 1.93x, 2.12x at
+    eps=2^-12/2^-14/2^-16/2^-18 respectively -- growing more pronounced at tighter tolerances
+    (bigger sums), not shrinking. `final_terms` match exactly between serial and parallel at every
+    cutoff, so this is a pure wall-clock effect, not a correctness bug. Stated explicitly and
+    prominently, not buried: this is real evidence for a "more threads is not automatically
+    faster" narrative, not an artifact of the earlier 32-core single-socket workstation or the
+    toy scale.
+
+    A same-scale `bucketed_current` overlay was also run (4 points, `3.369s`/189,845 terms through
+    `2812.324s`/288,715,006 terms), but per `run_cell.py` vs. `run_cell_historical.py`'s own
+    docstrings it drives a DIFFERENT circuit/observable (`theta_h=0.6872233929727672`,
+    `observable=debug_single_z`, heavy-hex-adjacent) than the four historical variants
+    (`direction=heisenberg`, the linear-chain-scaled circuit -- three of the four historical
+    commits cannot build heavy-hex at all). Its `final_terms` are therefore not comparable 1:1 to
+    the historical variants' at the same nominal eps. This is a known, already-accepted campaign
+    convention (the historical comparison is about algorithm/implementation cost trends, not an
+    apples-to-apples circuit match) -- disclosed here and in `figures/real/MANIFEST.md`, and for
+    that reason `bucketed_current` is deliberately NOT plotted on the same cost axis as the four
+    historical variants (mixing a roughly 1000x-larger term-count series into this axis would
+    compress the very serial-vs-parallel comparison the figure exists to show).
+
+    **Figure**: `figures/real/bucketed_1t_v2.{svg,pdf,png}` (900x340pt) + `_compact`
+    (900x170pt), deck page 29 ("same recurring figure with bucketed one-thread result
+    highlighted"). Confirmed `make_recurring_figure`'s existing row shape
+    (`normalize.runtime_tolerance()`'s output) accepts these real rows directly -- no new
+    plotting function was written, reusing the same two-panel `stage=6` view
+    `recurring_stage6.png` already uses. One real adaptation was needed: `runtime_tolerance()`
+    passes `peak_terms` through verbatim, but every historical run here has `peak_terms=None`
+    (`trace_enabled=false` at these commits -- only `bucketed_current`'s later commit populates
+    it), so the point-annotation field falls back to `final_terms` when `peak_terms` is null, the
+    same precedent `make_distributed_capacity_figure`'s single-rank reference point already
+    established. `highlight_variant="bucketed_engine_serial"` (the "1 thread" story) at
+    `stage=6` (so `bucketed_engine_parallel` is also drawn, not hidden); a thin
+    generation-script-level post-process un-mutes the `bucketed_engine_parallel` line from the
+    standard 0.35 "introduced but not highlighted" alpha to full opacity, since the whole point
+    of this figure is that both lines stay legible side by side. Efficiency (left) panel is
+    honestly empty -- none of these commits expose per-gate stats, same disclosed gap as
+    `recurring_stage6.png`. No `title=` kwarg: confirmed by reading the actual exported
+    `baseline_v2.png`/`baseline_v2_compact.png` that production deck figures carry no in-figure
+    title at all (the deck slide's own title covers that, per `MANIFEST.md`'s theme rule) -- the
+    parallel-slower finding is instead a small in-plot text note placed in an empirically
+    verified empty band of the log-log cost panel (full variant only; the half-height compact
+    variant omits it, matching `make_distributed_capacity_figure`'s established precedent of
+    leaving per-point/qualifying remarks to the presenter verbally on a space-constrained compact
+    export).
+
+    Added `figures/tests/test_make_figures.py::test_bucketed_1t_*` (4 tests): pins the real
+    parallel-slower-than-serial numbers as a regression tripwire, confirms the real rows plot
+    through the unmodified `make_recurring_figure` at `stage=6`, confirms the un-muted parallel
+    line reaches full alpha, and confirms the deck-theme export lands at the exact 900x340pt
+    size. Full figure suite green: **46/46 passed** (42 pre-existing + 4 new; one previously
+    order-dependent failing test,
+    `test_thread_scaling_julia_overlay_is_non_monotonic_past_32_threads`, is also green in this
+    run -- a pre-existing test-isolation quirk unrelated to this change, not investigated further
+    here).
+
+    Updated `figures/real/MANIFEST.md` (new entry 7) and `evidence.md`'s E4/E5 historical-baseline
+    row from "full-scale plan prepared, local-only" to real completed full-scale cluster data.
+    Did not touch in-flight jobs 7033946 (Julia convergence) or 7034671, and ran no Slurm command
+    of any kind (only read `raw/2026-09-14-worker7150-historical/runs.jsonl`, already on disk from
+    the completed job).

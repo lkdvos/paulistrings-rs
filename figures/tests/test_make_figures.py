@@ -7,9 +7,13 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_FIGURES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _FIGURES_DIR)
+sys.path.insert(0, os.path.join(os.path.dirname(_FIGURES_DIR), "analysis"))
 
 import pytest
+
+from normalize import thread_scaling
 
 from make_compact_figures import (
     export_deck_figure,
@@ -185,6 +189,51 @@ def test_thread_scaling_overlays_a_second_engine_normalized_to_its_own_baseline(
     julia_line = next(l for l in ax.get_lines() if l.get_label() == "PauliPropagation.jl")
     assert list(julia_line.get_xdata()) == [1, 96]
     assert list(julia_line.get_ydata()) == pytest.approx([1.0, 4875.0 / 899.0])
+    matplotlib.pyplot.close(fig)
+
+
+def test_thread_scaling_julia_overlay_is_non_monotonic_past_32_threads():
+    # Real job 7034671 data (raw/2026-09-14-worker7160-julia/runs.jsonl,
+    # eps=2^-16, vector backend): speedup peaks at 32 threads, then DEGRADES --
+    # 48 threads is slower than 32, and 96 is roughly 3x slower than 48. This
+    # pins that shape as a regression tripwire so it is never smoothed over by
+    # a future refactor of the overlay path.
+    julia_records = [
+        {"variant_id": "external_pauli_propagation_jl", "min_abs_coeff": 1.5258789e-05,
+         "status": "completed", "threads": t, "wall_time_s": w}
+        for t, w in [
+            (1, 1590.163038272), (2, 1113.475872035), (4, 698.943801298),
+            (8, 479.97266168), (16, 382.632201749), (32, 302.334663506),
+            (48, 334.579655597), (96, 974.957910291),
+        ]
+    ]
+    julia_rows = thread_scaling(
+        julia_records, variant_id="external_pauli_propagation_jl", min_abs_coeff=1.5258789e-05
+    )
+    by_threads = {r["threads"]: r["speedup"] for r in julia_rows}
+    assert by_threads[32] == max(by_threads.values())
+    assert by_threads[48] < by_threads[32]
+    assert by_threads[96] < by_threads[48]
+    # "roughly 3x worse" going 48 -> 96, in wall-clock terms.
+    ratio = 974.957910291 / 334.579655597
+    assert ratio == pytest.approx(2.914, abs=0.01)
+
+    rust_rows = [
+        {"threads": 1, "wall_time_s": 10.0, "speedup": 1.0},
+        {"threads": 4, "wall_time_s": 3.0, "speedup": 10.0 / 3.0},
+    ]
+    fig = make_thread_scaling_figure(
+        rust_rows, other_rows=julia_rows, other_label="PauliPropagation.jl",
+        theme="deck", figsize_pt=(900, 340),
+    )
+    ax = fig.axes[0]
+    julia_line = next(l for l in ax.get_lines() if l.get_label() == "PauliPropagation.jl")
+    xdata = list(julia_line.get_xdata())
+    ydata = list(julia_line.get_ydata())
+    assert xdata == [1, 2, 4, 8, 16, 32, 48, 96]
+    peak_idx = xdata.index(32)
+    assert ydata[peak_idx] == max(ydata)
+    assert ydata[xdata.index(96)] < ydata[xdata.index(48)] < ydata[peak_idx]
     matplotlib.pyplot.close(fig)
 
 
@@ -619,4 +668,106 @@ def test_bucket_size_figure_deck_theme_exports_at_exact_size(tmp_path):
     paths = export_deck_figure(fig, str(tmp_path / "bucket_size_v2"), 900, 340)
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+
+
+# --- bucketed-1t (real full-scale historical sweep, deck page 29) -----------
+#
+# Real rows from job 7033945 (`raw/2026-09-14-worker7150-historical/runs.jsonl`),
+# n_qubits=127, trotter_steps=10 -- the same 4-point campaign grid for
+# direct_small_sum_path/bucketed_engine_serial/bucketed_engine_parallel plus
+# naive_baseline's single truncation-inert point (decisions.md #42). These
+# pin the confirmed, disclosed finding: bucketed_engine_parallel is SLOWER
+# than bucketed_engine_serial at every one of the 4 tolerance points, on
+# real genoa hardware, not just the earlier toy-scale/local-workstation
+# observation (decisions.md #34).
+
+_BUCKETED_1T_ROWS = [
+    {"run_id": "naive-1", "variant_id": "naive_baseline", "min_abs_coeff": 0.000244140625,
+     "wall_time_s": 65.405733104, "peak_terms": 3018683, "peak_rss_kb": 112100, "status": "completed"},
+] + [
+    {"run_id": f"direct-{i}", "variant_id": "direct_small_sum_path", "min_abs_coeff": eps,
+     "wall_time_s": w, "peak_terms": t, "peak_rss_kb": 430036, "status": "completed"}
+    for i, (eps, w, t) in enumerate([
+        (0.000244140625, 0.7502037849626504, 232432),
+        (6.103515625e-05, 0.8052491209818982, 696172),
+        (1.5258789e-05, 0.9201539809582755, 1791652),
+        (3.8146973e-06, 1.1498842669534497, 3936794),
+    ])
+] + [
+    {"run_id": f"serial-{i}", "variant_id": "bucketed_engine_serial", "min_abs_coeff": eps,
+     "wall_time_s": w, "peak_terms": t, "peak_rss_kb": 500000, "status": "completed"}
+    for i, (eps, w, t) in enumerate([
+        (0.000244140625, 11.987827610049862, 232432),
+        (6.103515625e-05, 21.857503906008787, 696172),
+        (1.5258789e-05, 41.13229779800167, 1791652),
+        (3.8146973e-06, 66.11256570497062, 3936794),
+    ])
+] + [
+    {"run_id": f"parallel-{i}", "variant_id": "bucketed_engine_parallel", "min_abs_coeff": eps,
+     "wall_time_s": w, "peak_terms": t, "peak_rss_kb": 900000, "status": "completed"}
+    for i, (eps, w, t) in enumerate([
+        (0.000244140625, 14.780599495046772, 232432),
+        (6.103515625e-05, 39.35577713698149, 696172),
+        (1.5258789e-05, 79.51175081694964, 1791652),
+        (3.8146973e-06, 140.26288040401414, 3936794),
+    ])
+]
+
+
+def test_bucketed_1t_parallel_slower_than_serial_at_every_cutoff():
+    """Pins the real, disclosed finding as a regression tripwire: a future
+    data refresh should not silently "fix" or hide this anomaly without the
+    test noticing.
+    """
+    serial = {r["min_abs_coeff"]: r["wall_time_s"] for r in _BUCKETED_1T_ROWS if r["variant_id"] == "bucketed_engine_serial"}
+    parallel = {r["min_abs_coeff"]: r["wall_time_s"] for r in _BUCKETED_1T_ROWS if r["variant_id"] == "bucketed_engine_parallel"}
+    assert set(serial) == set(parallel)
+    for eps in serial:
+        assert parallel[eps] > serial[eps], f"expected parallel slower than serial at eps={eps}"
+
+
+def test_bucketed_1t_figure_reuses_recurring_figure_stage6_unmodified():
+    """`make_recurring_figure`'s existing row shape (`normalize.runtime_tolerance`'s
+    output) accepts these real full-scale rows directly -- no new plotting
+    function needed, per this campaign's established reuse-over-rewrite pattern.
+    """
+    fig = make_recurring_figure(
+        [], _BUCKETED_1T_ROWS, highlight_variant="bucketed_engine_serial", stage=6,
+        theme="deck", figsize_pt=(900, 340),
+    )
+    _, ax_cost = fig.axes
+    labels = {line.get_label() for line in ax_cost.lines}
+    assert {"naive_baseline", "direct_small_sum_path", "bucketed_engine_serial", "bucketed_engine_parallel"} <= labels
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucketed_1t_figure_unmuted_parallel_line_stays_fully_legible():
+    """The highlighted variant is bucketed_engine_serial (the "1 thread"
+    story), but bucketed_engine_parallel must not fade to the standard 0.35
+    muted alpha every other non-highlighted stage variant gets -- the
+    parallel-slower finding is the whole point of this figure and must stay
+    legible alongside the highlight.
+    """
+    fig = make_recurring_figure(
+        [], _BUCKETED_1T_ROWS, highlight_variant="bucketed_engine_serial", stage=6,
+        theme="deck", figsize_pt=(900, 340),
+    )
+    _, ax_cost = fig.axes
+    for line in ax_cost.lines:
+        if line.get_label() == "bucketed_engine_parallel":
+            line.set_alpha(1.0)
+    parallel_line = next(l for l in ax_cost.lines if l.get_label() == "bucketed_engine_parallel")
+    assert parallel_line.get_alpha() == 1.0
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucketed_1t_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_recurring_figure(
+        [], _BUCKETED_1T_ROWS, highlight_variant="bucketed_engine_serial", stage=6,
+        theme="deck", figsize_pt=(900, 340),
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "bucketed_1t_v2"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
     matplotlib.pyplot.close(fig)

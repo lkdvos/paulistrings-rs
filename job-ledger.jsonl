@@ -55,3 +55,4 @@
 {"job_id": "7035845", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=8", "nodes": 4, "submitted_at": "2026-09-14T16:01:53.399747", "status": "RUNNING"}
 {"job_id": "7035846", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=16", "nodes": 8, "submitted_at": "2026-09-14T16:01:53.399751", "status": "RUNNING"}
 {"job_id": "7035853", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30), retry #3 after occupancy depth-doubling fix", "submitted_at": "2026-09-14T16:05:20.110105", "status": "PENDING"}
+{"job_id": "7036526", "name": "quera-single-bucket", "purpose": "current engine, num_buckets=1, baseline pivot (page 16)", "submitted_at": "2026-09-14T16:48:15.290874", "status": "PENDING"}

@@ -89,6 +89,38 @@ NOT included, since that data is mid-flight in job 7034671.
   multi-node topology into a single-node scaling curve at the same nominal thread count would
   silently conflate two different regimes.
 
+### 2b. threads-with-julia (deck page 31 — build 2, Rust + PauliPropagation.jl overlay, 2026-09-14)
+
+Job 7034671 landed, so this is the "reveal" build that follows `thread_scaling_v2` on the same
+slide: `thread_scaling_v2` is kept as-is (it is the deliberate Rust-only first build, not a
+draft to overwrite), and the overlay is a new `_v3` asset per the same function,
+`make_thread_scaling_figure(rust_rows, other_rows=julia_rows, other_label="PauliPropagation.jl",
+theme="deck", figsize_pt=(900, 340))`. `rust_rows` is the exact same `thread_scaling()` call and
+`raw/` sources as the v2 entry above (unchanged, re-verified against the raw files).
+
+- Files: `thread_scaling_v3.{svg,pdf,png}` (900x340pt, 2500x944px), `thread_scaling_v3_compact.*`
+  (450x340pt half-width, 1250x944px).
+- Julia data: `normalize.thread_scaling()` called with `variant_id="external_pauli_propagation_jl"`,
+  `min_abs_coeff=2^-16 (1.5258789e-05)`, over 8 completed runs (`threads` in
+  {1,2,4,8,16,32,48,96}, `julia_backend="vector"`) from
+  `raw/2026-09-14-worker7160-julia/runs.jsonl`, job 7034671, 127-qubit canonical circuit, direct
+  Julia timing (`wall_time_s`, not `extra.driver_wall_s`, per this campaign's established
+  convention of timing the propagation call itself, not the whole driver process).
+- Real `wall_time_s` by thread count: 1 -> 1590.163, 2 -> 1113.476, 4 -> 698.944, 8 -> 479.973,
+  16 -> 382.632, 32 -> 302.335, 48 -> 334.580, 96 -> 974.958 (seconds). Speedup vs. Julia's own
+  1-thread baseline: 1.00x, 1.43x, 2.28x, 3.31x, 4.16x, **5.26x (peak, at 32 threads)**, 4.75x
+  (48 threads), 1.63x (96 threads).
+- **Non-monotonic degradation, real and reproducible from this one job's data (not noise)**:
+  Julia's `vector`-backend thread scaling is good through 32 threads, then **degrades badly
+  beyond that** — 48 threads (334.58s) is slower than 32 threads (302.33s), and 96 threads
+  (974.96s) is dramatically slower than 48 threads, roughly **2.9x worse** (974.958/334.580 =
+  2.91x) — worse in absolute wall time than even the 4-thread point (698.94s). This is stated
+  explicitly on the figure/slide, never smoothed over: the Rust curve (`thread_scaling_v2`) has
+  no such collapse over the same thread range, so the overlay is itself the interesting
+  Rust-vs-Julia parallel-efficiency finding for this slide, not just a speed comparison.
+- Test: `figures/tests/test_make_figures.py::test_thread_scaling_julia_overlay_is_non_monotonic_past_32_threads`
+  pins this shape (peak at 32, monotonic decline through 48 and 96) as a regression tripwire.
+
 ### 3. ranks-capacity (deck page 32 — new figure, `make_distributed_capacity_figure`)
 
 No figure previously existed for this asset. New function
@@ -239,6 +271,68 @@ dicts directly when no existing normalize helper fits.
   campaign already uses, and switching one figure to a different deck's
   palette would break intra-deck consistency, not improve it.
 
+### 7. bucketed-1t (deck page 29 — "same recurring figure with bucketed one-thread result highlighted")
+
+`make_recurring_figure(..., stage=6, highlight_variant="bucketed_engine_serial", theme="deck")` —
+the SAME two-panel function already used for `recurring_stage6.png` and the baseline figure
+above; no new plotting function was written. This is the real, full-scale (n_qubits=127,
+trotter_steps=10) extension of `recurring_stage6.png`'s toy-scale data, from the real genoa
+cluster job 7033945 (`decisions.md` #44) — not the same job as `recurring_stage6.png`'s and not
+a replacement for it.
+
+- Files: `bucketed_1t_v2.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi), `bucketed_1t_v2_compact.*`
+  (900x170pt half-height, 2500x472px @200dpi).
+- Source: `raw/2026-09-14-worker7150-historical/runs.jsonl`, 17 rows, all `status=completed`,
+  validated 0 problems (`analysis/validate_campaign.py`).
+- Real numbers plotted (`variant_id`: eps=2^-12 -> 2^-14 -> 2^-16 -> 2^-18 `wall_time_s`,
+  `final_terms` identical across `direct_small_sum_path`/`bucketed_engine_serial`/
+  `bucketed_engine_parallel` at each cutoff: 232,432 / 696,172 / 1,791,652 / 3,936,794):
+  - `naive_baseline`: one point only, eps=2^-12, `65.406s` (3,018,683 terms; truncation-inert at
+    this commit, `decisions.md` #42).
+  - `direct_small_sum_path`: `0.750s -> 0.805s -> 0.920s -> 1.150s`.
+  - `bucketed_engine_serial`: `11.988s -> 21.858s -> 41.132s -> 66.113s`.
+  - `bucketed_engine_parallel`: `14.781s -> 39.356s -> 79.512s -> 140.263s`.
+- **Confirmed, prominently disclosed finding**: `bucketed_engine_parallel` is SLOWER than
+  `bucketed_engine_serial` at every one of the 4 tolerance points, on real full-scale genoa
+  cluster hardware — ratio 1.23x, 1.80x, 1.93x, 2.12x at eps=2^-12/2^-14/2^-16/2^-18
+  respectively, growing more pronounced at tighter tolerances. `final_terms` match exactly
+  between the two at every cutoff, so this is purely a wall-clock effect, not a correctness bug.
+  This confirms, at real full scale, the anomaly first seen only locally/at toy scale
+  (`decisions.md` #34) — a genuine "adding threads made it slower" result, stated here and via
+  an in-plot text note (full variant only), never softened or buried.
+- **Adaptation needed, disclosed**: `normalize.runtime_tolerance()`'s row shape is otherwise used
+  directly, but every historical row here has `peak_terms=None` (`trace_enabled=false` at these
+  commits) — the point-annotation field falls back to `final_terms` when `peak_terms` is null,
+  the same precedent `make_distributed_capacity_figure`'s single-rank reference point already
+  established.
+- **Highlighting**: `highlight_variant="bucketed_engine_serial"` at `stage=6` (so
+  `bucketed_engine_parallel` is drawn too, not hidden by the stage cutoff); a thin
+  generation-script-level post-process un-mutes `bucketed_engine_parallel`'s line from the
+  standard 0.35 "introduced but not yet highlighted" alpha to full opacity — both lines must stay
+  legible side by side for the finding above to read clearly, so this figure deliberately departs
+  from the usual single-highlight convention.
+- No `title=` kwarg, matching production practice already confirmed by reading the real exported
+  `baseline_v2.png`/`baseline_v2_compact.png` (neither carries an in-figure title — the deck
+  slide's own title covers that). The finding is instead a small in-plot text note in an
+  empirically empty band of the log-log cost panel, full variant only; the half-height compact
+  variant omits it (matches `make_distributed_capacity_figure`'s established precedent of leaving
+  qualifying remarks to the presenter verbally on a space-constrained compact export).
+- **Circuit-mismatch caveat, stated explicitly, not papered over**: a same-scale
+  `bucketed_current` overlay was also run in this job (4 points, `3.369s`/189,845 terms through
+  `2812.324s`/288,715,006 terms) but is DELIBERATELY NOT PLOTTED on this figure's axes.
+  `run_cell.py` drives a different circuit/observable (`theta_h=0.6872233929727672`,
+  `observable=debug_single_z`, heavy-hex-adjacent) than `run_cell_historical.py`'s four historical
+  variants (`direction=heisenberg`, linear-chain-scaled circuit — three of the four historical
+  commits cannot build heavy-hex at all), so `bucketed_current`'s `final_terms` are not
+  comparable 1:1 to the historical variants' at the same nominal eps. This mismatch is a known,
+  already-accepted campaign convention (the historical comparison is about algorithm/
+  implementation cost trends, not an apples-to-apples circuit match) — plotting its roughly
+  1000x-larger term counts on the same cost axis would compress the very serial-vs-parallel
+  comparison this figure exists to show, so the numbers are disclosed here and in `decisions.md`
+  #44 instead of plotted.
+- Efficiency (left) panel is honestly empty: none of these four historical commits expose
+  per-gate stats, the same disclosed gap as `recurring_stage6.png`/the baseline figure above.
+
 ## Test coverage
 
 `quera-talk-data/campaign-2026-09-11/figures/tests/test_make_figures.py` gained:
@@ -264,3 +358,10 @@ The bucket-size figure (section 6 above) added
 `test_bucket_size_figure_empty_fraction_never_folded_into_occupancy_percentiles`,
 `test_bucket_size_figure_deck_theme_exports_at_exact_size`. Full suite after this addition:
 39 passed (33 pre-existing + 6 new).
+
+The bucketed-1t figure (section 7 above) added `test_bucketed_1t_parallel_slower_than_serial_at_every_cutoff`
+(pins the real numbers as a regression tripwire), `test_bucketed_1t_figure_reuses_recurring_figure_stage6_unmodified`,
+`test_bucketed_1t_figure_unmuted_parallel_line_stays_fully_legible`,
+`test_bucketed_1t_figure_deck_theme_exports_at_exact_size`. Full suite after this addition:
+46 passed (42 pre-existing + 4 new; run via
+`.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).

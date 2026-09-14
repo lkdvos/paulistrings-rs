@@ -261,6 +261,7 @@ def run_cell_julia(
             threads=spec.threads,
             warm_repeats=warm_repeats,
             layer_counts=True,
+            backend=spec.backend,
             timeout=timeout,
         )
     except julia_baseline.JuliaBaselineError as exc:

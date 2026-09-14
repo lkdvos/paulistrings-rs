@@ -819,3 +819,20 @@
    11.2x respectively) -- the advantage does not erode, and if anything grows slightly, as the sum
    grows by 4 orders of magnitude. `figures/real/hash_communication.png` regenerated as the real
    cutoff-sweep line plot (superseding the single-point eps=2^-16 bar chart).
+
+37. **Added real Julia multithreading support, 2026-09-14**, per user request. Investigated the
+   installed PauliPropagation.jl 0.8.2 source directly rather than assuming `julia -tN` alone
+   helps: `propagate`'s own docstring says `thread=true` (the default) "disables multithreading in
+   every function on the VectorPauliSum backend that can multithread" -- meaning the campaign's
+   default "dict" backend (`PauliSum`) is single-threaded regardless of `-t`, and only `PP_BACKEND=
+   vector` actually engages parallelism. This was existing, already-wired runner.jl functionality
+   (`PP_BACKEND` env var, already read at line ~642) -- no new Julia code needed. Spot-checked
+   correctness at a tiny scale (8 qubits, 5 gates): `dict`/1-thread and `vector`/4-thread agree on
+   `final_terms` (2 vs 2). Added `CellSpec.backend` (shared dataclass, `run_cell.py`; default
+   "dict", ignored by the Rust leg) and threaded it through `run_cell_julia.py`'s `run_task(...,
+   backend=spec.backend)` call (already recorded in `extra.julia_backend`, unused until now).
+   `campaign-genoa-julia.sbatch` gained `JULIA_THREADS`/`JULIA_BACKEND` env knobs (defaults
+   preserve today's single-thread/dict behavior exactly). Not yet parity-tested at full campaign
+   scale (only the tiny spot-check above) and not yet run on the real cluster -- see the submit
+   command below for a first real multithreaded point at the same eps=2^-16 the single-thread
+   baseline already covers, for a direct comparison.

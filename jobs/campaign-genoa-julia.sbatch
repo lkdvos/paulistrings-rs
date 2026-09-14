@@ -46,6 +46,17 @@
 #                        actually left for cells (this job's --time minus ~5 min of build time),
 #                        and/or set JULIA_WARM_REPEATS=0 or 1 and MIN_ABS_COEFF to a single,
 #                        loosest value per job rather than looping over the whole grid.
+#   JULIA_THREADS       julia -t N (default: 1). Meaningless alone: PauliPropagation.jl's
+#                        default "dict" backend (its PauliSum) is single-threaded regardless of
+#                        this flag -- confirmed by reading the installed package source
+#                        (propagate's thread=true docstring names only the "vector" backend as
+#                        multithread-capable). Set JULIA_BACKEND=vector too to get real
+#                        multithreading.
+#   JULIA_BACKEND       runner.jl's PP_BACKEND: "dict" (default, everything else in this
+#                        campaign uses this, parity-established against paulistrings) or
+#                        "vector" (VectorPauliSum, the only backend that honors JULIA_THREADS>1;
+#                        spot-checked to match "dict"'s final_terms at a tiny scale, not yet
+#                        parity-tested at full campaign scale the way "dict" has been).
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../../..}"
 
@@ -100,7 +111,9 @@ julia --project=benchmarks/julia -e 'using Pkg; Pkg.status()'
 : "${REPS:=1}"
 : "${JULIA_WARM_REPEATS:=}"
 : "${JULIA_CELL_TIMEOUT:=}"
-echo "min_abs_coeff='$MIN_ABS_COEFF' reps=$REPS"
+: "${JULIA_THREADS:=1}"
+: "${JULIA_BACKEND:=dict}"
+echo "min_abs_coeff='$MIN_ABS_COEFF' reps=$REPS julia_threads=$JULIA_THREADS julia_backend=$JULIA_BACKEND"
 
 date_tag=$(date +%Y-%m-%d)
 node=$(hostname -s)
@@ -118,7 +131,7 @@ fi
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
 for eps in $MIN_ABS_COEFF; do
-  config_id="genoa-c2-julia-eps${eps}"
+  config_id="genoa-c2-julia-eps${eps}-t${JULIA_THREADS}-${JULIA_BACKEND}"
   for rep in $(seq 0 $((REPS - 1))); do
     cat > "$cell_json" <<EOF
 {
@@ -129,7 +142,8 @@ for eps in $MIN_ABS_COEFF; do
   "direction": "heisenberg",
   "state": "z+",
   "observable": "canonical_z_127",
-  "threads": 1,
+  "threads": $JULIA_THREADS,
+  "backend": "$JULIA_BACKEND",
   "partitions": null,
   "repetition_index": $rep,
   "task_id": "T02-canonical",

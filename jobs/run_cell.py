@@ -94,6 +94,14 @@ class CellSpec:
     # `partition_row_blocks=`. Meaningless (and recorded as `None` in the run
     # record) when `partitions is None`.
     partition_row_policy: str = "random"
+    # Julia leg only (run_cell_julia.py): PauliPropagation.jl's storage backend.
+    # "dict" (default, its `PauliSum`) is single-threaded regardless of Julia's
+    # `-t` flag -- multithreading only engages on "vector" (`VectorPauliSum`),
+    # confirmed by reading the installed package source (`propagate`'s
+    # `thread=true` docstring: "disables multithreading in every function on
+    # the VectorPauliSum backend that can multithread"). Meaningless for the
+    # Rust leg (run_cell.py), which ignores this field entirely.
+    backend: str = "dict"
     # Debug-only override, NOT part of the frozen campaign schema
     # (contract.md pins n_qubits=127): a smoke-test cell may set this to a
     # small value to prove the plumbing without running the real workload.

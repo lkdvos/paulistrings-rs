@@ -836,3 +836,9 @@
    scale (only the tiny spot-check above) and not yet run on the real cluster -- see the submit
    command below for a first real multithreaded point at the same eps=2^-16 the single-thread
    baseline already covers, for a direct comparison.
+
+38. **Multithreaded Julia achieved for real on 2026-09-14** (job 7034021, eps=2^-16, 96 threads,
+   vector backend): `wall_time_s=899.49` vs. the existing single-thread `dict`-backend baseline's
+   `4874.94` -- a real ~5.4x speedup. `final_terms=38,791,220` and `expectation_re=0.3971653299846822`
+   both match the single-thread run to floating-point tolerance, confirming the `vector` backend's
+   correctness at full 127-qubit campaign scale (not just decision #37's tiny 8-qubit spot-check).

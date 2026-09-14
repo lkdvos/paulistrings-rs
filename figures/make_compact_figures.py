@@ -1410,9 +1410,15 @@ def make_baseline_eps_scaling_figure(
       - each label's color/marker/linestyle, fixed by that label's first-appearance position in
         `rows` -- a label plotted alone at stage 1 keeps the exact same look once stage 2 reveals
         a second line next to it;
-      - the x/y axis limits, taken from every row in `rows` regardless of `series_order` -- so a
+      - the y axis limits, taken from every row in `rows` regardless of `series_order` -- so a
         caller who always passes the full, current `rows` (trimming only `series_order`) gets a
-        deck build where the axes never jump between reveals, only new lines appear on them.
+        wall-time scale that never jumps between reveals, only new lines appear on it.
+    The x axis limits and tick set, by contrast, come from `draw_labels` only (which series
+    are ACTUALLY DRAWN this stage) -- keying them off the full `rows` left a real, visible
+    dead strip of unlabeled axis whenever a stage had no data at the tighter eps values a
+    LATER stage would reveal (caught on an actual rendered figure). Each stage's x-axis spans
+    exactly what it draws; later stages naturally extend further left as tighter-eps series
+    are revealed.
     A future stage's caller is expected to pass `rows` containing that stage's new series too;
     this function does not know or care how many stages there will eventually be.
     """
@@ -1484,11 +1490,18 @@ def make_baseline_eps_scaling_figure(
             else:
                 ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=legacy_color[label], label=label)
 
-        # Axis range from every row in `rows`, not just `draw_labels` -- see docstring: this is
-        # what keeps the axes from jumping when a later stage's `series_order` grows.
-        all_eps = [r["min_abs_coeff"] for r in rows]
+        # y-range from every row in `rows`, not just `draw_labels` -- keeps the axes from
+        # jumping when a later stage's `series_order` grows (see docstring).
+        #
+        # x-range, by contrast, comes from `draw_labels` only: keying it off the full `rows`
+        # left a real, visible artifact in a stage with no data past eps=2^-16 -- a wide dead
+        # strip of axis reserved for 2^-18/2^-20, with no gridline, tick, or point anywhere in
+        # it (caught on an actual rendered stage-1 figure, not a theoretical concern). Each
+        # stage's x-axis now spans exactly what it draws; later stages simply extend further
+        # left as tighter-eps series are revealed, which is the natural shape for a reveal.
+        drawn_eps = [r["min_abs_coeff"] for label in draw_labels for r in by_label[label]]
         all_wall = [r["wall_time_s"] for r in rows]
-        ax.set_xlim(min(all_eps) / 1.6, max(all_eps) * 1.6)
+        ax.set_xlim(min(drawn_eps) / 1.6, max(drawn_eps) * 1.6)
         ax.set_ylim(min(all_wall) / 1.6, max(all_wall) * 1.6)
         ax.set_xscale("log", base=2)
         ax.set_yscale("log")

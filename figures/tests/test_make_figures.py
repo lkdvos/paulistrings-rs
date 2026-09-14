@@ -1202,15 +1202,17 @@ def test_baseline_eps_scaling_figure_series_order_unknown_label_raises():
         make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS, series_order=["not a real label"])
 
 
-def test_baseline_eps_scaling_figure_progressive_reveal_keeps_axes_and_colors_stable():
-    """The whole point of `series_order`: a growing prefix must draw MORE lines on the
-    SAME axes, with each already-revealed label keeping its exact color/marker/linestyle --
-    this is what lets a slide deck build the story up one line at a time without the plot
-    jumping around between reveals.
+def test_baseline_eps_scaling_figure_progressive_reveal_keeps_y_axis_and_colors_stable():
+    """A growing `series_order` prefix must draw MORE lines on the SAME y-scale, with each
+    already-revealed label keeping its exact color/marker/linestyle -- this is what lets a
+    slide deck build the story up one line at a time without the wall-time axis jumping
+    around between reveals. (The x-axis is NOT asserted stable here -- see the dedicated
+    x-axis-grows test below; here both series share the same eps grid, so x happens not to
+    move, but that's incidental to this fixture, not the contract being tested.)
     """
     fig1 = make_baseline_eps_scaling_figure(_BASELINE_EPS_ROWS, series_order=["Julia, 1 thread"])
     ax1 = fig1.axes[0]
-    xlim1, ylim1 = ax1.get_xlim(), ax1.get_ylim()
+    ylim1 = ax1.get_ylim()
     color1 = ax1.get_lines()[0].get_color()
     matplotlib.pyplot.close(fig1)
 
@@ -1218,10 +1220,39 @@ def test_baseline_eps_scaling_figure_progressive_reveal_keeps_axes_and_colors_st
         _BASELINE_EPS_ROWS, series_order=["Julia, 1 thread", "Julia, 32 threads"]
     )
     ax2 = fig2.axes[0]
-    assert ax2.get_xlim() == pytest.approx(xlim1)
     assert ax2.get_ylim() == pytest.approx(ylim1)
     assert ax2.get_lines()[0].get_color() == color1
     matplotlib.pyplot.close(fig2)
+
+
+def test_baseline_eps_scaling_figure_x_axis_grows_with_tighter_eps_series():
+    """Real bug found on an actual rendered stage-1 figure: keying the x-axis off the full
+    `rows` (like the y-axis) left a wide, unlabeled dead strip whenever a stage had no data
+    at the tighter eps values a LATER stage would reveal. The x-axis must span only what the
+    CURRENT stage draws -- a stage with only loose-eps data must not reserve empty room for a
+    tighter eps some other, undrawn series has.
+    """
+    rows = [
+        {"label": "A", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 10.0},
+        {"label": "A", "min_abs_coeff": 9.765625e-04, "wall_time_s": 1.0},
+        {"label": "B", "min_abs_coeff": 3.8146973e-06, "wall_time_s": 500.0},  # tighter eps, only B has it
+        {"label": "B", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 50.0},
+        {"label": "B", "min_abs_coeff": 9.765625e-04, "wall_time_s": 5.0},
+    ]
+    fig_a_only = make_baseline_eps_scaling_figure(rows, series_order=["A"])
+    ax_a_only = fig_a_only.axes[0]
+    xlim_a_only = ax_a_only.get_xlim()
+    # "A" never reaches 3.8146973e-06 -- that point must fall OUTSIDE this stage's x-range.
+    assert xlim_a_only[0] > 3.8146973e-06
+    matplotlib.pyplot.close(fig_a_only)
+
+    fig_both = make_baseline_eps_scaling_figure(rows, series_order=["A", "B"])
+    ax_both = fig_both.axes[0]
+    xlim_both = ax_both.get_xlim()
+    # Once "B" (which reaches the tighter eps) is drawn, the x-axis must extend to include it.
+    assert xlim_both[0] < 3.8146973e-06
+    assert xlim_both[0] < xlim_a_only[0]
+    matplotlib.pyplot.close(fig_both)
 
 
 def test_baseline_eps_scaling_figure_deck_theme_exports_at_exact_size(tmp_path):

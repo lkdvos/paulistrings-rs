@@ -725,3 +725,149 @@ def make_distributed_capacity_figure(
     else:
         fig = _build()
     return fig
+
+
+def make_bucket_size_figure(
+    rows: Sequence[dict],
+    *,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """Two panels vs. `target_bucket_len` (x, log2-spaced, one fixed cell per point):
+    throughput (left) and occupancy distribution + empty-bucket fraction (right).
+
+    `rows` are the probe's raw JSON sidecar objects directly (no `normalize.py`
+    step -- there is no existing helper for this row shape and every other
+    figure that lacks one, e.g. `make_distributed_capacity_figure`, takes raw
+    dicts too), each augmented with a `strings_per_s` key: the probe's JSON
+    does not carry `strings/s` (checked directly against the sidecar's own
+    keys), only its sibling `.txt` phase-breakdown report does, on a
+    `strings/s = ...` line, so the caller must read and attach that field
+    before calling this function. Required keys per row: `target_bucket_len`,
+    `strings_per_s`, `num_buckets`, `empty_buckets`, `occupancy_median`,
+    `occupancy_p95`, `occupancy_max`.
+
+    This is REAL data from exactly one cell configuration (fixed workload,
+    threads=1, fixed hash, fixed `min_abs_coeff`, fixed depth -- only
+    `target_bucket_len` varies), 5 points, job 7035853. Occupancy is sampled
+    at the final step of a genuine 20-step trajectory, after a real
+    depth-doubling bug in the occupancy-sampling path was found and fixed
+    (`crates/paulistrings/examples/phase_breakdown.rs` git history: "fix
+    occupancy sampling's silent depth-doubling").
+
+    Over the 5 tested values (256..4096) throughput rises MONOTONICALLY with
+    no peak in range -- this function's title/caption must never claim an
+    optimum, a flattening, or cache residency; the honest statement is that
+    the curve is still rising at the largest tested value. A performance
+    optimum near an estimated cache size would be evidence consistent with
+    locality, not proof of cache residency -- moot here anyway, since there
+    is no optimum in the tested range at all.
+
+    The empty-bucket fraction (`empty_buckets / num_buckets`) is rendered as
+    its own bar series, never folded into the occupancy percentiles: a large
+    empty fraction lowers the *mean* occupancy of all buckets but says
+    nothing about how full the occupied ones are, which is what
+    `occupancy_median/p95/max` already describe correctly by excluding empty
+    buckets from their sample.
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_bucket_size_figure: no rows to plot -- run the "
+            "bucketsize-tbl{...}-probe cell for at least one target_bucket_len."
+        )
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (9.5, 4)
+
+    def _build():
+        fig, (ax_thr, ax_occ) = plt.subplots(1, 2, figsize=figsize)
+
+        pts = sorted(rows, key=lambda r: r["target_bucket_len"])
+        xs = [r["target_bucket_len"] for r in pts]
+
+        # --- left panel: throughput -------------------------------------
+        ys_thr = [r["strings_per_s"] for r in pts]
+        if deck:
+            st = _DECK_SERIES[0]
+            ax_thr.plot(
+                xs, ys_thr, marker=st["marker"], markersize=6, linewidth=1.8,
+                linestyle=st["linestyle"], color=st["color"],
+            )
+        else:
+            ax_thr.plot(xs, ys_thr, marker="o", markersize=5, linewidth=1.5, color=_ACCENT)
+        ax_thr.set_xscale("log", base=2)
+        ax_thr.set_xlabel("target_bucket_len")
+        ax_thr.set_ylabel("strings/s")
+
+        # --- right panel: occupancy distribution + empty-bucket fraction --
+        medians = [r["occupancy_median"] for r in pts]
+        p95s = [r["occupancy_p95"] for r in pts]
+        maxs = [r["occupancy_max"] for r in pts]
+        empty_frac = [r["empty_buckets"] / r["num_buckets"] for r in pts]
+
+        if deck:
+            median_style = _DECK_SERIES[0]
+            p95_style = _DECK_SERIES[1]
+            max_style = _DECK_SERIES[2]
+        else:
+            median_style = {"color": _ACCENT, "marker": "o", "linestyle": "-"}
+            p95_style = {"color": "#eb6834", "marker": "^", "linestyle": "--"}
+            max_style = {"color": "#5a8f3c", "marker": "s", "linestyle": ":"}
+
+        ax_occ.plot(xs, medians, marker=median_style["marker"], markersize=6, linewidth=1.8,
+                    linestyle=median_style["linestyle"], color=median_style["color"], label="median")
+        ax_occ.plot(xs, p95s, marker=p95_style["marker"], markersize=6, linewidth=1.8,
+                    linestyle=p95_style["linestyle"], color=p95_style["color"], label="p95")
+        ax_occ.plot(xs, maxs, marker=max_style["marker"], markersize=6, linewidth=1.8,
+                    linestyle=max_style["linestyle"], color=max_style["color"], label="max")
+        ax_occ.set_xscale("log", base=2)
+        ax_occ.set_xlabel("target_bucket_len")
+        ax_occ.set_ylabel("occupied strings per non-empty bucket")
+
+        # Empty-bucket fraction on its own twin axis, as thin bars -- a
+        # distinct visual channel from the occupancy lines so a reader sees
+        # both "how full are non-empty buckets" and "what fraction are
+        # empty" without one number diluting the other.
+        ax_empty = ax_occ.twinx()
+        bar_color = _DECK_NAVY if deck else "#898781"
+        # Bar width in log-x data units: a fixed fraction of each point's own x.
+        widths = [x * 0.12 for x in xs]
+        ax_empty.bar(xs, empty_frac, width=widths, color=bar_color, alpha=0.25, zorder=1, label="empty fraction")
+        ax_empty.set_ylim(0, 1)
+        ax_empty.set_ylabel("empty-bucket fraction")
+        if deck:
+            ax_empty.tick_params(colors=_DECK_NAVY)
+            ax_empty.spines["right"].set_color(_DECK_NAVY)
+            for label in ax_empty.get_yticklabels():
+                label.set_color(_DECK_NAVY)
+        else:
+            ax_empty.tick_params(colors="#898781")
+
+        lines, labels = ax_occ.get_legend_handles_labels()
+        bars, bar_labels = ax_empty.get_legend_handles_labels()
+        ax_occ.legend(lines + bars, labels + bar_labels, frameon=False, fontsize=8 if not deck else _DECK_FONT_PT * 0.7)
+
+        if deck:
+            if title:
+                fig.suptitle(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+            _style_axes_deck(ax_thr)
+            _style_axes_deck(ax_occ)
+        else:
+            ax_thr.set_title("Throughput vs. target bucket size")
+            ax_occ.set_title("Occupancy distribution vs. target bucket size")
+            _style_axes(ax_thr)
+            _style_axes(ax_occ)
+        fig.tight_layout()
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig

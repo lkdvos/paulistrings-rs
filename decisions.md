@@ -881,3 +881,31 @@
    comparison** -- `ccqlin038` is a CCA/CCQ workstation, not this campaign's genoa/rocky9 node class;
    the figure, its README, and evidence.md's E2 row all state this caveat prominently. Did not
    modify anything on branch `presentation`.
+
+41. **Bucket-size figure for slide page 30, real data, 2026-09-14.** Real cluster job 7035853
+   (single-thread, 127-qubit heavy-hex Trotter step, `min_abs_coeff=2^-12`, `min_buckets=128`)
+   swept `target_bucket_len` in {256, 512, 1024, 2048, 4096}, occupancy sampled at the final
+   step of a genuine 20-step trajectory. That sampling relied on a real bug fix landed along
+   the way: `crates/paulistrings/examples/phase_breakdown.rs`'s `--occupancy-at N` previously
+   sampled after a warm-up pass plus N more steps (real depth `2*reps`), which had silently
+   truncated the growing Trotter sum to nothing under the coefficient threshold while
+   `num_buckets()` stayed at its grow-only high-water mark -- masking `target_bucket_len`'s real
+   effect on occupancy (job 7035770's run exposed this: `empty_buckets == num_buckets` at every
+   value). Fixed by skipping the warm-up on the occupancy-sampling path so `--occupancy-at N`
+   means real depth N (commit `b15b741`). Confirmed the JSON sidecar has no `strings/s` key;
+   read it from each config's sibling `.txt` phase-breakdown report instead. Added
+   `make_compact_figures.py::make_bucket_size_figure` (two panels: throughput and occupancy
+   median/p95/max plus empty-bucket fraction on a twin bar axis, both vs. `target_bucket_len`
+   log2-spaced), taking raw probe-JSON dicts directly (no `normalize.py` step exists for this
+   shape, same precedent as `make_distributed_capacity_figure`). Real numbers: throughput rises
+   monotonically 5.713e7 -> 6.659e7 -> 7.158e7 -> 7.438e7 -> 7.588e7 strings/s across
+   256->512->1024->2048->4096, with **no peak in the tested range** -- the figure's docstring
+   states this explicitly and never claims an optimum, flattening, or cache residency. Occupancy
+   (median/p95/max, empty_buckets/num_buckets): 256 -> 1/2/3, 3374/4096; 512 -> 1/2/4, 1416/2048;
+   1024 -> 1/3/5, 518/1024; 2048 -> 2/4/6, 107/512; 4096 -> 3/6/8, 7/256. Generated
+   `figures/real/bucket_size_v2.{svg,pdf,png}` and `_compact` variants (deck theme, 900x340pt /
+   900x170pt, per MANIFEST's naming convention). Added 6 tests to
+   `figures/tests/test_make_figures.py`, including one that pins the "no interior peak" shape of
+   the real data as a regression tripwire and one confirming the empty-bucket fraction is never
+   folded into the occupancy percentiles. Full figure suite green: 39/39 passed
+   (`.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).

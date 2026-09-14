@@ -16,6 +16,7 @@ from make_compact_figures import (
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
     make_attempts_figure,
+    make_bucket_size_figure,
     make_convergence_figure,
     make_distributed_capacity_figure,
     make_hash_communication_figure,
@@ -494,6 +495,91 @@ def test_distributed_capacity_figure_deck_theme_exports_at_exact_size(tmp_path):
     ]
     fig = make_distributed_capacity_figure(rows, theme="deck", figsize_pt=(900, 340), title="Distributed capacity")
     paths = export_deck_figure(fig, str(tmp_path / "distributed_capacity_v2"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+# --- bucket size -----------------------------------------------------------
+
+# Real numbers from job 7035853 (raw/2026-09-14-worker7202-bucketsize/), used
+# verbatim -- see the figures/real/MANIFEST.md "bucket-size" section and
+# evidence.md for full provenance. strings_per_s is read from the sibling
+# .txt file's "strings/s = ..." line, since the JSON sidecar does not carry it.
+_BUCKET_SIZE_ROWS = [
+    {"target_bucket_len": 256, "num_buckets": 4096, "empty_buckets": 3374,
+     "occupancy_median": 1, "occupancy_p95": 2, "occupancy_max": 3, "strings_per_s": 5.713e7},
+    {"target_bucket_len": 512, "num_buckets": 2048, "empty_buckets": 1416,
+     "occupancy_median": 1, "occupancy_p95": 2, "occupancy_max": 4, "strings_per_s": 6.659e7},
+    {"target_bucket_len": 1024, "num_buckets": 1024, "empty_buckets": 518,
+     "occupancy_median": 1, "occupancy_p95": 3, "occupancy_max": 5, "strings_per_s": 7.158e7},
+    {"target_bucket_len": 2048, "num_buckets": 512, "empty_buckets": 107,
+     "occupancy_median": 2, "occupancy_p95": 4, "occupancy_max": 6, "strings_per_s": 7.438e7},
+    {"target_bucket_len": 4096, "num_buckets": 256, "empty_buckets": 7,
+     "occupancy_median": 3, "occupancy_p95": 6, "occupancy_max": 8, "strings_per_s": 7.588e7},
+]
+
+
+def test_bucket_size_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_bucket_size_figure([])
+
+
+def test_bucket_size_figure_builds_two_panels():
+    fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS)
+    assert len(fig.axes) >= 2
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucket_size_figure_throughput_panel_plots_all_five_points_in_order():
+    fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS)
+    ax_thr = fig.axes[0]
+    line = ax_thr.get_lines()[0]
+    assert list(line.get_xdata()) == [256, 512, 1024, 2048, 4096]
+    assert list(line.get_ydata()) == pytest.approx(
+        [5.713e7, 6.659e7, 7.158e7, 7.438e7, 7.588e7]
+    )
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucket_size_figure_throughput_has_no_peak_in_tested_range():
+    """The real data's headline honesty finding: throughput rises
+    monotonically across the whole tested range with no interior peak --
+    this is a property of the real numbers themselves, pinned here so a
+    future data refresh can't silently reintroduce a false "optimum" claim
+    without the test noticing the shape changed.
+    """
+    ys = [r["strings_per_s"] for r in sorted(_BUCKET_SIZE_ROWS, key=lambda r: r["target_bucket_len"])]
+    assert all(b >= a for a, b in zip(ys, ys[1:])), "expected monotonically non-decreasing throughput"
+    assert ys[-1] == max(ys), "expected the maximum to sit at the largest tested target_bucket_len (no peak in range)"
+
+
+def test_bucket_size_figure_empty_fraction_never_folded_into_occupancy_percentiles():
+    """empty_buckets/num_buckets must be rendered as its own series (the bar
+    axis), never averaged or folded into occupancy_median/p95/max -- those
+    fields already exclude empty buckets from their sample by construction.
+    """
+    fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS)
+    ax_occ = fig.axes[1]
+    occ_lines = {ln.get_label(): list(ln.get_ydata()) for ln in ax_occ.get_lines()}
+    assert occ_lines["median"] == [r["occupancy_median"] for r in _BUCKET_SIZE_ROWS]
+    assert occ_lines["p95"] == [r["occupancy_p95"] for r in _BUCKET_SIZE_ROWS]
+    assert occ_lines["max"] == [r["occupancy_max"] for r in _BUCKET_SIZE_ROWS]
+    # The empty-bucket fraction must appear on a distinct axes (the twin bar
+    # axis), never as a fourth occupancy line sharing that axes' data scale.
+    assert len(fig.axes) >= 3
+    ax_empty = fig.axes[2]
+    bar_heights = sorted(p.get_height() for p in ax_empty.patches)
+    expected = sorted(r["empty_buckets"] / r["num_buckets"] for r in _BUCKET_SIZE_ROWS)
+    assert bar_heights == pytest.approx(expected)
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucket_size_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_bucket_size_figure(
+        _BUCKET_SIZE_ROWS, theme="deck", figsize_pt=(900, 340), title="Bucket size"
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "bucket_size_v2"), 900, 340)
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)

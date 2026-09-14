@@ -164,6 +164,58 @@ trajectory + single-endpoint Julia overlay already plotted (parchment theme) in 
   evidence slots). Agrees with the Rust trajectory's own step-20 endpoint at that cutoff to
   `abs_delta=1.67e-16` per `decisions.md` #27.
 
+### 6. bucket-size (deck page 30 — "Throughput versus target bucket size and occupancy distribution")
+
+No figure previously existed for this asset. New function
+`make_bucket_size_figure(rows, theme=..., figsize_pt=..., title=...)` in
+`figures/make_compact_figures.py`: two panels vs. `target_bucket_len` (x,
+log2-spaced) — throughput (left) and occupancy median/p95/max plus the
+empty-bucket fraction on a twin bar axis (right). `rows` are the probe's raw
+JSON sidecar objects, each augmented with a `strings_per_s` key read from the
+sibling `.txt` report (the JSON does not carry `strings/s` — confirmed
+against the sidecar's own keys); there is no `normalize.py` step for this
+shape, matching `make_distributed_capacity_figure`'s precedent of taking raw
+dicts directly when no existing normalize helper fits.
+
+- Files: `bucket_size_v2.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi),
+  `bucket_size_v2_compact.{svg,pdf,png}` (900x170pt half-height, 2500x472px @200dpi).
+- Data: single-thread, 127-qubit heavy-hex Trotter step, `min_abs_coeff=2^-12
+  (0.000244140625)`, `min_buckets=128`, `target_bucket_len` in
+  {256, 512, 1024, 2048, 4096} — job 7035853. Source:
+  `raw/2026-09-14-worker7202-bucketsize/bucketsize-tbl{256,512,1024,2048,4096}-probe.json`
+  and the matching `.txt` phase-breakdown files (`strings/s` line only).
+- Real numbers plotted (`target_bucket_len`: `strings_per_s`, `num_buckets`,
+  `empty_buckets`, `occupancy_median`/`p95`/`max`):
+  - 256: 5.713e7, 4096, 3374, 1/2/3
+  - 512: 6.659e7, 2048, 1416, 1/2/4
+  - 1024: 7.158e7, 1024, 518, 1/3/5
+  - 2048: 7.438e7, 512, 107, 2/4/6
+  - 4096: 7.588e7, 256, 7, 3/6/8
+- **Honesty caveat, stated in the function's own docstring**: this is one
+  fixed cell configuration (workload/threads/hash/cutoff/depth all fixed,
+  only `target_bucket_len` varies), 5 points, one job. Throughput rises
+  **monotonically across the entire tested range with no interior peak** —
+  the figure/docstring never claims an optimum, a flattening, or cache
+  residency; the honest statement is that the curve is still rising at the
+  largest tested value (4096). A performance optimum near an estimated cache
+  size would be evidence consistent with locality, not proof of cache
+  residency — moot here regardless, since there is no optimum in range at all.
+- Occupancy was sampled at the final step of a genuine 20-step trajectory,
+  after a real depth-doubling bug in the occupancy-sampling path was found
+  and fixed in `crates/paulistrings/examples/phase_breakdown.rs` (git log:
+  "phase_breakdown: fix occupancy sampling's silent depth-doubling") —
+  `--occupancy-at N` previously sampled after a warm-up pass plus N more
+  steps (real depth `2*reps`, not `reps`), which for this growing Trotter
+  trajectory had already truncated to nothing under the coefficient
+  threshold while `num_buckets()` stayed at its grow-only high-water mark,
+  masking the real effect of `target_bucket_len` on occupancy. Fixed by
+  skipping the warm-up entirely on the occupancy-sampling path.
+- The empty-bucket fraction (`empty_buckets/num_buckets`) is rendered on its
+  own twin bar axis, never folded into the occupancy percentiles — a large
+  empty fraction lowers the *mean* occupancy of all buckets but says nothing
+  about how full the occupied ones are, which `occupancy_median/p95/max`
+  already describe correctly by excluding empty buckets from their sample.
+
 ## Test coverage
 
 `quera-talk-data/campaign-2026-09-11/figures/tests/test_make_figures.py` gained:
@@ -179,3 +231,12 @@ trajectory + single-endpoint Julia overlay already plotted (parchment theme) in 
 Full suite: `pytest quera-talk-data/campaign-2026-09-11/figures/tests/` — 33 passed (25
 pre-existing + 8 new; a `make_attempts_figure`/`attempts.*` figure and its tests present in
 this working tree belong to concurrent, unrelated work in this shared worktree, not this task).
+
+The bucket-size figure (section 6 above) added
+`test_bucket_size_figure_empty_input_raises_clear_error`,
+`test_bucket_size_figure_builds_two_panels`,
+`test_bucket_size_figure_throughput_panel_plots_all_five_points_in_order`,
+`test_bucket_size_figure_throughput_has_no_peak_in_tested_range`,
+`test_bucket_size_figure_empty_fraction_never_folded_into_occupancy_percentiles`,
+`test_bucket_size_figure_deck_theme_exports_at_exact_size`. Full suite after this addition:
+39 passed (33 pre-existing + 6 new).

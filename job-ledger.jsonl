@@ -46,3 +46,12 @@
 {"job_id": "7035691", "name": "quera-c-memory", "purpose": "memory diagnosis (page 17)", "node": "worker7183", "submitted_at": "2026-09-14T15:39:33.589982", "status": "RUNNING"}
 {"job_id": "7035692", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30)", "node": "worker7203", "submitted_at": "2026-09-14T15:39:33.589994", "status": "RUNNING"}
 {"job_id": "7035746", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30), retry after uncommitted-code failure on 7035692", "submitted_at": "2026-09-14T15:47:18.566352", "status": "PENDING"}
+{"job_id": "7035770", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30), retry #2 after output-dir mismatch fix", "node": "worker7192", "submitted_at": "2026-09-14T15:51:59.810393", "status": "RUNNING"}
+{"job_id": "7035811", "name": "quera-baseline-sweep", "purpose": "naive_baseline loose-tolerance sweep (page 16 baseline)", "node": "worker7192", "submitted_at": "2026-09-14T16:00:32.763394", "status": "RUNNING"}
+{"job_id": "7035841", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-16 ranks=2", "nodes": 1, "submitted_at": "2026-09-14T16:01:53.399696", "status": "RUNNING"}
+{"job_id": "7035842", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-16 ranks=8", "nodes": 4, "submitted_at": "2026-09-14T16:01:53.399729", "status": "RUNNING"}
+{"job_id": "7035843", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-16 ranks=16", "nodes": 8, "submitted_at": "2026-09-14T16:01:53.399737", "status": "RUNNING"}
+{"job_id": "7035844", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=2", "nodes": 1, "submitted_at": "2026-09-14T16:01:53.399742", "status": "RUNNING"}
+{"job_id": "7035845", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=8", "nodes": 4, "submitted_at": "2026-09-14T16:01:53.399747", "status": "RUNNING"}
+{"job_id": "7035846", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=16", "nodes": 8, "submitted_at": "2026-09-14T16:01:53.399751", "status": "RUNNING"}
+{"job_id": "7035853", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30), retry #3 after occupancy depth-doubling fix", "submitted_at": "2026-09-14T16:05:20.110105", "status": "PENDING"}

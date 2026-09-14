@@ -14,7 +14,7 @@ missing). None is populated with real numbers, and none may be until a real Slur
 | E5 | Bucketed multithread gain | 26-27 | tooling-ready | `campaign-genoa.sbatch` C3 stage (thread ladder) — needs C2's peak_terms first to pick fixed cutoffs |
 | E6 | Multiprocess/distributed behavior | 28 | tooling-ready | `jobs/campaign-genoa-distributed.sbatch` + `jobs/run_cell_distributed.py`, tested at 1/2/4 ranks (2026-09-13); not yet run on the real cluster |
 | E7 | Beyond-single-node capacity | 28 | blocked | Same driver as E6 works, but no lower-tolerance point that actually exceeds single-node capacity has been attempted yet |
-| E8 | Communication-aware hash | 28/28b | blocked | `partition_row_policy` field missing from the run-record schema (`decisions.md` #13); also needs E6's template |
+| E8 | Communication-aware hash | 28/28b | tooling-ready | Schema/driver/normalize/figure stack built and tested 2026-09-13 (`decisions.md` #21): `partition_row_policy` field, `run_cell.py`'s `"cut"` (BFS locality heuristic) vs `"random"` policies, `normalize.hash_communication`, `make_hash_communication_figure`. Real local proof (32 qubits, `partitions=2`, in-process engine, no MPI): random exported 8975 rows/294120 bytes vs. cut's 100 rows/3584 bytes for the same cell — not yet run at cluster (127-qubit) scale, and the distributed (`comm=`) path only supports `"random"` so far |
 | E9 | Observable consistency/convergence | 24 | tooling-ready | Live pilot already ran (5 steps, θh=7π/32, ε=2⁻⁶): 1355/1355 per-layer term counts identical, `|Δ⟨O⟩|=0` between engines (`decisions.md` #10) — this is a plumbing validation at shallow depth, not the headline 20-step accuracy claim, which still needs the real campaign |
 
 ## Headline numbers
@@ -33,7 +33,10 @@ running `./reproduce.sh submit-c1c2`'s printed command on the real cluster.
 
 ## Known gaps carried into any real run
 
-- `hash_communication` / E8: schema needs a `partition_row_policy` field before this table can ever be non-empty.
+- `hash_communication` / E8: schema/driver/normalize/figure support is real now (`decisions.md` #21), validated
+  with small local runs — not with a real cluster allocation. The distributed (`comm=`) path has no
+  explicit-rows plumbing, so a genuine multi-node "cut" comparison isn't possible yet either; only the
+  in-process partitioned engine (no MPI needed) supports both policies today.
 - `jobs/preflight.py`'s CPU fingerprint is MEDIUM confidence and cannot distinguish Genoa from Bergamo;
   confirm against a real genoa allocation's `/proc/cpuinfo` before trusting `hardware_valid=true` there.
 - `setup_time_s`/`scatter_time_s`/`gather_time_s` and per-gate `support_weight`/`bucket_bits`/`partner_count`

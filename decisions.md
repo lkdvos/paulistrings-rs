@@ -154,6 +154,100 @@
     per org policy (decision #2). E1/E2 (historical Rust commit variants) were not touched, per this task's
     explicit scope boundary.
 
+21. **Closed the E8 gap for real, on 2026-09-13**: decision #13 deferred `hash_communication()` (random-vs-cut
+    partition-row communication volume) on the missing `partition_row_policy` schema field. This pass adds it,
+    end to end, and validates it with real local runs (not fabricated numbers) — the in-process partitioned
+    engine, which needs no MPI, is the right tool: this is a placement/row-selection question, not a
+    distributed-capacity one.
+
+    **Rust/PyO3 (`crates/paulistrings-py/src/sum.rs`)**: `parse_partitions` used to hardcode
+    `partition_row_seed: None` when building the core `PartitionConfig` — there was no way at all to choose a
+    seed from Python. Fixed by threading a new `partition_row_seed: int | None = None` kwarg through
+    `propagate`/`propagate_with_stats` into the existing Rust field (no new Rust algorithm; `PartitionRows::
+    from_seed` already took a seed). A second, alternative kwarg `partition_row_blocks: list[list[int]] | None`
+    gives an explicit "cut": one disjoint qubit block per partition, fed straight to
+    `crates/paulistrings/src/bucket/hash.rs`'s **already-existing** `PartitionRows::cut(num_qubits, blocks)` —
+    that constructor (Z-only rows labelling blocks, `partition_of_pauli` = XOR of the odd-z-weight blocks' labels)
+    predates this task; no new row-construction algorithm was needed, only exposing it. Both kwargs are validated
+    (row/block count vs. `partitions=`'s resolved count, qubit bounds, block disjointness) with the GIL held,
+    *before* `allow_threads` releases it — a caller mistake is a `ValueError`, never a panic across the FFI
+    boundary. Mutually exclusive with each other and, for now, with `comm=` (no `PartitionConfig`-equivalent
+    plumbing exists on the MPI path yet; raises a clear `ValueError` naming the gap rather than silently
+    dropping the knob). `partition_row_seed=None`/`partition_row_blocks=None` (both defaults) reproduce today's
+    seeded-random path exactly — the performance-discipline rule that a new opt-in knob is a no-op at its
+    default.
+
+    **Rust tests**: `cargo test --workspace` (549 core-crate tests, unchanged) plus 3 new `paulistrings-py`
+    unit tests (`sum::partition_row_knob_tests`) proving two different explicit block sets assign a term to
+    different partitions, that a mismatched block count / an overlapping block is rejected before
+    `PartitionRows::cut` would panic on the same condition, and a round-trip check that a named block's qubit
+    lands in that partition. These test plain-Rust helper functions
+    (`validate_partition_row_blocks_impl`/`build_partition_rows`), not `parse_partitions`/`parse_run_mode`
+    themselves: this crate is `extension-module`-only (loaded *by* Python, never embedding it), so a
+    `Python::with_gil` call inside `cargo test` fails to link (`PyErr_*`/`PyUnicode_*` undefined symbols) —
+    the end-to-end Python-facing behavior is covered by 11 new tests in
+    `python/paulistrings/tests/test_partitioned.py` instead (built via `maturin develop --release`, run via
+    `pytest`). `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
+    **Schema (`analysis/schema.py`)**: added `partition_row_policy`, nullable `"random"`/`"cut"`, required null
+    when `engine == "unpartitioned"` (there is no row policy without a partitioned/distributed run) and
+    otherwise one of the two closed values. `analysis/tests/test_schema_and_normalize.py` gained 5 new
+    validator tests plus 2 `hash_communication` tests.
+
+    **Driver (`jobs/run_cell.py`)**: `CellSpec.partition_row_policy: str = "random"` (default preserves today's
+    behavior when `partitions is None`, where the field is simply ignored and recorded `None`). When
+    `partitions` is set, `"cut"` calls a new `_cut_blocks(spec, num_partitions)` helper — a breadth-first
+    traversal of `circuits.heavy_hex_sublattice(n)`'s edges from qubit 0, sliced into `num_partitions` equal
+    contiguous chunks of visit order. **This is a simple first-pass heuristic** (visiting physically adjacent
+    qubits consecutively keeps each chunk local without solving an actual min-cut) — **not** the "open research"
+    optimal row-tuning CLAUDE.md's Known Gaps section refers to, and it is not oversold as such anywhere in
+    code or docs. An unknown `partition_row_policy` value raises `ValueError` rather than silently falling back
+    to random. `jobs/run_cell_distributed.py` also gained the field (for `RUN_FIELDS` parity — it's a shared
+    tuple) but rejects anything other than `"random"` with a clear collective error: its `comm=` path has no
+    explicit-rows plumbing (see the Rust paragraph above), so writing a `"cut"`-labeled record without cut rows
+    actually applied would be a lie. `jobs/campaign-genoa-distributed.sbatch` gained a `PARTITION_ROW_POLICY`
+    env knob (default `random`, preserving today's behavior byte-for-byte) that fails the job immediately with
+    a clear message if set to `cut`. `jobs/run_cell_julia.py` (the external-baseline leg, unrelated to
+    partitioning) needed only `"partition_row_policy": None` added to its two record dicts to keep
+    `RUN_FIELDS` parity, since it shares that tuple with `run_cell.py`.
+
+    **`analysis/normalize.py::hash_communication`**: implemented for real. Takes `(run_records, gate_records)`,
+    groups by `run_id` (not merged across runs, so same-`config_id` "random" vs "cut" runs stay comparable
+    side by side), sums each run's `rows_exported`/`bytes_exported` across its own gate records — the exact
+    metric `PartitionStats`/`PartitionLayerRow` already exposed (decision #7's `GateTrace`/`PartitionLayerRecord`
+    work), no new metric invented. Raises `ValueError` (not a silent empty list) only when literally no run in
+    the input carries a non-null `partition_row_policy` — the old "field doesn't exist" placeholder condition
+    is gone since the field now exists; a genuinely input-less call still refuses to fabricate a plot, with a
+    precise cause instead of a vague one.
+
+    **`figures/make_compact_figures.py::make_hash_communication_figure`**: plots real rows now — one bar per
+    `(config_id, partition_row_policy)` pair, `total_rows_exported` on the y-axis. Still raises
+    `NotImplementedError` (not a blank/fabricated plot) on a genuinely empty row list, which can now only mean
+    every tagged run had zero gate records (e.g. a zero-layer circuit), not "the schema lacks the field."
+
+    **Real local validation** (this host is not genoa; same monkeyed-preflight precedent as decisions #17/#19/
+    #20 — this is local plumbing validation, not a cluster measurement): ran two otherwise-identical cells
+    through the real `jobs/run_cell.py` CLI path — 32 qubits, 4 Trotter steps, `partitions=2`, one with
+    `partition_row_policy="random"`, one `"cut"` — both `status="completed"`, both records/gate-records passed
+    `analysis/schema.py`'s validators and `analysis/validate_campaign.py` (0 problems) with 264 real gate
+    records each. Real numbers: **random** exported 8975 rows / 294120 bytes total across the run; **cut**
+    exported 100 rows / 3584 bytes — a ~98.9% reduction in row export volume for this cell, from the BFS cut
+    alone. `analysis.normalize.hash_communication` on the real `runs.jsonl`/`gates.rank-0.jsonl` this produced
+    returns exactly that comparison, and `figures.make_compact_figures.make_hash_communication_figure` plots it
+    without error. This is real evidence that random and cut policies genuinely differ in export volume — the
+    entire point of E8 — from a small local run, not a cluster-scale measurement (that's the sbatch command
+    below, not yet run, per decision #2).
+
+    **Not run**: the real cluster-scale, 127-qubit E8 comparison. `run_cell.py` supports
+    `partitions=`/`partition_row_policy=` for real today, but neither `campaign-genoa.sbatch` (single-node,
+    in-process partitioned) nor `campaign-genoa-distributed.sbatch` (multi-node MPI) exposes a real "cut" cell
+    at cluster scale yet: `campaign-genoa.sbatch` hardcodes `"partitions": null` in its cell.json template (no
+    env knob for it at all — out of this pass's scope, which only touched the distributed template per the
+    task), and the distributed path itself has no explicit-rows plumbing (above). A genuine cluster-scale E8
+    result needs either (a) a `campaign-genoa.sbatch` variant that sets `partitions=`/`partition_row_policy=`
+    in its cell.json (straightforward — the driver and PyO3 support already exist — but not built this pass),
+    or (b) the MPI-side explicit-rows plumbing. Neither was run; only prepared and reasoned about.
+
 9. **Caught and fixed a real regression before it shipped**: the direct/small-sum path (`engine::direct`) has
    its own layer loop, separate from the sorted engine's, and initially had no gate-trace wiring at all — so
    `engine="auto"`/`"direct"` runs recorded only the sorted-suffix layers, truncating `PropagationStats.layers`

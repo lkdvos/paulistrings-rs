@@ -73,7 +73,24 @@
         "root_cause": "genuine capacity/imbalance limit, NOT a code bug -- see decisions.md #22 for the full investigation (sacct/seff per-step MaxRSS/AveRSS, backtrace re-read, collective-order re-verification, term-count extrapolation). --mem/UCX config confirmed equivalent to the proven scripts/slurm/mpi-ranks.sbatch template; no fix applied to run_cell_distributed.py or campaign-genoa-distributed.sbatch since neither has a bug.",
         "recommended_resubmit": "env -u SBATCH_RESERVATION --nodes=8 MIN_ABS_COEFF=9.5367432e-07 sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-distributed.sbatch",
         "fallback_if_still_oom": "--nodes=16 next, or drop to eps=2^-19 (MIN_ABS_COEFF=1.9073486e-06) as a real (less ambitious) E7 capacity point rather than a repeated crash at 2^-20"
+      },
+      "E7_result_2026-09-14": {
+        "job_id": "7032351", "nodes": 8, "ranks": 16, "min_abs_coeff": 9.5367432e-07,
+        "outcome": "completed -- wall_time_s=1658.8, peak_terms=8923556570, peak_rss_kb~3.04 TiB summed across ranks (double a single genoa node's 1.5 TiB), a genuine beyond-single-node-capacity result. Doubling ranks vs the 7032060 attempt spread the same random partition-row draw thin enough that no single rank's share tipped it into OOM. evidence.md E7 moved blocked -> real data."
       }
+    },
+    {
+      "stage_id": "C5_e8_single_node",
+      "script": "jobs/campaign-genoa-e8.sbatch",
+      "submit_command": "env -u SBATCH_RESERVATION sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-e8.sbatch",
+      "status": "planned",
+      "purpose": "E8: real, hardware-valid random-vs-cut partition_row_policy comparison via the in-process partitioned engine (no MPI needed) -- the comm= path (C4_distributed) still only supports 'random', so this is a single genoa node instead of a multi-node job. Reuses campaign-genoa.sbatch's exact worktree/venv/maturin preamble.",
+      "matrix": {
+        "theta_h": "7pi/32", "trotter_steps": 20, "min_abs_coeff": 1.5258789e-05,
+        "partitions": 2, "partition_row_policy": ["random", "cut"], "repetition_index": [0]
+      },
+      "resource_bounds": {"nodes": 1, "exclusive": true, "wall_time_cap": "01:00:00", "max_concurrent_allocations": 1},
+      "implementation_note": "Not yet run on the real cluster. The only prior E8 data (decisions.md #21) came from a preflight-monkeypatched local test at 32 qubits, not a genoa-hardware-valid campaign record -- run_cell.py correctly refuses to run without a real genoa allocation (verified 2026-09-14: attempted locally, got status=invalid_hardware as expected, no bypass exists by design). This stage is real, hardware-valid data or nothing."
     },
     {
       "stage_id": "C1_C2_julia_external_baseline",

@@ -343,3 +343,12 @@
    equivalent — the same random partition draw that OOM'd one rank at 8 ranks (decision #22: one rank at
    ~1.20 TiB, 343% above average) spread thin enough across 16 ranks to leave headroom everywhere.
    `evidence.md` E6 and E7 both updated from tooling-ready/blocked to real data.
+
+24. **Prepared `jobs/campaign-genoa-e8.sbatch` on 2026-09-14** for a real, hardware-valid E8
+   comparison: single genoa node, in-process partitioned engine (`partitions=2`), same canonical
+   task and eps=2^-16 as `campaign-genoa.sbatch`'s trusted overlap point, run once under
+   `partition_row_policy=random` and once under `"cut"`. Needed because decision #21's random-vs-cut
+   numbers came from a preflight-monkeypatched local test (this login host isn't genoa), which proved
+   the mechanism but isn't schema-legitimate campaign data — confirmed 2026-09-14 by actually trying
+   `run_cell.py` locally: it correctly returned `status=invalid_hardware` with no bypass available,
+   by design. Not yet submitted (org policy: submission is the user's step).

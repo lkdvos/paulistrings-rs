@@ -56,3 +56,10 @@
 {"job_id": "7035846", "name": "quera-c4", "purpose": "distributed rank-scaling fill-in, eps=2^-18 ranks=16", "nodes": 8, "submitted_at": "2026-09-14T16:01:53.399751", "status": "RUNNING"}
 {"job_id": "7035853", "name": "quera-bucketsize", "purpose": "bucket-size sweep (page 30), retry #3 after occupancy depth-doubling fix", "submitted_at": "2026-09-14T16:05:20.110105", "status": "PENDING"}
 {"job_id": "7036526", "name": "quera-single-bucket", "purpose": "current engine, num_buckets=1, baseline pivot (page 16)", "submitted_at": "2026-09-14T16:48:15.290874", "status": "PENDING"}
+{"job_id": "7036821", "name": "quera-single-bucket-quick", "purpose": "quick loose-tolerance default vs single-bucket comparison (page 29 signal)", "node": "worker7182", "submitted_at": "2026-09-14T17:46:08.687953", "status": "RUNNING"}
+{"job_id": "7036825", "name": "quera-bucketsize-dryrun", "purpose": "cheap 127-qubit timing anchor for bucket-size topN sweep cost estimate", "node": "worker7182", "submitted_at": "2026-09-14T17:49:05.051273", "status": "RUNNING"}
+{"job_id": "7036845", "name": "quera-single-bucket-quick", "purpose": "single-bucket vs default comparison at eps 2^-14/2^-12", "node": "worker7182", "submitted_at": "2026-09-14T17:50:13.688142", "status": "RUNNING"}
+{"job_id": "7036873", "name": "quera-single-bucket", "purpose": "Rust single-bucket eps=2^-10 (baseline plot)", "submitted_at": "2026-09-14T18:03:36.004599", "status": "PENDING"}
+{"job_id": "7036874", "name": "quera-c1c2-julia", "purpose": "Julia single-thread dict, eps={2^-10,2^-12,2^-14} (baseline plot)", "submitted_at": "2026-09-14T18:03:36.004632", "status": "PENDING"}
+{"job_id": "7036875", "name": "quera-c1c2-julia", "purpose": "Julia multithreaded (96t) vector, eps={2^-10,2^-12,2^-14} (baseline plot)", "submitted_at": "2026-09-14T18:03:36.004641", "status": "PENDING"}
+{"job_id": "7036887", "name": "quera-c1c2-julia", "purpose": "Julia 32-thread vector, eps={2^-10,2^-12,2^-14} (baseline plot)", "node": "worker7160", "submitted_at": "2026-09-14T18:05:55.756379", "status": "RUNNING"}

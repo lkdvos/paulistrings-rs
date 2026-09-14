@@ -17,6 +17,7 @@ from normalize import thread_scaling
 
 from make_compact_figures import (
     export_deck_figure,
+    make_baseline_pivot_figure,
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
     make_attempts_figure,
@@ -25,6 +26,7 @@ from make_compact_figures import (
     make_distributed_capacity_figure,
     make_hash_communication_figure,
     make_memory_diagnosis_figure,
+    make_single_bucket_comparison_figure,
     make_thread_scaling_figure,
 )
 from make_recurring_figure import STAGE_VARIANTS, make_recurring_figure
@@ -912,4 +914,174 @@ def test_memory_diagnosis_figure_compact_variant_exports_at_exact_size(tmp_path)
     paths = export_deck_figure(fig, str(tmp_path / "memory_v2_compact"), 900, 170)
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((900 / 72.0, 170 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+# --- baseline pivot (deck page 16, real 3-point comparison, 2026-09-14) -----
+#
+# Real numbers: Julia 1-thread (raw/2026-09-14-worker7169-julia/runs.jsonl,
+# job 7033031), Julia 96-thread (decisions.md #38, job 7034021), current
+# engine forced to a single bucket (raw/2026-09-14-worker7160-single-bucket/
+# runs.jsonl, job 7036526). Supersedes the naive_baseline-sweep framing per
+# decisions.md #42 (that commit never wires truncation into its merge phase,
+# so it cannot produce a real tolerance sweep).
+
+_BASELINE_PIVOT_ROWS = [
+    {"label": "Julia (1 thread)", "wall_time_s": 4874.939709082, "threads": 1,
+     "engine": "julia", "final_terms": 38791220},
+    {"label": "Julia (96 threads)", "wall_time_s": 899.49, "threads": 96,
+     "engine": "julia", "final_terms": 38791220},
+    {"label": "Current engine (1 bucket)", "wall_time_s": 1967.578165213985, "threads": 1,
+     "engine": "current_engine", "final_terms": 38791220},
+]
+
+
+def test_baseline_pivot_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_baseline_pivot_figure([])
+
+
+def test_baseline_pivot_figure_plots_one_bar_per_row_in_order():
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS)
+    ax = fig.axes[0]
+    heights = [p.get_height() for p in ax.patches]
+    assert heights == pytest.approx([r["wall_time_s"] for r in _BASELINE_PIVOT_ROWS])
+    labels = [t.get_text() for t in ax.get_xticklabels()]
+    assert labels == [r["label"] for r in _BASELINE_PIVOT_ROWS]
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_pivot_figure_x_axis_is_categorical_not_a_thread_count():
+    """The 1 -> 96 -> 1 thread progression across these three real points is
+    NOT a monotonic thread axis (a different implementation sits at the
+    third point) -- this figure must use a plain categorical x-axis, never a
+    numeric/log thread scale that would visually imply otherwise.
+    """
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS)
+    ax = fig.axes[0]
+    assert ax.get_xscale() == "linear"
+    assert list(ax.get_xticks()) == [0, 1, 2]
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_pivot_figure_current_engine_bar_is_hatched_distinctly():
+    """The current-engine bar must be visually distinguishable from the two
+    Julia bars by more than color alone (a hatch pattern here), so the
+    "different implementation, not part of the Julia pair" signal survives
+    grayscale/color-blind viewing.
+    """
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS)
+    ax = fig.axes[0]
+    hatches = [p.get_hatch() for p in ax.patches]
+    engine_idx = [i for i, r in enumerate(_BASELINE_PIVOT_ROWS) if r["engine"] == "current_engine"]
+    julia_idx = [i for i, r in enumerate(_BASELINE_PIVOT_ROWS) if r["engine"] == "julia"]
+    assert all(hatches[i] for i in engine_idx)
+    assert all(not hatches[i] for i in julia_idx)
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_pivot_figure_annotates_julia_speedup():
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS)
+    ax = fig.axes[0]
+    texts = {t.get_text() for t in ax.texts}
+    assert any("5.42x" in t for t in texts)
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_pivot_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS, theme="deck", figsize_pt=(900, 340), title="Baseline pivot")
+    paths = export_deck_figure(fig, str(tmp_path / "baseline_v3"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_pivot_figure_compact_variant_exports_at_exact_size(tmp_path):
+    fig = make_baseline_pivot_figure(_BASELINE_PIVOT_ROWS, theme="deck", figsize_pt=(450, 340), title="Baseline pivot")
+    paths = export_deck_figure(fig, str(tmp_path / "baseline_v3_compact"), 450, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+# --- single-bucket comparison (deck page 29, real 2-point comparison) ------
+#
+# Replaces the dropped bucketed_1t_v2 figure (decisions.md #46: that figure
+# compared two different historical commits and did not support page 29's
+# actual claim). Real numbers: default bucket config (raw/2026-09-13-
+# worker7277/runs.jsonl, job 7030090) vs. forced single bucket
+# (raw/2026-09-14-worker7160-single-bucket/runs.jsonl, job 7036526), both
+# current engine, single-thread, same eps=2^-16/127-qubit config.
+
+_SINGLE_BUCKET_ROWS = [
+    {"label": "default buckets", "wall_time_s": 1629.904597465007, "final_terms": 38791220,
+     "expectation_re": 0.39716532998468246},
+    {"label": "1 bucket", "wall_time_s": 1967.578165213985, "final_terms": 38791220,
+     "expectation_re": 0.3971653299846819},
+]
+
+
+def test_single_bucket_comparison_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_single_bucket_comparison_figure([])
+
+
+def test_single_bucket_comparison_figure_plots_two_bars_in_order():
+    fig = make_single_bucket_comparison_figure(_SINGLE_BUCKET_ROWS)
+    ax = fig.axes[0]
+    heights = [p.get_height() for p in ax.patches]
+    assert heights == pytest.approx([r["wall_time_s"] for r in _SINGLE_BUCKET_ROWS])
+    labels = [t.get_text() for t in ax.get_xticklabels()]
+    assert labels == [r["label"] for r in _SINGLE_BUCKET_ROWS]
+    matplotlib.pyplot.close(fig)
+
+
+def test_single_bucket_comparison_figure_single_bucket_is_slower_by_about_21_percent():
+    """Pins the real, disclosed finding as a regression tripwire: a future
+    data refresh should not silently change this shape without the test
+    noticing.
+    """
+    default_t = next(r["wall_time_s"] for r in _SINGLE_BUCKET_ROWS if r["label"] == "default buckets")
+    single_t = next(r["wall_time_s"] for r in _SINGLE_BUCKET_ROWS if r["label"] == "1 bucket")
+    pct = 100.0 * (single_t / default_t - 1.0)
+    assert pct == pytest.approx(20.7, abs=0.1)
+
+
+def test_single_bucket_comparison_figure_annotates_percent_difference():
+    fig = make_single_bucket_comparison_figure(_SINGLE_BUCKET_ROWS)
+    ax = fig.axes[0]
+    texts = {t.get_text() for t in ax.texts}
+    assert any("20.7%" in t for t in texts)
+    matplotlib.pyplot.close(fig)
+
+
+def test_single_bucket_comparison_figure_states_matching_final_terms():
+    """Same correctness across both bars (identical final_terms) must be
+    stated on the figure itself, not left implicit -- this is the whole
+    point of the comparison being a pure wall-clock effect.
+    """
+    fig = make_single_bucket_comparison_figure(_SINGLE_BUCKET_ROWS)
+    ax = fig.axes[0]
+    texts = {t.get_text() for t in ax.texts}
+    assert any("38,791,220" in t for t in texts)
+    matplotlib.pyplot.close(fig)
+
+
+def test_single_bucket_comparison_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_single_bucket_comparison_figure(
+        _SINGLE_BUCKET_ROWS, theme="deck", figsize_pt=(900, 340), title="Bucket config, single thread"
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "bucketed_1t_v3"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+def test_single_bucket_comparison_figure_compact_variant_exports_at_exact_size(tmp_path):
+    fig = make_single_bucket_comparison_figure(
+        _SINGLE_BUCKET_ROWS, theme="deck", figsize_pt=(450, 340), title="Bucket config, single thread"
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "bucketed_1t_v3_compact"), 450, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)

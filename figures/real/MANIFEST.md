@@ -40,14 +40,16 @@ Slurm jobs 7033945/7033946/7034671 or any Slurm command.
 
 ## Figures
 
-### 1. baseline (deck page 16 — "Recurring two-panel baseline plus external libraries")
+### 1. baseline (deck page 16 — superseded 2026-09-14, see "baseline-pivot" below)
 
-Two-panel figure: left = efficiency (input-string throughput vs. strings entering a gate),
-right = wall time vs. coefficient tolerance, from `make_recurring_figure(..., stage=1,
-highlight_variant="naive_baseline")` — this IS the existing two-panel baseline function
-already used for `recurring_stage6.png`; no new plotting function was written for this view.
+**Superseded.** The `naive_baseline`-sweep framing below (`make_recurring_figure(..., stage=1,
+highlight_variant="naive_baseline")`) is kept here for provenance only — `decisions.md` #42
+found that commit's merge phase never wires truncation into its merge at all, so every point
+of a sweep comes back with the identical `final_terms`. It is truncation-inert, not a real
+"before this work" baseline, and `baseline_v2*` files are no longer page 16's asset (see the
+new "baseline-pivot" entry, `baseline_v3*`, immediately after this one).
 
-- Files: `baseline_v2.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi),
+- Files (kept, not regenerated): `baseline_v2.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi),
   `baseline_v2_compact.{svg,pdf,png}` (900x170pt half-height, 2500x472px @200dpi).
 - Left (efficiency) panel: **honestly empty**, with an explicit "no per-gate efficiency data
   for this variant" annotation — `naive_baseline` predates the engine's per-gate stats
@@ -70,6 +72,46 @@ already used for `recurring_stage6.png`; no new plotting function was written fo
     Julia leg (`decisions.md` #10: "the efficiency-panel per-gate series for
     PauliPropagation.jl stays marked missing"), so the external reference appears only on
     the cost panel, never the efficiency panel.
+
+### 1b. baseline-pivot (deck page 16 — real 3-point comparison, 2026-09-14)
+
+New function `make_baseline_pivot_figure(rows, theme=..., figsize_pt=..., title=...)` in
+`figures/make_compact_figures.py`: a plain 3-bar chart, not a sweep — the user's own framing
+("I'm happy to use the Julia data (both threaded and not), along with the current engine with
+a single bucket") replaces the truncation-inert `naive_baseline` story above. All three points
+share the same `eps=2^-16 (1.5258789e-05)`, 127-qubit canonical config.
+
+- Files: `baseline_v3.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi), `baseline_v3_compact.*`
+  (450x340pt half-width, 1250x944px @200dpi) — half-width, matching this MANIFEST's existing
+  convention for simple single-panel plots (thread scaling, hash-cut), since this is one plain
+  bar chart, not a two-panel/annotated view.
+- Real numbers plotted:
+  - Julia, 1 thread, `dict` backend: `wall_time_s=4874.939709082`, `final_terms=38,791,220`,
+    job 7033031. Source: `raw/2026-09-14-worker7169-julia/runs.jsonl`.
+  - Julia, 96 threads, `vector` backend: `wall_time_s=899.49`, `final_terms=38,791,220`, job
+    7034021. Source: `decisions.md` #38 / `job-ledger.jsonl` (no standalone `runs.jsonl` was
+    produced for this one-off point; `decisions.md` #38 is the citable record, at the 2-decimal
+    precision it reports).
+  - Current engine, single-thread, forced to one bucket (`min_buckets=1`): `wall_time_s=
+    1967.578165213985`, `final_terms=38,791,220`, job 7036526. Source:
+    `raw/2026-09-14-worker7160-single-bucket/runs.jsonl`.
+  - All three share `final_terms=38,791,220`.
+- **Honesty contract, load-bearing for this figure's design**: the x-axis is categorical
+  (three labels), never a numeric/log thread axis. The two Julia bars ARE a directly
+  comparable pair (same engine, same code, 1 vs. 96 threads, annotated `5.42x` speedup); the
+  current-engine bar is a DIFFERENT implementation, back at 1 thread again — 1 -> 96 -> 1 is
+  not a monotonic thread progression, and no line connects the three bars. Julia's two bars
+  share one color (`_DECK_SERIES[1]`); the current-engine bar gets both a distinct color
+  (`_DECK_SERIES[0]`, navy) AND a hatch pattern, so the "not part of the Julia pair" signal
+  survives grayscale/color-blind viewing, not just a color difference. Each bar is also
+  annotated with its own thread count directly on the bar.
+- Test coverage: `test_baseline_pivot_figure_empty_input_raises_clear_error`,
+  `test_baseline_pivot_figure_plots_one_bar_per_row_in_order`,
+  `test_baseline_pivot_figure_x_axis_is_categorical_not_a_thread_count`,
+  `test_baseline_pivot_figure_current_engine_bar_is_hatched_distinctly`,
+  `test_baseline_pivot_figure_annotates_julia_speedup`,
+  `test_baseline_pivot_figure_deck_theme_exports_at_exact_size`,
+  `test_baseline_pivot_figure_compact_variant_exports_at_exact_size`.
 
 ### 2. threads (deck page 31 — Rust-only reveal)
 
@@ -271,7 +313,17 @@ dicts directly when no existing normalize helper fits.
   campaign already uses, and switching one figure to a different deck's
   palette would break intra-deck consistency, not improve it.
 
-### 7. bucketed-1t (deck page 29 — "same recurring figure with bucketed one-thread result highlighted")
+### 7. bucketed-1t (deck page 29 — DROPPED 2026-09-14, see "bucketed-1t-v3" below)
+
+**Dropped.** `decisions.md` #46: the user pointed out this figure (historical
+`bucketed_engine_serial` vs. `bucketed_engine_parallel`, two DIFFERENT old commits) does not
+support what page 29 is actually meant to claim — that the CURRENT engine, single-threaded,
+performs worse at one bucket than at its default many-bucket configuration, isolated from
+threading entirely. `bucketed_1t_v2*` files were removed from `figures/real/`; this section is
+kept for provenance only (the description below is of the removed figure). The stage-6
+historical view (`make_recurring_figure(..., stage=6, ...)`) itself remains real, available
+backup material (e.g. for the "attempts" story, page 19), just no longer page 29's asset — see
+the new "bucketed-1t-v3" entry immediately after this one for what replaced it.
 
 `make_recurring_figure(..., stage=6, highlight_variant="bucketed_engine_serial", theme="deck")` —
 the SAME two-panel function already used for `recurring_stage6.png` and the baseline figure
@@ -332,6 +384,45 @@ a replacement for it.
   #44 instead of plotted.
 - Efficiency (left) panel is honestly empty: none of these four historical commits expose
   per-gate stats, the same disclosed gap as `recurring_stage6.png`/the baseline figure above.
+
+### 7b. bucketed-1t-v3 (deck page 29 — real 2-point comparison, 2026-09-14)
+
+New function `make_single_bucket_comparison_figure(rows, theme=..., figsize_pt=...,
+title=...)` in `figures/make_compact_figures.py`: a plain 2-bar chart — current engine,
+single-thread, default bucket config vs. forced to a single bucket, at the SAME
+`eps=2^-16 (1.5258789e-05)`, 127-qubit canonical config.
+
+- Files: `bucketed_1t_v3.{svg,pdf,png}` (900x340pt, 2500x944px @200dpi), `bucketed_1t_v3_compact.*`
+  (450x340pt half-width, 1250x944px @200dpi).
+- Real numbers plotted:
+  - Default bucket config (`target_bucket_len=1024`, `min_buckets=128`, the library defaults):
+    `wall_time_s=1629.9046` (one of 3 repetitions of job 7030090, range 1629.9-1675.6s),
+    `final_terms=38,791,220`. Source: `raw/2026-09-13-worker7277/runs.jsonl`.
+  - Forced single bucket (`min_buckets=1`, `target_bucket_len=1e9`): `wall_time_s=
+    1967.578165213985`, `final_terms=38,791,220`, job 7036526. Source:
+    `raw/2026-09-14-worker7160-single-bucket/runs.jsonl`.
+- **Real, clean finding**: forcing a single bucket is **~20.7% slower** than the default
+  many-bucket configuration, with `final_terms` matching exactly (38,791,220 both), a pure
+  wall-clock effect isolated from threading (both runs are single-thread) and from any
+  historical-commit confound (both runs are the SAME current-engine commit) — a much more
+  direct result than the dropped `bucketed_1t_v2` figure. Stated on the figure itself via the
+  `+20.7%` annotation and a `final_terms identical: 38,791,220` caption.
+- **`expectation_re` cross-check, disclosed**: job 7030090's own `runs.jsonl` rows carry no
+  `extra.expectation_re` field at all (only `wall_time_s`/`final_terms`/etc.). The default-bucket
+  config's expectation value is instead cited from the sibling E9 convergence sweep's own
+  `trotter_step=20` point at the same config (job 7033650, same `task_id=T02-canonical`, same
+  `eps=2^-16`): `expectation_re=0.39716532998468246`, which also reproduces
+  `final_terms=38,791,220` exactly — matching the single-bucket run's own
+  `expectation_re=0.3971653299846819` to floating-point tolerance (~3e-15), the repo's
+  determinism-policy bar. Not plotted on the figure (only `final_terms` is), cited here for the
+  record.
+- Test coverage: `test_single_bucket_comparison_figure_empty_input_raises_clear_error`,
+  `test_single_bucket_comparison_figure_plots_two_bars_in_order`,
+  `test_single_bucket_comparison_figure_single_bucket_is_slower_by_about_21_percent`,
+  `test_single_bucket_comparison_figure_annotates_percent_difference`,
+  `test_single_bucket_comparison_figure_states_matching_final_terms`,
+  `test_single_bucket_comparison_figure_deck_theme_exports_at_exact_size`,
+  `test_single_bucket_comparison_figure_compact_variant_exports_at_exact_size`.
 
 ## Test coverage
 
@@ -474,4 +565,22 @@ diagnosis, section 8 above): `test_memory_diagnosis_figure_empty_input_raises_cl
 `test_memory_diagnosis_figure_deck_theme_exports_at_exact_size`,
 `test_memory_diagnosis_figure_compact_variant_exports_at_exact_size`. Full suite after this
 addition: **55 passed** (46 pre-existing + 9 new; run via
+`.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).
+
+The baseline-pivot figure (section 1b above) added
+`test_baseline_pivot_figure_empty_input_raises_clear_error`,
+`test_baseline_pivot_figure_plots_one_bar_per_row_in_order`,
+`test_baseline_pivot_figure_x_axis_is_categorical_not_a_thread_count`,
+`test_baseline_pivot_figure_current_engine_bar_is_hatched_distinctly`,
+`test_baseline_pivot_figure_annotates_julia_speedup`,
+`test_baseline_pivot_figure_deck_theme_exports_at_exact_size`,
+`test_baseline_pivot_figure_compact_variant_exports_at_exact_size`. The bucketed-1t-v3 figure
+(section 7b above) added `test_single_bucket_comparison_figure_empty_input_raises_clear_error`,
+`test_single_bucket_comparison_figure_plots_two_bars_in_order`,
+`test_single_bucket_comparison_figure_single_bucket_is_slower_by_about_21_percent`,
+`test_single_bucket_comparison_figure_annotates_percent_difference`,
+`test_single_bucket_comparison_figure_states_matching_final_terms`,
+`test_single_bucket_comparison_figure_deck_theme_exports_at_exact_size`,
+`test_single_bucket_comparison_figure_compact_variant_exports_at_exact_size`. Full suite after
+both additions: **69 passed** (55 pre-existing + 14 new; run via
 `.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).

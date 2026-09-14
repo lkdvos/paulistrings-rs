@@ -1104,3 +1104,68 @@
     (already real, job 7030090, eps=2^-16, 1629.9s) vs. the same engine forced to
     `min_buckets=1` at the same config, single-thread (job 7036526, in flight as of this entry --
     see the entry that supersedes this one once it lands).
+
+47. **Job 7036526 (single-bucket) landed; baseline pivot (page 16) and bucketed-1t-v3 (page 29)
+    figures built from real data, 2026-09-14.** Both jobs referenced by decision #46 and the
+    baseline-pivot ask are now real, completed data on disk (nothing from job-ledger.jsonl's
+    still-pending entries -- verified `raw/2026-09-14-worker7160-single-bucket/runs.jsonl`
+    directly, `slurm_job_id=7036526`, `status=completed`).
+
+    **Baseline pivot (page 16)**: `min_buckets=1`, `target_bucket_len=1e9`, same
+    `eps=2^-16 (1.5258789e-05)`/127-qubit canonical config as every other campaign point:
+    `wall_time_s=1967.578165213985`, `final_terms=38,791,220`,
+    `expectation_re=0.3971653299846819`. Combined with the two already-real Julia points --
+    1-thread `dict` backend (`wall_time_s=4874.939709082`, job 7033031, `decisions.md` #27) and
+    96-thread `vector` backend (`wall_time_s=899.49`, job 7034021, `decisions.md` #38) -- this
+    replaces the truncation-inert `naive_baseline`-sweep framing (`decisions.md` #42) as page
+    16's "before this work" reference, per the user's explicit instruction ("I'm happy to use
+    the Julia data (both threaded and not), along with the current engine with a single
+    bucket"). New function `make_baseline_pivot_figure` in `figures/make_compact_figures.py`: a
+    plain categorical 3-bar chart, deliberately NOT a thread-scaling curve -- the 1 -> 96 -> 1
+    thread progression across these three real points is not monotonic (the third point is a
+    different implementation), so there is no connecting line across all three bars and the
+    x-axis is categorical labels, never a numeric thread axis. The two Julia bars share one
+    color and are annotated with their own real `5.42x` speedup; the current-engine bar gets
+    both a distinct color and a hatch pattern so it reads as "not part of the Julia pair" even
+    in grayscale. Files: `figures/real/baseline_v3.{svg,pdf,png}` (900x340pt) + `_compact`
+    (450x340pt half-width, matching this campaign's convention for single-panel, non-sweep
+    plots). The old `baseline_v2*` figure/section in `figures/real/MANIFEST.md` is marked
+    superseded (kept for provenance, not deleted) rather than removed outright, since it is
+    still real (if truncation-inert) data with its own citation trail.
+
+    **Bucketed-1t-v3 (page 29)**: same single-bucket run as above vs. the already-real
+    default-bucket-config point (job 7030090, `wall_time_s=1629.9046`, `final_terms=
+    38,791,220`, `raw/2026-09-13-worker7277/runs.jsonl`) -- both current engine, single-thread,
+    same `eps=2^-16`/127-qubit config, only `min_buckets`/`target_bucket_len` differing. Real,
+    clean finding: forcing a single bucket is **~20.7% slower** (100*(1967.578165213985/
+    1629.904597465007 - 1) = 20.71%) than the default many-bucket configuration, with
+    `final_terms` matching EXACTLY (38,791,220 both) -- a pure wall-clock effect, isolated from
+    threading (both single-thread) and from any historical-commit confound (both the SAME
+    current-engine commit), unlike the dropped `bucketed_1t_v2` figure's two-different-commits
+    comparison. One real gap, disclosed rather than papered over: job 7030090's own
+    `runs.jsonl` rows carry no `extra.expectation_re` field at all, so the default-bucket
+    config's expectation value for the correctness cross-check is cited instead from the
+    sibling E9 convergence sweep's own `trotter_step=20` point at the identical config (job
+    7033650, same `task_id=T02-canonical`, same eps): `expectation_re=0.39716532998468246`,
+    which also independently reproduces `final_terms=38,791,220` -- agreeing with the
+    single-bucket run's own `expectation_re=0.3971653299846819` to ~3e-15, well inside the
+    repo's determinism-policy tolerance bar. This value is cited in `figures/real/MANIFEST.md`
+    and here, not plotted (the figure states only the matching `final_terms`, which both runs'
+    own records carry directly). New function `make_single_bucket_comparison_figure`: a plain
+    2-bar chart with a `+20.7%` annotation and a `final_terms identical: 38,791,220` caption.
+    Files: `figures/real/bucketed_1t_v3.{svg,pdf,png}` (900x340pt) + `_compact` (450x340pt
+    half-width).
+
+    Added 14 tests to `figures/tests/test_make_figures.py` (7 per figure): empty-input error,
+    correct bar ordering/values, the categorical-not-thread-axis contract and hatch-based
+    distinction for the baseline pivot, the ~20.7%-slower regression tripwire and its in-figure
+    annotations for the bucketed-1t-v3 comparison, and an exact-size export test per theme
+    variant for both. Full suite green: **69/69 passed** (55 pre-existing + 14 new,
+    `.venv/bin/python -m pytest quera-talk-data/campaign-2026-09-11/figures/tests/`).
+
+    Updated `figures/real/MANIFEST.md` (new "baseline-pivot" entry 1b superseding the old
+    "baseline" entry 1, and new "bucketed-1t-v3" entry 7b alongside the dropped "bucketed-1t"
+    entry 7) and `evidence.md`'s E4/E5 row. Did not touch in-flight jobs 7036845 (quick
+    eps=2^-14/2^-12 comparison) or 7033946 (Julia convergence), and ran no Slurm command of any
+    kind (only read files already on disk from the completed job 7036526 and prior completed
+    jobs 7030090/7033031/7034021/7033650).

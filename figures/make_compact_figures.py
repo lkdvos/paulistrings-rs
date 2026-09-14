@@ -1193,3 +1193,235 @@ def make_bucket_size_figure(
     else:
         fig = _build()
     return fig
+
+
+def make_baseline_pivot_figure(
+    rows: Sequence[dict],
+    *,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """Three real wall-clock points marking "before this work" (deck page 16).
+
+    Supersedes the `naive_baseline`-tolerance-sweep framing of the old
+    `baseline_v2` figure (`make_recurring_figure(..., highlight_variant=
+    "naive_baseline")`): `decisions.md` #42 found that commit's merge phase
+    never wires truncation in at all, so every point of a sweep comes back
+    with the identical `final_terms` -- it cannot show a tolerance sweep, and
+    is truncation-inert rather than a real "before" baseline. The three
+    points the user asked for instead: PauliPropagation.jl single-thread,
+    PauliPropagation.jl 96-thread, and THIS engine's own single-bucket point
+    (`min_buckets=1`, forced back to the pre-bucketing regime) -- all at the
+    SAME `eps=2^-16`, 127-qubit canonical config.
+
+    Each row: `{"label": str, "wall_time_s": float, "threads": int, "engine":
+    "julia" | "current_engine", "final_terms": int | None}`.
+
+    This is a plain 3-point bar chart, deliberately NOT a scaling curve: the
+    x-axis is categorical (`label`), never a numeric thread axis, and no line
+    connects the three bars. The two Julia points ARE a directly comparable
+    pair (same engine, same code, 1 vs. 96 threads); the current-engine point
+    is a DIFFERENT implementation, back at 1 thread again -- 1 -> 96 -> 1 is
+    not a monotonic thread progression, and drawing it as one continuous
+    series would misleadingly imply otherwise. Julia's two bars share one
+    color; the current-engine bar gets both a distinct color AND a hatch
+    pattern, so "this one is not part of the Julia pair" survives grayscale
+    or color-blind viewing, not just a color difference.
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_baseline_pivot_figure: no rows to plot -- need the three "
+            "real wall-clock points (Julia 1-thread, Julia 96-thread, "
+            "current-engine 1-bucket) before this figure has anything to show."
+        )
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (6, 4.2)
+
+    def _build():
+        fig, ax = plt.subplots(figsize=figsize)
+
+        walls = [r["wall_time_s"] for r in rows]
+        xs = list(range(len(rows)))
+
+        julia_color = _DECK_SERIES[1]["color"] if deck else "#eb6834"
+        engine_color = _DECK_SERIES[0]["color"] if deck else _ACCENT
+        edge_color = _DECK_NAVY if deck else "#333333"
+        colors = [engine_color if r.get("engine") == "current_engine" else julia_color for r in rows]
+
+        bars = ax.bar(xs, walls, color=colors, width=0.55, edgecolor=edge_color, linewidth=0.8)
+        hatch_color = "#ffffff" if deck else "#f5f4ef"
+        for bar, r in zip(bars, rows):
+            if r.get("engine") == "current_engine":
+                bar.set_hatch("///")
+                # matplotlib draws hatch lines in the patch's edgecolor, which
+                # is the same navy as this bar's own outline -- invisible
+                # against a navy fill without an explicit lighter override.
+                bar.set_edgecolor(hatch_color)
+                bar.set_linewidth(1.2)
+
+        text_color = _DECK_NAVY if deck else "#333333"
+        muted = _DECK_GRID if deck else "#898781"
+        for xi, r in zip(xs, rows):
+            ax.annotate(
+                f"{r['wall_time_s']:.1f} s",
+                (xi, r["wall_time_s"]), xytext=(0, 4), textcoords="offset points",
+                ha="center", va="bottom", fontsize=9 if not deck else _DECK_FONT_PT * 0.65,
+                color=text_color,
+            )
+            thread_label = f"{r['threads']} thread{'s' if r['threads'] != 1 else ''}"
+            ax.annotate(
+                thread_label,
+                (xi, 0.02), xycoords=("data", "axes fraction"),
+                ha="center", va="bottom", fontsize=8 if not deck else _DECK_FONT_PT * 0.55,
+                color=muted,
+            )
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels([r["label"] for r in rows], fontsize=9 if not deck else _DECK_FONT_PT * 0.7)
+        ax.set_ylabel("wall time (s)")
+        ax.set_ylim(0, max(walls) * 1.22)
+
+        # Julia's own 1-thread -> 96-thread speedup, stated once as an explicit
+        # number rather than left for the reader to compute from the two bar
+        # heights -- only drawn when both Julia points are actually present.
+        julia_idx = [i for i, r in enumerate(rows) if r.get("engine") != "current_engine"]
+        if len(julia_idx) >= 2:
+            i0, i1 = julia_idx[0], julia_idx[-1]
+            if rows[i1]["wall_time_s"] > 0:
+                speedup = rows[i0]["wall_time_s"] / rows[i1]["wall_time_s"]
+                ax.annotate(
+                    f"{speedup:.2f}x",
+                    ((i0 + i1) / 2, max(rows[i0]["wall_time_s"], rows[i1]["wall_time_s"]) * 1.10),
+                    ha="center", va="bottom", fontsize=9 if not deck else _DECK_FONT_PT * 0.6,
+                    color=text_color, fontweight="bold",
+                )
+
+        if deck:
+            if title:
+                ax.set_title(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+            _style_axes_deck(ax)
+        else:
+            ax.set_title("SYNTHETIC — placeholder: baseline pivot")
+            _style_axes(ax)
+        ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig
+
+
+def make_single_bucket_comparison_figure(
+    rows: Sequence[dict],
+    *,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """Two-bar comparison: current engine, single-thread, default bucket
+    config vs. forced to a single bucket (deck page 29).
+
+    Supersedes the dropped `bucketed_1t_v2` figure (`decisions.md` #46):
+    that figure compared `bucketed_engine_serial` vs. `bucketed_engine_
+    parallel`, two DIFFERENT historical commits, which never supported page
+    29's actual claim. The real claim is narrower and entirely within the
+    CURRENT engine, single-threaded: does bucket-splitting itself help,
+    independent of threading? Both rows here are the same engine, same
+    commit, same thread count (1), same `eps=2^-16`/127-qubit config -- only
+    `min_buckets`/`target_bucket_len` differ.
+
+    Each row: `{"label": str, "wall_time_s": float, "final_terms": int |
+    None, "expectation_re": float | None}`. Exactly two rows are expected
+    (default config, forced single bucket); this function does not refuse a
+    different count, but its "N% slower" annotation only draws when there
+    are at least two.
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_single_bucket_comparison_figure: no rows to plot -- need "
+            "the default-bucket and single-bucket wall-clock points (same "
+            "config, same thread count) before this figure has anything to "
+            "show."
+        )
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (5, 4.2)
+
+    def _build():
+        fig, ax = plt.subplots(figsize=figsize)
+
+        walls = [r["wall_time_s"] for r in rows]
+        xs = list(range(len(rows)))
+        palette = [_DECK_SERIES[0]["color"], _DECK_SERIES[1]["color"]] if deck else [_ACCENT, "#eb6834"]
+        colors = [palette[i % len(palette)] for i in xs]
+        edge_color = _DECK_NAVY if deck else "#333333"
+
+        ax.bar(xs, walls, color=colors, width=0.5, edgecolor=edge_color, linewidth=0.8)
+
+        text_color = _DECK_NAVY if deck else "#333333"
+        muted = _DECK_GRID if deck else "#898781"
+        for xi, r in zip(xs, rows):
+            ax.annotate(
+                f"{r['wall_time_s']:.1f} s", (xi, r["wall_time_s"]),
+                xytext=(0, 4), textcoords="offset points", ha="center", va="bottom",
+                fontsize=9 if not deck else _DECK_FONT_PT * 0.65, color=text_color,
+            )
+
+        if len(rows) >= 2 and rows[0]["wall_time_s"] > 0:
+            pct = 100.0 * (rows[1]["wall_time_s"] / rows[0]["wall_time_s"] - 1.0)
+            ax.annotate(
+                f"{pct:+.1f}%",
+                (0.5, max(walls) * 1.16),
+                xycoords=("axes fraction", "data"), ha="center", va="bottom",
+                fontsize=10 if not deck else _DECK_FONT_PT * 0.7, color=text_color, fontweight="bold",
+            )
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels([r["label"] for r in rows], fontsize=9 if not deck else _DECK_FONT_PT * 0.7)
+        ax.set_ylabel("wall time (s)")
+        ax.set_ylim(0, max(walls) * 1.3)
+
+        # Same-correctness note: identical final_terms across both bars means
+        # this is a pure wall-clock effect, never a correctness difference.
+        terms = {r["final_terms"] for r in rows if r.get("final_terms") is not None}
+        if len(terms) == 1:
+            (n,) = terms
+            ax.annotate(
+                f"final_terms identical: {n:,}",
+                (0.5, -0.20), xycoords="axes fraction", ha="center", va="top",
+                fontsize=7 if not deck else _DECK_FONT_PT * 0.5, color=muted,
+            )
+
+        if deck:
+            if title:
+                ax.set_title(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+            _style_axes_deck(ax)
+        else:
+            ax.set_title("SYNTHETIC — placeholder: bucket config comparison")
+            _style_axes(ax)
+        ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        if len(terms) == 1:
+            fig.subplots_adjust(bottom=0.24)
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig

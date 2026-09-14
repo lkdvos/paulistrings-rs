@@ -109,6 +109,19 @@ class CellSpec:
     # metadata is not needed since n_qubits itself is a normal field, but
     # `observable` must then be "debug_single_z" (see `_build_observable`).
     n_qubits: int = 127
+    # The sorting engine's per-layer bucket-sizing knobs
+    # (`PropagateOptions::target_bucket_len`/`min_buckets`, engine/mod.rs),
+    # newly plumbed through `PauliSum.propagate`/`propagate_with_stats`.
+    # `None` (default) is untouched -- omitted from `propagate_kwargs`
+    # entirely, so a cell that does not set these gets exactly today's
+    # behaviour (`DEFAULT_TARGET_BUCKET_LEN=1024`/`DEFAULT_MIN_BUCKETS=128`).
+    # Only meaningful for `variant_id="bucketed_current"`; not part of the
+    # frozen T02 canonical schema, so not recorded in `RUN_FIELDS` -- the
+    # realized bucket count (`PauliSum.num_buckets`, not the request, since
+    # `rebucket` only ever grows a sum's partition) goes in the run record's
+    # open-ended `extra` dict instead.
+    target_bucket_len: int | None = None
+    min_buckets: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CellSpec":
@@ -298,6 +311,23 @@ def _slurm_job_id() -> str | None:
     return os.environ.get("SLURM_JOB_ID") or None
 
 
+def _extra_record(expectation: complex | None, evolved: Any, spec: CellSpec) -> dict[str, Any] | None:
+    """Open-ended `extra` payload (schema.py's one free-form field).
+
+    `num_buckets` is the *realized* count from `PauliSum.num_buckets` (grow-only
+    `rebucket`, so it can differ from a `target_bucket_len`/`min_buckets`
+    request) -- included whenever either knob was set on this cell, so a figure
+    caption can cite a real number rather than the requested target.
+    """
+    extra: dict[str, Any] = {}
+    if expectation is not None:
+        extra["expectation_re"] = expectation.real
+        extra["expectation_im"] = expectation.imag
+    if spec.target_bucket_len is not None or spec.min_buckets is not None:
+        extra["num_buckets"] = evolved.num_buckets
+    return extra or None
+
+
 def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run one cell, returning `(run_record, gate_records)`. Never raises for
     a cell that legitimately cannot run (bad hardware, deferred variant) —
@@ -358,6 +388,10 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
                 "expected 'random' or 'cut'"
             )
         row_policy = spec.partition_row_policy
+    if spec.target_bucket_len is not None:
+        propagate_kwargs["target_bucket_len"] = spec.target_bucket_len
+    if spec.min_buckets is not None:
+        propagate_kwargs["min_buckets"] = spec.min_buckets
 
     # One untraced propagate for the authoritative wall time — no stats
     # object in the timed region — mirroring bench_c_deep_trotter.py's
@@ -423,11 +457,7 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
         "log_path": None,
         "gate_trace_path": str(gate_trace_path),
         "partition_row_policy": row_policy,
-        "extra": (
-            {"expectation_re": expectation.real, "expectation_im": expectation.imag}
-            if expectation is not None
-            else None
-        ),
+        "extra": _extra_record(expectation, evolved, spec),
     }
 
     gate_records: list[dict[str, Any]] = []

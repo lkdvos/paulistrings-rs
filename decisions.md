@@ -1169,3 +1169,35 @@
     eps=2^-14/2^-12 comparison) or 7033946 (Julia convergence), and ran no Slurm command of any
     kind (only read files already on disk from the completed job 7036526 and prior completed
     jobs 7030090/7033031/7034021/7033650).
+
+48. **Bucket-size figure (page 30) re-sweep with topn:1000000, single-panel + real L2 line,
+    2026-09-14.** Job 7036867 re-swept the page-30 bucket-size figure with `--truncation
+    topn:1000000` instead of `coeff:2^-12` (fixing the earlier problem: at eps=2^-12 the final
+    term count was only ~770-900, too few for target_bucket_len in {256..4096} to produce
+    meaningfully different occupancy). Real result, all 5 configs hit exactly n=1,000,000, ZERO
+    empty buckets at every target_bucket_len (256->4096 buckets, median occupancy scales cleanly
+    244->3905). Throughput: 256->5.787e7, 512->6.132e7, 1024->6.322e7, 2048->6.513e7 (peak),
+    4096->6.495e7 strings/s. Job 7036934 added one more point, target_bucket_len=8192
+    (num_buckets=128, the min_buckets floor -- confirmed the largest value that can still move;
+    anything past this is identical since num_buckets cannot go below the floor): 6.498e7
+    strings/s. Honest finding: the "peak" at 2048 is real but flattens into a plateau
+    (2048/4096/8192 all sit at ~6.50e7 +-0.3%), not a sharp drop-off -- per user request for "a
+    point at larger target bucket lengths so the peak is more pronounced", the additional point
+    shows the shape IS a plateau, not a sharper peak, and the figure states this rather than
+    overclaiming a more dramatic effect than the data supports.
+
+    Job 7036934 also captured the real, node-local L2 cache size via `lscpu -C` (not a
+    substituted spec-sheet number, per this repo's own measured-over-spec discipline): **1 MiB
+    per core** (`L2 1M 96M 8 Unified 2 2048 1 64`), the first real L2 measurement on file for
+    this campaign's genoa hardware (`research/HARDWARE.md` had none).
+
+    `make_bucket_size_figure` gained `single_panel=True` (throughput only, per user request --
+    the occupancy panel stays available via the default) and `l2_cache_bytes=`/`bytes_per_term=`
+    (draws a vertical reference line at `target_bucket_len = l2_cache_bytes / bytes_per_term`,
+    48 B/term default). With the real 1 MiB L2, the reference line sits at target_bucket_len ~=
+    21,845 (2^14.4) -- well PAST where the plateau begins (~2^11) and past every tested point,
+    so the plateau is NOT positioned at the L2 boundary in this data; the figure does not claim
+    a cache-residency explanation for it. x-axis label changed from `target_bucket_len` (code
+    identifier) to "target bucket size (terms)" (human-readable), per user request. New exports:
+    `figures/real/bucket_size_v3.{svg,pdf,png}` and `_compact` (450x340pt half-width, single
+    panel). 71/71 figure tests passing.

@@ -1130,7 +1130,7 @@ def make_bucket_size_figure(
         else:
             ax_thr.plot(xs, ys_thr, marker="o", markersize=5, linewidth=1.5, color=_ACCENT)
         ax_thr.set_xscale("log", base=2)
-        ax_thr.set_xlabel("target_bucket_len")
+        ax_thr.set_xlabel("target bucket size (terms)")
         ax_thr.set_ylabel("strings/s")
 
         if l2_cache_bytes is not None:
@@ -1195,7 +1195,7 @@ def make_bucket_size_figure(
         ax_occ.plot(xs, maxs, marker=max_style["marker"], markersize=6, linewidth=1.8,
                     linestyle=max_style["linestyle"], color=max_style["color"], label="max")
         ax_occ.set_xscale("log", base=2)
-        ax_occ.set_xlabel("target_bucket_len")
+        ax_occ.set_xlabel("target bucket size (terms)")
         ax_occ.set_ylabel("occupied strings per non-empty bucket")
 
         # Empty-bucket fraction on its own twin axis, as thin bars -- a

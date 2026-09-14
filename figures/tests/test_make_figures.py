@@ -14,6 +14,7 @@ import pytest
 from make_compact_figures import (
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
+    make_attempts_figure,
     make_convergence_figure,
     make_hash_communication_figure,
     make_thread_scaling_figure,
@@ -181,6 +182,45 @@ def test_thread_scaling_overlays_a_second_engine_normalized_to_its_own_baseline(
     julia_line = next(l for l in ax.get_lines() if l.get_label() == "PauliPropagation.jl")
     assert list(julia_line.get_xdata()) == [1, 96]
     assert list(julia_line.get_ydata()) == pytest.approx([1.0, 4875.0 / 899.0])
+    matplotlib.pyplot.close(fig)
+
+
+# --- attempted parallel strategies (recovered presentation-branch data) ------
+
+
+def test_attempts_figure_empty_input_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="thread_scaling.jsonl"):
+        make_attempts_figure([])
+
+
+def test_attempts_figure_one_line_per_label():
+    rows = [
+        {"label": "threadmaps", "description": "per-thread map, merge at layer end", "threads": 1, "wall_time_s": 137.4},
+        {"label": "threadmaps", "description": "per-thread map, merge at layer end", "threads": 32, "wall_time_s": 162.1},
+        {"label": "mergesort", "description": "flat array, parallel sort, segmented merge", "threads": 1, "wall_time_s": 54.1},
+        {"label": "mergesort", "description": "flat array, parallel sort, segmented merge", "threads": 32, "wall_time_s": 28.5},
+    ]
+    fig = make_attempts_figure(rows)
+    assert fig is not None
+    ax = fig.axes[0]
+    assert len(ax.lines) == 2
+    assert "historical" in ax.get_title().lower()
+    matplotlib.pyplot.close(fig)
+
+
+def test_attempts_figure_current_engine_point_is_a_distinct_unconnected_marker():
+    rows = [
+        {"label": "threadmaps", "description": "per-thread map", "threads": 1, "wall_time_s": 137.4},
+        {"label": "threadmaps", "description": "per-thread map", "threads": 32, "wall_time_s": 162.1},
+    ]
+    current = {"label": "bucketed (this campaign, genoa)", "threads": 1, "wall_time_s": 3.2}
+    fig = make_attempts_figure(rows, current_engine_row=current)
+    ax = fig.axes[0]
+    # A line series has real linewidth; the reference point must be a scatter
+    # marker (no connected line), so it never reads as part of a scaling curve.
+    assert len(ax.lines) == 1
+    star_collections = [c for c in ax.collections if c.get_label() == current["label"]]
+    assert len(star_collections) == 1
     matplotlib.pyplot.close(fig)
 
 

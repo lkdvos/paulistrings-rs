@@ -856,3 +856,28 @@
    figures, 25/25 analysis+jobs). Not yet run on the real cluster -- see the submit command below
    for the real ladder, matching Rust's own thread points {1,2,4,8,16,32,48,96} at the same eps=2^-16
    already covered by both engines' single-thread and 96-thread points.
+
+40. **Recovered real "attempted parallel approaches" data for slide 19 ("attempts"), 2026-09-14.**
+   `E2` (evidence.md) was marked `blocked` because `presentation/bench/` is a standalone crate not
+   present in this tree -- but it was already run for real on git branch `presentation` (not
+   `main`, not this `presentation-work` worktree; never checked out here, read only via `git show`/
+   `git log`/`git branch --all --contains`). Verified: branch `presentation` and commit `81b922c`
+   (bench crate: naive/threadmaps/mergesort/bucketed) are reachable; `presentation/data/
+   thread_scaling.jsonl` was written by commit `d9a3794`, and its own header line records the engine
+   build it measured (`commit=7190d94`, host `ccqlin038`, 2026-09-06). Copied the file byte-for-byte
+   (not moved, not edited, source branch untouched) to `raw/recovered-presentation-branch-attempts/
+   thread_scaling.jsonl` with a README giving exact provenance and the cross-architecture caveat.
+   Real 1-thread wall times at 127 qubits/10 Trotter steps/eps=2^-12: `threadmaps` (per-thread
+   `HashMap`, merge at layer end) 137.4s, degrading with more threads (162.1s at 32); `mergesort`
+   (flat array, parallel sort, segmented merge of equal keys) 54.1s, improving to ~28s at 16-32
+   threads; `bucketed` (shipped engine, in-branch reference point) 15.1s down to ~1.7s. Added
+   `make_compact_figures.py::make_attempts_figure` (wall time vs. threads, log-log, one line per
+   strategy, title/caption explicit that this is historical cross-architecture reference data, an
+   optional unconnected star marker for a same-campaign reference point -- not used here, since no
+   confirmed real genoa bucketed 1-thread number exists yet in this campaign, per E4's own
+   `tooling-ready` status) plus two new tests in `figures/tests/test_make_figures.py`. Full figure
+   suite green: 25/25 passed (`./.venv/bin/python -m pytest figures/tests/`). Generated
+   `figures/real/attempts.{png,svg,pdf}` from the recovered data. **This is NOT a same-hardware
+   comparison** -- `ccqlin038` is a CCA/CCQ workstation, not this campaign's genoa/rocky9 node class;
+   the figure, its README, and evidence.md's E2 row all state this caveat prominently. Did not
+   modify anything on branch `presentation`.

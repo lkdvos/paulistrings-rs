@@ -254,3 +254,83 @@
    from 76 to 7 on the existing `test_per_layer_term_counts_match_between_engines` pytest. Fixed by mirroring
    the same want_timer/record_gate_trace wiring into `direct.rs::run_direct_prefix`, and pinned with a new
    assertion block in `small_sum_path.rs::assert_engines_agree` so it can't silently regress again.
+
+22. **Root-caused job 7032060's OOM crash (eps=2^-20, 8 ranks/4 nodes): genuine capacity shortfall
+    compounded by random-partition-row imbalance, not a code bug.** Investigated per the E7 completion
+    task: full re-read of `raw/slurm-7032060.out`, `sacct -j 7032060` broken out per step
+    (`MaxRSS`/`AveRSS`/`ReqMem`), `seff 7032060`, `jobs/run_cell_distributed.py` end to end, and a diff
+    of `jobs/campaign-genoa-distributed.sbatch` against the proven `scripts/slurm/mpi-ranks.sbatch`.
+
+    **Timeline (real, from sacct/seff, not guessed)**: job ran 01:33:01 wall and Slurm marked it
+    `COMPLETED` overall — the "srun launcher appears hung" note in `job-ledger.jsonl` was written before
+    the job's final state settled and is superseded by this entry. Step `7032060.0` ran 01:31:55 before
+    `OUT_OF_MEMORY`. `seff` reports 2.73 TB utilized of 5.87 TB requested (46.45%) but flags "the task
+    which had the largest memory consumption differs by 343.84% from the average" — `sacct`'s per-step
+    `MaxRSS=1257805740K` (~1.20 TiB, one single rank, task 1 on `worker7216`) vs `AveRSS=365811870K`
+    (~349 GiB average across the 8 ranks). One rank alone consumed ~82% of its node's usable RAM
+    (`ReqMem`/`seff` confirm the node got its full ~1.47 TiB, so the earlier "missing `--mem`" theory in
+    the task brief is **refuted** — `--exclusive` with no `--mem` correctly grants the whole node, matching
+    `mpi-ranks.sbatch`'s established, working behavior; no difference in UCX env vars between the two
+    scripts either, and `/dev/shm` on this login host is 126G tmpfs, not a plausible independent culprit).
+
+    **Backtrace re-read**: the SIGBUS-in-`MPI_Bcast`-under-`mpi4py` trace does **not** localize to the
+    `run_id` bcast at `run_cell_distributed.py:128` as speculated in the task brief. mpi4py's pickle-based
+    object collectives (`Comm.bcast`, `Comm.allreduce` on non-buffer Python objects) are implemented
+    internally via reduce+broadcast regardless of which Python-level method is called, so every
+    `COMM.allreduce(...)` call in the file (lines ~134, ~198, ~208, ~244-247) is an equally plausible site
+    for a `MPI_Bcast` frame — the trace alone can't distinguish them. Given 93 real minutes elapsed and
+    that `observable.propagate(..., comm=COMM, result="local")` (the ~90-minute Rust-side computation,
+    line 190) uses rsmpi directly and would show Rust frames if it were the crash site (it shows none),
+    the far more likely site is the very next Python-level collective after `propagate` returns —
+    `COMM.allreduce(local_exp, op=MPI.SUM)` at line 198 — i.e., the crash landed exactly when the already-
+    OOM-adjacent rank needed one more small allocation (pickling/MPI internal buffers) to do the
+    post-computation reduction. This is consistent with, not contradictory to, the OOM read: the collective
+    was the straw, not the load.
+
+    **No collective-order bug found.** Re-verified the module's own invariant ("no rank-dependent branch
+    around a collective"): every conditional (`spec.variant_id != "bucketed_current"`, `not group_ok`,
+    `spec.partition_row_policy != "random"`) is evaluated from `spec` (parsed identically by every rank from
+    one shared `cell.json`, written once by the sbatch script before any rank starts) or from `group_ok`
+    (itself already collectively agreed via the `allreduce` immediately above it). This cell used
+    `partition_row_policy="random"` on every rank (the only value the sbatch script ever writes into
+    `cell.json`, no per-rank variation possible from a single shared-filesystem file written before `srun`)
+    — the "cut... race" scenario in the task brief did not apply and there is no evidence of one.
+
+    **Real capacity extrapolation**: eps=2^-16 -> final_terms=38,791,220; eps=2^-18 ->
+    final_terms=583,393,599 / peak_terms=635,371,364, a ~15x jump. Naively continuing that ratio puts
+    eps=2^-20's peak in the 9-10 billion term range. At `W=2` (127 qubits needs the 128-qubit dispatch
+    width) the core payload is 2×u64 (x) + 2×u64 (z) + complex128 coefficient = 48 bytes/term; 10B terms is
+    ~480 GB of raw payload before any merge/scratch doubling, Vec capacity slack, or per-thread (48
+    threads/rank) Rayon accumulator overhead — all of which are real and unaccounted for in that minimum.
+    The observed total RSS (~2.79 TB, `AveRSS × NTasks`) implies an effective bytes/term several times the
+    48-byte floor, which is the expected shape for a parallel merge engine, not evidence of a leak.
+
+    **The imbalance is the sharper, more actionable half of the finding.** Total available memory (8 ranks
+    × ~1.47 TiB/node ÷ 2 ranks/node = 8 × ~735 GiB ≈ 5.87 TiB) would have comfortably covered an *evenly
+    split* ~10B-term sum. The crash happened because `partition_row_policy="random"` (the only policy this
+    path supports — decision #21) drew a partition-row set that put roughly 3.4x the average share of
+    terms on one rank, and that rank shares its node with a second rank, so the node-level ceiling (not the
+    cluster-level one) was hit first. `research/`/Known Gaps already documents partition-row imbalance as
+    open research ("roughly half of a dense two-qubit gate's deltas cross at P=2... tuning the rows is open
+    research") — this run is a real, measured instance of that same phenomenon causing an actual failure,
+    not a new mechanism.
+
+    **Conclusion: genuine capacity/imbalance limit at this scale, not a bug — case (b), no code fix
+    applied.** `run_cell_distributed.py` and `campaign-genoa-distributed.sbatch` are correct as written;
+    changing them would either paper over a real result (e.g. silently capping `min_abs_coeff`) or require
+    building the distributed explicit-rows plumbing decision #21 explicitly deferred (a multi-day task, out
+    of scope for an OOM-triage pass). The concrete, low-risk lever available today without any code change
+    is more nodes: doubling to `--nodes=8` (16 ranks, 1 per NUMA domain as today) roughly doubles both
+    total capacity and the number of partitions the random draw spreads terms over, which should shrink
+    the worst-rank absolute footprint even if the relative skew ratio persists. Recommended resubmit for a
+    real eps=2^-20 completion attempt:
+
+    ```
+    env -u SBATCH_RESERVATION --nodes=8 MIN_ABS_COEFF=9.5367432e-07 \
+        sbatch quera-talk-data/campaign-2026-09-11/jobs/campaign-genoa-distributed.sbatch
+    ```
+
+    If this still OOMs, the next lever is `--nodes=16` (32 ranks) before concluding eps=2^-20 needs the
+    distributed explicit-rows (`"cut"`) plumbing built first; a looser point (eps=2^-19, `MIN_ABS_COEFF=
+    1.9073486e-06`) is the fallback if node budget is constrained, as a real (if less ambitious) E7 capacity
+    point instead of a repeated crash at 2^-20.

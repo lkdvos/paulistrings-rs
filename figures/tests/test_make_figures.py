@@ -1255,6 +1255,47 @@ def test_baseline_eps_scaling_figure_x_axis_grows_with_tighter_eps_series():
     matplotlib.pyplot.close(fig_both)
 
 
+def test_baseline_eps_scaling_figure_emphasize_last_dims_earlier_series():
+    """`emphasize_last=True` must dim every already-revealed series (lower alpha, thinner
+    line) and keep the newest (draw_labels[-1]) at full emphasis -- without changing which
+    color/marker each label uses, so the legend still matches by shape and hue.
+    """
+    rows = [
+        {"label": "A", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 10.0},
+        {"label": "A", "min_abs_coeff": 9.765625e-04, "wall_time_s": 1.0},
+        {"label": "B", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 50.0},
+        {"label": "B", "min_abs_coeff": 9.765625e-04, "wall_time_s": 5.0},
+    ]
+    fig = make_baseline_eps_scaling_figure(
+        rows, series_order=["A", "B"], theme="deck", figsize_pt=(900, 340), emphasize_last=True,
+    )
+    ax = fig.axes[0]
+    line_a = next(ln for ln in ax.get_lines() if ln.get_label() == "A")
+    line_b = next(ln for ln in ax.get_lines() if ln.get_label() == "B")
+    assert line_a.get_alpha() < line_b.get_alpha()
+    assert line_a.get_linewidth() < line_b.get_linewidth()
+    matplotlib.pyplot.close(fig)
+
+
+def test_baseline_eps_scaling_figure_emphasize_last_default_off_is_unchanged():
+    """The default (`emphasize_last=False`) must draw every series at full, equal emphasis --
+    this is a real behavior-preservation check, not just a smoke test: the earlier stage
+    figures already committed to the deck must not silently change when this parameter is
+    merely present but unused.
+    """
+    rows = [
+        {"label": "A", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 10.0},
+        {"label": "B", "min_abs_coeff": 2.44140625e-04, "wall_time_s": 50.0},
+    ]
+    fig = make_baseline_eps_scaling_figure(rows, series_order=["A", "B"], theme="deck", figsize_pt=(900, 340))
+    ax = fig.axes[0]
+    line_a = next(ln for ln in ax.get_lines() if ln.get_label() == "A")
+    line_b = next(ln for ln in ax.get_lines() if ln.get_label() == "B")
+    assert line_a.get_alpha() == line_b.get_alpha() == 1.0
+    assert line_a.get_linewidth() == line_b.get_linewidth()
+    matplotlib.pyplot.close(fig)
+
+
 def test_baseline_eps_scaling_figure_deck_theme_exports_at_exact_size(tmp_path):
     fig = make_baseline_eps_scaling_figure(
         _BASELINE_EPS_ROWS, theme="deck", figsize_pt=(900, 340), title="Baseline: eps scaling"

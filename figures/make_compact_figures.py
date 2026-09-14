@@ -1382,6 +1382,7 @@ def make_baseline_eps_scaling_figure(
     figsize_pt: tuple[float, float] | None = None,
     title: str | None = None,
     speedup_baseline: str | None = None,
+    emphasize_last: bool = False,
 ):
     """One line per named series: wall time (y, log) vs. `min_abs_coeff` (x, log2-spaced), the
     eps-sweep redesign of the deck page 16 baseline story.
@@ -1394,6 +1395,14 @@ def make_baseline_eps_scaling_figure(
     label to have a row at every eps value any drawn series has one at, else that series/eps
     point is silently skipped (no fabricated ratio from a missing denominator) -- callers should
     ensure the baseline series is complete across the grid before relying on this panel.
+
+    `emphasize_last=True` visually distinguishes `draw_labels[-1]` -- the series a progressive
+    reveal just added relative to the previous stage -- from everything already shown: earlier
+    series render dimmed (reduced alpha, thinner line) while the newest keeps full color and a
+    heavier line. Each line keeps its own fixed color/marker/linestyle either way (only alpha/
+    linewidth change), so the legend still matches every line by shape and hue, just fainter
+    for what's already been introduced. Meaningless with a single drawn label (nothing to
+    contrast against) -- silently has no visible effect in that case, not an error.
 
     Supersedes `make_baseline_pivot_figure` (`baseline_v3`, a single-eps 3-bar chart) as page
     16's figure -- MANIFEST marks `baseline_v3` superseded, not deleted, same as this campaign's
@@ -1478,6 +1487,17 @@ def make_baseline_eps_scaling_figure(
         for r in rows:
             by_label.setdefault(r["label"], []).append(r)
 
+        # `emphasize_last`: dim every already-revealed series (lower alpha, thinner line) and
+        # emphasize draw_labels[-1] -- the one a progressive reveal just added relative to the
+        # previous stage. Color/marker/linestyle stay each label's own fixed style either way,
+        # so the legend still matches every line by shape and hue.
+        newest_label = draw_labels[-1] if (emphasize_last and len(draw_labels) > 1) else None
+
+        def _emphasis(label: str, base_linewidth: float) -> tuple[float, float]:
+            if newest_label is None or label == newest_label:
+                return 1.0, base_linewidth * 1.3
+            return 0.35, base_linewidth * 0.75
+
         for label in draw_labels:
             pts = sorted((r["min_abs_coeff"], r["wall_time_s"]) for r in by_label[label])
             if not pts:
@@ -1485,10 +1505,13 @@ def make_baseline_eps_scaling_figure(
             xs, ys = zip(*pts)
             if deck:
                 st = style_map[label]
-                ax.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=1.8,
+                alpha, lw = _emphasis(label, 1.8)
+                ax.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=lw, alpha=alpha,
                          linestyle=st["linestyle"], color=st["color"], label=label)
             else:
-                ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=legacy_color[label], label=label)
+                alpha, lw = _emphasis(label, 1.5)
+                ax.plot(xs, ys, marker="o", markersize=5, linewidth=lw, alpha=alpha,
+                        color=legacy_color[label], label=label)
 
         # y-range from every row in `rows`, not just `draw_labels` -- keeps the axes from
         # jumping when a later stage's `series_order` grows (see docstring).
@@ -1547,10 +1570,13 @@ def make_baseline_eps_scaling_figure(
                 xs, ys = zip(*pts)
                 if deck:
                     st = style_map[label]
-                    ax_speedup.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=1.8,
-                                     linestyle=st["linestyle"], color=st["color"])
+                    alpha, lw = _emphasis(label, 1.8)
+                    ax_speedup.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=lw,
+                                     alpha=alpha, linestyle=st["linestyle"], color=st["color"])
                 else:
-                    ax_speedup.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=legacy_color[label])
+                    alpha, lw = _emphasis(label, 1.5)
+                    ax_speedup.plot(xs, ys, marker="o", markersize=5, linewidth=lw, alpha=alpha,
+                                     color=legacy_color[label])
 
             ax_speedup.axhline(1.0, color=(_DECK_NAVY if deck else "#898781"), linewidth=0.8, linestyle=":")
             ax_speedup.set_xlim(ax.get_xlim())

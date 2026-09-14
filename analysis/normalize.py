@@ -182,15 +182,56 @@ def rank_scaling(
     return rows
 
 
-def hash_communication(run_records: list[dict]) -> list[dict]:
-    """Placeholder: empty until the schema gains 'partition_row_policy'.
+def hash_communication(run_records: list[dict], gate_records: list[dict]) -> list[dict]:
+    """One row per completed, `partition_row_policy`-tagged run: total rows/bytes
+    exported across all its layers, for a random-vs-cut communication-volume
+    comparison (E8, contract.md's "Partition rows are drawn at random by
+    default" + `decisions.md` #13).
 
-    This table is meant to compare export volume between random and cut-based
-    partition row selection (contract.md, "Partition rows are drawn at random
-    by default"), but the run record schema above has no field distinguishing
-    the two policies. Returns [] unconditionally until that field exists.
+    Grouped by `run_id` (not averaged/merged across runs) so the caller can
+    pair same-`config_id` runs that differ only in `partition_row_policy` --
+    the otherwise-identical-cell comparison this evidence slot needs.
+    Raises `ValueError` if no run in `run_records` carries a non-null
+    `partition_row_policy` at all -- schema/driver support with zero
+    real data is a different failure than "the field doesn't exist yet"
+    (the old placeholder), so this still refuses to fabricate a plot, but
+    with a precise cause.
     """
-    return []
+    tagged = [
+        r
+        for r in run_records
+        if r.get("partition_row_policy") is not None and r["status"] == "completed"
+    ]
+    if not tagged:
+        raise ValueError(
+            "hash_communication: no completed run in run_records carries a non-null "
+            "partition_row_policy -- run at least one 'random' and one 'cut' cell "
+            "(jobs/run_cell.py's partition_row_policy field) before this table has "
+            "anything to compare"
+        )
+
+    gates_by_run: dict[str, list[dict]] = {}
+    for g in gate_records:
+        gates_by_run.setdefault(g["run_id"], []).append(g)
+
+    rows = []
+    for r in tagged:
+        gates = gates_by_run.get(r["run_id"], [])
+        total_rows_exported = sum(g["rows_exported"] or 0 for g in gates)
+        total_bytes_exported = sum(g["bytes_exported"] or 0 for g in gates)
+        rows.append(
+            {
+                "run_id": r["run_id"],
+                "config_id": r["config_id"],
+                "partition_row_policy": r["partition_row_policy"],
+                "partitions": r["partitions"],
+                "layers": len(gates),
+                "total_rows_exported": total_rows_exported,
+                "total_bytes_exported": total_bytes_exported,
+            }
+        )
+    rows.sort(key=lambda r: (r["config_id"] or "", r["partition_row_policy"], r["run_id"]))
+    return rows
 
 
 def accuracy(run_records: list[dict]) -> list[dict]:

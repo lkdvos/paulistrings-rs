@@ -1,6 +1,6 @@
 import pytest
 
-from normalize import efficiency_binned, rank_scaling, thread_scaling
+from normalize import efficiency_binned, hash_communication, rank_scaling, thread_scaling
 from schema import validate_gate, validate_run
 
 
@@ -47,6 +47,7 @@ def make_run(**overrides) -> dict:
         "failure_reason": None,
         "log_path": None,
         "gate_trace_path": "gates.rank-0.jsonl",
+        "partition_row_policy": None,
     }
     base.update(overrides)
     return base
@@ -162,6 +163,92 @@ def test_thread_scaling_speedup_and_efficiency():
     row4 = next(r for r in rows if r["threads"] == 4)
     assert row4["speedup"] == pytest.approx(100.0 / 30.0)
     assert row4["efficiency"] == pytest.approx((100.0 / 30.0) / 4)
+
+
+def test_partition_row_policy_null_on_unpartitioned_passes():
+    assert validate_run(make_run(engine="unpartitioned", partition_row_policy=None)) == []
+
+
+def test_partition_row_policy_random_on_partitioned_passes():
+    record = make_run(engine="partitioned", partitions=2, partition_row_policy="random")
+    assert validate_run(record) == []
+
+
+def test_partition_row_policy_cut_on_distributed_passes():
+    record = make_run(
+        engine="distributed", partitions=2, ranks=2, partition_row_policy="cut"
+    )
+    assert validate_run(record) == []
+
+
+def test_partition_row_policy_bad_value_flagged():
+    record = make_run(engine="partitioned", partitions=2, partition_row_policy="quantum")
+    problems = validate_run(record)
+    assert any("partition_row_policy" in p for p in problems)
+
+
+def test_partition_row_policy_nonnull_on_unpartitioned_flagged():
+    record = make_run(engine="unpartitioned", partition_row_policy="random")
+    problems = validate_run(record)
+    assert any("partition_row_policy" in p and "unpartitioned" in p for p in problems)
+
+
+def test_partition_row_policy_missing_field_flagged():
+    record = make_run(engine="partitioned", partitions=2, partition_row_policy="random")
+    del record["partition_row_policy"]
+    problems = validate_run(record)
+    assert any("partition_row_policy" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# hash_communication (E8)
+
+
+def make_partitioned_run(*, run_id, policy, config_id="cfg-e8", rows_exported, bytes_exported):
+    """A completed partitioned run plus its own gate records, both schema-shaped."""
+    run = make_run(
+        run_id=run_id,
+        config_id=config_id,
+        engine="partitioned",
+        partitions=2,
+        partition_row_policy=policy,
+    )
+    gates = [
+        make_gate(
+            run_id=run_id,
+            circuit_index=k,
+            application_index=k,
+            rows_exported=r,
+            bytes_exported=b,
+        )
+        for k, (r, b) in enumerate(zip(rows_exported, bytes_exported))
+    ]
+    return run, gates
+
+
+def test_hash_communication_raises_with_no_policy_tagged_runs():
+    runs = [make_run(engine="unpartitioned", partition_row_policy=None)]
+    with pytest.raises(ValueError, match="partition_row_policy"):
+        hash_communication(runs, [])
+
+
+def test_hash_communication_compares_random_vs_cut_by_config():
+    random_run, random_gates = make_partitioned_run(
+        run_id="r-random", policy="random", rows_exported=[100, 200], bytes_exported=[1000, 2000]
+    )
+    cut_run, cut_gates = make_partitioned_run(
+        run_id="r-cut", policy="cut", rows_exported=[10, 20], bytes_exported=[100, 200]
+    )
+    rows = hash_communication([random_run, cut_run], random_gates + cut_gates)
+    assert len(rows) == 2
+    by_policy = {r["partition_row_policy"]: r for r in rows}
+    assert by_policy["random"]["config_id"] == "cfg-e8"
+    assert by_policy["random"]["total_rows_exported"] == 300
+    assert by_policy["random"]["total_bytes_exported"] == 3000
+    assert by_policy["cut"]["total_rows_exported"] == 30
+    assert by_policy["cut"]["total_bytes_exported"] == 300
+    # The whole point of E8: the cut policy exports less than the random draw.
+    assert by_policy["cut"]["total_rows_exported"] < by_policy["random"]["total_rows_exported"]
 
 
 def test_rank_scaling_capacity_extension_vs_overlap():

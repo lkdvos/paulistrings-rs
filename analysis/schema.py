@@ -9,6 +9,13 @@ import math
 SCHEMA_VERSION = 1
 
 _DIRECTIONS = {"forward", "heisenberg"}
+# "random" (GF(2)-random rows, today's only-used draw) or "cut" (an explicit
+# locality cut, `partition_row_blocks=` on the propagate surface) -- null for
+# a non-partitioned/non-distributed run, where the field has no meaning.
+# Added for E8 (decisions.md #13): the campaign could not compare communication
+# volume between the two row policies until a run record could say which one
+# it used.
+_PARTITION_ROW_POLICIES = {"random", "cut"}
 # The first three describe this engine's own run topology; "pauli_propagation_jl"
 # is the external-baseline leg (E0, jobs/run_cell_julia.py) -- a genuinely
 # different axis (which software, not how this engine partitioned its work),
@@ -171,6 +178,23 @@ def validate_run(record: dict) -> list[str]:
     for field in ("partitions", "threads", "ranks"):
         if _check_type(record, field, int, problems) and record[field] < 1:
             problems.append(f"{field} must be >= 1")
+
+    partition_row_policy = record.get("partition_row_policy")
+    if _check_nullable_type(record, "partition_row_policy", str, problems):
+        if (
+            partition_row_policy is not None
+            and partition_row_policy not in _PARTITION_ROW_POLICIES
+        ):
+            problems.append(
+                f"partition_row_policy must be one of {_PARTITION_ROW_POLICIES} or null, "
+                f"got {partition_row_policy!r}"
+            )
+        engine = record.get("engine")
+        if partition_row_policy is not None and engine == "unpartitioned":
+            problems.append(
+                "partition_row_policy must be null when engine == 'unpartitioned' "
+                "(there is no row policy without a partitioned/distributed run)"
+            )
 
     _check_nullable_type(record, "slurm_job_id", str, problems)
     _check_type(record, "node_class", str, problems)

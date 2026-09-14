@@ -842,3 +842,17 @@
    `4874.94` -- a real ~5.4x speedup. `final_terms=38,791,220` and `expectation_re=0.3971653299846822`
    both match the single-thread run to floating-point tolerance, confirming the `vector` backend's
    correctness at full 127-qubit campaign scale (not just decision #37's tiny 8-qubit spot-check).
+
+39. **Julia thread ladder + Rust-vs-Julia efficiency overlay, 2026-09-14**, per user request.
+   `campaign-genoa-julia.sbatch`'s `JULIA_THREADS` now accepts a space-separated list (looped,
+   mirroring `campaign-genoa.sbatch`'s `THREADS` ladder pattern) instead of one value; each thread
+   count only makes sense combined with `JULIA_BACKEND=vector` (decision #37: the default `dict`
+   backend is single-threaded regardless of `-tN`). `figures/make_compact_figures.py::
+   make_thread_scaling_figure` gained an `other_rows=`/`other_label=` overlay: each series is
+   normalized against its OWN 1-thread baseline (`normalize.thread_scaling()`'s existing contract),
+   so the comparison is of relative parallel efficiency, not absolute wall-clock speed -- a much
+   slower engine in absolute terms can still be plotted on the same relative-speedup axes. One
+   shared "ideal (y=x)" reference line covers both series. New figure test, all green (22/22
+   figures, 25/25 analysis+jobs). Not yet run on the real cluster -- see the submit command below
+   for the real ladder, matching Rust's own thread points {1,2,4,8,16,32,48,96} at the same eps=2^-16
+   already covered by both engines' single-thread and 96-thread points.

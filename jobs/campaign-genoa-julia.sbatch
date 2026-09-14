@@ -46,7 +46,8 @@
 #                        actually left for cells (this job's --time minus ~5 min of build time),
 #                        and/or set JULIA_WARM_REPEATS=0 or 1 and MIN_ABS_COEFF to a single,
 #                        loosest value per job rather than looping over the whole grid.
-#   JULIA_THREADS       julia -t N (default: 1). Meaningless alone: PauliPropagation.jl's
+#   JULIA_THREADS       space-separated thread-count ladder, julia -t N per value (default: 1).
+#                        Meaningless alone: PauliPropagation.jl's
 #                        default "dict" backend (its PauliSum) is single-threaded regardless of
 #                        this flag -- confirmed by reading the installed package source
 #                        (propagate's thread=true docstring names only the "vector" backend as
@@ -131,9 +132,10 @@ fi
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
 for eps in $MIN_ABS_COEFF; do
-  config_id="genoa-c2-julia-eps${eps}-t${JULIA_THREADS}-${JULIA_BACKEND}"
-  for rep in $(seq 0 $((REPS - 1))); do
-    cat > "$cell_json" <<EOF
+  for threads in $JULIA_THREADS; do
+    config_id="genoa-c2-julia-eps${eps}-t${threads}-${JULIA_BACKEND}"
+    for rep in $(seq 0 $((REPS - 1))); do
+      cat > "$cell_json" <<EOF
 {
   "variant_id": "bucketed_current",
   "theta_h": $THETA_H,
@@ -142,7 +144,7 @@ for eps in $MIN_ABS_COEFF; do
   "direction": "heisenberg",
   "state": "z+",
   "observable": "canonical_z_127",
-  "threads": $JULIA_THREADS,
+  "threads": $threads,
   "backend": "$JULIA_BACKEND",
   "partitions": null,
   "repetition_index": $rep,
@@ -150,10 +152,11 @@ for eps in $MIN_ABS_COEFF; do
   "config_id": "$config_id"
 }
 EOF
-    echo "== cell $config_id rep=$rep"
-    python quera-talk-data/campaign-2026-09-11/jobs/run_cell_julia.py \
-        "$cell_json" --out-dir "$out_dir" "${warm_repeats_flag[@]}" "${timeout_flag[@]}" \
-        || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+      echo "== cell $config_id rep=$rep"
+      python quera-talk-data/campaign-2026-09-11/jobs/run_cell_julia.py \
+          "$cell_json" --out-dir "$out_dir" "${warm_repeats_flag[@]}" "${timeout_flag[@]}" \
+          || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
+    done
   done
 done
 

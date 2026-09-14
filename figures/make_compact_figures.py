@@ -22,7 +22,7 @@ def _style_axes(ax) -> None:
     ax.tick_params(colors="#898781")
 
 
-def make_thread_scaling_figure(rows: Sequence[dict]):
+def make_thread_scaling_figure(rows: Sequence[dict], other_rows: Sequence[dict] = (), other_label: str = "other"):
     """One curve: thread count (x, log2-spaced) vs. speedup (y), from `thread_scaling()` rows.
 
     `speedup` is already relative to the filtered set's 1-thread row
@@ -30,20 +30,36 @@ def make_thread_scaling_figure(rows: Sequence[dict]):
     verbatim rather than recomputing anything against total/absolute time, so
     a y=x line at threads=1 always starts at speedup=1 by construction, never
     an absolute wall-clock baseline.
+
+    `other_rows` optionally overlays a second engine's thread-scaling curve
+    (same row shape, e.g. `thread_scaling()` called with `variant_id=
+    "external_pauli_propagation_jl"` for a Julia comparison) -- each series is
+    normalized against its OWN 1-thread time, so the comparison is of relative
+    parallel efficiency, not absolute wall-clock speed. One shared "ideal"
+    reference line covers both, since y=x on a log-log plot is independent of
+    either series' absolute baseline.
     """
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(5, 4))
+    fig, ax = plt.subplots(figsize=(5.5, 4))
 
-    points = sorted(
-        (r["threads"], r["speedup"]) for r in rows if r.get("speedup") is not None
-    )
-    if points:
-        xs, ys = zip(*points)
-        ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=_ACCENT, label="measured")
-        ideal_xs = xs
+    def _plot_series(series_rows, color, label):
+        pts = sorted(
+            (r["threads"], r["speedup"]) for r in series_rows if r.get("speedup") is not None
+        )
+        if pts:
+            xs, ys = zip(*pts)
+            ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=color, label=label)
+        return pts
+
+    points = _plot_series(rows, _ACCENT, "measured")
+    other_points = _plot_series(other_rows, "#eb6834", other_label) if other_rows else []
+
+    all_points = points or other_points
+    if all_points:
+        xs = sorted({p[0] for p in points} | {p[0] for p in other_points})
         ideal_ys = [x / xs[0] for x in xs]
-        ax.plot(ideal_xs, ideal_ys, linestyle="--", linewidth=1.0, color=_IDEAL, label="ideal (y=x)")
+        ax.plot(xs, ideal_ys, linestyle="--", linewidth=1.0, color=_IDEAL, label="ideal (y=x)")
 
     ax.set_xscale("log", base=2)
     ax.set_yscale("log", base=2)
@@ -51,7 +67,7 @@ def make_thread_scaling_figure(rows: Sequence[dict]):
     ax.set_ylabel("speedup vs. 1 thread")
     ax.set_title("SYNTHETIC — placeholder: thread scaling")
     _style_axes(ax)
-    if points:
+    if all_points:
         ax.legend(frameon=False)
     fig.tight_layout()
     return fig

@@ -164,6 +164,26 @@ def test_thread_scaling_speedup_is_relative_to_one_thread_point():
     matplotlib.pyplot.close(fig)
 
 
+def test_thread_scaling_overlays_a_second_engine_normalized_to_its_own_baseline():
+    rust_rows = [
+        {"threads": 1, "wall_time_s": 10.0, "speedup": 1.0},
+        {"threads": 4, "wall_time_s": 3.0, "speedup": 10.0 / 3.0},
+    ]
+    # Julia's own baseline is much slower in absolute terms, but its speedup
+    # column is still relative to ITS OWN 1-thread time -- the overlay must
+    # plot that column verbatim, not renormalize against Rust's baseline.
+    julia_rows = [
+        {"threads": 1, "wall_time_s": 4875.0, "speedup": 1.0},
+        {"threads": 96, "wall_time_s": 899.0, "speedup": 4875.0 / 899.0},
+    ]
+    fig = make_thread_scaling_figure(rust_rows, other_rows=julia_rows, other_label="PauliPropagation.jl")
+    ax = fig.axes[0]
+    julia_line = next(l for l in ax.get_lines() if l.get_label() == "PauliPropagation.jl")
+    assert list(julia_line.get_xdata()) == [1, 96]
+    assert list(julia_line.get_ydata()) == pytest.approx([1.0, 4875.0 / 899.0])
+    matplotlib.pyplot.close(fig)
+
+
 # --- hash communication -------------------------------------------------------
 
 

@@ -93,7 +93,10 @@ mkdir -p "$out_dir"
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
 for policy in random cut; do
-  config_id="genoa-e8-eps${MIN_ABS_COEFF}-p${PARTITIONS}-${policy}"
+  # Shared config_id across policies (only partition_row_policy differs) so
+  # figures/make_compact_figures.py::make_hash_communication_figure groups
+  # the random/cut pair into one x-axis category instead of two singletons.
+  config_id="genoa-e8-eps${MIN_ABS_COEFF}-p${PARTITIONS}"
   for rep in $(seq 0 $((REPS - 1))); do
     cat > "$cell_json" <<EOF
 {

@@ -352,3 +352,13 @@
    the mechanism but isn't schema-legitimate campaign data — confirmed 2026-09-14 by actually trying
    `run_cell.py` locally: it correctly returned `status=invalid_hardware` with no bypass available,
    by design. Not yet submitted (org policy: submission is the user's step).
+
+25. **E8 achieved for real on 2026-09-14** (`raw/2026-09-14-worker7173-e8`, job 7033128): the
+   locality-aware `"cut"` partition-row policy cut export volume by ~91% (408M vs. 4.52B rows;
+   19.6GB vs. 217GB) and wall time by ~2.3x (39.6s vs. 91.9s) relative to `"random"`, at the same
+   correctness (`final_terms`/`peak_terms` identical between policies) — the first schema-legitimate,
+   hardware-valid E8 data point, superseding decision #21's preflight-monkeypatched local proof.
+   Note: `campaign-genoa-e8.sbatch` originally embedded the policy name in `config_id`, which would
+   have defeated `make_hash_communication_figure`'s per-`config_id` grouping; fixed to share one
+   `config_id` across both policies (only `partition_row_policy` differs) before generating the real
+   figure at `figures/real/hash_communication.png`. `evidence.md` E8 moved tooling-ready to real data.

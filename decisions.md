@@ -377,3 +377,11 @@
    predate this fix, including the 2026-09-13 `worker7277`/`worker7327` data) -- a fresh, cheap
    single cell (threads=96, eps=2^-16, matching the real Julia point in `raw/2026-09-14-worker7169-julia`)
    is needed to get the first real paired accuracy data point.
+
+27. **E9 headline accuracy result achieved for real on 2026-09-14** (`raw/2026-09-14-worker7169`
+   paired with `raw/2026-09-14-worker7169-julia`): at the full 20-step canonical depth, eps=2^-16,
+   `paulistrings`' expectation value (0.39716532998468246) agrees with PauliPropagation.jl's
+   (0.3971653299846826) to `abs_delta=1.67e-16` -- floating-point noise, not a real discrepancy.
+   This is the headline claim decision #10's shallow 5-step pilot could only gesture at.
+   `figures/real/accuracy.png` generated via the fixed `normalize.accuracy()` (decision #26).
+   evidence.md E9 moved from "plumbing validation only" to real headline data.

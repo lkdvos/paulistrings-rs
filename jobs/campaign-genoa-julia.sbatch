@@ -35,6 +35,17 @@
 #                    already gives an in-process warm-time estimate per cell; this is for
 #                    cross-process noise, not the primary noise floor).
 #   JULIA_WARM_REPEATS  overrides runner.jl's PP_WARM_REPEATS (default: runner.jl's own, 3).
+#   JULIA_CELL_TIMEOUT  seconds before run_cell_julia.py gives up on one cell's julia
+#                        subprocess (default: run_cell_julia.py's own, 3600s). Single-thread
+#                        Julia at the full 20-step/127-qubit depth is slower per gate than the
+#                        Rust engine (decisions.md #10), and PP_WARM_REPEATS=3 means 1 cold + 3
+#                        warm full propagations per cell by default -- 3600s is too tight for
+#                        anything past the loosest eps and silently wastes the rest of the
+#                        allocation looping over cells that will each hit the same timeout
+#                        (job 7032188's real failure). Set this close to the wall-time budget
+#                        actually left for cells (this job's --time minus ~5 min of build time),
+#                        and/or set JULIA_WARM_REPEATS=0 or 1 and MIN_ABS_COEFF to a single,
+#                        loosest value per job rather than looping over the whole grid.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../../..}"
 
@@ -88,6 +99,7 @@ julia --project=benchmarks/julia -e 'using Pkg; Pkg.status()'
 : "${THETA_H:=0.6872233929727672}"                                # 7*pi/32
 : "${REPS:=1}"
 : "${JULIA_WARM_REPEATS:=}"
+: "${JULIA_CELL_TIMEOUT:=}"
 echo "min_abs_coeff='$MIN_ABS_COEFF' reps=$REPS"
 
 date_tag=$(date +%Y-%m-%d)
@@ -98,6 +110,10 @@ mkdir -p "$out_dir"
 warm_repeats_flag=()
 if [ -n "$JULIA_WARM_REPEATS" ]; then
   warm_repeats_flag=(--warm-repeats "$JULIA_WARM_REPEATS")
+fi
+timeout_flag=()
+if [ -n "$JULIA_CELL_TIMEOUT" ]; then
+  timeout_flag=(--timeout "$JULIA_CELL_TIMEOUT")
 fi
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
@@ -122,7 +138,7 @@ for eps in $MIN_ABS_COEFF; do
 EOF
     echo "== cell $config_id rep=$rep"
     python quera-talk-data/campaign-2026-09-11/jobs/run_cell_julia.py \
-        "$cell_json" --out-dir "$out_dir" "${warm_repeats_flag[@]}" \
+        "$cell_json" --out-dir "$out_dir" "${warm_repeats_flag[@]}" "${timeout_flag[@]}" \
         || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"
   done
 done

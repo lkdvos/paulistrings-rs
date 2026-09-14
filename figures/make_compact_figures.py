@@ -1381,9 +1381,19 @@ def make_baseline_eps_scaling_figure(
     theme: str = "legacy",
     figsize_pt: tuple[float, float] | None = None,
     title: str | None = None,
+    speedup_baseline: str | None = None,
 ):
     """One line per named series: wall time (y, log) vs. `min_abs_coeff` (x, log2-spaced), the
     eps-sweep redesign of the deck page 16 baseline story.
+
+    `speedup_baseline`, when given (a label present in `rows`), adds a second panel: speedup
+    relative to that label AT THE SAME eps -- `wall_time_s[speedup_baseline][eps] /
+    wall_time_s[label][eps]` -- for every drawn series, including the baseline itself (a flat
+    line at 1.0, a visible sanity check). This is a per-eps ratio, not a single fixed baseline
+    value, since the baseline's own wall time varies across the eps grid. Requires the baseline
+    label to have a row at every eps value any drawn series has one at, else that series/eps
+    point is silently skipped (no fabricated ratio from a missing denominator) -- callers should
+    ensure the baseline series is complete across the grid before relying on this panel.
 
     Supersedes `make_baseline_pivot_figure` (`baseline_v3`, a single-eps 3-bar chart) as page
     16's figure -- MANIFEST marks `baseline_v3` superseded, not deleted, same as this campaign's
@@ -1437,13 +1447,23 @@ def make_baseline_eps_scaling_figure(
             )
         draw_labels = list(series_order)
 
+    if speedup_baseline is not None and speedup_baseline not in all_labels:
+        raise ValueError(
+            f"make_baseline_eps_scaling_figure: speedup_baseline={speedup_baseline!r} is not a "
+            f"label present in rows: {all_labels}"
+        )
+
     def _eps_label(eps: float) -> str:
         return rf"$\varepsilon=2^{{{round(math.log2(eps))}}}$" if eps > 0 else r"$\varepsilon=0$"
 
     legacy_palette = [_ACCENT, "#eb6834", "#5a8f3c", "#a15fb5", "#5b5f97"]
 
     def _build():
-        fig, ax = plt.subplots(figsize=figsize)
+        if speedup_baseline is not None:
+            fig, (ax, ax_speedup) = plt.subplots(1, 2, figsize=figsize)
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
+            ax_speedup = None
 
         style_map = {label: _DECK_SERIES[i % len(_DECK_SERIES)] for i, label in enumerate(all_labels)}
         legacy_color = {label: legacy_palette[i % len(legacy_palette)] for i, label in enumerate(all_labels)}
@@ -1493,6 +1513,46 @@ def make_baseline_eps_scaling_figure(
             ax.set_title("SYNTHETIC — placeholder: baseline eps scaling")
             _style_axes(ax)
 
+        if ax_speedup is not None:
+            baseline_by_eps = {r["min_abs_coeff"]: r["wall_time_s"] for r in by_label[speedup_baseline]}
+            for label in draw_labels:
+                pts = []
+                for r in by_label[label]:
+                    eps = r["min_abs_coeff"]
+                    if eps in baseline_by_eps:
+                        pts.append((eps, baseline_by_eps[eps] / r["wall_time_s"]))
+                if not pts:
+                    continue
+                pts.sort()
+                xs, ys = zip(*pts)
+                if deck:
+                    st = style_map[label]
+                    ax_speedup.plot(xs, ys, marker=st["marker"], markersize=6, linewidth=1.8,
+                                     linestyle=st["linestyle"], color=st["color"])
+                else:
+                    ax_speedup.plot(xs, ys, marker="o", markersize=5, linewidth=1.5, color=legacy_color[label])
+
+            ax_speedup.axhline(1.0, color=(_DECK_NAVY if deck else "#898781"), linewidth=0.8, linestyle=":")
+            ax_speedup.set_xlim(ax.get_xlim())
+            ax_speedup.set_xscale("log", base=2)
+            # Linear, not log, per explicit user request (unlike the left panel's wall time,
+            # which stays log -- that choice is unchanged).
+            ax_speedup.set_xticks(eps_ticks)
+            ax_speedup.set_xticklabels([_eps_label(e) for e in eps_ticks], fontsize=7 if not deck else _DECK_FONT_PT * 0.6)
+            ax_speedup.minorticks_off()
+            ax_speedup.set_xlabel(r"$\varepsilon$ (min_abs_coeff)")
+            # A rotated y-label as long as the full baseline name (e.g. "speedup vs. current
+            # engine, 1 bucket") ran past the top of the canvas on an actual render at this
+            # figure's height -- real clipping, not theoretical. Just "speedup" keeps the axis
+            # legible; which baseline it's relative to is stated in the figure's own title/
+            # caption and in MANIFEST.md, not silently dropped from the deliverable.
+            ax_speedup.set_ylabel("speedup")
+            if deck:
+                _style_axes_deck(ax_speedup)
+            else:
+                ax_speedup.set_title("SYNTHETIC — placeholder: speedup")
+                _style_axes(ax_speedup)
+
         if draw_labels:
             # A `loc="best"` legend sits INSIDE the axes and, with 4 long labels, can overlap
             # the plotted lines rather than truly clip -- caught on an actual rendered PNG at
@@ -1510,6 +1570,11 @@ def make_baseline_eps_scaling_figure(
             fontsize = 7 if not deck else _DECK_FONT_PT * 0.6
             fig.tight_layout()
             base_bottom = fig.subplotpars.bottom
+            # fig.legend() (figure coordinates), not ax.legend() (axes coordinates): with a
+            # second panel (`speedup_baseline` given), an axes-relative legend centers under
+            # only the LEFT panel, not the whole figure -- real problem, only visible once a
+            # second panel exists, so this must be figure-relative unconditionally.
+            handles, labels = ax.get_legend_handles_labels()
             # Jumping straight from "all in one row" to "exactly one column" (as an earlier
             # version of this code did) makes a 7-entry legend seven rows tall -- real problem
             # hit at 7 series: it overflowed the bottom-margin cap and overlapped the x-axis
@@ -1520,9 +1585,9 @@ def make_baseline_eps_scaling_figure(
             while ncol >= 1:
                 if legend is not None:
                     legend.remove()
-                legend = ax.legend(
-                    frameon=False, fontsize=fontsize, loc="upper center",
-                    bbox_to_anchor=(0.5, -0.22), borderaxespad=0.0, ncol=ncol,
+                legend = fig.legend(
+                    handles, labels, frameon=False, fontsize=fontsize, loc="lower center",
+                    bbox_to_anchor=(0.5, 0.0), borderaxespad=0.0, ncol=ncol,
                 )
                 fig.canvas.draw()
                 fig_bbox = fig.get_window_extent()

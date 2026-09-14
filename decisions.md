@@ -1301,3 +1301,30 @@
     Files: `figures/real/baseline_v4_stage{1,2,3,4}.{svg,pdf,png}` and `_compact` variants (28
     files total). `baseline_v3`/`make_baseline_pivot_figure` remain superseded-but-kept per
     decisions.md #50/MANIFEST's existing convention.
+
+52. **Baseline eps-scaling gains a speedup panel (linear axis) and 2^-18/2^-20 points where
+    real, 2026-09-14.** `make_baseline_eps_scaling_figure` gained `speedup_baseline: str | None`:
+    when given a label present in `rows`, adds a second panel plotting
+    `wall_time_s[speedup_baseline][eps] / wall_time_s[label][eps]` per eps, per user request,
+    with `speedup_baseline="current engine, 1 bucket"` (single-threaded, single-bucket Rust).
+    The baseline's own line is a flat 1.0 (a visible sanity check) wherever it has data. Ratio
+    axis is LINEAR (not log, unlike the left wall-time panel), per explicit user request.
+
+    Real additional data points, added only where they exist (per user request: "leave them out
+    where we don't have data" -- no fabricated points for the other 5 series at these eps):
+    - "current engine, default buckets, 96 threads" @ eps=2^-18: 482.571s (job 7031790, E6,
+      already-real single-node/96-thread reference).
+    - "current engine, 16 ranks" @ eps=2^-18: 227.84442280902294s (job 7032059, E6) and
+      @ eps=2^-20: 1658.816s (job 7032351, E7).
+
+    Fixed a real legend-position bug the second panel exposed: `ax.legend(bbox_to_anchor=...)`
+    is in AXES coordinates, so it centered under only the LEFT panel once a second panel
+    existed -- switched to `fig.legend()` (figure coordinates, `loc="lower center"`,
+    `bbox_to_anchor=(0.5, 0.0)`) so the legend centers under the whole figure regardless of
+    panel count. Also fixed a real y-label clipping bug: the full baseline name as a rotated
+    ylabel ("speedup vs. current engine, 1 bucket") ran past the top of the canvas on an actual
+    render -- shortened to just "speedup", with the baseline name stated in MANIFEST.md/the
+    figure's own caption context instead of the axis itself.
+
+    All 4 stages regenerated with both the wall-time-only and two-panel speedup variants:
+    `baseline_v4_stage{1,2,3,4}[_speedup].{svg,pdf,png}` and `_compact` (56 files total).

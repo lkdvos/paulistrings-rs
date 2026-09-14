@@ -198,6 +198,18 @@ Julia-96-thread/eps=2^-16 value (`899.49`, `decisions.md` #38, job 7034021, no s
   searching downward from `ncol=len(labels)` for the widest fitting column count, and relaxing
   the cap to 0.97.
 - Files: `baseline_v4_stage{1,2,3,4}.{svg,pdf,png}` and `_compact` variants (28 files total).
+- **Speedup panel + 2^-18/2^-20 points, 2026-09-14** (decisions.md #52): `speedup_baseline=
+  "current engine, 1 bucket"` adds a second panel plotting `wall_time[baseline][eps] /
+  wall_time[label][eps]` per eps -- LINEAR y-axis (unlike the log wall-time panel), per user
+  request. Two series gained real points at tighter eps where the data already existed
+  elsewhere in this campaign, added only where real (no fabricated points for the other 5
+  series): "current engine, default buckets, 96 threads" @ eps=2^-18 (482.571s, job 7031790,
+  E6) and "current engine, 16 ranks" @ eps=2^-18 (227.844s, job 7032059) and eps=2^-20
+  (1658.816s, job 7032351, E7). Fixed a real legend-position bug the second panel exposed
+  (axes-relative `ax.legend()` centered under only the left panel; switched to figure-relative
+  `fig.legend()`) and a real y-label clipping bug (the full baseline name as a rotated label ran
+  past the canvas top; shortened to "speedup" alone). Files:
+  `baseline_v4_stage{1,2,3,4}_speedup.{svg,pdf,png}` and `_compact` (28 more files).
 - Test coverage (`figures/tests/test_make_figures.py`):
   `test_baseline_eps_scaling_figure_empty_input_raises_clear_error`,
   `test_baseline_eps_scaling_figure_one_line_per_label`,

@@ -605,6 +605,25 @@ def test_bucket_size_figure_builds_two_panels():
     matplotlib.pyplot.close(fig)
 
 
+def test_bucket_size_figure_single_panel_omits_occupancy_axes():
+    fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS, single_panel=True)
+    assert len(fig.axes) == 1
+    matplotlib.pyplot.close(fig)
+
+
+def test_bucket_size_figure_l2_line_sits_at_cache_bytes_over_bytes_per_term():
+    # 1 MiB L2, 48 B/term (this repo's fixed W=2/Complex64 payload) -> the
+    # line should sit at target_bucket_len = 1048576 / 48.
+    fig = make_bucket_size_figure(
+        _BUCKET_SIZE_ROWS, single_panel=True, l2_cache_bytes=1024 * 1024, bytes_per_term=48.0,
+    )
+    ax = fig.axes[0]
+    vlines = [ln for ln in ax.get_lines() if ln.get_xdata()[0] == ln.get_xdata()[-1]]
+    assert vlines, "expected a vertical line for the L2 cache reference"
+    assert vlines[0].get_xdata()[0] == pytest.approx((1024 * 1024) / 48.0)
+    matplotlib.pyplot.close(fig)
+
+
 def test_bucket_size_figure_throughput_panel_plots_all_five_points_in_order():
     fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS)
     ax_thr = fig.axes[0]

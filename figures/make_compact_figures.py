@@ -1014,9 +1014,29 @@ def make_bucket_size_figure(
     theme: str = "legacy",
     figsize_pt: tuple[float, float] | None = None,
     title: str | None = None,
+    single_panel: bool = False,
+    l2_cache_bytes: float | None = None,
+    bytes_per_term: float = 48.0,
 ):
     """Two panels vs. `target_bucket_len` (x, log2-spaced, one fixed cell per point):
     throughput (left) and occupancy distribution + empty-bucket fraction (right).
+
+    `single_panel=True` renders throughput alone (no occupancy panel) -- the
+    occupancy view stays available via the default two-panel mode, this is
+    an alternate rendering of the SAME rows, not a different dataset.
+
+    `l2_cache_bytes`, when given, draws a vertical reference line at the
+    `target_bucket_len` whose bucket working set (`target_bucket_len *
+    bytes_per_term`) equals that many bytes -- i.e. `l2_cache_bytes /
+    bytes_per_term`. `bytes_per_term` defaults to 48 (W=2, Complex64, this
+    repo's own fixed payload fact, `crates/paulistrings/src/bucket/sum.rs`).
+    Per this module's own established discipline (see this function's design
+    note below on why fig4b/fig5's cache bands were NOT borrowed originally):
+    only pass a REAL, measured `l2_cache_bytes` for the actual host these
+    rows were measured on (e.g. `lscpu -C` output from the same job) -- never
+    a spec sheet or another architecture's number. A line on this plot is
+    evidence consistent with locality if a throughput peak sits near it,
+    never proof of cache residency by itself.
 
     `rows` are the probe's raw JSON sidecar objects directly (no `normalize.py`
     step -- there is no existing helper for this row shape and every other
@@ -1084,15 +1104,22 @@ def make_bucket_size_figure(
     import matplotlib.pyplot as plt
 
     deck = theme == "deck"
-    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (9.5, 4)
+    if single_panel:
+        figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (5.5, 4)
+    else:
+        figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (9.5, 4)
 
     def _build():
-        fig, (ax_thr, ax_occ) = plt.subplots(1, 2, figsize=figsize)
+        if single_panel:
+            fig, ax_thr = plt.subplots(figsize=figsize)
+            ax_occ = None
+        else:
+            fig, (ax_thr, ax_occ) = plt.subplots(1, 2, figsize=figsize)
 
         pts = sorted(rows, key=lambda r: r["target_bucket_len"])
         xs = [r["target_bucket_len"] for r in pts]
 
-        # --- left panel: throughput -------------------------------------
+        # --- left/only panel: throughput ---------------------------------
         ys_thr = [r["strings_per_s"] for r in pts]
         if deck:
             st = _DECK_SERIES[0]
@@ -1105,6 +1132,17 @@ def make_bucket_size_figure(
         ax_thr.set_xscale("log", base=2)
         ax_thr.set_xlabel("target_bucket_len")
         ax_thr.set_ylabel("strings/s")
+
+        if l2_cache_bytes is not None:
+            critical_x = l2_cache_bytes / bytes_per_term
+            line_color = _DECK_NAVY if deck else "#898781"
+            ax_thr.axvline(critical_x, color=line_color, linewidth=1.2, linestyle=(0, (4, 2)))
+            ax_thr.annotate(
+                f"L2 ({l2_cache_bytes / 1024:.0f} KiB)",
+                (critical_x, 1.0), xycoords=ax_thr.get_xaxis_transform(),
+                ha="center", va="bottom", fontsize=7 if not deck else _DECK_FONT_PT * 0.6,
+                color=line_color,
+            )
 
         # Realised bucket count under each point -- borrowed from the older
         # `presentation` deck's fig4b_bucket_speedup.py, which annotates
@@ -1125,6 +1163,17 @@ def make_bucket_size_figure(
             )
 
         # --- right panel: occupancy distribution + empty-bucket fraction --
+        if ax_occ is None:
+            if deck:
+                if title:
+                    ax_thr.set_title(title, fontsize=_DECK_FONT_PT, color=_DECK_NAVY)
+                _style_axes_deck(ax_thr)
+            else:
+                ax_thr.set_title("Throughput vs. target bucket size")
+                _style_axes(ax_thr)
+            fig.tight_layout()
+            return fig
+
         medians = [r["occupancy_median"] for r in pts]
         p95s = [r["occupancy_p95"] for r in pts]
         maxs = [r["occupancy_max"] for r in pts]

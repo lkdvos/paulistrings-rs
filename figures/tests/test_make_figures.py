@@ -575,6 +575,21 @@ def test_bucket_size_figure_empty_fraction_never_folded_into_occupancy_percentil
     matplotlib.pyplot.close(fig)
 
 
+def test_bucket_size_figure_annotates_realised_bucket_count():
+    """Borrowed from the older `presentation` deck's fig4b_bucket_speedup.py
+    "B={buckets}" convention: each throughput point is labeled with its real
+    `num_buckets`, since that field already exists on every row and helps a
+    reader see `num_buckets` is derived from `target_bucket_len`, not a
+    second independent axis.
+    """
+    fig = make_bucket_size_figure(_BUCKET_SIZE_ROWS)
+    ax_thr = fig.axes[0]
+    texts = {t.get_text() for t in ax_thr.texts}
+    for r in _BUCKET_SIZE_ROWS:
+        assert f"B={r['num_buckets']}" in texts
+    matplotlib.pyplot.close(fig)
+
+
 def test_bucket_size_figure_deck_theme_exports_at_exact_size(tmp_path):
     fig = make_bucket_size_figure(
         _BUCKET_SIZE_ROWS, theme="deck", figsize_pt=(900, 340), title="Bucket size"

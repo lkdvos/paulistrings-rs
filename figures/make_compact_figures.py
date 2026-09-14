@@ -770,6 +770,29 @@ def make_bucket_size_figure(
     nothing about how full the occupied ones are, which is what
     `occupancy_median/p95/max` already describe correctly by excluding empty
     buckets from their sample.
+
+    Design note (compared against the older `presentation` branch's
+    fig4b_bucket_speedup.py / fig5_bucket_sweep.py, which the user pointed at
+    as "the figure I need"): those two figures measure genuinely different
+    things -- fig4b is 16-vs-1-thread speedup and parallel efficiency vs.
+    bucket size, fig5 is ns/term-layer and L2/LLC cache-miss rate vs. bucket
+    size, both from a 2026-09-06 ccqlin038 (Cascade Lake) sweep with no
+    `--occupancy-at` support at all. Neither shows an occupancy distribution,
+    so neither is a structural match for this deck's actual page-30 ask
+    ("throughput vs. target bucket size and occupancy distribution") -- this
+    two-panel throughput+occupancy layout already is that content, and this
+    campaign's own deck-v2 theme (`_DECK_SERIES`/`_DECK_NAVY`) is what every
+    other figure in this deck uses, so re-theming to fig4b/fig5's unrelated
+    `common.py` palette would break consistency with the rest of THIS deck.
+    The one design idea borrowed from fig4b is real and cheap to keep
+    honest: annotating the realised `num_buckets` under each throughput
+    point, the same "B={buckets}" convention fig4b uses under its bottom
+    panel. No cache-crossing vertical bands were added (fig4b/fig5 both
+    have them): this campaign's host is AMD Genoa (EPYC 9474F), and
+    `research/HARDWARE.md` has no measured L2/LLC size for that host, only
+    for `ccqlin038` -- adding a band would mean an unmeasured spec number,
+    which this repo's own convention (measured facts over spec, see
+    `research/HARDWARE.md`'s DDR4 spec-vs-measured note) argues against.
     """
     if not rows:
         raise NotImplementedError(
@@ -801,6 +824,24 @@ def make_bucket_size_figure(
         ax_thr.set_xscale("log", base=2)
         ax_thr.set_xlabel("target_bucket_len")
         ax_thr.set_ylabel("strings/s")
+
+        # Realised bucket count under each point -- borrowed from the older
+        # `presentation` deck's fig4b_bucket_speedup.py, which annotates
+        # "B={buckets}" the same way; it lets the audience read off that
+        # `num_buckets` is itself derived (n / target_bucket_len, floored at
+        # `min_buckets`) rather than an independent axis. `get_xaxis_transform`
+        # keeps the label at a fixed vertical fraction regardless of the
+        # strings/s scale.
+        label_color = _DECK_NAVY if deck else "#898781"
+        for r in pts:
+            ax_thr.annotate(
+                f"B={r['num_buckets']}",
+                (r["target_bucket_len"], 0.04),
+                xycoords=ax_thr.get_xaxis_transform(),
+                ha="center", va="bottom",
+                fontsize=7 if not deck else _DECK_FONT_PT * 0.55,
+                color=label_color,
+            )
 
         # --- right panel: occupancy distribution + empty-bucket fraction --
         medians = [r["occupancy_median"] for r in pts]

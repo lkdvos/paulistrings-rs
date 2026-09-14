@@ -215,6 +215,29 @@ dicts directly when no existing normalize helper fits.
   empty fraction lowers the *mean* occupancy of all buckets but says nothing
   about how full the occupied ones are, which `occupancy_median/p95/max`
   already describe correctly by excluding empty buckets from their sample.
+- **Compared against the `presentation` branch's `fig4b_bucket_speedup.py` /
+  `fig5_bucket_sweep.py`** (the user's pointed-at reference for this slide):
+  read directly from the `pres` worktree, those two figures are a genuinely
+  different measurement — fig4b is 16-vs-1-thread speedup + parallel
+  efficiency vs. bucket size, fig5 is ns/term-layer + L2/LLC cache-miss rate
+  vs. bucket size, both from a 2026-09-06 `ccqlin038` (Cascade Lake) sweep
+  (`presentation/data/bucket_sweep.jsonl` + `bucket_sweep_perf.jsonl`,
+  commit `52511c0`) that predates the `--occupancy-at` flag entirely and
+  carries no occupancy data of any kind. Neither is a structural match for
+  the actual page-30 ask, so the two-panel throughput+occupancy layout above
+  is kept as-is (it already is that content) rather than restructured to
+  match either reference, and no numbers from that worktree appear here.
+  One design idea *is* borrowed, cheaply and honestly: each throughput point
+  is now annotated `B={num_buckets}`, the same convention fig4b uses under
+  its bottom panel — `num_buckets` was already a required row field. No
+  cache-crossing vertical bands (which both fig4b and fig5 have) were added:
+  this campaign's host is AMD Genoa (EPYC 9474F) and `research/HARDWARE.md`
+  has no measured L2/LLC size for it, only for `ccqlin038`, and this repo's
+  convention is measured facts over spec numbers. The two figures' own
+  `common.py` color palette was not adopted either — this deck has its own
+  `_DECK_SERIES`/`_DECK_NAVY` theme that every other v2 figure in this
+  campaign already uses, and switching one figure to a different deck's
+  palette would break intra-deck consistency, not improve it.
 
 ## Test coverage
 
@@ -226,7 +249,8 @@ dicts directly when no existing normalize helper fits.
 `test_distributed_capacity_figure_empty_input_raises_clear_error`,
 `test_distributed_capacity_figure_rejects_fabricated_runtime_on_failed_row`,
 `test_distributed_capacity_figure_marks_completed_oom_and_untested_distinctly`,
-`test_distributed_capacity_figure_deck_theme_exports_at_exact_size`.
+`test_distributed_capacity_figure_deck_theme_exports_at_exact_size`,
+`test_bucket_size_figure_annotates_realised_bucket_count`.
 
 Full suite: `pytest quera-talk-data/campaign-2026-09-11/figures/tests/` — 33 passed (25
 pre-existing + 8 new; a `make_attempts_figure`/`attempts.*` figure and its tests present in

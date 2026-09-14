@@ -14,6 +14,7 @@ import pytest
 from make_compact_figures import (
     make_hash_communication_vs_cutoff_figure,
     make_accuracy_figure,
+    make_convergence_figure,
     make_hash_communication_figure,
     make_thread_scaling_figure,
 )
@@ -230,4 +231,39 @@ def test_accuracy_figure_builds_from_reference_observed_pairs():
     ]
     fig = make_accuracy_figure(rows)
     assert fig is not None
+    matplotlib.pyplot.close(fig)
+
+
+# --- convergence -----------------------------------------------------------
+
+
+def test_convergence_figure_no_completed_rows_raises_clear_error():
+    with pytest.raises(NotImplementedError, match="no completed rows"):
+        make_convergence_figure([{"status": "invalid_hardware"}])
+
+
+def test_convergence_figure_one_line_per_cutoff():
+    rows = [
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-4, "trotter_step": 2, "expectation_re": 0.8},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.7},
+    ]
+    fig = make_convergence_figure(rows)
+    assert fig is not None
+    ax = fig.axes[0]
+    assert len(ax.lines) == 2
+    matplotlib.pyplot.close(fig)
+
+
+def test_convergence_figure_overlays_julia_reference_points():
+    rows = [
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 1, "expectation_re": 0.9},
+        {"status": "completed", "min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.7},
+    ]
+    julia_points = [{"min_abs_coeff": 1e-6, "trotter_step": 2, "expectation_re": 0.701}]
+    fig = make_convergence_figure(rows, julia_points=julia_points)
+    assert fig is not None
+    ax = fig.axes[0]
+    assert any(c.get_label() == "PauliPropagation.jl" for c in ax.collections)
     matplotlib.pyplot.close(fig)

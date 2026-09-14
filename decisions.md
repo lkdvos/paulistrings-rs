@@ -563,3 +563,17 @@
    purpose but isn't itself one of the 7 `STAGE_VARIANTS` (that slot is `bucketed_engine_parallel`,
    "the canonical bucketed engine as shipped"), so it's excluded from the figure. `evidence.md`
    E4/E5-historical-baseline row upgraded from toy-scale-non-genoa to real genoa data.
+
+33. **Convergence sweep completed for real on 2026-09-14** (job 7033650, 80 points, all
+   `status=completed`): eps=2^-16 and eps=2^-18's final (step 20) points exactly match the
+   previously-measured `final_terms` (38,791,220 and 583,393,599 respectively) from the main
+   campaign's own 127-qubit runs, confirming the prefix-propagation approach's correctness
+   end-to-end, not just at toy scale. Per a follow-up user request ("I'm also still missing a
+   figure that contains the comparison with PauliPropagation.jl"), `make_convergence_figure`
+   gained an optional `julia_points=` overlay (black stars) -- `runner.jl` only computes a final
+   expectation value, never a per-layer one (its `PP_LAYER_COUNTS` gives per-layer term counts
+   only), so this is a real endpoint overlay, not a Julia trajectory line. The one real Julia point
+   we have (eps=2^-16, step 20, decisions.md #27) is plotted; getting more would need additional,
+   expensive Julia runs at the other three cutoffs (not requested, not run). Output renamed
+   `figures/real/accuracy.png` -> `convergence.png` to match its actual content. 3 new figure
+   tests, all green (19/19).

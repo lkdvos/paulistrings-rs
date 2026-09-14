@@ -183,7 +183,7 @@ def make_accuracy_figure(rows: Sequence[dict]):
     return fig
 
 
-def make_convergence_figure(rows: Sequence[dict]):
+def make_convergence_figure(rows: Sequence[dict], julia_points: Sequence[dict] = ()):
     """One line per `min_abs_coeff`: the observable's expectation value at
     every Trotter step, from `jobs/run_convergence_sweep.py`'s
     `convergence.jsonl` records.
@@ -194,6 +194,15 @@ def make_convergence_figure(rows: Sequence[dict]):
     an `invalid_hardware` sweep raises `NotImplementedError` rather than
     silently plotting nothing, matching this module's other "real data or an
     explicit reason" contract.
+
+    `julia_points` optionally overlays PauliPropagation.jl reference points
+    (`{"min_abs_coeff", "trotter_step", "expectation_re"}` dicts, e.g. built
+    from `jobs/run_cell_julia.py`'s run records) as black stars -- Julia's
+    `runner.jl` only computes the observable's expectation once, at the end
+    of the whole circuit (see its `PP_LAYER_COUNTS` docs: per-layer *term
+    counts* are available, per-layer *expectation values* are not), so this
+    is real endpoint(s), not a Julia trajectory line. Each point is matched
+    to the Rust line of the same `min_abs_coeff` when one exists.
     """
     completed = [r for r in rows if r.get("status") == "completed"]
     if not completed:
@@ -202,6 +211,8 @@ def make_convergence_figure(rows: Sequence[dict]):
             "either never ran or failed preflight (see the row's status/"
             "failure_reason)."
         )
+
+    import math
 
     import matplotlib.pyplot as plt
 
@@ -219,10 +230,16 @@ def make_convergence_figure(rows: Sequence[dict]):
         ys = [p["expectation_re"] for p in pts]
         color = cmap(i / max(len(epsilons) - 1, 1))
         # log2(eps) for a compact, campaign-native label (every cutoff here is dyadic).
-        import math
-
         label = f"eps=2^{round(math.log2(eps))}" if eps > 0 else "eps=0"
         ax.plot(xs, ys, marker="o", markersize=3, linewidth=1.2, color=color, label=label)
+
+    if julia_points:
+        jxs = [p["trotter_step"] for p in julia_points]
+        jys = [p["expectation_re"] for p in julia_points]
+        ax.scatter(
+            jxs, jys, marker="*", s=140, color="black", zorder=5,
+            label="PauliPropagation.jl", edgecolors="white", linewidths=0.5,
+        )
 
     ax.set_xlabel("Trotter step")
     ax.set_ylabel("<O>")

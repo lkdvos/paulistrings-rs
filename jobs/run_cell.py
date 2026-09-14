@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ RUN_FIELDS = (
     "setup_time_s", "scatter_time_s", "gather_time_s", "initial_terms",
     "final_terms", "peak_terms", "peak_rss_kb", "peak_rss_provenance",
     "status", "failure_reason", "log_path", "gate_trace_path",
+    "partition_row_policy",
 )
 
 #: Field order of one per-gate record.
@@ -85,6 +87,13 @@ class CellSpec:
     config_id: str | None = None
     pair_index: int | None = None
     max_weight: int | None = None
+    # E8 (decisions.md #13): which GF(2) rows a partitioned/distributed run
+    # uses. "random" (default) reproduces today's behaviour exactly -- the
+    # engine's seeded draw, untouched. "cut" builds an explicit locality cut
+    # from the heavy-hex lattice (`_cut_blocks`) and passes it as
+    # `partition_row_blocks=`. Meaningless (and recorded as `None` in the run
+    # record) when `partitions is None`.
+    partition_row_policy: str = "random"
     # Debug-only override, NOT part of the frozen campaign schema
     # (contract.md pins n_qubits=127): a smoke-test cell may set this to a
     # small value to prove the plumbing without running the real workload.
@@ -115,6 +124,49 @@ def _build_circuit(spec: CellSpec):
         trotter_steps=spec.trotter_steps,
         theta_h=spec.theta_h,
     )
+
+
+def _cut_blocks(spec: CellSpec, num_partitions: int) -> list[list[int]]:
+    """A simple, honest locality cut of the heavy-hex lattice into `num_partitions`
+    contiguous qubit blocks, for `PauliSum.propagate`'s `partition_row_blocks=`.
+
+    Not the "open research" row-tuning CLAUDE.md's Known Gaps section refers
+    to -- this is a first-pass heuristic: a breadth-first traversal from qubit
+    0 over `circuits.heavy_hex_sublattice(n)`'s edges visits physically
+    adjacent qubits consecutively, so slicing that visit order into
+    `num_partitions` equal contiguous chunks keeps each chunk's qubits close
+    on the device without solving an actual min-cut. `num_partitions` must be
+    a power of two (`PauliSum.propagate`'s own requirement); this function
+    does not itself re-check that.
+    """
+    edges = circuits.heavy_hex_sublattice(spec.n_qubits)
+    adjacency: dict[int, set[int]] = {}
+    for a, b in edges:
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+
+    visited = [False] * spec.n_qubits
+    order: list[int] = []
+    for start in range(spec.n_qubits):
+        if visited[start]:
+            continue
+        visited[start] = True
+        queue = deque([start])
+        while queue:
+            u = queue.popleft()
+            order.append(u)
+            for v in sorted(adjacency.get(u, ())):
+                if not visited[v]:
+                    visited[v] = True
+                    queue.append(v)
+
+    chunk = len(order) // num_partitions
+    blocks: list[list[int]] = []
+    for i in range(num_partitions):
+        lo = i * chunk
+        hi = (i + 1) * chunk if i < num_partitions - 1 else len(order)
+        blocks.append(order[lo:hi])
+    return blocks
 
 
 def _build_observable(spec: CellSpec):
@@ -226,6 +278,9 @@ def _empty_run_record(
         "failure_reason": failure_reason,
         "log_path": None,
         "gate_trace_path": None,
+        # The cell never ran, so no row policy was ever chosen -- null, same
+        # as an unpartitioned run's.
+        "partition_row_policy": None,
     }
 
 
@@ -278,18 +333,38 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
     observable = _build_observable(spec)
     policy = harness.make_policy(max_weight=spec.max_weight, min_abs_coeff=spec.min_abs_coeff)
 
+    # `partitions=`/the row-policy kwargs are only meaningful (and only
+    # passed) for a partitioned cell; an unpartitioned cell (spec.partitions
+    # is None) calls exactly as before this knob existed. `partition_row_policy`
+    # is recorded as `None` in that case too (schema.py rejects a non-null
+    # value on an "unpartitioned" engine record).
+    propagate_kwargs: dict[str, Any] = {}
+    row_policy: str | None = None
+    if spec.partitions is not None:
+        propagate_kwargs["partitions"] = spec.partitions
+        if spec.partition_row_policy == "cut":
+            propagate_kwargs["partition_row_blocks"] = _cut_blocks(spec, spec.partitions)
+        elif spec.partition_row_policy != "random":
+            raise ValueError(
+                f"unknown partition_row_policy {spec.partition_row_policy!r}; "
+                "expected 'random' or 'cut'"
+            )
+        row_policy = spec.partition_row_policy
+
     # One untraced propagate for the authoritative wall time — no stats
     # object in the timed region — mirroring bench_c_deep_trotter.py's
     # `_rust_leg` pattern of keeping the timed call free of tracing overhead.
     start = time.perf_counter()
-    evolved = observable.propagate(circuit, policy, direction=spec.direction)
+    evolved = observable.propagate(circuit, policy, direction=spec.direction, **propagate_kwargs)
     wall_time_s = time.perf_counter() - start
     if spec.state:
         evolved.expectation(spec.state)
 
     # A second, separately timed call for the per-gate trace; its own wall
     # time is diagnostic only and is not written into `wall_time_s`.
-    _, stats = observable.propagate_with_stats(circuit, policy, direction=spec.direction)
+    _, stats = observable.propagate_with_stats(
+        circuit, policy, direction=spec.direction, **propagate_kwargs
+    )
 
     commit, dirty = _git_provenance()
     run_record = {
@@ -337,6 +412,7 @@ def run_cell(spec: CellSpec, out_dir: Path) -> tuple[dict[str, Any], list[dict[s
         "failure_reason": None,
         "log_path": None,
         "gate_trace_path": str(gate_trace_path),
+        "partition_row_policy": row_policy,
     }
 
     gate_records: list[dict[str, Any]] = []

@@ -120,3 +120,73 @@ def test_cell_json_rejects_unknown_fields():
 
     with pytest.raises(ValueError):
         run_cell.CellSpec.from_dict({"variant_id": "bucketed_current", "typo_field": 1})
+
+
+# --------------------------------------------------------------------------
+# partition_row_policy (E8)
+
+
+def test_unpartitioned_cell_has_null_partition_row_policy(monkeypatch):
+    """`partitions=None` never touches the row-policy machinery at all; the
+    record's `partition_row_policy` is `None`, matching `engine="unpartitioned"`
+    (schema.py rejects any other combination)."""
+    monkeypatch.setattr(preflight, "run_preflight", _passing_hardware_report)
+    spec = _smoke_spec(partition_row_policy="cut")  # ignored: partitions is None
+    record, _ = run_cell.run_cell(spec, Path("/tmp"))
+    assert record["engine"] == "unpartitioned"
+    assert record["partition_row_policy"] is None
+
+
+def test_partitioned_cell_records_its_row_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(preflight, "run_preflight", _passing_hardware_report)
+    spec = _smoke_spec(partitions=2, partition_row_policy="random")
+    record, gates = run_cell.run_cell(spec, tmp_path)
+    assert record["status"] == "completed"
+    assert record["engine"] == "partitioned"
+    assert record["partition_row_policy"] == "random"
+    assert gates, "a partitioned completed run still emits per-layer gate records"
+
+
+def test_cut_policy_uses_the_heavy_hex_lattice_and_differs_from_random(tmp_path, monkeypatch):
+    """The real point of E8: a 'cut' cell and a 'random' cell on the same
+    otherwise-identical spec move a different number of rows across the
+    partition boundary."""
+    monkeypatch.setattr(preflight, "run_preflight", _passing_hardware_report)
+
+    random_spec = _smoke_spec(
+        partitions=2, partition_row_policy="random", trotter_steps=3
+    )
+    cut_spec = _smoke_spec(partitions=2, partition_row_policy="cut", trotter_steps=3)
+
+    random_record, random_gates = run_cell.run_cell(random_spec, tmp_path)
+    cut_record, cut_gates = run_cell.run_cell(cut_spec, tmp_path)
+
+    assert random_record["partition_row_policy"] == "random"
+    assert cut_record["partition_row_policy"] == "cut"
+
+    random_rows = [g["rows_exported"] for g in random_gates]
+    cut_rows = [g["rows_exported"] for g in cut_gates]
+    assert random_rows != cut_rows, (
+        "random and cut policies must move a genuinely different row pattern, "
+        "or the schema/driver plumbing isn't reaching the engine"
+    )
+
+
+def test_unknown_partition_row_policy_raises(monkeypatch):
+    monkeypatch.setattr(preflight, "run_preflight", _passing_hardware_report)
+    spec = _smoke_spec(partitions=2, partition_row_policy="not_a_real_policy")
+    import pytest
+
+    with pytest.raises(ValueError, match="partition_row_policy"):
+        run_cell.run_cell(spec, Path("/tmp"))
+
+
+def test_cut_blocks_partition_all_qubits_disjointly():
+    spec = _smoke_spec(partitions=4)
+    blocks = run_cell._cut_blocks(spec, 4)
+    assert len(blocks) == 4
+    seen: set[int] = set()
+    for block in blocks:
+        assert not (seen & set(block)), "cut blocks must be disjoint"
+        seen |= set(block)
+    assert seen == set(range(spec.n_qubits)), "cut blocks must cover every qubit"

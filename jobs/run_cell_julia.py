@@ -188,6 +188,8 @@ def _empty_run_record(
         "failure_reason": failure_reason,
         "log_path": None,
         "gate_trace_path": None,
+        # Julia is never partitioned by this driver -- no row policy exists.
+        "partition_row_policy": None,
         "extra": None,
     }
 
@@ -326,6 +328,7 @@ def run_cell_julia(
         "failure_reason": None,
         "log_path": None,
         "gate_trace_path": None,
+        "partition_row_policy": None,
         "extra": {
             "per_layer_terms": result.per_layer_terms,
             "expectation_re": None if exp is None else exp.real,

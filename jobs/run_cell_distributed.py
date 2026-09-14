@@ -104,6 +104,8 @@ def _empty_run_record(
         "failure_reason": failure_reason,
         "log_path": None,
         "gate_trace_path": None,
+        # The group never ran, so no row policy was ever chosen.
+        "partition_row_policy": None,
     }
 
 
@@ -162,6 +164,20 @@ def main(argv: list[str] | None = None) -> int:
                 ],
             )
         return 0
+
+    # E8: the distributed (`comm=`) path has no explicit-rows plumbing yet
+    # (`sum.rs::parse_run_mode` refuses `partition_row_seed=`/
+    # `partition_row_blocks=` together with `comm=`), so "cut" would silently
+    # run "random" under a wrong label -- raise instead of ever writing that
+    # record. Every rank reaches this check identically (no rank branches
+    # alone), so the whole group raises together, before any collective below.
+    if spec.partition_row_policy != "random":
+        raise ValueError(
+            f"partition_row_policy={spec.partition_row_policy!r} is not supported on the "
+            "distributed (comm=) path yet; only 'random' is (see this module's docstring "
+            "and decisions.md's E8 entry). Use the in-process partitioned engine "
+            "(run_cell.py, partitions=) for a 'cut' comparison."
+        )
 
     circuit = _build_circuit(spec)
     observable = _build_observable(spec)
@@ -275,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
             "failure_reason": None,
             "log_path": None,
             "gate_trace_path": str(out_dir / "gates.rank-*.jsonl"),
+            # Guaranteed "random" by the check above (this path never reaches
+            # here with any other value) -- recorded from `spec`, not
+            # hardcoded, so a future policy addition can't silently mislabel.
+            "partition_row_policy": spec.partition_row_policy,
         }
         assert set(run_record) == set(RUN_FIELDS), (
             f"run record field set drifted from run_cell.py's RUN_FIELDS: "

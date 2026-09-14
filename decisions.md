@@ -334,3 +334,12 @@
     distributed explicit-rows (`"cut"`) plumbing built first; a looser point (eps=2^-19, `MIN_ABS_COEFF=
     1.9073486e-06`) is the fallback if node budget is constrained, as a real (if less ambitious) E7 capacity
     point instead of a repeated crash at 2^-20.
+
+23. **E7 achieved for real on 2026-09-14**: resubmitting at 16 ranks/8 nodes (double decision #22's
+   8-rank attempt, same eps=2^-20, same `partition_row_policy=random`) completed cleanly:
+   `wall_time_s=1658.8`, `peak_terms=8,923,556,570`, `peak_rss_kb≈3.04 TB` summed across ranks
+   (`raw/2026-09-13-distributed-16ranks/runs.jsonl`). 3.04 TB is double a single genoa node's 1.5 TB
+   RAM, so this is a genuine beyond-single-node-capacity demonstration, not merely a slow single-node
+   equivalent — the same random partition draw that OOM'd one rank at 8 ranks (decision #22: one rank at
+   ~1.20 TiB, 343% above average) spread thin enough across 16 ranks to leave headroom everywhere.
+   `evidence.md` E6 and E7 both updated from tooling-ready/blocked to real data.

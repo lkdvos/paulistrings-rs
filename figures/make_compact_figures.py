@@ -653,14 +653,25 @@ def make_distributed_capacity_figure(
                 any_plotted = True
                 xs = [r["ranks"] for r in completed]
                 ys = [r["wall_time_s"] for r in completed]
+                # peak_terms is a property of the tolerance, not the rank count, for every
+                # real series measured so far -- stating it once in the legend label (when it's
+                # genuinely constant across the series) instead of at every point avoids
+                # repeating the same "N=..." annotation densely along a short log-log line.
+                # Falls back to per-point annotation if a real series ever DOES show variation
+                # (e.g. a future capacity-extension series with rank-dependent term counts),
+                # so this never hides a real difference.
+                distinct_n = {r["peak_terms"] for r in completed if r.get("peak_terms")}
+                label = _label(eps)
+                if len(distinct_n) == 1:
+                    label = f"{label} (N={next(iter(distinct_n)):,})"
                 ax.plot(
                     xs, ys, marker=style["marker"], markersize=7, linewidth=1.8,
                     linestyle=style["linestyle"] if len(xs) > 1 else "none",
-                    color=style["color"], label=_label(eps),
+                    color=style["color"], label=label,
                 )
                 for r in completed:
                     parts = []
-                    if r.get("peak_terms"):
+                    if len(distinct_n) != 1 and r.get("peak_terms"):
                         parts.append(f"N={r['peak_terms']:,}")
                     if r.get("peak_rss_kb"):
                         parts.append(f"{r['peak_rss_kb'] / 1e9:.2f} TB")
@@ -710,9 +721,14 @@ def make_distributed_capacity_figure(
                 seen.add(l)
                 dedup_handles.append(h)
                 dedup_labels.append(l)
+            # Point annotations (N=, memory, notes) are dense on a log-log plot with only a
+            # few series -- an in-axes legend collides with them at almost any corner, so the
+            # legend sits outside the plot area entirely (right margin) rather than chasing an
+            # empty spot that may not exist once real annotations are added.
             ax.legend(
                 dedup_handles, dedup_labels, frameon=False,
-                fontsize=7 if not deck else _DECK_FONT_PT * 0.7, loc="lower right",
+                fontsize=7 if not deck else _DECK_FONT_PT * 0.7,
+                loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
             )
         fig.tight_layout()
         return fig

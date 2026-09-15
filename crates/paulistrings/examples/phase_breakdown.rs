@@ -87,6 +87,14 @@ Options:
                             per-layer policy and are the only way to get
                             FEWER. Both have to move together: above the
                             floor, raising --target-bucket-len alone is inert.
+  --occupancy-at <rep>     0-based rep index to sample bucket occupancy at (diagnostic, opt-in;
+                            absent by default). Splits the cell's timed call into one
+                            propagate_with_scratch_and_options per rep instead of one call over
+                            the whole circuit, so wall_ns/stats are the same total work summed
+                            differently. After the named rep, records num_buckets(), an explicit
+                            empty-bucket count, and median/p95/max bucket_len() over non-empty
+                            buckets, into the JSON sidecar. Not supported for `trotter` (its
+                            circuit ignores --reps). Must be less than --reps.
   --truncation <spec>      Truncation policy for every cell, one of:
                               keep          no truncation (default)
                               coeff:<t>     CoefficientThreshold(t): a
@@ -462,6 +470,8 @@ struct Config {
     target_bucket_len: usize,
     /// Engine's per-layer bucket-count floor. See `--min-buckets`.
     min_buckets: usize,
+    /// Rep index (0-based) to sample bucket occupancy at. See `--occupancy-at`.
+    occupancy_at: Option<usize>,
     /// TOTAL thread counts; a partitioned cell splits one of these over its partitions.
     threads: Vec<usize>,
     /// Partition counts to sweep. See `--partitions`.
@@ -543,6 +553,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut bucket_bits: u8 = 0;
     let mut target_bucket_len: usize = DEFAULT_TARGET_BUCKET_LEN;
     let mut min_buckets: usize = DEFAULT_MIN_BUCKETS;
+    let mut occupancy_at: Option<usize> = None;
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
@@ -592,6 +603,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
             "--target-bucket-len" => target_bucket_len = parse_usize(value, "--target-bucket-len")?,
             "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
+            "--occupancy-at" => occupancy_at = Some(parse_usize(value, "--occupancy-at")?),
             "--truncation" => truncation = TruncSpec::parse(value)?,
             "--partitions" => partitions = parse_csv_usize(value, "--partitions")?,
             "--partition-cpus" => partition_cpus = PartitionCpus::parse(value)?,
@@ -638,6 +650,14 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     }
     if partitions.is_empty() {
         return Err("--partitions must list at least one partition count".to_string());
+    }
+    if let Some(step) = occupancy_at {
+        if step >= reps {
+            return Err(format!(
+                "--occupancy-at {step} must be less than --reps ({reps}): it names a 0-based rep \
+                 index to sample after"
+            ));
+        }
     }
 
     // The two Trotter-step workloads run on a lattice of their own.
@@ -731,6 +751,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         bucket_bits,
         target_bucket_len,
         min_buckets,
+        occupancy_at,
         threads,
         partitions,
         mpi,
@@ -1017,6 +1038,49 @@ struct CellResult {
     partitioned: Option<PartitionCellStats>,
     /// `(rank, ranks)` for a `--mpi` cell; every field above is then this rank's own.
     mpi: Option<(u32, u32)>,
+    /// Bucket occupancy sampled at `--occupancy-at`, `None` unless the flag was passed.
+    occupancy: Option<Occupancy>,
+}
+
+/// A bucket-occupancy snapshot: how term counts spread across buckets at one rep.
+struct Occupancy {
+    /// The rep index this was sampled after (echoes `--occupancy-at`).
+    step: usize,
+    num_buckets: usize,
+    empty_buckets: usize,
+    /// Median/p95/max computed over non-empty buckets only: an empty bucket is idle capacity,
+    /// not a small piece of work, and folding it in would understate the occupied buckets' skew.
+    median: usize,
+    p95: usize,
+    max: usize,
+}
+
+/// Reads `sum`'s bucket-length histogram and reduces it to [`Occupancy`].
+fn occupancy_histogram<const W: usize>(sum: &PauliSum<W>, step: usize) -> Occupancy {
+    let num_buckets = sum.num_buckets();
+    let mut nonempty: Vec<usize> = (0..num_buckets)
+        .map(|b| sum.bucket_len(b))
+        .filter(|&len| len > 0)
+        .collect();
+    nonempty.sort_unstable();
+    let empty_buckets = num_buckets - nonempty.len();
+    Occupancy {
+        step,
+        num_buckets,
+        empty_buckets,
+        median: percentile(&nonempty, 0.5),
+        p95: percentile(&nonempty, 0.95),
+        max: nonempty.last().copied().unwrap_or(0),
+    }
+}
+
+/// Nearest-rank percentile of a sorted, non-empty-filtered slice; `0` when it's empty.
+fn percentile(sorted: &[usize], p: f64) -> usize {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 /// The partition-axis numbers of one cell, from the timed call's
@@ -1143,7 +1207,15 @@ where
         ..PropagateOptions::default()
     };
 
-    let (steady_n, wall_ns, stats) = pool.install(|| {
+    if cfg.occupancy_at.is_some() && layer == LayerKind::Trotter {
+        eprintln!(
+            "phase_breakdown: warning: --occupancy-at is not supported for `trotter` (its \
+             circuit ignores --reps); no occupancy sample will be taken for this cell."
+        );
+    }
+    let sample_by_step = cfg.occupancy_at.is_some() && layer != LayerKind::Trotter;
+
+    let (steady_n, wall_ns, stats, occupancy) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
         // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
@@ -1158,20 +1230,49 @@ where
         let _ = scratch.take_stats(); // discard warm-up counters
 
         let steady_n = warmed.len();
-        let start = Instant::now();
-        let output = propagate_with_scratch_and_options(
-            &circuit,
-            warmed,
-            policy,
-            Direction::Forward,
-            &mut scratch,
-            options,
-        );
-        let wall_ns = start.elapsed().as_nanos() as u64;
-        let stats = scratch.take_stats();
-        std::hint::black_box(&output);
 
-        (steady_n, wall_ns, stats)
+        if sample_by_step {
+            // One rep's worth of circuit, called cfg.reps times: same total work as the single
+            // whole-circuit call below, just split so the sum after a chosen rep is observable.
+            let one_rep = build_circuit::<W>(layer, cfg.qubits, 1, gen_qubits);
+            let mut sum = warmed;
+            let mut wall_ns = 0u64;
+            let mut stats = PhaseStats::default();
+            let mut occupancy = None;
+            for step in 0..cfg.reps {
+                let start = Instant::now();
+                sum = propagate_with_scratch_and_options(
+                    &one_rep,
+                    sum,
+                    policy,
+                    Direction::Forward,
+                    &mut scratch,
+                    options,
+                );
+                wall_ns += start.elapsed().as_nanos() as u64;
+                stats.add(&scratch.take_stats());
+                if Some(step) == cfg.occupancy_at {
+                    occupancy = Some(occupancy_histogram(&sum, step));
+                }
+            }
+            std::hint::black_box(&sum);
+            (steady_n, wall_ns, stats, occupancy)
+        } else {
+            let start = Instant::now();
+            let output = propagate_with_scratch_and_options(
+                &circuit,
+                warmed,
+                policy,
+                Direction::Forward,
+                &mut scratch,
+                options,
+            );
+            let wall_ns = start.elapsed().as_nanos() as u64;
+            let stats = scratch.take_stats();
+            std::hint::black_box(&output);
+
+            (steady_n, wall_ns, stats, None)
+        }
     });
 
     let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
@@ -1205,6 +1306,7 @@ where
         // No split, so no partition numbers on this row.
         partitioned: None,
         mpi: None,
+        occupancy,
     }
 }
 
@@ -1611,6 +1713,8 @@ where
         row_stats,
         partitioned: Some(summary),
         mpi: None,
+        // Occupancy sampling is unimplemented for the partitioned path; scoped to P = 1 for now.
+        occupancy: None,
     }
 }
 
@@ -1732,6 +1836,7 @@ where
         row_stats,
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
+        occupancy: None,
     }
 }
 
@@ -2163,7 +2268,16 @@ fn json_line(cell: &CellResult) -> String {
         Some((rank, ranks)) => format!(",\"rank\":{rank},\"ranks\":{ranks}"),
         None => String::new(),
     };
-    format!("{core}{partition_fields}{mpi_fields}}}")
+    // Absent (not null) when --occupancy-at wasn't passed, so existing consumers see no new keys.
+    let occupancy_fields = match &cell.occupancy {
+        Some(o) => format!(
+            ",\"occupancy_step\":{},\"num_buckets\":{},\"empty_buckets\":{},\
+             \"occupancy_median\":{},\"occupancy_p95\":{},\"occupancy_max\":{}",
+            o.step, o.num_buckets, o.empty_buckets, o.median, o.p95, o.max,
+        ),
+        None => String::new(),
+    };
+    format!("{core}{partition_fields}{mpi_fields}{occupancy_fields}}}")
 }
 
 const TSV_HEADER: &str =

@@ -6,7 +6,7 @@
 
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionTrace, PartitionedTruncation,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionTrace, PartitionedTruncation,
     PauliSum as CorePauliSum, PropagateOptions, TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
@@ -90,17 +90,43 @@ pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<
     unsafe { MpiTransport::from_raw_handle(handle) }.map_err(mpi_error)
 }
 
-/// One distributed propagate: the adopted transport plus what to hand back. Constructed with the GIL held and consumed inside `allow_threads`, keeping the communicator's lifetime inside the call.
+/// The group size of an mpi4py communicator.
+///
+/// `MPI_Comm_size` is **local**, so this is readable before the collective duplicate in [`transport_from_comm`] and gives every rank the same number — which is what lets `parse_run_mode` validate `partition_row_blocks=` against the rank count and still reject on every rank alike.
+pub fn comm_size(comm: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let size: i64 = comm
+        .call_method0("Get_size")
+        .map_err(|err| {
+            PyTypeError::new_err(format!(
+                "comm= must be a live mpi4py communicator (mpi4py.MPI.Comm); Get_size() on {} \
+                 failed: {err}",
+                comm.get_type()
+                    .name()
+                    .map_or_else(|_| "an unknown type".to_string(), |name| name.to_string()),
+            ))
+        })?
+        .extract()?;
+    usize::try_from(size)
+        .map_err(|_| PyValueError::new_err(format!("comm= reports a group size of {size}")))
+}
+
+/// One distributed propagate: the adopted transport, the rows to split by, and what to hand back. Constructed with the GIL held and consumed inside `allow_threads`, keeping the communicator's lifetime inside the call.
 pub struct MpiRun {
     /// The duplicated communicator, moved into the `DistributedSum`.
     transport: MpiTransport,
+    /// Which rows decide a term's rank. Resolved to a `PartitionRows<W>` inside the width dispatch, where `W` is known.
+    rows: PartitionRowPolicy,
     /// `true` for `result="gather"`, `false` for `result="local"`.
     gather: bool,
 }
 
 impl MpiRun {
-    pub fn new(transport: MpiTransport, gather: bool) -> Self {
-        Self { transport, gather }
+    pub fn new(transport: MpiTransport, rows: PartitionRowPolicy, gather: bool) -> Self {
+        Self {
+            transport,
+            rows,
+            gather,
+        }
     }
 
     /// Scatter, propagate, and take this rank's answer. **Collective.**
@@ -115,8 +141,13 @@ impl MpiRun {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        let Self { transport, gather } = self;
-        let mut split = MpiSum::<W>::scatter(sum.clone(), transport, &default_config())?;
+        let Self {
+            transport,
+            rows,
+            gather,
+        } = self;
+        let mut split =
+            MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
         split.propagate_with_options(circuit, policy, direction, options);
         let out = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
@@ -137,8 +168,13 @@ impl MpiRun {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        let Self { transport, gather } = self;
-        let mut split = MpiSum::<W>::scatter(sum.clone(), transport, &default_config())?;
+        let Self {
+            transport,
+            rows,
+            gather,
+        } = self;
+        let mut split =
+            MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
         split.enable_trace();
         split.propagate_with_options(circuit, policy, direction, options);
         let (rank, size) = (split.rank(), split.size());

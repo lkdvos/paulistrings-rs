@@ -10,6 +10,8 @@ use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::engine::partitioned::{numa_nodes, CpuSet};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
+#[cfg(feature = "mpi")]
+use paulistrings::PartitionRowPolicy;
 use paulistrings::{
     propagate_with_options, propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction,
     EngineSelection, GateTrace, LayerScratch, PartitionConfig, PartitionRows, PartitionRuntime,
@@ -510,18 +512,19 @@ fn parse_partition_row_blocks(
     Ok(Some(blocks))
 }
 
-/// Validates `partition_row_blocks` against the resolved partition count and qubit count.
+/// Validates `partition_row_blocks` against the partition count and qubit count, `what` naming where that count came from (`partitions=` on the in-process path, the MPI group size under `comm=`).
 /// Plain Rust (`Result<(), String>`), not `PyResult`, so it — and its `#[cfg(test)]` coverage — never touch the Python C API: this crate is `extension-module`-only (see the `partition_row_knob_tests` module comment), so a test that formats a `PyErr` fails to link.
 /// `validate_partition_row_blocks` (below) is the `PyResult` wrapper `parse_run_mode` actually calls.
 fn validate_partition_row_blocks_impl(
     blocks: &[Vec<u32>],
     num_qubits: usize,
     num_partitions: usize,
+    what: &str,
 ) -> Result<(), String> {
     if blocks.len() != num_partitions {
         return Err(format!(
-            "partition_row_blocks has {} block(s), but partitions={num_partitions} needs \
-             exactly one block per partition",
+            "partition_row_blocks has {} block(s), but {what} needs exactly one block per \
+             partition",
             blocks.len()
         ));
     }
@@ -552,8 +555,9 @@ fn validate_partition_row_blocks(
     blocks: &[Vec<u32>],
     num_qubits: usize,
     num_partitions: usize,
+    what: &str,
 ) -> PyResult<()> {
-    validate_partition_row_blocks_impl(blocks, num_qubits, num_partitions)
+    validate_partition_row_blocks_impl(blocks, num_qubits, num_partitions, what)
         .map_err(PyValueError::new_err)
 }
 
@@ -811,17 +815,6 @@ fn parse_run_mode(
              draw vs. an explicit locality cut); pass at most one",
         ));
     }
-    if distributed && (partition_row_seed.is_some() || row_blocks.is_some()) {
-        // `MpiRun` carries no `PartitionConfig` today — there is nowhere for
-        // either knob to go on the `comm=` path, so silently dropping it
-        // would be exactly the kind of undocumented gap this campaign's E8
-        // work is closing. Raise instead.
-        return Err(PyValueError::new_err(
-            "partition_row_seed= and partition_row_blocks= are not yet supported with comm= \
-             (distributed); use partitions= (the in-process partitioned engine) for a row-policy \
-             comparison",
-        ));
-    }
     let config = parse_partitions(partitions, pin_memory, partition_row_seed)?;
     if (distributed || config.is_some()) && spec_has_exact_topn(spec) {
         return Err(topn_partitioned_error(if distributed {
@@ -830,22 +823,29 @@ fn parse_run_mode(
             partitions
         }));
     }
-    if let (Some(config), Some(row_blocks)) = (&config, &row_blocks) {
-        // `resolve()` alone (not `PartitionRuntime::new`, which builds pinned
-        // pools) is enough to learn the partition count for validation.
-        let num_partitions = config.resolve().map_err(topology_error)?.len();
-        validate_partition_row_blocks(row_blocks, num_qubits, num_partitions)?;
-    } else if config.is_none() && row_blocks.is_some() {
-        return Err(PyValueError::new_err(
-            "partition_row_blocks= needs partitions= (it has no effect on the unpartitioned path)",
-        ));
-    }
     if distributed {
         #[cfg(feature = "mpi")]
         {
-            let transport = crate::mpi::transport_from_comm(py, comm.expect("comm is Some"))?;
+            let comm = comm.expect("comm is Some");
+            if let Some(blocks) = &row_blocks {
+                // `MPI_Comm_size` is local and every rank reads the same
+                // number, so validating here still rejects on every rank alike
+                // — before the collective duplicate below.
+                let ranks = crate::mpi::comm_size(comm)?;
+                validate_partition_row_blocks(
+                    blocks,
+                    num_qubits,
+                    ranks,
+                    &format!("comm= with {ranks} rank(s)"),
+                )?;
+            }
+            let rows = match row_blocks {
+                Some(blocks) => PartitionRowPolicy::Cut(blocks),
+                None => PartitionRowPolicy::Seeded(partition_row_seed),
+            };
+            let transport = crate::mpi::transport_from_comm(py, comm)?;
             return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(
-                transport, gather,
+                transport, rows, gather,
             )));
         }
         #[cfg(not(feature = "mpi"))]
@@ -853,6 +853,22 @@ fn parse_run_mode(
             let _ = (py, gather);
             return Err(mpi_unavailable_error());
         }
+    }
+    if let (Some(config), Some(row_blocks)) = (&config, &row_blocks) {
+        // `resolve()` alone (not `PartitionRuntime::new`, which builds pinned
+        // pools) is enough to learn the partition count for validation.
+        let num_partitions = config.resolve().map_err(topology_error)?.len();
+        validate_partition_row_blocks(
+            row_blocks,
+            num_qubits,
+            num_partitions,
+            &format!("partitions={num_partitions}"),
+        )?;
+    } else if config.is_none() && row_blocks.is_some() {
+        return Err(PyValueError::new_err(
+            "partition_row_blocks= needs partitions= or comm= (it has no effect on the \
+             unpartitioned path)",
+        ));
     }
     Ok(match config {
         Some(config) => RunMode::Partitioned(config, row_blocks),
@@ -1368,7 +1384,8 @@ impl PauliSum {
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
     /// In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
-    /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other and (for now) with `comm=`.
+    /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
+    /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
     /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
@@ -1544,12 +1561,12 @@ mod partition_row_knob_tests {
         let num_partitions = 2;
 
         let half_low = vec![vec![0u32, 1], vec![2u32, 3]];
-        validate_partition_row_blocks_impl(&half_low, num_qubits, num_partitions)
+        validate_partition_row_blocks_impl(&half_low, num_qubits, num_partitions, "partitions=2")
             .expect("two disjoint blocks covering all 4 qubits validate cleanly");
         let rows_low = build_partition_rows::<1>(&half_low, num_qubits);
 
         let half_alt = vec![vec![0u32, 2], vec![1u32, 3]];
-        validate_partition_row_blocks_impl(&half_alt, num_qubits, num_partitions)
+        validate_partition_row_blocks_impl(&half_alt, num_qubits, num_partitions, "partitions=2")
             .expect("an alternative disjoint cut also validates cleanly");
         let rows_alt = build_partition_rows::<1>(&half_alt, num_qubits);
 
@@ -1571,9 +1588,21 @@ mod partition_row_knob_tests {
     #[test]
     fn mismatched_block_count_is_a_value_error_not_a_panic() {
         let one_block = vec![vec![0u32, 1, 2, 3]];
-        let err = validate_partition_row_blocks_impl(&one_block, 4, 2)
+        let err = validate_partition_row_blocks_impl(&one_block, 4, 2, "partitions=2")
             .expect_err("1 block for 2 partitions must be rejected");
         assert!(err.contains("partition_row_blocks"));
+        assert!(err.contains("partitions=2"));
+    }
+
+    /// The count a distributed run validates against is the MPI group size, so
+    /// the message names the group rather than a `partitions=` the caller never
+    /// passed.
+    #[test]
+    fn a_mismatched_block_count_names_the_group_under_comm() {
+        let two_blocks = vec![vec![0u32, 1], vec![2u32, 3]];
+        let err = validate_partition_row_blocks_impl(&two_blocks, 4, 4, "comm= with 4 rank(s)")
+            .expect_err("2 blocks for a 4-rank group must be rejected");
+        assert!(err.contains("comm= with 4 rank(s)"), "{err}");
     }
 
     /// A qubit named in two blocks is rejected before it ever reaches `PartitionRows::cut`
@@ -1581,7 +1610,7 @@ mod partition_row_knob_tests {
     #[test]
     fn overlapping_blocks_are_a_value_error() {
         let overlapping = vec![vec![0u32, 1], vec![1u32, 2]];
-        let err = validate_partition_row_blocks_impl(&overlapping, 3, 2)
+        let err = validate_partition_row_blocks_impl(&overlapping, 3, 2, "partitions=2")
             .expect_err("qubit 1 in two blocks must be rejected");
         assert!(err.contains("more than one block"));
     }

@@ -31,7 +31,8 @@ use paulistrings::channel::{
     Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
 use paulistrings::engine::partitioned::{
-    count_remote_deltas, DistributedSum, PartitionConfig, PartitionRuntime, BITS_AGREE_EVERY,
+    count_remote_deltas, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
+    BITS_AGREE_EVERY,
 };
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
@@ -40,8 +41,8 @@ use paulistrings::test_support::{
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
-    propagate, Circuit, Direction, PartitionRows, PartitionedTruncation, PauliString, PauliSum,
-    PropagateOptions,
+    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
+    PauliString, PauliSum, Phase, PropagateOptions,
 };
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -495,6 +496,53 @@ fn run_matrix(r: &mut Runner) {
         if let Some(got) = split.gather() {
             let want = propagate(&circuit, sum, &WeightCutoff(4), Direction::Forward);
             assert_terms_close(&got, &want, TOL, "long local run");
+            assert_eq!(got.len(), want.len());
+        }
+    });
+
+    // ---- the row policy -------------------------------------------------
+    r.case("a cut row policy puts each block on its own rank", |r| {
+        const NQ: usize = 16;
+        let size = r.size as usize;
+        let per = NQ / size;
+        let blocks: Vec<Vec<u32>> = (0..size)
+            .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+            .collect();
+
+        // One `Z` per qubit: a single-`Z` key has odd z-weight in exactly the
+        // block holding that qubit, so its rank is that block's index.
+        let mut acc = BuildAccumulator::<1>::new(NQ);
+        for q in 0..NQ as u32 {
+            acc.add_term(
+                PauliString::<1>::z(q),
+                Phase::ONE,
+                Complex64::new(1.0 + f64::from(q), 0.0),
+            );
+        }
+        let sum = acc.finalize();
+
+        let transport = MpiTransport::from_communicator(r.world);
+        let mut split = DistributedSum::scatter_with_policy(
+            sum.clone(),
+            transport,
+            &r.config(SEED),
+            &PartitionRowPolicy::Cut(blocks.clone()),
+        )
+        .expect("topology resolves");
+        split.assert_invariants();
+
+        let (_, z, _) = split.local().to_arrays();
+        let mut held: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+        held.sort_unstable();
+        assert_eq!(held, blocks[r.rank as usize], "rank {}'s block", r.rank);
+
+        // A caller's rows are a placement, not a semantics: the gathered answer
+        // is still the serial one.
+        let circuit = local_run_then_one_crossing::<1>(NQ);
+        split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
+        if let Some(got) = split.gather() {
+            let want = propagate(&circuit, sum, &WeightCutoff(4), Direction::Forward);
+            assert_terms_close(&got, &want, TOL, "cut row policy");
             assert_eq!(got.len(), want.len());
         }
     });

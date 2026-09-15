@@ -547,6 +547,27 @@ fn validate_partition_row_blocks_impl(
             seen[qi] = true;
         }
     }
+    if !num_partitions.is_power_of_two() {
+        return Err(format!(
+            "partition_row_blocks cannot cut {what}: a partition is named by log2(P) GF(2) rows, \
+             so the count must be a power of two"
+        ));
+    }
+    // `PartitionRows::cut` panics on a row no qubit can set, which would leave
+    // half the partitions permanently empty; the caller sees a `ValueError`
+    // instead.
+    for bit in 0..num_partitions.trailing_zeros() {
+        let reachable = blocks
+            .iter()
+            .enumerate()
+            .any(|(b, qubits)| (b >> bit) & 1 == 1 && !qubits.is_empty());
+        if !reachable {
+            return Err(format!(
+                "partition_row_blocks: no qubit lies in a block whose index has bit {bit} set, so \
+                 that partition bit is constant and half the partitions would stay empty"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1592,6 +1613,31 @@ mod partition_row_knob_tests {
             .expect_err("1 block for 2 partitions must be rejected");
         assert!(err.contains("partition_row_blocks"));
         assert!(err.contains("partitions=2"));
+    }
+
+    /// A block set `PartitionRows::cut` would panic on is a `ValueError` too:
+    /// a partition bit no qubit can set leaves half the partitions empty.
+    #[test]
+    fn a_block_set_that_cannot_name_every_partition_is_a_value_error() {
+        let empty_second = vec![vec![0u32, 1, 2, 3], Vec::new()];
+        let err = validate_partition_row_blocks_impl(&empty_second, 4, 2, "partitions=2")
+            .expect_err("an empty block 1 leaves partition bit 0 constant");
+        assert!(err.contains("bit 0"), "{err}");
+
+        // Block 1 empty out of four is fine — block 3 still sets bit 0.
+        let one_empty = vec![vec![0u32], Vec::new(), vec![1u32], vec![2u32]];
+        validate_partition_row_blocks_impl(&one_empty, 4, 4, "partitions=4")
+            .expect("every bit is set by some non-empty block");
+    }
+
+    /// A placement whose partition count is not a power of two cannot be cut by
+    /// `log2(P)` rows at all.
+    #[test]
+    fn a_partition_count_that_is_not_a_power_of_two_is_a_value_error() {
+        let three = vec![vec![0u32], vec![1u32], vec![2u32]];
+        let err = validate_partition_row_blocks_impl(&three, 3, 3, "partitions=3")
+            .expect_err("three partitions cannot be named by GF(2) rows");
+        assert!(err.contains("power of two"), "{err}");
     }
 
     /// The count a distributed run validates against is the MPI group size, so

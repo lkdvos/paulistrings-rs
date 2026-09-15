@@ -14,13 +14,18 @@
 
 use num_complex::Complex64;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::engine::partitioned::{DistributedSum, InProcessTransport, PartitionConfig};
+use paulistrings::engine::partitioned::{
+    DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy,
+};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
-use paulistrings::{propagate, Circuit, Direction, PartitionedTruncation, PauliSum};
+use paulistrings::{
+    propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
+    Phase,
+};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
@@ -351,6 +356,106 @@ fn len_is_collective_and_the_shares_add_up() {
     assert_eq!(seen.iter().map(|&(_, local)| local).sum::<usize>(), want);
     // A 500-term sum over four ranks: nobody holds all of it.
     assert!(seen.iter().all(|&(_, local)| local < want));
+}
+
+/// One `Z` per qubit, so a cut makes every term's rank hand-computable: a
+/// single-`Z` key has odd z-weight in exactly the block holding that qubit.
+fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
+    let mut acc = BuildAccumulator::<W>::new(num_qubits);
+    for q in 0..num_qubits as u32 {
+        acc.add_term(
+            PauliString::<W>::z(q),
+            Phase::ONE,
+            Complex64::new(1.0 + f64::from(q), 0.0),
+        );
+    }
+    acc.finalize()
+}
+
+/// The qubits this rank's share names, one per single-`Z` term, ascending.
+fn local_z_qubits<const W: usize, X: paulistrings::engine::partitioned::Transport>(
+    split: &DistributedSum<W, X>,
+) -> Vec<u32> {
+    let (_, z, _) = split.local().to_arrays();
+    let mut qubits: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+    qubits.sort_unstable();
+    qubits
+}
+
+/// An explicit cut is the whole point of the policy: the caller, not a random
+/// draw, decides which rank a block of qubits belongs to.
+#[test]
+fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
+    const NQ: usize = 8;
+    let sum = single_z_sum::<1>(NQ);
+    let policy = PartitionRowPolicy::Cut(vec![(0..4).collect(), (4..8).collect()]);
+
+    let held: Vec<Vec<u32>> = std::thread::scope(|scope| {
+        let (sum, policy) = (&sum, &policy);
+        let handles: Vec<_> = InProcessTransport::group(2)
+            .into_iter()
+            .map(|transport| {
+                scope.spawn(move || {
+                    let split = DistributedSum::scatter_with_policy(
+                        sum.clone(),
+                        transport,
+                        &config(),
+                        policy,
+                    )
+                    .expect("topology resolves");
+                    split.assert_invariants();
+                    local_z_qubits(&split)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread panicked"))
+            .collect()
+    });
+
+    assert_eq!(held[0], vec![0, 1, 2, 3], "block 0 is rank 0's");
+    assert_eq!(held[1], vec![4, 5, 6, 7], "block 1 is rank 1's");
+}
+
+/// `Seeded` is the existing draw spelled as a policy: at the config's own seed
+/// it splits the sum exactly as [`DistributedSum::scatter`] does.
+#[test]
+fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
+    const SEED: u64 = 0x5EED_C0FF_EE00_4321;
+    let sum = rand_sum::<1>(300, 8, 0x0D22);
+
+    let seen: Vec<(usize, usize)> = std::thread::scope(|scope| {
+        let sum = &sum;
+        let handles: Vec<_> = InProcessTransport::group(2)
+            .into_iter()
+            .zip(InProcessTransport::group(2))
+            .map(|(a, b)| {
+                scope.spawn(move || {
+                    let want = DistributedSum::scatter(sum.clone(), a, &config())
+                        .expect("topology resolves");
+                    let got = DistributedSum::scatter_with_policy(
+                        sum.clone(),
+                        b,
+                        &config(),
+                        &PartitionRowPolicy::Seeded(Some(SEED)),
+                    )
+                    .expect("topology resolves");
+                    assert_eq!(want.rows(), got.rows());
+                    (want.len_local(), got.len_local())
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread panicked"))
+            .collect()
+    });
+
+    for (rank, &(want, got)) in seen.iter().enumerate() {
+        assert_eq!(want, got, "rank {rank}: terms held");
+    }
+    assert_eq!(seen.iter().map(|&(_, got)| got).sum::<usize>(), sum.len());
 }
 
 /// `local_expectation_product_state` is per rank, and the ranks' answers sum to

@@ -1506,3 +1506,31 @@
     data): node-granularity is slower at this tighter eps too (2300.3 vs 1658.8s, a 1.39x gap
     at MORE hardware for node-granularity, since 16 nodes > 8 nodes) — consistent with every
     other eps tested, not a term-count artifact that resolves with more work per rank.
+
+59. **E8's plumbing gap actually closed: `run_cell_distributed.py`/`campaign-genoa-distributed.
+    sbatch` now support `PARTITION_ROW_POLICY=cut` for real, 2026-09-14.** Follows from decision
+    #56's `paulistrings-py` merge (`partition_row_seed=`/`partition_row_blocks=` now reach
+    `comm=`). `run_cell_distributed.py` now imports `run_cell._cut_blocks` and, for
+    `partition_row_policy="cut"`, calls it with `num_partitions=SIZE` (the MPI group size, not
+    an in-process `partitions=` count) and passes the result as `partition_row_blocks=` to both
+    the timed `propagate` call and `propagate_with_stats` — every rank computes the identical
+    blocks from the identical `cell.json` with no collective involved, so this cannot
+    desynchronize the group. `campaign-genoa-distributed.sbatch`'s `PARTITION_ROW_POLICY` guard
+    now accepts `"cut"` instead of rejecting it outright; header comment updated to match.
+
+    TDD: added `test_cut_policy_run_matches_schema_and_uses_a_locality_cut` to
+    `jobs/tests/test_run_cell_distributed.py`, confirmed red against the still-rejecting code
+    (a real `ValueError` at the old guard, not a placeholder), then green after the change.
+    Verified for real, not just claimed: rebuilt `.venv-mpi`'s extension (`maturin develop
+    --release --features mpi`) against the merged Rust code, ran the new test at 1 rank
+    (plain `pytest`) AND under real `mpirun -n 2`/`mpirun -n 4` — 3/3 passed at every rank
+    count. Full `python/paulistrings/tests` under the same rebuilt extension: 435 passed, 50
+    skipped. `jobs/tests/` (non-MPI): 38 passed, 5 skipped. `cargo test --workspace` and
+    `cargo clippy --workspace --all-targets -- -D warnings` both still clean.
+
+    Not yet run: a real cluster cell with `PARTITION_ROW_POLICY=cut` — this closes the code
+    gap only. The obvious next distributed job is a `cut` vs. `random` comparison at a rank
+    count decision #57 already has "random" data for (e.g. 32 or 64 domain-ranks, eps=2^-16),
+    to see whether the locality cut's ~11x export-volume advantage on the in-process engine
+    (decision's own E8 entry, `hash_communication_v2`) carries over to real wall time once
+    network communication (not just in-process channel sends) is the cost being cut.

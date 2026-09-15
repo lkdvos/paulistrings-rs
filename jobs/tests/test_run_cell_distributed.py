@@ -127,6 +127,30 @@ def test_completed_run_matches_schema(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(_SKIP is not None, reason=str(_SKIP))
+def test_cut_policy_run_matches_schema_and_uses_a_locality_cut(tmp_path, monkeypatch):
+    """`partition_row_policy="cut"` must actually reach `propagate`'s
+    `partition_row_blocks=` on the `comm=` path now (E8's plumbing gap, closed
+    by the `paulistrings-py` merge that added `partition_row_seed=`/
+    `partition_row_blocks=` support to `comm=`) -- this is the regression net
+    for that wiring, not just "random" happening to still work."""
+    monkeypatch.setattr(preflight, "run_preflight", _passing_hardware_report)
+    cell_path = _smoke_cell(tmp_path, partition_row_policy="cut")
+    out_dir = tmp_path / "out"
+    out_dir = COMM.bcast(out_dir if RANK == 0 else None, root=0)
+
+    rc = run_cell_distributed.main([str(cell_path), "--out-dir", str(out_dir)])
+    assert rc == 0
+
+    COMM.Barrier()
+    if RANK == 0:
+        runs = [json.loads(l) for l in (out_dir / "runs.jsonl").read_text().splitlines()]
+        assert len(runs) == 1
+        assert runs[0]["status"] == "completed"
+        assert runs[0]["partition_row_policy"] == "cut"
+        assert set(runs[0]) == set(RUN_FIELDS)
+
+
+@pytest.mark.skipif(_SKIP is not None, reason=str(_SKIP))
 def test_invalid_hardware_on_any_rank_fails_the_whole_group(tmp_path, monkeypatch):
     """One rank's failed preflight must stop the *group*, not just that rank
     -- otherwise the survivors would deadlock waiting in a collective the

@@ -43,15 +43,11 @@
 #   THETA_H         kick angle (default: 7pi/32).
 #   REPS            repetitions (default: 1 -- an MPI allocation is expensive to repeat blindly;
 #                    bump once the first point's cost is known).
-#   PARTITION_ROW_POLICY   "random" (default, today's behavior exactly) or "cut". E8
-#                    (decisions.md #13/2026-09-13): `run_cell_distributed.py`'s `comm=` path has
-#                    no explicit-rows plumbing yet (`sum.rs::parse_run_mode` refuses
-#                    `partition_row_seed=`/`partition_row_blocks=` together with `comm=`), so
-#                    "cut" is rejected below with a clear error rather than silently running
-#                    "random" under a "cut" label. A real distributed E8 comparison needs that
-#                    MPI-side plumbing built first; the in-process partitioned engine
-#                    (`campaign-genoa.sbatch`/`run_cell.py`, no MPI needed) already supports both
-#                    policies today.
+#   PARTITION_ROW_POLICY   "random" (default, today's behavior exactly) or "cut" -- a locality
+#                    cut of the heavy-hex lattice into one contiguous qubit block per rank
+#                    (`run_cell.py::_cut_blocks`, reused by `run_cell_distributed.py`). Both
+#                    reach `comm=` now (the `paulistrings-py` merge that closed decisions.md
+#                    #13/E8's plumbing gap); any other value is rejected with a clear error.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../../..}"
 
@@ -145,10 +141,9 @@ echo "== running $ranks ranks ($per_node per node), from $nodes nodes available"
 : "${THETA_H:=0.6872233929727672}"      # 7*pi/32
 : "${REPS:=1}"
 : "${PARTITION_ROW_POLICY:=random}"
-if [ "$PARTITION_ROW_POLICY" != "random" ]; then
-    echo "PARTITION_ROW_POLICY=$PARTITION_ROW_POLICY: only 'random' is supported on the" \
-         "distributed (comm=) path today -- run_cell_distributed.py has no explicit-rows" \
-         "plumbing yet (see this file's header comment and decisions.md)" >&2
+if [ "$PARTITION_ROW_POLICY" != "random" ] && [ "$PARTITION_ROW_POLICY" != "cut" ]; then
+    echo "PARTITION_ROW_POLICY=$PARTITION_ROW_POLICY: expected 'random' or 'cut' (see this" \
+         "file's header comment)" >&2
     exit 3
 fi
 echo "min_abs_coeff=$MIN_ABS_COEFF trotter_steps=$TROTTER_STEPS reps=$REPS partition_row_policy=$PARTITION_ROW_POLICY"

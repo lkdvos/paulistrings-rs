@@ -48,6 +48,7 @@ from run_cell import (  # noqa: E402
     _build_circuit,
     _build_observable,
     _compiler_version,
+    _cut_blocks,
     _git_provenance,
     _runtime_version,
     _slurm_job_id,
@@ -165,18 +166,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
-    # E8: the distributed (`comm=`) path has no explicit-rows plumbing yet
-    # (`sum.rs::parse_run_mode` refuses `partition_row_seed=`/
-    # `partition_row_blocks=` together with `comm=`), so "cut" would silently
-    # run "random" under a wrong label -- raise instead of ever writing that
-    # record. Every rank reaches this check identically (no rank branches
-    # alone), so the whole group raises together, before any collective below.
-    if spec.partition_row_policy != "random":
+    # `partition_row_blocks=` now reaches `comm=` too (the `paulistrings-py`
+    # merge that closed E8's plumbing gap), so "cut" builds the same locality
+    # cut `run_cell.py` uses for the in-process path, sized to the GROUP
+    # (`SIZE`), not to an in-process `partitions=` count. Every rank computes
+    # the identical blocks from the identical `spec` with no collective, so
+    # this cannot itself desynchronize the group; an unknown policy still
+    # raises identically on every rank before any collective below.
+    propagate_kwargs: dict[str, object] = {}
+    if spec.partition_row_policy == "cut":
+        propagate_kwargs["partition_row_blocks"] = _cut_blocks(spec, SIZE)
+    elif spec.partition_row_policy != "random":
         raise ValueError(
-            f"partition_row_policy={spec.partition_row_policy!r} is not supported on the "
-            "distributed (comm=) path yet; only 'random' is (see this module's docstring "
-            "and decisions.md's E8 entry). Use the in-process partitioned engine "
-            "(run_cell.py, partitions=) for a 'cut' comparison."
+            f"unknown partition_row_policy {spec.partition_row_policy!r}; expected 'random' "
+            "or 'cut'"
         )
 
     circuit = _build_circuit(spec)
@@ -188,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     # capacity rule) -- mirrors run_cell.py's untraced-call pattern.
     start = time.perf_counter()
     evolved_local = observable.propagate(
-        circuit, policy, direction=spec.direction, comm=COMM, result="local"
+        circuit, policy, direction=spec.direction, comm=COMM, result="local", **propagate_kwargs
     )
     # A local partial sum's expectation is one disjoint term of the true
     # value by linearity (matches PartitionedSum::expectation_product_state's
@@ -201,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # A separate, untimed-for-wall_time_s-purposes call for the per-gate
     # trace -- same two-call structure as run_cell.py.
-    _, stats = observable.propagate_with_stats(circuit, policy, direction=spec.direction, comm=COMM)
+    _, stats = observable.propagate_with_stats(
+        circuit, policy, direction=spec.direction, comm=COMM, **propagate_kwargs
+    )
 
     # Diagnostic only, computed after the timed region: the group's
     # critical-rank proxy, since ranks are not synchronized mid-layer.

@@ -1551,3 +1551,31 @@
     draws this series, but all 4 rebuilt for consistency since the y-axis is keyed off the
     full row set. Speedup vs. "current engine, 1 bucket" at eps=2^-16 jumped from ~55x (16
     ranks) to ~146x (64 ranks), visible on `baseline_v4_stage4_speedup`.
+
+61. **First real distributed `cut`-policy measurement: 1.87x faster than `random` at 64 ranks,
+    eps=2^-16, 2026-09-14.** Job 7039565 (32 nodes, domain granularity, 64 ranks,
+    `PARTITION_ROW_POLICY=cut`): `wall_time_s=7.203605674003484`, same cell as the existing
+    `random`-policy point (job 7037490 originally, 13.454993522027507s) — ratio 1.868x. This is
+    the first evidence the E8 in-process finding (`hash_communication_v2`, ~11x export-volume
+    reduction from the locality cut) carries over to a REAL distributed run over the network,
+    not just in-process channel sends — a genuinely open question as of decision #59, now
+    answered in the direction the in-process result predicted (real speedup, though smaller
+    than the in-process export-volume ratio, expected since wall time isn't purely
+    communication-bound). Both rows land in the same
+    `raw/2026-09-14-distributed-64ranks/runs.jsonl`, distinguished by `partition_row_policy`,
+    exactly as designed (decision #59). Not yet folded into any figure — a dedicated cut-vs-
+    random comparison figure (or an addition to `distributed_scaling`) is a natural next step,
+    not done here since only one (config, eps) pair has both policies measured so far.
+
+62. **Stage5 added to the staged baseline plots: "current engine, 64 ranks, cut", real (one
+    point so far), 2026-09-14.** Per user request, an 8th series joins the progressive reveal:
+    `"current engine, 64 ranks, cut"` at eps=2^-16 only (7.203605674003484s, job 7039565,
+    decision #61) — speedup vs. "current engine, 1 bucket" is ~273x, the highest of any series.
+    Jobs for eps=2^-18/2^-20/2^-22 (same 64-rank/32-node/cut configuration) submitted; eps=2^-22
+    is genuinely new territory for this campaign, never measured at any placement before.
+    Add each real value to `/tmp/build_baseline_stages3.py`'s `"current engine, 64 ranks, cut"`
+    row and re-run once they land — same convention as every other sparse series (real points
+    only, gaps left visibly empty on the x-axis rather than interpolated or fabricated). Files:
+    `baseline_v4_stage5[_speedup].{svg,pdf,png}` + `_compact` (new; stages 1-4 unchanged since
+    this label wasn't added to their `series_order`, though the underlying `rows` grew, so all
+    were regenerated for consistency — no visible change expected at those stages).

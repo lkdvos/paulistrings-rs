@@ -1,0 +1,221 @@
+{
+  "variants": {
+    "naive_baseline": {
+      "description": "Original sort-merge direct apply: unbucketed, serial, single-thread; the initial engine design (Phase 6)",
+      "commit_sha": "d410f4e5985ad917146867be31511143fde8f893",
+      "commit_short_desc": "Phase 6: sort-merge engine + propagate with Direction",
+      "file_paths": [
+        "crates/paulistrings/src/engine/sort_merge.rs",
+        "crates/paulistrings/src/engine/mod.rs"
+      ],
+      "known_confounders": [
+        "Lacks parallel implementation",
+        "No bucketing (uses lex sort on all terms per layer)",
+        "No channel prepare optimization",
+        "No truncation or TopN support in initial version"
+      ],
+      "differential_feasibility": "FEASIBLE_WITH_WORKTREE",
+      "notes": "This commit introduced the initial sort-merge pipeline. The algorithm is unbucketed and serial, making it a natural baseline for comparing against later bucketing and parallelization improvements."
+    },
+    "direct_small_sum_path": {
+      "description": "Direct-apply hash-map path for small sums (< 2048 terms by default); bypasses bucketing and prepare for low-m regimes",
+      "commit_sha": "e56f021e54f3f64c3ddb8e2f688c39d91433d721",
+      "commit_short_desc": "feat: add a runtime-selectable direct-apply small-sum path",
+      "file_paths": [
+        "crates/paulistrings/src/engine/direct.rs",
+        "crates/paulistrings/src/engine/mod.rs"
+      ],
+      "known_confounders": [
+        "Orthogonal to bucketed path; only activated for small sums (< threshold)",
+        "Does not apply per-layer finalization for truncation policies",
+        "No bucketing, no coset span, no sort"
+      ],
+      "differential_feasibility": "FEASIBLE_BENCHMARKING",
+      "notes": "Introduced as an opt-in EngineSelection::Auto path. Not the focus for mid-range benchmarks (1e5-1e6 terms) but valuable for showing the per-layer fixed-cost landscape. Verified in FINDINGS.md as 2.28-2.36x faster on small-m kicked-Ising."
+    },
+    "bucketed_engine_serial": {
+      "description": "Bucketed sort-merge engine, single-threaded version (v0.2 B.5): introduces GF(2)-linear hash bucketing and bucket-local sorting",
+      "commit_sha": "f08db7df8bcd771f25383db0120e111cfb018bd2",
+      "commit_short_desc": "v0.2 B.5: the bucketed layer engine, sequential",
+      "file_paths": [
+        "crates/paulistrings/src/bucket/hash.rs",
+        "crates/paulistrings/src/bucket/sum.rs",
+        "crates/paulistrings/src/engine/bucketed.rs"
+      ],
+      "known_confounders": [
+        "Serial execution (no parallelization yet)",
+        "Removes the global sort; replaces with bucket-local sorts",
+        "Introduces GF(2)-linear hash for bucketing",
+        "Includes channel prepare optimization"
+      ],
+      "differential_feasibility": "FEASIBLE_BENCHMARKING",
+      "notes": "This is the core bucketing innovation. Measured ~15x speedup on depolarizing layer at 1e6 terms when parallelized in v0.2 C.1. Single-thread performance vs d410f4e shows the algorithmic win of bucketing alone."
+    },
+    "bucketed_engine_parallel": {
+      "description": "Bucketed engine with Rayon parallelization (v0.2 C.1-C.3): adds thread-level parallelism via write-disjoint bucket cosets",
+      "commit_sha": "ef037012e645d4f63013f26eaf3dbd6ce6299660",
+      "commit_short_desc": "v0.2 C.1-C.3: parallelize the engine, then fix what measurement exposed",
+      "file_paths": [
+        "crates/paulistrings/src/engine/bucketed.rs",
+        "crates/paulistrings/src/engine/mod.rs",
+        "crates/paulistrings/benches/pauli_ops.rs"
+      ],
+      "known_confounders": [
+        "Introduces parallel bucket loop via rayon::par_iter_mut",
+        "Also refactors rescale_in_place to parallel",
+        "Includes improved truncation finalization and benchmarking suite",
+        "Adds byte-identity tests across thread counts"
+      ],
+      "differential_feasibility": "FEASIBLE_BENCHMARKING",
+      "notes": "Reported 60.3ms -> 1.12ms on Depolarizing (54x), 7.93x thread scaling on rotation at 32 threads. The write-disjoint bucket cosets enable lock-free parallelism. This is the canonical bucketed engine as shipped."
+    },
+    "presentation_bench_crate_variants": {
+      "description": "Presentation benchmark crate with four isolated implementations for comparison: naive (direct loop), per-thread-map (work-stealing maps), mergesort (parallel mergesort), and bucketed (reference impl)",
+      "commit_sha": "81b922c5a57e971a97f1630b74bce85f8fc8750c",
+      "commit_short_desc": "presentation: bench crate — naive, per-thread-map, mergesort and bucketed variants with agreement tests",
+      "file_paths": [
+        "presentation/bench/src/naive.rs",
+        "presentation/bench/src/threadmaps.rs",
+        "presentation/bench/src/mergesort.rs",
+        "presentation/bench/src/bucketed.rs",
+        "presentation/bench/src/main.rs",
+        "presentation/bench/tests/agreement.rs"
+      ],
+      "known_confounders": [
+        "Independent implementations in the bench crate, not the core library",
+        "Includes agreement tests to verify all four produce identical results",
+        "Single workload fixture shared across all variants",
+        "Simplified interfaces compared to full engine (no truncation, no channels)"
+      ],
+      "differential_feasibility": "DIRECTLY_USABLE",
+      "notes": "Checkout commit 81b922c and run `cargo run --release -p presentation-bench`. Provides apples-to-apples A/B between threadmaps (rejected), mergesort (attempted), and bucketed (shipped). Also available at later commits (2b2caca) with updated lockfile."
+    },
+    "partitioned_numa_engine": {
+      "description": "Partitioned engine with in-process NUMA domains (PR #6): splits sum across P ≤ 16 NUMA domains via GF(2)-partition rows, one pinned Rayon pool per partition, write-disjoint by construction",
+      "commit_sha": "a07cc5073fd53fa572f48616b400bc5134fce2d5",
+      "commit_short_desc": "Merge pull request #6 from lkdvos/partitioned-engine",
+      "file_paths": [
+        "crates/paulistrings/src/engine/partitioned/",
+        "crates/paulistrings/src/engine/partitioned/driver.rs",
+        "crates/paulistrings/src/engine/partitioned/layer.rs",
+        "crates/paulistrings/src/engine/partitioned/export.rs",
+        "crates/paulistrings/src/bucket/hash.rs",
+        "crates/paulistrings/src/bucket/sum.rs"
+      ],
+      "known_confounders": [
+        "Bundles in-process NUMA partitioning, MPI support, and exchange protocol",
+        "Introduces PartitionRows::cut policy for selecting partition boundaries",
+        "Includes new phase-timing instrumentation and exchange optimization",
+        "Adds distributed sum support (MpiTransport) alongside in-process",
+        "Incompatible with exact TopN (ApproxTopN substituted at compile time)"
+      ],
+      "differential_feasibility": "FEASIBLE_BENCHMARKING",
+      "notes": "Measured -4.1% to -18.2% on dense layers at P=2; 2-8x cost multiplier on layers with remote deltas. Set P=1 for single-process reference (byte-identical to bucketed engine). Use `--partitions 2 --partition-cpus '<cpu_list>'` on phase_breakdown probe."
+    },
+    "jcc_erratum_and_branch_prediction": {
+      "description": "Front-end campaign: JCC branch padding (SKX102 erratum fix), branch-prediction optimization (merge split + branchless gather filter), and radix gate second arm",
+      "commit_sha": "df28850f73a0331cd9375ee4258e4343fce402e6",
+      "commit_short_desc": "Front-end campaign: JCC erratum, branch prediction, and the radix gate — −23..−28% on sparse layers (#7)",
+      "file_paths": [
+        "crates/paulistrings/src/engine/merge.rs",
+        "crates/paulistrings/src/channel/prepared.rs",
+        "crates/paulistrings/src/engine/bucketed.rs",
+        "crates/paulistrings/src/bucket/hash.rs",
+        "scripts/jcc-rustflags.sh",
+        ".cargo/config.toml"
+      ],
+      "known_confounders": [
+        "JCC padding flag (scripts/jcc-rustflags.sh) is CPU-dependent; not in base .cargo/config",
+        "Bundles three distinct optimizations: padding (DSB fix), merge split (branch prediction), radix gate arm",
+        "Radix gate second arm adds conditional logic for rest_streams >= 3 && rest_rows_per_key < 2",
+        "The padding is a ~1% tax on non-affected systems; included via detection script",
+        "XOR-fold popcount reduction is null on latency-bound layers but bitwise identical"
+      ],
+      "differential_feasibility": "FEASIBLE_BENCHMARKING",
+      "notes": "Reported -23% to -28% on sparse layers (su4, rotation_zz); -14.68% on rotation_zz from branch prediction alone (40% of misses removed). JCC padding brings DSB residency from 45.8% to 97.9%. Measurement must source jcc-rustflags.sh to apply padding on affected systems."
+    },
+    "attempted_rejected_variants": {
+      "description": "Attempted but rejected approaches recorded in research/FINDINGS.md: per-thread-maps (1.25-1.9x slower), parallel mergesort (overtaken by bucketing), SIMD kernels (layout cost > ISA gain), static coset placement (stragglers cost locality), branchless merge (cmov adds dependency)",
+      "commit_sha": "MULTIPLE_RESEARCH_NOTES",
+      "commit_short_desc": "See research/FINDINGS.md for full protocols and raw A/B tables",
+      "file_paths": [
+        "research/FINDINGS.md",
+        "git log --diff-filter=D -- research/notes/ (recover deleted notes)"
+      ],
+      "known_confounders": [
+        "These are reported measurements, not current code",
+        "Full reproduction protocols in deleted research/notes/ (git show branch:research/notes/YYYY-MM-DD-*.md)",
+        "Some (e.g., static coset placement) are inherently architecture-dependent"
+      ],
+      "differential_feasibility": "GIT_HISTORY_ONLY",
+      "notes": "Not suitable for live benchmarking. Instead, read FINDINGS.md sections: 'Static coset→worker placement' (1.25-1.9x slower), 'Segment-copy merge' (+36.3% on cnot), 'Interleaved transient key layout' (+1.9% on gu2q), 'Branchless merge2_into' (+4.83% on rotation_zz)."
+    }
+  },
+  "benchmark_datasets": {
+    "python_suite": {
+      "path": "benchmarks/python/",
+      "datasets": [
+        {
+          "name": "baseline_comparison",
+          "file": "baseline_comparison/results.json",
+          "description": "Baseline vs Julia library comparison (jl_performance suite)"
+        },
+        {
+          "name": "theta_sweep",
+          "file": "theta_sweep/results.json",
+          "description": "Parameter sweep (XXZ theta angle)"
+        },
+        {
+          "name": "jl_performance",
+          "file": "jl_performance/results.json",
+          "description": "Julia library baseline across workloads"
+        },
+        {
+          "name": "su4_staircase",
+          "file": "su4_staircase/results.json",
+          "description": "SU(4) gate staircase circuit benchmark"
+        },
+        {
+          "name": "deep_trotter",
+          "file": "deep_trotter/results.json",
+          "description": "Deep Trotter decomposition layers"
+        }
+      ],
+      "notes": "Multiple sub-variants under jl_performance (post-optimization, deep-kicked-ising, post-optimization-auto, su4-curve). Each contains results.json and summary.json."
+    },
+    "presentation_data": {
+      "path": "benchmarks/ (presentation figures, recovered via git history)",
+      "datasets": [
+        {
+          "name": "campaign_10step",
+          "commit": "d9a3794",
+          "description": "10-step Trotter working point campaign data: ladder, scaling, sweep, memory, target-cpu A/B, perf counters"
+        },
+        {
+          "name": "figure_scripts",
+          "commit": "032d4b4",
+          "description": "Figure scripts F1–F7, calibration data, archived 5-step results"
+        }
+      ],
+      "notes": "Presentation data is scattered across git commits (d9a3794, eba104a, etc.). Recover via `git show <commit>:benchmarks/` or rebuild from probe."
+    }
+  },
+  "metadata": {
+    "task": "T01 - Inventory real historical revisions/configurations for performance-talk benchmark campaign",
+    "generated_at": "2026-09-11T13:30Z",
+    "generation_context": "Read-only reconnaissance via git log, FINDINGS.md, and code inspection",
+    "assumptions": [
+      "All listed commit SHAs are canonical and stable in git history",
+      "Presentation data under benchmarks/ was generated by phase_breakdown probe with varying configurations",
+      "Bucketed engine at P=1 is byte-identical reference for P>1 partitioned measurements",
+      "JCC padding script correctly detects SKX102 erratum; portable default is unpadded"
+    ],
+    "verification_note": "Main agent re-verified every commit_sha against `git log -1 --format='%H %s' <sha>` on 2026-09-11 after the recon subagent (haiku, low effort) fabricated three of seven hashes (ea88433b4e2c0ca74196cb6f45f3e41a28e60e77 did not exist as given -- the short prefix ea88433 actually resolves to a different commit, 'v0.2 B.4: Prepared channels'; e56f021... and df28850... had garbled suffixes). All three were corrected in place to the real full SHAs; the other four (d410f4e..., ef037012..., 81b922c5..., a07cc507...) were confirmed correct as given. Treat any further SHA from a low-effort agent as unverified until re-checked this way.",
+    "next_steps": [
+      "Choose 3-5 variant pairs for isolated A/B benchmarking (e.g., d410f4e vs ea88433 for bucketing impact; ef03701 1-thread vs 32-thread for parallelism; optional: 81b922c threadmaps vs bucketed for architecture narrative)",
+      "Set up isolated worktrees for old commits; current source tree is suitable for P=1 and later variants only",
+      "Verify phase_breakdown probe binary compatibility across target commits or rebuild from Cargo.lock",
+      "Decide whether to include rejected approaches (FINDINGS.md-only) or focus on shipped variants in figures"
+    ]
+  }
+}

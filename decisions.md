@@ -1534,3 +1534,20 @@
     to see whether the locality cut's ~11x export-volume advantage on the in-process engine
     (decision's own E8 entry, `hash_communication_v2`) carries over to real wall time once
     network communication (not just in-process channel sends) is the cost being cut.
+
+60. **Staged baseline plots (page 16) upgraded to the 64-rank distributed point, real data,
+    2026-09-14.** Per user request ("use the higher node/rank counts for the stricter
+    accuracies to complete the staged plots"): jobs 7039480/7039481 (32 nodes, domain
+    granularity, 64 ranks, eps=2^-18/2^-20 — random policy) landed real: 99.798s and 498.319s.
+    Combined with the already-real eps=2^-16 point (13.455s, decision #57), the distributed
+    series in `/tmp/build_baseline_stages3.py` was renamed from "current engine, 16 ranks" to
+    "current engine, 64 ranks" and given all three of ITS OWN measured points — not a mix of
+    old 16-rank and new 64-rank numbers under one label, which would misrepresent a single
+    engine configuration's own eps-scaling curve. The old series' eps=2^-10/12/14 points were
+    never measured at 64 ranks, so they are DROPPED rather than reused from the 16-rank
+    series, per this figure's established convention (leave a label's unmeasured points out,
+    never fabricate or borrow from a different configuration). All 4 stages regenerated
+    (`baseline_v4_stage{1,2,3,4}[_speedup].{svg,pdf,png}` + `_compact`) — only stage4 actually
+    draws this series, but all 4 rebuilt for consistency since the y-axis is keyed off the
+    full row set. Speedup vs. "current engine, 1 bucket" at eps=2^-16 jumped from ~55x (16
+    ranks) to ~146x (64 ranks), visible on `baseline_v4_stage4_speedup`.

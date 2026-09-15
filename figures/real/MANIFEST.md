@@ -210,6 +210,16 @@ Julia-96-thread/eps=2^-16 value (`899.49`, `decisions.md` #38, job 7034021, no s
   `fig.legend()`) and a real y-label clipping bug (the full baseline name as a rotated label ran
   past the canvas top; shortened to "speedup" alone). Files:
   `baseline_v4_stage{1,2,3,4}_speedup.{svg,pdf,png}` and `_compact` (28 more files).
+- **"current engine, 16 ranks" replaced wholesale by "current engine, 64 ranks", 2026-09-14**
+  (decisions.md #56-60): once `P_MAX_BITS` allowed more than 16 partitions, the 64-domain-rank
+  configuration measured strictly faster at every eps than 16 ranks (decisions.md #57/#58), so
+  the label was renamed and re-measured at all three of its own eps points rather than mixing
+  rank counts within one label: `{"2^-16": 13.454993522027507, "2^-18": 99.79831294401083,
+  "2^-20": 498.318717295002}` (jobs 7037490 for eps=2^-16, 7039480/7039481 for eps=2^-18/2^-20).
+  The old series' eps=2^-10/12/14 points were never measured at 64 ranks and are DROPPED, not
+  reused from the 16-rank data — this series is now shorter on the x-axis than the other six,
+  which is honest rather than padded. Speedup vs. "current engine, 1 bucket" at eps=2^-16 rose
+  from ~55x to ~146x. All 4 stages + speedup variants regenerated from the same script.
 - Test coverage (`figures/tests/test_make_figures.py`):
   `test_baseline_eps_scaling_figure_empty_input_raises_clear_error`,
   `test_baseline_eps_scaling_figure_one_line_per_label`,

@@ -1,0 +1,78 @@
+{
+  "baseline-ops": [
+    1352.1,
+    548.5
+  ],
+  "bucket-cosets": [
+    1000.0,
+    620.0
+  ],
+  "fig0_term_growth_10steps": [
+    1180.0,
+    520.0
+  ],
+  "fig0_term_growth_peak_10steps": [
+    1180.0,
+    520.0
+  ],
+  "fig2_targetcpu": [
+    900.0,
+    380.0
+  ],
+  "fig3_all": [
+    1100.0,
+    560.0
+  ],
+  "fig3_old_attempts": [
+    1100.0,
+    560.0
+  ],
+  "fig4_superlinear": [
+    900.0,
+    520.0
+  ],
+  "fig4_superlinear_large": [
+    900.0,
+    520.0
+  ],
+  "fig4b_bucket_speedup": [
+    1100.0,
+    620.0
+  ],
+  "fig5_bucket_sweep": [
+    1343.0,
+    602.0
+  ],
+  "fig6_memory": [
+    900.0,
+    480.0
+  ],
+  "organic_ladder": [
+    1400.0,
+    560.0
+  ],
+  "organic_ladder2": [
+    1400.0,
+    560.0
+  ],
+  "organic_ladder5": [
+    1400.0,
+    560.0
+  ],
+  "organic_ladder7": [
+    1400.0,
+    560.0
+  ],
+  "organic_ladder_col": [
+    900.0,
+    520.0
+  ],
+  "phase-shares": [
+    900.0,
+    440.0
+  ],
+  "roofline-threads": [
+    900.0,
+    560.0
+  ]
+}

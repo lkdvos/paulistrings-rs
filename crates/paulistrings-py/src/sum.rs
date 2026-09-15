@@ -45,6 +45,11 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.len())
     }
 
+    /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident (`rebucket` is grow-only), not a request.
+    pub fn num_buckets(&self) -> usize {
+        for_each_width!(self, |s| s.num_buckets())
+    }
+
     /// Uniform product state: the same `+1` eigenstate on every qubit.
     pub fn expectation_uniform(&self, state: ProductState) -> Complex64 {
         for_each_width!(self, |s| s.expectation_product_state(state))
@@ -345,12 +350,14 @@ fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     }
 }
 
-/// `"sorted"` (default), `"auto"` or `"direct"`, paired with an optional small-sum threshold, as a core [`PropagateOptions`].
-/// `None`/`None` is `PropagateOptions::default()` exactly, so the kwargs are additive and omitting them changes nothing; parsed once at the boundary, outside the width dispatch.
+/// `"sorted"` (default), `"auto"` or `"direct"`, paired with an optional small-sum threshold and the per-layer bucket-sizing knobs, as a core [`PropagateOptions`].
+/// `None`/`None`/`None`/`None` is `PropagateOptions::default()` exactly, so the kwargs are additive and omitting them changes nothing; parsed once at the boundary, outside the width dispatch.
 /// Shared by `propagate` and `propagate_with_stats`, like `parse_direction`.
 fn parse_engine(
     engine: Option<&str>,
     small_sum_threshold: Option<usize>,
+    target_bucket_len: Option<usize>,
+    min_buckets: Option<usize>,
 ) -> PyResult<PropagateOptions> {
     let engine = match engine.unwrap_or("sorted") {
         "sorted" => EngineSelection::SortedOnly,
@@ -363,10 +370,12 @@ fn parse_engine(
             )))
         }
     };
+    let defaults = PropagateOptions::default();
     Ok(PropagateOptions {
         engine,
         small_sum_threshold: small_sum_threshold.unwrap_or(DEFAULT_SMALL_SUM_THRESHOLD),
-        ..PropagateOptions::default()
+        target_bucket_len: target_bucket_len.unwrap_or(defaults.target_bucket_len),
+        min_buckets: min_buckets.unwrap_or(defaults.min_buckets),
     })
 }
 
@@ -1222,6 +1231,13 @@ impl PauliSum {
         self.inner.len()
     }
 
+    /// Current bucket count the sum's storage is partitioned into.
+    /// Realized, not requested: reflects the running max of `desired_bits` over every `propagate`/`rebucket` call so far (grow-only), so it can differ from a `min_buckets`/`target_bucket_len` request passed to `propagate`.
+    #[getter]
+    fn num_buckets(&self) -> usize {
+        self.inner.num_buckets()
+    }
+
     /// Snapshot of the coefficient column as a list of Python complex values.
     fn coefficients(&self) -> Vec<Complex64> {
         self.inner.coeffs()
@@ -1346,6 +1362,7 @@ impl PauliSum {
     ///
     /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
     /// `engine` is `"sorted"` (default, always bucketed), `"auto"` (a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass like `topn`), or `"direct"` (same threshold, always). Results agree to floating-point tolerance across engines (ARCHITECTURE.md §Determinism).
+    /// `target_bucket_len` and `min_buckets` are the sorting engine's per-layer bucket-sizing knobs (`None` for either keeps that field at `PropagateOptions::default()`, `1024`/`128`); see `PropagateOptions` for the tradeoff. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
@@ -1359,7 +1376,7 @@ impl PauliSum {
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -1369,6 +1386,8 @@ impl PauliSum {
         direction: Option<&str>,
         engine: Option<&str>,
         small_sum_threshold: Option<usize>,
+        target_bucket_len: Option<usize>,
+        min_buckets: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
         pin_memory: bool,
         partition_row_seed: Option<u64>,
@@ -1377,7 +1396,7 @@ impl PauliSum {
         result: &str,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
-        let options = parse_engine(engine, small_sum_threshold)?;
+        let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;
@@ -1429,7 +1448,7 @@ impl PauliSum {
     /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
     /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -1439,6 +1458,8 @@ impl PauliSum {
         direction: Option<&str>,
         engine: Option<&str>,
         small_sum_threshold: Option<usize>,
+        target_bucket_len: Option<usize>,
+        min_buckets: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
         pin_memory: bool,
         partition_row_seed: Option<u64>,
@@ -1447,7 +1468,7 @@ impl PauliSum {
         result: &str,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
-        let options = parse_engine(engine, small_sum_threshold)?;
+        let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
         check_num_qubits(&self.inner, circuit)?;
         let no_op = PolicySpec::NoOp;

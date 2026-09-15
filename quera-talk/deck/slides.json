@@ -1,0 +1,66 @@
+{
+  "note": "Tracking manifest, not a build input. Section .typ files are the code source of truth for build counts (progressive-slide(id, mode, n, ...)); this mirrors them by hand for human/handoff visibility. If they drift, the .typ files win -- fix this file to match, not the reverse.",
+  "sections": [
+    { "key": "00-introduction", "title": "Introduction" },
+    { "key": "01-propagation", "title": "Being strong: Pauli propagation" },
+    { "key": "02-memory", "title": "Optimizations and the memory bottleneck" },
+    { "key": "03-partitioning", "title": "Being smart: structured partitioning" },
+    { "key": "04-results", "title": "Results and tuning" },
+    { "key": "05-conclusion", "title": "Technical conclusion" },
+    { "key": "06-quera", "title": "QuEra vision" }
+  ],
+  "slides": [
+    { "n": 1, "id": "intro-title", "section": "00-introduction", "title": "Title and idiom", "builds": 1, "status": "prototype-complete", "prototype": "P1", "figures": [] },
+    { "n": 2, "id": "intro-who-i-am", "section": "00-introduction", "title": "Who I am", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 3, "id": "intro-path-to-problem", "section": "00-introduction", "title": "How I arrived at this problem", "builds": 1, "status": "scaffold", "figures": [] },
+
+    { "n": 4, "id": "pauli-observable-evolution", "section": "01-propagation", "title": "Evolving an observable", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 5, "id": "kicked-ising-benchmark", "section": "01-propagation", "title": "The kicked Ising benchmark", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 6, "id": "pauli-encoding", "section": "01-propagation", "title": "Representing a Pauli string", "builds": 3, "status": "prototype-complete", "prototype": "P2", "figures": [] },
+    { "n": 7, "id": "clifford-and-rotation-gates", "section": "01-propagation", "title": "Clifford gates and Pauli rotations", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 8, "id": "growing-pauli-sum", "section": "01-propagation", "title": "Managing a growing Pauli sum", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 9, "id": "end-of-gate-truncation", "section": "01-propagation", "title": "End-of-gate truncation", "builds": 1, "status": "scaffold", "figures": [] },
+
+    { "n": 10, "id": "baseline-performance", "section": "02-memory", "title": "Baseline performance", "builds": 1, "status": "prototype-complete", "prototype": "P5", "figures": ["baseline"] },
+    { "n": 11, "id": "kernel-optimization", "section": "02-memory", "title": "Making the kernel faster", "builds": 1, "status": "scaffold", "figures": ["kernel"] },
+    { "n": 12, "id": "threading-obstacle", "section": "02-memory", "title": "The threading obstacle", "builds": 1, "status": "scaffold", "figures": ["threading-attempt"] },
+    { "n": 13, "id": "profiling-results", "section": "02-memory", "title": "What profiling revealed", "builds": 1, "status": "scaffold", "figures": ["profile-crop"] },
+    { "n": 14, "id": "memory-budget", "section": "02-memory", "title": "The memory budget", "builds": 1, "status": "scaffold", "figures": ["memory-annotated"] },
+
+    { "n": 15, "id": "memory-opportunities", "section": "03-partitioning", "title": "Opportunities in memory use", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 16, "id": "bit-flip", "section": "03-partitioning", "title": "Flipping one bit", "builds": 2, "status": "prototype-complete", "prototype": "P3", "figures": [] },
+    { "n": 17, "id": "two-sorted-streams", "section": "03-partitioning", "title": "Two sorted streams", "builds": 3, "status": "prototype-complete", "prototype": "P3", "figures": [] },
+    { "n": 18, "id": "whole-bucket-movement", "section": "03-partitioning", "title": "Whole-bucket movement", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 19, "id": "predictable-destination-rule", "section": "03-partitioning", "title": "A predictable destination rule", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 20, "id": "gf2-linear-hash", "section": "03-partitioning", "title": "A GF(2)-linear hash", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 21, "id": "rotation-bucket-pairs", "section": "03-partitioning", "title": "Rotations couple bucket pairs", "builds": 3, "status": "prototype-complete", "prototype": "P4", "figures": [] },
+    { "n": 22, "id": "coset-closure", "section": "03-partitioning", "title": "Closed cosets and in-place gate application", "builds": 2, "status": "prototype-complete", "prototype": "P4", "figures": [] },
+    { "n": 23, "id": "sort-merge-work-unit", "section": "03-partitioning", "title": "Sort-merge inside the work unit", "builds": 1, "status": "scaffold", "figures": [] },
+
+    { "n": 24, "id": "correctness-accuracy", "section": "04-results", "title": "Correctness and comparable accuracy", "builds": 1, "status": "scaffold", "figures": ["accuracy"] },
+    { "n": 25, "id": "performance-bucketed", "section": "04-results", "title": "Single-thread performance with bucketing", "builds": 1, "status": "scaffold", "figures": ["bucketed-single-thread"] },
+    { "n": 26, "id": "bucketing-vs-threading", "section": "04-results", "title": "Separating bucketing from threading", "builds": 1, "status": "scaffold", "figures": ["bucketed-multithread"] },
+    { "n": 27, "id": "thread-scaling-tuning", "section": "04-results", "title": "Thread scaling and bucket tuning", "builds": 1, "status": "scaffold", "figures": ["thread-scaling"] },
+    { "n": 28, "id": "distributed-and-hashing", "section": "04-results", "title": "Multiple nodes and communication-aware hashing", "builds": 1, "status": "scaffold", "note": "Outline flags a possible 28b split once real data/rehearsal timing is known; keep as one build until then.", "figures": ["distributed-extension", "hash-communication"] },
+
+    { "n": 29, "id": "approach-summary", "section": "05-conclusion", "title": "What the approach establishes", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 30, "id": "scope-next-steps", "section": "05-conclusion", "title": "Scope and next steps", "builds": 1, "status": "scaffold", "figures": [] },
+
+    { "n": 31, "id": "why-quera", "section": "06-quera", "title": "Why QuEra", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 32, "id": "tensor-network-background", "section": "06-quera", "title": "What I bring from tensor networks", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 33, "id": "querakit-architecture", "section": "06-quera", "title": "QuantumKitHub: architecture and shared software", "builds": 2, "status": "prototype-complete", "prototype": "P6", "figures": [] },
+    { "n": 34, "id": "scientific-workflow-example", "section": "06-quera", "title": "A scientific workflow I would like to support", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 35, "id": "problem-approach", "section": "06-quera", "title": "How I approach a new problem", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 36, "id": "joining-the-team", "section": "06-quera", "title": "How I would start with the team", "builds": 1, "status": "scaffold", "figures": [] },
+    { "n": 37, "id": "responsibility-growth", "section": "06-quera", "title": "The responsibility I want to grow into", "builds": 1, "status": "scaffold", "figures": [] }
+  ],
+  "totals": {
+    "conceptual_slides": 37,
+    "full_build_pdf_pages": 46,
+    "prototype_build_pdf_pages": 17,
+    "prototype_concepts": 6,
+    "prototype_ids_covered": 8,
+    "note_on_counts": "37 conceptual slides != 46 physical pages because 7 ids use progressive builds (pauli-encoding x3, bit-flip x2, two-sorted-streams x3, rotation-bucket-pairs x3, coset-closure x2, querakit-architecture x2 -- extra pages = 2+1+2+2+1+1 = 9, so 37+9=46). Prototype build renders only the 8 prototype-owned ids (components.typ:prototype-ids) = 1+3+1+2+3+3+2 = wait see below.",
+    "prototype_page_math": "intro-title(1) + pauli-encoding(3) + baseline-performance(1) + bit-flip(2) + two-sorted-streams(3) + rotation-bucket-pairs(3) + coset-closure(2) + querakit-architecture(2) = 17"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "note": "Tracks provenance/status only. Dimensions and styling are defined once in ../figure-contract.json -- do not restate them here, just point at the file.",
+  "assets": [
+    { "path": "figures/baseline.svg", "stage_id": "baseline", "used_by_slide": "baseline-performance", "status": "pending", "provenance": null },
+    { "path": "figures/kernel.svg", "stage_id": "kernel", "used_by_slide": "kernel-optimization", "status": "pending", "provenance": null },
+    { "path": "figures/threading-attempt.svg", "stage_id": "threading-attempt", "used_by_slide": "threading-obstacle", "status": "pending", "provenance": null },
+    { "path": "figures/memory-budget.svg", "stage_id": "memory-annotated", "used_by_slide": "memory-budget", "status": "pending", "provenance": null },
+    { "path": "figures/bucketed-1t.svg", "stage_id": "bucketed-single-thread", "used_by_slide": "performance-bucketed", "status": "pending", "provenance": null },
+    { "path": "figures/bucketed-mt.svg", "stage_id": "bucketed-multithread", "used_by_slide": "bucketing-vs-threading", "status": "pending", "provenance": null },
+    { "path": "figures/thread-scaling.svg", "stage_id": "thread-scaling", "used_by_slide": "thread-scaling-tuning", "status": "pending", "provenance": null },
+    { "path": "figures/distributed.svg", "stage_id": "distributed-extension", "used_by_slide": "distributed-and-hashing", "status": "pending", "provenance": null },
+    { "path": "figures/hash-communication.svg", "stage_id": "hash-communication", "used_by_slide": "distributed-and-hashing", "status": "pending", "provenance": null },
+    { "path": "figures/accuracy.svg", "stage_id": "accuracy", "used_by_slide": "correctness-accuracy", "status": "pending", "provenance": null },
+    { "path": "figures/profile.png", "stage_id": "profile-crop", "used_by_slide": "profiling-results", "status": "pending", "provenance": null }
+  ],
+  "status_values": ["pending", "placeholder-in-deck", "real-asset", "superseded"],
+  "provenance_when_real": "Set to {\"commit\": \"<paulistrings-rs commit>\", \"host\": \"<Rusty|Popeye node type>\", \"date\": \"<ISO date>\", \"script\": \"<generating script path>\"} once a real asset lands."
+}

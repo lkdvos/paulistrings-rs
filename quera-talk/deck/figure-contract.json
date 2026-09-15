@@ -1,0 +1,106 @@
+{
+  "$schema_note": "Contract between the slide agent (placement/typography, owns this file) and the benchmark/data agent (data, computation, plotting). Stage is 1920x1080pt, 1pt == 1px in the source design system. Numbers here were fixed by rendering the actual prototype (P5, id baseline-performance) and reading back the layout that did not overflow the stage -- not guessed.",
+  "stage": { "width_pt": 1920, "height_pt": 1080, "margin_left_right_pt": 144, "margin_top_bottom_pt": 108 },
+
+  "recurring_two_panel_figure": {
+    "description": "The evolving figure carried from slide 10 (baseline-performance) through slide 28 (distributed-and-hashing). Same two frames every appearance; only which variants are drawn changes. See components.typ:recurring-figure / figure-panel for the placeholder this replaces.",
+    "placement": "Centered body of a content-slide(align-center: true), directly below the title, no other body content above it on these slides.",
+    "panel_count": 2,
+    "panel_width_pt": 750,
+    "panel_height_pt": 420,
+    "column_gutter_pt": 96,
+    "total_width_pt": 1596,
+    "note": "750*2 + 96 = 1596pt, inside the 1632pt content width (1920 - 2*144). Do not widen a panel past 750pt without re-checking total width against 1632pt.",
+    "panels": [
+      {
+        "id": "processing-efficiency",
+        "title": "Processing efficiency",
+        "x_axis": "strings entering the update (log where the data spans orders of magnitude)",
+        "y_axis": "input-string updates per second, R_j = N_j / t_j aggregated as sum(N_j)/sum(t_j) (log)",
+        "annotations": ["peak resident string count at labeled tolerance points", "measured peak memory", "memory-limit markers", "single-thread cycles/update or equivalent-cycles/update as a scoped annotation, not a recurring axis"]
+      },
+      {
+        "id": "full-calculation",
+        "title": "Full calculation",
+        "x_axis": "truncation tolerance, decreasing left to right (log)",
+        "y_axis": "total simulation wall time in seconds (log)",
+        "annotations": ["curves end at their last completed run", "an OOM symbol outside the runtime series marks an actual attempted memory failure, never an invented runtime", "distributed extension visibly extends the axis range rather than rescaling silently"]
+      }
+    ],
+    "stage_filenames": {
+      "baseline": "figures/baseline.svg",
+      "kernel": "figures/kernel.svg",
+      "threading-attempt": "figures/threading-attempt.svg",
+      "memory-annotated": "figures/memory-budget.svg",
+      "bucketed-single-thread": "figures/bucketed-1t.svg",
+      "bucketed-multithread": "figures/bucketed-mt.svg",
+      "distributed-extension": "figures/distributed.svg"
+    },
+    "stage_filenames_note": "Each file is the SAME two panels with the cumulative set of variants revealed through that stage (see variant_styles below) -- not a diff or a single new curve alone. slides.json's fig-stage-equivalent schedule (components.typ:fig-stage) says which stage each slide id reveals through."
+  },
+
+  "hash_communication_figure": {
+    "slide": "distributed-and-hashing (28 / 28b)",
+    "filename": "figures/hash-communication.svg",
+    "width_pt": 1632,
+    "height_pt": 620,
+    "content": "Communication bytes per gate, communication time, and full gate time at one fixed distributed workload, comparing PartitionRows::cut (z-only block-parity) against random rows. Show rank/thread layout and occupancy/imbalance alongside the communication result.",
+    "layout": "Distinct from the recurring figure -- own axes and legend, not a third panel bolted onto the two-panel figure."
+  },
+
+  "accuracy_figure": {
+    "slide": "correctness-accuracy (24)",
+    "filename": "figures/accuracy.svg",
+    "width_pt": 1200,
+    "height_pt": 620,
+    "content": "One compact consistency comparison against a matched existing-library result or published observable/convergence plot, at matched parameters and stated truncation policy."
+  },
+
+  "typography": {
+    "panel_title": { "font": "Caprasimo", "weight": 400, "size_pt": 34, "color": "#201e1d" },
+    "axis_label": { "font": "Figtree", "size_pt": 24, "color": "rgba(32,30,29,0.55)", "features": ["tnum"] },
+    "legend_label": { "font": "Figtree", "size_pt": 24, "color": "rgba(32,30,29,0.70)" },
+    "caption": { "font": "Figtree", "size_pt": 27, "color": "rgba(32,30,29,0.70)", "max_chars": 82 },
+    "note": "These are the actual placement sizes at the 1920pt stage -- author the figure at this size and do not let a downstream rescale shrink them. If exporting via matplotlib, figsize_inches = (width_pt/72, height_pt/72) at whatever dpi gives crisp text; text stays at the pt sizes above regardless of dpi."
+  },
+
+  "grid_and_axes": {
+    "hairline_pt": 1,
+    "hairline_color": "rgba(32,30,29,0.16)",
+    "reference_line": { "color": "#8c491a", "dash": "dashed", "label_color": "#8c491a" }
+  },
+
+  "variant_styles": {
+    "note": "Two accent colors are not enough to identify six variants -- neutral ramp step + dash pattern + endpoint marker, never color alone. Fixed order is the legend order; do not reassign a variant's style once introduced, and do not recolor a variant because it becomes the current focus (highlight instead, e.g. heavier stroke weight, without changing hue/dash).",
+    "line_width_pt": 4,
+    "sequence": [
+      { "id": "baseline", "label": "Baseline (external reference)", "color": "#82796a", "ramp_step": "neutral-600", "dash": "solid", "marker": "circle-open" },
+      { "id": "kernel", "label": "Kernel-optimized baseline", "color": "#474238", "ramp_step": "neutral-800", "dash": "solid", "marker": "circle-open" },
+      { "id": "threading-attempt", "label": "Attempted threading", "color": "#a19786", "ramp_step": "neutral-500", "dash": "dotted", "marker": "triangle-open" },
+      { "id": "bucketed-1t", "label": "Bucketed, 1 thread", "color": "#b2622d", "ramp_step": "accent-600", "dash": "solid", "marker": "circle-filled" },
+      { "id": "bucketed-mt", "label": "Bucketed, multithread", "color": "#643312", "ramp_step": "accent-800", "dash": "solid", "marker": "square-filled" },
+      { "id": "distributed", "label": "Distributed (multi-node)", "color": "#56633f", "ramp_step": "accent2-750", "dash": "densely-dotted", "marker": "diamond-filled" }
+    ]
+  },
+
+  "text_handling": {
+    "mode": "embedded_text_preferred",
+    "rationale": "SVG with live <text> (not outlined paths) lets Typst's own font substitution and the deck's font-path resolution apply consistently, and keeps file size down.",
+    "fallback": "If the plotting environment cannot embed Figtree/Caprasimo, outline the text instead of silently substituting a different live font, and note the substitution in the figure manifest's provenance field.",
+    "accepted_formats": ["svg", "pdf"],
+    "rejected": "Raster PNG/JPG for any figure containing axis text or a legend -- text must stay crisp when a viewer zooms during Q&A."
+  },
+
+  "caption_ownership": {
+    "owner": "slide agent (this project)",
+    "rule": "Figures ship with NO baked-in caption or slide title. Captions and titles are set in Typst by the section files so they inherit the deck's type scale and never duplicate text baked into the image."
+  },
+
+  "modes": {
+    "draft": "Compiles with figures/*.svg replaced by the same-size placeholder frame the components.typ:recurring-figure prototype already draws (title, axes, 'Benchmark data pending', accumulated legend). No missing-asset error.",
+    "release": {
+      "description": "scripts/check-figures.sh --release fails the build if any required real asset from figure-manifest.json is still a placeholder or a required evidence slot in notes.md is unresolved.",
+      "not_a_scaffold_failure": "A release-mode failure while benchmark data is intentionally pending is expected and is not a defect in this scaffold."
+    }
+  }
+}

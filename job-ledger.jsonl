@@ -72,3 +72,5 @@
 {"job_id": "7037031", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-10 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980679", "status": "PENDING"}
 {"job_id": "7037032", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-12 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980696", "status": "PENDING"}
 {"job_id": "7037033", "name": "quera-c4", "purpose": "16-rank distributed, eps=2^-14 (baseline stage 4)", "submitted_at": "2026-09-14T18:42:06.980711", "status": "PENDING"}
+{"job_id": "7037150", "name": "quera-c4-node", "purpose": "C4 node-granularity placement test, 2 nodes/2 ranks, loose eps, TROTTER_STEPS=4", "submitted_at": "2026-09-14T00:00:00", "status": "COMPLETED"}
+{"job_id": "7037152", "name": "quera-c4-node", "purpose": "C4 node-granularity placement, 16 nodes/16 ranks, eps=2^-16 (overlap point)", "submitted_at": "2026-09-14T00:00:00", "status": "COMPLETED"}

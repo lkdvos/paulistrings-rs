@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=quera-c4
+#SBATCH --job-name=quera-c4-node
 #SBATCH --partition=ccq
 #SBATCH --constraint=genoa&rocky9
 #SBATCH --nodes=2
@@ -8,12 +8,21 @@
 #SBATCH --output=quera-talk-data/campaign-2026-09-11/raw/slurm-%j.out
 #
 # Multi-node distributed (MPI, `comm=`) stage for campaign-2026-09-11 (C4,
-# E6/E7): one partition per rank, one rank per NUMA domain (D=1), mirroring
-# scripts/slurm/mpi-ranks.sbatch's placement exactly (`--cpu-bind=ldoms
-# --mpi=pmix`, ranks rounded down to a power of two) but running the real
-# canonical task through `run_cell_distributed.py` instead of the
-# differential-test binary. `variant_id=bucketed_current` only, same
-# deferral as `campaign-genoa.sbatch`.
+# E6/E7): one partition per rank, **one rank per node** (D=1, spanning both
+# NUMA domains). `comm=`'s placement (`paulistrings::mpi::default_config`) is
+# `Placement::Auto{max_partitions: Some(1)}`, which resolves to a single slot
+# over whatever CPUs are in the process's affinity mask
+# (`engine/partitioned/topology.rs::resolve_auto`): when that mask spans both
+# of a node's NUMA domains, the two are merged into one un-pinned-to-a-node
+# slot (`node: None`, so `bind_memory` is a no-op) with `threads = ` the full
+# core count. So node-granularity placement needs no engine change at all —
+# only `--cpus-per-task`/`--cpu-bind` here, giving each rank the whole node
+# instead of one domain. This supersedes this file's earlier one-rank-per-
+# NUMA-domain placement (`--cpu-bind=ldoms`, mirroring
+# scripts/slurm/mpi-ranks.sbatch): half as many ranks for the same node
+# count, each rank twice the size. Runs the real canonical task through
+# `run_cell_distributed.py`, not the differential-test binary.
+# `variant_id=bucketed_current` only, same deferral as `campaign-genoa.sbatch`.
 #
 # Multi-node builds must land on the SHARED filesystem, not node-local /tmp
 # (mpi-ranks.sbatch's note on jobs 7008425/26): every rank execs the binary/
@@ -94,17 +103,42 @@ source "$venv/bin/activate"
 }
 (cd "$src" && maturin develop --release --features mpi -m crates/paulistrings-py/Cargo.toml)
 
-# --- placement: one rank per NUMA domain, D=1 (mirrors mpi-ranks.sbatch) ---
-numa=$(ls -d /sys/devices/system/node/node* | wc -l)
-cpus_per_numa=$(( SLURM_CPUS_ON_NODE / numa ))
+# --- placement: RANK_GRANULARITY selects one rank per NODE (default, both NUMA
+# domains in one rank -- see decision #53) or one rank per NUMA DOMAIN (the
+# original placement, kept for direct scaling comparisons -- decision #54 found
+# the two are NOT equivalent at matched rank/node count, so both stay live). ---
+: "${RANK_GRANULARITY:=node}"   # "node" (default) or "domain"
 nodes=${SLURM_JOB_NUM_NODES:-1}
-total=$(( nodes * numa ))
-ranks=1
-while [ $(( ranks * 2 )) -le "$total" ]; do ranks=$(( ranks * 2 )); done
-per_node=$(( ranks / nodes ))
-[ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
-echo "numa domains per node: $numa, cpus per domain: $cpus_per_numa, nodes: $nodes"
-echo "== running $ranks ranks ($per_node per node, D=1), from $total available domains"
+case "$RANK_GRANULARITY" in
+  node)
+    cpus_per_rank=$SLURM_CPUS_ON_NODE
+    ranks=1
+    while [ $(( ranks * 2 )) -le "$nodes" ]; do ranks=$(( ranks * 2 )); done
+    per_node=1
+    cpu_bind=none
+    out_tag="distributed-node"
+    config_suffix="-1rank-per-node"
+    ;;
+  domain)
+    numa=$(ls -d /sys/devices/system/node/node* 2>/dev/null | wc -l)
+    [ "$numa" -lt 1 ] && numa=1
+    cpus_per_rank=$(( SLURM_CPUS_ON_NODE / numa ))
+    total=$(( nodes * numa ))
+    ranks=1
+    while [ $(( ranks * 2 )) -le "$total" ]; do ranks=$(( ranks * 2 )); done
+    per_node=$(( ranks / nodes ))
+    [ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
+    cpu_bind=ldoms
+    out_tag="distributed"
+    config_suffix=""
+    ;;
+  *)
+    echo "RANK_GRANULARITY must be 'node' or 'domain', got '$RANK_GRANULARITY'" >&2
+    exit 3
+    ;;
+esac
+echo "granularity=$RANK_GRANULARITY cpus per rank: $cpus_per_rank, nodes: $nodes"
+echo "== running $ranks ranks ($per_node per node), from $nodes nodes available"
 
 : "${MIN_ABS_COEFF:=1.5258789e-05}"     # 2^-16, the point campaign-genoa.sbatch already trusts
 : "${TROTTER_STEPS:=20}"
@@ -120,11 +154,11 @@ fi
 echo "min_abs_coeff=$MIN_ABS_COEFF trotter_steps=$TROTTER_STEPS reps=$REPS partition_row_policy=$PARTITION_ROW_POLICY"
 
 date_tag=$(date +%Y-%m-%d)
-out_dir="$repo/quera-talk-data/campaign-2026-09-11/raw/${date_tag}-distributed-${ranks}ranks"
+out_dir="$repo/quera-talk-data/campaign-2026-09-11/raw/${date_tag}-${out_tag}-${ranks}ranks"
 mkdir -p "$out_dir"
 
 cell_json="$CARGO_TARGET_DIR/cell.json"
-config_id="genoa-c4-eps${MIN_ABS_COEFF}-r${ranks}"
+config_id="genoa-c4-eps${MIN_ABS_COEFF}-r${ranks}${config_suffix}"
 for rep in $(seq 0 $((REPS - 1))); do
   cat > "$cell_json" <<EOF
 {
@@ -135,7 +169,7 @@ for rep in $(seq 0 $((REPS - 1))); do
   "direction": "heisenberg",
   "state": "z+",
   "observable": "canonical_z_127",
-  "threads": $cpus_per_numa,
+  "threads": $cpus_per_rank,
   "partitions": $ranks,
   "repetition_index": $rep,
   "task_id": "T02-canonical",
@@ -144,8 +178,15 @@ for rep in $(seq 0 $((REPS - 1))); do
 }
 EOF
   echo "== cell $config_id rep=$rep ($ranks ranks)"
-  RAYON_NUM_THREADS=$cpus_per_numa srun --ntasks="$ranks" --ntasks-per-node="$per_node" \
-      --cpus-per-task="$cpus_per_numa" --cpu-bind=ldoms --mpi=pmix \
+  # cpu_bind=none (RANK_GRANULARITY=node): each rank's affinity mask must cover
+  # the whole node so `default_config`'s Placement::Auto{max_partitions: Some(1)}
+  # merges both NUMA domains into its one slot instead of resolving to just
+  # one of them. cpu_bind=ldoms (RANK_GRANULARITY=domain) restricts each rank
+  # right back to one domain, the original placement. RAYON_NUM_THREADS is set
+  # for parity/safety on any non-pool rayon use before scatter; the partitioned
+  # pool itself sizes from the resolved affinity mask, not this env var.
+  RAYON_NUM_THREADS=$cpus_per_rank srun --ntasks="$ranks" --ntasks-per-node="$per_node" \
+      --cpus-per-task="$cpus_per_rank" --cpu-bind="$cpu_bind" --mpi=pmix \
       "$venv/bin/python" "$repo/quera-talk-data/campaign-2026-09-11/jobs/run_cell_distributed.py" \
       "$cell_json" --out-dir "$out_dir" \
       || echo "  cell failed/invalid — see $out_dir/runs.jsonl status field"

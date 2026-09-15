@@ -1328,3 +1328,128 @@
 
     All 4 stages regenerated with both the wall-time-only and two-panel speedup variants:
     `baseline_v4_stage{1,2,3,4}[_speedup].{svg,pdf,png}` and `_compact` (56 files total).
+
+53. **Distributed (C4) placement switched from one rank per NUMA domain to one rank per node,
+    2026-09-14**, per user request to replace the multi-node dataset entirely (existing
+    `raw/2026-0[34]-distributed-{2,4,8,16}ranks/` per-domain data is kept, un-superseded, since
+    it is a different, still-valid measurement — just not the one future distributed cells will
+    add to). Investigated first whether this needs an engine change: it does not.
+    `comm=`'s placement (`paulistrings::mpi::default_config`,
+    `crates/paulistrings/src/engine/partitioned/mpi.rs`) is
+    `Placement::Auto{max_partitions: Some(1)}`, which `resolve_auto`
+    (`engine/partitioned/topology.rs`) resolves to a single slot over whatever CPUs are in the
+    process's affinity mask; when that mask spans both of a node's NUMA domains, `resolve_auto`
+    already merges them into one un-pinned-to-a-node slot (`node: None`, size two domains) rather
+    than picking one. So node-granularity placement is a pure launcher change: give each rank the
+    whole node's affinity instead of one domain's.
+
+    `jobs/campaign-genoa-distributed.sbatch` changed: `ranks` now rounds `SLURM_JOB_NUM_NODES`
+    (not `nodes * numa_domains_per_node`) down to a power of two, `--ntasks-per-node=1` always,
+    `--cpus-per-task` is the whole node's core count, and `--cpu-bind=none` replaces
+    `--cpu-bind=ldoms` (ldoms would have restricted the rank right back to one domain). Output
+    directory renamed `raw/<date>-distributed-node-<ranks>ranks/` (was
+    `raw/<date>-distributed-<ranks>ranks/`) and `config_id` gets a `-1rank-per-node` suffix, so
+    old and new data can never collide even at the same rank count.
+
+    Plan: test cheap first (2 nodes = 2 ranks, a network-crossing sanity check the in-process
+    partitioned engine can't give), then hand over the real overnight job at up to 16 nodes.
+    Per the org LAW, submission is the user's own step; see job-ledger.jsonl / the next entry for
+    the actual job IDs once run.
+
+54. **Node-granularity distributed run landed for real, 2026-09-14 — both jobs completed in
+    minutes, no overnight wait needed.** Job 7037150 (2 nodes/2 ranks, loose eps=2^-10,
+    trotter_steps=4, sanity check only): completed, 0.027 s, 2761 terms — confirms the placement
+    change works end to end across a real network hop, not just within one node. Job 7037152 (16
+    nodes/16 ranks, eps=2^-16, the trusted overlap point, real headline settings): completed,
+    **58.972 s**, peak_terms=45,418,768 (matches the term count at this eps from every other
+    engine/placement at this eps — expected, term count is eps-driven not placement-driven),
+    peak_rss_kb=19,293,188 (~19.3 GB, summed across ranks; grows with rank count same as always,
+    a probe/replication artifact per `Known gaps`).
+
+    **A real, honest comparison, not just a pass/fail:** the old one-rank-per-NUMA-domain data at
+    the same eps and the same *rank count* (`raw/2026-09-14-distributed-16ranks`, 8 nodes, 16
+    domain-ranks) ran in **35.725 s** — i.e. the new run, on **twice the nodes** (16 vs 8) at the
+    same rank count, is **slower**, not faster. This is a real, measured result, not a fluke of a
+    single run (no reps to double-check yet, flagged as such). The plausible mechanism: a
+    node-granularity rank runs ONE flat 96-thread Rayon pool spanning both sockets with no
+    NUMA-local split (that is exactly what `Placement::Auto{max_partitions: Some(1)}` does when
+    given the whole node's affinity mask — see decision #53), so cross-socket memory traffic in
+    the coset_loop's gather/merge phases pays the locality cost the two-domains-per-node
+    partitioned design exists to avoid — the same effect this repo's own NUMA pinning work
+    (`ARCHITECTURE.md §Partitioning`, `research/HARDWARE.md`) was built around. Fewer, bigger
+    ranks buys less MPI exchange overhead per node but loses more to intra-rank NUMA locality;
+    at 16 ranks the trade nets negative here.
+
+    Node-granularity DOES give one thing the old approach never had: a real, measured 16-node
+    data point at all (old data tops out at 8 nodes / 16 domain-ranks). Whether that capacity
+    extension is worth reporting alongside a wall-clock regression at matched rank count is a
+    presentation-content call, not an engineering one — flagged for the user rather than decided
+    here. Files: `raw/2026-09-14-distributed-node-{2,16}ranks/`. Old per-domain data at
+    `raw/2026-0[34]-distributed-{2,4,8,16}ranks/` is kept, unsuperseded (decision #53).
+
+55. **8-node matched comparison confirms the slowdown, and `campaign-genoa-distributed.sbatch`
+    gains a `RANK_GRANULARITY` knob, 2026-09-14.** Job 7037246 (8 nodes, `RANK_GRANULARITY=node`
+    default, 8 node-ranks, eps=2^-16): 60.765 s. Directly against the old 8-node point at the
+    SAME node count (`raw/2026-09-14-distributed-16ranks`, 16 domain-ranks, 2 per node): 35.725 s.
+    So at matched hardware (not just matched rank count, decision #54's comparison), node
+    granularity is ~1.7x slower here — not an artifact of the rank-count mismatch.
+
+    Per a user question, whether this is a term-count effect (too few terms to amortize some
+    fixed cost, vs. a bandwidth-bound NUMA cost that would persist or worsen at scale) is being
+    tested directly: jobs 7037247 (16 nodes, eps=2^-18) and 7037248 (16 nodes, eps=2^-20) are
+    running now, against old comparison points at the same eps (8-node/16-domain-rank: 227.844 s
+    @ 2^-18, 1658.816 s @ 2^-20).
+
+    Since the user then wanted more OLD-placement (one rank per NUMA domain) scaling points at
+    16 and 32 nodes — beyond the old data's previous ceiling of 8 nodes — the sbatch script
+    needed both placements addressable, not just the new default. Added
+    `RANK_GRANULARITY={node (default) | domain}`: `domain` reproduces the original placement
+    exactly (`--cpu-bind=ldoms`, ranks = nodes × numa-domains-per-node rounded to a power of two,
+    `out_dir`/`config_id` unchanged from the original — same directory naming as the existing
+    `raw/2026-0[34]-distributed-{2,4,8,16}ranks/` data, so new domain-granularity runs land
+    alongside the old ones as more points on the same curve, not a separate series).
+
+    Slurm-side, checked before scaling further: this account's jobs run under QOS `gen` on
+    partition `ccq`, and `gen` has no node-count limit set (`MaxNodesPU`/`GrpTRES` node cap both
+    unset) — `ccq`'s partition-level `MaxNodes` is also `UNLIMITED`. The real ceiling is physical:
+    `sinfo` showed ~288 genoa+rocky9 nodes total, 69 idle at the time asked. No LAW-relevant
+    concern — read-only `sinfo`/`sacctmgr show`/`sacct` only, no job control commands run.
+
+56. **`P_MAX_BITS` raised from 4 to 6 (16 to 64 partitions), with explicit user sign-off,
+    2026-09-14.** Jobs 7037263/64/67/68/69/70 (decision #55's further node-count scaling) all
+    panicked identically: `PartitionRows: bits N exceeds P_MAX_BITS 4` — a real, deliberate
+    architectural ceiling (`crates/paulistrings/src/bucket/hash.rs`), not a launcher bug, and it
+    applies to BOTH placements equally (the earlier 16-node/16-rank point was already sitting at
+    it). Raising it needed the user's go-ahead first, since the constant's doc comment says the
+    smallness is deliberate; asked, and got it.
+
+    TDD, red before green: added `partition_row_ceiling_covers_64_ranks` (fails against the old
+    constant), then raised `P_MAX_BITS: u8 = 4` to `6`. Fixed the one stale test this exposed —
+    `partition_is_within_range_and_the_identity_key_is_partition_zero` asserted the literal `16`
+    rather than `1 << P_MAX_BITS`, so it would have silently stopped meaning anything the next
+    time this constant moves.
+
+    A real, independent bug turned up while raising it, not introduced by it:
+    `InProcessTransport`'s `GroupState::departed` was an `AtomicU32` bitmask (`1 << rank`) with a
+    comment claiming `P ≤ 16` made a `u32` ample — true at 16, already latent at the *old* ceiling
+    of 16 partitions (rank 16..31 already fit only by luck, since 32 is the actual overflow
+    point), and definitely broken once ranks reach 32. `1u32 << 32` panics in debug ("attempt to
+    shift left with overflow") and silently wraps to rank 0 in release — a rank 32+ dying would
+    misreport as rank 0 dying in production. Added
+    `a_partner_at_rank_32_that_panicked_is_reported_by_its_own_rank` (red: caught the debug-build
+    shift panic verbatim), then widened `departed` to `AtomicU64` (green). This only affects
+    `InProcessTransport` (in-process tests / the `partitions=` path's differential nets); the real
+    MPI `Transport` has no such mask and was never at risk.
+
+    `cargo test --workspace` (all crates, doctests included) and
+    `cargo clippy --workspace --all-targets -- -D warnings` both clean after the fix. Doc updates:
+    `ARCHITECTURE.md` §Hash/§Bucketing and `CLAUDE.md`'s engine overview both cited `P ≤ 16`;
+    updated to `P ≤ 64`. Local `.venv`'s compiled extension was NOT rebuilt (permission declined,
+    and moot anyway — every campaign sbatch script builds its own fresh worktree+venv on the job
+    node, so this only matters for local/interactive Python use outside a cluster job).
+
+    This does NOT change today's finding (decision #54): 16 ranks is still the point where node-
+    granularity trades hardware for wall time. It only removes the *hard* ceiling that made 32/64-
+    rank points impossible to even attempt — whether that trade keeps favoring the old placement
+    at higher rank counts, or whether node-granularity's coarser communication pays off once there
+    are enough ranks to amortize it, is now an open, testable question rather than a moot one.

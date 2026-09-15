@@ -1632,3 +1632,15 @@
     `distributed_scaling[_compact].{svg,pdf,png}`, `baseline_v4_stage5[_speedup][_compact].
     {svg,pdf,png}`, all regenerated. Figures suite still 90 passed, no code changes needed
     beyond the two build scripts' data.
+
+66. **"current engine, 64 ranks" and "...cut" series completed across the full eps grid,
+    2026-09-15.** Jobs 7040824-7040829 (32 nodes/64 domain-ranks, both policies, eps=2^-10/
+    2^-12/2^-14): all real, all completed in ~1 minute each (looser than anything else run at
+    64 ranks). Both series in `/tmp/build_baseline_stages3.py` now span the SAME 6-point eps
+    grid every other series has (2^-10 through 2^-20) rather than only the 3 tighter points —
+    the gap flagged in decision #60/#62 as "shorter on the x-axis than the other six" is closed.
+    Cut stays faster than random at every eps, same as the node-count sweep (decision #65)
+    found at every node count. `baseline_v4_stage5[_speedup][_compact]` regenerated; the "cut"
+    line is now visibly the fastest series across the ENTIRE eps range, not just the tighter
+    tolerances. `distributed_scaling` unaffected (node-count sweep at fixed eps, not eps-
+    dependent) — not rebuilt.

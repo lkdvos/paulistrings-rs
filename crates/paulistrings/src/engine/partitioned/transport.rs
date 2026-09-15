@@ -8,7 +8,7 @@
 
 use std::cell::UnsafeCell;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -928,8 +928,8 @@ struct GroupState {
     /// Ranks in the group.
     size: u32,
     /// Bit `q` set once rank `q`'s transport has been dropped — it will publish nothing further.
-    /// `P ≤ 16`, so a `u32` mask is ample.
-    departed: AtomicU32,
+    /// `P ≤ 64` (`P_MAX_BITS`), so a `u64` mask is ample.
+    departed: AtomicU64,
     /// One publication point per rank, in rank order.
     slots: Box<[RankSlot]>,
 }
@@ -938,7 +938,7 @@ impl GroupState {
     fn new(size: u32) -> Self {
         Self {
             size,
-            departed: AtomicU32::new(0),
+            departed: AtomicU64::new(0),
             slots: (0..size).map(|_| RankSlot::default()).collect(),
         }
     }
@@ -995,7 +995,7 @@ impl GroupState {
 
             spins = spins.saturating_add(1);
             if spins >= SPINS_BEFORE_YIELD || spins.is_multiple_of(CHECKS_EVERY) {
-                if self.departed.load(Ordering::Acquire) & (1 << src) != 0
+                if self.departed.load(Ordering::Acquire) & (1u64 << src) != 0
                     // A rank that published this generation and then left the group is not a dead partner: re-read before condemning it, so the last collective of a call cannot race the partner's return.
                     && slot.progress.load(Ordering::Acquire) >> 8 < gen
                 {
@@ -1107,7 +1107,7 @@ impl Drop for InProcessTransport {
     fn drop(&mut self) {
         self.state
             .departed
-            .fetch_or(1 << self.rank, Ordering::Release);
+            .fetch_or(1u64 << self.rank, Ordering::Release);
     }
 }
 
@@ -2195,6 +2195,32 @@ mod tests {
             });
             let _: Vec<Option<Vec<u64>>> =
                 zero.exchange(vec![None, Some(vec![7u64])], &mut Vec::new());
+        });
+    }
+
+    /// `GroupState::departed` marks a rank's bit with `1 << rank`: at rank 32 (the first index
+    /// beyond a `u32` mask's width), a `u32` mask either panics on the shift (debug) or wraps the
+    /// exponent and silently marks rank 0 instead (release) — both wrong, and `P_MAX_BITS` is
+    /// meant to allow a group this large. Rank 32 dying must be reported by its own number, not
+    /// rank 0's, and must not panic on the shift itself. Ranks 1..=31 must genuinely participate
+    /// (not just sit idle) so none of them is itself mistaken for the dead partner.
+    #[test]
+    #[should_panic(expected = "partition 32 terminated")]
+    fn a_partner_at_rank_32_that_panicked_is_reported_by_its_own_rank() {
+        let mut group = InProcessTransport::group(33);
+        let far = group.pop().expect("rank 32");
+        let zero = group.remove(0);
+        let middle = group; // ranks 1..=31
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _ = std::panic::catch_unwind(|| panic!("rank 32 dies before its barrier"));
+                drop(far);
+            });
+            for transport in middle {
+                scope.spawn(move || transport.barrier());
+            }
+            zero.barrier();
         });
     }
 }

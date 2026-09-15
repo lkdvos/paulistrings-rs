@@ -232,7 +232,9 @@ def test_auto_places_one_partition_per_numa_node():
 
 def test_the_kwargs_are_accepted_positionally_after_small_sum_threshold():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    positional = s.propagate(c, None, "forward", "sorted", 4096, _cpu_sets(), False)
+    positional = s.propagate(
+        c, None, "forward", "sorted", 4096, None, None, _cpu_sets(), False
+    )
     keyword = s.propagate(
         c,
         engine="sorted",
@@ -352,6 +354,7 @@ def test_partition_stats_are_self_consistent():
         part.terms_in,
         part.terms_out,
         part.imbalance,
+        part.nanos,
     ):
         assert len(field) == stats.layers
 
@@ -368,6 +371,14 @@ def test_partition_stats_are_self_consistent():
         # the bound that always holds is 1 <= imbalance <= P.
         assert 1.0 <= part.imbalance[k] <= part.partitions
         assert part.imbalance[k] < 1.2
+        # The top-level `nanos` is the critical-rank proxy: the max over the
+        # raw per-partition timings this record carries.
+        assert len(part.nanos[k]) == part.partitions
+        assert stats.nanos[k] == max(part.nanos[k])
+        # `circuit_index`/`application_index`/`gate_name` are agreed collective
+        # values, identical on every partition by construction.
+        assert stats.circuit_index[k] == k
+        assert stats.application_index[k] == k
 
     # This circuit does move rows: a partitioned run that never exchanged
     # anything would not be testing the exchange at all.
@@ -429,3 +440,122 @@ def test_numa_nodes_is_exported():
     assert paulistrings.numa_nodes is numa_nodes
     assert "numa_nodes" in paulistrings.__all__
     assert "PartitionStats" in paulistrings.__all__
+
+
+# --------------------------------------------------------------------------
+# partition_row_seed / partition_row_blocks (E8: random vs. designed-cut rows)
+#
+# Closes the campaign's E8 gap (quera-talk-data/campaign-2026-09-11/decisions.md
+# #13): before this, `sum.rs` hardcoded `partition_row_seed: None` and there
+# was no way at all to choose explicit rows from Python, so a random-vs-cut
+# communication-volume comparison could not be collected.
+
+
+def test_default_partition_rows_are_unchanged():
+    """Neither new kwarg touches the result when both are left at `None` —
+    the additive-kwarg contract every other partitioned knob already has."""
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    want = s.propagate(c, partitions=_cpu_sets())
+    got = s.propagate(c, partitions=_cpu_sets(), partition_row_seed=None, partition_row_blocks=None)
+    assert _as_dict(got) == _as_dict(want)
+
+
+def test_distinct_seeds_move_different_rows():
+    """Two different `partition_row_seed`s draw two different GF(2) row sets,
+    so the per-layer export volume differs -- proof the seed actually reaches
+    the engine (it used to be silently dropped)."""
+    s, c = _observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
+    policy = truncation.approx_topn(NUM_TERMS)
+    _, stats_a = s.propagate_with_stats(
+        c, policy, partitions=_cpu_sets(), partition_row_seed=1
+    )
+    _, stats_b = s.propagate_with_stats(
+        c, policy, partitions=_cpu_sets(), partition_row_seed=2
+    )
+    assert stats_a.partition.rows_exported != stats_b.partition.rows_exported
+
+
+@pytest.mark.parametrize("num_qubits", WIDTHS)
+def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
+    """Both new row policies are placement knobs, not semantic ones: the
+    returned sum and every per-layer term count still match the unpartitioned
+    run, exactly like the existing seeded-random path."""
+    s, c = _observable(num_qubits), _mixed_circuit(num_qubits)
+    policy = truncation.approx_topn(NUM_TERMS)
+    want, want_stats = s.propagate_with_stats(c, policy)
+
+    half = num_qubits // 2
+    blocks = [list(range(half)), list(range(half, num_qubits))]
+    got_cut, stats_cut = s.propagate_with_stats(
+        c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks
+    )
+    _assert_terms_close(got_cut, want)
+    _assert_counts_equal(stats_cut, want_stats)
+
+    got_seed, stats_seed = s.propagate_with_stats(
+        c, policy, partitions=_cpu_sets(), partition_row_seed=7
+    )
+    _assert_terms_close(got_seed, want)
+    _assert_counts_equal(stats_seed, want_stats)
+
+
+def test_cut_blocks_round_trip_to_the_named_partition():
+    """A block's qubits actually land in that block's partition: a term whose
+    only support is in block 1 always crosses when scattered from a sum built
+    entirely of block-0 terms, and never crosses when its support matches the
+    cut."""
+    n = WIDTHS[0]
+    half = n // 2
+    blocks = [list(range(half)), list(range(half, n))]
+
+    # An all-Z observable inside block 0 only: `PartitionRows::cut`'s own
+    # tests establish that a term's partition is the XOR of the z-weight-odd
+    # blocks, so a single Z in block 0 belongs to partition 0.
+    s = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
+    c = Circuit(n)
+    c.rz(0.3, 0)  # Z survives an RZ unchanged; keeps the term in one bucket.
+    _, stats = s.propagate_with_stats(
+        c, partitions=_cpu_sets(), partition_row_blocks=blocks
+    )
+    assert stats.partition.rows_exported == [0]
+
+
+def test_partition_row_blocks_wrong_count_is_value_error():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    with pytest.raises(ValueError, match="partition_row_blocks"):
+        s.propagate(c, partitions=_cpu_sets(), partition_row_blocks=[[0, 1]])
+
+
+def test_partition_row_blocks_overlap_is_value_error():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    with pytest.raises(ValueError, match="more than one block"):
+        s.propagate(
+            c,
+            partitions=_cpu_sets(),
+            partition_row_blocks=[[0, 1], [1, 2, 3, 4, 5, 6, 7]],
+        )
+
+
+def test_partition_row_blocks_out_of_range_qubit_is_value_error():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    with pytest.raises(ValueError, match="out of range"):
+        s.propagate(
+            c, partitions=_cpu_sets(), partition_row_blocks=[[0, 99], [1, 2]]
+        )
+
+
+def test_partition_row_blocks_needs_partitions():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    with pytest.raises(ValueError, match="needs partitions"):
+        s.propagate(c, partition_row_blocks=[[0, 1, 2, 3, 4, 5, 6, 7]])
+
+
+def test_seed_and_blocks_are_mutually_exclusive():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    with pytest.raises(ValueError, match="alternatives"):
+        s.propagate(
+            c,
+            partitions=_cpu_sets(),
+            partition_row_seed=1,
+            partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]],
+        )

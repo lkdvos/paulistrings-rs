@@ -149,6 +149,7 @@ fn assert_engines_agree<const W: usize, T>(
 {
     let mut s1 = LayerScratch::<W>::new();
     s1.enable_term_trace();
+    s1.enable_gate_trace();
     let want = propagate_with_scratch_and_options(
         circuit,
         sum.clone(),
@@ -158,9 +159,11 @@ fn assert_engines_agree<const W: usize, T>(
         SORTED,
     );
     let want_trace = s1.take_term_trace().expect("tracing enabled");
+    let want_gate_trace = s1.take_gate_trace().expect("gate tracing enabled");
 
     let mut s2 = LayerScratch::<W>::new();
     s2.enable_term_trace();
+    s2.enable_gate_trace();
     let got = propagate_with_scratch_and_options(
         circuit,
         sum.clone(),
@@ -170,6 +173,7 @@ fn assert_engines_agree<const W: usize, T>(
         options,
     );
     let got_trace = s2.take_term_trace().expect("tracing enabled");
+    let got_gate_trace = s2.take_gate_trace().expect("gate tracing enabled");
 
     assert_eq!(
         got_trace.terms_in, want_trace.terms_in,
@@ -178,6 +182,35 @@ fn assert_engines_agree<const W: usize, T>(
     assert_eq!(
         got_trace.terms_out, want_trace.terms_out,
         "{what}: per-layer terms_out",
+    );
+    // The gate trace has to agree on layer count and identity across the
+    // direct-prefix/sorted-suffix crossing (`options`) versus the pure sorting
+    // engine (`SORTED`): a mismatch here is exactly the bug where the direct
+    // path's prefix layers went untraced.
+    assert_eq!(
+        got_gate_trace.circuit_index, want_gate_trace.circuit_index,
+        "{what}: per-layer circuit_index",
+    );
+    assert_eq!(
+        got_gate_trace.application_index, want_gate_trace.application_index,
+        "{what}: per-layer application_index",
+    );
+    assert_eq!(
+        got_gate_trace.gate_name, want_gate_trace.gate_name,
+        "{what}: per-layer gate_name",
+    );
+    assert_eq!(
+        got_gate_trace.terms_in, want_gate_trace.terms_in,
+        "{what}: gate trace terms_in",
+    );
+    assert_eq!(
+        got_gate_trace.terms_out, want_gate_trace.terms_out,
+        "{what}: gate trace terms_out",
+    );
+    assert_eq!(
+        got_gate_trace.nanos.len(),
+        want_gate_trace.nanos.len(),
+        "{what}: gate trace nanos length",
     );
     assert_terms_close(&got, &want, 1e-9, what);
     // `assert_invariants` is debug-only and this file is also built by

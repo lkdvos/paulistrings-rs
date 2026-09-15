@@ -11,7 +11,7 @@ The one storage type is a bucketed `PauliSum<W>`: structure-of-arrays `x`/`z`/co
 That makes a channel's output buckets statically predictable and deduplication bucket-local, so the propagation loop contains no global sort.
 The unit of parallel work is a coset of `span(h(D))`, write-disjoint by construction — no atomics, no locks, no synchronization inside a layer.
 The core takes `W` as a const generic; the PyO3 bindings monomorphize widths `{1, 2, 4, 8, 16}` (64–1024 qubits) and dispatch once outside any hot loop.
-Above that sits an optional **partitioned** engine: the sum split across `P ≤ 16` NUMA domains by designated GF(2) partition rows, one pinned Rayon pool each, with a push-model exchange and a `Transport` trait as the seam.
+Above that sits an optional **partitioned** engine: the sum split across `P ≤ 64` NUMA domains (or, distributed, ranks) by designated GF(2) partition rows, one pinned Rayon pool each, with a push-model exchange and a `Transport` trait as the seam.
 The same layer loop runs distributed, one partition per MPI rank (`DistributedSum`, the off-by-default `mpi` feature), with the transport as the only difference.
 
 `ARCHITECTURE.md` is the design source of truth and code cites its named sections as `ARCHITECTURE.md §Engine`.

@@ -6,9 +6,9 @@ use crate::pauli_string::PauliString;
 /// Rows for all `B_MAX_BITS` bits are generated up front so that [`Gf2Hash::refine`] is free: the active hash is always a prefix of the same fixed matrix, so refinement is a single parity pass rather than a re-hash.
 pub const B_MAX_BITS: u8 = 20;
 
-/// Maximum number of partition bits, i.e. `P ≤ 2^4 = 16` partitions.
-/// Partitions are the coarse split of a sum across independent workers (see [`PartitionRows`]); the bucket bits of [`Gf2Hash`] refine within one partition. The cap is deliberately small: `P` tracks NUMA-scale hardware parallelism, not term count.
-pub const P_MAX_BITS: u8 = 4;
+/// Maximum number of partition bits, i.e. `P ≤ 2^6 = 64` partitions.
+/// Partitions are the coarse split of a sum across independent workers (see [`PartitionRows`]); the bucket bits of [`Gf2Hash`] refine within one partition. The cap is deliberately small: `P` tracks hardware parallelism (NUMA domains in-process, nodes under a distributed run), not term count.
+pub const P_MAX_BITS: u8 = 6;
 
 /// Salt mixed into a [`PartitionRows`] seed before row generation.
 /// Without it, `PartitionRows::from_seed(n, p, s)` and `Gf2Hash::new(n, b, s)` would draw from the same stream and the partition rows would be the hash's first `p` rows — dependent by construction, and the global bucket `(part(v), loc(v))` would only have `max(p, b)` bits of entropy instead of `p + b`.
@@ -1127,7 +1127,7 @@ mod tests {
     #[test]
     fn partition_is_within_range_and_the_identity_key_is_partition_zero() {
         let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, 0xABCDEF);
-        assert_eq!(p.num_partitions(), 16);
+        assert_eq!(p.num_partitions(), 1usize << P_MAX_BITS);
         // p(0) = 0 for any linear map — the same documented wart as `h`.
         assert_eq!(p.partition_of(&[0, 0], &[0, 0]), 0);
         let mut rng = Xs64::new(101);
@@ -1204,6 +1204,17 @@ mod tests {
         assert_eq!(rx, [[!0u64, live], [0x1, 0x0]]);
         assert_eq!(rz, [[0x0u64, 0x3], [0xF, 0x0]]);
         assert_eq!(p.bits(), 2);
+    }
+
+    /// A distributed run needs one partition per rank, and one rank per node (rather than per
+    /// NUMA domain) means fewer, bigger partitions for the same rank count is not the point —
+    /// more nodes at a fixed granularity is. 64 partitions covers that without making the row
+    /// count term-count-dependent, the thing `P_MAX_BITS` exists to avoid.
+    #[test]
+    fn partition_row_ceiling_covers_64_ranks() {
+        // `from_seed` panics with "exceeds P_MAX_BITS" if the constant is still below 6.
+        let p = PartitionRows::<2>::from_seed(127, 6, 0xFEED_1234);
+        assert_eq!(p.num_partitions(), 64);
     }
 
     #[test]

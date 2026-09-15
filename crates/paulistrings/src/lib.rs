@@ -64,7 +64,7 @@ pub use accumulator::BuildAccumulator;
 pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use engine::bucketed::{LayerScratch, TermTrace};
+pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
 // The MPI transport and its distributed driver, behind the `mpi` feature.
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;
@@ -73,8 +73,8 @@ pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
     circuit_generators, count_remote_deltas, propagate_partitioned,
     propagate_partitioned_with_options, DistributedSum, GeneratorWeight, PartitionConfig,
-    PartitionLayerRecord, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Placement, TopologyError,
+    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
+    PartitionedTruncation, Placement, TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

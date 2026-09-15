@@ -40,6 +40,17 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;
 
+/// Which rows a scatter splits by: a seeded GF(2)-random draw, or an explicit qubit cut.
+///
+/// A draw spreads a channel's deltas over every rank; a cut keeps them local whenever the channel's qubits share a block, which is what makes export volume a property of the geometry rather than of the seed (ARCHITECTURE.md §Partitioning).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PartitionRowPolicy {
+    /// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None` — the default, and what [`PartitionConfig::partition_row_seed`] already selects.
+    Seeded(Option<u64>),
+    /// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order.
+    Cut(Vec<Vec<u32>>),
+}
+
 /// One process's partition of a sum split across a [`Transport`]'s group.
 ///
 /// Held across calls — the split, the rows, the pool and the layer scratch all persist — so a Trotter driver scatters once, steps many times, and gathers once.
@@ -178,6 +189,35 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         let rows =
             PartitionRows::<W>::from_seed(sum.num_qubits(), size.trailing_zeros() as u8, seed);
         Self::scatter_with_rows(sum, transport, runtime, rows)
+    }
+
+    /// [`scatter`](Self::scatter) with the rows a [`PartitionRowPolicy`] names, the qubit count and the group size taken from `sum` and `transport`.
+    ///
+    /// [`PartitionRowPolicy::Seeded(config.partition_row_seed)`](PartitionRowPolicy::Seeded) is [`scatter`](Self::scatter) itself.
+    ///
+    /// # Errors
+    ///
+    /// [`TopologyError`] if `config` cannot be resolved or the pool cannot be built.
+    ///
+    /// # Panics
+    ///
+    /// As [`scatter`](Self::scatter), plus [`PartitionRows::cut`]'s own checks on a [`Cut`](PartitionRowPolicy::Cut) policy: one block per rank, disjoint, every qubit in range.
+    pub fn scatter_with_policy(
+        sum: PauliSum<W>,
+        transport: X,
+        config: &PartitionConfig,
+        policy: &PartitionRowPolicy,
+    ) -> Result<Self, TopologyError> {
+        let runtime = PartitionRuntime::new(config)?;
+        Ok(match policy {
+            PartitionRowPolicy::Seeded(seed) => {
+                Self::scatter_with_runtime(sum, transport, runtime, *seed)
+            }
+            PartitionRowPolicy::Cut(blocks) => {
+                let rows = PartitionRows::<W>::cut(sum.num_qubits(), blocks);
+                Self::scatter_with_rows(sum, transport, runtime, rows)
+            }
+        })
     }
 
     /// [`scatter`](Self::scatter) with caller-supplied partition rows.

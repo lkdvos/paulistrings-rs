@@ -44,6 +44,8 @@ pub struct LayerScratch<const W: usize> {
     pub(crate) stats: PhaseStats,
     /// The opt-in per-layer term-count trace, `None` unless [`Self::enable_term_trace`] was called.
     pub(crate) term_trace: Option<TermTrace>,
+    /// The opt-in per-layer gate trace, `None` unless [`Self::enable_gate_trace`] was called.
+    pub(crate) gate_trace: Option<GateTrace>,
 }
 
 impl<const W: usize> LayerScratch<W> {
@@ -75,6 +77,18 @@ impl<const W: usize> LayerScratch<W> {
     pub fn take_term_trace(&mut self) -> Option<TermTrace> {
         self.term_trace.as_mut().map(std::mem::take)
     }
+
+    /// Start recording a [`GateTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards records already taken.
+    /// Always compiled: enabling it costs one extra `Instant::now()` pair per traced layer, gated behind the same hoisted flag as the per-layer `DEBUG` log.
+    pub fn enable_gate_trace(&mut self) {
+        self.gate_trace.get_or_insert_with(GateTrace::default);
+    }
+
+    /// Drain and return the per-layer gate trace, or `None` if tracing was never enabled.
+    /// Draining leaves tracing enabled with empty vectors, so a reused scratch reports each call separately without re-enabling.
+    pub fn take_gate_trace(&mut self) -> Option<GateTrace> {
+        self.gate_trace.as_mut().map(std::mem::take)
+    }
 }
 
 /// Per-layer resident term counts, recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace) set.
@@ -98,6 +112,30 @@ impl TermTrace {
             .chain(self.terms_out.iter().copied())
             .max()
     }
+}
+
+/// Per-layer structured gate trace: application index, original circuit index, gate name, term counts, and the complete gate's elapsed wall time.
+///
+/// Recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_gate_trace`](LayerScratch::enable_gate_trace) set.
+/// Always compiled, like [`TermTrace`]; unlike it, a traced layer pays one extra `Instant::now()` pair, gated behind the same hoisted flag that already guards the per-layer `DEBUG` log, so an untraced layer's cost is unchanged (CLAUDE.md §Performance discipline).
+/// `nanos[k]` covers the same window `propagate`'s per-layer `DEBUG` line reports: before `rebucket`/`prepare`, through the coset loop, `finalize_layer`, and any completion sync that phase needs — a complete gate application.
+///
+/// Every field has one entry per layer applied, in *application* order (so reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)); `circuit_index` recovers the original position regardless of direction, and `application_index` is the loop counter, so a consumer needs neither the direction nor the circuit length to pair the two.
+/// There is no per-gate Trotter-step index here: [`Circuit`](crate::Circuit) has no notion of steps, so a step boundary is `circuit_index / channels_per_step` for a caller who knows that constant, not something the engine can compute.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GateTrace {
+    /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction.
+    pub circuit_index: Vec<u32>,
+    /// This layer's position in the propagation loop, i.e. `k` in `propagate`'s `for k in 0..n`.
+    pub application_index: Vec<u32>,
+    /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel.
+    pub gate_name: Vec<&'static str>,
+    /// Resident term count before the layer.
+    pub terms_in: Vec<usize>,
+    /// Resident term count after the layer, i.e. after `finalize_layer`.
+    pub terms_out: Vec<usize>,
+    /// Elapsed wall-clock nanoseconds for the complete gate application.
+    pub nanos: Vec<u64>,
 }
 
 /// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
@@ -1083,6 +1121,25 @@ mod tests {
             })
         );
         assert_eq!(scratch.take_term_trace(), Some(TermTrace::default()));
+    }
+
+    /// The gate trace's state machine mirrors [`TermTrace`]'s: off by default, `enable` idempotent and non-destructive, `take` drains but stays on.
+    #[test]
+    fn gate_trace_is_opt_in_and_drains_on_take() {
+        let mut scratch = LayerScratch::<1>::new();
+        assert!(scratch.take_gate_trace().is_none(), "off by default");
+
+        scratch.enable_gate_trace();
+        scratch.gate_trace.as_mut().unwrap().circuit_index.push(3);
+        scratch.enable_gate_trace(); // idempotent: must not clear the 3
+        assert_eq!(
+            scratch.take_gate_trace(),
+            Some(GateTrace {
+                circuit_index: vec![3],
+                ..GateTrace::default()
+            })
+        );
+        assert_eq!(scratch.take_gate_trace(), Some(GateTrace::default()));
     }
 
     /// `peak_terms` is the between-layer resident maximum, which lives in

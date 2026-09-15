@@ -308,6 +308,89 @@ def test_multi_rank_run_actually_exchanges(observable, circuit):
 
 
 # --------------------------------------------------------------------------
+# partition_row_seed / partition_row_blocks on the distributed path
+
+
+def _cut_blocks(num_qubits=NUM_QUBITS, ranks=SIZE):
+    """One contiguous block of qubits per rank, covering every qubit.
+
+    A locality cut: the deltas of a gate whose qubits share a block never leave
+    the rank. Identical on every rank, which the split requires."""
+    edges = [(num_qubits * r) // ranks for r in range(ranks + 1)]
+    return [list(range(edges[r], edges[r + 1])) for r in range(ranks)]
+
+
+def test_a_seed_is_a_placement_knob_not_a_semantic_one(observable, circuit, reference):
+    """An explicit `partition_row_seed` reaches the distributed scatter and
+    changes nothing about the answer."""
+    got = observable.propagate(circuit, POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
+    if RANK == 0:
+        assert len(got) == len(reference)
+        _assert_terms_close(got, reference)
+
+
+def test_a_locality_cut_is_a_placement_knob_not_a_semantic_one(
+    observable, circuit, reference
+):
+    """Same for an explicit cut, which is the point of the kwarg: the rows are
+    the caller's, the result is still the serial one."""
+    got = observable.propagate(
+        circuit, POLICY, comm=COMM, partition_row_blocks=_cut_blocks()
+    )
+    if RANK == 0:
+        assert len(got) == len(reference)
+        _assert_terms_close(got, reference)
+
+
+def test_a_locality_cut_holds_the_terms_it_names():
+    """The cut really is the split: with `result="local"`, a sum of one `Z` per
+    qubit puts each qubit's term on the rank whose block holds it.
+
+    Hand-computable — `PartitionRows::cut` labels a key by the XOR of the
+    blocks it has odd z-weight in, so a single `Z` belongs to its own block —
+    and it is what a random draw does *not* do."""
+    blocks = _cut_blocks(NUM_QUBITS, SIZE)
+    terms = {"I" * q + "Z" + "I" * (NUM_QUBITS - q - 1): 1.0 + q for q in range(NUM_QUBITS)}
+    s = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS)
+    empty = Circuit(NUM_QUBITS)
+
+    local = s.propagate(empty, comm=COMM, partition_row_blocks=blocks, result="local")
+    # Collectives are done; the assertion below is this rank's own.
+    zs = local.z_array()
+    held = sorted(int(row[w]).bit_length() - 1 + 64 * w
+                  for row in zs for w in range(zs.shape[1]) if row[w])
+    assert held == blocks[RANK]
+
+
+def test_distributed_seed_and_blocks_are_mutually_exclusive(observable, circuit):
+    with pytest.raises(ValueError, match="alternatives"):
+        observable.propagate(
+            circuit,
+            POLICY,
+            comm=COMM,
+            partition_row_seed=1,
+            partition_row_blocks=_cut_blocks(),
+        )
+
+
+def test_distributed_blocks_are_validated_against_the_group_size(observable, circuit):
+    """The block count must equal the rank count, and the check happens before
+    the communicator is adopted — so every rank raises, rather than some of
+    them entering a collective the others never reach."""
+    with pytest.raises(ValueError, match="partition_row_blocks"):
+        observable.propagate(
+            circuit, POLICY, comm=COMM, partition_row_blocks=_cut_blocks(ranks=2 * SIZE)
+        )
+
+
+def test_distributed_blocks_reject_an_out_of_range_qubit(observable, circuit):
+    blocks = _cut_blocks()
+    blocks[0] = blocks[0] + [NUM_QUBITS + 1]
+    with pytest.raises(ValueError, match="out of range"):
+        observable.propagate(circuit, POLICY, comm=COMM, partition_row_blocks=blocks)
+
+
+# --------------------------------------------------------------------------
 # Errors — every one of them raised before any collective, on every rank alike
 
 

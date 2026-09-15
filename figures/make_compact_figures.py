@@ -819,6 +819,173 @@ def make_distributed_capacity_figure(
     return fig
 
 
+def make_distributed_scaling_figure(
+    rows: Sequence[dict],
+    *,
+    theme: str = "legacy",
+    figsize_pt: tuple[float, float] | None = None,
+    title: str | None = None,
+):
+    """Two-panel comparison of the two distributed rank-per-node placements (quera-talk-data
+    campaign 2026-09-11 decisions #53-56): one rank per NUMA domain (`"domain"`) vs one rank per
+    node (`"node"`), at the same `min_abs_coeff` across a node-count sweep.
+
+    Left panel: wall time (log) vs. node count (log2), one line per granularity. Right panel:
+    parallel efficiency vs. node count -- `eff(N) = (T(N0) * N0) / (T(N) * N)`, where `N0` is
+    THAT SERIES' OWN smallest measured node count (1.0 there by construction). This is
+    deliberately per-series, not a shared cross-granularity baseline: domain-granularity's
+    smallest measured point is 1 node (2 ranks) and node-granularity's is 8 nodes (the engine
+    has never been run below that for node granularity, and the two are not directly comparable
+    hardware configurations at N0). The two lines are each honest about their OWN scaling from
+    wherever they start; they are NOT on a common efficiency scale, and the y-axis label says so
+    rather than implying a shared reference silently. A granularity with fewer than two rows
+    still draws its wall-time point but contributes no efficiency line -- one point has nothing
+    to scale against besides itself.
+
+    Each row: `{"granularity": "domain" | "node", "nodes": int, "wall_time_s": float}`.
+    """
+    if not rows:
+        raise NotImplementedError(
+            "make_distributed_scaling_figure: no rows to plot -- need at least one "
+            "(granularity, nodes, wall_time_s) row before this figure has anything to show."
+        )
+
+    import math
+
+    import matplotlib.pyplot as plt
+
+    deck = theme == "deck"
+    figsize = (figsize_pt[0] / 72.0, figsize_pt[1] / 72.0) if (deck and figsize_pt) else (7.0, 4.0)
+
+    granularities: list[str] = []
+    for r in rows:
+        if r["granularity"] not in granularities:
+            granularities.append(r["granularity"])
+
+    _GRANULARITY_LABEL = {
+        "domain": "one rank per NUMA domain",
+        "node": "one rank per node",
+    }
+
+    legacy_palette = [_ACCENT, "#eb6834", "#5a8f3c", "#a15fb5"]
+
+    def _build():
+        fig, (ax, ax_eff) = plt.subplots(1, 2, figsize=figsize)
+
+        by_gran: dict[str, list[dict]] = {}
+        for r in rows:
+            by_gran.setdefault(r["granularity"], []).append(r)
+
+        style_map = {g: _DECK_SERIES[i % len(_DECK_SERIES)] for i, g in enumerate(granularities)}
+        legacy_color = {g: legacy_palette[i % len(legacy_palette)] for i, g in enumerate(granularities)}
+
+        for g in granularities:
+            series_rows = sorted(by_gran[g], key=lambda r: r["nodes"])
+            xs = [r["nodes"] for r in series_rows]
+            ys = [r["wall_time_s"] for r in series_rows]
+            label = _GRANULARITY_LABEL.get(g, g)
+            if deck:
+                st = style_map[g]
+                ax.plot(xs, ys, marker=st["marker"], markersize=7, linewidth=1.8,
+                         linestyle=st["linestyle"] if len(xs) > 1 else "none",
+                         color=st["color"], label=label)
+            else:
+                ax.plot(xs, ys, marker="o", markersize=6, linewidth=1.5,
+                         linestyle="-" if len(xs) > 1 else "none",
+                         color=legacy_color[g], label=label)
+
+            if len(series_rows) >= 2:
+                n0, t0 = xs[0], ys[0]
+                eff_xs = xs
+                eff_ys = [(t0 * n0) / (t * n) for n, t in zip(xs, ys)]
+                if deck:
+                    st = style_map[g]
+                    ax_eff.plot(eff_xs, eff_ys, marker=st["marker"], markersize=7, linewidth=1.8,
+                                 linestyle=st["linestyle"], color=st["color"])
+                else:
+                    ax_eff.plot(eff_xs, eff_ys, marker="o", markersize=6, linewidth=1.5,
+                                 color=legacy_color[g])
+
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xlabel("nodes")
+        ax.set_ylabel("wall time (s)")
+
+        ax_eff.axhline(1.0, color=(_DECK_NAVY if deck else "#898781"), linewidth=0.8, linestyle=":")
+        ax_eff.set_xscale("log", base=2)
+        ax_eff.set_xlabel("nodes")
+        # Just "efficiency", not the full "efficiency (rel. own smallest node count)" --
+        # the longer form clipped past the top of the canvas on an actual render (the same
+        # failure mode `make_baseline_eps_scaling_figure`'s speedup panel hit and fixed the
+        # same way). The per-series-baseline caveat is stated in the docstring/caption/
+        # MANIFEST instead of on the axis itself.
+        ax_eff.set_ylabel("efficiency")
+
+        if deck:
+            _style_axes_deck(ax)
+            _style_axes_deck(ax_eff)
+        else:
+            ax.set_title("SYNTHETIC — placeholder: distributed scaling, wall time")
+            ax_eff.set_title("SYNTHETIC — placeholder: distributed scaling, efficiency")
+            _style_axes(ax)
+            _style_axes(ax_eff)
+
+        fontsize = 7 if not deck else _DECK_FONT_PT * 0.6
+        fig.tight_layout()
+        base_bottom = fig.subplotpars.bottom
+        base_top = fig.subplotpars.top
+        if deck and title:
+            # fig.suptitle(), not ax.set_title() on just the left panel: with two panels, a
+            # title set on one axes alone can run past its own subplot and collide with the
+            # OTHER panel's rotated y-label -- real collision, caught on an actual rendered
+            # figure at this figure's title length, not theoretical. Centering over the whole
+            # figure and measuring the real rendered height (same fit-then-measure pattern the
+            # bottom legend below uses) is what actually avoids the height collision.
+            #
+            # Height alone is not enough: at the COMPACT canvas size, the full title text at
+            # full font size also overflowed past both left and right edges of the figure --
+            # a second real clipping mode, caught on an actual rendered compact figure. Shrink
+            # the font until the rendered title width actually fits, the same "fit, don't
+            # guess" principle the legend's ncol search below already uses for width.
+            title_fontsize = _DECK_FONT_PT
+            suptitle = fig.suptitle(title, fontsize=title_fontsize, color=_DECK_NAVY)
+            fig.canvas.draw()
+            fig_bbox = fig.get_window_extent()
+            while suptitle.get_window_extent().width > fig_bbox.width and title_fontsize > _DECK_FONT_PT * 0.4:
+                title_fontsize *= 0.9
+                suptitle.set_fontsize(title_fontsize)
+                fig.canvas.draw()
+            title_height_frac = suptitle.get_window_extent().height / fig_bbox.height
+            fig.subplots_adjust(top=max(base_top - title_height_frac - 0.03, 0.5))
+        handles, labels = ax.get_legend_handles_labels()
+        ncol = len(granularities)
+        legend = None
+        while ncol >= 1:
+            if legend is not None:
+                legend.remove()
+            legend = fig.legend(
+                handles, labels, frameon=False, fontsize=fontsize, loc="lower center",
+                bbox_to_anchor=(0.5, 0.0), borderaxespad=0.0, ncol=ncol,
+            )
+            fig.canvas.draw()
+            fig_bbox = fig.get_window_extent()
+            if legend.get_window_extent().width <= fig_bbox.width or ncol == 1:
+                break
+            ncol -= 1
+        legend_height_frac = legend.get_window_extent().height / fig_bbox.height
+        fig.subplots_adjust(bottom=min(base_bottom + legend_height_frac + 0.03, 0.97))
+        return fig
+
+    if deck:
+        import matplotlib as mpl
+
+        with mpl.rc_context(_deck_rc_params()):
+            fig = _build()
+    else:
+        fig = _build()
+    return fig
+
+
 def make_memory_diagnosis_figure(
     phase_rows: Sequence[dict],
     traffic: dict,

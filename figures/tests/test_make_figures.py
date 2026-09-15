@@ -25,6 +25,7 @@ from make_compact_figures import (
     make_bucket_size_figure,
     make_convergence_figure,
     make_distributed_capacity_figure,
+    make_distributed_scaling_figure,
     make_hash_communication_figure,
     make_memory_diagnosis_figure,
     make_single_bucket_comparison_figure,
@@ -1313,4 +1314,79 @@ def test_baseline_eps_scaling_figure_compact_variant_exports_at_exact_size(tmp_p
     paths = export_deck_figure(fig, str(tmp_path / "baseline_v4_stage1_compact"), 450, 340)
     assert set(paths) == {"svg", "pdf", "png"}
     assert fig.get_size_inches() == pytest.approx((450 / 72.0, 340 / 72.0))
+    matplotlib.pyplot.close(fig)
+
+
+_DISTRIBUTED_SCALING_ROWS = [
+    {"granularity": "domain", "nodes": 1, "wall_time_s": 97.144},
+    {"granularity": "domain", "nodes": 2, "wall_time_s": 69.542},
+    {"granularity": "domain", "nodes": 4, "wall_time_s": 63.396},
+    {"granularity": "domain", "nodes": 8, "wall_time_s": 35.725},
+    {"granularity": "domain", "nodes": 16, "wall_time_s": 21.038},
+    {"granularity": "domain", "nodes": 32, "wall_time_s": 13.455},
+    {"granularity": "node", "nodes": 8, "wall_time_s": 60.765},
+    {"granularity": "node", "nodes": 16, "wall_time_s": 58.972},
+    {"granularity": "node", "nodes": 32, "wall_time_s": 37.971},
+]
+
+
+def test_distributed_scaling_figure_no_rows_raises():
+    with pytest.raises(NotImplementedError, match="no rows to plot"):
+        make_distributed_scaling_figure([])
+
+
+def test_distributed_scaling_figure_draws_one_line_per_granularity():
+    fig = make_distributed_scaling_figure(_DISTRIBUTED_SCALING_ROWS)
+    ax_wall, ax_eff = fig.axes
+    assert len(ax_wall.get_lines()) == 2
+    _, labels = ax_wall.get_legend_handles_labels()
+    assert set(labels) == {"one rank per NUMA domain", "one rank per node"}
+    matplotlib.pyplot.close(fig)
+
+
+def test_distributed_scaling_figure_efficiency_is_one_at_each_series_own_first_point():
+    fig = make_distributed_scaling_figure(_DISTRIBUTED_SCALING_ROWS)
+    _, ax_eff = fig.axes
+    # Both series' efficiency lines start at (their own smallest node count, 1.0) --
+    # domain's is nodes=1, node-granularity's is nodes=8, not a shared x position. The
+    # y=1.0 reference axhline has no marker (unlike a real data series) -- excluded by that,
+    # not by point count, since axhline's own xdata also happens to have length 2.
+    lines = [l for l in ax_eff.get_lines() if l.get_marker() != "None"]
+    starts = sorted((line.get_xdata()[0], line.get_ydata()[0]) for line in lines)
+    assert starts == [(1.0, pytest.approx(1.0)), (8.0, pytest.approx(1.0))]
+    matplotlib.pyplot.close(fig)
+
+
+def test_distributed_scaling_figure_efficiency_below_one_for_sublinear_scaling():
+    fig = make_distributed_scaling_figure(_DISTRIBUTED_SCALING_ROWS)
+    _, ax_eff = fig.axes
+    for line in ax_eff.get_lines():
+        if line.get_marker() == "None":
+            continue  # the y=1.0 reference axhline, not a data series
+        ys = line.get_ydata()
+        # Real measured scaling here is sublinear (wall time doesn't halve every
+        # doubling), so efficiency must drop below 1.0 past the first point.
+        assert ys[-1] < 1.0
+    matplotlib.pyplot.close(fig)
+
+
+def test_distributed_scaling_figure_single_point_granularity_skips_efficiency_line():
+    rows = _DISTRIBUTED_SCALING_ROWS + [{"granularity": "solo", "nodes": 4, "wall_time_s": 10.0}]
+    fig = make_distributed_scaling_figure(rows)
+    ax_wall, ax_eff = fig.axes
+    # Three wall-time lines (domain, node, solo) but only two efficiency lines --
+    # "solo" has nothing to normalize against besides itself.
+    assert len(ax_wall.get_lines()) == 3
+    assert len([l for l in ax_eff.get_lines() if l.get_marker() != "None"]) == 2
+    matplotlib.pyplot.close(fig)
+
+
+def test_distributed_scaling_figure_deck_theme_exports_at_exact_size(tmp_path):
+    fig = make_distributed_scaling_figure(
+        _DISTRIBUTED_SCALING_ROWS, theme="deck", figsize_pt=(900, 340),
+        title="Distributed scaling: domain vs. node granularity",
+    )
+    paths = export_deck_figure(fig, str(tmp_path / "distributed_scaling"), 900, 340)
+    assert set(paths) == {"svg", "pdf", "png"}
+    assert fig.get_size_inches() == pytest.approx((900 / 72.0, 340 / 72.0))
     matplotlib.pyplot.close(fig)

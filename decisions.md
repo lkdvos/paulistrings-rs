@@ -1453,3 +1453,31 @@
     rank points impossible to even attempt — whether that trade keeps favoring the old placement
     at higher rank counts, or whether node-granularity's coarser communication pays off once there
     are enough ranks to amortize it, is now an open, testable question rather than a moot one.
+
+57. **32/64-node distributed points landed for real (both placements), plus a new
+    distributed-scaling figure and node-efficiency panel, 2026-09-14.** Jobs 7037489 (16 nodes,
+    domain, 32 ranks: 21.038s), 7037490 (32 nodes, domain, 64 ranks: 13.455s), 7037491 (32 nodes,
+    node granularity, 32 ranks: 37.971s) all completed real, no fabricated data. The scaling
+    question decision #56 left open is answered, at least so far: domain-granularity keeps its
+    lead over node-granularity at every node count now measured (8: 35.7 vs. 60.8s; 16: 21.0 vs.
+    59.0s; 32: 13.5 vs. 38.0s). The ratio (node-granularity time / domain-granularity time) is
+    1.70x at 8 nodes, 2.81x at 16 nodes, 2.81x at 32 nodes -- it does NOT monotonically narrow
+    with scale; it widened from 8 to 16 nodes, then held flat into 32. Stated plainly rather than
+    reporting only the 8-node comparison, which alone would have suggested a narrowing trend that
+    the fuller data does not support.
+
+    New figure `make_distributed_scaling_figure` in `make_compact_figures.py` (two-panel: wall
+    time vs. nodes, log-log; parallel efficiency vs. nodes, linear y, PER-SERIES baseline since
+    domain's and node-granularity's smallest measured node counts differ — see the function's own
+    docstring and MANIFEST.md's new "distributed-scaling" section). TDD: 6 new tests, full suite
+    90 passed. Two real rendering bugs found and fixed on an actual render before calling this
+    done: a two-panel title set via `ax.set_title()` on one axes collided with the OTHER panel's
+    y-label once long enough (switched to a height-fit `fig.suptitle()`), and that same title
+    additionally overflowed the compact (450x340pt) canvas's WIDTH at full font size (fixed with
+    a shrink-until-it-fits loop, not just a height fix). Files: `distributed_scaling.{svg,pdf,
+    png}` and `_compact` variants, in `figures/real/`.
+
+    Job 7037492 (64 nodes, node-granularity, 64 ranks) and job 7037248 (16 nodes, node-
+    granularity, eps=2^-20, the term-count-effect check from earlier) were still running when
+    this figure was built — NOT included in the figure or the ratios above. Rebuild once they
+    land rather than treating this entry as final.

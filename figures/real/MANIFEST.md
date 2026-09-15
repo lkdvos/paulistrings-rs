@@ -315,6 +315,60 @@ fabricated wall time — enforced by a `ValueError` if a non-completed row carri
     OOM, one untested) — per the task's own allowance, this is reported as the honest,
     minimal comparison the real data supports, not padded with invented intermediate points.
 
+### 3b. distributed-scaling (new figure, `make_distributed_scaling_figure`, 2026-09-14)
+
+New two-panel figure comparing the two distributed rank-per-node placements at eps=2^-16
+(1.5258789e-05, the same trusted overlap point as asset 3 above): one rank per NUMA domain
+("domain") vs. one rank per node ("node"), both introduced in decisions.md #53-56. Left panel:
+wall time (log) vs. node count (log2). Right panel: parallel efficiency, `eff(N) = (T(N0)*N0) /
+(T(N)*N)` computed PER SERIES relative to that series' own smallest measured node count `N0` —
+domain-granularity's `N0` is 1 node, node-granularity's is 8 (the smaller counts were never run
+under node granularity) — the two lines are NOT on a shared efficiency scale, stated in the
+function's own docstring rather than implied by the shared axis.
+
+- Files: `distributed_scaling.{svg,pdf,png}` (900x340pt), `distributed_scaling_compact.*`
+  (450x340pt).
+- All 9 points real and completed, `raw/2026-0[34]-distributed-{2,4,8,16,32,64}ranks/runs.jsonl`
+  (domain) and `raw/2026-09-14-distributed-node-{8,16,32}ranks/runs.jsonl` (node):
+
+  | granularity | nodes | ranks | wall_time_s |
+  |---|---|---|---|
+  | domain | 1 | 2 | 97.144 |
+  | domain | 2 | 4 | 69.542 |
+  | domain | 4 | 8 | 63.396 |
+  | domain | 8 | 16 | 35.725 |
+  | domain | 16 | 32 | 21.038 |
+  | domain | 32 | 64 | 13.455 |
+  | node | 8 | 8 | 60.765 |
+  | node | 16 | 16 | 58.972 |
+  | node | 32 | 32 | 37.971 |
+
+- Reading: domain-granularity scales cleanly (sublinearly, as expected) all the way to 32
+  nodes/64 ranks — the point that was flatly impossible before decision #56 raised
+  `P_MAX_BITS` from 4 to 6. Node-granularity is slower than domain-granularity at every node
+  count where both were measured (8 nodes: 60.8s vs. domain's 8-node point of 35.7s; 16 nodes:
+  59.0s vs. 21.0s; 32 nodes: 38.0s vs. 13.5s) — see decisions.md #54/#57 for the full
+  node-matched comparison and the open question of whether node-granularity's relative gap
+  narrows at larger scale still.
+- Fixed two real rendering bugs found on an actual render, both in `make_distributed_scaling_
+  figure` itself: (1) a title set via `ax.set_title()` on only the left panel collided with the
+  right panel's rotated y-axis label once the title was long enough — switched to
+  `fig.suptitle()`, sized like the bottom legend already was (measure the real rendered height
+  after a draw, reserve exactly that much top margin); (2) at the compact (450x340pt) size, the
+  full-length title also overflowed past BOTH left and right canvas edges — fixed by shrinking
+  the suptitle's font size in a loop until it actually fits the figure width, the same
+  "measure, don't guess" principle as the legend's own column-count search.
+- Test coverage: `test_distributed_scaling_figure_no_rows_raises`,
+  `test_distributed_scaling_figure_draws_one_line_per_granularity`,
+  `test_distributed_scaling_figure_efficiency_is_one_at_each_series_own_first_point`,
+  `test_distributed_scaling_figure_efficiency_below_one_for_sublinear_scaling`,
+  `test_distributed_scaling_figure_single_point_granularity_skips_efficiency_line`,
+  `test_distributed_scaling_figure_deck_theme_exports_at_exact_size`. Full suite after this
+  addition: **90 passed** (this module's own incremental "Full suite" notes above have drifted
+  out of sync with several intervening figure additions not individually logged here — 90 is
+  the real, current, directly-verified count via `pytest
+  quera-talk-data/campaign-2026-09-11/figures/tests/`, not derived from the stale trail).
+
 ### 4. hash-cut (existing `hash_communication.png`)
 
 `make_hash_communication_vs_cutoff_figure(rows, theme="deck")`, restyled only — same

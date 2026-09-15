@@ -488,9 +488,7 @@ fn parse_partitions(
 
 /// `partition_row_blocks=` → an explicit "cut" policy, one disjoint qubit block per partition, fed straight to the core [`PartitionRows::cut`](paulistrings::PartitionRows::cut).
 /// `None` (the default) means no override — the caller's `partition_row_seed`/the sum's own hash seed picks GF(2)-random rows instead, unchanged from before this knob existed.
-fn parse_partition_row_blocks(
-    obj: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<Vec<Vec<u32>>>> {
+fn parse_partition_row_blocks(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Vec<u32>>>> {
     let Some(obj) = obj else {
         return Ok(None);
     };

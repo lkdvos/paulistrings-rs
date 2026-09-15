@@ -391,7 +391,15 @@ where
                 .expect("want_timer implies layer_t0 is Some")
                 .elapsed();
             if gate_tracing {
-                record_gate_trace(scratch, idx as u32, k as u32, ch.debug_name(), terms_before, sum.len(), dt);
+                record_gate_trace(
+                    scratch,
+                    idx as u32,
+                    k as u32,
+                    ch.debug_name(),
+                    terms_before,
+                    sum.len(),
+                    dt,
+                );
             }
             if debug_on {
                 log::debug!(
@@ -534,7 +542,8 @@ mod tests {
 
         let mut scratch = LayerScratch::<1>::new();
         scratch.enable_gate_trace();
-        let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+        let _ =
+            propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
         let trace = scratch.take_gate_trace().unwrap();
 
         assert_eq!(trace.application_index, vec![0, 1]);
@@ -558,8 +567,13 @@ mod tests {
 
         let mut scratch = LayerScratch::<1>::new();
         scratch.enable_gate_trace();
-        let _ =
-            propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Heisenberg, &mut scratch);
+        let _ = propagate_with_scratch(
+            &circuit,
+            sum,
+            &AlwaysKeep,
+            Direction::Heisenberg,
+            &mut scratch,
+        );
         let trace = scratch.take_gate_trace().unwrap();
 
         // Applied in loop order 0, 1, but the circuit ran channel 1 (`s`) first.
@@ -578,7 +592,8 @@ mod tests {
         circuit.push(Clifford1Q::h(0));
 
         let mut scratch = LayerScratch::<1>::new();
-        let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+        let _ =
+            propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
         assert!(scratch.take_gate_trace().is_none());
     }
 }

@@ -71,6 +71,21 @@ if comm.Get_rank() == 0:
 `comm` and `partitions` are alternatives — passing both is a `ValueError`.
 A distributed run places one partition per *process*, so the placement is the launcher's job.
 
+### Which rows decide a term's rank
+
+By default the rows are a GF(2)-random draw from the sum's own hash seed, which spreads a gate's deltas over every rank whatever the qubits' geometry.
+`partition_row_seed=` picks the draw; `partition_row_blocks=` replaces it with an explicit locality cut, one contiguous list of qubit indices per rank, so a gate whose qubits share a block never exchanges at all:
+
+```python
+half = observable.num_qubits // 2
+blocks = [list(range(half)), list(range(half, observable.num_qubits))]
+evolved = observable.propagate(circuit, policy, comm=comm, partition_row_blocks=blocks)
+```
+
+Both kwargs work the same way under `partitions=`, and the two are alternatives to each other.
+The block count must equal the rank count, the blocks must be disjoint, and they must be identical on every rank — the split is a local filter each rank computes for itself.
+A term's rank is then the XOR of the blocks it has odd Z-weight in, so a term supported inside one block belongs to that block's rank.
+
 ### `result="gather"` versus `result="local"`
 
 | `result` | what each rank gets back |

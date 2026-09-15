@@ -1593,3 +1593,17 @@
     to a real line once eps=2^-18/2^-20/2^-22 (or another node count) land under `cut`. No
     engine/test code changed beyond the doc/label additions -- `cargo test --workspace` (551+
     passed) and the figures suite (90 passed) both still green.
+
+64. **Job 7039572 (eps=2^-22, cut policy, 32 nodes/64 ranks) OOM'd for real, 2026-09-15** — a
+    genuine measurement, not a bug: `seff` reports 24.39 TB average utilized (52% of the
+    group's combined 46.94 TB) but the single worst rank's `MaxRSS` was ~1.06 TiB
+    (1,110,546,144 KB, `sacct`), 271% above the average task's peak — enough to exceed that
+    one node's own 1.47 TB budget even though the GROUP as a whole had headroom. Root cause is
+    load imbalance across ranks, not insufficient total memory, consistent with this
+    campaign's prior OOM (job 7032060, decisions.md #22) — that one was under `random`, this
+    one under `cut`, so the locality cut's block sizes are not automatically balanced either at
+    this qubit count/rank count. No `runs.jsonl` row was written (the whole group, including
+    rank 0, was killed before rank 0 could append one) — `eps=2^-22` stays untested at this
+    configuration, not silently recorded as a data point. Not retried in this session; a retry
+    would need either more nodes (thinner per-rank share) or a rebalanced cut, both real
+    follow-up work, not something to paper over with an inferred number.

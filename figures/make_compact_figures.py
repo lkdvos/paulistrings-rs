@@ -842,7 +842,10 @@ def make_distributed_scaling_figure(
     still draws its wall-time point but contributes no efficiency line -- one point has nothing
     to scale against besides itself.
 
-    Each row: `{"granularity": "domain" | "node", "nodes": int, "wall_time_s": float}`.
+    Each row: `{"granularity": str, "nodes": int, "wall_time_s": float}`. `"granularity"` is any
+    caller-chosen key, not restricted to `"domain"`/`"node"` -- `_GRANULARITY_LABEL` maps known
+    keys to a readable legend label and falls back to the raw key for an unlisted one (e.g. a
+    third series distinguishing a partition-row policy, not just a placement).
     """
     if not rows:
         raise NotImplementedError(
@@ -865,6 +868,7 @@ def make_distributed_scaling_figure(
     _GRANULARITY_LABEL = {
         "domain": "one rank per NUMA domain",
         "node": "one rank per node",
+        "domain-cut": "one rank per NUMA domain, cut policy",
     }
 
     legacy_palette = [_ACCENT, "#eb6834", "#5a8f3c", "#a15fb5"]

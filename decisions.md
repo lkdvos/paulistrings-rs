@@ -1579,3 +1579,17 @@
     `baseline_v4_stage5[_speedup].{svg,pdf,png}` + `_compact` (new; stages 1-4 unchanged since
     this label wasn't added to their `series_order`, though the underlying `rows` grew, so all
     were regenerated for consistency — no visible change expected at those stages).
+
+63. **`distributed_scaling` gains a third series for the cut-policy point, 2026-09-14.**
+    `make_distributed_scaling_figure`'s `"granularity"` field was already a free-form string
+    (only `_GRANULARITY_LABEL` special-cased `"domain"`/`"node"` for a readable legend entry) --
+    generalized the docstring to say so explicitly and added a `"domain-cut"` label ("one rank
+    per NUMA domain, cut policy"). Build script tags a row `"domain-cut"` instead of `"domain"`
+    when its source `runs.jsonl` row has `partition_row_policy == "cut"`. Currently one point
+    (32 nodes, eps=2^-16, 7.204s, decision #61) -- draws on the wall-time panel same as any
+    other single-point series (no line, a lone marker) and correctly contributes no efficiency
+    line (nothing to normalize a single point against), matching the function's existing
+    single-point handling with no code change beyond the label map and docstring. Will extend
+    to a real line once eps=2^-18/2^-20/2^-22 (or another node count) land under `cut`. No
+    engine/test code changed beyond the doc/label additions -- `cargo test --workspace` (551+
+    passed) and the figures suite (90 passed) both still green.

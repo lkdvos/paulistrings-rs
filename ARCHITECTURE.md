@@ -229,7 +229,7 @@ Partitions (§Partitioning) are the outer level of the same decomposition: the s
 ## Partitioning
 
 A partitioned run splits the sum across `P = 2^p` independent partitions — one NUMA domain in-process, one MPI rank distributed — by widening the bucket index.
-A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` designated **partition rows** (`PartitionRows<W>`, `P_MAX_BITS = 4`, so `P ≤ 16`), and `loc(v) = H·v` from an unchanged `Gf2Hash`.
+A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` designated **partition rows** (`PartitionRows<W>`, `P_MAX_BITS = 6`, so `P ≤ 64`), and `loc(v) = H·v` from an unchanged `Gf2Hash`.
 **A partition holds the terms with `part(v) = rank` and nothing else**, so a key lives on exactly one partition and duplicates can no more straddle partitions than buckets (§Bucketing).
 
 The partition rows are a separate matrix, not a prefix of `H`: `H`'s active rows grow with the term count, and a row that moved would change a term's owner mid-run.

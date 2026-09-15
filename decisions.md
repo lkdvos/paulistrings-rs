@@ -1481,3 +1481,28 @@
     granularity, eps=2^-20, the term-count-effect check from earlier) were still running when
     this figure was built — NOT included in the figure or the ratios above. Rebuild once they
     land rather than treating this entry as final.
+
+58. **64-node node-granularity point landed for real; `distributed_scaling` figure rebuilt to
+    include it, 2026-09-14.** Job 7037492 (64 nodes, node granularity, 64 ranks, eps=2^-16):
+    29.028s, real, completed. This is now node-granularity's OWN P_MAX_BITS ceiling too (64
+    ranks = 1 << 6, same cap decision #56 raised) — both placements are simultaneously at their
+    maximum rank count (domain: 32 nodes/64 ranks; node: 64 nodes/64 ranks), so neither can be
+    pushed further without another `P_MAX_BITS` change.
+
+    At the largest points reachable under each placement (domain's 32 nodes vs. node's 64
+    nodes — DIFFERENT node counts, not a matched comparison), domain-granularity is still
+    faster on HALF the hardware: 13.455s (32 nodes) vs. 29.028s (64 nodes) — 2.16x faster on
+    half the nodes. Every node-count-matched comparison available (8/16/32 nodes, decision
+    #57) already showed domain-granularity winning; this is simply the strongest form of that
+    same finding, now that node-granularity has nothing left to prove at greater scale within
+    the current `P_MAX_BITS` ceiling.
+
+    `figures/real/distributed_scaling.{svg,pdf,png}` and `_compact` rebuilt from the same
+    build script, now 10 real rows (up from 9); no code change needed, the figure function
+    already draws whatever `nodes` values are present. Job 7037248 (16 nodes, node
+    granularity, eps=2^-20): 2300.294s, real, completed — the term-count-effect check from the
+    user's "is this a term-count effect?" question is now answerable in full (compare against
+    the domain-granularity 8-node/16-rank point at the same eps, 1658.816s, decision #52/#54's
+    data): node-granularity is slower at this tighter eps too (2300.3 vs 1658.8s, a 1.39x gap
+    at MORE hardware for node-granularity, since 16 nodes > 8 nodes) — consistent with every
+    other eps tested, not a term-count artifact that resolves with more work per rank.

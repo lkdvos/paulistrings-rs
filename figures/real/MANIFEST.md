@@ -328,8 +328,8 @@ function's own docstring rather than implied by the shared axis.
 
 - Files: `distributed_scaling.{svg,pdf,png}` (900x340pt), `distributed_scaling_compact.*`
   (450x340pt).
-- All 9 points real and completed, `raw/2026-0[34]-distributed-{2,4,8,16,32,64}ranks/runs.jsonl`
-  (domain) and `raw/2026-09-14-distributed-node-{8,16,32}ranks/runs.jsonl` (node):
+- All 10 points real and completed, `raw/2026-0[34]-distributed-{2,4,8,16,32,64}ranks/runs.jsonl`
+  (domain) and `raw/2026-09-14-distributed-node-{8,16,32,64}ranks/runs.jsonl` (node):
 
   | granularity | nodes | ranks | wall_time_s |
   |---|---|---|---|
@@ -342,14 +342,20 @@ function's own docstring rather than implied by the shared axis.
   | node | 8 | 8 | 60.765 |
   | node | 16 | 16 | 58.972 |
   | node | 32 | 32 | 37.971 |
+  | node | 64 | 64 | 29.028 |
 
 - Reading: domain-granularity scales cleanly (sublinearly, as expected) all the way to 32
   nodes/64 ranks — the point that was flatly impossible before decision #56 raised
   `P_MAX_BITS` from 4 to 6. Node-granularity is slower than domain-granularity at every node
   count where both were measured (8 nodes: 60.8s vs. domain's 8-node point of 35.7s; 16 nodes:
-  59.0s vs. 21.0s; 32 nodes: 38.0s vs. 13.5s) — see decisions.md #54/#57 for the full
-  node-matched comparison and the open question of whether node-granularity's relative gap
-  narrows at larger scale still.
+  59.0s vs. 21.0s; 32 nodes: 38.0s vs. 13.5s) — see decisions.md #54/#57 for the node-matched
+  comparison, which does not show a narrowing gap at scale (the ratio widens from 8 to 16
+  nodes then holds flat into 32). 64 nodes is node-granularity's OWN `P_MAX_BITS` ceiling
+  (64 ranks, 1 per node) exactly as 32 nodes/64 ranks is domain-granularity's — both
+  placements are now simultaneously at their maximum reachable rank count, so this dataset is
+  complete under the current engine (decision #58): even domain-granularity's best point on
+  half the hardware (32 nodes, 13.5s) beats node-granularity's best point on all of it
+  (64 nodes, 29.0s).
 - Fixed two real rendering bugs found on an actual render, both in `make_distributed_scaling_
   figure` itself: (1) a title set via `ax.set_title()` on only the left panel collided with the
   right panel's rotated y-axis label once the title was long enough — switched to

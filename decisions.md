@@ -1607,3 +1607,28 @@
     configuration, not silently recorded as a data point. Not retried in this session; a retry
     would need either more nodes (thinner per-rank share) or a rebalanced cut, both real
     follow-up work, not something to paper over with an inferred number.
+
+65. **Full cut-vs-random node-count sweep landed, cut wins at every node count, 2026-09-15.**
+    Jobs 7039576-7039580 (1/2/4/8/16 nodes, domain granularity, cut, eps=2^-16) plus the
+    existing 32-node point (decision #61) complete the curve the user asked for ("use the same
+    threshold and sweep the node counts instead"):
+
+    | nodes | random (s) | cut (s) | cut speedup |
+    |---|---|---|---|
+    | 1 | 97.144 | 40.118 | 2.42x |
+    | 2 | 69.542 | 30.724 | 2.26x |
+    | 4 | 63.396 | 22.183 | 2.86x |
+    | 8 | 35.725 | 12.996 | 2.75x |
+    | 16 | 21.038 | 9.754 | 2.16x |
+    | 32 | 13.455 | 7.204 | 1.87x |
+
+    Cut is faster than random at every single node count measured (2.16x-2.86x, no clear trend
+    up or down with scale — decision #61's single-point "does the E8 in-process advantage carry
+    over to real network communication" question is now answered YES, robustly, not just at one
+    lucky point). `distributed_scaling` gains a full 6-point "one rank per NUMA domain, cut
+    policy" line (previously one lone point). Jobs 7039570/7039571 (eps=2^-18/2^-20, 64 ranks,
+    cut) also landed: 52.771s and 323.464s (vs. random's 99.798s/498.319s — 1.89x/1.54x) — added
+    to `baseline_v4_stage5`'s "current engine, 64 ranks, cut" series, now 3 real points. Files:
+    `distributed_scaling[_compact].{svg,pdf,png}`, `baseline_v4_stage5[_speedup][_compact].
+    {svg,pdf,png}`, all regenerated. Figures suite still 90 passed, no code changes needed
+    beyond the two build scripts' data.

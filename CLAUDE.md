@@ -32,6 +32,9 @@ These rules are binding on every file, including markdown.
 
 ## Commands
 
+End users install a released wheel from GitHub Releases (README's Python quickstart) — no Rust toolchain needed.
+Everything below is the from-source / contributor path.
+
 Setup creates `./.venv` and builds the PyO3 extension; the toolchain is pinned in `rust-toolchain.toml`.
 `PYTHON` defaults to `/usr/bin/python3.11`, which is absent on most Flatiron hosts — take one from Lmod instead.
 
@@ -66,6 +69,14 @@ export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features mpi        # tests/mpi_ranks.rs as a one-rank world
 scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
 scripts/mpi-test.sh --ranks 2,4 --python         # and the bindings' net
+```
+
+`mpi` is never bundled into a released wheel — no MPI implementation is portable across cluster/vendor combinations — so it stays a pip-driven source build against the loaded modules:
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install ".[dev]" --config-settings=build-args="--features mpi"
 ```
 
 `--python` needs a second venv, because `./.venv` has no mpi4py and mpi4py must come from the same interpreter and MPI the modules provide.

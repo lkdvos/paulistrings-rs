@@ -32,6 +32,9 @@ These rules are binding on every file, including markdown.
 
 ## Commands
 
+End users install a released wheel from GitHub Releases (README's Python quickstart) — no Rust toolchain needed.
+Everything below is the from-source / contributor path.
+
 Setup creates `./.venv` and builds the PyO3 extension; the toolchain is pinned in `rust-toolchain.toml`.
 `PYTHON` defaults to `/usr/bin/python3.11`, which is absent on most Flatiron hosts — take one from Lmod instead.
 
@@ -68,6 +71,14 @@ scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
 scripts/mpi-test.sh --ranks 2,4 --python         # and the bindings' net
 ```
 
+`mpi` is never bundled into a released wheel — no MPI implementation is portable across cluster/vendor combinations — so it stays a pip-driven source build against the loaded modules:
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install ".[dev]" --config-settings=build-args="--features mpi"
+```
+
 `--python` needs a second venv, because `./.venv` has no mpi4py and mpi4py must come from the same interpreter and MPI the modules provide.
 Build it once and `--python` reuses it (`$VIRTUAL_ENV` overrides the path):
 
@@ -81,6 +92,16 @@ Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:ru
 
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 **Submitting is the user's step, never an agent's** — adjust the template and hand over the `sbatch` line.
+
+## Releasing
+
+Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in one step; commit both together, never separately.
+CI's `version-sync` job fails a PR if the two ever disagree.
+Before tagging: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, the `mpi` CI job, and `python` CI job must all be green on `main`; also check `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils`, which mirrors what docs.rs builds and is not covered by `cargo test`.
+Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag, to catch a wheel-matrix failure before it's user-visible.
+**Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which checks the tag against both version files and publishes wheels (manylinux x86_64, macOS x86_64/arm64) to the GitHub Release.
+Publishing the Rust crate to crates.io is a separate, manual `workflow_dispatch` of `.github/workflows/crates-publish.yml` (defaults to `--dry-run`) — run it after the wheel release for the same version, not instead of it.
+Neither workflow writes a changelog; that stays unautomated today.
 
 ## Progress logging
 

@@ -9,6 +9,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version-sync:
+    name: Cargo.toml / pyproject.toml versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/check-version-sync.sh
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest

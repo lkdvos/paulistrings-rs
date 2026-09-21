@@ -1,0 +1,34 @@
+name: crates-publish
+
+# Manual only, run after release.yml's tag-triggered wheel build for the same
+# version: Rust and Python are released together, one version for both, so
+# this checks Cargo.toml agrees with pyproject.toml before publishing rather
+# than trusting a tag of its own.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (cargo publish --dry-run, nothing is uploaded)"
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: cargo publish paulistrings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: scripts/check-version-sync.sh
+      # Cargo.lock is gitignored (a library, not committing it deliberately),
+      # so a fresh checkout has none — `--locked` below needs one present,
+      # just not one that came from git.
+      - run: cargo generate-lockfile
+      - name: cargo publish (dry run)
+        if: inputs.dry_run
+        run: cargo publish -p paulistrings --locked --dry-run
+      - name: cargo publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p paulistrings --locked

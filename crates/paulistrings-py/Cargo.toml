@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Python bindings for paulistrings"
+# A cdylib with no reusable Rust API; distributed as wheels, never as a crate.
+publish = false
 
 [lib]
 name = "_paulistrings"

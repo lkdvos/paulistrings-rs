@@ -1,9 +1,7 @@
 # Observable from a Hamiltonian
 
-A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same
-way as any other observable — accumulate `{pauli_string: coefficient}` and
-hand it to `PauliSum.from_strings`. This builds a transverse-field Ising chain,
-`H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)`:
+A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same way as any other observable — accumulate `{pauli_string: coefficient}` and hand it to `PauliSum.from_strings`.
+This builds a transverse-field Ising chain, `H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)`:
 
 ```python
 from paulistrings import PauliSum
@@ -25,11 +23,7 @@ for i in range(n):
 hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
 ```
 
-Terms that land on the same key sum their coefficients (only relevant if your
-own construction can produce duplicate strings; the chain above never does).
-For thousands of terms built programmatically, [`from_arrays`](build-observable-from-arrays.md)
-avoids the per-term string allocation.
+`terms` is a plain `dict`, so accumulating into `terms.get(key, 0.0) - J` before the call is what merges repeated bonds onto one string — `from_strings` itself never sees a duplicate key, since a Python dict cannot hold one.
+For thousands of terms built programmatically, [`from_arrays`](build-observable-from-arrays.md) avoids the per-term string allocation and instead sums duplicate rows itself.
 
-See [PauliSum reference](../reference/pauli-sum.md) for the full constructor
-surface and [Observable from Pauli strings](build-observable-from-strings.md)
-for the string-key convention.
+See [PauliSum reference](../reference/pauli-sum.md) for the full constructor surface and [Observable from Pauli strings](build-observable-from-strings.md) for the string-key convention.

@@ -109,7 +109,7 @@ would flatten this curve; nothing in the current engine has one. The counts alte
 sweep (7841 vs 6631; 821 750 vs 517 398): the seed sits on bond `c = n//2`, an even bond when
 `n ≡ 0 (mod 4)` and odd otherwise, so the even-then-odd sweep hits it in a different half-step
 each time, changing the truncation schedule (a property of the bond ordering, not noise). Peak
-memory tracks the term count and the width monomorphization, and nothing else: for the `Jz=0.5`,
+memory tracks the term count and the compile-time width tier, and nothing else: for the `Jz=0.5`,
 `Z_c` series (~206 000 terms at every `n`), growth is 11.2 MiB for `n ≤ 60` and 17.5 MiB for
 `n ≥ 70`, **55 B/term against 87 B/term** — the `W = 1 → W = 2` boundary at 64 qubits (64-bit vs
 128-bit symplectic keys: 32 B/term of key becomes 48 B/term).

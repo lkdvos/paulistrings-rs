@@ -51,8 +51,8 @@ It is `None` for an unpartitioned run.
 
 ## Partitioning changes
 
-**`RAYON_NUM_THREADS` is ignored.** The partitioned engine builds one pool per partition from the placement, not from Rayon's global pool, so the thread count comes from the CPU sets.
-Under `Placement::Unpinned` it comes from `threads_per_partition`.
+**`RAYON_NUM_THREADS` is ignored.** The partitioned engine builds one pool per partition from the placement, not from Rayon's global pool, so an explicit CPU-list placement takes its thread count from the list lengths.
+Without an explicit placement (`partitions="auto"` or an integer count) it comes from `threads_per_partition` instead.
 The variable still governs an unpartitioned run ([Running on NUMA partitions](../how-to/run-on-numa-partitions.md)).
 
 **Exact `topn` is unavailable.** Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects `truncation.topn`.

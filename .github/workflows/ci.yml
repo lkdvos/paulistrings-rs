@@ -9,6 +9,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version-sync:
+    name: Cargo.toml / pyproject.toml versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          pyproject_version="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
+          if [[ "$cargo_version" != "$pyproject_version" ]]; then
+            echo "::error::Cargo.toml ($cargo_version) and pyproject.toml ($pyproject_version) disagree — release both together, e.g. scripts/bump-version.sh"
+            exit 1
+          fi
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest

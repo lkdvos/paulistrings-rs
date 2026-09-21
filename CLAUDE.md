@@ -95,12 +95,13 @@ Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 
 ## Releasing
 
-Rust and Python release together, one version for both: bump `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in the same commit, never separately.
+Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in one step; commit both together, never separately.
+CI's `version-sync` job fails a PR if the two ever disagree.
 Before tagging: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, the `mpi` CI job, and `python` CI job must all be green on `main`; also check `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils`, which mirrors what docs.rs builds and is not covered by `cargo test`.
 Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag, to catch a wheel-matrix failure before it's user-visible.
 **Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which checks the tag against both version files and publishes wheels (manylinux x86_64, macOS x86_64/arm64) to the GitHub Release.
 Publishing the Rust crate to crates.io is a separate, manual `workflow_dispatch` of `.github/workflows/crates-publish.yml` (defaults to `--dry-run`) — run it after the wheel release for the same version, not instead of it.
-Neither workflow bumps versions or writes a changelog; both are unautomated today.
+Neither workflow writes a changelog; that stays unautomated today.
 
 ## Progress logging
 

@@ -4,14 +4,14 @@ What the engine's speed rests on, and where its measured limits are.
 Layout and dispatch decisions come first; the second half is a roofline analysis of the current engine against the reference host's measured memory bandwidth.
 Every number is copied from a committed source, named inline and in the footer.
 
-## Layout: structure-of-arrays, monomorphized width
+## Layout: structure-of-arrays, compile-time width
 
-Terms live in per-bucket parallel columns: `Vec<[u64; W]>` for the `x` and `z` key words, `Vec<Complex64>` for coefficients — 48 B per term at `W = 2` (32 B key + 16 B coefficient).
+Terms live in per-bucket parallel columns: fixed-width bit arrays for the x and z key words, complex numbers for coefficients — 48 B per term at the two-word (128-qubit) tier (32 B key + 16 B coefficient).
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream only the bytes they use, and each column maps directly to a GPU device buffer.
 Buckets retain their capacity across layers, so a steady-state propagation loop allocates nothing (`ARCHITECTURE.md` §Data-Model).
 
-The width `W` is a const generic: monomorphization unrolls all bit operations and keeps `PauliString` a `Copy` value type.
-The Python bindings instantiate `W ∈ {1, 2, 4, 8, 16}` (64–1024 qubits) and dispatch once, outside any hot loop (`ARCHITECTURE.md` §Width).
+The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
+The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (`ARCHITECTURE.md` §Width).
 
 ## Where a layer's time goes
 
@@ -93,7 +93,7 @@ They stop at half the write ceiling with 70–90% of their modeled traffic cache
 
 ## Across NUMA nodes and across ranks
 
-Both facts above — the second socket adding 15–25% rather than 2×, and the dense-PTM class pinned to the write ceiling — are the same effect: pages are placed by first touch and Rayon then steals work across sockets, so roughly half of the second socket's reads are remote.
+Both facts above — the second socket adding 15–25% rather than 2×, and the dense-PTM class pinned to the write ceiling — are the same effect: pages are placed by first touch and the thread pool then steals work across sockets, so roughly half of the second socket's reads are remote.
 The engine can instead be run partitioned, one pinned pool and one share of the sum per NUMA domain, with only the rows a layer moves across a domain boundary exchanged.
 
 **Locality decides whether that pays.** A layer with no row crossing runs 4–18% faster at `P = 2`, the gain growing with cores per socket; a layer that exports rows costs 2–8× the layer it feeds.

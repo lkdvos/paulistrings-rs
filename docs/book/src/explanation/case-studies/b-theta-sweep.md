@@ -4,7 +4,7 @@
 how far a truncated Pauli sum drifts from the exact answer, and what an
 <em>exact</em> reference costs at each cone size.</p>
 
-![Absolute error against warm wall time, one curve per kick angle](../assets/theta-sweep/error-vs-runtime.svg)
+![Absolute error against warm wall time, one curve per kick angle](../../assets/theta-sweep/error-vs-runtime.svg)
 
 *The plot the benchmark exists for: `|error|` against warm wall time, over the
 truncation grid, for every observable and angle.*
@@ -76,7 +76,7 @@ which reports the same run's 5.58·10⁻⁷ true error as zero.
 
 ## Reference values
 
-![Absolute error against the coefficient cutoff](../assets/theta-sweep/error-vs-min-abs-coeff.svg)
+![Absolute error against the coefficient cutoff](../../assets/theta-sweep/error-vs-min-abs-coeff.svg)
 
 `Z_62` and weight-10 carry exact references at every interior angle (12
 decimal digits, in the committed `summary.json`). Weight-17's four interior
@@ -93,7 +93,7 @@ the tightest point of each sweep has an error of ~0 by construction.
 
 ## Clifford endpoints {#clifford-endpoints}
 
-![Absolute error against the weight cap](../assets/theta-sweep/error-vs-max-weight.svg)
+![Absolute error against the weight cap](../../assets/theta-sweep/error-vs-max-weight.svg)
 
 Scored over the coefficient sweep (8 cutoffs from `1e-2` to `1e-9`) at each
 endpoint:
@@ -154,13 +154,13 @@ confident one. That property does not survive to Benchmark C's depth — see
 
 ## Cross-engine parity {#cross-engine-parity}
 
-![All 1355 per-layer term counts, both engines](../assets/theta-sweep/parity-per-layer-terms.svg)
+![All 1355 per-layer term counts, both engines](../../assets/theta-sweep/parity-per-layer-terms.svg)
 
 Matched truncation, one gate per channel on both sides, Heisenberg, `|0…0⟩`,
 single-threaded, θ_h = 0.2, `min_abs_coeff ∈ {1e-3, 1e-4, 1e-5}` — three
 cutoffs rather than one, compared per applied layer, all 1355 of them.
 
-![Term count against the cutoff, both engines](../assets/theta-sweep/term-count-vs-truncation.svg)
+![Term count against the cutoff, both engines](../../assets/theta-sweep/term-count-vs-truncation.svg)
 
 Per-layer counts are 1355/1355 identical for all nine (observable, cutoff)
 pairs. Final terms and |Δ⟨O⟩|:

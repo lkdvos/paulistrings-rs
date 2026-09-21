@@ -2,7 +2,7 @@
 
 <p class="lead">Two diagnostics read off the evolved sum's numpy export, each answering "how hard is this operator?" under a different cost model: Pauli-spectrum entropy (a magic-adjacent diagnostic for truncation-based Pauli propagation) and operator entanglement, the cost model for matrix-product-operator methods. Both are zero on a single Pauli string.</p>
 
-![Both diagnostics against the kick angle, with the two Clifford angles marked](../assets/b6/theta_sweep.svg)
+![Both diagnostics against the kick angle, with the two Clifford angles marked](../../assets/b6/theta_sweep.svg)
 
 *Exact (untruncated) sweep of the kick angle on a 16-qubit kicked-Ising chain. Both diagnostics vanish at both Clifford endpoints and are strictly positive at all 15 interior angles. Dotted verticals mark the Clifford angles.*
 
@@ -69,7 +69,7 @@ At each size the dense `2ⁿ × 2ⁿ` matrix is rebuilt with `numpy.kron`, and b
 
 ## Depth sweep: exact against truncated
 
-![Both diagnostics against depth, exact and truncated](../assets/b6/depth_sweep.svg)
+![Both diagnostics against depth, exact and truncated](../../assets/b6/depth_sweep.svg)
 
 Same chain at n = 20, generic `θ_h = 0.6`, seed `Z_10`, one cut bond. Exact through depth 6 (208 012 terms, a 462×1715 Schmidt matrix); depth 7 exact is 2.67 M terms and past the guard, so it is truncated-only.
 
@@ -87,7 +87,7 @@ Same chain at n = 20, generic `θ_h = 0.6`, seed `Z_10`, one cut bond. Exact thr
 
 ## Truncation convergence
 
-![Convergence panel: rows are depth, columns are diagnostic](../assets/b6/convergence_panel.svg)
+![Convergence panel: rows are depth, columns are diagnostic](../../assets/b6/convergence_panel.svg)
 
 Depth 6 converges monotonically against the exact value over five orders of `min_abs_coeff`, ending at **4.6·10⁻¹¹** (`S_2`) and **3.7·10⁻¹¹** (`S_op`); at `1e-7` the truncated sum already has 4.5× fewer terms than exact while agreeing to eleven digits. Depth 7 has no exact reference, so it is shown self-converging instead: successive drift falls by roughly 1.5 orders per decade of cutoff, converging the quoted depth-7 values to about 10⁻⁷. Both statements are asserted by the script, not eyeballed. Full tables are in the source README.
 

@@ -1,6 +1,6 @@
 [book]
 title = "paulistrings-rs"
-description = "Pauli propagation in Rust: showcases, benchmarks, and cross-engine comparisons."
+description = "Pauli propagation from Python: tutorial, how-to guides, reference, and explanation."
 language = "en"
 src = "src"
 

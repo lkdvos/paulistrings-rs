@@ -6,7 +6,7 @@ Below roughly 10⁴ tracked terms <code>PauliPropagation.jl</code> is 3–4× fa
 engine is ~1.5× faster and pulling away. A single-point comparison would have "shown" either
 engine winning by 3–4×.</p>
 
-![Untruncated term count against Trotter steps, free and interacting regimes](../assets/xxz/term-growth.svg)
+![Untruncated term count against Trotter steps, free and interacting regimes](../../assets/xxz/term-growth.svg)
 
 ## Setup
 
@@ -83,7 +83,7 @@ Aer call fails the assertion — both oracle-using modes therefore run every pro
 
 ## Time and peak memory against `n` {#time-and-peak-memory-against-n}
 
-![Warm propagation time and peak memory growth against chain length](../assets/xxz/time-memory-vs-n.svg)
+![Warm propagation time and peak memory growth against chain length](../../assets/xxz/time-memory-vs-n.svg)
 
 6 Trotter steps, matched `min_abs_coeff = 1e-6` in both regimes, `n = 20…100`. One Python
 subprocess per point, because `VmHWM` is a process-lifetime high-water mark: a single process
@@ -116,7 +116,7 @@ memory tracks the term count and the width monomorphization, and nothing else: f
 
 ## Convergence panels {#convergence-panels}
 
-![Absolute error against runtime at n = 24](../assets/xxz/error-vs-runtime.svg)
+![Absolute error against runtime at n = 24](../../assets/xxz/error-vs-runtime.svg)
 
 `n = 24`, 6 Trotter steps, `Z_c`, against the exact statevector value:
 
@@ -139,7 +139,7 @@ decade buys nothing measurable: below ~3·10⁻⁷ the comparison stops resolvin
 floating-point coefficients summed in an unspecified order, contracted against a dense reference
 with an error budget of its own, is the floor of the comparison, not of the truncation.
 
-![Self-convergence at n = 60 and n = 100](../assets/xxz/self-convergence.svg)
+![Self-convergence at n = 60 and n = 100](../../assets/xxz/self-convergence.svg)
 
 The self-converged panels at `n = 60` and `n = 100` produce bit-identical values at every cutoff
 (`+0.0247793658` at 10⁻⁸ for both) and identical term counts, differing only in wall time (9.6 s

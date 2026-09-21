@@ -6,7 +6,7 @@ The companion [Performance](performance.md) page puts measured numbers to each c
 
 ## The propagation loop
 
-A `PauliSum` stores each term as a symplectic key: qubit `i`'s Pauli is a bit pair, packed into `x: [u64; W]`, `z: [u64; W]` words (`W` words cover `64·W` qubits), with a complex coefficient (ARCHITECTURE.md §Data-Model).
+A `PauliSum` stores each term as a symplectic key: qubit `i`'s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient (ARCHITECTURE.md §Data-Model).
 Under this encoding Pauli multiplication is bitwise XOR of keys plus a phase, and the phase is folded into the coefficient at the boundary, so a key is a plain element of the vector space `GF(2)^{2n}`.
 
 Each circuit layer applies one channel to every term.
@@ -22,7 +22,7 @@ The sum is partitioned into buckets, and its canonical order is bucket index asc
 Deduplication therefore only ever needs a canonical order *within* one bucket, and every bucket is small and cache-resident.
 Nothing in the propagation loop ever sorts the whole sum.
 
-Storage is structure-of-arrays per bucket: parallel `Vec<[u64; W]>` columns for `x` and `z` and a `Vec<Complex64>` for coefficients.
+Storage is structure-of-arrays per bucket: parallel columns for the x key bits, the z key bits, and the complex coefficients.
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream exactly the bytes they use, and every column maps directly to a GPU device buffer.
 Buckets own their columns, so each retains its capacity across layers: the steady state of a propagation loop allocates nothing.
 
@@ -46,7 +46,7 @@ Refining the partition when the sum grows is a single parity pass per term, not 
 
 Take the span of `h(D)` in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: **a coset is a closed task**.
-That is the engine's whole parallel decomposition — one coset per Rayon task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
+That is the engine's whole parallel decomposition — one coset per work-stealing task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
 Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Parallelism).
 
 ![Bucket space partitioned into cosets](../assets/design/bucket-cosets.svg)
@@ -74,16 +74,16 @@ Channels that never change keys at all (depolarizing, dephasing, Pauli gates) by
 
 ## Channels are prepared once
 
-Applying a channel through its trait object per term would pay a virtual call and re-derived tables millions of times.
+Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
-The preparation is derived automatically for any channel with support on at most two qubits by probing the channel's own `apply` on the local Pauli basis — a custom channel implements `apply` and gets the bucketed engine for free.
+The preparation is derived automatically for any channel with support on at most two qubits by probing the channel's own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
 Pauli rotations prepare specially at any generator weight, since their delta set is just `{0, generator}` (ARCHITECTURE.md §Prepared-Channels).
 
 ## Truncation is what keeps it tractable
 
-Truncation is a trait with two hooks split by cost.
-`keep_term` runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is monomorphized into it, so a threshold test inlines to a compare with no call.
-`finalize_layer` runs once per layer and may be non-local; `TopN` and its histogram-based approximation live there.
+A truncation policy has two hooks split by cost.
+The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
+The per-layer step runs once per layer and may be non-local; `TopN` and its histogram-based approximation live there.
 Policies compose with and/or combinators.
 Magnitude comparisons use `|c|²` rather than `|c|` (the same ordering, no `hypot` on the hot path), and `TopN` keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).
 

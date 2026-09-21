@@ -1,13 +1,13 @@
 # B2 — Noisy circuit verification
 
 <p class="lead">The 127-qubit heavy-hex kicked-Ising circuit from
-<a href="../benchmarks/c-deep-trotter.html">Benchmark C</a> gets per-gate depolarizing
+<a href="c-deep-trotter.html">Benchmark C</a> gets per-gate depolarizing
 noise added, and the noise makes the simulation cheaper. At <code>p = 3e-2</code> the
 tracked set peaks at 651× fewer terms than at <code>p = 0</code>, and the run finishes
 1078× faster, at the same cutoff. Every density-matrix method scales the opposite
 way.</p>
 
-![Peak and final term count, and wall time, against the noise rate](../assets/b2/terms-and-time-vs-noise.svg)
+![Peak and final term count, and wall time, against the noise rate](../../assets/b2/terms-and-time-vs-noise.svg)
 
 ## Noise shrinks the tracked set
 
@@ -63,7 +63,7 @@ legs in the same sweep.
 
 ## Convergence across cutoffs
 
-![Convergence against cutoff, one curve per noise rate](../assets/b2/convergence-vs-cutoff.svg)
+![Convergence against cutoff, one curve per noise rate](../../assets/b2/convergence-vs-cutoff.svg)
 
 At `p = 3e-2` the fixed-cutoff answer above reads exactly `0`; the converged answer is 7.8·10⁻⁵.
 
@@ -108,7 +108,7 @@ channel here neither self-adjoint nor key-preserving, its Heisenberg dual
 
 ## What is claimable
 
-![Observable decay against the noise rate](../assets/b2/observable-decay-vs-noise.svg)
+![Observable decay against the noise rate](../../assets/b2/observable-decay-vs-noise.svg)
 
 At `p = 0` the noise model must vanish and this showcase must return Benchmark C's
 claimable numbers, read from C's committed `summary.json` at run time rather than
@@ -138,7 +138,7 @@ actually want, since a device is noisy:
 
 `p = 1e-3` at 20 steps is not claimable, since its cutoff sweep never plateaued, and
 neither is `θ_h = 7π/32` at 20 steps noiseless: it is
-[Benchmark C's measured reachability boundary](../benchmarks/c-deep-trotter.md#what-it-would-take).
+[Benchmark C's measured reachability boundary](c-deep-trotter.md#what-it-would-take).
 
 ### The reachability boundary, with and without noise
 

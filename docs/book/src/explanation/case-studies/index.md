@@ -1,7 +1,62 @@
-# Benchmarks
+# Case studies
 
-<p class="lead">Five benchmarks, each with a setup, an oracle, and a result.
-Two of the five results are negative.</p>
+Ten measured pieces of work — five showcases and five benchmarks — each one a
+physics question or a performance question the engine was pointed at rather
+than a demonstration written around a known answer. Every one carries an
+independent cross-check (a dense reference computed by a route that shares no
+code with the engine, or an exact oracle such as `stim`) and, where the result
+is truncated, a convergence panel that says where the converged window ends.
+
+## Showcases
+
+Five measured applications.
+
+| | what it shows | independent check | cost |
+|---|---|---|---|
+| [B1 Operator scrambling](b1-operator-scrambling.md) | support growth, light cones, OTOCs and butterfly velocity — 1D chain, then a 2D quench, then a measured 3D cost projection | dense `2ⁿ×2ⁿ` Kronecker construction; worst gap 5.8·10⁻¹⁵ (1D) / 2.1·10⁻¹⁴ (2D) | minutes (1D), ~15 min (2D), tens of GB |
+| [B2 Noisy circuit verification](b2-noisy-verification.md) | on a 127-qubit kicked-Ising circuit, **noise makes the simulation cheaper**: 651× fewer peak terms and 1078× less wall time at `p = 3e-2` | hand-rolled Kraus density-matrix evolution, all five channels, both directions, `1e-10` | 25.7 min single-threaded |
+| [B5 Operator backpropagation](b5-operator-backpropagation.md) | hybrid depth reduction: back-propagate the tail classically, hand a QPU the shorter front circuit and an evolved observable | qiskit-Aer statevector, gap 1.7·10⁻¹⁶; task file round-trip gap exactly `0.0` | ~3 s |
+| [B6 Resource probes](b6-resource-probes.md) | difficulty of the evolved operator: Pauli-spectrum entropy (the cost model for *this* engine) against operator entanglement (the cost model for MPO methods) | brute force over all `4ⁿ` traces and a dense SVD; every gap ≤ 8.9·10⁻¹⁶ | under a minute |
+| [B7 Stabilizer-prep](b7-stabilizer-prep.md) | stim prepares a 36-qubit 2D cluster state, a non-Clifford tail is propagated, and the expectation is contracted against the stabilizer state in `O(m·n²/64)`, avoiding a 1.0 TiB state vector | dense statevector and a projector from the generators alone at `n ≤ 12`, plus qiskit Aer; worst gap 2.2·10⁻¹⁵ | 116 s, 10.2 GiB peak RSS (`--quick`: 40 s, 1.5 GiB) |
+
+B3 (variational pre-training) and B4 (QML/QCNN) are not part of this suite.
+
+### What every showcase page carries
+
+A convergence panel on every truncated result: a single number from a single
+cutoff is not a result here. The retained Hilbert–Schmidt norm `N = Σ|c_P|²`
+alongside it, conserved under exact unitary evolution and equal to 1 for a
+single Pauli seed, so `1 − N` is exactly the deleted fraction of the operator
+under truncation. Named dependencies rather than silent approximations: where
+a reference was not reachable, the page says so and what it would cost.
+
+### Reproducing a showcase
+
+```bash
+./scripts/setup.sh
+source .venv/bin/activate
+pip install -e ".[examples]"
+maturin develop --release -m crates/paulistrings-py/Cargo.toml
+
+RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
+RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py
+RAYON_NUM_THREADS=1 python examples/b5_operator_backpropagation/run_b5.py
+RAYON_NUM_THREADS=1 python examples/b6_resource_probes/run_b6.py
+RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py
+```
+
+Each script rewrites every figure and JSON file next to itself. Each showcase
+also has a CI-visible correctness gate under `examples/tests/` that
+runs in about a second on numpy alone — the physics is checked on every commit
+even though the full runs are manual.
+
+**Source:**
+[`examples/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/README.md).
+
+## Benchmarks
+
+Five benchmarks, each with a setup, an oracle, and a result.
+Two of the five results are negative.
 
 | | setup | oracle | headline result |
 |---|---|---|---|
@@ -11,7 +66,7 @@ Two of the five results are negative.</p>
 | [D XXZ chain](d-xxz-chain.md) | Trotterized XXZ chain, `n = 20…100`, free and interacting regimes | statevector at `n ≤ 26`, plus an *analytic* growth law | quadratic term growth confirmed as **exactly `16s²`**; the cross-engine ranking changes sign between 3·10³ and 3·10⁴ terms |
 | [E Random SU(4) brickwork](e-su4-brickwork.md) | 36 qubits, an independent Haar-random SU(4) block per brickwork site | statevector at `n ≤ 24` | the generic worst case: no Clifford structure, no light-cone shortcut. Rise, plateau, then **collapse to zero terms**; the two engines within noise of each other |
 
-## The rules these ran under
+### The rules these ran under
 
 Four of them are worth stating up front, because they are what makes the tables
 comparable:
@@ -35,7 +90,7 @@ comparable:
    its reported uncertainty is inside half the accuracy bar. Rows failing either
    test are printed as `not claimable` and no value is quoted from them.
 
-## The plateau criterion
+### The plateau criterion
 
 The obvious self-convergence test is "tighten the cutoff until two successive
 values agree to `tol`". That test is wrong here, and Benchmark B caught it.
@@ -57,7 +112,7 @@ looks. The fix is worth a measured **190×** in accuracy.
 Benchmarks C and B2 import that criterion as a function object rather than
 re-implementing it, and a test asserts it is the same object.
 
-## Reproducing
+### Reproducing a benchmark
 
 ```bash
 ./scripts/setup.sh && source .venv/bin/activate
@@ -74,13 +129,11 @@ RAYON_NUM_THREADS=1 python benchmarks/python/bench_e_su4.py
 None of these is in CI. Each has a CI-safe correctness gate at smaller scale
 under `benchmarks/python/tests/`, so the physics is checked on every commit.
 
-There are two further benchmark surfaces this section does not cover: the Rust
-criterion microbenchmarks (`cargo bench -p paulistrings`, for tight inner-loop
-work — multiplication, commutator, weight, hashing) and the cross-*library*
+There is a further benchmark surface this section does not cover: the cross-*library*
 construction/conjugation comparison against `qiskit.SparsePauliOp` and
 `openfermion.QubitOperator` in `benchmarks/python/bench_baseline.py`.
 
-## Caveat that applies to every page in this section
+### Caveat that applies to every benchmark page
 
 **Wall times are indicative of shape, not campaign-grade.** They were taken on a
 shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, `ccqlin038`) whose stated

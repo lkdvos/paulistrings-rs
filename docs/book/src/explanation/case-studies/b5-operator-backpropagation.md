@@ -2,7 +2,7 @@
 
 <p class="lead">Split a circuit near the end, back-propagate the observable through the tail classically, and hand a QPU the shorter front circuit plus an evolved observable. The composed expectation is <em>exactly</em> the full-circuit one — so the trade is QPU depth against classical term count, and this page measures both sides of it.</p>
 
-![Evolved-observable term count and residual front-circuit size against tail depth](../assets/b5/depth_vs_terms.svg)
+![Evolved-observable term count and residual front-circuit size against tail depth](../../assets/b5/depth_vs_terms.svg)
 
 *As the tail depth `k` grows the residual front circuit shrinks linearly in Trotter steps (186 → 0 gates) while the weight-capped evolved observable grows roughly exponentially (1 → 12 413 terms).*
 
@@ -25,8 +25,9 @@ source .venv/bin/activate
 python examples/b5_operator_backpropagation/run_b5.py
 ```
 
-Key calls:
+Key calls — an excerpt from the actual example script, verified by `pytest examples/tests/test_showcase_b5.py`, not standalone:
 
+<!-- doctest: skip -->
 ```python
 tail_evolved = observable.propagate(tail_circuit, policy, direction="heisenberg")
 psio.save(npz_path, tail_evolved)                 # round-trip through disk
@@ -62,7 +63,7 @@ Sweeping `min_abs_coeff` against the exact reference above:
 | 1e-6 | 64465 | −0.1755848308 | 1.483e-07 |
 | 1e-8 | 64786 | −0.1755846840 | 1.531e-09 |
 
-![Convergence panel against the exact reference](../assets/b5/convergence_panel.svg)
+![Convergence panel against the exact reference](../../assets/b5/convergence_panel.svg)
 
 Truncation is applied after every *channel*, not after every Python call, so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where `k` is chosen. The gap is **not monotone** in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.
 

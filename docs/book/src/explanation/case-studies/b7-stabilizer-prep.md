@@ -59,7 +59,7 @@ swept from `0` to `π/2`:
 
 (all 17 sweep points: `theta_sweep.csv`)
 
-![Expectation of the two cluster stabilizers against the kick angle, with the closed-form curve overlaid](../assets/b7/theta_sweep.svg)
+![Expectation of the two cluster stabilizers against the kick angle, with the closed-form curve overlaid](../../assets/b7/theta_sweep.svg)
 
 Preparation depth is free on the Heisenberg side: it never sees the state, so
 one evolved observable is contracted against the same cluster state prepared
@@ -114,7 +114,7 @@ to 2.1 ns and flattens near the cost of a load, an xor pair and a parity.
 Linearity in `m` at `n = 256` holds flat to 7% over two decades, from 1 000 to
 100 000 terms (`scaling.csv`).
 
-![Per-term contraction time against n, and linearity against m](../assets/b7/scaling.svg)
+![Per-term contraction time against n, and linearity against m](../../assets/b7/scaling.svg)
 
 The full run takes 116 s and 10.2 GiB peak RSS, single-threaded
 (`RAYON_NUM_THREADS=1`), the minimum of five repeats after warm-up. Every
@@ -138,7 +138,7 @@ converges faster than the sum: between `1e-4` and `1e-6` at depth 4 the term
 count grows 1.4× while the answer moves 2.3e-5, because only terms landing in
 the stabilizer group contribute at all.
 
-![Truncation convergence at tail depths 4 and 5](../assets/b7/convergence_panel.svg)
+![Truncation convergence at tail depths 4 and 5](../../assets/b7/convergence_panel.svg)
 
 ## Reproducing
 

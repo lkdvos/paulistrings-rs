@@ -5,7 +5,37 @@ The published site at
 an [mdBook](https://rust-lang.github.io/mdBook/) whose source is
 [`book/`](book/), with the crate's rustdoc mounted underneath it at `/api/`.
 Both are built and deployed by [`.github/workflows/docs.yml`](../.github/workflows/docs.yml)
-on every push to `main`.
+on every push to `main`, published from the `gh-pages` branch (GitHub Pages'
+"Deploy from a branch" source, not the Actions-based deployment — see "Previews"
+below for why).
+
+Every fenced `python` code block in the book runs for real in that same
+workflow, against a built (debug-profile) extension, before anything deploys — see
+[`scripts/test-doc-snippets.py`](../scripts/test-doc-snippets.py).
+A block preceded by a `<!-- doctest: skip -->` line is excluded: MPI/NUMA
+snippets this runner has no hardware for, and case-study excerpts already
+covered by `pytest examples/tests`.
+Run it locally the same way CI does, against an activated venv:
+
+```bash
+python scripts/test-doc-snippets.py            # every page
+python scripts/test-doc-snippets.py --list      # what would run/skip, no execution
+python scripts/test-doc-snippets.py FILE ...    # just these pages
+```
+
+## Previews
+
+Every same-repo pull request that touches `docs/**` gets its build published
+under `pr-preview/pr-<n>/` on the `gh-pages` branch, with the link
+auto-commented on the PR by
+[`rossjrw/pr-preview-action`](https://github.com/rossjrw/pr-preview-action);
+the preview is removed again when the PR closes. This only works for pull
+requests from this repository (not forks), since a fork's `GITHUB_TOKEN` has
+no write access — same restriction the main deploy always had. This is also
+why the site deploys via a `gh-pages` branch rather than the newer
+Actions-based Pages deployment: a preview subtree living alongside the main
+site on one branch has no equivalent in the Actions method, which publishes
+exactly one artifact per deployment.
 
 ## Building it locally
 
@@ -29,13 +59,16 @@ by rendering `cargo doc` alongside the book. Everything else resolves locally.
 
 ## What is in it
 
-| page | contents |
+The book follows a [Diataxis](https://diataxis.fr/) structure, Python-only —
+the Rust interface's home is the crate's own rustdoc and `ARCHITECTURE.md`.
+
+| section | contents |
 |---|---|
-| `book/src/index.md` | landing page: what Pauli propagation is, what the library is and is not |
-| `book/src/getting-started.md` | install, both quickstarts, truncation, direction semantics, threads |
-| `book/src/showcases/` | one page per Part-B showcase: setup, method, measured result |
-| `book/src/benchmarks/` | one page per Part-A benchmark A–E, setup → oracle → result |
-| `book/src/comparisons.md` | `PauliPropagation.jl` parity and crossover; state-vector, stabilizer and MPO methods |
+| `book/src/index.md`, `installation.md` | landing page and install |
+| `book/src/tutorial/` | one guided walkthrough: observable → circuit → propagate → measure |
+| `book/src/how-to/` | goal-oriented recipes (noise, truncation, direction, stats, NUMA, MPI, interop, io) |
+| `book/src/reference/` | terse Python API reference: `PauliSum`, `Circuit`, `propagate`, truncation, direction, measurement |
+| `book/src/explanation/` | how it works, performance, NUMA/MPI, comparisons, and `case-studies/` (the Part-B showcases and Part-A benchmarks) |
 
 ## Two rules the content follows
 

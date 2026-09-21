@@ -8,7 +8,7 @@ structure, no commuting sublattice, no light-cone shortcut past
 nearest-neighbour causality. Every number below shows how the engine behaves
 with no help from problem structure.</p>
 
-![Peak and final term count against depth, at three truncation cutoffs](../assets/su4/term_count_vs_depth.svg)
+![Peak and final term count against depth, at three truncation cutoffs](../../assets/su4/term_count_vs_depth.svg)
 
 ## Setup
 
@@ -52,7 +52,7 @@ cheaply.
 
 ### Error against runtime
 
-![Absolute error against warm runtime at n = 16, depth 6](../assets/su4/error_vs_runtime.svg)
+![Absolute error against warm runtime at n = 16, depth 6](../../assets/su4/error_vs_runtime.svg)
 
 `n = 16`, depth 6 (statevector-checkable, deep enough for fanout to be well
 underway). Oracle: −0.0497243601.
@@ -79,7 +79,7 @@ guaranteed monotone in the cutoff for a generic, non-sign-coherent operator.
 
 ### Time and memory against `n`
 
-![Time and peak memory against qubit count at fixed depth](../assets/su4/time_memory_vs_n.svg)
+![Time and peak memory against qubit count at fixed depth](../../assets/su4/time_memory_vs_n.svg)
 
 Depth 6, `min_abs_coeff = 1e-4`, `n` from 8 to the 36-qubit headline.
 Oracle-checked up to `n = 24`; `n ∈ {28, 32, 36}` is self-converged only

@@ -7,7 +7,7 @@ reachable</strong>, and the published record agrees: the paper that set the
 bar publishes no exact 20-step value either. That reachability boundary, not
 a single accuracy number, is this benchmark's headline.</p>
 
-![Absolute error against warm wall time, one curve per depth, with the 0.01 target drawn](../assets/deep-trotter/error-vs-runtime.svg)
+![Absolute error against warm wall time, one curve per depth, with the 0.01 target drawn](../../assets/deep-trotter/error-vs-runtime.svg)
 
 *`|error|` against warm wall time, one curve per depth in the ladder, with the
 0.01 accuracy target drawn. Read the [`claimable` column](#time-to-error)
@@ -61,7 +61,7 @@ own tightest run by construction. Only `claimable` rows are quoted below.
 
 ### Reference values, with convergence evidence
 
-![Expectation against cutoff, against each reference](../assets/deep-trotter/convergence-vs-truncation.svg)
+![Expectation against cutoff, against each reference](../../assets/deep-trotter/convergence-vs-truncation.svg)
 
 | θ_h | steps | reference ⟨Z₆₂⟩ | method | exact? | uncertainty | converged | claimable |
 |---|---|---|---|---|---|---|---|
@@ -161,13 +161,13 @@ error reduction per the same step):
 
 The 0.01 bar needs roughly `2⁻²⁰`–`2⁻²²` here, out of reach of a
 workstation. [Showcase
-B2](../showcases/b2-noisy-verification.md#the-reachability-boundary-with-and-without-noise)
+B2](b2-noisy-verification.md#the-reachability-boundary-with-and-without-noise)
 revisits this point with noise: 48× fewer peak terms, a 154× smaller last
 difference, and still not a pass.
 
 ### Sanity envelope and methodology check
 
-![Peak resident terms against cutoff, with the expected envelope shaded](../assets/deep-trotter/term-count-vs-truncation.svg)
+![Peak resident terms against cutoff, with the expected envelope shaded](../../assets/deep-trotter/term-count-vs-truncation.svg)
 
 12 records fall on the three cutoffs tracked here, scored against a
 1.2·10⁶–9.3·10⁶ tracked-set envelope: nine of twelve are inside or
@@ -197,7 +197,7 @@ perturbation is one ulp: 1.1·10⁻¹⁹ absolute at `2⁻¹⁴`.
 
 ## Cross-engine parity at the deepest point {#cross-engine-parity-at-the-deepest-point}
 
-![All 5420 per-layer term counts, both engines](../assets/deep-trotter/parity-per-layer-terms.svg)
+![All 5420 per-layer term counts, both engines](../../assets/deep-trotter/parity-per-layer-terms.svg)
 
 Matched truncation at `θ_h = 7π/32`, 20 Trotter steps, the deepest point in
 the benchmark, one gate per channel on both sides, Heisenberg, `|0…0⟩`,

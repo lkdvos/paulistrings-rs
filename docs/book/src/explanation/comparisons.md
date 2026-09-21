@@ -35,10 +35,10 @@ The results, all from committed benchmark READMEs:
 
 | where | configuration | compared | result |
 |---|---|---|---|
-| [Benchmark B](benchmarks/b-theta-sweep.md#cross-engine-parity) | 127 q, 5 steps, 3 observables × 3 cutoffs | 12 195 per-layer counts | 9/9 pass, every count identical; 8 of 9 expectations agree to the last bit |
-| [Benchmark C](benchmarks/c-deep-trotter.md#cross-engine-parity-at-the-deepest-point) | 127 q, 20 steps, 3 dyadic cutoffs | 16 260 per-layer counts | 3/3 pass, final and peak counts exact, expectations ≤ 5.6e-17 |
-| [Benchmark D](benchmarks/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ chain, 4 configurations | 171–702 layers each | 4/4 pass, expectations ≤ 1.7e-16 |
-| [Benchmark E](benchmarks/e-su4-brickwork.md#cross-engine-comparison) | Haar SU(4) brickwork, `unitary_2q` gates | all layers at two sizes | exact, and the expectation to 1e-12 |
+| [Benchmark B](case-studies/b-theta-sweep.md#cross-engine-parity) | 127 q, 5 steps, 3 observables × 3 cutoffs | 12 195 per-layer counts | 9/9 pass, every count identical; 8 of 9 expectations agree to the last bit |
+| [Benchmark C](case-studies/c-deep-trotter.md#cross-engine-parity-at-the-deepest-point) | 127 q, 20 steps, 3 dyadic cutoffs | 16 260 per-layer counts | 3/3 pass, final and peak counts exact, expectations ≤ 5.6e-17 |
+| [Benchmark D](case-studies/d-xxz-chain.md#cross-engine-timing-and-the-crossover) | XXZ chain, 4 configurations | 171–702 layers each | 4/4 pass, expectations ≤ 1.7e-16 |
+| [Benchmark E](case-studies/e-su4-brickwork.md#cross-engine-comparison) | Haar SU(4) brickwork, `unitary_2q` gates | all layers at two sizes | exact, and the expectation to 1e-12 |
 | parity gate itself | 6 q, 57 gates, both directions, with and without truncation | 57 layers per row, 5 rows | all identical, expectations ≤ 5.6e-17 |
 
 The truncated rows of the last entry are non-vacuous: the same circuit with no
@@ -58,6 +58,13 @@ qubit 1, this repository 0-based with the leftmost character qubit 0. Observable
 keys map verbatim and gate indices map with a `+1`. Direction maps exactly:
 `"heisenberg"` ↔ `heisenberg=true` (jl's default), `"forward"` ↔
 `heisenberg=false`.
+
+That mapping is not fully symmetric in practice: jl 0.8.2 defines no
+Schrödinger-picture transfer map at all for `unitary_1q`, `unitary_2q`,
+`amplitude_damping`, `pauli_channel` or `depolarize2`, so `direction="forward"`
+has no jl counterpart for any circuit using those gates. Every cross-engine
+comparison on this site is therefore run in the Heisenberg direction, where
+both sides agree.
 
 ### The semantic divergences, measured
 
@@ -79,7 +86,7 @@ exactly equal to the threshold; this repository's `CoefficientThreshold` keeps
 For generic angles the divergence is a measure-zero event and every parity row
 above passes untouched. It is not measure-zero for dyadic cutoffs at Clifford
 angles, where coefficients are exact dyadics and can land on the cutoff
-bit-exactly ([Benchmark C hits this](benchmarks/c-deep-trotter.md#the-dyadic-cutoffs-and-the-one-ulp-mitigation)).
+bit-exactly ([Benchmark C hits this](case-studies/c-deep-trotter.md#the-dyadic-cutoffs-and-the-one-ulp-mitigation)).
 The mitigation, when it bites: perturb the *threshold* on one side by one ulp
 and report it, never a coefficient. jl gets `nextafter(eps, ∞)`; no float lies
 between, so jl's `|c| < eps′` becomes exactly this engine's `|c| <= eps`. A test
@@ -121,7 +128,7 @@ Heisenberg map is the unital dual `Φ†` (`Φ†(I) = I`), so `⟨Z⟩` for a q
 `|0⟩` — the channel's fixed point — stays at `1`. The shared fixture gives 9
 terms on both engines with identical labels and bit-exact coefficients, a test
 pins the orientation from both sides, and
-[Showcase B2](showcases/b2-noisy-verification.md#the-same-collapse-three-other-channels)
+[Showcase B2](case-studies/b2-noisy-verification.md#the-same-collapse-three-other-channels)
 carries the physics.
 
 ### Known gaps
@@ -237,7 +244,7 @@ carries a convergence panel.
 
 Also an oracle, not a competitor. At a Clifford point `stim` gives the exact ±1
 integer in under 0.1 s at any qubit count, and
-[Benchmark A](benchmarks/a-clifford.md) exists to be scored against it.
+[Benchmark A](case-studies/a-clifford.md) exists to be scored against it.
 Benchmark B reproduces those integers bit-exactly at every one of eight
 cutoffs, for three observables at both Clifford endpoints.
 
@@ -250,20 +257,20 @@ cutoffs, for three observables at both Clifford endpoints.
 
 A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
 samples one Pauli error rather than averaging over them, which is why
-[Showcase B2](showcases/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
+[Showcase B2](case-studies/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
 carries a hand-rolled Kraus density-matrix reference instead.
 
 ## vs tensor-network / MPO methods
 
 No measured head-to-head, and this site does not claim one. What it has is a
 cost-model comparison on the same operators:
-[Showcase B6](showcases/b6-resource-probes.md) computes the Pauli-spectrum
+[Showcase B6](case-studies/b6-resource-probes.md) computes the Pauli-spectrum
 entropy (the quantity governing truncation error for this engine) alongside the
 operator entanglement across a bipartition (the quantity governing MPO bond
 dimension), and finds them saying different things about the same operator:
 `S_2` grows steadily with depth while `S_op` saturates around 1.3 nats from
 depth 5 on. A TDVP baseline at large `n` is
-[a named limitation of Benchmark D](benchmarks/d-xxz-chain.md#limitations), not
+[a named limitation of Benchmark D](case-studies/d-xxz-chain.md#limitations), not
 silently approximated.
 
 ## vs `qiskit.SparsePauliOp` / `openfermion.QubitOperator`
@@ -288,7 +295,7 @@ library / paulistrings:
 | 1 000 | 71.0 | 4 978.4 | 70× |
 | 10 000 | 1 057.3 | 32 642.0 | 31× |
 
-![Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings](assets/comparisons/baseline-ops.svg)
+![Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings](../assets/comparisons/baseline-ops.svg)
 
 `openfermion` has no equivalent conjugation operation and is not in the second
 group. `PauliStrings.jl`, the library that inspired this one, is excluded for

@@ -6,7 +6,7 @@ What is new is the transport (point-to-point MPI instead of in-process channels)
 
 **The reason to reach for it is capacity.** A sum that does not fit one node's memory fits `P` of them, and the per-rank overhead is bounded and does not grow with the rank count.
 
-It is behind the off-by-default `mpi` cargo feature, so the default wheel cannot do it.
+It is an off-by-default build option the released wheel omits, so the default wheel cannot do it.
 `paulistrings.mpi_available()` says whether this build can, and `comm=` in a build without it raises `RuntimeError`.
 
 ## What to expect
@@ -45,6 +45,7 @@ The built extension carries an rpath to that MPI's library directory, so `import
 
 ## Python
 
+<!-- doctest: skip -->
 ```python
 import mpi4py
 mpi4py.rc.thread_level = "serialized"      # before mpi4py.MPI is imported
@@ -76,6 +77,7 @@ A distributed run places one partition per *process*, so the placement is the la
 By default the rows are a GF(2)-random draw from the sum's own hash seed, which spreads a gate's deltas over every rank whatever the qubits' geometry.
 `partition_row_seed=` picks the draw; `partition_row_blocks=` replaces it with an explicit locality cut, one contiguous list of qubit indices per rank, so a gate whose qubits share a block never exchanges at all:
 
+<!-- doctest: skip -->
 ```python
 half = observable.num_qubits // 2
 blocks = [list(range(half)), list(range(half, observable.num_qubits))]
@@ -95,6 +97,7 @@ A term's rank is then the XOR of the blocks it has odd Z-weight in, so a term su
 
 The shares are disjoint and cover the result, so reductions over `comm` are exact:
 
+<!-- doctest: skip -->
 ```python
 local = observable.propagate(circuit, policy, comm=comm, result="local")
 terms = comm.allreduce(len(local))
@@ -141,6 +144,7 @@ A rank that skips one hangs the rest.
 Its per-layer lists hold **this rank's entry only** — gathering the group's counters would mean a collective per layer for a diagnostic — so `terms_in[k]` is a one-element list, `rows_exported[k]` is what this rank sent, and `imbalance[k]` is always `1.0`.
 Reduce over `comm` for the group's picture:
 
+<!-- doctest: skip -->
 ```python
 _, stats = observable.propagate_with_stats(circuit, policy, comm=comm)
 exported = comm.allreduce(sum(stats.partition.rows_exported))
@@ -154,4 +158,4 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 - **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-architecture or mixed-`W` job is silently wrong.
 - **One partition per rank.** The hybrid — several NUMA domains inside one rank — is not implemented.
   Intra-node, that is what would take the 2-rank case below 3.5×.
-- **The library never initializes MPI.** The application owns `MPI_Init` and `MPI_Finalize`; from Rust, build the universe with the re-exported `paulistrings::mpi::rsmpi` rather than a separate `mpi` dependency, so the versions cannot disagree.
+- **The library never initializes MPI.** The application owns `MPI_Init` and `MPI_Finalize`.

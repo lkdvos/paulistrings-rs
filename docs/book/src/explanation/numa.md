@@ -25,6 +25,7 @@ To split across *processes* instead, for capacity rather than bandwidth, see [Ru
 
 ## Python
 
+<!-- doctest: skip -->
 ```python
 evolved = observable.propagate(
     circuit,
@@ -36,6 +37,7 @@ evolved = observable.propagate(
 
 `partitions` takes `"auto"`, an integer (a power of two, at most 16), or an explicit list of CPU lists — one per partition, in the `"0-7,16-23"` spelling — when the automatic split is not the one you want:
 
+<!-- doctest: skip -->
 ```python
 partitions=["0-7,16-23", "8-15,24-31"]
 ```
@@ -47,33 +49,11 @@ partitions=["0-7,16-23", "8-15,24-31"]
 It is `None` for an unpartitioned run.
 `local[k]` says whether layer `k` exchanged at all, which is the figure the table above turns on.
 
-## Rust
-
-```rust
-use paulistrings::engine::partitioned::{
-    propagate_partitioned, PartitionConfig, Placement,
-};
-
-let config = PartitionConfig {
-    placement: Placement::Auto { max_partitions: None },
-    bind_memory: true,
-    partition_row_seed: None,
-};
-let evolved = propagate_partitioned(
-    &circuit, sum, &ApproxTopN(1_000_000), Direction::Heisenberg, &config,
-)?;
-```
-
-`Placement::Explicit(vec![CpuSet::parse("0-7,16-23")?, CpuSet::parse("8-15,24-31")?])` fixes the split by hand; `Placement::Unpinned { partitions, threads_per_partition }` gives the shape of a partitioned run with no pinning at all, which is what the test suite uses.
-
-Hold a `PartitionedSum` instead of calling the one-shot entry point when a driver steps an observable through many circuits: it scatters once, propagates per step, and gathers once.
-`PartitionRuntime` is built from the config and shared behind an `Arc`, so the pinned pools are paid for once.
-
 ## Two things that change
 
 **`RAYON_NUM_THREADS` is ignored.** The partitioned engine builds one pool per partition from the placement, not from Rayon's global pool, so the thread count comes from the CPU sets.
 Under `Placement::Unpinned` it comes from `threads_per_partition`.
-The variable still governs an unpartitioned run ([Getting started](../getting-started.md#threads)).
+The variable still governs an unpartitioned run ([Running on NUMA partitions](../how-to/run-on-numa-partitions.md)).
 
 **Exact `topn` is unavailable.** Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects `truncation.topn`.
 Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.

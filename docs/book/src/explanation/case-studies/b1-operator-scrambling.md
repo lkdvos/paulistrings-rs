@@ -25,8 +25,9 @@ python examples/b1_operator_scrambling/run_b1_1d.py     # 1D chain, a few minute
 python examples/b1_operator_scrambling/run_b1_2d.py     # 2D quench, ~15 minutes
 ```
 
-Evolution is one `propagate` call per Trotter step, truncating after each:
+Evolution is one `propagate` call per Trotter step, truncating after each — an excerpt from the actual example script, verified by `pytest examples/tests`, not standalone:
 
+<!-- doctest: skip -->
 ```python
 from paulistrings import truncation
 from common import observables
@@ -56,7 +57,7 @@ circuit reproduce exactly the (apply-adjoint, truncate) sequence of one call
 on the `t`-step circuit, so the whole time series costs **one** 12-step
 propagation.
 
-![Light cone heat maps for the 1D chain at four truncation cutoffs](../assets/b1/light_cone_1d.svg)
+![Light cone heat maps for the 1D chain at four truncation cutoffs](../../assets/b1/light_cone_1d.svg)
 
 At `θ_h = π/2` every gate is Clifford, so one Pauli string evolves into one
 Pauli string with unit coefficient: its support is the **exact** causal cone,
@@ -68,7 +69,7 @@ one bond.
 
 ### Where the cutoff gives out
 
-![Support growth and discarded weight against Trotter step](../assets/b1/support_growth.svg)
+![Support growth and discarded weight against Trotter step](../../assets/b1/support_growth.svg)
 
 Four cutoffs, twelve steps. At the final step:
 
@@ -85,14 +86,14 @@ that says so. At 3·10⁻⁶ the retained norm stays above 0.999 through step 9.
 
 ### The OTOC
 
-![OTOC front and convergence panel](../assets/b1/otoc_1d.svg)
+![OTOC front and convergence panel](../../assets/b1/otoc_1d.svg)
 
 `C(r, t)` at `r = centre + 5`, `t = 12`, as the cutoff tightens: `0.031137`
 (10⁻³), `1.003293` (10⁻⁴), `1.346556` (10⁻⁵), `1.368813` (3·10⁻⁶) — the
 loosest cutoff wrong by 40×, the two tightest agreeing to 2.2·10⁻² (1.6%
 relative). The cone interior saturates at `C ≈ 1.3–1.4`, heading for `C → 1`.
 
-![Headline OTOC against truncation](../assets/b1/convergence_panel_1d.svg)
+![Headline OTOC against truncation](../../assets/b1/convergence_panel_1d.svg)
 
 ### Butterfly velocity
 
@@ -111,7 +112,7 @@ the structural bound measured above. The `w > 10⁻²` column is the
 cautionary tale: still climbing (0.776 → 0.848 → 0.903), it reads
 `v_B ≈ 0.9` to anyone who picks one contour and stops.
 
-![Front, fits, and v_B against truncation](../assets/b1/butterfly_velocity_1d.svg)
+![Front, fits, and v_B against truncation](../../assets/b1/butterfly_velocity_1d.svg)
 
 Scanning the kick angle at two cutoffs (`n = 61`, 12 steps, 27 s total, `w >
 10⁻⁴` contour, `min_abs_coeff = 10⁻⁵`) gives a velocity rising with kick
@@ -120,7 +121,7 @@ for `θ_h = 0.2, 0.4, 0.6, 0.9`. Only the first two are converged
 (`N(12) = 1.0000`); at `θ_h = 0.6` and `0.9` velocity moves by 0.05 between
 cutoffs (`N(12) = 0.9995` and `0.7158`).
 
-![Velocity against kick angle](../assets/b1/velocity_vs_kick_angle.svg)
+![Velocity against kick angle](../../assets/b1/velocity_vs_kick_angle.svg)
 
 ## The 2D quench
 
@@ -153,7 +154,7 @@ one tight enough to keep 99.9997% of it hits the term ceiling at `t = 0.9`.
 
 ### Magnetization
 
-![Magnetization and discarded weight for the 2D quench](../assets/b1/quench_observables_2d.svg)
+![Magnetization and discarded weight for the 2D quench](../../assets/b1/quench_observables_2d.svg)
 
 **Verdict: the 2D quench magnetization is converged to ~10⁻³ out to `t = 0.90`
 (6 Trotter steps), and not converged beyond it.** The two tightest cutoffs
@@ -161,14 +162,14 @@ differ by 0, 0, 6.5·10⁻⁵, 1.3·10⁻⁴, 3.1·10⁻⁴ and 1.2·10⁻³ at 
 step 6 only the two loosest cutoffs reach at all, disagreeing by up to
 3.8·10⁻² — shown in the figure's right-hand panel.
 
-![2D light cone maps and radial convergence](../assets/b1/light_cone_2d.svg)
+![2D light cone maps and radial convergence](../../assets/b1/light_cone_2d.svg)
 
 The maps are diamonds, not squares — a Manhattan ball, since one Trotter
 step moves the boundary by one bond. Mean per-site weight at step 6,
 `min_abs_coeff = 10⁻⁷`, by graph distance 0…6: `0.985, 0.504, 0.0402,
 4.3·10⁻⁴, 8.4·10⁻⁷, 1.2·10⁻¹¹, 0` — one to two orders of magnitude per site.
 
-![Infinite-temperature two-point function](../assets/b1/correlator_2d.svg)
+![Infinite-temperature two-point function](../../assets/b1/correlator_2d.svg)
 
 The two-point function is a *sensitivity floor*, not an error: a coefficient
 `G(r,t)` below `min_abs_coeff` reads back as exactly `0.0`. At step 6 the
@@ -178,7 +179,7 @@ every other site reads exactly zero. A tighter `10⁻¹⁴` probe on a 5×5
 lattice shows the centre alone through step 3, so at least part of this is a
 real selection rule, unresolved here.
 
-![Headline magnetization against truncation](../assets/b1/convergence_panel_2d.svg)
+![Headline magnetization against truncation](../../assets/b1/convergence_panel_2d.svg)
 
 ## Performance
 

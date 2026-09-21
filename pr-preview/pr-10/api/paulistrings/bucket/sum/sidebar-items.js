@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_HASH_SEED","DEFAULT_MIN_BUCKETS","DEFAULT_TARGET_BUCKET_LEN","MIN_TERMS_PER_TASK"],"fn":["desired_bits"],"struct":["PauliSum"]};

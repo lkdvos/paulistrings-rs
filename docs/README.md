@@ -23,6 +23,10 @@ python scripts/test-doc-snippets.py --list      # what would run/skip, no execut
 python scripts/test-doc-snippets.py FILE ...    # just these pages
 ```
 
+This is an exit-code check, not an accuracy guarantee: a snippet that runs and
+prints a wrong number still passes. It catches a broken import, a renamed
+method or a stale signature — not stale prose around a correct-looking output.
+
 ## Previews
 
 Every same-repo pull request that touches `docs/**` gets its build published

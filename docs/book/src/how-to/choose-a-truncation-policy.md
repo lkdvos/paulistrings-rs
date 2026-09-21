@@ -22,7 +22,4 @@ policy = truncation.weight(6) & truncation.coeff(1e-10)
 
 Keep `min_abs_coeff` above ~1e-12 on deep circuits — `cos(π/2)` is `6.123233995736766e-17`, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.
 
-A truncated Pauli sum has no variational bound: dropped terms carry signs, so error need not fall monotonically as the cutoff tightens.
-Read a convergence sweep as a trend across a grid, not a point-to-point improvement.
-
-See [Truncation reference](../reference/truncation.md) for the full policy table and [How it works](../explanation/index.md) for the mechanism.
+See [Truncation](../explanation/truncation.md) for what truncation actually does to the result (it has no variational bound, and reading a convergence sweep is not the same as reading a point-to-point improvement), [Truncation reference](../reference/truncation.md) for the full policy table, and [Propagation engine](../explanation/propagation-engine.md) for the mechanism.

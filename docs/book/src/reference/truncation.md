@@ -22,4 +22,4 @@ All four live in the `paulistrings.truncation` module and run after every channe
 `approx_topn` bins by octave of `\|c\|**2` and keeps whole octaves top-down while they fit in `n`: at most `n` is kept, the shortfall is bounded by the coarsest excluded octave's population, and a tie group is always kept whole.
 `topn` raises `NotImplementedError` under `partitions=`/`comm=`; `approx_topn` is the partitioned/distributed default in that case.
 
-See [Truncation policy](../how-to/choose-a-truncation-policy.md) for guidance and [How it works](../explanation/index.md) for the truncation mechanism.
+See [Truncation policy](../how-to/choose-a-truncation-policy.md) for guidance and [Truncation](../explanation/truncation.md) for the mechanism.

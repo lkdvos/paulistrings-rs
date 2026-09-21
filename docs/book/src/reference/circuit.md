@@ -7,7 +7,7 @@
 ## Conventions
 
 **One gate per channel.** Every `Circuit` method pushes exactly one channel per qubit/pair — a broadcast call like `depolarize(p, [0, 1])` pushes two channels, not one bundled channel.
-Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call.
+Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call — see [Truncation](../explanation/truncation.md).
 
 **Rotation angle convention.** Every rotation method implements `U = exp(-i*theta*P/2)` for its generator `P`.
 A generator coefficient `s` in `exp(-i*s*P)` (no `/2`) needs `theta = 2*s`.
@@ -16,35 +16,39 @@ A generator coefficient `s` in `exp(-i*s*P)` (no `/2`) needs `theta = 2*s`.
 
 Each of these is a `Circuit` method, a `gates.<name>(...)` factory returning a `Channel` for `circuit.append(...)`, or both:
 
-| `Circuit` method | `gates.` factory | Qubits | Extra args |
-|---|---|---|---|
-| `.h(qubit)` | `gates.h(qubit)` | 1 | — |
-| `.s(qubit)` | `gates.s(qubit)` | 1 | — |
-| `.sdg(qubit)` | `gates.sdg(qubit)` | 1 | `S^dagger` |
-| `.x(qubit)` | `gates.x(qubit)` | 1 | — |
-| `.y(qubit)` | `gates.y(qubit)` | 1 | — |
-| `.z(qubit)` | `gates.z(qubit)` | 1 | — |
-| `.cnot(control, target)` | `gates.cnot(control, target)` | 2 | indices must differ |
-| `.cz(q0, q1)` | `gates.cz(q0, q1)` | 2 | indices must differ |
-| `.swap(q0, q1)` | `gates.swap(q0, q1)` | 2 | indices must differ |
-| `.rz(theta, qubit)` | `gates.rz(theta, qubit)` | 1 | `theta` |
-| `.rx(theta, qubit)` | `gates.rx(theta, qubit)` | 1 | `theta` |
-| `.ry(theta, qubit)` | `gates.ry(theta, qubit)` | 1 | `theta` |
-| `.pauli_rotation(pauli, qubits, theta)` | `gates.pauli_rotation(pauli, qubits, theta)` | any | `pauli[k]` acts on `qubits[k]`; identity positions are expressed by omission, not `I` |
-| `.unitary_1q(qubit, matrix)` | `gates.unitary_1q(qubit, matrix)` | 1 | `2x2` complex, checked unitary |
-| `.unitary_2q(q0, q1, matrix)` | `gates.unitary_2q(q0, q1, matrix)` | 2 | `4x4` complex, checked unitary; `q0` is the more significant tensor factor (`\|q0 q1>`) |
+| `Circuit` method | `gates.` factory | Qubits | Extra args | Caveats |
+|---|---|---|---|---|
+| `.h(qubit)` | `gates.h(qubit)` | 1 | — | — |
+| `.s(qubit)` | `gates.s(qubit)` | 1 | — | — |
+| `.sdg(qubit)` | `gates.sdg(qubit)` | 1 | `S^dagger` | — |
+| `.x(qubit)` | `gates.x(qubit)` | 1 | — | — |
+| `.y(qubit)` | `gates.y(qubit)` | 1 | — | — |
+| `.z(qubit)` | `gates.z(qubit)` | 1 | — | — |
+| `.cnot(control, target)` | `gates.cnot(control, target)` | 2 | indices must differ | — |
+| `.cz(q0, q1)` | `gates.cz(q0, q1)` | 2 | indices must differ | — |
+| `.swap(q0, q1)` | `gates.swap(q0, q1)` | 2 | indices must differ | — |
+| `.rz(theta, qubit)` | `gates.rz(theta, qubit)` | 1 | `theta` | — |
+| `.rx(theta, qubit)` | `gates.rx(theta, qubit)` | 1 | `theta` | — |
+| `.ry(theta, qubit)` | `gates.ry(theta, qubit)` | 1 | `theta` | — |
+| `.pauli_rotation(pauli, qubits, theta)` | `gates.pauli_rotation(pauli, qubits, theta)` | any | `pauli[k]` acts on `qubits[k]`; identity positions are expressed by omission, not `I` | the one exemption from the two-qubit support panic below — any generator weight is accepted |
+| `.unitary_1q(qubit, matrix)` | `gates.unitary_1q(qubit, matrix)` | 1 | `2x2` complex, checked unitary | — |
+| `.unitary_2q(q0, q1, matrix)` | `gates.unitary_2q(q0, q1, matrix)` | 2 | `4x4` complex, checked unitary; `q0` is the more significant tensor factor (`\|q0 q1>`) | — |
+
+A channel with support on more than two qubits, other than `pauli_rotation`, makes `propagate` **panic**; there is no fallback path.
 
 `circuit.append(gates.h(0))` is equivalent to `circuit.h(0)`.
 
 ## Noise channels
 
-| `Circuit` method | `noise.` factory | Semantics |
-|---|---|---|
-| `.depolarize(p, qubits)` | `noise.depolarize(p, qubit)` | one channel per qubit in `qubits` |
-| `.dephase(p, qubits)` | `noise.dephase(p, qubit)` | one channel per qubit |
-| `.amplitude_damping(gamma, qubits)` | `noise.amplitude_damping(gamma, qubit)` | one channel per qubit |
-| `.pauli_channel(px, py, pz, qubits)` | `noise.pauli_channel(px, py, pz, qubit)` | `px + py + pz <= 1`; one channel per qubit |
-| `.depolarize2(p, pairs)` | `noise.depolarize2(p, q0, q1)` | one channel per `(q0, q1)` pair; indices in a pair must differ |
+| `Circuit` method | `noise.` factory | Semantics | Caveats |
+|---|---|---|---|
+| `.depolarize(p, qubits)` | `noise.depolarize(p, qubit)` | one channel per qubit in `qubits` | non-unitary; see below |
+| `.dephase(p, qubits)` | `noise.dephase(p, qubit)` | one channel per qubit | non-unitary; see below |
+| `.amplitude_damping(gamma, qubits)` | `noise.amplitude_damping(gamma, qubit)` | one channel per qubit | non-unitary; see below |
+| `.pauli_channel(px, py, pz, qubits)` | `noise.pauli_channel(px, py, pz, qubit)` | `px + py + pz <= 1`; one channel per qubit | non-unitary; see below |
+| `.depolarize2(p, pairs)` | `noise.depolarize2(p, q0, q1)` | one channel per `(q0, q1)` pair; indices in a pair must differ | non-unitary; see below |
+
+Every noise channel is non-unitary: `circuit.adjoint()` raises `ValueError` naming it if the circuit contains one.
 
 `pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)`; `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
 See [Circuit noise](../how-to/add-noise-to-a-circuit.md) for a worked example.

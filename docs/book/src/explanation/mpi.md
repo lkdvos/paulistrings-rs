@@ -155,7 +155,7 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 - **Exact `topn` is unavailable**, as in any partitioned run: choosing the `n`-th largest magnitude across ranks is a distributed selection.
   `truncation.approx_topn(n)` all-reduces its octave histogram and retains exactly the set a single-process run would have.
 - **A replicated input caps the sum at what one rank can build.** Reaching the capacity the ranks together have needs a driver that ingests already distributed; the scatter itself is a local filter and costs nothing extra.
-- **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-architecture or mixed-`W` job is silently wrong.
+- **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-architecture job, or one mixing compile-time width tiers across ranks, is silently wrong.
 - **One partition per rank.** The hybrid — several NUMA domains inside one rank — is not implemented.
   Intra-node, that is what would take the 2-rank case below 3.5×.
 - **The library never initializes MPI.** The application owns `MPI_Init` and `MPI_Finalize`.

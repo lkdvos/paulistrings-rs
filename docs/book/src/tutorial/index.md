@@ -46,5 +46,5 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 
 ## See also
 
-- `examples/common/observables.py` — more observable constructions.
-- `examples/common/circuits.py` — more circuit constructions.
+- [`examples/common/observables.py`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py) — more observable constructions.
+- [`examples/common/circuits.py`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py) — more circuit constructions.

@@ -74,6 +74,7 @@ def main() -> int:
         return 0
 
     failures = []
+    skip_only_pages = 0
     total_run = total_skip = 0
     for path in paths:
         rel = path.relative_to(REPO_ROOT) if path.is_absolute() else path
@@ -92,11 +93,18 @@ def main() -> int:
             print(f"FAIL {rel} ({run_count} block(s))")
         elif run_count:
             print(f"ok   {rel} ({run_count} block(s), {skip_count} skipped)")
+        else:
+            skip_only_pages += 1
+            print(f"skip {rel} ({skip_count} block(s), 0 run)")
 
     if args.list:
         return 0
 
-    print(f"\n{len(paths) - len(failures)}/{len(paths)} pages passed, {total_run} block(s) run, {total_skip} skipped")
+    passed_pages = len(paths) - len(failures) - skip_only_pages
+    print(
+        f"\n{passed_pages}/{len(paths)} pages passed, {skip_only_pages} fully skipped, "
+        f"{len(failures)} failed, {total_run} block(s) run, {total_skip} skipped"
+    )
     for rel, error in failures:
         print(f"\n--- {rel} ---\n{error}")
     return 1 if failures else 0

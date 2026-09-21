@@ -4,6 +4,7 @@ Short, goal-oriented recipes. Each assumes the [Tutorial](../tutorial/index.md)'
 
 - [Observable from Pauli strings](build-observable-from-strings.md) — `PauliSum.from_strings`.
 - [Observable from raw arrays](build-observable-from-arrays.md) — `from_arrays` and the array accessors.
+- [Observable from a Hamiltonian](build-observable-from-hamiltonian.md) — accumulating a weighted sum of Pauli strings.
 - [PauliSum save and load](save-load-pauli-sum.md) — the `paulistrings.io` `.npz` format.
 - [Circuit noise](add-noise-to-a-circuit.md) — the noise channels and the `noise` factories.
 - [stim and qiskit circuit import](import-circuit-from-stim-or-qiskit.md) — `interop.circuit_from_stim`/`circuit_from_qiskit`/`circuit_from_json`.

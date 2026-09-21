@@ -65,7 +65,7 @@ Sweeping `min_abs_coeff` against the exact reference above:
 
 ![Convergence panel against the exact reference](../../assets/b5/convergence_panel.svg)
 
-Truncation is applied after every *channel*, not after every Python call, so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where `k` is chosen. The gap is **not monotone** in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.
+Truncation is applied after every *channel*, not after every Python call (see [Truncation](../truncation.md)), so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where `k` is chosen. The gap is **not monotone** in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.
 
 ## The actual trade-off: depth against term count
 

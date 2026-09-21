@@ -15,7 +15,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `x`, `z` | `uint64` array, shape `(n_terms, w)` | symplectic key words, `1 <= w <= ` the band width `num_qubits` picks; narrower than the band is zero-padded |
+| `x`, `z` | `uint64` array, shape `(n_terms, w)` | symplectic key words, `1 <= w <= ` the compile-time width tier `num_qubits` picks; narrower than the tier is zero-padded |
 | `coefficients` | 1-D array, length `n_terms` | `complex128` or a real-float dtype |
 | `num_qubits` | `int` | a set bit at or beyond this qubit is a `ValueError` |
 
@@ -24,7 +24,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 | Call | Returns |
 |---|---|
 | `.num_qubits` | qubit count |
-| `.width` | active monomorphized width `W` (words per term) |
+| `.width` | active compile-time width tier (words per term) |
 | `len(sum)` | term count |
 | `.num_buckets` | current bucket count (grow-only, reflects the last `propagate`/`rebucket`) |
 | `.coefficients()` | coefficient column as a list of Python `complex` |

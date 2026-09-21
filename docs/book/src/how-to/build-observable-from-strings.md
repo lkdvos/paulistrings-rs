@@ -1,4 +1,4 @@
-# Build an observable from Pauli strings
+# Observable from Pauli strings
 
 ```python
 from paulistrings import PauliSum

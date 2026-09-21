@@ -1,4 +1,4 @@
-# Import a circuit from stim or qiskit
+# stim and qiskit circuit import
 
 ```python
 import stim
@@ -30,4 +30,4 @@ A third path builds a `Circuit` from the frozen task-JSON schema, e.g. when read
 circuit = interop.circuit_from_json({"gates": [{"name": "h", "qubits": [0]}]}, n_qubits=1)
 ```
 
-See [Circuit reference](../reference/circuit.md) for the gate vocabulary each importer maps onto, and `interop.stabilizers_from_stim` in [Compute expectation values](compute-expectation-values.md) for reading out a Clifford circuit's output state rather than its gates.
+See [Circuit reference](../reference/circuit.md) for the gate vocabulary each importer maps onto, and `interop.stabilizers_from_stim` in [Expectation values](compute-expectation-values.md) for reading out a Clifford circuit's output state rather than its gates.

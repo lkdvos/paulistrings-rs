@@ -125,7 +125,7 @@ off at 1e-4: errors 2.00·10⁻³ and 2.29·10⁻³; the next decade would cost
 "passes" without measuring anything; the fourth, at 3π/8, needs 101 s and
 4 291 840 terms.
 
-## Truncation error is not monotone in the cutoff {#truncation-error-is-not-monotone-in-the-cutoff}
+## Non-monotone truncation error {#non-monotone-truncation-error}
 
 weight-10 at the two largest interior angles, against exact references:
 
@@ -150,7 +150,7 @@ by saturation, the remaining error being summation rounding (1.3·10⁻¹⁴,
 6.9·10⁻¹⁸), which sets the floating-point floor in the comparison. The two
 budget-stopped rows are still honest: a larger uncertainty, not a falsely
 confident one. That property does not survive to Benchmark C's depth — see
-[C](c-deep-trotter.md#the-uncertainty-estimate-is-not-a-bound).
+[C](c-deep-trotter.md#non-bound-uncertainty-estimate).
 
 ## Cross-engine parity {#cross-engine-parity}
 

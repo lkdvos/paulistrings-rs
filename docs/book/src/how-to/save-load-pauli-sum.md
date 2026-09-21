@@ -1,4 +1,4 @@
-# Save and load a PauliSum
+# PauliSum save and load
 
 ```python
 from paulistrings import PauliSum, io as psio

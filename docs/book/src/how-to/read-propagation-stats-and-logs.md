@@ -1,4 +1,4 @@
-# Read propagation stats and logs
+# Propagation stats and logs
 
 ```python
 from paulistrings import Circuit, PauliSum, truncation

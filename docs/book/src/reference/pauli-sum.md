@@ -42,4 +42,4 @@ All four array/list accessors return the sum's canonical order (partition-bucket
 | `paulistrings.io.load(path)` | read back a `PauliSum` |
 | `paulistrings.interop.load_task(path)` | parse a schema-v1 task JSON file into a `Task`, whose `.observable` is a `PauliSum` when the task defines one |
 
-See [Save and load a PauliSum](../how-to/save-load-pauli-sum.md) for the recipe.
+See [PauliSum save and load](../how-to/save-load-pauli-sum.md) for the recipe.

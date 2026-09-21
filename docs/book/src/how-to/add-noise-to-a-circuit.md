@@ -1,4 +1,4 @@
-# Add noise to a circuit
+# Circuit noise
 
 ```python
 from paulistrings import Circuit

@@ -21,7 +21,7 @@ Five measured applications.
 
 B3 (variational pre-training) and B4 (QML/QCNN) are not part of this suite.
 
-### What every showcase page carries
+### Contents common to every showcase page
 
 A convergence panel on every truncated result: a single number from a single
 cutoff is not a result here. The retained Hilbert–Schmidt norm `N = Σ|c_P|²`
@@ -66,7 +66,7 @@ Two of the five results are negative.
 | [D XXZ chain](d-xxz-chain.md) | Trotterized XXZ chain, `n = 20…100`, free and interacting regimes | statevector at `n ≤ 26`, plus an *analytic* growth law | quadratic term growth confirmed as **exactly `16s²`**; the cross-engine ranking changes sign between 3·10³ and 3·10⁴ terms |
 | [E Random SU(4) brickwork](e-su4-brickwork.md) | 36 qubits, an independent Haar-random SU(4) block per brickwork site | statevector at `n ≤ 24` | the generic worst case: no Clifford structure, no light-cone shortcut. Rise, plateau, then **collapse to zero terms**; the two engines within noise of each other |
 
-### The rules these ran under
+### Comparability rules
 
 Four of them are worth stating up front, because they are what makes the tables
 comparable:
@@ -133,7 +133,7 @@ There is a further benchmark surface this section does not cover: the cross-*lib
 construction/conjugation comparison against `qiskit.SparsePauliOp` and
 `openfermion.QubitOperator` in `benchmarks/python/bench_baseline.py`.
 
-### Caveat that applies to every benchmark page
+### Caveat for every benchmark page
 
 **Wall times are indicative of shape, not campaign-grade.** They were taken on a
 shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, `ccqlin038`) whose stated

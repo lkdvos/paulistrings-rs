@@ -13,7 +13,7 @@ Buckets retain their capacity across layers, so a steady-state propagation loop 
 The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
 The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (`ARCHITECTURE.md` §Width).
 
-## Where a layer's time goes
+## Layer time breakdown
 
 Measured on the reference host (2× Xeon Gold 6244, 16c/32t) with the repo's phase-timing probe, per layer class, as a share of summed worker busy time (gather / sort / merge):
 
@@ -30,7 +30,7 @@ Parallel efficiency (busy time over coset-loop wall × threads) is 0.99 for `su4
 
 Per-term cost is flat in the sum size over the measured range: 30.5–30.6 ns/term for the ZZ rotation across m = 1.50e6 → 4.50e6, 138.5–141.3 for the sparse 2q unitary, 322–327 for `su4` (single thread).
 
-## The memory wall, measured
+## Memory wall
 
 The ceiling comes from a STREAM-style probe (`crates/membench` via `scripts/bandwidth.sh`), nominal bytes with plain write-allocating stores — the same store pattern the engine uses.
 Best GB/s on the reference host:
@@ -53,7 +53,7 @@ bytes/layer = terms_in×T + 2×(rows_gathered−rows_id)×T + 2×rows_id×16
 
 Reading the ratio of measured DRAM traffic to ceiling as a classification: at or above ~70% of the measured ceiling a phase is bandwidth-bound; modeled traffic far above measured means the working set is cache-served; far below ceiling with a high LLC miss rate points at latency, not bandwidth.
 
-### Single thread: nothing is bandwidth-bound
+### Single-thread roofline
 
 Measured on the current engine (fact sheet: `research/HARDWARE.md` §Engine roofline, single thread; ceilings per the 1-core row above):
 
@@ -66,7 +66,7 @@ Measured on the current engine (fact sheet: `research/HARDWARE.md` §Engine roof
 The byte model over-counts DRAM traffic by 2.5–12.8× at one thread because most modeled traffic is served from cache.
 The sparse classes are limited by load latency (IPC ≈ 2.2–2.6 with 34–41% LLC load-miss); `su4` is compute-bound in its sort (IPC 2.98, 2.1% LLC load-miss).
 
-### Threads: the dense-PTM class hits the write ceiling
+### Multi-thread roofline
 
 `su4` at m = 1.41e7 (both-socket ceilings: read 45.0 / write 25.3 at 8–16t, 48.8 / 23.1 at 32t):
 
@@ -98,11 +98,11 @@ The engine can instead be run partitioned, one pinned pool and one share of the 
 
 **Locality decides whether that pays.** A layer with no row crossing runs 4–18% faster at `P = 2`, the gain growing with cores per socket; a layer that exports rows costs 2–8× the layer it feeds.
 Random partition rows put about half of a dense two-qubit gate's deltas across a boundary, so the default draw lands a mixed circuit in the second case.
-[Running across NUMA nodes](numa.md) covers when to reach for it and how to ask for it.
+[NUMA nodes](numa.md) covers when to reach for it and how to ask for it.
 
 The same split across *processes* is one partition per MPI rank, and there the goal is capacity rather than bandwidth.
 Per-rank overhead is bounded and flat in the rank count: local layers cost ~10.5 ms at 6·10⁶ terms per rank whatever the group size, and a rotation layer whose generator crosses costs 3.5× that intra-node and 4.4–4.7× inter-node, unchanged from 4 to 8 ranks.
-[Running across MPI ranks](mpi.md) covers the launch and the limits.
+[MPI ranks](mpi.md) covers the launch and the limits.
 
 ## Thread-count guidance
 

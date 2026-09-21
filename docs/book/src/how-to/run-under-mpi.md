@@ -1,4 +1,4 @@
-# Run under MPI
+# MPI ranks
 
 Needs a from-source build with the `mpi` build option — see [Installation](../installation.md).
 
@@ -53,4 +53,4 @@ _, stats = observable.propagate_with_stats(circuit, policy, comm=comm)
 exported = comm.allreduce(sum(stats.partition.rows_exported))
 ```
 
-See [Running across MPI ranks](../explanation/mpi.md) for what this costs and buys, the rank-count and thread-level requirements, and [Installation](../installation.md) for the from-source MPI build steps.
+See [MPI ranks](../explanation/mpi.md) for what this costs and buys, the rank-count and thread-level requirements, and [Installation](../installation.md) for the from-source MPI build steps.

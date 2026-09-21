@@ -1,4 +1,4 @@
-# Your first propagation
+# First propagation
 
 This walks through one Heisenberg-picture propagation end to end: build an observable, build a circuit, propagate it, read out an expectation value.
 

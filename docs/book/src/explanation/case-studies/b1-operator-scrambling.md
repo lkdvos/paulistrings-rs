@@ -67,7 +67,7 @@ string, weight running `1, 3, 5, …, 15` and cone radius `0, 1, 2, …, 7` —
 layer followed by one *commuting* `ZZ` layer moving the boundary by at most
 one bond.
 
-### Where the cutoff gives out
+### Cutoff breakdown
 
 ![Support growth and discarded weight against Trotter step](../../assets/b1/support_growth.svg)
 
@@ -130,7 +130,7 @@ Trotter step of `H = J Σ Z_iZ_j + h Σ X_i` with `J = h = 1`, `dt = 0.15`, up
 to `t = 1.5` — physical time, not a Floquet period, so the step count
 resolves the dynamics rather than merely advancing it.
 
-### 2D is the hard case {#why-2d-is-the-hard-case}
+### 2D as the hard case {#why-2d-is-the-hard-case}
 
 In 1D the causal cone holds `O(t)` sites; in 2D it is an area, `O(t²)`, and
 Pauli strings inside it grow as `4^O(t²)`. A weight cap does not fix this: on

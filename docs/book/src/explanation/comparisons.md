@@ -45,7 +45,7 @@ The truncated rows of the last entry are non-vacuous: the same circuit with no
 policy keeps 3 881 terms, so the `1e-4` row exercises coefficient truncation and
 the `max_weight=4` row exercises weight truncation.
 
-### The conventions agree
+### Convention agreement
 
 Both engines are Hermitian-Y: a real coefficient multiplies the literal Pauli
 string, `Y` carries no phase of its own, and the coefficient type stays real
@@ -66,7 +66,7 @@ has no jl counterpart for any circuit using those gates. Every cross-engine
 comparison on this site is therefore run in the Heisenberg direction, where
 both sides agree.
 
-### The semantic divergences, measured
+### Semantic divergences
 
 Established by probes whose expected values are hand-derived in comments, never
 read back from the library.
@@ -147,7 +147,7 @@ carries the physics.
 - jl's experimental fused rotation kernel has no parity established, because it
   truncates during gate application.
 
-### Performance depends on the size of the tracked set
+### Performance vs tracked-set size
 
 There is no single ratio: the ranking changes sign, and where it changes sign
 depends on the workload by an order of magnitude.
@@ -160,7 +160,7 @@ independently-noisy means. Every configuration passes a per-layer term-count
 parity gate before any timing is reported. `ratio > 1` means this engine is
 faster.
 
-#### Where the ranking changes sign
+#### Ranking crossover
 
 | workload | channels | crossover (peak terms) |
 |---|---|---|

@@ -95,7 +95,7 @@ resolving this point: uncertainty 1.44·10⁻¹, 14× the target.
 below `1e-3`), because the observable has decayed to `⟨Z₆₂⟩ ≈ 0.016` and the
 sum collapses from a 1.4·10⁷-term transient to 34 698 resident terms.
 
-### The uncertainty estimate is not a bound {#the-uncertainty-estimate-is-not-a-bound}
+### Non-bound uncertainty estimate {#non-bound-uncertainty-estimate}
 
 Its bias flips sign. Measured on the 20-qubit sublattice at 20 steps, where
 a dense statevector gives the truth, over the full grid it is conservative;
@@ -147,7 +147,7 @@ at 5 steps; at 9 steps it needs `2⁻¹⁴`, 2.2·10⁶ terms and 37 s against a
 reference resolved only to `1e-2`; at 15–20 steps neither the target nor a
 reference to score it against is reachable inside this benchmark's box.
 
-### What it would take at 20 steps, θ_h = 7π/32 {#what-it-would-take}
+### Reachability requirements at 20 steps, θ_h = 7π/32 {#reachability-requirements}
 
 Extrapolating the measured growth (15.9× in terms and ~15× in wall time per
 factor of four in the cutoff, against a measured error law of only ~2.2×
@@ -161,7 +161,7 @@ error reduction per the same step):
 
 The 0.01 bar needs roughly `2⁻²⁰`–`2⁻²²` here, out of reach of a
 workstation. [Showcase
-B2](b2-noisy-verification.md#the-reachability-boundary-with-and-without-noise)
+B2](b2-noisy-verification.md#reachability-boundary-with-and-without-noise)
 revisits this point with noise: 48× fewer peak terms, a 154× smaller last
 difference, and still not a pass.
 

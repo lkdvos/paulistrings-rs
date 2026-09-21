@@ -16,7 +16,7 @@ lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Full walkthrough:
 [`crates/paulistrings/docs/examples/ising_2d_quench.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md).
 
-## What Pauli propagation is
+## Pauli propagation
 
 Write the observable, not the state, in the Pauli basis:
 
@@ -41,7 +41,7 @@ deleted, and whether the answer still moves when the cutoff is tightened. Every
 showcase and benchmark page answers that with a convergence sweep, and says so
 when the point is *not resolved*.
 
-## What this library is
+## Scope
 
 - **Operator-basis Pauli propagation at 10⁶–10⁸ terms**, in either picture.
 - **A GF(2)-bucketed, write-disjoint parallel engine.** Terms are partitioned by
@@ -58,7 +58,7 @@ when the point is *not resolved*.
 - **A GPU-ready, C-compatible plain-data layout** with fixed-fanout output
   buffers: a future GPU backend is an added kernel, not a rewrite.
 
-## What this library is not
+## Non-goals
 
 State-vector, tensor-network, stabilizer and matrix-product-state simulation
 are **explicit non-goals**. This engine has one storage type — a bucketed sum
@@ -75,7 +75,7 @@ Two hard edges worth knowing before you start:
 - A truncated Pauli sum has **no variational bound**. Discarded terms carry
   signs, so a partial sum can sit on either side of the truth and the error
   need not be monotone in the cutoff. This is measured, not hypothetical —
-  [Benchmark B](explanation/case-studies/b-theta-sweep.md#truncation-error-is-not-monotone-in-the-cutoff)
+  [Benchmark B](explanation/case-studies/b-theta-sweep.md#non-monotone-truncation-error)
   and [Benchmark C](explanation/case-studies/c-deep-trotter.md) both show it
   happening.
 
@@ -83,7 +83,7 @@ New to the library? Build an observable, run it through a circuit, and read
 out an expectation value in one guided walkthrough:
 [Tutorial](tutorial/index.md).
 
-## Start here
+## Sections
 
 | | |
 |---|---|
@@ -96,7 +96,7 @@ out an expectation value in one guided walkthrough:
 | [Python reference](reference/index.md) | this book's Python API reference |
 | [Rust API](api/paulistrings/index.html) | rustdoc for the core crate, plus [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) on GitHub — the hand-off point for Rust users, not part of this book |
 
-## How to read the numbers on this site
+## Numbers on this site
 
 Every number here is copied from a **committed** results file or README in the
 repository, and every page names the file it came from. No measurement was

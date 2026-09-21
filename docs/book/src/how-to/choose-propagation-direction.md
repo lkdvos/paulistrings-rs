@@ -1,4 +1,4 @@
-# Choose a propagation direction
+# Propagation direction
 
 ```python
 from paulistrings import Circuit, PauliSum, truncation

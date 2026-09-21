@@ -1,4 +1,4 @@
-# Compute expectation values
+# Expectation values
 
 ```python
 from paulistrings import Circuit, PauliSum, truncation

@@ -9,7 +9,7 @@ way.</p>
 
 ![Peak and final term count, and wall time, against the noise rate](../../assets/b2/terms-and-time-vs-noise.svg)
 
-## Noise shrinks the tracked set
+## Tracked-set shrinkage from noise
 
 A Kraus/density-matrix simulator pays for noise twice: it carries a `4ⁿ` object
 instead of a `2ⁿ` one, and each channel costs more than a gate. Pauli propagation
@@ -106,7 +106,7 @@ channel here neither self-adjoint nor key-preserving, its Heisenberg dual
 [cross-engine noise-channel parity](../comparisons.md#noise-channel-parity) results.
 `dephase(1e-2)` damps `⟨Z₆₂⟩` less since dephasing leaves `Z` untouched.
 
-## What is claimable
+## Claimable results
 
 ![Observable decay against the noise rate](../../assets/b2/observable-decay-vs-noise.svg)
 
@@ -138,9 +138,9 @@ actually want, since a device is noisy:
 
 `p = 1e-3` at 20 steps is not claimable, since its cutoff sweep never plateaued, and
 neither is `θ_h = 7π/32` at 20 steps noiseless: it is
-[Benchmark C's measured reachability boundary](c-deep-trotter.md#what-it-would-take).
+[Benchmark C's measured reachability boundary](c-deep-trotter.md#reachability-requirements).
 
-### The reachability boundary, with and without noise
+### Reachability boundary, with and without noise
 
 Running that 7π/32, 20-step circuit noisily at `p = 1e-2` shows what noise does to
 the boundary. At the same `2⁻¹⁶` cutoff, the noiseless run (Benchmark C) peaks at

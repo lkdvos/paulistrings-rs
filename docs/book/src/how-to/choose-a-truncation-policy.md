@@ -1,4 +1,4 @@
-# Choose a truncation policy
+# Truncation policy
 
 ```python
 from paulistrings import truncation

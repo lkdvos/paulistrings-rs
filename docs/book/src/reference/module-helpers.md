@@ -12,4 +12,4 @@
 `pyo3-log` caches each logger's effective level the first time it is consulted.
 Call `paulistrings.reset_log_cache()` after changing a Python log level mid-process (e.g. `logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)`), or the new level is not picked up.
 
-See [Read propagation stats and logs](../how-to/read-propagation-stats-and-logs.md) for the full recipe.
+See [Propagation stats and logs](../how-to/read-propagation-stats-and-logs.md) for the full recipe.

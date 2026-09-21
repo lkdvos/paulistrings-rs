@@ -28,7 +28,7 @@ deliverable is a scaling sweep (36 scaling points plus two truncation grids), wh
 lives in `examples/xxz_chain/` rather than with the other benchmarks (no `pytest-benchmark` entry;
 see Limitations).
 
-## The `Jz = 0` growth law is quadratic
+## Quadratic growth law at `Jz = 0`
 
 The measured log-log slope of untruncated non-zero term count against Trotter steps is
 **exactly 2.0000** at `n = 40, 60, 80, 100`, weight-1 seed. The counts are `16 s²` exactly for

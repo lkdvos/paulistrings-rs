@@ -1,4 +1,4 @@
-# Run across NUMA partitions
+# NUMA partitions
 
 In a single unpartitioned process, set thread count via `RAYON_NUM_THREADS` **before the interpreter starts** — Rayon builds its global pool at the first `propagate` call and never resizes it, so setting the variable from inside an already-running script doesn't reliably reach it:
 
@@ -37,4 +37,4 @@ _, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # per-layer bytes/rows sent, None if unpartitioned
 ```
 
-See [Running across NUMA nodes](../explanation/numa.md) for what this costs and buys, and when the exchange makes it not worth it.
+See [NUMA nodes](../explanation/numa.md) for what this costs and buys, and when the exchange makes it not worth it.

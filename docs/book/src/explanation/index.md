@@ -1,4 +1,4 @@
-# How it works
+# Engine design
 
 `paulistrings` evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer's data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
@@ -26,7 +26,7 @@ Storage is structure-of-arrays per bucket: parallel columns for the x key bits, 
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream exactly the bytes they use, and every column maps directly to a GPU device buffer.
 Buckets own their columns, so each retains its capacity across layers: the steady state of a propagation loop allocates nothing.
 
-## The bucket hash is GF(2)-linear
+## GF(2)-linear bucket hash
 
 The bucket function is `h(v) = H·v` for a fixed dense random matrix `H` over GF(2), giving `B = 2^b` buckets.
 Linearity is the property everything else follows from:
@@ -42,7 +42,7 @@ Because `H` is dense and random, bucket loads stay uniform whatever structure tr
 Bucket count follows the sum's size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
 Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to `H` splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).
 
-## Cosets are closed, write-disjoint tasks
+## Write-disjoint cosets
 
 Take the span of `h(D)` in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: **a coset is a closed task**.
@@ -54,7 +54,7 @@ Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Pa
 At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
 Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified (ARCHITECTURE.md §Determinism).
 
-## A layer runs in place
+## In-place layer execution
 
 Each coset task, independently:
 
@@ -72,14 +72,14 @@ The merge is fused with the segmented reduction: one two-pointer walk sums equal
 
 Channels that never change keys at all (depolarizing, dephasing, Pauli gates) bypass the whole pipeline as a parallel coefficient rescale.
 
-## Channels are prepared once
+## Channel preparation
 
 Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel's own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
 Pauli rotations prepare specially at any generator weight, since their delta set is just `{0, generator}` (ARCHITECTURE.md §Prepared-Channels).
 
-## Truncation is what keeps it tractable
+## Truncation
 
 A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
@@ -87,11 +87,11 @@ The per-layer step runs once per layer and may be non-local; `TopN` and its hist
 Policies compose with and/or combinators.
 Magnitude comparisons use `|c|²` rather than `|c|` (the same ordering, no `hypot` on the hot path), and `TopN` keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).
 
-## Where to go deeper
+## Further reading
 
 [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
 The rustdoc under [/api/](../api/paulistrings/index.html) documents the public types; the module docs on `engine::bucketed`, `engine::merge`, and `pauli_sum` carry the precise per-module contracts.
 
-The same loop runs with the sum split across NUMA domains or MPI ranks — [Running across NUMA nodes](numa.md), [Running across MPI ranks](mpi.md), and `ARCHITECTURE.md` §Partitioning for the mechanism.
+The same loop runs with the sum split across NUMA domains or MPI ranks — [NUMA nodes](numa.md), [MPI ranks](mpi.md), and `ARCHITECTURE.md` §Partitioning for the mechanism.
 
 Sources: [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs [`engine/bucketed.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs), [`engine/merge.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs), [`pauli_sum.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum.rs).

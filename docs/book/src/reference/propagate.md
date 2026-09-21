@@ -53,7 +53,7 @@ Under `comm=`, the block count in `partition_row_blocks` must equal the MPI grou
 `comm=` requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 `comm=` and `partitions=` are alternatives — place via the launcher (e.g. `mpirun --map-by ppr:1:numa --bind-to numa`) rather than both. Without the `mpi` feature, `comm=` raises `RuntimeError`.
 
-See [Run across NUMA partitions](../how-to/run-on-numa-partitions.md) and [Run under MPI](../how-to/run-under-mpi.md) for recipes.
+See [NUMA partitions](../how-to/run-on-numa-partitions.md) and [MPI ranks](../how-to/run-under-mpi.md) for recipes.
 
 ## `PropagationStats`
 

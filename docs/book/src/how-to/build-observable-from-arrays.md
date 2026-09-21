@@ -1,4 +1,4 @@
-# Build an observable from raw arrays
+# Observable from raw arrays
 
 ```python
 import numpy as np

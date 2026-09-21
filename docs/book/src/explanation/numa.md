@@ -1,10 +1,10 @@
-# Running across NUMA nodes
+# NUMA nodes
 
 A partitioned run splits the sum across NUMA domains instead of sharing one pool across the whole box.
 Each domain gets its own pinned thread pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
 The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Partitioning; this page is when to reach for it and how.
 
-## What it costs and what it buys
+## Cost and benefit
 
 **Locality decides everything.** A layer whose gates leave the partition rows fixed runs entirely inside its own domain and gains; a layer that moves any row across a boundary pays for the export pass, the copy and the receiver's larger merge stream.
 Measured at `P = 2` against `P = 1` on the same binary, on two-socket hosts from 8 to 48 cores per socket:
@@ -21,7 +21,7 @@ Full tables: [`research/HARDWARE.md`](https://github.com/lkdvos/paulistrings-rs/
 
 Random partition rows put roughly half of a dense two-qubit gate's deltas across a boundary, so the default draw lands a mixed circuit in the bottom row of that table.
 **In-process partitioning is worth it when the exchange is rare**, and choosing rows that make it rare — rows reading the qubits on the boundary of a spatial cut, so only cut-crossing gates exchange — is open research (`research/FINDINGS.md`).
-To split across *processes* instead, for capacity rather than bandwidth, see [Running across MPI ranks](mpi.md).
+To split across *processes* instead, for capacity rather than bandwidth, see [MPI ranks](mpi.md).
 
 ## Python
 
@@ -49,7 +49,7 @@ partitions=["0-7,16-23", "8-15,24-31"]
 It is `None` for an unpartitioned run.
 `local[k]` says whether layer `k` exchanged at all, which is the figure the table above turns on.
 
-## Two things that change
+## Partitioning changes
 
 **`RAYON_NUM_THREADS` is ignored.** The partitioned engine builds one pool per partition from the placement, not from Rayon's global pool, so the thread count comes from the CPU sets.
 Under `Placement::Unpinned` it comes from `threads_per_partition`.
@@ -67,7 +67,7 @@ Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is al
 - **Results agree to floating-point tolerance, not bit for bit** — as they do across bucket counts.
   At `P = 1` the output is bitwise the unpartitioned engine's.
 
-## Measuring it
+## Benchmarking
 
 `P = 1` versus `P = N` is a runtime-knob A/B of one binary, not a code A/B:
 

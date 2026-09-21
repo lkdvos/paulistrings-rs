@@ -47,7 +47,7 @@ Each of these is a `Circuit` method, a `gates.<name>(...)` factory returning a `
 | `.depolarize2(p, pairs)` | `noise.depolarize2(p, q0, q1)` | one channel per `(q0, q1)` pair; indices in a pair must differ |
 
 `pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)`; `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
-See [Add noise to a circuit](../how-to/add-noise-to-a-circuit.md) for a worked example.
+See [Circuit noise](../how-to/add-noise-to-a-circuit.md) for a worked example.
 
 ## Composition
 
@@ -74,4 +74,4 @@ A non-unitary channel (a noise channel) raises `ValueError` naming it.
 | `paulistrings.interop.circuit_from_qiskit(qc)` | a `qiskit.QuantumCircuit` |
 | `paulistrings.interop.circuit_from_json(obj, n_qubits)` | the task-JSON schema-v1 `"circuit"` object |
 
-See [Import a circuit from stim or qiskit](../how-to/import-circuit-from-stim-or-qiskit.md) for the recipe.
+See [stim and qiskit circuit import](../how-to/import-circuit-from-stim-or-qiskit.md) for the recipe.

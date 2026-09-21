@@ -1,4 +1,4 @@
-# Running across MPI ranks
+# MPI ranks
 
 A distributed run is a [partitioned run](numa.md) with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same two things that change.
@@ -9,7 +9,7 @@ What is new is the transport (point-to-point MPI instead of in-process channels)
 It is an off-by-default build option the released wheel omits, so the default wheel cannot do it.
 `paulistrings.mpi_available()` says whether this build can, and `comm=` in a build without it raises `RuntimeError`.
 
-## What to expect
+## Expected performance
 
 Measured on Icelake `ccq` nodes (2 × 32 cores), one rank per NUMA domain, 32 threads per rank, UCX shared memory within a node and InfiniBand between nodes, at 6·10⁶ terms per rank:
 
@@ -23,7 +23,7 @@ The step from 2 to 4 is shared memory giving way to InfiniBand.
 A remote layer is **transfer-bound** — the pipeline runs the coset loop under the transfer, so what is left is the export pass plus the bytes on the wire — which means the lever is fewer bytes (locality rows, a lower truncation), not more threads.
 Full table: [`research/HARDWARE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md) §Partitioned engine, MPI weak scaling.
 
-## Building it
+## Building from source
 
 The feature needs an MPI installation (for `mpicc`, which rsmpi's build script probes) and a `libclang` for its bindgen.
 On a Flatiron host:
@@ -72,7 +72,7 @@ if comm.Get_rank() == 0:
 `comm` and `partitions` are alternatives — passing both is a `ValueError`.
 A distributed run places one partition per *process*, so the placement is the launcher's job.
 
-### Which rows decide a term's rank
+### Partition row selection
 
 By default the rows are a GF(2)-random draw from the sum's own hash seed, which spreads a gate's deltas over every rank whatever the qubits' geometry.
 `partition_row_seed=` picks the draw; `partition_row_blocks=` replaces it with an explicit locality cut, one contiguous list of qubit indices per rank, so a gate whose qubits share a block never exchanges at all:
@@ -122,7 +122,7 @@ Each rank's Rayon pool sizes itself from the CPUs the launcher left in its affin
 On Rusty, `scripts/slurm/mpi-ranks.sbatch` does the arithmetic: it reads the node's domain count, rounds `nodes × domains` down to a power of two, and runs the differential net and then the probe at that rank count.
 See [`scripts/slurm/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md).
 
-## The three requirements
+## Requirements
 
 **Thread level at least `MPI_THREAD_SERIALIZED`.** The layer loop runs inside a pinned Rayon pool, so MPI is called from a pool worker rather than the process's main thread — and not necessarily the same worker on every layer.
 Only ever one at a time, which is exactly `SERIALIZED`; `FUNNELED` would be a false claim.

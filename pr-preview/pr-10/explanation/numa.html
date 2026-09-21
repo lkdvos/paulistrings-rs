@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0382195d.js";
+            window.path_to_searchindex_js = "../searchindex-236bf281.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-25a9cda8.js"></script>
@@ -225,8 +225,8 @@ To split across <em>processes</em> instead, for capacity rather than bandwidth, 
 It is <code>None</code> for an unpartitioned run.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the table above turns on.</p>
 <h2 id="partitioning-changes"><a class="header" href="#partitioning-changes">Partitioning changes</a></h2>
-<p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so the thread count comes from the CPU sets.
-Under <code>Placement::Unpinned</code> it comes from <code>threads_per_partition</code>.
+<p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so an explicit CPU-list placement takes its thread count from the list lengths.
+Without an explicit placement (<code>partitions="auto"</code> or an integer count) it comes from <code>threads_per_partition</code> instead.
 The variable still governs an unpartitioned run (<a href="../how-to/run-on-numa-partitions.html">Running on NUMA partitions</a>).</p>
 <p><strong>Exact <code>topn</code> is unavailable.</strong> Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects <code>truncation.topn</code>.
 Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.

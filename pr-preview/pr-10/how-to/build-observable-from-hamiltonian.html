@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0382195d.js";
+            window.path_to_searchindex_js = "../searchindex-236bf281.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-25a9cda8.js"></script>
@@ -182,10 +182,8 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="observable-from-a-hamiltonian"><a class="header" href="#observable-from-a-hamiltonian">Observable from a Hamiltonian</a></h1>
-<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same
-way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and
-hand it to <code>PauliSum.from_strings</code>. This builds a transverse-field Ising chain,
-<code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
+<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and hand it to <code>PauliSum.from_strings</code>.
+This builds a transverse-field Ising chain, <code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
 <pre><code class="language-python">from paulistrings import PauliSum
 
 n = 4
@@ -204,13 +202,9 @@ for i in range(n):
 
 hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
 </code></pre>
-<p>Terms that land on the same key sum their coefficients (only relevant if your
-own construction can produce duplicate strings; the chain above never does).
-For thousands of terms built programmatically, <a href="build-observable-from-arrays.html"><code>from_arrays</code></a>
-avoids the per-term string allocation.</p>
-<p>See <a href="../reference/pauli-sum.html">PauliSum reference</a> for the full constructor
-surface and <a href="build-observable-from-strings.html">Observable from Pauli strings</a>
-for the string-key convention.</p>
+<p><code>terms</code> is a plain <code>dict</code>, so accumulating into <code>terms.get(key, 0.0) - J</code> before the call is what merges repeated bonds onto one string — <code>from_strings</code> itself never sees a duplicate key, since a Python dict cannot hold one.
+For thousands of terms built programmatically, <a href="build-observable-from-arrays.html"><code>from_arrays</code></a> avoids the per-term string allocation and instead sums duplicate rows itself.</p>
+<p>See <a href="../reference/pauli-sum.html">PauliSum reference</a> for the full constructor surface and <a href="build-observable-from-strings.html">Observable from Pauli strings</a> for the string-key convention.</p>
 
                     </main>
 

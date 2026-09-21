@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0382195d.js";
+            window.path_to_searchindex_js = "searchindex-236bf281.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-25a9cda8.js"></script>
@@ -420,10 +420,8 @@ rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=2)
 See <a href="#paulisum">PauliSum reference</a> for the array dtypes and layout.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="observable-from-a-hamiltonian"><a class="header" href="#observable-from-a-hamiltonian">Observable from a Hamiltonian</a></h1>
-<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same
-way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and
-hand it to <code>PauliSum.from_strings</code>. This builds a transverse-field Ising chain,
-<code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
+<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and hand it to <code>PauliSum.from_strings</code>.
+This builds a transverse-field Ising chain, <code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
 <pre><code class="language-python">from paulistrings import PauliSum
 
 n = 4
@@ -442,13 +440,9 @@ for i in range(n):
 
 hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
 </code></pre>
-<p>Terms that land on the same key sum their coefficients (only relevant if your
-own construction can produce duplicate strings; the chain above never does).
-For thousands of terms built programmatically, <a href="#observable-from-raw-arrays"><code>from_arrays</code></a>
-avoids the per-term string allocation.</p>
-<p>See <a href="#paulisum">PauliSum reference</a> for the full constructor
-surface and <a href="#observable-from-pauli-strings">Observable from Pauli strings</a>
-for the string-key convention.</p>
+<p><code>terms</code> is a plain <code>dict</code>, so accumulating into <code>terms.get(key, 0.0) - J</code> before the call is what merges repeated bonds onto one string — <code>from_strings</code> itself never sees a duplicate key, since a Python dict cannot hold one.
+For thousands of terms built programmatically, <a href="#observable-from-raw-arrays"><code>from_arrays</code></a> avoids the per-term string allocation and instead sums duplicate rows itself.</p>
+<p>See <a href="#paulisum">PauliSum reference</a> for the full constructor surface and <a href="#observable-from-pauli-strings">Observable from Pauli strings</a> for the string-key convention.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="paulisum-save-and-load"><a class="header" href="#paulisum-save-and-load">PauliSum save and load</a></h1>
 <pre><code class="language-python">from paulistrings import PauliSum, io as psio
@@ -1065,14 +1059,10 @@ Call <code>paulistrings.reset_log_cache()</code> after changing a Python log lev
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="truncation"><a class="header" href="#truncation">Truncation</a></h1>
-<p>Truncation is what makes the method work, and it is applied <strong>after every
-channel</strong> — not after every <code>propagate</code> call, and not after every “layer”.
-Three consequences follow, and all three are load-bearing elsewhere in this
-book.</p>
+<p>Truncation is what makes the method work, and it is applied <strong>after every channel</strong> — not after every <code>propagate</code> call, and not after every “layer”.
+Three consequences follow, and all three are load-bearing elsewhere in this book.</p>
 <h2 id="splitting-a-circuit-is-free"><a class="header" href="#splitting-a-circuit-is-free">Splitting a circuit is free</a></h2>
-<p>Propagating through <code>a</code> and then <code>b</code> applies the same sequence of (apply,
-truncate) steps as propagating through <code>a</code> followed by <code>b</code> in one call, so the
-two agree exactly, for any split point:</p>
+<p>Propagating through <code>a</code> and then <code>b</code> applies the same sequence of (apply, truncate) steps as propagating through <code>a</code> followed by <code>b</code> in one call, so the two agree exactly, in application order:</p>
 <pre><code class="language-python">import numpy as np
 from paulistrings import Circuit, PauliSum, truncation
 
@@ -1094,30 +1084,21 @@ whole = observable.propagate(front + back, policy, direction="forward")
 assert len(split) == len(whole)
 assert np.allclose(split.coefficients_array(), whole.coefficients_array())
 </code></pre>
-<p>A time series therefore costs one pass rather than one pass per time point,
-and a hybrid split costs nothing in accuracy — the identity
-<a href="#b5--hybrid-depth-reduction">Showcase B5</a> rests on.</p>
+<p>Application order is circuit order under <code>direction="forward"</code>, as above, but the <em>reverse</em> of circuit order under <code>direction="heisenberg"</code> — see <a href="#direction-semantics">Direction semantics</a>.
+A Heisenberg split must therefore propagate <code>back</code> before <code>front</code>, not <code>front</code> before <code>back</code>.
+A time series still costs one pass rather than one pass per time point, and a hybrid split still costs nothing in accuracy, once split at the right end — the identity <a href="#b5--hybrid-depth-reduction">Showcase B5</a> rests on.</p>
 <h2 id="a-gate-is-a-truncation-point"><a class="header" href="#a-gate-is-a-truncation-point">A gate is a truncation point</a></h2>
-<p>Fusing two gates into one channel changes the answer. That is why every
-circuit in this repository’s example suite is built one gate per push, and why
-the <a href="#against-other-tools">cross-engine comparison</a> can be compared <em>per layer</em> at
-all.</p>
+<p>Fusing two gates into one channel changes the answer.
+That is why every circuit in this repository’s example suite is built one gate per push, and why the <a href="#against-other-tools">cross-engine comparison</a> can be compared <em>per layer</em> at all.</p>
 <h2 id="a-noise-channel-is-a-truncation-point-too"><a class="header" href="#a-noise-channel-is-a-truncation-point-too">A noise channel is a truncation point too</a></h2>
-<p>In the Pauli basis a depolarizing channel is a coefficient rescale, so adding
-noise makes a fixed threshold bite harder at every depth. That is the whole
-mechanism behind
-<a href="#b2--noisy-circuit-verification">Showcase B2</a>, where noise makes the
-simulation cheaper rather than more expensive.</p>
+<p>In the Pauli basis a depolarizing channel is a coefficient rescale, so adding noise makes a fixed threshold bite harder at every depth.
+That is the whole mechanism behind <a href="#b2--noisy-circuit-verification">Showcase B2</a>, where noise makes the simulation cheaper rather than more expensive.</p>
 <h2 id="no-variational-bound"><a class="header" href="#no-variational-bound">No variational bound</a></h2>
-<p>A truncated Pauli sum has no variational bound. Discarded terms carry signs,
-so a partial sum can sit on either side of the truth and the error need not
-fall monotonically as the cutoff tightens. This is measured, not
-hypothetical — <a href="#b--kick-angle-sweep">Benchmark B</a> and
-<a href="#d--xxz-chain-scaling">Benchmark D</a> both record non-monotone rows. Read
-a convergence sweep as a trend across the grid, never as a point-to-point
-improvement.</p>
-<p>Which policy to reach for is a separate question — see
-<a href="#truncation-policy">Truncation policy</a>.</p>
+<p>A truncated Pauli sum has no variational bound.
+Discarded terms carry signs, so a partial sum can sit on either side of the truth and the error need not fall monotonically as the cutoff tightens.
+This is measured, not hypothetical — <a href="#b--kick-angle-sweep">Benchmark B</a> and <a href="#d--xxz-chain-scaling">Benchmark D</a> both record non-monotone rows.
+Read a convergence sweep as a trend across the grid, never as a point-to-point improvement.</p>
+<p>Which policy to reach for is a separate question — see <a href="#truncation-policy">Truncation policy</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagation-engine"><a class="header" href="#propagation-engine">Propagation engine</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
@@ -1347,8 +1328,8 @@ To split across <em>processes</em> instead, for capacity rather than bandwidth, 
 It is <code>None</code> for an unpartitioned run.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the table above turns on.</p>
 <h2 id="partitioning-changes"><a class="header" href="#partitioning-changes">Partitioning changes</a></h2>
-<p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so the thread count comes from the CPU sets.
-Under <code>Placement::Unpinned</code> it comes from <code>threads_per_partition</code>.
+<p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so an explicit CPU-list placement takes its thread count from the list lengths.
+Without an explicit placement (<code>partitions="auto"</code> or an integer count) it comes from <code>threads_per_partition</code> instead.
 The variable still governs an unpartitioned run (<a href="#numa-partitions">Running on NUMA partitions</a>).</p>
 <p><strong>Exact <code>topn</code> is unavailable.</strong> Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects <code>truncation.topn</code>.
 Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
@@ -3363,7 +3344,7 @@ would flatten this curve; nothing in the current engine has one. The counts alte
 sweep (7841 vs 6631; 821 750 vs 517 398): the seed sits on bond <code>c = n//2</code>, an even bond when
 <code>n ≡ 0 (mod 4)</code> and odd otherwise, so the even-then-odd sweep hits it in a different half-step
 each time, changing the truncation schedule (a property of the bond ordering, not noise). Peak
-memory tracks the term count and the width monomorphization, and nothing else: for the <code>Jz=0.5</code>,
+memory tracks the term count and the compile-time width tier, and nothing else: for the <code>Jz=0.5</code>,
 <code>Z_c</code> series (~206 000 terms at every <code>n</code>), growth is 11.2 MiB for <code>n ≤ 60</code> and 17.5 MiB for
 <code>n ≥ 70</code>, <strong>55 B/term against 87 B/term</strong> — the <code>W = 1 → W = 2</code> boundary at 64 qubits (64-bit vs
 128-bit symplectic keys: 32 B/term of key becomes 48 B/term).</p>

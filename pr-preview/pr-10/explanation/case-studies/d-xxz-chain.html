@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-0382195d.js";
+            window.path_to_searchindex_js = "../../searchindex-236bf281.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-25a9cda8.js"></script>
@@ -292,7 +292,7 @@ would flatten this curve; nothing in the current engine has one. The counts alte
 sweep (7841 vs 6631; 821 750 vs 517 398): the seed sits on bond <code>c = n//2</code>, an even bond when
 <code>n ≡ 0 (mod 4)</code> and odd otherwise, so the even-then-odd sweep hits it in a different half-step
 each time, changing the truncation schedule (a property of the bond ordering, not noise). Peak
-memory tracks the term count and the width monomorphization, and nothing else: for the <code>Jz=0.5</code>,
+memory tracks the term count and the compile-time width tier, and nothing else: for the <code>Jz=0.5</code>,
 <code>Z_c</code> series (~206 000 terms at every <code>n</code>), growth is 11.2 MiB for <code>n ≤ 60</code> and 17.5 MiB for
 <code>n ≥ 70</code>, <strong>55 B/term against 87 B/term</strong> — the <code>W = 1 → W = 2</code> boundary at 64 qubits (64-bit vs
 128-bit symplectic keys: 32 B/term of key becomes 48 B/term).</p>

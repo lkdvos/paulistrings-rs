@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>propagate / propagate_with_stats - paulistrings-rs</title>
+        <title>Propagation - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-2e762057.js"></script>
+        <script src="../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -238,7 +238,7 @@ The GIL is released for the duration of both calls.</p>
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
-<p>See <a href="../how-to/run-on-numa-partitions.html">Run across NUMA partitions</a> and <a href="../how-to/run-under-mpi.html">Run under MPI</a> for recipes.</p>
+<p>See <a href="../how-to/run-on-numa-partitions.html">NUMA partitions</a> and <a href="../how-to/run-under-mpi.html">MPI ranks</a> for recipes.</p>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
 <div class="table-wrapper">

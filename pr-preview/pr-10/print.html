@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-2e762057.js"></script>
+        <script src="toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -196,7 +196,7 @@ exact diagonalization is already infeasible (<code>2^36</code> amplitudes for th
 lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Full walkthrough:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>.</p>
-<h2 id="what-pauli-propagation-is"><a class="header" href="#what-pauli-propagation-is">What Pauli propagation is</a></h2>
+<h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
 <p>Write the observable, not the state, in the Pauli basis:</p>
 <pre><code class="language-text">O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n
 </code></pre>
@@ -215,7 +215,7 @@ this site therefore has to report is how much of the operator the truncation
 deleted, and whether the answer still moves when the cutoff is tightened. Every
 showcase and benchmark page answers that with a convergence sweep, and says so
 when the point is <em>not resolved</em>.</p>
-<h2 id="what-this-library-is"><a class="header" href="#what-this-library-is">What this library is</a></h2>
+<h2 id="scope"><a class="header" href="#scope">Scope</a></h2>
 <ul>
 <li><strong>Operator-basis Pauli propagation at 10⁶–10⁸ terms</strong>, in either picture.</li>
 <li><strong>A GF(2)-bucketed, write-disjoint parallel engine.</strong> Terms are partitioned by
@@ -232,7 +232,7 @@ loop.</li>
 <li><strong>A GPU-ready, C-compatible plain-data layout</strong> with fixed-fanout output
 buffers: a future GPU backend is an added kernel, not a rewrite.</li>
 </ul>
-<h2 id="what-this-library-is-not"><a class="header" href="#what-this-library-is-not">What this library is not</a></h2>
+<h2 id="non-goals"><a class="header" href="#non-goals">Non-goals</a></h2>
 <p>State-vector, tensor-network, stabilizer and matrix-product-state simulation
 are <strong>explicit non-goals</strong>. This engine has one storage type — a bucketed sum
 of parallel x/z/coefficient columns — and one loop.
@@ -247,14 +247,14 @@ fallback path.</li>
 <li>A truncated Pauli sum has <strong>no variational bound</strong>. Discarded terms carry
 signs, so a partial sum can sit on either side of the truth and the error
 need not be monotone in the cutoff. This is measured, not hypothetical —
-<a href="#truncation-error-is-not-monotone-in-the-cutoff">Benchmark B</a>
+<a href="#non-monotone-truncation-error">Benchmark B</a>
 and <a href="#benchmark-c--deep-trotter-circuits">Benchmark C</a> both show it
 happening.</li>
 </ul>
 <p>New to the library? Build an observable, run it through a circuit, and read
 out an expectation value in one guided walkthrough:
-<a href="#your-first-propagation">Tutorial</a>.</p>
-<h2 id="start-here"><a class="header" href="#start-here">Start here</a></h2>
+<a href="#first-propagation">Tutorial</a>.</p>
+<h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -262,9 +262,9 @@ out an expectation value in one guided walkthrough:
 </thead>
 <tbody>
 <tr><td><a href="#installation">Installation</a></td><td>install the Python package</td></tr>
-<tr><td><a href="#your-first-propagation">Tutorial</a></td><td>one guided walkthrough: observable, circuit, propagate, measure</td></tr>
+<tr><td><a href="#first-propagation">Tutorial</a></td><td>one guided walkthrough: observable, circuit, propagate, measure</td></tr>
 <tr><td><a href="#how-to-guides">How-to guides</a></td><td>task recipes — noise, truncation, direction, NUMA, MPI, interop</td></tr>
-<tr><td><a href="#how-it-works">Explanation</a></td><td>how it works and why it’s fast: the bucketed layout, coset parallelism, and the measured roofline</td></tr>
+<tr><td><a href="#engine-design">Explanation</a></td><td>how it works and why it’s fast: the bucketed layout, coset parallelism, and the measured roofline</td></tr>
 <tr><td><a href="#case-studies">Case studies</a></td><td>measured applications and benchmarks: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, XXZ scaling, and more, including the negative results</td></tr>
 <tr><td><a href="#against-other-tools">Comparisons</a></td><td>vs <code>PauliPropagation.jl</code> (term-for-term parity, and the measured crossover), vs state-vector and stabilizer simulators</td></tr>
 <tr><td><a href="#reference">Python reference</a></td><td>this book’s Python API reference</td></tr>
@@ -272,7 +272,7 @@ out an expectation value in one guided walkthrough:
 </tbody>
 </table>
 </div>
-<h2 id="how-to-read-the-numbers-on-this-site"><a class="header" href="#how-to-read-the-numbers-on-this-site">How to read the numbers on this site</a></h2>
+<h2 id="numbers-on-this-site"><a class="header" href="#numbers-on-this-site">Numbers on this site</a></h2>
 <p>Every number here is copied from a <strong>committed</strong> results file or README in the
 repository, and every page names the file it came from. No measurement was
 taken to build this site. Three consequences:</p>
@@ -295,7 +295,7 @@ ends with the exact invocation that regenerates its figures and JSON.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs">github.com/lkdvos/paulistrings-rs</a>.
 The design source of truth is
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a>;
-the site’s <a href="#how-it-works">Explanation pages</a> are its public summary.
+the site’s <a href="#engine-design">Explanation pages</a> are its public summary.
 Dual-licensed MIT OR Apache-2.0.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
@@ -332,7 +332,7 @@ benchmarks — the library itself needs nothing but <code>numpy</code>:</p>
 pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="your-first-propagation"><a class="header" href="#your-first-propagation">Your first propagation</a></h1>
+<h1 id="first-propagation"><a class="header" href="#first-propagation">First propagation</a></h1>
 <p>This walks through one Heisenberg-picture propagation end to end: build an observable, build a circuit, propagate it, read out an expectation value.</p>
 <pre><code class="language-python">import math
 from paulistrings import Circuit, PauliSum, truncation
@@ -376,22 +376,22 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="how-to-guides"><a class="header" href="#how-to-guides">How-to guides</a></h1>
-<p>Short, goal-oriented recipes. Each assumes the <a href="#your-first-propagation">Tutorial</a>’s basics.</p>
+<p>Short, goal-oriented recipes. Each assumes the <a href="#first-propagation">Tutorial</a>’s basics.</p>
 <ul>
-<li><a href="#build-an-observable-from-pauli-strings">Build an observable from Pauli strings</a> — <code>PauliSum.from_strings</code>.</li>
-<li><a href="#build-an-observable-from-raw-arrays">Build an observable from raw arrays</a> — <code>from_arrays</code> and the array accessors.</li>
-<li><a href="#save-and-load-a-paulisum">Save and load a PauliSum</a> — the <code>paulistrings.io</code> <code>.npz</code> format.</li>
-<li><a href="#add-noise-to-a-circuit">Add noise to a circuit</a> — the noise channels and the <code>noise</code> factories.</li>
-<li><a href="#import-a-circuit-from-stim-or-qiskit">Import a circuit from stim or qiskit</a> — <code>interop.circuit_from_stim</code>/<code>circuit_from_qiskit</code>/<code>circuit_from_json</code>.</li>
-<li><a href="#choose-a-truncation-policy">Choose a truncation policy</a> — which of <code>coeff</code>/<code>weight</code>/<code>topn</code> to reach for.</li>
-<li><a href="#choose-a-propagation-direction">Choose a propagation direction</a> — Heisenberg vs forward.</li>
-<li><a href="#compute-expectation-values">Compute expectation values</a> — <code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>.</li>
-<li><a href="#read-propagation-stats-and-logs">Read propagation stats and logs</a> — <code>propagate_with_stats</code> and the <code>log</code> facade.</li>
-<li><a href="#run-across-numa-partitions">Run across NUMA partitions</a> — <code>partitions=</code> and <code>RAYON_NUM_THREADS</code>.</li>
-<li><a href="#run-under-mpi">Run under MPI</a> — <code>comm=</code> and the distributed engine.</li>
+<li><a href="#observable-from-pauli-strings">Observable from Pauli strings</a> — <code>PauliSum.from_strings</code>.</li>
+<li><a href="#observable-from-raw-arrays">Observable from raw arrays</a> — <code>from_arrays</code> and the array accessors.</li>
+<li><a href="#paulisum-save-and-load">PauliSum save and load</a> — the <code>paulistrings.io</code> <code>.npz</code> format.</li>
+<li><a href="#circuit-noise">Circuit noise</a> — the noise channels and the <code>noise</code> factories.</li>
+<li><a href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a> — <code>interop.circuit_from_stim</code>/<code>circuit_from_qiskit</code>/<code>circuit_from_json</code>.</li>
+<li><a href="#truncation-policy">Truncation policy</a> — which of <code>coeff</code>/<code>weight</code>/<code>topn</code> to reach for.</li>
+<li><a href="#propagation-direction">Propagation direction</a> — Heisenberg vs forward.</li>
+<li><a href="#expectation-values">Expectation values</a> — <code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>.</li>
+<li><a href="#propagation-stats-and-logs">Propagation stats and logs</a> — <code>propagate_with_stats</code> and the <code>log</code> facade.</li>
+<li><a href="#numa-partitions">NUMA partitions</a> — <code>partitions=</code> and <code>RAYON_NUM_THREADS</code>.</li>
+<li><a href="#mpi-ranks">MPI ranks</a> — <code>comm=</code> and the distributed engine.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="build-an-observable-from-pauli-strings"><a class="header" href="#build-an-observable-from-pauli-strings">Build an observable from Pauli strings</a></h1>
+<h1 id="observable-from-pauli-strings"><a class="header" href="#observable-from-pauli-strings">Observable from Pauli strings</a></h1>
 <pre><code class="language-python">from paulistrings import PauliSum
 
 observable = PauliSum.from_strings(
@@ -402,7 +402,7 @@ observable = PauliSum.from_strings(
 A coefficient multiplies the literal <strong>Hermitian</strong> Pauli string: <code>Y</code> carries no phase of its own, unlike a “canonical” phased Y elsewhere.
 See <a href="#paulisum">PauliSum reference</a> for the full constructor surface and error cases (length mismatch, invalid character).</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="build-an-observable-from-raw-arrays"><a class="header" href="#build-an-observable-from-raw-arrays">Build an observable from raw arrays</a></h1>
+<h1 id="observable-from-raw-arrays"><a class="header" href="#observable-from-raw-arrays">Observable from raw arrays</a></h1>
 <pre><code class="language-python">import numpy as np
 from paulistrings import PauliSum
 
@@ -418,7 +418,7 @@ rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=2)
 <code>from_arrays</code> is the exact inverse: it hands the same columns back to the engine as a <code>PauliSum</code>, so an analysis pass can round-trip without re-parsing strings.
 See <a href="#paulisum">PauliSum reference</a> for the array dtypes and layout.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="save-and-load-a-paulisum"><a class="header" href="#save-and-load-a-paulisum">Save and load a PauliSum</a></h1>
+<h1 id="paulisum-save-and-load"><a class="header" href="#paulisum-save-and-load">PauliSum save and load</a></h1>
 <pre><code class="language-python">from paulistrings import PauliSum, io as psio
 
 evolved = PauliSum.from_strings({"XI": 1.0, "IZ": 0.5}, num_qubits=2)
@@ -429,7 +429,7 @@ reloaded = psio.load("evolved.npz")
 It’s how an evolved observable crosses a process boundary — propagate, save, load elsewhere, propagate further, as in <a href="#b5--hybrid-depth-reduction">Case study B5</a>.
 <code>load</code> hard-errors on a missing or unrecognized format field rather than guessing.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="add-noise-to-a-circuit"><a class="header" href="#add-noise-to-a-circuit">Add noise to a circuit</a></h1>
+<h1 id="circuit-noise"><a class="header" href="#circuit-noise">Circuit noise</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit
 
 circuit = Circuit(4)
@@ -450,7 +450,7 @@ circuit.append(channel)
 </code></pre>
 <p>See <a href="#circuit">Circuit reference</a> for the full channel list and parameter meanings.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="import-a-circuit-from-stim-or-qiskit"><a class="header" href="#import-a-circuit-from-stim-or-qiskit">Import a circuit from stim or qiskit</a></h1>
+<h1 id="stim-and-qiskit-circuit-import"><a class="header" href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a></h1>
 <pre><code class="language-python">import stim
 from paulistrings import interop
 
@@ -472,9 +472,9 @@ Measurements, resets, conditioned instructions, and gates on more than two qubit
 <p>A third path builds a <code>Circuit</code> from the frozen task-JSON schema, e.g. when reading a job file produced by the <a href="#against-other-tools">cross-engine comparisons</a>:</p>
 <pre><code class="language-python">circuit = interop.circuit_from_json({"gates": [{"name": "h", "qubits": [0]}]}, n_qubits=1)
 </code></pre>
-<p>See <a href="#circuit">Circuit reference</a> for the gate vocabulary each importer maps onto, and <code>interop.stabilizers_from_stim</code> in <a href="#compute-expectation-values">Compute expectation values</a> for reading out a Clifford circuit’s output state rather than its gates.</p>
+<p>See <a href="#circuit">Circuit reference</a> for the gate vocabulary each importer maps onto, and <code>interop.stabilizers_from_stim</code> in <a href="#expectation-values">Expectation values</a> for reading out a Clifford circuit’s output state rather than its gates.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="choose-a-truncation-policy"><a class="header" href="#choose-a-truncation-policy">Choose a truncation policy</a></h1>
+<h1 id="truncation-policy"><a class="header" href="#truncation-policy">Truncation policy</a></h1>
 <pre><code class="language-python">from paulistrings import truncation
 
 policy = truncation.coeff(1e-10)
@@ -490,9 +490,9 @@ Reach for it unless you have a specific reason not to.</p>
 <p>Keep <code>min_abs_coeff</code> above ~1e-12 on deep circuits — <code>cos(π/2)</code> is <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.</p>
 <p>A truncated Pauli sum has no variational bound: dropped terms carry signs, so error need not fall monotonically as the cutoff tightens.
 Read a convergence sweep as a trend across a grid, not a point-to-point improvement.</p>
-<p>See <a href="#truncation-policies">Truncation reference</a> for the full policy table and <a href="#how-it-works">How it works</a> for the mechanism.</p>
+<p>See <a href="#truncation-policies">Truncation reference</a> for the full policy table and <a href="#engine-design">How it works</a> for the mechanism.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="choose-a-propagation-direction"><a class="header" href="#choose-a-propagation-direction">Choose a propagation direction</a></h1>
+<h1 id="propagation-direction"><a class="header" href="#propagation-direction">Propagation direction</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
@@ -514,7 +514,7 @@ It starts from a wide operator, so the cost profile is different from the outset
 Get the circuit’s push order right and the direction flag does the rest.</p>
 <p>See <a href="#direction-semantics">Direction reference</a> for the full table and <a href="#against-other-tools">Comparisons</a> for the cross-engine asymmetry in what <code>"forward"</code> can express.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="compute-expectation-values"><a class="header" href="#compute-expectation-values">Compute expectation values</a></h1>
+<h1 id="expectation-values"><a class="header" href="#expectation-values">Expectation values</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
@@ -546,7 +546,7 @@ observable.identity_coefficient()  # the coefficient of I...I
 </code></pre>
 <p>See <a href="#measurement">Measurement reference</a> for the full signatures and label alphabet.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="read-propagation-stats-and-logs"><a class="header" href="#read-propagation-stats-and-logs">Read propagation stats and logs</a></h1>
+<h1 id="propagation-stats-and-logs"><a class="header" href="#propagation-stats-and-logs">Propagation stats and logs</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
@@ -573,7 +573,7 @@ paulistrings.reset_log_cache()   # pyo3-log caches each logger's effective level
 Leave logging off when timing — an enabled DEBUG filter adds a clock read per layer.</p>
 <p>See <a href="#propagate--propagate_with_stats">PropagationStats reference</a> for the full field list.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="run-across-numa-partitions"><a class="header" href="#run-across-numa-partitions">Run across NUMA partitions</a></h1>
+<h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>In a single unpartitioned process, set thread count via <code>RAYON_NUM_THREADS</code> <strong>before the interpreter starts</strong> — Rayon builds its global pool at the first <code>propagate</code> call and never resizes it, so setting the variable from inside an already-running script doesn’t reliably reach it:</p>
 <pre><code class="language-bash">RAYON_NUM_THREADS=32 python my_script.py
 </code></pre>
@@ -598,9 +598,9 @@ Leave logging off when timing — an enabled DEBUG filter adds a clock read per 
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # per-layer bytes/rows sent, None if unpartitioned
 </code></pre>
-<p>See <a href="#running-across-numa-nodes">Running across NUMA nodes</a> for what this costs and buys, and when the exchange makes it not worth it.</p>
+<p>See <a href="#numa-nodes">NUMA nodes</a> for what this costs and buys, and when the exchange makes it not worth it.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="run-under-mpi"><a class="header" href="#run-under-mpi">Run under MPI</a></h1>
+<h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>Needs a from-source build with the <code>mpi</code> build option — see <a href="#installation">Installation</a>.</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">import mpi4py
@@ -640,10 +640,10 @@ value = comm.allreduce(local.expectation("z+"))
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, comm=comm)
 exported = comm.allreduce(sum(stats.partition.rows_exported))
 </code></pre>
-<p>See <a href="#running-across-mpi-ranks">Running across MPI ranks</a> for what this costs and buys, the rank-count and thread-level requirements, and <a href="#installation">Installation</a> for the from-source MPI build steps.</p>
+<p>See <a href="#mpi-ranks-1">MPI ranks</a> for what this costs and buys, the rank-count and thread-level requirements, and <a href="#installation">Installation</a> for the from-source MPI build steps.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="reference"><a class="header" href="#reference">Reference</a></h1>
-<p>Signatures and tables for the Python API. No rationale — see <a href="#how-it-works">Explanation</a> for that, or <a href="#how-to-guides">How-to guides</a> for recipes.</p>
+<p>Signatures and tables for the Python API. No rationale — see <a href="#engine-design">Explanation</a> for that, or <a href="#how-to-guides">How-to guides</a> for recipes.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -722,7 +722,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 </tbody>
 </table>
 </div>
-<p>See <a href="#save-and-load-a-paulisum">Save and load a PauliSum</a> for the recipe.</p>
+<p>See <a href="#paulisum-save-and-load">PauliSum save and load</a> for the recipe.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="circuit"><a class="header" href="#circuit">Circuit</a></h1>
 <h2 id="constructor"><a class="header" href="#constructor">Constructor</a></h2>
@@ -775,7 +775,7 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 </table>
 </div>
 <p><code>pauli_channel(p/3, p/3, p/3, q)</code> is <code>depolarize(p, q)</code>; <code>pauli_channel(0, 0, p, q)</code> is <code>dephase(p, q)</code>.
-See <a href="#add-noise-to-a-circuit">Add noise to a circuit</a> for a worked example.</p>
+See <a href="#circuit-noise">Circuit noise</a> for a worked example.</p>
 <h2 id="composition"><a class="header" href="#composition">Composition</a></h2>
 <div class="table-wrapper">
 <table>
@@ -810,7 +810,7 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 </tbody>
 </table>
 </div>
-<p>See <a href="#import-a-circuit-from-stim-or-qiskit">Import a circuit from stim or qiskit</a> for the recipe.</p>
+<p>See <a href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a> for the recipe.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagate--propagate_with_stats"><a class="header" href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></h1>
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, engine=None,
@@ -869,7 +869,7 @@ The GIL is released for the duration of both calls.</p>
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
-<p>See <a href="#run-across-numa-partitions">Run across NUMA partitions</a> and <a href="#run-under-mpi">Run under MPI</a> for recipes.</p>
+<p>See <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a> for recipes.</p>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
 <div class="table-wrapper">
@@ -945,7 +945,7 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 <p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
-<p>See <a href="#choose-a-truncation-policy">Choose a truncation policy</a> for guidance and <a href="#how-it-works">How it works</a> for the truncation mechanism.</p>
+<p>See <a href="#truncation-policy">Truncation policy</a> for guidance and <a href="#engine-design">How it works</a> for the truncation mechanism.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="direction-semantics"><a class="header" href="#direction-semantics">Direction semantics</a></h1>
 <p><code>direction=</code> selects which conjugation <code>propagate</code>/<code>propagate_with_stats</code> performs.</p>
@@ -963,7 +963,7 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 <h2 id="push-order"><a class="header" href="#push-order">Push order</a></h2>
 <p>Push order interacts with direction. Under <code>"heisenberg"</code> the engine iterates channels in reverse, so pushing <code>ZZ</code> rotations before <code>X</code> rotations gives a step operator <code>U = U_X · U_ZZ</code>, and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Build the circuit in the order you want applied under <code>"forward"</code>; the direction flag handles the reversal.</p>
-<p>See <a href="#choose-a-propagation-direction">Choose a propagation direction</a> for guidance on which picture answers which question.</p>
+<p>See <a href="#propagation-direction">Propagation direction</a> for guidance on which picture answers which question.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="measurement"><a class="header" href="#measurement">Measurement</a></h1>
 <h2 id="expectationstatex"><a class="header" href="#expectationstatex"><code>expectation(state="x+")</code></a></h2>
@@ -1011,9 +1011,9 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <h2 id="logging-gotcha"><a class="header" href="#logging-gotcha">Logging gotcha</a></h2>
 <p><code>pyo3-log</code> caches each logger’s effective level the first time it is consulted.
 Call <code>paulistrings.reset_log_cache()</code> after changing a Python log level mid-process (e.g. <code>logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)</code>), or the new level is not picked up.</p>
-<p>See <a href="#read-propagation-stats-and-logs">Read propagation stats and logs</a> for the full recipe.</p>
+<p>See <a href="#propagation-stats-and-logs">Propagation stats and logs</a> for the full recipe.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h1>
+<h1 id="engine-design"><a class="header" href="#engine-design">Engine design</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer’s data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
 The companion <a href="#performance">Performance</a> page puts measured numbers to each claim; <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the invariants-only reference this page narrates — cited by section below rather than restated in full.</p>
@@ -1032,7 +1032,7 @@ Nothing in the propagation loop ever sorts the whole sum.</p>
 <p>Storage is structure-of-arrays per bucket: parallel columns for the x key bits, the z key bits, and the complex coefficients.
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream exactly the bytes they use, and every column maps directly to a GPU device buffer.
 Buckets own their columns, so each retains its capacity across layers: the steady state of a propagation loop allocates nothing.</p>
-<h2 id="the-bucket-hash-is-gf2-linear"><a class="header" href="#the-bucket-hash-is-gf2-linear">The bucket hash is GF(2)-linear</a></h2>
+<h2 id="gf2-linear-bucket-hash"><a class="header" href="#gf2-linear-bucket-hash">GF(2)-linear bucket hash</a></h2>
 <p>The bucket function is <code>h(v) = H·v</code> for a fixed dense random matrix <code>H</code> over GF(2), giving <code>B = 2^b</code> buckets.
 Linearity is the property everything else follows from:</p>
 <pre><code class="language-text">h(v ⊕ d) = h(v) ⊕ h(d)
@@ -1042,7 +1042,7 @@ Equal keys always share a bucket (h is a function), so duplicates can never stra
 Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).</p>
 <p>Bucket count follows the sum’s size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
 Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).</p>
-<h2 id="cosets-are-closed-write-disjoint-tasks"><a class="header" href="#cosets-are-closed-write-disjoint-tasks">Cosets are closed, write-disjoint tasks</a></h2>
+<h2 id="write-disjoint-cosets"><a class="header" href="#write-disjoint-cosets">Write-disjoint cosets</a></h2>
 <p>Take the span of <code>h(D)</code> in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: <strong>a coset is a closed task</strong>.
 That is the engine’s whole parallel decomposition — one coset per work-stealing task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
@@ -1050,7 +1050,7 @@ Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Pa
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"><span class="img-wrapper"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"></span></label></p>
 <p>At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
 Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified (ARCHITECTURE.md §Determinism).</p>
-<h2 id="a-layer-runs-in-place"><a class="header" href="#a-layer-runs-in-place">A layer runs in place</a></h2>
+<h2 id="in-place-layer-execution"><a class="header" href="#in-place-layer-execution">In-place layer execution</a></h2>
 <p>Each coset task, independently:</p>
 <ol>
 <li><strong>Swap</strong> its bucket columns into worker-persistent scratch, leaving emptied, capacity-retaining columns behind as the write destinations.
@@ -1065,21 +1065,21 @@ The identity delta’s stream keeps its source keys, so it inherits the source b
 The rest-stream sort itself exploits that a gather run is a concatenation of already-sorted per-delta streams; a radix variant takes over for dense two-qubit PTMs, where the sort dominates the layer.
 The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes (ARCHITECTURE.md §Engine).</p>
 <p>Channels that never change keys at all (depolarizing, dephasing, Pauli gates) bypass the whole pipeline as a parallel coefficient rescale.</p>
-<h2 id="channels-are-prepared-once"><a class="header" href="#channels-are-prepared-once">Channels are prepared once</a></h2>
+<h2 id="channel-preparation"><a class="header" href="#channel-preparation">Channel preparation</a></h2>
 <p>Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel’s own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
 Pauli rotations prepare specially at any generator weight, since their delta set is just <code>{0, generator}</code> (ARCHITECTURE.md §Prepared-Channels).</p>
-<h2 id="truncation-is-what-keeps-it-tractable"><a class="header" href="#truncation-is-what-keeps-it-tractable">Truncation is what keeps it tractable</a></h2>
+<h2 id="truncation"><a class="header" href="#truncation">Truncation</a></h2>
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
 Policies compose with and/or combinators.
 Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code> keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).</p>
-<h2 id="where-to-go-deeper"><a class="header" href="#where-to-go-deeper">Where to go deeper</a></h2>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
 <p><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
 The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>
-<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#running-across-numa-nodes">Running across NUMA nodes</a>, <a href="#running-across-mpi-ranks">Running across MPI ranks</a>, and <code>ARCHITECTURE.md</code> §Partitioning for the mechanism.</p>
+<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-nodes">NUMA nodes</a>, <a href="#mpi-ranks-1">MPI ranks</a>, and <code>ARCHITECTURE.md</code> §Partitioning for the mechanism.</p>
 <p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum.rs"><code>pauli_sum.rs</code></a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="performance"><a class="header" href="#performance">Performance</a></h1>
@@ -1092,7 +1092,7 @@ Coefficient-only scans (truncation, expectation values) and key-only scans (weig
 Buckets retain their capacity across layers, so a steady-state propagation loop allocates nothing (<code>ARCHITECTURE.md</code> §Data-Model).</p>
 <p>The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
 The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (<code>ARCHITECTURE.md</code> §Width).</p>
-<h2 id="where-a-layers-time-goes"><a class="header" href="#where-a-layers-time-goes">Where a layer’s time goes</a></h2>
+<h2 id="layer-time-breakdown"><a class="header" href="#layer-time-breakdown">Layer time breakdown</a></h2>
 <p>Measured on the reference host (2× Xeon Gold 6244, 16c/32t) with the repo’s phase-timing probe, per layer class, as a share of summed worker busy time (gather / sort / merge):</p>
 <div class="table-wrapper">
 <table>
@@ -1110,7 +1110,7 @@ The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and
 Parallel efficiency (busy time over coset-loop wall × threads) is 0.99 for <code>su4</code> at 16 threads: load balance is a solved problem, and the scaling limits below are memory-system effects, not imbalance.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/design/phase-shares.svg" alt="Share of worker busy time in gather, sort and merge per layer class, one thread"><span class="img-wrapper"><img src="assets/design/phase-shares.svg" alt="Share of worker busy time in gather, sort and merge per layer class, one thread"></span></label></p>
 <p>Per-term cost is flat in the sum size over the measured range: 30.5–30.6 ns/term for the ZZ rotation across m = 1.50e6 → 4.50e6, 138.5–141.3 for the sparse 2q unitary, 322–327 for <code>su4</code> (single thread).</p>
-<h2 id="the-memory-wall-measured"><a class="header" href="#the-memory-wall-measured">The memory wall, measured</a></h2>
+<h2 id="memory-wall"><a class="header" href="#memory-wall">Memory wall</a></h2>
 <p>The ceiling comes from a STREAM-style probe (<code>crates/membench</code> via <code>scripts/bandwidth.sh</code>), nominal bytes with plain write-allocating stores — the same store pattern the engine uses.
 Best GB/s on the reference host:</p>
 <div class="table-wrapper">
@@ -1132,7 +1132,7 @@ Best GB/s on the reference host:</p>
               + 2×rows_sorted×T + terms_out×T
 </code></pre>
 <p>Reading the ratio of measured DRAM traffic to ceiling as a classification: at or above ~70% of the measured ceiling a phase is bandwidth-bound; modeled traffic far above measured means the working set is cache-served; far below ceiling with a high LLC miss rate points at latency, not bandwidth.</p>
-<h3 id="single-thread-nothing-is-bandwidth-bound"><a class="header" href="#single-thread-nothing-is-bandwidth-bound">Single thread: nothing is bandwidth-bound</a></h3>
+<h3 id="single-thread-roofline"><a class="header" href="#single-thread-roofline">Single-thread roofline</a></h3>
 <p>Measured on the current engine (fact sheet: <code>research/HARDWARE.md</code> §Engine roofline, single thread; ceilings per the 1-core row above):</p>
 <div class="table-wrapper">
 <table>
@@ -1148,7 +1148,7 @@ Best GB/s on the reference host:</p>
 </div>
 <p>The byte model over-counts DRAM traffic by 2.5–12.8× at one thread because most modeled traffic is served from cache.
 The sparse classes are limited by load latency (IPC ≈ 2.2–2.6 with 34–41% LLC load-miss); <code>su4</code> is compute-bound in its sort (IPC 2.98, 2.1% LLC load-miss).</p>
-<h3 id="threads-the-dense-ptm-class-hits-the-write-ceiling"><a class="header" href="#threads-the-dense-ptm-class-hits-the-write-ceiling">Threads: the dense-PTM class hits the write ceiling</a></h3>
+<h3 id="multi-thread-roofline"><a class="header" href="#multi-thread-roofline">Multi-thread roofline</a></h3>
 <p><code>su4</code> at m = 1.41e7 (both-socket ceilings: read 45.0 / write 25.3 at 8–16t, 48.8 / 23.1 at 32t):</p>
 <div class="table-wrapper">
 <table>
@@ -1184,10 +1184,10 @@ The sparse classes are limited by load latency (IPC ≈ 2.2–2.6 with 34–41% 
 The engine can instead be run partitioned, one pinned pool and one share of the sum per NUMA domain, with only the rows a layer moves across a domain boundary exchanged.</p>
 <p><strong>Locality decides whether that pays.</strong> A layer with no row crossing runs 4–18% faster at <code>P = 2</code>, the gain growing with cores per socket; a layer that exports rows costs 2–8× the layer it feeds.
 Random partition rows put about half of a dense two-qubit gate’s deltas across a boundary, so the default draw lands a mixed circuit in the second case.
-<a href="#running-across-numa-nodes">Running across NUMA nodes</a> covers when to reach for it and how to ask for it.</p>
+<a href="#numa-nodes">NUMA nodes</a> covers when to reach for it and how to ask for it.</p>
 <p>The same split across <em>processes</em> is one partition per MPI rank, and there the goal is capacity rather than bandwidth.
 Per-rank overhead is bounded and flat in the rank count: local layers cost ~10.5 ms at 6·10⁶ terms per rank whatever the group size, and a rotation layer whose generator crosses costs 3.5× that intra-node and 4.4–4.7× inter-node, unchanged from 4 to 8 ranks.
-<a href="#running-across-mpi-ranks">Running across MPI ranks</a> covers the launch and the limits.</p>
+<a href="#mpi-ranks-1">MPI ranks</a> covers the launch and the limits.</p>
 <h2 id="thread-count-guidance"><a class="header" href="#thread-count-guidance">Thread-count guidance</a></h2>
 <p>On a comparable two-socket host: run dense-PTM-heavy circuits (general two-qubit unitaries with dense transfer matrices) at ~16 threads — beyond that the write ceiling is already saturated and extra threads only add contention.
 Run sparse-rotation and Clifford circuits at full thread count (11–13× at 32 threads here).
@@ -1197,11 +1197,11 @@ Hyperthreads add no bandwidth and help only latency-bound phases.</p>
 Effects below that need the interleaved A/B protocol (<code>scripts/ab-compare.sh</code>), whose acceptance criterion is direction consistency across every pair.</p>
 <p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Width, §Performance-Model (layout and dispatch).</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="running-across-numa-nodes"><a class="header" href="#running-across-numa-nodes">Running across NUMA nodes</a></h1>
+<h1 id="numa-nodes"><a class="header" href="#numa-nodes">NUMA nodes</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one pool across the whole box.
 Each domain gets its own pinned thread pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
 The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning; this page is when to reach for it and how.</p>
-<h2 id="what-it-costs-and-what-it-buys"><a class="header" href="#what-it-costs-and-what-it-buys">What it costs and what it buys</a></h2>
+<h2 id="cost-and-benefit"><a class="header" href="#cost-and-benefit">Cost and benefit</a></h2>
 <p><strong>Locality decides everything.</strong> A layer whose gates leave the partition rows fixed runs entirely inside its own domain and gains; a layer that moves any row across a boundary pays for the export pass, the copy and the receiver’s larger merge stream.
 Measured at <code>P = 2</code> against <code>P = 1</code> on the same binary, on two-socket hosts from 8 to 48 cores per socket:</p>
 <div class="table-wrapper">
@@ -1221,7 +1221,7 @@ Load imbalance across partitions stays within 1.000–1.004 with random rows.
 Full tables: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, P=1 vs P=2 in-process.</p>
 <p>Random partition rows put roughly half of a dense two-qubit gate’s deltas across a boundary, so the default draw lands a mixed circuit in the bottom row of that table.
 <strong>In-process partitioning is worth it when the exchange is rare</strong>, and choosing rows that make it rare — rows reading the qubits on the boundary of a spatial cut, so only cut-crossing gates exchange — is open research (<code>research/FINDINGS.md</code>).
-To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="#running-across-mpi-ranks">Running across MPI ranks</a>.</p>
+To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="#mpi-ranks-1">MPI ranks</a>.</p>
 <h2 id="python"><a class="header" href="#python">Python</a></h2>
 <!-- doctest: skip -->
 <pre><code class="language-python">evolved = observable.propagate(
@@ -1240,10 +1240,10 @@ To split across <em>processes</em> instead, for capacity rather than bandwidth, 
 <p><code>propagate_with_stats</code> fills <code>PropagationStats.partition</code> on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
 It is <code>None</code> for an unpartitioned run.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the table above turns on.</p>
-<h2 id="two-things-that-change"><a class="header" href="#two-things-that-change">Two things that change</a></h2>
+<h2 id="partitioning-changes"><a class="header" href="#partitioning-changes">Partitioning changes</a></h2>
 <p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so the thread count comes from the CPU sets.
 Under <code>Placement::Unpinned</code> it comes from <code>threads_per_partition</code>.
-The variable still governs an unpartitioned run (<a href="#run-across-numa-partitions">Running on NUMA partitions</a>).</p>
+The variable still governs an unpartitioned run (<a href="#numa-partitions">Running on NUMA partitions</a>).</p>
 <p><strong>Exact <code>topn</code> is unavailable.</strong> Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects <code>truncation.topn</code>.
 Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
 <code>coeff</code> and <code>weight</code> are per-term filters and need nothing.</p>
@@ -1255,7 +1255,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
 At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 </ul>
-<h2 id="measuring-it"><a class="header" href="#measuring-it">Measuring it</a></h2>
+<h2 id="benchmarking"><a class="header" href="#benchmarking">Benchmarking</a></h2>
 <p><code>P = 1</code> versus <code>P = N</code> is a runtime-knob A/B of one binary, not a code A/B:</p>
 <pre><code class="language-bash">scripts/ab-compare.sh partitions-1v2 --a . --b . \
   --probe   '--n 1000000 --threads 32 --layers su4_local --partitions 1' \
@@ -1267,14 +1267,14 @@ A partitioned cell runs under <strong>no</strong> placement prefix: <code>numact
 On an exclusive cluster node, <code>scripts/slurm/ab-campaign.sbatch</code> builds the CPU lists from the node’s own topology.
 The protocol and the sidecar fields are in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="running-across-mpi-ranks"><a class="header" href="#running-across-mpi-ranks">Running across MPI ranks</a></h1>
-<p>A distributed run is a <a href="#running-across-numa-nodes">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
+<h1 id="mpi-ranks-1"><a class="header" href="#mpi-ranks-1">MPI ranks</a></h1>
+<p>A distributed run is a <a href="#numa-nodes">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same two things that change.
 What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<code>ARCHITECTURE.md</code> §Partitioning, subsection “Transport composition”).</p>
 <p><strong>The reason to reach for it is capacity.</strong> A sum that does not fit one node’s memory fits <code>P</code> of them, and the per-rank overhead is bounded and does not grow with the rank count.</p>
 <p>It is an off-by-default build option the released wheel omits, so the default wheel cannot do it.
 <code>paulistrings.mpi_available()</code> says whether this build can, and <code>comm=</code> in a build without it raises <code>RuntimeError</code>.</p>
-<h2 id="what-to-expect"><a class="header" href="#what-to-expect">What to expect</a></h2>
+<h2 id="expected-performance"><a class="header" href="#expected-performance">Expected performance</a></h2>
 <p>Measured on Icelake <code>ccq</code> nodes (2 × 32 cores), one rank per NUMA domain, 32 threads per rank, UCX shared memory within a node and InfiniBand between nodes, at 6·10⁶ terms per rank:</p>
 <div class="table-wrapper">
 <table>
@@ -1291,7 +1291,7 @@ What is new is the transport (point-to-point MPI instead of in-process channels)
 The step from 2 to 4 is shared memory giving way to InfiniBand.
 A remote layer is <strong>transfer-bound</strong> — the pipeline runs the coset loop under the transfer, so what is left is the export pass plus the bytes on the wire — which means the lever is fewer bytes (locality rows, a lower truncation), not more threads.
 Full table: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, MPI weak scaling.</p>
-<h2 id="building-it"><a class="header" href="#building-it">Building it</a></h2>
+<h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
 <p>The feature needs an MPI installation (for <code>mpicc</code>, which rsmpi’s build script probes) and a <code>libclang</code> for its bindgen.
 On a Flatiron host:</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
@@ -1330,7 +1330,7 @@ if comm.Get_rank() == 0:
 </code></pre>
 <p><code>comm</code> and <code>partitions</code> are alternatives — passing both is a <code>ValueError</code>.
 A distributed run places one partition per <em>process</em>, so the placement is the launcher’s job.</p>
-<h3 id="which-rows-decide-a-terms-rank"><a class="header" href="#which-rows-decide-a-terms-rank">Which rows decide a term’s rank</a></h3>
+<h3 id="partition-row-selection"><a class="header" href="#partition-row-selection">Partition row selection</a></h3>
 <p>By default the rows are a GF(2)-random draw from the sum’s own hash seed, which spreads a gate’s deltas over every rank whatever the qubits’ geometry.
 <code>partition_row_seed=</code> picks the draw; <code>partition_row_blocks=</code> replaces it with an explicit locality cut, one contiguous list of qubit indices per rank, so a gate whose qubits share a block never exchanges at all:</p>
 <!-- doctest: skip -->
@@ -1370,7 +1370,7 @@ Each rank’s Rayon pool sizes itself from the CPUs the launcher left in its aff
 <code>RAYON_NUM_THREADS</code> is ignored, as in any partitioned run.</p>
 <p>On Rusty, <code>scripts/slurm/mpi-ranks.sbatch</code> does the arithmetic: it reads the node’s domain count, rounds <code>nodes × domains</code> down to a power of two, and runs the differential net and then the probe at that rank count.
 See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md"><code>scripts/slurm/README.md</code></a>.</p>
-<h2 id="the-three-requirements"><a class="header" href="#the-three-requirements">The three requirements</a></h2>
+<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
 <p><strong>Thread level at least <code>MPI_THREAD_SERIALIZED</code>.</strong> The layer loop runs inside a pinned Rayon pool, so MPI is called from a pool worker rather than the process’s main thread — and not necessarily the same worker on every layer.
 Only ever one at a time, which is exactly <code>SERIALIZED</code>; <code>FUNNELED</code> would be a false claim.
 Set <code>mpi4py.rc.thread_level</code> <em>before</em> <code>from mpi4py import MPI</code> (mpi4py’s default, <code>"multiple"</code>, is also fine).
@@ -1446,7 +1446,7 @@ gets a single-gate task compared coefficient by coefficient to <code>1e-12</code
 <p>The truncated rows of the last entry are non-vacuous: the same circuit with no
 policy keeps 3 881 terms, so the <code>1e-4</code> row exercises coefficient truncation and
 the <code>max_weight=4</code> row exercises weight truncation.</p>
-<h3 id="the-conventions-agree"><a class="header" href="#the-conventions-agree">The conventions agree</a></h3>
+<h3 id="convention-agreement"><a class="header" href="#convention-agreement">Convention agreement</a></h3>
 <p>Both engines are Hermitian-Y: a real coefficient multiplies the literal Pauli
 string, <code>Y</code> carries no phase of its own, and the coefficient type stays real
 under every gate in the vocabulary. This was verified by hand-derived probe:
@@ -1463,7 +1463,7 @@ Schrödinger-picture transfer map at all for <code>unitary_1q</code>, <code>unit
 has no jl counterpart for any circuit using those gates. Every cross-engine
 comparison on this site is therefore run in the Heisenberg direction, where
 both sides agree.</p>
-<h3 id="the-semantic-divergences-measured"><a class="header" href="#the-semantic-divergences-measured">The semantic divergences, measured</a></h3>
+<h3 id="semantic-divergences"><a class="header" href="#semantic-divergences">Semantic divergences</a></h3>
 <p>Established by probes whose expected values are hand-derived in comments, never
 read back from the library.</p>
 <h4 id="the-one-real-divergence"><a class="header" href="#the-one-real-divergence">The one real divergence: the coefficient boundary</a></h4>
@@ -1541,7 +1541,7 @@ equivalent. Likewise jl’s <code>max_freq</code> / <code>max_sins</code> trunca
 <li>jl’s experimental fused rotation kernel has no parity established, because it
 truncates during gate application.</li>
 </ul>
-<h3 id="performance-depends-on-the-size-of-the-tracked-set"><a class="header" href="#performance-depends-on-the-size-of-the-tracked-set">Performance depends on the size of the tracked set</a></h3>
+<h3 id="performance-vs-tracked-set-size"><a class="header" href="#performance-vs-tracked-set-size">Performance vs tracked-set size</a></h3>
 <p>There is no single ratio: the ranking changes sign, and where it changes sign
 depends on the workload by an order of magnitude.</p>
 <p>The source is a dedicated head-to-head study
@@ -1551,7 +1551,7 @@ configuration, accepted on direction consistency, never on a difference of two
 independently-noisy means. Every configuration passes a per-layer term-count
 parity gate before any timing is reported. <code>ratio &gt; 1</code> means this engine is
 faster.</p>
-<h4 id="where-the-ranking-changes-sign"><a class="header" href="#where-the-ranking-changes-sign">Where the ranking changes sign</a></h4>
+<h4 id="ranking-crossover"><a class="header" href="#ranking-crossover">Ranking crossover</a></h4>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1748,7 +1748,7 @@ is truncated, a convergence panel that says where the converged window ends.</p>
 </table>
 </div>
 <p>B3 (variational pre-training) and B4 (QML/QCNN) are not part of this suite.</p>
-<h3 id="what-every-showcase-page-carries"><a class="header" href="#what-every-showcase-page-carries">What every showcase page carries</a></h3>
+<h3 id="contents-common-to-every-showcase-page"><a class="header" href="#contents-common-to-every-showcase-page">Contents common to every showcase page</a></h3>
 <p>A convergence panel on every truncated result: a single number from a single
 cutoff is not a result here. The retained Hilbert–Schmidt norm <code>N = Σ|c_P|²</code>
 alongside it, conserved under exact unitary evolution and equal to 1 for a
@@ -1790,7 +1790,7 @@ Two of the five results are negative.</p>
 </tbody>
 </table>
 </div>
-<h3 id="the-rules-these-ran-under"><a class="header" href="#the-rules-these-ran-under">The rules these ran under</a></h3>
+<h3 id="comparability-rules"><a class="header" href="#comparability-rules">Comparability rules</a></h3>
 <p>Four of them are worth stating up front, because they are what makes the tables
 comparable:</p>
 <ol>
@@ -1847,7 +1847,7 @@ under <code>benchmarks/python/tests/</code>, so the physics is checked on every 
 <p>There is a further benchmark surface this section does not cover: the cross-<em>library</em>
 construction/conjugation comparison against <code>qiskit.SparsePauliOp</code> and
 <code>openfermion.QubitOperator</code> in <code>benchmarks/python/bench_baseline.py</code>.</p>
-<h3 id="caveat-that-applies-to-every-benchmark-page"><a class="header" href="#caveat-that-applies-to-every-benchmark-page">Caveat that applies to every benchmark page</a></h3>
+<h3 id="caveat-for-every-benchmark-page"><a class="header" href="#caveat-for-every-benchmark-page">Caveat for every benchmark page</a></h3>
 <p><strong>Wall times are indicative of shape, not campaign-grade.</strong> They were taken on a
 shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, <code>ccqlin038</code>) whose stated
 single-thread run-to-run noise is ±5–8% — and concurrent load was heavier than
@@ -1915,7 +1915,7 @@ string, weight running <code>1, 3, 5, …, 15</code> and cone radius <code>0, 1,
 <strong>1.000 sites per Trotter step</strong>, the structural bound of a single-site <code>X</code>
 layer followed by one <em>commuting</em> <code>ZZ</code> layer moving the boundary by at most
 one bond.</p>
-<h3 id="where-the-cutoff-gives-out"><a class="header" href="#where-the-cutoff-gives-out">Where the cutoff gives out</a></h3>
+<h3 id="cutoff-breakdown"><a class="header" href="#cutoff-breakdown">Cutoff breakdown</a></h3>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/b1/support_growth.svg" alt="Support growth and discarded weight against Trotter step"><span class="img-wrapper"><img src="assets/b1/support_growth.svg" alt="Support growth and discarded weight against Trotter step"></span></label></p>
 <p>Four cutoffs, twelve steps. At the final step:</p>
 <div class="table-wrapper">
@@ -1973,7 +1973,7 @@ cutoffs (<code>N(12) = 0.9995</code> and <code>0.7158</code>).</p>
 Trotter step of <code>H = J Σ Z_iZ_j + h Σ X_i</code> with <code>J = h = 1</code>, <code>dt = 0.15</code>, up
 to <code>t = 1.5</code> — physical time, not a Floquet period, so the step count
 resolves the dynamics rather than merely advancing it.</p>
-<h3 id="why-2d-is-the-hard-case"><a class="header" href="#why-2d-is-the-hard-case">2D is the hard case</a></h3>
+<h3 id="why-2d-is-the-hard-case"><a class="header" href="#why-2d-is-the-hard-case">2D as the hard case</a></h3>
 <p>In 1D the causal cone holds <code>O(t)</code> sites; in 2D it is an area, <code>O(t²)</code>, and
 Pauli strings inside it grow as <code>4^O(t²)</code>. A weight cap does not fix this: on
 a degree-4 lattice one <code>exp(iπ/4 Z_iZ_j)</code> layer takes weight-1 to weight 5,
@@ -2067,7 +2067,7 @@ tracked set peaks at 651× fewer terms than at <code>p = 0</code>, and the run f
 way.</p>
 
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/b2/terms-and-time-vs-noise.svg" alt="Peak and final term count, and wall time, against the noise rate"><span class="img-wrapper"><img src="assets/b2/terms-and-time-vs-noise.svg" alt="Peak and final term count, and wall time, against the noise rate"></span></label></p>
-<h2 id="noise-shrinks-the-tracked-set"><a class="header" href="#noise-shrinks-the-tracked-set">Noise shrinks the tracked set</a></h2>
+<h2 id="tracked-set-shrinkage-from-noise"><a class="header" href="#tracked-set-shrinkage-from-noise">Tracked-set shrinkage from noise</a></h2>
 <p>A Kraus/density-matrix simulator pays for noise twice: it carries a <code>4ⁿ</code> object
 instead of a <code>2ⁿ</code> one, and each channel costs more than a gate. Pauli propagation
 pays negatively: a single-qubit depolarizing channel rescales a coefficient by
@@ -2166,7 +2166,7 @@ channel here neither self-adjoint nor key-preserving, its Heisenberg dual
 <code>Z → (1−γ)Z + γI</code> fanning out — checked against the comparisons page’s
 <a href="#noise-channel-parity">cross-engine noise-channel parity</a> results.
 <code>dephase(1e-2)</code> damps <code>⟨Z₆₂⟩</code> less since dephasing leaves <code>Z</code> untouched.</p>
-<h2 id="what-is-claimable"><a class="header" href="#what-is-claimable">What is claimable</a></h2>
+<h2 id="claimable-results"><a class="header" href="#claimable-results">Claimable results</a></h2>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/b2/observable-decay-vs-noise.svg" alt="Observable decay against the noise rate"><span class="img-wrapper"><img src="assets/b2/observable-decay-vs-noise.svg" alt="Observable decay against the noise rate"></span></label></p>
 <p>At <code>p = 0</code> the noise model must vanish and this showcase must return Benchmark C’s
 claimable numbers, read from C’s committed <code>summary.json</code> at run time rather than
@@ -2200,8 +2200,8 @@ actually want, since a device is noisy:</p>
 </div>
 <p><code>p = 1e-3</code> at 20 steps is not claimable, since its cutoff sweep never plateaued, and
 neither is <code>θ_h = 7π/32</code> at 20 steps noiseless: it is
-<a href="#what-it-would-take">Benchmark C’s measured reachability boundary</a>.</p>
-<h3 id="the-reachability-boundary-with-and-without-noise"><a class="header" href="#the-reachability-boundary-with-and-without-noise">The reachability boundary, with and without noise</a></h3>
+<a href="#reachability-requirements">Benchmark C’s measured reachability boundary</a>.</p>
+<h3 id="reachability-boundary-with-and-without-noise"><a class="header" href="#reachability-boundary-with-and-without-noise">Reachability boundary, with and without noise</a></h3>
 <p>Running that 7π/32, 20-step circuit noisily at <code>p = 1e-2</code> shows what noise does to
 the boundary. At the same <code>2⁻¹⁶</code> cutoff, the noiseless run (Benchmark C) peaks at
 45.4 million terms and ends at 38.8 million, last difference 1.44e-1; the noisy run
@@ -2765,7 +2765,7 @@ off at 1e-4: errors 2.00·10⁻³ and 2.29·10⁻³; the next decade would cost
 ~10⁻⁷–10⁻⁴ already sit inside 1e-3, so a <code>0.0</code> returned with zero terms
 “passes” without measuring anything; the fourth, at 3π/8, needs 101 s and
 4 291 840 terms.</p>
-<h2 id="truncation-error-is-not-monotone-in-the-cutoff"><a class="header" href="#truncation-error-is-not-monotone-in-the-cutoff">Truncation error is not monotone in the cutoff</a></h2>
+<h2 id="non-monotone-truncation-error"><a class="header" href="#non-monotone-truncation-error">Non-monotone truncation error</a></h2>
 <p>weight-10 at the two largest interior angles, against exact references:</p>
 <div class="table-wrapper">
 <table>
@@ -2792,7 +2792,7 @@ by saturation, the remaining error being summation rounding (1.3·10⁻¹⁴,
 6.9·10⁻¹⁸), which sets the floating-point floor in the comparison. The two
 budget-stopped rows are still honest: a larger uncertainty, not a falsely
 confident one. That property does not survive to Benchmark C’s depth — see
-<a href="#the-uncertainty-estimate-is-not-a-bound">C</a>.</p>
+<a href="#non-bound-uncertainty-estimate">C</a>.</p>
 <h2 id="cross-engine-parity"><a class="header" href="#cross-engine-parity">Cross-engine parity</a></h2>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/theta-sweep/parity-per-layer-terms.svg" alt="All 1355 per-layer term counts, both engines"><span class="img-wrapper"><img src="assets/theta-sweep/parity-per-layer-terms.svg" alt="All 1355 per-layer term counts, both engines"></span></label></p>
 <p>Matched truncation, one gate per channel on both sides, Heisenberg, <code>|0…0⟩</code>,
@@ -2947,7 +2947,7 @@ resolving this point: uncertainty 1.44·10⁻¹, 14× the target.</p>
 0.014730, 0.015481, 0.016131 at <code>2⁻⁸ … 2⁻¹⁴</code>, two successive differences
 below <code>1e-3</code>), because the observable has decayed to <code>⟨Z₆₂⟩ ≈ 0.016</code> and the
 sum collapses from a 1.4·10⁷-term transient to 34 698 resident terms.</p>
-<h3 id="the-uncertainty-estimate-is-not-a-bound"><a class="header" href="#the-uncertainty-estimate-is-not-a-bound">The uncertainty estimate is not a bound</a></h3>
+<h3 id="non-bound-uncertainty-estimate"><a class="header" href="#non-bound-uncertainty-estimate">Non-bound uncertainty estimate</a></h3>
 <p>Its bias flips sign. Measured on the 20-qubit sublattice at 20 steps, where
 a dense statevector gives the truth, over the full grid it is conservative;
 stopped after two points, what a budget guard does, it is not:</p>
@@ -3006,7 +3006,7 @@ resident terms clear it at 20 steps.</li>
 at 5 steps; at 9 steps it needs <code>2⁻¹⁴</code>, 2.2·10⁶ terms and 37 s against a
 reference resolved only to <code>1e-2</code>; at 15–20 steps neither the target nor a
 reference to score it against is reachable inside this benchmark’s box.</p>
-<h3 id="what-it-would-take"><a class="header" href="#what-it-would-take">What it would take at 20 steps, θ_h = 7π/32</a></h3>
+<h3 id="reachability-requirements"><a class="header" href="#reachability-requirements">Reachability requirements at 20 steps, θ_h = 7π/32</a></h3>
 <p>Extrapolating the measured growth (15.9× in terms and ~15× in wall time per
 factor of four in the cutoff, against a measured error law of only ~2.2×
 error reduction per the same step):</p>
@@ -3023,7 +3023,7 @@ error reduction per the same step):</p>
 </table>
 </div>
 <p>The 0.01 bar needs roughly <code>2⁻²⁰</code>–<code>2⁻²²</code> here, out of reach of a
-workstation. <a href="#the-reachability-boundary-with-and-without-noise">Showcase
+workstation. <a href="#reachability-boundary-with-and-without-noise">Showcase
 B2</a>
 revisits this point with noise: 48× fewer peak terms, a 154× smaller last
 difference, and still not a pass.</p>
@@ -3168,7 +3168,7 @@ gives <code>⟨Z_c⟩ = 0</code> by symmetry. The domain wall is a computational
 deliverable is a scaling sweep (36 scaling points plus two truncation grids), which is why it
 lives in <code>examples/xxz_chain/</code> rather than with the other benchmarks (no <code>pytest-benchmark</code> entry;
 see Limitations).</p>
-<h2 id="the-jz--0-growth-law-is-quadratic"><a class="header" href="#the-jz--0-growth-law-is-quadratic">The <code>Jz = 0</code> growth law is quadratic</a></h2>
+<h2 id="quadratic-growth-law-at-jz--0"><a class="header" href="#quadratic-growth-law-at-jz--0">Quadratic growth law at <code>Jz = 0</code></a></h2>
 <p>The measured log-log slope of untruncated non-zero term count against Trotter steps is
 <strong>exactly 2.0000</strong> at <code>n = 40, 60, 80, 100</code>, weight-1 seed. The counts are <code>16 s²</code> exactly for
 every unsaturated point, independent of <code>dt</code> (0.05, 0.1, 0.37 all identical) and of the seed site:</p>

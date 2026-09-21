@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-2e762057.js"></script>
+        <script src="../../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -235,7 +235,7 @@ string, weight running <code>1, 3, 5, …, 15</code> and cone radius <code>0, 1,
 <strong>1.000 sites per Trotter step</strong>, the structural bound of a single-site <code>X</code>
 layer followed by one <em>commuting</em> <code>ZZ</code> layer moving the boundary by at most
 one bond.</p>
-<h3 id="where-the-cutoff-gives-out"><a class="header" href="#where-the-cutoff-gives-out">Where the cutoff gives out</a></h3>
+<h3 id="cutoff-breakdown"><a class="header" href="#cutoff-breakdown">Cutoff breakdown</a></h3>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/b1/support_growth.svg" alt="Support growth and discarded weight against Trotter step"><span class="img-wrapper"><img src="../../assets/b1/support_growth.svg" alt="Support growth and discarded weight against Trotter step"></span></label></p>
 <p>Four cutoffs, twelve steps. At the final step:</p>
 <div class="table-wrapper">
@@ -293,7 +293,7 @@ cutoffs (<code>N(12) = 0.9995</code> and <code>0.7158</code>).</p>
 Trotter step of <code>H = J Σ Z_iZ_j + h Σ X_i</code> with <code>J = h = 1</code>, <code>dt = 0.15</code>, up
 to <code>t = 1.5</code> — physical time, not a Floquet period, so the step count
 resolves the dynamics rather than merely advancing it.</p>
-<h3 id="why-2d-is-the-hard-case"><a class="header" href="#why-2d-is-the-hard-case">2D is the hard case</a></h3>
+<h3 id="why-2d-is-the-hard-case"><a class="header" href="#why-2d-is-the-hard-case">2D as the hard case</a></h3>
 <p>In 1D the causal cone holds <code>O(t)</code> sites; in 2D it is an area, <code>O(t²)</code>, and
 Pauli strings inside it grow as <code>4^O(t²)</code>. A weight cap does not fix this: on
 a degree-4 lattice one <code>exp(iπ/4 Z_iZ_j)</code> layer takes weight-1 to weight 5,

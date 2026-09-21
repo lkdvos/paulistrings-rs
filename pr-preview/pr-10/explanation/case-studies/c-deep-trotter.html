@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-2e762057.js"></script>
+        <script src="../../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -274,7 +274,7 @@ resolving this point: uncertainty 1.44·10⁻¹, 14× the target.</p>
 0.014730, 0.015481, 0.016131 at <code>2⁻⁸ … 2⁻¹⁴</code>, two successive differences
 below <code>1e-3</code>), because the observable has decayed to <code>⟨Z₆₂⟩ ≈ 0.016</code> and the
 sum collapses from a 1.4·10⁷-term transient to 34 698 resident terms.</p>
-<h3 id="the-uncertainty-estimate-is-not-a-bound"><a class="header" href="#the-uncertainty-estimate-is-not-a-bound">The uncertainty estimate is not a bound</a></h3>
+<h3 id="non-bound-uncertainty-estimate"><a class="header" href="#non-bound-uncertainty-estimate">Non-bound uncertainty estimate</a></h3>
 <p>Its bias flips sign. Measured on the 20-qubit sublattice at 20 steps, where
 a dense statevector gives the truth, over the full grid it is conservative;
 stopped after two points, what a budget guard does, it is not:</p>
@@ -333,7 +333,7 @@ resident terms clear it at 20 steps.</li>
 at 5 steps; at 9 steps it needs <code>2⁻¹⁴</code>, 2.2·10⁶ terms and 37 s against a
 reference resolved only to <code>1e-2</code>; at 15–20 steps neither the target nor a
 reference to score it against is reachable inside this benchmark’s box.</p>
-<h3 id="what-it-would-take"><a class="header" href="#what-it-would-take">What it would take at 20 steps, θ_h = 7π/32</a></h3>
+<h3 id="reachability-requirements"><a class="header" href="#reachability-requirements">Reachability requirements at 20 steps, θ_h = 7π/32</a></h3>
 <p>Extrapolating the measured growth (15.9× in terms and ~15× in wall time per
 factor of four in the cutoff, against a measured error law of only ~2.2×
 error reduction per the same step):</p>
@@ -350,7 +350,7 @@ error reduction per the same step):</p>
 </table>
 </div>
 <p>The 0.01 bar needs roughly <code>2⁻²⁰</code>–<code>2⁻²²</code> here, out of reach of a
-workstation. <a href="b2-noisy-verification.html#the-reachability-boundary-with-and-without-noise">Showcase
+workstation. <a href="b2-noisy-verification.html#reachability-boundary-with-and-without-noise">Showcase
 B2</a>
 revisits this point with noise: 48× fewer peak terms, a 154× smaller last
 difference, and still not a pass.</p>

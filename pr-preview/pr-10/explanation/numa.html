@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Running across NUMA nodes - paulistrings-rs</title>
+        <title>NUMA nodes - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-2e762057.js"></script>
+        <script src="../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,11 +181,11 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="running-across-numa-nodes"><a class="header" href="#running-across-numa-nodes">Running across NUMA nodes</a></h1>
+                        <h1 id="numa-nodes"><a class="header" href="#numa-nodes">NUMA nodes</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one pool across the whole box.
 Each domain gets its own pinned thread pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
 The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning; this page is when to reach for it and how.</p>
-<h2 id="what-it-costs-and-what-it-buys"><a class="header" href="#what-it-costs-and-what-it-buys">What it costs and what it buys</a></h2>
+<h2 id="cost-and-benefit"><a class="header" href="#cost-and-benefit">Cost and benefit</a></h2>
 <p><strong>Locality decides everything.</strong> A layer whose gates leave the partition rows fixed runs entirely inside its own domain and gains; a layer that moves any row across a boundary pays for the export pass, the copy and the receiver’s larger merge stream.
 Measured at <code>P = 2</code> against <code>P = 1</code> on the same binary, on two-socket hosts from 8 to 48 cores per socket:</p>
 <div class="table-wrapper">
@@ -205,7 +205,7 @@ Load imbalance across partitions stays within 1.000–1.004 with random rows.
 Full tables: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, P=1 vs P=2 in-process.</p>
 <p>Random partition rows put roughly half of a dense two-qubit gate’s deltas across a boundary, so the default draw lands a mixed circuit in the bottom row of that table.
 <strong>In-process partitioning is worth it when the exchange is rare</strong>, and choosing rows that make it rare — rows reading the qubits on the boundary of a spatial cut, so only cut-crossing gates exchange — is open research (<code>research/FINDINGS.md</code>).
-To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="mpi.html">Running across MPI ranks</a>.</p>
+To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="mpi.html">MPI ranks</a>.</p>
 <h2 id="python"><a class="header" href="#python">Python</a></h2>
 <!-- doctest: skip -->
 <pre><code class="language-python">evolved = observable.propagate(
@@ -224,7 +224,7 @@ To split across <em>processes</em> instead, for capacity rather than bandwidth, 
 <p><code>propagate_with_stats</code> fills <code>PropagationStats.partition</code> on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
 It is <code>None</code> for an unpartitioned run.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the table above turns on.</p>
-<h2 id="two-things-that-change"><a class="header" href="#two-things-that-change">Two things that change</a></h2>
+<h2 id="partitioning-changes"><a class="header" href="#partitioning-changes">Partitioning changes</a></h2>
 <p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so the thread count comes from the CPU sets.
 Under <code>Placement::Unpinned</code> it comes from <code>threads_per_partition</code>.
 The variable still governs an unpartitioned run (<a href="../how-to/run-on-numa-partitions.html">Running on NUMA partitions</a>).</p>
@@ -239,7 +239,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
 At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 </ul>
-<h2 id="measuring-it"><a class="header" href="#measuring-it">Measuring it</a></h2>
+<h2 id="benchmarking"><a class="header" href="#benchmarking">Benchmarking</a></h2>
 <p><code>P = 1</code> versus <code>P = N</code> is a runtime-knob A/B of one binary, not a code A/B:</p>
 <pre><code class="language-bash">scripts/ab-compare.sh partitions-1v2 --a . --b . \
   --probe   '--n 1000000 --threads 32 --layers su4_local --partitions 1' \

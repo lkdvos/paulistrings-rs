@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Import a circuit from stim or qiskit - paulistrings-rs</title>
+        <title>stim and qiskit circuit import - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-2e762057.js"></script>
+        <script src="../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,7 +181,7 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="import-a-circuit-from-stim-or-qiskit"><a class="header" href="#import-a-circuit-from-stim-or-qiskit">Import a circuit from stim or qiskit</a></h1>
+                        <h1 id="stim-and-qiskit-circuit-import"><a class="header" href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a></h1>
 <pre><code class="language-python">import stim
 from paulistrings import interop
 
@@ -203,7 +203,7 @@ Measurements, resets, conditioned instructions, and gates on more than two qubit
 <p>A third path builds a <code>Circuit</code> from the frozen task-JSON schema, e.g. when reading a job file produced by the <a href="../explanation/comparisons.html">cross-engine comparisons</a>:</p>
 <pre><code class="language-python">circuit = interop.circuit_from_json({"gates": [{"name": "h", "qubits": [0]}]}, n_qubits=1)
 </code></pre>
-<p>See <a href="../reference/circuit.html">Circuit reference</a> for the gate vocabulary each importer maps onto, and <code>interop.stabilizers_from_stim</code> in <a href="compute-expectation-values.html">Compute expectation values</a> for reading out a Clifford circuit’s output state rather than its gates.</p>
+<p>See <a href="../reference/circuit.html">Circuit reference</a> for the gate vocabulary each importer maps onto, and <code>interop.stabilizers_from_stim</code> in <a href="compute-expectation-values.html">Expectation values</a> for reading out a Clifford circuit’s output state rather than its gates.</p>
 
                     </main>
 

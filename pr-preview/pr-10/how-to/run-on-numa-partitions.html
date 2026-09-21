@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Run across NUMA partitions - paulistrings-rs</title>
+        <title>NUMA partitions - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-2e762057.js"></script>
+        <script src="../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,7 +181,7 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="run-across-numa-partitions"><a class="header" href="#run-across-numa-partitions">Run across NUMA partitions</a></h1>
+                        <h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>In a single unpartitioned process, set thread count via <code>RAYON_NUM_THREADS</code> <strong>before the interpreter starts</strong> — Rayon builds its global pool at the first <code>propagate</code> call and never resizes it, so setting the variable from inside an already-running script doesn’t reliably reach it:</p>
 <pre><code class="language-bash">RAYON_NUM_THREADS=32 python my_script.py
 </code></pre>
@@ -206,7 +206,7 @@
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # per-layer bytes/rows sent, None if unpartitioned
 </code></pre>
-<p>See <a href="../explanation/numa.html">Running across NUMA nodes</a> for what this costs and buys, and when the exchange makes it not worth it.</p>
+<p>See <a href="../explanation/numa.html">NUMA nodes</a> for what this costs and buys, and when the exchange makes it not worth it.</p>
 
                     </main>
 

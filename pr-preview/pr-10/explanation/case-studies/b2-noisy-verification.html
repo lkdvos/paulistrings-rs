@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-bcb33025.js";
+            window.path_to_searchindex_js = "../../searchindex-ff6d6182.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-2e762057.js"></script>
+        <script src="../../toc-58c4d26e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,7 +190,7 @@ tracked set peaks at 651× fewer terms than at <code>p = 0</code>, and the run f
 way.</p>
 
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/b2/terms-and-time-vs-noise.svg" alt="Peak and final term count, and wall time, against the noise rate"><span class="img-wrapper"><img src="../../assets/b2/terms-and-time-vs-noise.svg" alt="Peak and final term count, and wall time, against the noise rate"></span></label></p>
-<h2 id="noise-shrinks-the-tracked-set"><a class="header" href="#noise-shrinks-the-tracked-set">Noise shrinks the tracked set</a></h2>
+<h2 id="tracked-set-shrinkage-from-noise"><a class="header" href="#tracked-set-shrinkage-from-noise">Tracked-set shrinkage from noise</a></h2>
 <p>A Kraus/density-matrix simulator pays for noise twice: it carries a <code>4ⁿ</code> object
 instead of a <code>2ⁿ</code> one, and each channel costs more than a gate. Pauli propagation
 pays negatively: a single-qubit depolarizing channel rescales a coefficient by
@@ -289,7 +289,7 @@ channel here neither self-adjoint nor key-preserving, its Heisenberg dual
 <code>Z → (1−γ)Z + γI</code> fanning out — checked against the comparisons page’s
 <a href="../comparisons.html#noise-channel-parity">cross-engine noise-channel parity</a> results.
 <code>dephase(1e-2)</code> damps <code>⟨Z₆₂⟩</code> less since dephasing leaves <code>Z</code> untouched.</p>
-<h2 id="what-is-claimable"><a class="header" href="#what-is-claimable">What is claimable</a></h2>
+<h2 id="claimable-results"><a class="header" href="#claimable-results">Claimable results</a></h2>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/b2/observable-decay-vs-noise.svg" alt="Observable decay against the noise rate"><span class="img-wrapper"><img src="../../assets/b2/observable-decay-vs-noise.svg" alt="Observable decay against the noise rate"></span></label></p>
 <p>At <code>p = 0</code> the noise model must vanish and this showcase must return Benchmark C’s
 claimable numbers, read from C’s committed <code>summary.json</code> at run time rather than
@@ -323,8 +323,8 @@ actually want, since a device is noisy:</p>
 </div>
 <p><code>p = 1e-3</code> at 20 steps is not claimable, since its cutoff sweep never plateaued, and
 neither is <code>θ_h = 7π/32</code> at 20 steps noiseless: it is
-<a href="c-deep-trotter.html#what-it-would-take">Benchmark C’s measured reachability boundary</a>.</p>
-<h3 id="the-reachability-boundary-with-and-without-noise"><a class="header" href="#the-reachability-boundary-with-and-without-noise">The reachability boundary, with and without noise</a></h3>
+<a href="c-deep-trotter.html#reachability-requirements">Benchmark C’s measured reachability boundary</a>.</p>
+<h3 id="reachability-boundary-with-and-without-noise"><a class="header" href="#reachability-boundary-with-and-without-noise">Reachability boundary, with and without noise</a></h3>
 <p>Running that 7π/32, 20-step circuit noisily at <code>p = 1e-2</code> shows what noise does to
 the boundary. At the same <code>2⁻¹⁶</code> cutoff, the noiseless run (Benchmark C) peaks at
 45.4 million terms and ends at 38.8 million, last difference 1.44e-1; the noisy run

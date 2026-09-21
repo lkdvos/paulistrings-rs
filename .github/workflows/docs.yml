@@ -184,7 +184,7 @@ jobs:
         with:
           name: site
           path: _site
-      - uses: rossjrw/pr-preview-action@v2
+      - uses: rossjrw/pr-preview-action@v1
         with:
           source-dir: _site
           preview-branch: gh-pages
@@ -198,7 +198,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: rossjrw/pr-preview-action@v2
+      - uses: rossjrw/pr-preview-action@v1
         with:
           action: remove
           preview-branch: gh-pages

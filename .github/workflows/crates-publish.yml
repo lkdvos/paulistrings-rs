@@ -1,8 +1,9 @@
 name: crates-publish
 
-# Manual only, deliberately decoupled from release.yml's tag-triggered wheel
-# builds: the Rust crate is the secondary front end here, and its release
-# cadence (API stability) has nothing to do with the Python wheels'.
+# Manual only, run after release.yml's tag-triggered wheel build for the same
+# version: Rust and Python are released together, one version for both, so
+# this checks Cargo.toml agrees with pyproject.toml before publishing rather
+# than trusting a tag of its own.
 on:
   workflow_dispatch:
     inputs:
@@ -18,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Cargo.toml matches pyproject.toml
+        run: |
+          cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          pyproject_version="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
+          if [[ "$cargo_version" != "$pyproject_version" ]]; then
+            echo "::error::Cargo.toml ($cargo_version) and pyproject.toml ($pyproject_version) disagree — release both together"
+            exit 1
+          fi
       - name: cargo publish (dry run)
         if: inputs.dry_run
         run: cargo publish -p paulistrings --locked --dry-run

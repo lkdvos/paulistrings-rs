@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>B5 — Hybrid depth reduction - paulistrings-rs</title>
+        <title>Showcase B5 — Hybrid depth reduction - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-58c4d26e.js"></script>
+        <script src="../../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -239,7 +239,7 @@ composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
 </table>
 </div>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/b5/convergence_panel.svg" alt="Convergence panel against the exact reference"><span class="img-wrapper"><img src="../../assets/b5/convergence_panel.svg" alt="Convergence panel against the exact reference"></span></label></p>
-<p>Truncation is applied after every <em>channel</em>, not after every Python call, so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where <code>k</code> is chosen. The gap is <strong>not monotone</strong> in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.</p>
+<p>Truncation is applied after every <em>channel</em>, not after every Python call (see <a href="../truncation.html">Truncation</a>), so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where <code>k</code> is chosen. The gap is <strong>not monotone</strong> in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.</p>
 <h2 id="the-actual-trade-off-depth-against-term-count"><a class="header" href="#the-actual-trade-off-depth-against-term-count">The actual trade-off: depth against term count</a></h2>
 <p>16-qubit heavy-hex kicked-Ising sublattice, 6 Trotter steps, <code>θ_h = 0.6</code> (a generic, non-Clifford kick), observable <code>Z_8</code>, truncated at <code>weight &lt;= 6</code> throughout — the weight cap is what makes the classical half tractable in practice. Sweeping the tail depth <code>k</code> from 0 (nothing back-propagated) to 6 (front empty):</p>
 <div class="table-wrapper">

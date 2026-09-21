@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>NUMA nodes - paulistrings-rs</title>
+        <title>Observable from a Hamiltonian - paulistrings-rs</title>
 
 
         <!-- Custom HTML head -->
@@ -147,7 +147,7 @@
                         <a href="https://github.com/lkdvos/paulistrings-rs" title="Git repository" aria-label="Git repository">
                             <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
                         </a>
-                        <a href="https://github.com/lkdvos/paulistrings-rs/edit/main/docs/book/src/explanation/numa.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                        <a href="https://github.com/lkdvos/paulistrings-rs/edit/main/docs/book/src/how-to/build-observable-from-hamiltonian.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
                             <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
                         </a>
 
@@ -181,85 +181,46 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="numa-nodes"><a class="header" href="#numa-nodes">NUMA nodes</a></h1>
-<p>A partitioned run splits the sum across NUMA domains instead of sharing one pool across the whole box.
-Each domain gets its own pinned thread pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning; this page is when to reach for it and how.</p>
-<h2 id="cost-and-benefit"><a class="header" href="#cost-and-benefit">Cost and benefit</a></h2>
-<p><strong>Locality decides everything.</strong> A layer whose gates leave the partition rows fixed runs entirely inside its own domain and gains; a layer that moves any row across a boundary pays for the export pass, the copy and the receiver’s larger merge stream.
-Measured at <code>P = 2</code> against <code>P = 1</code> on the same binary, on two-socket hosts from 8 to 48 cores per socket:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>layer class</th><th><code>P = 2</code> vs <code>P = 1</code></th></tr>
-</thead>
-<tbody>
-<tr><td>dense two-qubit unitaries, no row crossing</td><td><strong>4–18% faster</strong>, direction-consistent on every host</td></tr>
-<tr><td>Pauli rotations, no row crossing</td><td>coset loop 12–22% faster on two of three hosts</td></tr>
-<tr><td>any layer that exports rows (random rows)</td><td><strong>2–8× slower</strong>, and worse at higher core counts</td></tr>
-</tbody>
-</table>
-</div>
-<p>The gain grows with cores per socket, as a memory-system effect should: −4% on an 8-core-per-socket workstation, −18% on a 48-core Genoa at 96 threads.
-Load imbalance across partitions stays within 1.000–1.004 with random rows.
-Full tables: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, P=1 vs P=2 in-process.</p>
-<p>Random partition rows put roughly half of a dense two-qubit gate’s deltas across a boundary, so the default draw lands a mixed circuit in the bottom row of that table.
-<strong>In-process partitioning is worth it when the exchange is rare</strong>, and choosing rows that make it rare — rows reading the qubits on the boundary of a spatial cut, so only cut-crossing gates exchange — is open research (<code>research/FINDINGS.md</code>).
-To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="mpi.html">MPI ranks</a>.</p>
-<h2 id="python"><a class="header" href="#python">Python</a></h2>
-<!-- doctest: skip -->
-<pre><code class="language-python">evolved = observable.propagate(
-    circuit,
-    truncation.approx_topn(1_000_000),
-    direction="heisenberg",
-    partitions="auto",            # one partition per NUMA node, rounded down to a power of two
-)
+                        <h1 id="observable-from-a-hamiltonian"><a class="header" href="#observable-from-a-hamiltonian">Observable from a Hamiltonian</a></h1>
+<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same
+way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and
+hand it to <code>PauliSum.from_strings</code>. This builds a transverse-field Ising chain,
+<code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
+<pre><code class="language-python">from paulistrings import PauliSum
+
+n = 4
+J, h = 1.0, 0.5
+terms: dict[str, float] = {}
+
+for i in range(n - 1):
+    key = ["I"] * n
+    key[i] = key[i + 1] = "Z"
+    terms["".join(key)] = terms.get("".join(key), 0.0) - J
+
+for i in range(n):
+    key = ["I"] * n
+    key[i] = "X"
+    terms["".join(key)] = terms.get("".join(key), 0.0) - h
+
+hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
 </code></pre>
-<p><code>partitions</code> takes <code>"auto"</code>, an integer (a power of two, at most 16), or an explicit list of CPU lists — one per partition, in the <code>"0-7,16-23"</code> spelling — when the automatic split is not the one you want:</p>
-<!-- doctest: skip -->
-<pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
-</code></pre>
-<p><code>paulistrings.numa_nodes()</code> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
-<code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
-<p><code>propagate_with_stats</code> fills <code>PropagationStats.partition</code> on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
-It is <code>None</code> for an unpartitioned run.
-<code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the table above turns on.</p>
-<h2 id="partitioning-changes"><a class="header" href="#partitioning-changes">Partitioning changes</a></h2>
-<p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong> The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool, so the thread count comes from the CPU sets.
-Under <code>Placement::Unpinned</code> it comes from <code>threads_per_partition</code>.
-The variable still governs an unpartitioned run (<a href="../how-to/run-on-numa-partitions.html">Running on NUMA partitions</a>).</p>
-<p><strong>Exact <code>topn</code> is unavailable.</strong> Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run rejects <code>truncation.topn</code>.
-Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
-<code>coeff</code> and <code>weight</code> are per-term filters and need nothing.</p>
-<h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
-<ul>
-<li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
-<li><strong><code>P</code> is a power of two, at most 16.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows.</li>
-<li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
-<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
-At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
-</ul>
-<h2 id="benchmarking"><a class="header" href="#benchmarking">Benchmarking</a></h2>
-<p><code>P = 1</code> versus <code>P = N</code> is a runtime-knob A/B of one binary, not a code A/B:</p>
-<pre><code class="language-bash">scripts/ab-compare.sh partitions-1v2 --a . --b . \
-  --probe   '--n 1000000 --threads 32 --layers su4_local --partitions 1' \
-  --probe-b '--n 1000000 --threads 32 --layers su4_local --partitions 2 \
-             --partition-cpus "0-15,32-47;16-31,48-63"'
-</code></pre>
-<p><code>--threads</code> is the total at every <code>P</code>.
-A partitioned cell runs under <strong>no</strong> placement prefix: <code>numactl</code> and <code>taskset</code> both defeat the split the engine is making.
-On an exclusive cluster node, <code>scripts/slurm/ab-campaign.sbatch</code> builds the CPU lists from the node’s own topology.
-The protocol and the sidecar fields are in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a>.</p>
+<p>Terms that land on the same key sum their coefficients (only relevant if your
+own construction can produce duplicate strings; the chain above never does).
+For thousands of terms built programmatically, <a href="build-observable-from-arrays.html"><code>from_arrays</code></a>
+avoids the per-term string allocation.</p>
+<p>See <a href="../reference/pauli-sum.html">PauliSum reference</a> for the full constructor
+surface and <a href="build-observable-from-strings.html">Observable from Pauli strings</a>
+for the string-key convention.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../explanation/performance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../how-to/build-observable-from-arrays.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../explanation/mpi.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../how-to/save-load-pauli-sum.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -269,11 +230,11 @@ The protocol and the sidecar fields are in <a href="https://github.com/lkdvos/pa
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../explanation/performance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../how-to/build-observable-from-arrays.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../explanation/mpi.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../how-to/save-load-pauli-sum.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

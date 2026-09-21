@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-58c4d26e.js"></script>
+        <script src="toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -264,7 +264,7 @@ out an expectation value in one guided walkthrough:
 <tr><td><a href="#installation">Installation</a></td><td>install the Python package</td></tr>
 <tr><td><a href="#first-propagation">Tutorial</a></td><td>one guided walkthrough: observable, circuit, propagate, measure</td></tr>
 <tr><td><a href="#how-to-guides">How-to guides</a></td><td>task recipes — noise, truncation, direction, NUMA, MPI, interop</td></tr>
-<tr><td><a href="#engine-design">Explanation</a></td><td>how it works and why it’s fast: the bucketed layout, coset parallelism, and the measured roofline</td></tr>
+<tr><td><a href="#explanation">Explanation</a></td><td>how it works and why it’s fast: the bucketed layout, coset parallelism, and the measured roofline</td></tr>
 <tr><td><a href="#case-studies">Case studies</a></td><td>measured applications and benchmarks: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, XXZ scaling, and more, including the negative results</td></tr>
 <tr><td><a href="#against-other-tools">Comparisons</a></td><td>vs <code>PauliPropagation.jl</code> (term-for-term parity, and the measured crossover), vs state-vector and stabilizer simulators</td></tr>
 <tr><td><a href="#reference">Python reference</a></td><td>this book’s Python API reference</td></tr>
@@ -295,7 +295,7 @@ ends with the exact invocation that regenerates its figures and JSON.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs">github.com/lkdvos/paulistrings-rs</a>.
 The design source of truth is
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a>;
-the site’s <a href="#engine-design">Explanation pages</a> are its public summary.
+the site’s <a href="#explanation">Explanation pages</a> are its public summary.
 Dual-licensed MIT OR Apache-2.0.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
@@ -371,8 +371,8 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 <code>evolved.expectation("x+")</code> evaluates the expectation value in the uniform product state <code>|+…+⟩</code>; <code>.real</code> drops the (here zero) imaginary part.</p>
 <h2 id="see-also"><a class="header" href="#see-also">See also</a></h2>
 <ul>
-<li><code>examples/common/observables.py</code> — more observable constructions.</li>
-<li><code>examples/common/circuits.py</code> — more circuit constructions.</li>
+<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> — more observable constructions.</li>
+<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more circuit constructions.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="how-to-guides"><a class="header" href="#how-to-guides">How-to guides</a></h1>
@@ -380,6 +380,7 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 <ul>
 <li><a href="#observable-from-pauli-strings">Observable from Pauli strings</a> — <code>PauliSum.from_strings</code>.</li>
 <li><a href="#observable-from-raw-arrays">Observable from raw arrays</a> — <code>from_arrays</code> and the array accessors.</li>
+<li><a href="#observable-from-a-hamiltonian">Observable from a Hamiltonian</a> — accumulating a weighted sum of Pauli strings.</li>
 <li><a href="#paulisum-save-and-load">PauliSum save and load</a> — the <code>paulistrings.io</code> <code>.npz</code> format.</li>
 <li><a href="#circuit-noise">Circuit noise</a> — the noise channels and the <code>noise</code> factories.</li>
 <li><a href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a> — <code>interop.circuit_from_stim</code>/<code>circuit_from_qiskit</code>/<code>circuit_from_json</code>.</li>
@@ -417,6 +418,37 @@ rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=2)
 <p><code>x_array()</code>/<code>z_array()</code>/<code>coefficients_array()</code> are zero-copy numpy views of the symplectic bit columns and coefficients — the shape an analysis pass would want to work in directly, rather than going through strings.
 <code>from_arrays</code> is the exact inverse: it hands the same columns back to the engine as a <code>PauliSum</code>, so an analysis pass can round-trip without re-parsing strings.
 See <a href="#paulisum">PauliSum reference</a> for the array dtypes and layout.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="observable-from-a-hamiltonian"><a class="header" href="#observable-from-a-hamiltonian">Observable from a Hamiltonian</a></h1>
+<p>A Hamiltonian is just a weighted sum of Pauli strings, so it is built the same
+way as any other observable — accumulate <code>{pauli_string: coefficient}</code> and
+hand it to <code>PauliSum.from_strings</code>. This builds a transverse-field Ising chain,
+<code>H = -J * sum(Z_i Z_{i+1}) - h * sum(X_i)</code>:</p>
+<pre><code class="language-python">from paulistrings import PauliSum
+
+n = 4
+J, h = 1.0, 0.5
+terms: dict[str, float] = {}
+
+for i in range(n - 1):
+    key = ["I"] * n
+    key[i] = key[i + 1] = "Z"
+    terms["".join(key)] = terms.get("".join(key), 0.0) - J
+
+for i in range(n):
+    key = ["I"] * n
+    key[i] = "X"
+    terms["".join(key)] = terms.get("".join(key), 0.0) - h
+
+hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
+</code></pre>
+<p>Terms that land on the same key sum their coefficients (only relevant if your
+own construction can produce duplicate strings; the chain above never does).
+For thousands of terms built programmatically, <a href="#observable-from-raw-arrays"><code>from_arrays</code></a>
+avoids the per-term string allocation.</p>
+<p>See <a href="#paulisum">PauliSum reference</a> for the full constructor
+surface and <a href="#observable-from-pauli-strings">Observable from Pauli strings</a>
+for the string-key convention.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="paulisum-save-and-load"><a class="header" href="#paulisum-save-and-load">PauliSum save and load</a></h1>
 <pre><code class="language-python">from paulistrings import PauliSum, io as psio
@@ -488,9 +520,7 @@ Reach for it unless you have a specific reason not to.</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 </code></pre>
 <p>Keep <code>min_abs_coeff</code> above ~1e-12 on deep circuits — <code>cos(π/2)</code> is <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.</p>
-<p>A truncated Pauli sum has no variational bound: dropped terms carry signs, so error need not fall monotonically as the cutoff tightens.
-Read a convergence sweep as a trend across a grid, not a point-to-point improvement.</p>
-<p>See <a href="#truncation-policies">Truncation reference</a> for the full policy table and <a href="#engine-design">How it works</a> for the mechanism.</p>
+<p>See <a href="#truncation">Truncation</a> for what truncation actually does to the result (it has no variational bound, and reading a convergence sweep is not the same as reading a point-to-point improvement), <a href="#truncation-policies">Truncation reference</a> for the full policy table, and <a href="#propagation-engine">Propagation engine</a> for the mechanism.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagation-direction"><a class="header" href="#propagation-direction">Propagation direction</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
@@ -643,7 +673,7 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 <p>See <a href="#mpi-ranks-1">MPI ranks</a> for what this costs and buys, the rank-count and thread-level requirements, and <a href="#installation">Installation</a> for the from-source MPI build steps.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="reference"><a class="header" href="#reference">Reference</a></h1>
-<p>Signatures and tables for the Python API. No rationale — see <a href="#engine-design">Explanation</a> for that, or <a href="#how-to-guides">How-to guides</a> for recipes.</p>
+<p>Signatures and tables for the Python API. No rationale — see <a href="#explanation">Explanation</a> for that, or <a href="#how-to-guides">How-to guides</a> for recipes.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -684,7 +714,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 <tr><th>Parameter</th><th>Type</th><th>Notes</th></tr>
 </thead>
 <tbody>
-<tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the band width <code>num_qubits</code> picks; narrower than the band is zero-padded</td></tr>
+<tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the compile-time width tier <code>num_qubits</code> picks; narrower than the tier is zero-padded</td></tr>
 <tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>complex128</code> or a real-float dtype</td></tr>
 <tr><td><code>num_qubits</code></td><td><code>int</code></td><td>a set bit at or beyond this qubit is a <code>ValueError</code></td></tr>
 </tbody>
@@ -698,7 +728,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 </thead>
 <tbody>
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
-<tr><td><code>.width</code></td><td>active monomorphized width <code>W</code> (words per term)</td></tr>
+<tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
 <tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
@@ -729,7 +759,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 <p><code>Circuit(num_qubits)</code> — an empty circuit.</p>
 <h2 id="conventions"><a class="header" href="#conventions">Conventions</a></h2>
 <p><strong>One gate per channel.</strong> Every <code>Circuit</code> method pushes exactly one channel per qubit/pair — a broadcast call like <code>depolarize(p, [0, 1])</code> pushes two channels, not one bundled channel.
-Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call.</p>
+Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call — see <a href="#truncation">Truncation</a>.</p>
 <p><strong>Rotation angle convention.</strong> Every rotation method implements <code>U = exp(-i*theta*P/2)</code> for its generator <code>P</code>.
 A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2</code>) needs <code>theta = 2*s</code>.</p>
 <h2 id="gates"><a class="header" href="#gates">Gates</a></h2>
@@ -737,43 +767,45 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th><code>Circuit</code> method</th><th><code>gates.</code> factory</th><th>Qubits</th><th>Extra args</th></tr>
+<tr><th><code>Circuit</code> method</th><th><code>gates.</code> factory</th><th>Qubits</th><th>Extra args</th><th>Caveats</th></tr>
 </thead>
 <tbody>
-<tr><td><code>.h(qubit)</code></td><td><code>gates.h(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.s(qubit)</code></td><td><code>gates.s(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.sdg(qubit)</code></td><td><code>gates.sdg(qubit)</code></td><td>1</td><td><code>S^dagger</code></td></tr>
-<tr><td><code>.x(qubit)</code></td><td><code>gates.x(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.y(qubit)</code></td><td><code>gates.y(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.z(qubit)</code></td><td><code>gates.z(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.cnot(control, target)</code></td><td><code>gates.cnot(control, target)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.cz(q0, q1)</code></td><td><code>gates.cz(q0, q1)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.swap(q0, q1)</code></td><td><code>gates.swap(q0, q1)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.rz(theta, qubit)</code></td><td><code>gates.rz(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td></tr>
-<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td></tr>
-<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td></tr>
+<tr><td><code>.h(qubit)</code></td><td><code>gates.h(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.s(qubit)</code></td><td><code>gates.s(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.sdg(qubit)</code></td><td><code>gates.sdg(qubit)</code></td><td>1</td><td><code>S^dagger</code></td><td>—</td></tr>
+<tr><td><code>.x(qubit)</code></td><td><code>gates.x(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.y(qubit)</code></td><td><code>gates.y(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.z(qubit)</code></td><td><code>gates.z(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.cnot(control, target)</code></td><td><code>gates.cnot(control, target)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.cz(q0, q1)</code></td><td><code>gates.cz(q0, q1)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.swap(q0, q1)</code></td><td><code>gates.swap(q0, q1)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.rz(theta, qubit)</code></td><td><code>gates.rz(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td><td>the one exemption from the two-qubit support panic below — any generator weight is accepted</td></tr>
+<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td><td>—</td></tr>
+<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
+<p>A channel with support on more than two qubits, other than <code>pauli_rotation</code>, makes <code>propagate</code> <strong>panic</strong>; there is no fallback path.</p>
 <p><code>circuit.append(gates.h(0))</code> is equivalent to <code>circuit.h(0)</code>.</p>
 <h2 id="noise-channels"><a class="header" href="#noise-channels">Noise channels</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th><code>Circuit</code> method</th><th><code>noise.</code> factory</th><th>Semantics</th></tr>
+<tr><th><code>Circuit</code> method</th><th><code>noise.</code> factory</th><th>Semantics</th><th>Caveats</th></tr>
 </thead>
 <tbody>
-<tr><td><code>.depolarize(p, qubits)</code></td><td><code>noise.depolarize(p, qubit)</code></td><td>one channel per qubit in <code>qubits</code></td></tr>
-<tr><td><code>.dephase(p, qubits)</code></td><td><code>noise.dephase(p, qubit)</code></td><td>one channel per qubit</td></tr>
-<tr><td><code>.amplitude_damping(gamma, qubits)</code></td><td><code>noise.amplitude_damping(gamma, qubit)</code></td><td>one channel per qubit</td></tr>
-<tr><td><code>.pauli_channel(px, py, pz, qubits)</code></td><td><code>noise.pauli_channel(px, py, pz, qubit)</code></td><td><code>px + py + pz &lt;= 1</code>; one channel per qubit</td></tr>
-<tr><td><code>.depolarize2(p, pairs)</code></td><td><code>noise.depolarize2(p, q0, q1)</code></td><td>one channel per <code>(q0, q1)</code> pair; indices in a pair must differ</td></tr>
+<tr><td><code>.depolarize(p, qubits)</code></td><td><code>noise.depolarize(p, qubit)</code></td><td>one channel per qubit in <code>qubits</code></td><td>non-unitary; see below</td></tr>
+<tr><td><code>.dephase(p, qubits)</code></td><td><code>noise.dephase(p, qubit)</code></td><td>one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.amplitude_damping(gamma, qubits)</code></td><td><code>noise.amplitude_damping(gamma, qubit)</code></td><td>one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.pauli_channel(px, py, pz, qubits)</code></td><td><code>noise.pauli_channel(px, py, pz, qubit)</code></td><td><code>px + py + pz &lt;= 1</code>; one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.depolarize2(p, pairs)</code></td><td><code>noise.depolarize2(p, q0, q1)</code></td><td>one channel per <code>(q0, q1)</code> pair; indices in a pair must differ</td><td>non-unitary; see below</td></tr>
 </tbody>
 </table>
 </div>
+<p>Every noise channel is non-unitary: <code>circuit.adjoint()</code> raises <code>ValueError</code> naming it if the circuit contains one.</p>
 <p><code>pauli_channel(p/3, p/3, p/3, q)</code> is <code>depolarize(p, q)</code>; <code>pauli_channel(0, 0, p, q)</code> is <code>dephase(p, q)</code>.
 See <a href="#circuit-noise">Circuit noise</a> for a worked example.</p>
 <h2 id="composition"><a class="header" href="#composition">Composition</a></h2>
@@ -945,7 +977,7 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 <p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
-<p>See <a href="#truncation-policy">Truncation policy</a> for guidance and <a href="#engine-design">How it works</a> for the truncation mechanism.</p>
+<p>See <a href="#truncation-policy">Truncation policy</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="direction-semantics"><a class="header" href="#direction-semantics">Direction semantics</a></h1>
 <p><code>direction=</code> selects which conjugation <code>propagate</code>/<code>propagate_with_stats</code> performs.</p>
@@ -1013,7 +1045,81 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 Call <code>paulistrings.reset_log_cache()</code> after changing a Python log level mid-process (e.g. <code>logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)</code>), or the new level is not picked up.</p>
 <p>See <a href="#propagation-stats-and-logs">Propagation stats and logs</a> for the full recipe.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="engine-design"><a class="header" href="#engine-design">Engine design</a></h1>
+<h1 id="explanation"><a class="header" href="#explanation">Explanation</a></h1>
+<p>Background and rationale, read occasionally rather than searched. See <a href="#how-to-guides">How-to guides</a> for recipes and <a href="#reference">Reference</a> for signatures and tables.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Page</th><th>Covers</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="#truncation">Truncation</a></td><td>what truncation actually does to the result: per-channel application, no variational bound</td></tr>
+<tr><td><a href="#propagation-engine">Propagation engine</a></td><td>the bucketed layout, the GF(2)-linear hash, coset parallelism, and why the loop needs no locks</td></tr>
+<tr><td><a href="#performance">Performance</a></td><td>measured numbers behind the engine design’s claims</td></tr>
+<tr><td><a href="#numa-nodes">NUMA nodes</a></td><td>the in-process partitioned engine, when it helps</td></tr>
+<tr><td><a href="#mpi-ranks-1">MPI ranks</a></td><td>the distributed engine, one partition per rank</td></tr>
+<tr><td><a href="#against-other-tools">Comparisons</a></td><td>how this engine’s numbers relate to other simulators</td></tr>
+<tr><td><a href="#case-studies">Case studies</a></td><td>measured showcases and benchmarks, each a record with independent cross-checks</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="truncation"><a class="header" href="#truncation">Truncation</a></h1>
+<p>Truncation is what makes the method work, and it is applied <strong>after every
+channel</strong> — not after every <code>propagate</code> call, and not after every “layer”.
+Three consequences follow, and all three are load-bearing elsewhere in this
+book.</p>
+<h2 id="splitting-a-circuit-is-free"><a class="header" href="#splitting-a-circuit-is-free">Splitting a circuit is free</a></h2>
+<p>Propagating through <code>a</code> and then <code>b</code> applies the same sequence of (apply,
+truncate) steps as propagating through <code>a</code> followed by <code>b</code> in one call, so the
+two agree exactly, for any split point:</p>
+<pre><code class="language-python">import numpy as np
+from paulistrings import Circuit, PauliSum, truncation
+
+observable = PauliSum.from_strings({"ZIII": 1.0}, num_qubits=4)
+policy = truncation.coeff(1e-10)
+
+front = Circuit(4)
+front.h(0)
+front.cnot(0, 1)
+
+back = Circuit(4)
+back.rz(0.3, 1)
+
+split = observable.propagate(front, policy, direction="forward").propagate(
+    back, policy, direction="forward"
+)
+whole = observable.propagate(front + back, policy, direction="forward")
+
+assert len(split) == len(whole)
+assert np.allclose(split.coefficients_array(), whole.coefficients_array())
+</code></pre>
+<p>A time series therefore costs one pass rather than one pass per time point,
+and a hybrid split costs nothing in accuracy — the identity
+<a href="#b5--hybrid-depth-reduction">Showcase B5</a> rests on.</p>
+<h2 id="a-gate-is-a-truncation-point"><a class="header" href="#a-gate-is-a-truncation-point">A gate is a truncation point</a></h2>
+<p>Fusing two gates into one channel changes the answer. That is why every
+circuit in this repository’s example suite is built one gate per push, and why
+the <a href="#against-other-tools">cross-engine comparison</a> can be compared <em>per layer</em> at
+all.</p>
+<h2 id="a-noise-channel-is-a-truncation-point-too"><a class="header" href="#a-noise-channel-is-a-truncation-point-too">A noise channel is a truncation point too</a></h2>
+<p>In the Pauli basis a depolarizing channel is a coefficient rescale, so adding
+noise makes a fixed threshold bite harder at every depth. That is the whole
+mechanism behind
+<a href="#b2--noisy-circuit-verification">Showcase B2</a>, where noise makes the
+simulation cheaper rather than more expensive.</p>
+<h2 id="no-variational-bound"><a class="header" href="#no-variational-bound">No variational bound</a></h2>
+<p>A truncated Pauli sum has no variational bound. Discarded terms carry signs,
+so a partial sum can sit on either side of the truth and the error need not
+fall monotonically as the cutoff tightens. This is measured, not
+hypothetical — <a href="#b--kick-angle-sweep">Benchmark B</a> and
+<a href="#d--xxz-chain-scaling">Benchmark D</a> both record non-monotone rows. Read
+a convergence sweep as a trend across the grid, never as a point-to-point
+improvement.</p>
+<p>Which policy to reach for is a separate question — see
+<a href="#truncation-policy">Truncation policy</a>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="propagation-engine"><a class="header" href="#propagation-engine">Propagation engine</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer’s data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
 The companion <a href="#performance">Performance</a> page puts measured numbers to each claim; <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the invariants-only reference this page narrates — cited by section below rather than restated in full.</p>
@@ -1070,7 +1176,7 @@ The merge is fused with the segmented reduction: one two-pointer walk sums equal
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel’s own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
 Pauli rotations prepare specially at any generator weight, since their delta set is just <code>{0, generator}</code> (ARCHITECTURE.md §Prepared-Channels).</p>
-<h2 id="truncation"><a class="header" href="#truncation">Truncation</a></h2>
+<h2 id="truncation-1"><a class="header" href="#truncation-1">Truncation</a></h2>
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
@@ -1394,7 +1500,7 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 <li><strong>Exact <code>topn</code> is unavailable</strong>, as in any partitioned run: choosing the <code>n</code>-th largest magnitude across ranks is a distributed selection.
 <code>truncation.approx_topn(n)</code> all-reduces its octave histogram and retains exactly the set a single-process run would have.</li>
 <li><strong>A replicated input caps the sum at what one rank can build.</strong> Reaching the capacity the ranks together have needs a driver that ingests already distributed; the scatter itself is a local filter and costs nothing extra.</li>
-<li><strong>Homogeneous groups only.</strong> The wire carries raw host bytes, so a mixed-architecture or mixed-<code>W</code> job is silently wrong.</li>
+<li><strong>Homogeneous groups only.</strong> The wire carries raw host bytes, so a mixed-architecture job, or one mixing compile-time width tiers across ranks, is silently wrong.</li>
 <li><strong>One partition per rank.</strong> The hybrid — several NUMA domains inside one rank — is not implemented.
 Intra-node, that is what would take the 2-rank case below 3.5×.</li>
 <li><strong>The library never initializes MPI.</strong> The application owns <code>MPI_Init</code> and <code>MPI_Finalize</code>.</li>
@@ -2315,7 +2421,7 @@ composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
 </table>
 </div>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/b5/convergence_panel.svg" alt="Convergence panel against the exact reference"><span class="img-wrapper"><img src="assets/b5/convergence_panel.svg" alt="Convergence panel against the exact reference"></span></label></p>
-<p>Truncation is applied after every <em>channel</em>, not after every Python call, so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where <code>k</code> is chosen. The gap is <strong>not monotone</strong> in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.</p>
+<p>Truncation is applied after every <em>channel</em>, not after every Python call (see <a href="#truncation">Truncation</a>), so splitting a circuit and truncating separately on each half agrees exactly, for any split point, with truncating the full circuit in one shot — a test pins it. The table above is therefore independent of where <code>k</code> is chosen. The gap is <strong>not monotone</strong> in the cutoff (2.9e-2 at 3e-2, then 6.3e-2 at 1e-2) — dropped terms carry signs, and a truncated Pauli sum has no variational bound.</p>
 <h2 id="the-actual-trade-off-depth-against-term-count"><a class="header" href="#the-actual-trade-off-depth-against-term-count">The actual trade-off: depth against term count</a></h2>
 <p>16-qubit heavy-hex kicked-Ising sublattice, 6 Trotter steps, <code>θ_h = 0.6</code> (a generic, non-Clifford kick), observable <code>Z_8</code>, truncated at <code>weight &lt;= 6</code> throughout — the weight cap is what makes the classical half tractable in practice. Sweeping the tail depth <code>k</code> from 0 (nothing back-propagated) to 6 (front empty):</p>
 <div class="table-wrapper">

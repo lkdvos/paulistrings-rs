@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58c4d26e.js"></script>
+        <script src="../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -308,7 +308,7 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 <li><strong>Exact <code>topn</code> is unavailable</strong>, as in any partitioned run: choosing the <code>n</code>-th largest magnitude across ranks is a distributed selection.
 <code>truncation.approx_topn(n)</code> all-reduces its octave histogram and retains exactly the set a single-process run would have.</li>
 <li><strong>A replicated input caps the sum at what one rank can build.</strong> Reaching the capacity the ranks together have needs a driver that ingests already distributed; the scatter itself is a local filter and costs nothing extra.</li>
-<li><strong>Homogeneous groups only.</strong> The wire carries raw host bytes, so a mixed-architecture or mixed-<code>W</code> job is silently wrong.</li>
+<li><strong>Homogeneous groups only.</strong> The wire carries raw host bytes, so a mixed-architecture job, or one mixing compile-time width tiers across ranks, is silently wrong.</li>
 <li><strong>One partition per rank.</strong> The hybrid — several NUMA domains inside one rank — is not implemented.
 Intra-node, that is what would take the 2-rank case below 3.5×.</li>
 <li><strong>The library never initializes MPI.</strong> The application owns <code>MPI_Init</code> and <code>MPI_Finalize</code>.</li>

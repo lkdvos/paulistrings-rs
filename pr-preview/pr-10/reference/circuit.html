@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58c4d26e.js"></script>
+        <script src="../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -186,7 +186,7 @@
 <p><code>Circuit(num_qubits)</code> — an empty circuit.</p>
 <h2 id="conventions"><a class="header" href="#conventions">Conventions</a></h2>
 <p><strong>One gate per channel.</strong> Every <code>Circuit</code> method pushes exactly one channel per qubit/pair — a broadcast call like <code>depolarize(p, [0, 1])</code> pushes two channels, not one bundled channel.
-Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call.</p>
+Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call — see <a href="../explanation/truncation.html">Truncation</a>.</p>
 <p><strong>Rotation angle convention.</strong> Every rotation method implements <code>U = exp(-i*theta*P/2)</code> for its generator <code>P</code>.
 A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2</code>) needs <code>theta = 2*s</code>.</p>
 <h2 id="gates"><a class="header" href="#gates">Gates</a></h2>
@@ -194,43 +194,45 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th><code>Circuit</code> method</th><th><code>gates.</code> factory</th><th>Qubits</th><th>Extra args</th></tr>
+<tr><th><code>Circuit</code> method</th><th><code>gates.</code> factory</th><th>Qubits</th><th>Extra args</th><th>Caveats</th></tr>
 </thead>
 <tbody>
-<tr><td><code>.h(qubit)</code></td><td><code>gates.h(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.s(qubit)</code></td><td><code>gates.s(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.sdg(qubit)</code></td><td><code>gates.sdg(qubit)</code></td><td>1</td><td><code>S^dagger</code></td></tr>
-<tr><td><code>.x(qubit)</code></td><td><code>gates.x(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.y(qubit)</code></td><td><code>gates.y(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.z(qubit)</code></td><td><code>gates.z(qubit)</code></td><td>1</td><td>—</td></tr>
-<tr><td><code>.cnot(control, target)</code></td><td><code>gates.cnot(control, target)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.cz(q0, q1)</code></td><td><code>gates.cz(q0, q1)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.swap(q0, q1)</code></td><td><code>gates.swap(q0, q1)</code></td><td>2</td><td>indices must differ</td></tr>
-<tr><td><code>.rz(theta, qubit)</code></td><td><code>gates.rz(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td></tr>
-<tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td></tr>
-<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td></tr>
-<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td></tr>
+<tr><td><code>.h(qubit)</code></td><td><code>gates.h(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.s(qubit)</code></td><td><code>gates.s(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.sdg(qubit)</code></td><td><code>gates.sdg(qubit)</code></td><td>1</td><td><code>S^dagger</code></td><td>—</td></tr>
+<tr><td><code>.x(qubit)</code></td><td><code>gates.x(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.y(qubit)</code></td><td><code>gates.y(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.z(qubit)</code></td><td><code>gates.z(qubit)</code></td><td>1</td><td>—</td><td>—</td></tr>
+<tr><td><code>.cnot(control, target)</code></td><td><code>gates.cnot(control, target)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.cz(q0, q1)</code></td><td><code>gates.cz(q0, q1)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.swap(q0, q1)</code></td><td><code>gates.swap(q0, q1)</code></td><td>2</td><td>indices must differ</td><td>—</td></tr>
+<tr><td><code>.rz(theta, qubit)</code></td><td><code>gates.rz(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
+<tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td><td>the one exemption from the two-qubit support panic below — any generator weight is accepted</td></tr>
+<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td><td>—</td></tr>
+<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
+<p>A channel with support on more than two qubits, other than <code>pauli_rotation</code>, makes <code>propagate</code> <strong>panic</strong>; there is no fallback path.</p>
 <p><code>circuit.append(gates.h(0))</code> is equivalent to <code>circuit.h(0)</code>.</p>
 <h2 id="noise-channels"><a class="header" href="#noise-channels">Noise channels</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th><code>Circuit</code> method</th><th><code>noise.</code> factory</th><th>Semantics</th></tr>
+<tr><th><code>Circuit</code> method</th><th><code>noise.</code> factory</th><th>Semantics</th><th>Caveats</th></tr>
 </thead>
 <tbody>
-<tr><td><code>.depolarize(p, qubits)</code></td><td><code>noise.depolarize(p, qubit)</code></td><td>one channel per qubit in <code>qubits</code></td></tr>
-<tr><td><code>.dephase(p, qubits)</code></td><td><code>noise.dephase(p, qubit)</code></td><td>one channel per qubit</td></tr>
-<tr><td><code>.amplitude_damping(gamma, qubits)</code></td><td><code>noise.amplitude_damping(gamma, qubit)</code></td><td>one channel per qubit</td></tr>
-<tr><td><code>.pauli_channel(px, py, pz, qubits)</code></td><td><code>noise.pauli_channel(px, py, pz, qubit)</code></td><td><code>px + py + pz &lt;= 1</code>; one channel per qubit</td></tr>
-<tr><td><code>.depolarize2(p, pairs)</code></td><td><code>noise.depolarize2(p, q0, q1)</code></td><td>one channel per <code>(q0, q1)</code> pair; indices in a pair must differ</td></tr>
+<tr><td><code>.depolarize(p, qubits)</code></td><td><code>noise.depolarize(p, qubit)</code></td><td>one channel per qubit in <code>qubits</code></td><td>non-unitary; see below</td></tr>
+<tr><td><code>.dephase(p, qubits)</code></td><td><code>noise.dephase(p, qubit)</code></td><td>one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.amplitude_damping(gamma, qubits)</code></td><td><code>noise.amplitude_damping(gamma, qubit)</code></td><td>one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.pauli_channel(px, py, pz, qubits)</code></td><td><code>noise.pauli_channel(px, py, pz, qubit)</code></td><td><code>px + py + pz &lt;= 1</code>; one channel per qubit</td><td>non-unitary; see below</td></tr>
+<tr><td><code>.depolarize2(p, pairs)</code></td><td><code>noise.depolarize2(p, q0, q1)</code></td><td>one channel per <code>(q0, q1)</code> pair; indices in a pair must differ</td><td>non-unitary; see below</td></tr>
 </tbody>
 </table>
 </div>
+<p>Every noise channel is non-unitary: <code>circuit.adjoint()</code> raises <code>ValueError</code> naming it if the circuit contains one.</p>
 <p><code>pauli_channel(p/3, p/3, p/3, q)</code> is <code>depolarize(p, q)</code>; <code>pauli_channel(0, 0, p, q)</code> is <code>dephase(p, q)</code>.
 See <a href="../how-to/add-noise-to-a-circuit.html">Circuit noise</a> for a worked example.</p>
 <h2 id="composition"><a class="header" href="#composition">Composition</a></h2>

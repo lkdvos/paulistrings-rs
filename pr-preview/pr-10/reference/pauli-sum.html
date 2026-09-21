@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58c4d26e.js"></script>
+        <script src="../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,7 +204,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 <tr><th>Parameter</th><th>Type</th><th>Notes</th></tr>
 </thead>
 <tbody>
-<tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the band width <code>num_qubits</code> picks; narrower than the band is zero-padded</td></tr>
+<tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the compile-time width tier <code>num_qubits</code> picks; narrower than the tier is zero-padded</td></tr>
 <tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>complex128</code> or a real-float dtype</td></tr>
 <tr><td><code>num_qubits</code></td><td><code>int</code></td><td>a set bit at or beyond this qubit is a <code>ValueError</code></td></tr>
 </tbody>
@@ -218,7 +218,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 </thead>
 <tbody>
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
-<tr><td><code>.width</code></td><td>active monomorphized width <code>W</code> (words per term)</td></tr>
+<tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
 <tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>

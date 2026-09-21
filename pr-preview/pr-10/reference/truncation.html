@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58c4d26e.js"></script>
+        <script src="../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -212,7 +212,7 @@
 <p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
-<p>See <a href="../how-to/choose-a-truncation-policy.html">Truncation policy</a> for guidance and <a href="../explanation/index.html">How it works</a> for the truncation mechanism.</p>
+<p>See <a href="../how-to/choose-a-truncation-policy.html">Truncation policy</a> for guidance and <a href="../explanation/truncation.html">Truncation</a> for the mechanism.</p>
 
                     </main>
 

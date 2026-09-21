@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff6d6182.js";
+            window.path_to_searchindex_js = "../searchindex-0382195d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58c4d26e.js"></script>
+        <script src="../toc-25a9cda8.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,9 +195,7 @@ Reach for it unless you have a specific reason not to.</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 </code></pre>
 <p>Keep <code>min_abs_coeff</code> above ~1e-12 on deep circuits — <code>cos(π/2)</code> is <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.</p>
-<p>A truncated Pauli sum has no variational bound: dropped terms carry signs, so error need not fall monotonically as the cutoff tightens.
-Read a convergence sweep as a trend across a grid, not a point-to-point improvement.</p>
-<p>See <a href="../reference/truncation.html">Truncation reference</a> for the full policy table and <a href="../explanation/index.html">How it works</a> for the mechanism.</p>
+<p>See <a href="../explanation/truncation.html">Truncation</a> for what truncation actually does to the result (it has no variational bound, and reading a convergence sweep is not the same as reading a point-to-point improvement), <a href="../reference/truncation.html">Truncation reference</a> for the full policy table, and <a href="../explanation/propagation-engine.html">Propagation engine</a> for the mechanism.</p>
 
                     </main>
 

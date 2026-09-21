@@ -19,14 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Cargo.toml matches pyproject.toml
-        run: |
-          cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
-          pyproject_version="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
-          if [[ "$cargo_version" != "$pyproject_version" ]]; then
-            echo "::error::Cargo.toml ($cargo_version) and pyproject.toml ($pyproject_version) disagree — release both together"
-            exit 1
-          fi
+      - run: scripts/check-version-sync.sh
+      # Cargo.lock is gitignored (a library, not committing it deliberately),
+      # so a fresh checkout has none — `--locked` below needs one present,
+      # just not one that came from git.
+      - run: cargo generate-lockfile
       - name: cargo publish (dry run)
         if: inputs.dry_run
         run: cargo publish -p paulistrings --locked --dry-run

@@ -18,10 +18,9 @@ jobs:
       - name: compare tag to pyproject.toml / Cargo.toml
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          pyproject_version="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
-          cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
-          if [[ "$tag" != "$pyproject_version" || "$tag" != "$cargo_version" ]]; then
-            echo "::error::tag v$tag does not match pyproject.toml ($pyproject_version) / Cargo.toml ($cargo_version)"
+          version="$(scripts/check-version-sync.sh)"
+          if [[ "$tag" != "$version" ]]; then
+            echo "::error::tag v$tag does not match Cargo.toml/pyproject.toml ($version)"
             exit 1
           fi
 

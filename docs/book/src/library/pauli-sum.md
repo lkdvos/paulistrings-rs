@@ -5,11 +5,13 @@
 | Signature | Builds |
 |---|---|
 | `PauliSum(num_qubits)` | the empty sum |
-| `PauliSum.from_strings(terms, num_qubits)` | from a `{pauli_string: coefficient}` dict; each key is `num_qubits` characters of `I/X/Y/Z`, index `i` addresses qubit `i` |
+| `PauliSum.from_strings(terms, *, num_qubits=None)` | from a `{pauli_string: coefficient}` dict; each key is `num_qubits` characters of `I/X/Y/Z`, index `i` addresses qubit `i` |
+| `PauliSum.from_strings(labels, coefficients, *, num_qubits=None)` | the same, from two equal-length sequences instead of a dict; a label repeated in `labels` accumulates rather than raising |
 | `PauliSum.from_arrays(x, z, coefficients, num_qubits)` | from raw symplectic arrays — the inverse of `x_array`/`z_array`/`coefficients_array` |
 
+`num_qubits` is inferred from the first label's length when omitted from either `from_strings` form; an empty `terms`/`labels` with no explicit `num_qubits` is a `ValueError`, since there is nothing to infer it from.
 `from_strings` and `from_arrays` both use the crate's Hermitian convention: a coefficient multiplies the literal Pauli string, and `Y` carries no phase of its own.
-Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
+Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are dropped.
 
 `from_arrays` parameters:
 
@@ -31,8 +33,10 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 | `.coefficients_array()` | coefficient column as a 1-D `complex128` NumPy array |
 | `.x_array()` | X-part column, 2-D `uint64` array, shape `(len, width)` |
 | `.z_array()` | Z-part column, 2-D `uint64` array, shape `(len, width)` |
+| `str(sum)`, `repr(sum)` | `coefficient*label` for the first few terms, `+`-joined, `... (N more terms)` past that; `0` for the empty sum |
 
 All four array/list accessors return the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`), consistently across calls.
+`str`/`repr` show that same order's *prefix*, never sorted by coefficient magnitude — a magnitude sort would cost `O(len log len)` just to print a preview, on a type whose whole point is staying cheap at a huge term count.
 
 ## Arithmetic
 

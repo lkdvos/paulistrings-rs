@@ -96,7 +96,8 @@ impl PauliStringImpl {
 }
 
 /// Decode a symplectic key back into its `IXYZ` label — `parse_pauli_key`'s inverse, in the same Hermitian convention (`Y` is the `(x=1, z=1)` key, with no phase factor).
-fn label_of<const W: usize>(p: &CorePauliString<W>, num_qubits: usize) -> String {
+/// `pub(crate)` so `sum.rs`'s `PauliSum.__repr__` can decode a preview of a sum's terms with it.
+pub(crate) fn label_of<const W: usize>(p: &CorePauliString<W>, num_qubits: usize) -> String {
     (0..num_qubits)
         .map(|q| {
             let word = q / 64;

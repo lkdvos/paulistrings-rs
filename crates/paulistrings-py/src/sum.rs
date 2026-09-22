@@ -98,6 +98,25 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.scale(factor))
     }
 
+    /// First `k` terms in canonical order, decoded to `(label, coefficient)` — `O(k)`, not `O(len())`, so `__repr__`/`__str__` stay cheap on a huge sum.
+    pub fn preview(&self, k: usize) -> Vec<(String, Complex64)> {
+        fn preview_of<const W: usize>(
+            s: &CorePauliSum<W>,
+            num_qubits: usize,
+            k: usize,
+        ) -> Vec<(String, Complex64)> {
+            s.iter()
+                .take(k)
+                .map(|(x, z, c)| {
+                    let key = PauliString::<W> { x: *x, z: *z };
+                    (crate::pauli_string::label_of(&key, num_qubits), c)
+                })
+                .collect()
+        }
+        let num_qubits = self.num_qubits();
+        for_each_width!(self, |s| preview_of(s, num_qubits, k))
+    }
+
     /// Snapshot of the coefficient column, in the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`; equal to plain lex order for sums of ≤ 1024 terms).
     pub fn coeffs(&self) -> Vec<Complex64> {
         fn coeffs_of<const W: usize>(s: &CorePauliSum<W>) -> Vec<Complex64> {
@@ -125,9 +144,63 @@ impl PauliSumImpl {
         for_each_width!(self, |s| xz_of(s))
     }
 
-    /// Build from a `{pauli_string: coefficient}` Python dict at the requested width; the width must already match `num_qubits` (caller's job).
-    pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
+    /// Build from a `{pauli_string: coefficient}` Python dict. `num_qubits` is inferred from the first key's length when `None`.
+    pub fn from_strings_dict(
+        terms: &Bound<'_, PyDict>,
+        num_qubits: Option<usize>,
+    ) -> PyResult<Self> {
+        let num_qubits = match num_qubits {
+            Some(n) => n,
+            None => match terms.iter().next() {
+                Some((key, _)) => {
+                    let s: String = key.extract().map_err(|_| {
+                        PyTypeError::new_err("PauliSum.from_strings keys must be str")
+                    })?;
+                    s.chars().count()
+                }
+                None => {
+                    return Err(PyValueError::new_err(
+                        "PauliSum.from_strings: cannot infer num_qubits from an empty dict; pass num_qubits explicitly",
+                    ))
+                }
+            },
+        };
         for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
+    }
+
+    /// Build from two equal-length sequences, `labels` (`I/X/Y/Z` strings) and `coefficients`. `num_qubits` is inferred from the first label's length when `None`. A label repeated in `labels` accumulates rather than overwriting, unlike a dict's keys.
+    pub fn from_label_list(
+        labels: &Bound<'_, PyAny>,
+        coefficients: &Bound<'_, PyAny>,
+        num_qubits: Option<usize>,
+    ) -> PyResult<Self> {
+        let labels: Vec<String> = labels.extract().map_err(|_| {
+            PyTypeError::new_err("PauliSum.from_strings: labels must be a sequence of str")
+        })?;
+        let n_coeffs = coefficients.len()?;
+        if labels.len() != n_coeffs {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_strings: {} labels but {} coefficients",
+                labels.len(),
+                n_coeffs
+            )));
+        }
+        let num_qubits = match num_qubits {
+            Some(n) => n,
+            None => labels.first().map(|s| s.chars().count()).ok_or_else(|| {
+                PyValueError::new_err(
+                    "PauliSum.from_strings: cannot infer num_qubits from zero terms; pass num_qubits explicitly",
+                )
+            })?,
+        };
+        for_num_qubits!(num_qubits, |W| parse_label_list::<W>(
+            num_qubits,
+            &labels,
+            coefficients
+        )?)
+        .ok_or_else(|| {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
         })
     }
@@ -190,6 +263,28 @@ fn parse_terms<const W: usize>(
         }
         let c = extract_complex(&val)?;
         acc.add_term(parse_pauli_key::<W>(&s)?, Phase::ONE, c);
+    }
+    Ok(acc.finalize())
+}
+
+/// Build a `PauliSum<W>` from parallel `labels`/`coefficients` sequences. Unlike [`parse_terms`]'s dict, a label repeated in `labels` is not an error — `BuildAccumulator::add_term` sums it, the same accumulation the manual's Hamiltonian example does by hand with a dict.
+fn parse_label_list<const W: usize>(
+    num_qubits: usize,
+    labels: &[String],
+    coefficients: &Bound<'_, PyAny>,
+) -> PyResult<CorePauliSum<W>> {
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, labels.len());
+    for (i, s) in labels.iter().enumerate() {
+        if s.len() != num_qubits {
+            return Err(PyValueError::new_err(format!(
+                "Pauli string {:?} has length {}, expected {} (length must match num_qubits)",
+                s,
+                s.len(),
+                num_qubits
+            )));
+        }
+        let c = extract_complex(&coefficients.get_item(i)?)?;
+        acc.add_term(parse_pauli_key::<W>(s)?, Phase::ONE, c);
     }
     Ok(acc.finalize())
 }
@@ -1281,6 +1376,36 @@ impl PauliSum {
     }
 }
 
+/// How many terms `__repr__`/`__str__` show before falling back to `... (N more terms)`.
+const PREVIEW_TERMS: usize = 4;
+
+/// `0.25` for a real coefficient, `(0.25+0.5j)` otherwise — dropping the `+0j` tail Python's own `complex.__repr__` always carries, since most coefficients in this library are real.
+fn format_coeff(c: Complex64) -> String {
+    if c.im == 0.0 {
+        format!("{}", c.re)
+    } else {
+        format!("({}{}{}j)", c.re, if c.im < 0.0 { "-" } else { "+" }, c.im.abs())
+    }
+}
+
+/// `PauliSum.__repr__`/`__str__`'s body: the first [`PREVIEW_TERMS`] terms as `coefficient*label`, `+`-joined, with a trailing count of however many more there are.
+/// `0` for the empty sum — the zero operator, not "no terms".
+fn format_sum(inner: &PauliSumImpl) -> String {
+    let len = inner.len();
+    if len == 0 {
+        return "0".to_string();
+    }
+    let shown = inner.preview(PREVIEW_TERMS);
+    let mut parts: Vec<String> = shown
+        .iter()
+        .map(|(label, c)| format!("{}*{}", format_coeff(*c), label))
+        .collect();
+    if len > shown.len() {
+        parts.push(format!("... ({} more term{})", len - shown.len(), if len - shown.len() == 1 { "" } else { "s" }));
+    }
+    parts.join(" + ")
+}
+
 /// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
 fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if factor.downcast::<PauliSum>().is_ok() {
@@ -1306,18 +1431,39 @@ impl PauliSum {
             })
     }
 
-    /// Build from a `{pauli_string: coefficient}` dict.
+    /// Build from a `{pauli_string: coefficient}` dict, or from `(labels, coefficients)` — two equal-length sequences.
     ///
-    /// Each key is a string of `I/X/Y/Z` characters, one per qubit (index
+    /// Each label is a string of `I/X/Y/Z` characters, one per qubit (index
     /// `i` addresses qubit `i`). Coefficients multiply the literal Hermitian
     /// Pauli string, so a Hermitian observable has real coefficients.
+    /// `num_qubits` is inferred from the first label's length when omitted.
+    /// A label repeated in the two-sequence form accumulates, unlike a dict's keys.
     #[classmethod]
+    #[pyo3(signature = (terms, coefficients=None, *, num_qubits=None))]
     fn from_strings(
         _cls: &Bound<'_, pyo3::types::PyType>,
-        terms: &Bound<'_, PyDict>,
-        num_qubits: usize,
+        terms: &Bound<'_, PyAny>,
+        coefficients: Option<&Bound<'_, PyAny>>,
+        num_qubits: Option<usize>,
     ) -> PyResult<Self> {
-        let inner = PauliSumImpl::from_strings_dict(num_qubits, terms)?;
+        let inner = match coefficients {
+            Some(coefficients) => {
+                if terms.downcast::<PyDict>().is_ok() {
+                    return Err(PyTypeError::new_err(
+                        "PauliSum.from_strings: pass either a dict, or (labels, coefficients) as two sequences — not a dict with coefficients also given",
+                    ));
+                }
+                PauliSumImpl::from_label_list(terms, coefficients, num_qubits)?
+            }
+            None => {
+                let dict = terms.downcast::<PyDict>().map_err(|_| {
+                    PyTypeError::new_err(
+                        "PauliSum.from_strings: pass a dict, or (labels, coefficients) as two equal-length sequences",
+                    )
+                })?;
+                PauliSumImpl::from_strings_dict(dict, num_qubits)?
+            }
+        };
         Ok(Self { inner })
     }
 
@@ -1345,6 +1491,16 @@ impl PauliSum {
 
     fn __len__(&self) -> usize {
         self.inner.len()
+    }
+
+    /// The first few terms as `coefficient*label`, `+`-joined; `0` for the empty sum.
+    /// Always a prefix in canonical storage order, never sorted by magnitude — that would cost `O(len() log len())` just to print, on a type whose whole point is staying cheap at a huge term count.
+    fn __repr__(&self) -> String {
+        format_sum(&self.inner)
+    }
+
+    fn __str__(&self) -> String {
+        format_sum(&self.inner)
     }
 
     /// Current bucket count the sum's storage is partitioned into.

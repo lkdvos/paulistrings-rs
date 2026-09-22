@@ -233,3 +233,86 @@ def test_adding_a_non_sum_is_a_type_error():
     a = PauliSum.from_strings({"XI": 1.0}, num_qubits=2)
     with pytest.raises(TypeError):
         a + 1.0
+
+
+# ---- pretty-printing ----
+
+
+def test_empty_sum_prints_as_zero():
+    assert str(PauliSum(4)) == "0"
+    assert repr(PauliSum(4)) == "0"
+
+
+def test_str_and_repr_show_coefficient_and_label():
+    # Canonical order is lexicographic on (x, z), so "IZ" (x=0) precedes "XI" (x=1).
+    sum_ = PauliSum.from_strings({"XI": 0.5, "IZ": -1.0}, num_qubits=2)
+    assert str(sum_) == "-1*IZ + 0.5*XI"
+    assert repr(sum_) == str(sum_)
+
+
+def test_a_real_coefficient_drops_the_imaginary_part_but_a_complex_one_does_not():
+    real = PauliSum.from_strings({"X": 0.25}, num_qubits=1)
+    assert str(real) == "0.25*X"
+    complex_ = PauliSum.from_strings({"X": 0.25 + 0.5j}, num_qubits=1)
+    assert str(complex_) == "(0.25+0.5j)*X"
+    negative_imag = PauliSum.from_strings({"X": 0.25 - 0.5j}, num_qubits=1)
+    assert str(negative_imag) == "(0.25-0.5j)*X"
+
+
+def test_a_sum_past_the_preview_count_is_truncated_with_a_count():
+    terms = {("I" * i + "X" + "I" * (5 - i)): 1.0 for i in range(6)}
+    sum_ = PauliSum.from_strings(terms, num_qubits=6)
+    text = str(sum_)
+    assert text.endswith("... (2 more terms)")
+    assert text.count("*") == 4
+
+
+def test_preview_is_prefix_order_not_sorted_by_magnitude():
+    # A huge first coefficient must still show first, in storage order --
+    # sorting by magnitude just to print a preview would cost O(N log N).
+    sum_ = PauliSum.from_strings({"II": 1000.0, "XX": 1.0, "IX": 1.0, "XI": 1.0, "YY": 1.0}, num_qubits=2)
+    assert str(sum_).startswith("1000*II")
+
+
+# ---- from_strings: inference and the (labels, coefficients) form ----
+
+
+def test_num_qubits_is_inferred_from_a_dict():
+    sum_ = PauliSum.from_strings({"XII": 1.0, "IXI": 1.0})
+    assert sum_.num_qubits == 3
+    assert len(sum_) == 2
+
+
+def test_num_qubits_is_inferred_from_labels_and_coefficients():
+    sum_ = PauliSum.from_strings(["XII", "IXI"], [1.0, 2.0])
+    assert sum_.num_qubits == 3
+    assert sorted(c.real for c in sum_.coefficients()) == [1.0, 2.0]
+
+
+def test_explicit_num_qubits_still_works_for_both_forms():
+    a = PauliSum.from_strings({"XI": 1.0}, num_qubits=2)
+    b = PauliSum.from_strings(["XI"], [1.0], num_qubits=2)
+    assert a.num_qubits == b.num_qubits == 2
+
+
+def test_a_repeated_label_in_the_list_form_accumulates():
+    sum_ = PauliSum.from_strings(["XI", "XI", "IZ"], [1.0, 2.0, 5.0])
+    assert len(sum_) == 2
+    assert sorted(c.real for c in sum_.coefficients()) == [3.0, 5.0]
+
+
+def test_mismatched_label_and_coefficient_counts_is_a_value_error():
+    with pytest.raises(ValueError, match="labels but"):
+        PauliSum.from_strings(["XI"], [1.0, 2.0])
+
+
+def test_inferring_num_qubits_from_nothing_is_a_value_error():
+    with pytest.raises(ValueError, match="cannot infer num_qubits"):
+        PauliSum.from_strings({})
+    with pytest.raises(ValueError, match="cannot infer num_qubits"):
+        PauliSum.from_strings([], [])
+
+
+def test_a_dict_with_coefficients_also_given_is_a_type_error():
+    with pytest.raises(TypeError, match="not a dict with coefficients"):
+        PauliSum.from_strings({"XI": 1.0}, [1.0])

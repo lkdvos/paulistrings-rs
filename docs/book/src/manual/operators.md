@@ -126,31 +126,31 @@ To allow for efficient merging of the strings, we store two separate lists, one 
 
 ### The `PauliSum` type {#the-paulisum-type}
 
-A `PauliSum` is an operator on $L$ qubits written in the Pauli basis, $O = \sum_P c_P P$, one (complex) coefficient per `PauliString` $P$, each string appearing at most once — real-valued sums are on the roadmap but not yet supported.
+A `PauliSum` is an operator on $L$ qubits written in the Pauli basis, $O = \sum_P c_P P$, one (complex) coefficient per `PauliString` $P$, each string appearing at most once.
 It is the one storage type in this library: the observable you start from, the Hamiltonian you Trotterize, the result a propagation hands back, and the "state" an overlap is taken against are all the same `PauliSum`.
 The convention is Hermitian everywhere a Pauli string is written or read: a coefficient multiplies the literal Hermitian Pauli string, and $Y$ carries no phase of its own.
 
-What a sum costs is its term count $N$, not its qubit count $L$; $L = 127$ with $N$ in the thousands is cheap and $L = 4$ with $N$ in the millions is not, which is why every accessor below reports terms and every result page reports how many survived.
+What a sum costs is its term count $N$, not its qubit count $L$; $L = 127$ with $N$ in the thousands is cheap and $L = 12$ with $N$ in the millions is not, which is why every accessor below reports terms and every result page reports how many survived.
 [Cost is terms, not qubits](propagation/index.md#cost-model) is the full statement.
 
-The direct way to write one is a dict from Pauli strings to coefficients.
-Each key is exactly `num_qubits` characters of `I`, `X`, `Y`, `Z` (upper case only), and character `i` addresses qubit `i`.
+The direct way to write one is a dict from Pauli strings to coefficients, or two parallel sequences — labels and coefficients — for when the labels are not already deduplicated.
+Each label is exactly `num_qubits` characters of `I`, `X`, `Y`, `Z` (upper case only), character `i` addresses qubit `i`, and `num_qubits` itself is inferred from the first label when not given.
 
 ```python
 from paulistrings import PauliSum
 
 observable = PauliSum.from_strings(
-    {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4
+    {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}
 )
-print(len(observable), observable.num_qubits)
+print(observable)
 ```
 
 ```text
-4 4
+0.25*XIII + 0.25*IXII + 0.25*IIXI + 0.25*IIIX
 ```
 
 A wrong key length or a character outside `IXYZ` is a `ValueError` naming the offending string; an exact-zero coefficient is dropped rather than stored.
-A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — [Hamiltonians and programmatic construction](#hamiltonians-and-programmatic-construction) below merges them by hand this way, and [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, once each piece is already its own sum.
+A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — [Hamiltonians and programmatic construction](#hamiltonians-and-programmatic-construction) below merges them by hand this way, [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, and `PauliSum.from_strings(labels, coefficients)` accumulates a repeated label directly, since a plain Python list can hold one.
 The constructor table is in [PauliSum](../library/pauli-sum.md#constructors); [First propagation](../examples/first-propagation.md) runs this exact observable through a circuit.
 
 **The Hermitian convention above is a storage detail, not an input or display rule.**
@@ -172,11 +172,13 @@ combined = bond + bond
 combined += PauliSum.from_strings({"IZZI": -1.0}, num_qubits=4)
 combined *= 2.0
 
-print(len(combined), combined.overlap(bond).real)
+print(combined)
+print(combined.overlap(bond).real)
 ```
 
 ```text
-2 4.0
+-4*ZZII + -2*IZZI
+4.0
 ```
 
 `bond + bond` adds onto the shared `ZZII` string instead of needing `2 * bond`'s coefficient computed by hand, and the `+=` after it adds a string that was not there yet without disturbing `ZZII`.
@@ -203,11 +205,11 @@ for i in range(n):
     terms["".join(key)] = terms.get("".join(key), 0.0) - h
 
 hamiltonian = PauliSum.from_strings(terms, num_qubits=n)
-print(len(hamiltonian))
+print(hamiltonian)
 ```
 
 ```text
-7
+-1*ZZII + -1*IZZI + -1*IIZZ + -0.5*XIII + ... (3 more terms)
 ```
 
 The `terms.get(key, 0.0) - J` accumulation is what merges a bond that appears twice onto one string; `from_strings` never sees a duplicate.
@@ -276,14 +278,14 @@ Layout and dtypes are tabulated under [PauliSum](../library/pauli-sum.md#accesso
 
 #### Inspecting a sum {#inspecting}
 
-`len(...)` gives the term count $N$, `.num_qubits` the qubit count $L$, and `.width` the word tier; `PauliSum(4)` below constructs the empty sum on four qubits, which is what a propagation that truncated everything returns.
+`len(...)` gives the term count $N$, `.num_qubits` the qubit count $L$, and `.width` the word tier; `PauliSum(4)` below constructs the empty sum on four qubits — printing it shows `0`, the zero operator, which is what a propagation that truncated everything returns.
 `.coefficients()` is the coefficient column as a Python list, for small sums where NumPy is overkill.
 
 The one scalar worth knowing by name is the Hilbert–Schmidt norm $\sum_P |c_P|^2$, which equals $\text{tr}(O^\dagger O) / 2^L$ because Pauli strings are orthonormal under that inner product; calling `.overlap()` on a sum against itself computes it in one call.
 Unitary evolution conserves it exactly, so after a truncated propagation the drop from the input's value to the output's is precisely the norm truncation deleted, which makes it the first diagnostic of any result.
 
 ```python
-print(len(PauliSum(4)), PauliSum(4).width)
+print(PauliSum(4), PauliSum(4).width)
 norm = float(np.sum(np.abs(hamiltonian.coefficients_array()) ** 2))
 print(norm, hamiltonian.overlap(hamiltonian).real)
 ```

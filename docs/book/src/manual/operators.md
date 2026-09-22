@@ -12,15 +12,15 @@ This means that for each qubit, we store two separate bits that dictate what ope
 Concretely, for bits $x$ and $z$, we encode the operator in a Hermitian convention as:
 
 $$
-P = i^{xz}X^xZ^z
+P = j^{xz}X^xZ^z
 $$
 
-In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = iXZ = i(1, 1)$.
+In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = jXZ = j(1, 1)$.
 
 For an $L$-qubit string, we can collect these into two masks, or in components:
 
 $$
-P(\vec{x}, \vec{z}) = i^{\sum_j^L x_jz_j} \bigotimes_j^L X_j^{x_j} Z_j^{z_j}
+P(\vec{x}, \vec{z}) = j^{\sum_q^L x_qz_q} \bigotimes_q^L X_q^{x_q} Z_q^{z_q}
 $$
 
 
@@ -78,39 +78,22 @@ False True
 -2j 0j
 ```
 
-`mul` is the closed form itself: multiplying two Pauli strings results in exactly one output string, up to a phase $i^k$ the caller must keep track of.
-The canonical example being $XZ = -iY$ above.
+`mul` is the closed form itself: multiplying two Pauli strings results in exactly one output string, up to a phase $j^k$ the caller must keep track of.
+The canonical example being $XZ = -jY$ above.
 In general, writing $(x^P, z^P)$ and $(x^Q, z^Q)$ for the two operands' symplectic bits, the phase is:
 
 $$
-i^k, \qquad k = \sum_j \Big(x^P_j z^P_j + x^Q_j z^Q_j - (x^P_j \oplus x^Q_j)(z^P_j \oplus z^Q_j)\Big) + 2 \sum_j z^P_j x^Q_j \pmod 4
+j^k, \qquad k = \sum_q \Big(x^P_q z^P_q + x^Q_q z^Q_q - (x^P_q \oplus x^Q_q)(z^P_q \oplus z^Q_q)\Big) + 2 \sum_q z^P_q x^Q_q \pmod 4
 $$
 
 ```python
-def bits(label):
-    x = [ch in "XY" for ch in label]
-    z = [ch in "ZY" for ch in label]
-    return x, z
-
-
-def mul_phase(label_p, label_q):
-    xp, zp = bits(label_p)
-    xq, zq = bits(label_q)
-    k = 0
-    for a, b, c, d in zip(xp, zp, xq, zq):
-        a, b, c, d = int(a), int(b), int(c), int(d)
-        xr, zr = a ^ c, b ^ d
-        k += a * b + c * d - xr * zr + 2 * b * c
-    return 1j ** (k % 4)
-
-
-p, q = PauliString.from_label("XZY"), PauliString.from_label("ZXY")
-phase, product = p.mul(q)
-print(phase, product, mul_phase("XZY", "ZXY"))
+a, b = PauliString.from_label("XZY"), PauliString.from_label("ZXY")
+phase, product = a.mul(b)
+print(phase, product)
 ```
 
 ```text
-(1+0j) YYI (1+0j)
+(1+0j) YYI
 ```
 
 `commutes_with` is the symplectic inner product read as a boolean, `False` here since $X$ and $Z$ do not commute on the same qubit.
@@ -118,23 +101,18 @@ In the Pauli algebra, this is mutually exclusive with `anticommutes_with`, which
 Generally, the computation follows:
 
 $$
-\langle P, Q \rangle = \sum_j \Big(x^P_j z^Q_j + z^P_j x^Q_j\Big) \bmod 2
+\langle P, Q \rangle = \sum_q \Big(x^P_q z^Q_q + z^P_q x^Q_q\Big) \bmod 2
 $$
 
 with the two strings commuting exactly when $\langle P, Q \rangle = 0$:
 
 ```python
-def symplectic_inner(label_p, label_q):
-    xp, zp = bits(label_p)
-    xq, zq = bits(label_q)
-    return sum(a * d + b * c for a, b, c, d in zip(xp, zp, xq, zq)) % 2
-
-
-print(symplectic_inner("X", "Z"), symplectic_inner("XY", "XY"))
+a, b = PauliString.from_label("XY"), PauliString.from_label("XY")
+print(a.commutes_with(b))
 ```
 
 ```text
-1 0
+True
 ```
 
 Finally, both `commutator` and `anticommutator` result in a single string and coefficient again.
@@ -195,7 +173,7 @@ The constructor table is in [PauliSum](../library/pauli-sum.md#constructors); [F
 
 **The Hermitian convention above is a storage detail, not an input or display rule.**
 It does not change what `from_strings` accepts or what a decoded label reads back as — `Y` is always literally `Y`, on the way in and on the way out.
-It matters only when comparing a coefficient against another library's internal representation: stim stores `Y` the same Hermitian way, so a coefficient that reads `+1` here reads `+1` in stim, but a library that keeps the phased "canonical" $Y = iXZ$ instead would read the same physical operator's coefficient differently.
+It matters only when comparing a coefficient against another library's internal representation: stim stores `Y` the same Hermitian way, so a coefficient that reads `+1` here reads `+1` in stim, but a library that keeps the phased "canonical" $Y = jXZ$ instead would read the same physical operator's coefficient differently.
 
 ### Multi-string operations
 

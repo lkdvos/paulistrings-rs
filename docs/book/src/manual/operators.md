@@ -133,12 +133,26 @@ The convention is Hermitian everywhere a Pauli string is written or read: a coef
 What a sum costs is its term count $N$, not its qubit count $L$; $L = 127$ with $N$ in the thousands is cheap and $L = 12$ with $N$ in the millions is not, which is why every accessor below reports terms and every result page reports how many survived.
 [Cost is terms, not qubits](propagation/index.md#cost-model) is the full statement.
 
-The direct way to write one is a dict from Pauli strings to coefficients, or two parallel sequences — labels and coefficients — for when the labels are not already deduplicated.
-Each label is exactly `num_qubits` characters of `I`, `X`, `Y`, `Z` (upper case only), character `i` addresses qubit `i`, and `num_qubits` itself is inferred from the first label when not given.
+The natural way to build a sum is out of single strings, combined with `+` and `*` the same way you would write the sum on paper: `p(label)` gives a single `PauliString`, and multiplying one by a number gives a one-term `PauliSum` that `+` then combines with the rest.
 
 ```python
-from paulistrings import PauliSum
+from paulistrings import PauliSum, p
 
+observable = 0.25 * p("XIII") + 0.25 * p("IXII") + 0.25 * p("IIXI") + 0.25 * p("IIIX")
+print(observable)
+```
+
+```text
+0.25*XIII + 0.25*IXII + 0.25*IIXI + 0.25*IIIX
+```
+
+Each label is exactly `num_qubits` characters of `I`, `X`, `Y`, `Z` (upper case only), character `i` addressing qubit `i`.
+A wrong length or a character outside `IXYZ` is a `ValueError` naming the offending string, and multiplying a string by an exact-zero coefficient gives the empty sum rather than a stored zero.
+`PauliString * PauliString` is a `TypeError`, not the Pauli product — that is `.mul(other)`, covered under [Single string operations](#single-string-operations) below.
+
+`from_strings` builds a sum with many terms at once, straight from a full dict or from two parallel sequences of labels and coefficients, inferring `num_qubits` from the first label when it isn't given:
+
+```python
 observable = PauliSum.from_strings(
     {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}
 )
@@ -149,8 +163,6 @@ print(observable)
 0.25*XIII + 0.25*IXII + 0.25*IIXI + 0.25*IIIX
 ```
 
-A wrong key length or a character outside `IXYZ` is a `ValueError` naming the offending string; an exact-zero coefficient is dropped rather than stored.
-A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — [Hamiltonians and programmatic construction](#hamiltonians-and-programmatic-construction) below merges them by hand this way, [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, and `PauliSum.from_strings(labels, coefficients)` accumulates a repeated label directly, since a plain Python list can hold one.
 The constructor table is in [PauliSum](../library/pauli-sum.md#constructors); [First propagation](../examples/first-propagation.md) runs this exact observable through a circuit.
 
 **The Hermitian convention above is a storage detail, not an input or display rule.**
@@ -161,15 +173,14 @@ It matters only when comparing a coefficient against another library's internal 
 
 #### Combining sums {#combining-sums}
 
-Building a sum by hand, as above, means merging duplicate strings into one dict entry yourself before the call — get that wrong and a later dict assignment silently overwrites an earlier coefficient instead of adding to it.
-`PauliSum` arithmetic avoids that risk directly: `+` and `-` combine two sums by adding or subtracting coefficients on matching strings and keeping the rest, `+=` and `-=` do the same in place, and `*`/`*=` scale every coefficient by a number.
+The same `+` and `*` above also combine two full sums, not just single strings: `+` and `-` add or subtract coefficients on matching strings and keep the rest, `+=` and `-=` do the same in place, and `*`/`*=` scale every coefficient by a number.
 
 ```python
 from paulistrings import PauliSum
 
-bond = PauliSum.from_strings({"ZZII": -1.0}, num_qubits=4)
+bond = PauliSum.from_strings({"ZZII": -1.0})
 combined = bond + bond
-combined += PauliSum.from_strings({"IZZI": -1.0}, num_qubits=4)
+combined += PauliSum.from_strings({"IZZI": -1.0})
 combined *= 2.0
 
 print(combined)

@@ -40,3 +40,12 @@ A `qubit` at or beyond `num_qubits` is a `ValueError`, as is a character outside
 All five require both operands to have the same `num_qubits`; anything else is a `ValueError`.
 The product string is `mul`'s either way, so a `0` coefficient is an exact algebraic zero.
 See [Pauli strings](../manual/operators.md#the-paulistring-type) for the encoding and worked examples.
+
+## Arithmetic
+
+| Call | Returns |
+|---|---|
+| `p * c`, `c * p` | a one-term `PauliSum`, coefficient `c` on `p` |
+
+`c` must be a complex or real number — `p * q` between two `PauliString`s is a `TypeError` pointing at `.mul(other)`, the Pauli product with its phase, since `*` on a `PauliString` is scalar-only, matching `PauliSum`.
+This is what lets a sum be built directly out of strings, e.g. `p("XYZ") * 2 + p("YZI") * 3`; see [The `PauliSum` type](../manual/operators.md#the-paulisum-type).

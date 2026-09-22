@@ -147,6 +147,40 @@ def test_binary_methods_reject_a_qubit_count_mismatch():
             getattr(p("XY"), method)(p("XYZ"))
 
 
+# ---- PauliString scalar multiplication ----
+
+
+def test_string_times_scalar_is_a_one_term_sum():
+    sum_ = p("XYZ") * 2
+    assert isinstance(sum_, PauliSum)
+    assert sum_.num_qubits == 3
+    assert str(sum_) == "2*XYZ"
+
+
+def test_rmul_matches_mul():
+    assert str(3 * p("III")) == str(p("III") * 3)
+
+
+def test_string_sums_combine_with_plus():
+    combined = p("XYZ") * 2 + p("YZI") * 3
+    assert str(combined) == "3*YZI + 2*XYZ"
+
+
+def test_string_times_zero_is_the_empty_sum():
+    assert str(p("XYZ") * 0) == "0"
+    assert len(p("XYZ") * 0) == 0
+
+
+def test_string_times_string_is_a_type_error():
+    with pytest.raises(TypeError, match="use .mul"):
+        p("XY") * p("YZ")
+
+
+def test_string_times_non_scalar_is_a_type_error():
+    with pytest.raises(TypeError, match="complex or real number"):
+        p("XY") * "nope"
+
+
 # ---- PauliSum arithmetic ----
 
 

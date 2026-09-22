@@ -205,6 +205,32 @@ impl PauliSumImpl {
         })
     }
 
+    /// Single-term sum from a `PauliString`'s key and a coefficient — `PauliString.__mul__`'s body.
+    /// `coeff` may be exactly zero; `BuildAccumulator::finalize` already drops it, giving the empty sum.
+    pub fn from_single(
+        term: &crate::pauli_string::PauliStringImpl,
+        num_qubits: usize,
+        coeff: Complex64,
+    ) -> Self {
+        fn build<const W: usize>(
+            p: &PauliString<W>,
+            num_qubits: usize,
+            coeff: Complex64,
+        ) -> CorePauliSum<W> {
+            let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
+            acc.add_term(*p, Phase::ONE, coeff);
+            acc.finalize()
+        }
+        use crate::pauli_string::PauliStringImpl as PS;
+        match term {
+            PS::W1(p) => PauliSumImpl::W1(build(p, num_qubits, coeff)),
+            PS::W2(p) => PauliSumImpl::W2(build(p, num_qubits, coeff)),
+            PS::W4(p) => PauliSumImpl::W4(build(p, num_qubits, coeff)),
+            PS::W8(p) => PauliSumImpl::W8(build(p, num_qubits, coeff)),
+            PS::W16(p) => PauliSumImpl::W16(build(p, num_qubits, coeff)),
+        }
+    }
+
     /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
     /// of [`Self::xz_flat`] / [`Self::coeffs`]. See `PauliSum::from_arrays`
     /// for the shape/dtype contract; this just picks the width band for
@@ -429,7 +455,7 @@ fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
 }
 
 /// Extract a Python complex/float/int into `Complex64`.
-fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
+pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if let Ok(c) = val.downcast::<PyComplex>() {
         return Ok(Complex64::new(c.real(), c.imag()));
     }

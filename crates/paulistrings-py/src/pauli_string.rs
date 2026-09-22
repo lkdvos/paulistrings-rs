@@ -1,7 +1,7 @@
 //! Python `PauliString` class with width-monomorphized backing storage. See
 //! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
 
-use crate::sum::parse_pauli_key;
+use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
 use num_complex::Complex64;
 use paulistrings::pauli_string::PauliString as CorePauliString;
 use pyo3::exceptions::PyValueError;
@@ -291,5 +291,29 @@ impl PauliString {
     /// Anticommutator `{self, other}` as `(coefficient, string)` — `commutator`'s mirror: `2 · mul`'s coefficient when the two commute, exactly `0` when they anticommute.
     fn anticommutator(&self, other: &Self) -> PyResult<(Complex64, Self)> {
         self.bracket(other, Bracket::Anticommutator, "anticommutator")
+    }
+
+    /// `self * scalar`: a one-term `PauliSum`, so `p("XYZ") * 2 + p("YZI") * 3` builds a sum directly out of strings.
+    /// Scalar-only — `mul` is the Pauli product of two strings.
+    fn __mul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<PauliSum> {
+        if factor.downcast::<Self>().is_ok() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "PauliString * PauliString is not supported: use .mul(other) for the Pauli \
+                 product with its phase; * and *= take a complex or real number",
+            ));
+        }
+        let factor = extract_complex(factor).map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "PauliString * x: x must be a complex or real number (scalar scaling)",
+            )
+        })?;
+        Ok(PauliSum {
+            inner: PauliSumImpl::from_single(&self.inner, self.num_qubits, factor),
+        })
+    }
+
+    /// `scalar * self`, identical to `self * scalar`.
+    fn __rmul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<PauliSum> {
+        self.__mul__(factor)
     }
 }

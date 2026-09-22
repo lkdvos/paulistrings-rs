@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5cfe6870.js";
+            window.path_to_searchindex_js = "../searchindex-0f1f86cc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-6d08c121.js"></script>
@@ -261,32 +261,37 @@ It is the one storage type in this library: the observable you start from, the H
 The convention is Hermitian everywhere a Pauli string is written or read: a coefficient multiplies the literal Hermitian Pauli string, and <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span> carries no phase of its own.</p>
 <p>What a sum costs is its term count <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span>, not its qubit count <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span>; <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">127</span></span></span></span> with <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span> in the thousands is cheap and <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">12</span></span></span></span> with <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span> in the millions is not, which is why every accessor below reports terms and every result page reports how many survived.
 <a href="propagation/index.html#cost-model">Cost is terms, not qubits</a> is the full statement.</p>
-<p>The direct way to write one is a dict from Pauli strings to coefficients, or two parallel sequences — labels and coefficients — for when the labels are not already deduplicated.
-Each label is exactly <code>num_qubits</code> characters of <code>I</code>, <code>X</code>, <code>Y</code>, <code>Z</code> (upper case only), character <code>i</code> addresses qubit <code>i</code>, and <code>num_qubits</code> itself is inferred from the first label when not given.</p>
-<pre><code class="language-python">from paulistrings import PauliSum
+<p>The natural way to build a sum is out of single strings, combined with <code>+</code> and <code>*</code> the same way you would write the sum on paper: <code>p(label)</code> gives a single <code>PauliString</code>, and multiplying one by a number gives a one-term <code>PauliSum</code> that <code>+</code> then combines with the rest.</p>
+<pre><code class="language-python">from paulistrings import PauliSum, p
 
-observable = PauliSum.from_strings(
+observable = 0.25 * p("XIII") + 0.25 * p("IXII") + 0.25 * p("IIXI") + 0.25 * p("IIIX")
+print(observable)
+</code></pre>
+<pre><code class="language-text">0.25*XIII + 0.25*IXII + 0.25*IIXI + 0.25*IIIX
+</code></pre>
+<p>Each label is exactly <code>num_qubits</code> characters of <code>I</code>, <code>X</code>, <code>Y</code>, <code>Z</code> (upper case only), character <code>i</code> addressing qubit <code>i</code>.
+A wrong length or a character outside <code>IXYZ</code> is a <code>ValueError</code> naming the offending string, and multiplying a string by an exact-zero coefficient gives the empty sum rather than a stored zero.
+<code>PauliString * PauliString</code> is a <code>TypeError</code>, not the Pauli product — that is <code>.mul(other)</code>, covered under <a href="#single-string-operations">Single string operations</a> below.</p>
+<p><code>from_strings</code> builds a sum with many terms at once, straight from a full dict or from two parallel sequences of labels and coefficients, inferring <code>num_qubits</code> from the first label when it isn’t given:</p>
+<pre><code class="language-python">observable = PauliSum.from_strings(
     {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}
 )
 print(observable)
 </code></pre>
 <pre><code class="language-text">0.25*XIII + 0.25*IXII + 0.25*IIXI + 0.25*IIIX
 </code></pre>
-<p>A wrong key length or a character outside <code>IXYZ</code> is a <code>ValueError</code> naming the offending string; an exact-zero coefficient is dropped rather than stored.
-A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — <a href="#hamiltonians-and-programmatic-construction">Hamiltonians and programmatic construction</a> below merges them by hand this way, <a href="#combining-sums">Combining sums</a> covers doing it with <code>PauliSum</code> arithmetic instead, and <code>PauliSum.from_strings(labels, coefficients)</code> accumulates a repeated label directly, since a plain Python list can hold one.
-The constructor table is in <a href="../library/pauli-sum.html#constructors">PauliSum</a>; <a href="../examples/first-propagation.html">First propagation</a> runs this exact observable through a circuit.</p>
+<p>The constructor table is in <a href="../library/pauli-sum.html#constructors">PauliSum</a>; <a href="../examples/first-propagation.html">First propagation</a> runs this exact observable through a circuit.</p>
 <p><strong>The Hermitian convention above is a storage detail, not an input or display rule.</strong>
 It does not change what <code>from_strings</code> accepts or what a decoded label reads back as — <code>Y</code> is always literally <code>Y</code>, on the way in and on the way out.
 It matters only when comparing a coefficient against another library’s internal representation: stim stores <code>Y</code> the same Hermitian way, so a coefficient that reads <code>+1</code> here reads <code>+1</code> in stim, but a library that keeps the phased “canonical” <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8778em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05724em;">j</span><span class="mord mathnormal" style="margin-right:0.07153em;">XZ</span></span></span></span> instead would read the same physical operator’s coefficient differently.</p>
 <h3 id="multi-string-operations"><a class="header" href="#multi-string-operations">Multi-string operations</a></h3>
 <h4 id="combining-sums"><a class="header" href="#combining-sums">Combining sums</a></h4>
-<p>Building a sum by hand, as above, means merging duplicate strings into one dict entry yourself before the call — get that wrong and a later dict assignment silently overwrites an earlier coefficient instead of adding to it.
-<code>PauliSum</code> arithmetic avoids that risk directly: <code>+</code> and <code>-</code> combine two sums by adding or subtracting coefficients on matching strings and keeping the rest, <code>+=</code> and <code>-=</code> do the same in place, and <code>*</code>/<code>*=</code> scale every coefficient by a number.</p>
+<p>The same <code>+</code> and <code>*</code> above also combine two full sums, not just single strings: <code>+</code> and <code>-</code> add or subtract coefficients on matching strings and keep the rest, <code>+=</code> and <code>-=</code> do the same in place, and <code>*</code>/<code>*=</code> scale every coefficient by a number.</p>
 <pre><code class="language-python">from paulistrings import PauliSum
 
-bond = PauliSum.from_strings({"ZZII": -1.0}, num_qubits=4)
+bond = PauliSum.from_strings({"ZZII": -1.0})
 combined = bond + bond
-combined += PauliSum.from_strings({"IZZI": -1.0}, num_qubits=4)
+combined += PauliSum.from_strings({"IZZI": -1.0})
 combined *= 2.0
 
 print(combined)

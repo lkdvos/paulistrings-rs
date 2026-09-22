@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5cfe6870.js";
+            window.path_to_searchindex_js = "../searchindex-0f1f86cc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-6d08c121.js"></script>
@@ -236,6 +236,19 @@ A <code>qubit</code> at or beyond <code>num_qubits</code> is a <code>ValueError<
 <p>All five require both operands to have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
 The product string is <code>mul</code>’s either way, so a <code>0</code> coefficient is an exact algebraic zero.
 See <a href="../manual/operators.html#the-paulistring-type">Pauli strings</a> for the encoding and worked examples.</p>
+<h2 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Call</th><th>Returns</th></tr>
+</thead>
+<tbody>
+<tr><td><code>p * c</code>, <code>c * p</code></td><td>a one-term <code>PauliSum</code>, coefficient <code>c</code> on <code>p</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>c</code> must be a complex or real number — <code>p * q</code> between two <code>PauliString</code>s is a <code>TypeError</code> pointing at <code>.mul(other)</code>, the Pauli product with its phase, since <code>*</code> on a <code>PauliString</code> is scalar-only, matching <code>PauliSum</code>.
+This is what lets a sum be built directly out of strings, e.g. <code>p("XYZ") * 2 + p("YZI") * 3</code>; see <a href="../manual/operators.html#the-paulisum-type">The <code>PauliSum</code> type</a>.</p>
 
                     </main>
 

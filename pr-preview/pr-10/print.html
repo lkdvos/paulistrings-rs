@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-418e6393.js";
+            window.path_to_searchindex_js = "searchindex-fb1189b1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -218,7 +218,7 @@ However, in order to keep this computation tractable at longer times, we truncat
 Finally, we can extrapolate to the limit of no truncation to validate our results.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"></span></label></p>
 <p>Two field strengths <code>h</code> (color) and five <code>TopN</code> term caps <code>10², 10³, 10⁴, 10⁵, 3×10⁵</code> (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, <code>J = 1</code>.
-At <code>h = 0.1</code> the three largest caps already sit on top of each other through <code>t = 0.8</code>: that overlap is the trusted regime, where raising the cap further would not move the curve.
+At <code>h = 0.3</code> the three largest caps already sit on top of each other through <code>t = 0.8</code>: that overlap is the trusted regime, where raising the cap further would not move the curve.
 At <code>h = 3.1</code> even the two largest caps are still visibly tightening rather than fully flat by <code>t = 0.8</code> — the same term budget buys less trustworthy time here, because a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster.
 The smallest cap, <code>TopN = 10²</code>, peels away from the trusted band by <code>t ≈ 0.2</code> at both field strengths, well before the run ends.
 Figure script: <code>docs/figures/ising-quench-convergence/quench_convergence.py</code>.</p>
@@ -429,15 +429,72 @@ Afterwards, enter by topic from the sidebar: every section is self-contained eno
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="operators"><a class="header" href="#operators">Operators</a></h1>
-<h2 id="what-a-pauli-sum-is"><a class="header" href="#what-a-pauli-sum-is">What a Pauli sum is</a></h2>
-<p>A Pauli sum is an operator on <code>n</code> qubits written in the Pauli basis: <code>O = Σ_P c_P P</code>, one complex coefficient per Pauli string <code>P ∈ {I, X, Y, Z}^n</code>, each string appearing at most once.
+<p>The primary objects of this library are operators acting on <code>L</code> qubits.
+For a single qubit, the identity along with the Pauli matrices forms an orthonormal basis.
+Therefore, we can generate any multi-qubit operator as a linear combination of so-called <strong>Pauli strings</strong>.
+These are strings of length <code>L</code> containing the letters <code>\{I, X, Y, Z\}</code>, such that all possible strings carry all possible basis elements.</p>
+<h2 id="pauli-strings"><a class="header" href="#pauli-strings">Pauli strings</a></h2>
+<p>A single Pauli string <code>P</code> is stored in the so-called symplectic encoding.
+This means that for each qubit, we store two separate bits that dictate what operator is used.
+Concretely, for bits <code>x</code> and <code>z</code>, we encode the operator in a Hermitian convention as:</p>
+<pre><code class="language-math">P = i^{xz}X^xZ^z
+</code></pre>
+<p>In particular, this gives <code>X = (1, 0)</code>, <code>Z = (0, 1)</code>, and <code>Y = iXZ = i(1, 1)</code>.</p>
+<p>For an <code>L</code>-qubit string, we can collect these into two masks, or in components:</p>
+<pre><code class="language-math">P(\vec{x}, \vec{z}) = i^{\sum_j^L x_jz_j} ⨂_j^L X_j^{x_j} Z_j^{z_j}
+</code></pre>
+<h3 id="the-paulistring-type"><a class="header" href="#the-paulistring-type">The <code>PauliString</code> type</a></h3>
+<p>A single Pauli string is its own type, <code>PauliString</code> — the object the symplectic encoding above describes, before any coefficient is attached to it.
+It is immutable and carries <code>num_qubits</code>, a <code>weight</code> (the number of non-identity factors, the same quantity <a href="#choosing-a-policy"><code>truncation.weight</code></a> caps), and a <code>label</code> (the <code>IXYZ</code> string <code>str(p)</code> also gives).</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">from paulistrings import PauliString
+
+identity = PauliString.identity(num_qubits=3)
+x0 = PauliString.x(0, num_qubits=3)
+y1 = PauliString.y(1, num_qubits=3)
+z2 = PauliString.z(2, num_qubits=3)
+from_label = PauliString.from_label("XYZ")
+
+print(identity.label, identity.weight)
+print(x0.label, y1.label, z2.label)
+print(from_label == (x0.mul(y1)[1].mul(z2)[1]))
+</code></pre>
+<pre><code class="language-text">III 0
+XII IYI IIZ
+True
+</code></pre>
+<p><code>identity</code>, <code>x</code>, <code>y</code>, <code>z</code> and <code>from_label</code> are the five constructors; each single-site constructor takes the qubit index and the register size, and <code>from_label</code> takes a full-length <code>IXYZ</code> string the same way <a href="#the-paulisum-type"><code>PauliSum.from_strings</code></a> keys do.
+Two strings compare equal when their labels and <code>num_qubits</code> agree; there is no coefficient here to compare, which is exactly the difference from a one-term <code>PauliSum</code>.</p>
+<h3 id="single-string-operations"><a class="header" href="#single-string-operations">Single string operations</a></h3>
+<p>The only two operations a bare Pauli string supports are the two the symplectic encoding makes closed-form: whether two strings commute, and what their product is.</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">from paulistrings import PauliString
+
+x = PauliString.x(0, num_qubits=1)
+z = PauliString.z(0, num_qubits=1)
+
+print(x.commutes_with(z))
+phase, product = x.mul(z)
+print(phase, product.label)
+</code></pre>
+<pre><code class="language-text">False
+(-0-1j) Y
+</code></pre>
+<p><code>commutes_with</code> is the symplectic inner product read as a boolean — <code>False</code> here is <code>X</code> and <code>Z</code> anticommuting on the same qubit, the textbook case.
+<code>mul</code> is the other half: multiplying two Pauli strings is never ambiguous or a sum of several strings, it is exactly one string and a phase <code>i^k</code> the caller folds into a coefficient, <code>X·Z = -iY</code> above being the canonical instance (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code> §Engine</a> states the general rule).
+That closure — one string in, one string and a phase out — is why a gate’s image is a short, enumerable list of terms rather than a combinatorial explosion; <a href="#cost-model">Cost is terms, not qubits</a> is what a whole sum inherits from this one-string fact.</p>
+<h2 id="pauli-sums"><a class="header" href="#pauli-sums">Pauli sums</a></h2>
+<p>As the basis of Pauli strings spans the full operator space, any operator can be written as a linear combination of Pauli strings: <code>O = \sum_P c_P P</code>.
+Since the total space is <code>4^L</code>-dimensional, we wish to store a <strong>sparse</strong> representation of the unique non-zero coefficient-string pairs.
+To allow for efficient merging of the strings, we store two separate lists, one for the coefficients and one for the strings, sorted by the string.</p>
+<h3 id="the-paulisum-type"><a class="header" href="#the-paulisum-type">The <code>PauliSum</code> type</a></h3>
+<p>A <code>PauliSum</code> is an operator on <code>n</code> qubits written in the Pauli basis: <code>O = Σ_P c_P P</code>, one complex coefficient per <code>PauliString</code> <code>P</code>, each string appearing at most once.
 It is the one storage type in this library: the observable you start from, the Hamiltonian you Trotterize, the result a propagation hands back, and the “state” an overlap is taken against are all the same <code>PauliSum</code>.
 The convention is Hermitian everywhere a Pauli string is written or read: a coefficient multiplies the literal Hermitian Pauli string, and <code>Y</code> carries no phase of its own.
 That is the same convention stim uses, and it differs from the phased “canonical” <code>Y</code> some operator libraries carry, so a coefficient that reads <code>+1</code> here reads <code>+1</code> in stim and may not in a library that stores <code>iXZ</code>.</p>
 <p>What a sum costs is its term count, not its qubit count; 127 qubits with a thousand terms is cheap and 4 qubits with a million terms is not, which is why every accessor below reports terms and every result page reports how many survived.
 <a href="#cost-model">Cost is terms, not qubits</a> is the full statement.</p>
-<h2 id="from-pauli-strings"><a class="header" href="#from-pauli-strings">From Pauli strings</a></h2>
-<p>The direct way to write an observable is a dict from Pauli strings to coefficients.
+<p>The direct way to write one is a dict from Pauli strings to coefficients.
 Each key is exactly <code>num_qubits</code> characters of <code>I</code>, <code>X</code>, <code>Y</code>, <code>Z</code> (upper case only), and character <code>i</code> addresses qubit <code>i</code>.</p>
 <pre><code class="language-python">from paulistrings import PauliSum
 
@@ -451,7 +508,8 @@ print(len(observable), observable.num_qubits)
 <p>A wrong key length or a character outside <code>IXYZ</code> is a <code>ValueError</code> naming the offending string; an exact-zero coefficient is dropped rather than stored.
 A Python dict cannot hold a duplicate key, so merging repeated strings is your job before the call, which is what the next section does.
 The constructor table is in <a href="#constructors">PauliSum</a>; <a href="#first-propagation">First propagation</a> runs this exact observable through a circuit.</p>
-<h2 id="hamiltonians"><a class="header" href="#hamiltonians">Hamiltonians and programmatic construction</a></h2>
+<h3 id="multi-string-operations"><a class="header" href="#multi-string-operations">Multi-string operations</a></h3>
+<h4 id="hamiltonians-and-programmatic-construction"><a class="header" href="#hamiltonians-and-programmatic-construction">Hamiltonians and programmatic construction</a></h4>
 <p>A Hamiltonian is a weighted sum of Pauli strings and is built the same way, by accumulating a dict and handing it over once.
 This is a transverse-field Ising chain, <code>H = -J Σ Z_i Z_{i+1} - h Σ X_i</code>:</p>
 <pre><code class="language-python">n = 4
@@ -479,7 +537,7 @@ For tens of thousands of terms built in a loop, the string keys become the cost,
 A Hamiltonian as a <code>PauliSum</code> is an <em>observable</em>, something you measure the energy of.
 To evolve <em>under</em> a Hamiltonian, it enters as a circuit of Pauli rotations, one per term per Trotter step, with the angle rule in <a href="#building-a-circuit">Building a circuit</a>; the observable that propagates is a different sum.
 <a href="#incremental-propagation">Incremental propagation</a> is the Trotter time series end to end, and the shared constructions the example suite uses live in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a>.</p>
-<h2 id="symplectic-arrays"><a class="header" href="#symplectic-arrays">Symplectic arrays</a></h2>
+<h4 id="symplectic-arrays"><a class="header" href="#symplectic-arrays">Symplectic arrays</a></h4>
 <p>Underneath, a Pauli string is two bit vectors: qubit <code>q</code>’s Pauli is bit <code>q</code> of an <code>x</code> word and bit <code>q</code> of a <code>z</code> word, with <code>(0,0)</code> = <code>I</code>, <code>(1,0)</code> = <code>X</code>, <code>(0,1)</code> = <code>Z</code> and <code>(1,1)</code> = <code>Y</code>.
 Words are 64 bits, and a sum’s <code>width</code> is how many words each term carries: one for up to 64 qubits, two for up to 128, then 4, 8 and 16, so 1024 qubits is the ceiling.
 <code>x_array()</code> and <code>z_array()</code> return the two columns as <code>uint64</code> arrays of shape <code>(len, width)</code>, where column <code>j</code> covers qubits <code>64*j .. 64*j + 63</code>; <code>coefficients_array()</code> is the matching <code>complex128</code> column.</p>
@@ -522,7 +580,7 @@ IIIX -0.500
 <p>The rows come out in the sum’s canonical storage order — <a href="#layout">bucket</a> index ascending, then lexicographic <code>(x, z)</code> — which is the same for all three accessors called on the same sum but is neither insertion order nor string order, and a <code>propagate</code> call may rebucket and reorder.
 Pair rows from one snapshot, never <code>x</code> from before a propagation with <code>c</code> from after it.
 Layout and dtypes are tabulated under <a href="#accessors">PauliSum</a>; <a href="#b1--operator-scrambling">B1</a> reads a light cone and an OTOC off these three arrays and <a href="#b6--resource-probes">B6</a> computes Pauli-spectrum entropies from them in pure NumPy.</p>
-<h2 id="inspecting"><a class="header" href="#inspecting">Inspecting a sum</a></h2>
+<h4 id="inspecting"><a class="header" href="#inspecting">Inspecting a sum</a></h4>
 <p><code>len(sum)</code> is the term count, <code>.num_qubits</code> the register size, <code>.width</code> the word tier, and <code>PauliSum(n)</code> is the empty sum on <code>n</code> qubits, which is what a propagation that truncated everything returns.
 <code>.coefficients()</code> is the coefficient column as a Python list, for small sums where NumPy is overkill.</p>
 <p>The one scalar worth knowing by name is the Hilbert–Schmidt norm <code>Σ|c|²</code>, which equals <code>tr(O†O) / 2^n</code> because Pauli strings are orthonormal under that inner product; <code>sum.overlap(sum).real</code> computes it in one call.
@@ -535,7 +593,8 @@ print(norm, hamiltonian.overlap(hamiltonian).real)
 4.0 4.0
 </code></pre>
 <p>Reading the retained norm alongside a cutoff sweep is <a href="#validating-a-result">Validating a result</a>; <a href="#overlap">Overlaps and the identity coefficient</a> covers <code>overlap</code> between two different sums.</p>
-<h2 id="saving-and-loading"><a class="header" href="#saving-and-loading">Saving and loading</a></h2>
+<h2 id="io"><a class="header" href="#io">IO</a></h2>
+<h3 id="saving-and-loading"><a class="header" href="#saving-and-loading">Saving and loading</a></h3>
 <p>A sum crosses a process boundary as a <code>.npz</code> file: the three columns plus <code>num_qubits</code> and a format tag, written with <code>numpy.savez_compressed</code>, no pickle.</p>
 <pre><code class="language-python">from paulistrings import io as psio
 
@@ -548,17 +607,18 @@ print(len(reloaded), reloaded.num_qubits, psio.FORMAT)
 <p><code>save</code> appends <code>.npz</code> if the path lacks it, and <code>load</code> raises <code>ValueError</code> on a file without the <code>paulistrings-npz-v1</code> format tag rather than guessing at an archive’s layout.
 This is how a propagated observable is handed to a second run: propagate, save, load elsewhere, propagate further, which is the whole mechanism of <a href="#validation-1">B5</a>.
 The format is specified under <a href="#saving-loading-importing">PauliSum</a>.</p>
-<h2 id="where-else-observables-come-from"><a class="header" href="#where-else-observables-come-from">Where else observables come from</a></h2>
+<h3 id="where-else-observables-come-from"><a class="header" href="#where-else-observables-come-from">Where else observables come from</a></h3>
 <p>Two importers hand back a <code>PauliSum</code> you did not write by hand.
 <code>interop.circuit_from_stim</code> returns <code>(circuit, observable)</code>, where the observable is built from the stim program’s <code>OBSERVABLE_INCLUDE</code> instructions, or <code>None</code> when it has none; <code>interop.load_task</code> parses a task-JSON file and its <code>.observable</code> is the task’s observable when one is defined.
 Both live in <a href="#importing-circuits">Importing circuits</a>, since the circuit is the main thing they import.
 The third source is a previous propagation: its result is an ordinary <code>PauliSum</code>, ready to be propagated further, which is what <a href="#incremental-propagation">Incremental propagation</a> is built on.</p>
-<h2 id="see-it-in-use"><a class="header" href="#see-it-in-use">See it in use</a></h2>
+<h2 id="references"><a class="header" href="#references">References</a></h2>
 <ul>
 <li><a href="#first-propagation">First propagation</a> — <code>from_strings</code>, the decoded surviving terms, and the retained norm across a cutoff sweep, on four qubits.</li>
 <li><a href="#running-it">B1 — Operator scrambling</a> — the light cone, OTOC and two-point function all read from <code>x_array</code>, <code>z_array</code> and <code>coefficients_array</code> exported once per Trotter step.</li>
 <li><a href="#b6--resource-probes">B6 — Resource probes</a> — Pauli-spectrum entropy and operator entanglement computed in pure NumPy over the same three arrays.</li>
 <li><a href="#validation-1">B5 — Hybrid depth reduction</a> — an evolved observable saved to <code>.npz</code>, read back, and embedded in a task JSON, with the round-trip gap measured.</li>
+<li><a href="#paulisum">PauliSum</a> — the dry constructor, accessor and format reference this chapter cites throughout.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="circuits"><a class="header" href="#circuits">Circuits</a></h1>
@@ -690,7 +750,7 @@ Importer signatures are under <a href="#importing-a-circuit">Circuit</a>; the st
 <code>pauli_rotation</code> is the one exemption and accepts a generator of any weight, so a <code>ZZZ</code> or weight-ten rotation is fine.</p>
 <p>From Python the constructors keep you inside the edge: every named gate and noise method is one- or two-qubit, <code>unitary_2q</code> is the widest matrix accepted, and the importers reject a three-qubit instruction with <code>ValueError</code> before it reaches a circuit.
 The edge is therefore what a three-qubit gate becomes when you need one: a decomposition into one- and two-qubit gates, each its own truncation point, or a Pauli rotation if it is one.</p>
-<h2 id="see-it-in-use-1"><a class="header" href="#see-it-in-use-1">See it in use</a></h2>
+<h2 id="see-it-in-use"><a class="header" href="#see-it-in-use">See it in use</a></h2>
 <ul>
 <li><a href="#b2--noisy-circuit-verification">B2 — Noisy circuit verification</a> — a depolarizing channel on every qubit a gate just touched, at 127 qubits, then the same run with each of the other channels swapped in, and the collapse in term count that follows.</li>
 <li><a href="#running-it-2">B5 — Hybrid depth reduction</a> — a circuit split into a front and a tail, the tail’s propagated observable written to a task JSON and read back with <code>load_task</code>.</li>
@@ -916,7 +976,7 @@ Discarded terms carry signs, so a partial sum can sit on either side of the trut
 <p>Read a convergence sweep as a trend across the grid, never as a point-to-point improvement, and never read agreement between two adjacent cutoffs as an error bound.
 That is why a single number at a single cutoff is not a result, and why the next page exists.
 The same absence of a bound also means the sweep’s self-estimated uncertainty can be wrong in either direction; <a href="#non-bound-uncertainty-estimate">Benchmark C</a> measures a case where a budget-stopped sweep reports an uncertainty 15.7× smaller than the true error.</p>
-<h2 id="see-it-in-use-2"><a class="header" href="#see-it-in-use-2">See it in use</a></h2>
+<h2 id="see-it-in-use-1"><a class="header" href="#see-it-in-use-1">See it in use</a></h2>
 <ul>
 <li><a href="#non-monotone-truncation-error">Benchmark B — Kick-angle sweep</a> and <a href="#convergence-panels">Benchmark D — XXZ chain</a> both record non-monotone truncation error against an exact reference.</li>
 <li><a href="#non-bound-uncertainty-estimate">Benchmark C — Deep Trotter circuits</a> shows the self-estimated uncertainty flipping from conservative to falsely confident at depth.</li>
@@ -1318,7 +1378,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
 At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 </ul>
-<h2 id="see-it-in-use-3"><a class="header" href="#see-it-in-use-3">See it in use</a></h2>
+<h2 id="see-it-in-use-2"><a class="header" href="#see-it-in-use-2">See it in use</a></h2>
 <p><a href="#partitioned">Engine performance</a> has the <code>P = 2</code> versus <code>P = 1</code> tables per host and thread count, the per-layer times of an exchange-free layer, the bandwidth counters behind the gain, and the benchmarking protocol for reproducing them.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
@@ -1541,7 +1601,7 @@ Both signatures are under <a href="#overlapother">Measurement</a>.</p>
 <p>A single expectation value at a single cutoff is a number, not a result.
 The truncation that made the sum tractable deleted terms carrying signs, so the value can sit on either side of the truth and need not move monotonically as the cutoff tightens — <a href="#no-variational-bound">No variational bound</a> is the statement and the measured cases.
 What turns the number into a result is <a href="#validating-a-result">Validating a result</a>: sweep the cutoff, read the retained norm alongside, apply the plateau criterion, and score against an exact reference wherever one is affordable.</p>
-<h2 id="see-it-in-use-4"><a class="header" href="#see-it-in-use-4">See it in use</a></h2>
+<h2 id="see-it-in-use-3"><a class="header" href="#see-it-in-use-3">See it in use</a></h2>
 <ul>
 <li><a href="#check-the-cutoff">First propagation</a> — <code>expectation("x+")</code> after a Heisenberg run, then the same value across three cutoffs with the retained norm alongside.</li>
 <li><a href="#b7--stabilizer-state-preparation">B7 — Stabilizer-state preparation</a> — <code>stabilizers_from_stim</code> on a 36-qubit cluster state, <code>expectation_stabilizer</code> on the propagated observable.</li>
@@ -2292,7 +2352,7 @@ python examples/b6_resource_probes/run_b6.py
 <p>The CI gate is 18 tests, numpy-only, under a second:</p>
 <pre><code class="language-bash">pytest examples/tests/test_showcase_b6.py
 </code></pre>
-<h2 id="references"><a class="header" href="#references">References</a></h2>
+<h2 id="references-1"><a class="header" href="#references-1">References</a></h2>
 <ol>
 <li>L. Leone, S. F. E. Oliviero, A. Hamma, “Stabilizer Rényi Entropy”, Phys. Rev. Lett. 128, 050402 (2022); arXiv:2106.12587. <em>State</em> SRE — the quantity this showcase’s Pauli-spectrum entropy resembles but is not.</li>
 <li>L. Leone, L. Bittel, “Stabilizer entropies are monotones for magic-state resource theory”, Phys. Rev. A 110, L040403 (2024); arXiv:2404.11652. Monotonicity for α ≥ 2, <strong>restricted to pure states</strong>.</li>

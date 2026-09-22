@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,7 +204,7 @@ The GIL is released for the duration of both calls.</p>
 <tbody>
 <tr><td><code>circuit</code></td><td><code>Circuit</code></td><td>required</td><td>must share <code>num_qubits</code> with <code>sum</code></td></tr>
 <tr><td><code>policy</code></td><td><code>Truncation | None</code></td><td><code>None</code></td><td><code>None</code> applies no per-term filtering beyond the engine’s exact-zero drop</td></tr>
-<tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td>see <a href="direction.html">Direction semantics</a></td></tr>
+<tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td><strong>the default is not the Heisenberg picture most examples here use</strong> — pass it explicitly; see <a href="direction.html">Direction semantics</a></td></tr>
 <tr><td><code>engine</code></td><td><code>"sorted" | "auto" | "direct" | None</code></td><td><code>None</code> = <code>"sorted"</code></td><td><code>"sorted"</code>: always bucketed. <code>"auto"</code>: a term-by-term hash-map path below <code>small_sum_threshold</code>, unless the policy has a layer pass (e.g. <code>topn</code>). <code>"direct"</code>: same threshold, always. All three agree to floating-point tolerance</td></tr>
 <tr><td><code>small_sum_threshold</code></td><td><code>int | None</code></td><td><code>None</code> = <code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td>term-count cutoff for <code>"auto"</code>/<code>"direct"</code></td></tr>
 <tr><td><code>target_bucket_len</code></td><td><code>int | None</code></td><td><code>None</code> = <code>1024</code></td><td>sorting engine’s per-layer bucket-sizing knob</td></tr>
@@ -241,6 +241,8 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 <p>See <a href="../how-to/run-on-numa-partitions.html">NUMA partitions</a> and <a href="../how-to/run-under-mpi.html">MPI ranks</a> for recipes.</p>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
+<p>A <strong>layer</strong> here is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates in the field-standard sense.
+A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes two layers, and <code>len(circuit) == stats.layers</code>.</p>
 <div class="table-wrapper">
 <table>
 <thead>

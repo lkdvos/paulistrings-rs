@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-25a9cda8.js"></script>
+        <script src="../../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -188,6 +188,16 @@ than a demonstration written around a known answer. Every one carries an
 independent cross-check (a dense reference computed by a route that shares no
 code with the engine, or an exact oracle such as <code>stim</code>) and, where the result
 is truncated, a convergence panel that says where the converged window ends.</p>
+<h2 id="the-2d-ising-quench"><a class="header" href="#the-2d-ising-quench">The flagship worked example: a 2D Ising quench</a></h2>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="../../assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
+<p>The site’s landing figure is a transverse-field Ising quench on a periodic 4×4 and 6×6 lattice at <code>J = h = 1</code>, first-order Trotterized at <code>δt = 0.05</code> out to <code>t = 2</code>.
+The average X magnetization is Heisenberg-propagated through the 40-step circuit and read against <code>|+…+⟩</code> at every step, under <code>coeff(1e-10) &amp; topn(k)</code> with <code>k</code> of 50 000 (4×4) and 200 000 (6×6).
+The 6×6 case is <code>2³⁶</code> amplitudes, already out of reach for exact diagonalization; the quench runs in ~11–12 s on the reference host.</p>
+<p>The honest error bar there is not floating point but the <code>topn</code> tie rule: <code>topn</code> keeps or drops a magnitude-tied symmetry orbit whole, and an alternative tiebreak that always keeps exactly <code>k</code> terms moves the trajectory by up to 1.7% (4×4) and 0.37% (6×6).
+The larger lattice is the better-resolved one, because the observable averages over more sites and the truncation error self-averages.</p>
+<p>The walkthrough is a Rust one — it is the crate’s own worked example, embedded into its rustdoc — and is the hand-off point for Rust users rather than part of this book:
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>, with the source at <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/examples/ising_2d_quench.rs"><code>ising_2d_quench.rs</code></a>.
+For the same pattern in Python — one Trotter step at a time, an expectation value per step — see <a href="../../how-to/propagate-a-time-series.html">Observable vs time</a>.</p>
 <h2 id="showcases"><a class="header" href="#showcases">Showcases</a></h2>
 <p>Five measured applications.</p>
 <div class="table-wrapper">
@@ -211,7 +221,8 @@ cutoff is not a result here. The retained Hilbert–Schmidt norm <code>N = Σ|c_
 alongside it, conserved under exact unitary evolution and equal to 1 for a
 single Pauli seed, so <code>1 − N</code> is exactly the deleted fraction of the operator
 under truncation. Named dependencies rather than silent approximations: where
-a reference was not reachable, the page says so and what it would cost.</p>
+a reference was not reachable, the page says so and what it would cost.
+<a href="../../how-to/validate-a-result.html">Validate a result</a> is that panel as a recipe, for your own runs.</p>
 <h3 id="reproducing-a-showcase"><a class="header" href="#reproducing-a-showcase">Reproducing a showcase</a></h3>
 <pre><code class="language-bash">./scripts/setup.sh
 source .venv/bin/activate
@@ -253,8 +264,8 @@ comparable:</p>
 <ol>
 <li>One gate per channel, everywhere. Truncation is applied after every
 channel, so fusing two gates into one channel changes the answer. Every
-circuit in the suite is built one gate per <code>Circuit.push</code>, which is also
-what makes a <em>per-layer</em> comparison against another engine meaningful.</li>
+circuit in the suite is built one gate per <code>Circuit</code> method call, which is
+also what makes a <em>per-layer</em> comparison against another engine meaningful.</li>
 <li>Term-count parity blocks timing. No cross-engine wall time is reported for
 a configuration whose evolved Pauli sums diverge term-for-term at matched
 truncation. The parity gate runs first, untimed, and compares every
@@ -287,7 +298,8 @@ ordinary slowly-converging series). A flat value with a still-growing sum is
 rejected. A sum truncated to zero terms is rejected outright, however flat it
 looks. The fix is worth a measured <strong>190×</strong> in accuracy.</p>
 <p>Benchmarks C and B2 import that criterion as a function object rather than
-re-implementing it, and a test asserts it is the same object.</p>
+re-implementing it, and a test asserts it is the same object.
+<a href="../../how-to/validate-a-result.html">Validate a result</a> states it as user guidance, with the sweep that feeds it.</p>
 <h3 id="reproducing-a-benchmark"><a class="header" href="#reproducing-a-benchmark">Reproducing a benchmark</a></h3>
 <pre><code class="language-bash">./scripts/setup.sh &amp;&amp; source .venv/bin/activate
 pip install -e ".[examples,bench]"
@@ -322,7 +334,7 @@ and the per-benchmark READMEs linked from each page.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../explanation/comparisons.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../explanation/mpi.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -336,7 +348,7 @@ and the per-benchmark READMEs linked from each page.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../explanation/comparisons.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../explanation/mpi.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

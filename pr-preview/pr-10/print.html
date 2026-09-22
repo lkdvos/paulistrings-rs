@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-236bf281.js";
+            window.path_to_searchindex_js = "searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-25a9cda8.js"></script>
+        <script src="toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -194,8 +194,9 @@ compared, term for term, against
 average-X-magnetization observable through a Trotter circuit — a regime where
 exact diagonalization is already infeasible (<code>2^36</code> amplitudes for the 6×6
 lattice) but Pauli propagation with modest truncation finishes in seconds to
-minutes. Full walkthrough:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>.</p>
+minutes. Setup, truncation and error bar:
+<a href="#the-2d-ising-quench">the 2D Ising quench</a>,
+which links on to the crate’s full Rust walkthrough.</p>
 <h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
 <p>Write the observable, not the state, in the Pauli basis:</p>
 <pre><code class="language-text">O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n
@@ -299,11 +300,15 @@ the site’s <a href="#explanation">Explanation pages</a> are its public summary
 Dual-licensed MIT OR Apache-2.0.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
-<p>Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to <a href="https://github.com/lkdvos/paulistrings-rs/releases">GitHub Releases</a> — no Rust toolchain needed:</p>
-<pre><code class="language-bash">pip install "paulistrings @ https://github.com/lkdvos/paulistrings-rs/releases/download/vX.Y.Z/paulistrings-X.Y.Z-cp39-abi3-&lt;platform-tag&gt;.whl"
+<p><strong><code>paulistrings</code> is not published to PyPI</strong>, so <code>pip install paulistrings</code> will not find it.
+Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to <a href="https://github.com/lkdvos/paulistrings-rs/releases">GitHub Releases</a> instead — no Rust toolchain needed.</p>
+<p>With the <a href="https://cli.github.com/">GitHub CLI</a>, which resolves the latest release for you:</p>
+<pre><code class="language-bash">gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
+pip install ./paulistrings-*.whl
 </code></pre>
-<p><code>&lt;platform-tag&gt;</code> is <code>manylinux_2_28_x86_64</code> (Linux, including Rusty/Popeye), <code>macosx_11_0_arm64</code> (Apple silicon) or <code>macosx_10_12_x86_64</code> (Intel Mac); one abi3 wheel per platform serves every Python &gt;= 3.9.
-Or download the <code>.whl</code> asset for your platform and <code>pip install ./paulistrings-*.whl</code>.</p>
+<p>Substitute the platform tag for your machine: <code>manylinux_2_28_x86_64</code> (Linux, including Rusty/Popeye), <code>macosx_11_0_arm64</code> (Apple silicon) or <code>macosx_10_12_x86_64</code> (Intel Mac).
+One abi3 wheel per platform serves every Python &gt;= 3.9.</p>
+<p>Without <code>gh</code>, take the <code>.whl</code> asset for your platform from the <a href="https://github.com/lkdvos/paulistrings-rs/releases/latest">latest release</a> and <code>pip install ./paulistrings-*.whl</code>.</p>
 <p>These wheels cover the default engine only.
 The <code>mpi</code> feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster’s loaded MPI module:</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
@@ -355,6 +360,9 @@ evolved = observable.propagate(
 )
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
+<pre><code class="language-text">5 0.7309698831278217
+</code></pre>
+<p>Five Pauli strings survived, and the average X magnetization in <code>|++++⟩</code> after the circuit is <code>0.731</code>.</p>
 <h2 id="step-by-step"><a class="header" href="#step-by-step">Step by step</a></h2>
 <p><code>PauliSum.from_strings</code> builds the observable directly from a dict of Pauli strings to coefficients.
 Here it is the average X magnetization on 4 qubits: a quarter weight on each single-qubit <code>X</code> string.</p>
@@ -369,10 +377,58 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 <p><code>evolved</code> is the propagated <code>PauliSum</code>.
 <code>len(evolved)</code> is the number of surviving terms.
 <code>evolved.expectation("x+")</code> evaluates the expectation value in the uniform product state <code>|+…+⟩</code>; <code>.real</code> drops the (here zero) imaginary part.</p>
-<h2 id="see-also"><a class="header" href="#see-also">See also</a></h2>
+<h2 id="look-at-the-terms-that-survived"><a class="header" href="#look-at-the-terms-that-survived">Look at the terms that survived</a></h2>
+<p><code>PauliSum</code> has no term-listing accessor: it hands back the symplectic columns the engine stores, and a Pauli character is the pair of bits for that qubit.
+Qubit <code>q</code>’s Pauli is bit <code>q</code> of the x word and bit <code>q</code> of the z word — <code>(0,0)</code> is <code>I</code>, <code>(1,0)</code> is <code>X</code>, <code>(0,1)</code> is <code>Z</code>, <code>(1,1)</code> is <code>Y</code>.
+Decode the five terms and sort them by magnitude:</p>
+<pre><code class="language-python">import numpy as np
+
+PAULI = np.array([["I", "Z"], ["X", "Y"]])
+
+x = evolved.x_array()
+z = evolved.z_array()
+coefficients = evolved.coefficients_array()
+
+for row in np.argsort(-np.abs(coefficients)):
+    label = "".join(PAULI[(x[row, 0] &gt;&gt; q) &amp; 1, (z[row, 0] &gt;&gt; q) &amp; 1] for q in range(4))
+    print(f"{label}  {coefficients[row].real:+.9f}")
+</code></pre>
+<pre><code class="language-text">IIZI  +0.250000000
+IXII  +0.250000000
+IIIX  +0.250000000
+XXII  +0.230969883
+YXII  -0.095670858
+</code></pre>
+<p>Two of the four seed terms, <code>IXII</code> and <code>IIIX</code>, came through untouched, on the qubits the <code>cnot</code> and the <code>rz</code> never reach.
+<code>IIXI</code> picked up <code>circuit.h(2)</code> and became <code>IIZI</code>, since a Hadamard swaps <code>X</code> and <code>Z</code> on the qubit it acts on.
+<code>XIII</code> is the one the <code>cnot</code> and the <code>rz</code> both acted on, since qubit 0 is the CNOT’s control: <code>cnot(0, 1)</code> turns it into <code>XXII</code>, and <code>rz(math.pi / 8, 0)</code> then splits that into <code>XXII</code> and <code>YXII</code>.
+The <code>[row, 0]</code> index picks word 0 of the term, which is the whole key here because 4 qubits fit in one 64-bit word — see <a href="#observable-from-raw-arrays">Observable from raw arrays</a> for the general layout.</p>
+<h2 id="check-the-cutoff"><a class="header" href="#check-the-cutoff">Check the cutoff</a></h2>
+<p><code>truncation.coeff(1e-10)</code> was a guess.
+Run the same propagation at a few looser cutoffs and watch the term count, the answer and the retained norm <code>Σ|c|²</code> together:</p>
+<pre><code class="language-python">norm_in = float(np.sum(np.abs(observable.coefficients_array()) ** 2))
+
+for eps in [1e-1, 1e-2, 1e-10]:
+    trial = observable.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
+    retained = float(np.sum(np.abs(trial.coefficients_array()) ** 2)) / norm_in
+    print(f"{eps:7.0e}  terms={len(trial):3d}  &lt;O&gt;={trial.expectation('x+').real:+.9f}  retained={retained:.6f}")
+</code></pre>
+<pre><code class="language-text">  1e-01  terms=  4  &lt;O&gt;=+0.730969883  retained=0.963388
+  1e-02  terms=  5  &lt;O&gt;=+0.730969883  retained=1.000000
+  1e-10  terms=  5  &lt;O&gt;=+0.730969883  retained=1.000000
+</code></pre>
+<p>The answer is the same to every printed digit at all three cutoffs, and <code>1e-2</code> already retains the whole operator — this circuit is small enough that the truncation never bit.</p>
+<p>Read the top row carefully, though.
+At <code>1e-1</code> the sum lost 3.7% of its norm and the answer did not move at all, because the deleted <code>YXII</code> term has a <code>Y</code> on qubit 0 and contributes nothing to <code>⟨++++|O|++++⟩</code>.
+A flat answer over a <em>changing</em> sum is not evidence of convergence, and on a real problem that is exactly the trap to check for — <a href="#validate-a-result">Validate a result</a> is the full recipe.</p>
+<h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
 <ul>
-<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> — more observable constructions.</li>
-<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more circuit constructions.</li>
+<li><a href="#how-to-guides">How-to guides</a> — the task recipes: noise, truncation, interop, stats, NUMA, MPI.</li>
+<li><a href="#validate-a-result">Validate a result</a> — the cutoff sweep, the retained norm, and when a number may be quoted.</li>
+<li><a href="#propagation-direction">Propagation direction</a> and <a href="#direction-semantics">Direction semantics</a> — what <code>"heisenberg"</code> and <code>"forward"</code> compute, and which state <code>expectation</code> is then read against.</li>
+<li><a href="#observable-vs-time">Observable vs time</a> — the same walkthrough, stepped out into a Trotterized time series.</li>
+<li><a href="#against-other-tools">Comparisons</a> — whether Pauli propagation is the right method for your problem at all.</li>
+<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> and <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more observable and circuit constructions.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="how-to-guides"><a class="header" href="#how-to-guides">How-to guides</a></h1>
@@ -385,8 +441,10 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 <li><a href="#circuit-noise">Circuit noise</a> — the noise channels and the <code>noise</code> factories.</li>
 <li><a href="#stim-and-qiskit-circuit-import">stim and qiskit circuit import</a> — <code>interop.circuit_from_stim</code>/<code>circuit_from_qiskit</code>/<code>circuit_from_json</code>.</li>
 <li><a href="#truncation-policy">Truncation policy</a> — which of <code>coeff</code>/<code>weight</code>/<code>topn</code> to reach for.</li>
+<li><a href="#validate-a-result">Validate a result</a> — the cutoff sweep, the retained norm, and when a value may be quoted.</li>
 <li><a href="#propagation-direction">Propagation direction</a> — Heisenberg vs forward.</li>
 <li><a href="#expectation-values">Expectation values</a> — <code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>.</li>
+<li><a href="#observable-vs-time">Observable vs time</a> — a Trotterized time series in one incremental pass.</li>
 <li><a href="#propagation-stats-and-logs">Propagation stats and logs</a> — <code>propagate_with_stats</code> and the <code>log</code> facade.</li>
 <li><a href="#numa-partitions">NUMA partitions</a> — <code>partitions=</code> and <code>RAYON_NUM_THREADS</code>.</li>
 <li><a href="#mpi-ranks">MPI ranks</a> — <code>comm=</code> and the distributed engine.</li>
@@ -514,7 +572,84 @@ Reach for it unless you have a specific reason not to.</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 </code></pre>
 <p>Keep <code>min_abs_coeff</code> above ~1e-12 on deep circuits — <code>cos(π/2)</code> is <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.</p>
+<p>Whichever policy you pick, the cutoff is a guess until it has been swept — see <a href="#validate-a-result">Validate a result</a> for the sweep, the retained-norm diagnostic and the criterion for quoting a value.</p>
 <p>See <a href="#truncation">Truncation</a> for what truncation actually does to the result (it has no variational bound, and reading a convergence sweep is not the same as reading a point-to-point improvement), <a href="#truncation-policies">Truncation reference</a> for the full policy table, and <a href="#propagation-engine">Propagation engine</a> for the mechanism.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="validate-a-result"><a class="header" href="#validate-a-result">Validate a result</a></h1>
+<p>One expectation value at one cutoff is not a result.
+Three checks turn it into one: sweep the cutoff, read the retained norm, and score against an exact reference wherever that is affordable.</p>
+<h2 id="sweep-the-cutoff"><a class="header" href="#sweep-the-cutoff">Sweep the cutoff</a></h2>
+<p>Run the same propagation at a few decreasing <code>truncation.coeff</code> thresholds and watch the answer, the term count and the retained norm together.</p>
+<pre><code class="language-python">import numpy as np
+from paulistrings import Circuit, PauliSum, truncation
+
+n, steps = 12, 6
+
+step = Circuit(n)
+for q in range(n - 1):
+    step.pauli_rotation("ZZ", [q, q + 1], 1.0)
+for q in range(n):
+    step.rx(1.1, q)
+for q in range(n):
+    step.rz(0.6, q)
+
+circuit = Circuit(n)
+for _ in range(steps):
+    circuit = circuit + step
+
+observable = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
+norm_in = float(np.sum(np.abs(observable.coefficients_array()) ** 2))
+
+for eps in [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]:
+    evolved = observable.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
+    retained = float(np.sum(np.abs(evolved.coefficients_array()) ** 2)) / norm_in
+    print(f"{eps:7.0e}  terms={len(evolved):6d}  &lt;Z0&gt;={evolved.expectation('z+').real:+.9f}  retained={retained:.6f}")
+</code></pre>
+<pre><code class="language-text">  1e-01  terms=     0  &lt;Z0&gt;=+0.000000000  retained=0.000000
+  1e-02  terms=   708  &lt;Z0&gt;=+0.301649751  retained=0.856704
+  1e-03  terms=  3466  &lt;Z0&gt;=+0.323737940  retained=0.998545
+  1e-04  terms=  4392  &lt;Z0&gt;=+0.324826803  retained=0.999998
+  1e-05  terms=  4478  &lt;Z0&gt;=+0.324877392  retained=1.000000
+</code></pre>
+<p>Three things to read off, in order.
+The <code>1e-1</code> row truncated the sum to zero terms and reports <code>0.0</code>; a zero-term sum is not a converged answer however stable it looks, and the run has to be thrown away rather than quoted.
+The value then moves by 2.2·10⁻² from <code>1e-2</code> to <code>1e-3</code>, by 1.1·10⁻³ to <code>1e-4</code>, and by 5.1·10⁻⁵ to <code>1e-5</code> — a falling sequence of differences, which is what a converging sweep looks like.
+The retained norm rounds to <code>1.000000</code> at <code>1e-5</code>, but it is not exactly 1 — that row is one term short of the 4 479 an untruncated run returns (see below) — so read it as “the sweep has bottomed out”, not as “this row is exact”.</p>
+<p>The differences are the uncertainty estimate, not the cutoff.
+Quote the tightest row’s value with the last difference as its error bar, and never quote a value from a cutoff you did not sweep past.</p>
+<h2 id="read-the-retained-norm"><a class="header" href="#read-the-retained-norm">Read the retained norm</a></h2>
+<p>The retained Hilbert–Schmidt norm is <code>N = Σ_P |c_P|²</code>, which <code>coefficients_array()</code> gives directly:</p>
+<pre><code class="language-python">def retained_norm(pauli_sum):
+    return float(np.sum(np.abs(pauli_sum.coefficients_array()) ** 2))
+</code></pre>
+<p><code>N</code> is conserved under exact unitary evolution, so the fraction of the operator a truncated run deleted is <code>1 − N_out / N_in</code>, measured against the same quantity on the input sum.
+For a single Pauli seed <code>N_in</code> is 1 and the deleted fraction is just <code>1 − N_out</code>, which is the form the <a href="#case-studies">case studies</a> quote.</p>
+<p>Two caveats.
+A noise channel rescales coefficients by design, so under a noisy circuit <code>N</code> falls whether or not anything was truncated and the diagnostic no longer isolates truncation — see <a href="#circuit-noise">Circuit noise</a>.
+And a large retained norm does not by itself mean a correct expectation value: the deleted terms carry signs and may be exactly the ones the state projects onto, which is why the norm is read <em>alongside</em> the sweep rather than instead of it.</p>
+<h2 id="apply-the-plateau-criterion"><a class="header" href="#apply-the-plateau-criterion">Apply the plateau criterion</a></h2>
+<p>Where no exact reference exists, the sweep is the only reference, and the criterion for accepting one is stricter than “two successive values agree”.</p>
+<p>A self-converged value may be quoted only when both of the following hold:</p>
+<ul>
+<li>the two most recent successive differences are small against the accuracy you need, <strong>and</strong></li>
+<li>either the term count has stopped growing — the sum has saturated, and the plateau is the exact answer — or both of those differences are strictly nonzero.</li>
+</ul>
+<p>A flat value on a still-growing sum is <strong>rejected</strong>: at a small rotation angle, loosening the cutoff by a decade can admit thousands of terms none of which contributes to the state being measured, so the value does not move while the sum keeps growing, and an exactly-zero difference there means “no relevant term has arrived yet”.
+A sum truncated to zero terms is rejected outright, however flat it looks.</p>
+<p>That distinction is worth a measured 190× in the accuracy of the reported uncertainty — <a href="#the-self-convergence-criterion-and-the-measured-reason-it-is-not-the-obvious-one">Benchmark B</a> is where it was caught and measured.</p>
+<p>Truncation has <strong>no variational bound</strong>, so read a sweep as a trend across the whole grid, never as a point-to-point improvement: a partial sum can sit on either side of the truth and the error need not fall monotonically — see <a href="#no-variational-bound">Truncation</a>.</p>
+<h2 id="score-against-an-exact-reference-where-you-can"><a class="header" href="#score-against-an-exact-reference-where-you-can">Score against an exact reference where you can</a></h2>
+<p>The sweep estimates its own uncertainty; an exact reference measures the error.
+Reach for one whenever the problem admits it:</p>
+<ul>
+<li><strong>Drop the policy entirely.</strong> A small system or a shallow circuit may fit untruncated, in which case <code>policy=None</code> is the exact answer and the sweep can be scored against it.
+The sweep above bottoms out at 4 478 terms, one short of the 4 479 that <code>observable.propagate(circuit, None, direction="heisenberg")</code> returns.</li>
+<li><strong>Restrict to the causal cone.</strong> A local observable only spreads as far as its light cone, so the exact problem is often far smaller than the full register.</li>
+<li><strong>Use a dense simulator.</strong> A state-vector reference (qiskit Aer, or a hand-rolled Kronecker construction) is exact to ~26–30 qubits and does not care about depth — see <a href="#vs-state-vector-simulation">Comparisons</a>.</li>
+<li><strong>Use <code>stim</code> at a Clifford point.</strong> Where the circuit is Clifford, a tableau simulator gives the exact ±1 integer at any qubit count.</li>
+</ul>
+<p>An exact reference at a reachable corner of the parameter space also calibrates the sweep at the corners you cannot reach.</p>
+<p>See <a href="#truncation-policy">Truncation policy</a> for which policy to sweep, <a href="#propagation-stats-and-logs">Propagation stats and logs</a> for the term counts and memory footprint behind a run, and <a href="#truncation">Truncation</a> for what truncation does to the result.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagation-direction"><a class="header" href="#propagation-direction">Propagation direction</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
@@ -534,8 +669,42 @@ It starts from a wide operator, so the cost profile is different from the outset
 <pre><code class="language-python">evolved = observable.propagate(circuit, policy, direction="forward")
 </code></pre>
 <p><strong>Always pass <code>direction</code> explicitly.</strong> The Python binding defaults <code>direction=None</code> to <code>"forward"</code>, but the two pictures answer different questions — treat the default as a one-off exploration convenience, not an idiom.</p>
+<h2 id="which-state-the-label-is-read-against"><a class="header" href="#which-state-the-label-is-read-against">Which state the label is read against</a></h2>
+<p><code>expectation(state)</code> evaluates <code>⟨s|A|s⟩</code> for whatever sum it is handed, so <code>direction</code> decides what <code>s</code> refers to:</p>
+<ul>
+<li>under <code>"heisenberg"</code> the evolved sum is <code>U†OU</code>, so <code>expectation(s)</code> is <code>O</code>’s expectation in <code>U|s⟩</code> — <strong><code>s</code> is the input state, before the circuit</strong>;</li>
+<li>under <code>"forward"</code> the evolved sum is <code>UOU†</code>, so <code>expectation(s)</code> is <code>O</code>’s expectation in <code>U†|s⟩</code> — <strong><code>s</code> is a state at the circuit’s output end</strong>.</li>
+</ul>
+<p>Getting it backwards is silent.
+The same observable, the same circuit and the same state label give two perfectly plausible numbers:</p>
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+
+observable = PauliSum.from_strings({"ZII": 1.0}, num_qubits=3)
+
+both = Circuit(3)
+both.h(0)
+both.pauli_rotation("ZZ", [0, 1], 0.6)
+both.rx(0.9, 0)
+both.rx(0.9, 2)
+both.cnot(1, 2)
+
+exact = truncation.coeff(1e-12)
+heisenberg = observable.propagate(both, exact, direction="heisenberg")
+forward = observable.propagate(both, exact, direction="forward")
+
+print("heisenberg", heisenberg.expectation("x+").real)
+print("forward   ", forward.expectation("x+").real)
+</code></pre>
+<pre><code class="language-text">heisenberg 0.6216099682706644
+forward    0.8253356149096783
+</code></pre>
+<p><code>0.6216…</code> is <code>⟨Z_0⟩</code> measured after running this circuit on <code>|+++⟩</code> — the Heisenberg answer, and the one nearly every question of the form “what does this circuit measure?” wants.
+<code>0.8253…</code> is the same observable pushed forward through the circuit and then read against <code>|+++⟩</code> at the far end, which answers a different question.
+Both were checked against a dense <code>2³×2³</code> construction; neither is a bug.</p>
+<h2 id="push-order"><a class="header" href="#push-order">Push order</a></h2>
 <p>Push order interacts with direction: under <code>"heisenberg"</code> the engine walks the channel list <strong>in reverse</strong> and applies each channel’s adjoint, so pushing <code>ZZ</code> rotations before <code>X</code> rotations builds <code>U = U_X · U_ZZ</code> and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Get the circuit’s push order right and the direction flag does the rest.</p>
+<p>Direction also decides which end an <em>incremental</em> propagation extends, which is what a time series is built from — see <a href="#observable-vs-time">Observable vs time</a>.</p>
 <p>See <a href="#direction-semantics">Direction reference</a> for the full table and <a href="#against-other-tools">Comparisons</a> for the cross-engine asymmetry in what <code>"forward"</code> can express.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="expectation-values"><a class="header" href="#expectation-values">Expectation values</a></h1>
@@ -570,6 +739,56 @@ observable.identity_coefficient()  # the coefficient of I...I
 </code></pre>
 <p>See <a href="#measurement">Measurement reference</a> for the full signatures and label alphabet.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="observable-vs-time"><a class="header" href="#observable-vs-time">Observable vs time</a></h1>
+<p>A Trotterized time series costs one propagation, not one per time point: propagate a single step, read the expectation value, propagate the next step from where the last one stopped.</p>
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+
+n, steps = 12, 6
+
+step = Circuit(n)
+for q in range(n - 1):
+    step.pauli_rotation("ZZ", [q, q + 1], 1.0)
+for q in range(n):
+    step.rx(1.1, q)
+for q in range(n):
+    step.rz(0.6, q)
+
+observable = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
+policy = truncation.coeff(1e-4)
+
+evolved = observable
+series = [(0, len(evolved), evolved.expectation("z+").real)]
+for k in range(1, steps + 1):
+    evolved = evolved.propagate(step, policy, direction="heisenberg")
+    series.append((k, len(evolved), evolved.expectation("z+").real))
+
+for k, terms, value in series:
+    print(f"step {k}  terms {terms:5d}  &lt;Z0&gt; {value:+.6f}")
+</code></pre>
+<pre><code class="language-text">step 0  terms     1  &lt;Z0&gt; +1.000000
+step 1  terms     3  &lt;Z0&gt; +0.453596
+step 2  terms    14  &lt;Z0&gt; +0.022743
+step 3  terms    69  &lt;Z0&gt; +0.241941
+step 4  terms   279  &lt;Z0&gt; +0.531583
+step 5  terms  1116  &lt;Z0&gt; +0.498573
+step 6  terms  4392  &lt;Z0&gt; +0.324827
+</code></pre>
+<p>The last point is identical to propagating the whole six-step circuit in one call — same 4 392 terms, same value — because truncation runs after every channel either way, so splitting a circuit changes nothing (<a href="#splitting-a-circuit-is-free">Truncation</a>).
+The series is therefore free: it is the same single pass, read out at every step boundary.</p>
+<p>Each <code>expectation</code> call is one masked pass over the surviving terms and does not consume the sum, so recording several observables per time point costs only those passes.</p>
+<h2 id="the-heisenberg-ordering-trap"><a class="header" href="#the-heisenberg-ordering-trap">The Heisenberg-ordering trap</a></h2>
+<p>Under <code>direction="heisenberg"</code> each <code>propagate</code> call conjugates the <em>outside</em> of what is already there, so an incremental call <strong>prepends</strong> its circuit rather than appending it.
+Propagating <code>a</code> and then <code>b</code> gives what the single circuit <code>b + a</code> gives, not <code>a + b</code>.</p>
+<p>This is invisible above because every Trotter step is the same channel list: <code>U</code> conjugated <code>k</code> times is <code>(U^k)† O U^k</code> whichever way the steps are ordered.
+It is not invisible for a <strong>time-dependent</strong> schedule — a ramp, a varying angle, a noise rate that changes with depth.
+There the loop above computes the steps in the wrong time order, and each time point has to be propagated from the seed with the steps walked in reverse: <code>O(t_k)</code> needs step <code>k</code> applied first and step <code>1</code> last.</p>
+<p>Under <code>direction="forward"</code> the ordering is the ordinary one — an incremental call appends — so a forward time series over a time-dependent schedule does loop in time order.
+See <a href="#direction-semantics">Direction semantics</a> for what each picture computes.</p>
+<h2 id="keeping-the-series-honest"><a class="header" href="#keeping-the-series-honest">Keeping the series honest</a></h2>
+<p>A time series is a grid of truncated results, so every point carries the same obligation a single number does: sweep the cutoff and check the retained norm, and expect the later points to converge last.
+See <a href="#validate-a-result">Validate a result</a>.</p>
+<p>Term growth across the series is the cost signal — <code>propagate_with_stats</code> reports it per layer rather than per step, see <a href="#propagation-stats-and-logs">Propagation stats and logs</a>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagation-stats-and-logs"><a class="header" href="#propagation-stats-and-logs">Propagation stats and logs</a></h1>
 <pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
 
@@ -585,6 +804,17 @@ print(stats.terms_in, stats.terms_out)   # one entry per layer, post-truncation
 </code></pre>
 <p><code>propagate_with_stats</code> returns the same evolved sum <code>propagate</code> would, alongside a <code>PropagationStats</code> with per-layer term counts in and out, <code>peak_terms</code>, and per-layer gate-trace fields (<code>gate_name</code>, <code>nanos</code>, …).
 Enabling it does not change the propagated sum.</p>
+<h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
+<p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
+<code>PauliSum.width</code> is the compile-time word tier the qubit count picked — 1 word up to 64 qubits, 2 up to 128, then 4, 8, 16 — so a 127-qubit sum is 48 B/term and a 1024-qubit sum 272 B/term.</p>
+<p><code>stats.peak_terms</code> is the peak <em>resident</em> term count between layers, so <code>peak_terms × (16 × width + 16)</code> is the sum’s own high-water mark:</p>
+<pre><code class="language-python">print(stats.peak_terms, evolved.width, stats.peak_terms * (16 * evolved.width + 16))
+</code></pre>
+<p>Two things that estimate does not include.
+Each layer also allocates a transient in-layer expansion — a term fans out over the channel’s delta set before the merge collapses it — bounded by the fanout of the widest channel in the circuit (2 for a Pauli rotation, up to 16 for a dense two-qubit unitary) times one coset’s working set per worker, not times the whole sum.
+And buckets keep their capacity across layers, so a sum that shrinks after its peak does not give the memory back.</p>
+<p>Run a short prefix of the circuit first and extrapolate <code>peak_terms</code> from the per-layer growth in <code>terms_out</code>: the growth is what sets the bill, and the truncation policy is the knob on it.
+<a href="#layout-structure-of-arrays-compile-time-width">Performance</a> has the layout this arithmetic comes from.</p>
 <p>For running logs instead of a post-hoc summary, the library logs through the <code>log</code> facade under the target <code>paulistrings.propagate</code> — INFO on entry/exit of <code>propagate</code>, DEBUG once per layer:</p>
 <pre><code class="language-python">import logging
 import paulistrings
@@ -861,7 +1091,7 @@ The GIL is released for the duration of both calls.</p>
 <tbody>
 <tr><td><code>circuit</code></td><td><code>Circuit</code></td><td>required</td><td>must share <code>num_qubits</code> with <code>sum</code></td></tr>
 <tr><td><code>policy</code></td><td><code>Truncation | None</code></td><td><code>None</code></td><td><code>None</code> applies no per-term filtering beyond the engine’s exact-zero drop</td></tr>
-<tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td>see <a href="#direction-semantics">Direction semantics</a></td></tr>
+<tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td><strong>the default is not the Heisenberg picture most examples here use</strong> — pass it explicitly; see <a href="#direction-semantics">Direction semantics</a></td></tr>
 <tr><td><code>engine</code></td><td><code>"sorted" | "auto" | "direct" | None</code></td><td><code>None</code> = <code>"sorted"</code></td><td><code>"sorted"</code>: always bucketed. <code>"auto"</code>: a term-by-term hash-map path below <code>small_sum_threshold</code>, unless the policy has a layer pass (e.g. <code>topn</code>). <code>"direct"</code>: same threshold, always. All three agree to floating-point tolerance</td></tr>
 <tr><td><code>small_sum_threshold</code></td><td><code>int | None</code></td><td><code>None</code> = <code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td>term-count cutoff for <code>"auto"</code>/<code>"direct"</code></td></tr>
 <tr><td><code>target_bucket_len</code></td><td><code>int | None</code></td><td><code>None</code> = <code>1024</code></td><td>sorting engine’s per-layer bucket-sizing knob</td></tr>
@@ -898,6 +1128,8 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 <p>See <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a> for recipes.</p>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
+<p>A <strong>layer</strong> here is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates in the field-standard sense.
+A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes two layers, and <code>len(circuit) == stats.layers</code>.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -986,7 +1218,23 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 </tbody>
 </table>
 </div>
-<h2 id="push-order"><a class="header" href="#push-order">Push order</a></h2>
+<p><code>None</code> selects <code>"forward"</code>, which is <strong>not</strong> the direction most examples on this site use; pass <code>direction</code> explicitly.</p>
+<h2 id="what-the-state-label-then-means"><a class="header" href="#what-the-state-label-then-means">What the state label then means</a></h2>
+<p><code>direction</code> also fixes which state a following <a href="#measurement"><code>expectation(state)</code></a> call is read against, because <code>expectation</code> evaluates <code>⟨s|A|s⟩</code> for whatever sum <code>A</code> it is given.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>direction</code></th><th><code>evolved.expectation(s)</code> equals</th><th>so <code>s</code> is</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"heisenberg"</code></td><td><code>⟨s|U†OU|s⟩</code>, i.e. <code>O</code>’s expectation in <code>U|s⟩</code></td><td>the <strong>input</strong> state, the one the circuit acts on</td></tr>
+<tr><td><code>"forward"</code></td><td><code>⟨s|UOU†|s⟩</code>, i.e. <code>O</code>’s expectation in <code>U†|s⟩</code></td><td>the state at the circuit’s <strong>output</strong> end</td></tr>
+</tbody>
+</table>
+</div>
+<p>Swapping the two is silent: both give a number of the right magnitude and type, and neither raises.
+<a href="#propagation-direction">Propagation direction</a> has the same circuit and observable run both ways, with the two different numbers.</p>
+<h2 id="push-order-1"><a class="header" href="#push-order-1">Push order</a></h2>
 <p>Push order interacts with direction. Under <code>"heisenberg"</code> the engine iterates channels in reverse, so pushing <code>ZZ</code> rotations before <code>X</code> rotations gives a step operator <code>U = U_X · U_ZZ</code>, and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Build the circuit in the order you want applied under <code>"forward"</code>; the direction flag handles the reversal.</p>
 <p>See <a href="#propagation-direction">Propagation direction</a> for guidance on which picture answers which question.</p>
@@ -1047,16 +1295,360 @@ Call <code>paulistrings.reset_log_cache()</code> after changing a Python log lev
 <tr><th>Page</th><th>Covers</th></tr>
 </thead>
 <tbody>
+<tr><td><a href="#against-other-tools">Comparisons</a></td><td>which method fits which problem, and how this engine’s numbers relate to other simulators</td></tr>
 <tr><td><a href="#truncation">Truncation</a></td><td>what truncation actually does to the result: per-channel application, no variational bound</td></tr>
 <tr><td><a href="#propagation-engine">Propagation engine</a></td><td>the bucketed layout, the GF(2)-linear hash, coset parallelism, and why the loop needs no locks</td></tr>
 <tr><td><a href="#performance">Performance</a></td><td>measured numbers behind the engine design’s claims</td></tr>
 <tr><td><a href="#numa-nodes">NUMA nodes</a></td><td>the in-process partitioned engine, when it helps</td></tr>
 <tr><td><a href="#mpi-ranks-1">MPI ranks</a></td><td>the distributed engine, one partition per rank</td></tr>
-<tr><td><a href="#against-other-tools">Comparisons</a></td><td>how this engine’s numbers relate to other simulators</td></tr>
 <tr><td><a href="#case-studies">Case studies</a></td><td>measured showcases and benchmarks, each a record with independent cross-checks</td></tr>
 </tbody>
 </table>
 </div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="against-other-tools"><a class="header" href="#against-other-tools">Against other tools</a></h1>
+<p class="lead">Against <code>PauliPropagation.jl</code>, the other mature
+Pauli-propagation engine, the comparison is term for term: same circuits, same
+truncation, parity-gated timing. Against state-vector, stabilizer and MPO
+methods the tools do not overlap, and this page records where each applies.</p>
+
+<h2 id="which-method-fits-which-problem"><a class="header" href="#which-method-fits-which-problem">Which method fits which problem</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>your problem</th><th>reach for</th></tr>
+</thead>
+<tbody>
+<tr><td>one observable, non-Clifford circuit, more qubits than a dense method holds</td><td>Pauli propagation — this engine</td></tr>
+<tr><td>any observable, exactly, at ~26–30 qubits or fewer</td><td>a state-vector simulator</td></tr>
+<tr><td>a Clifford circuit, at any qubit count</td><td><code>stim</code></td></tr>
+<tr><td>a low-operator-entanglement operator you need a bond-dimension bound for</td><td>an MPO/tensor-network method</td></tr>
+<tr><td>storing and algebraically manipulating a Pauli operator, without propagation</td><td><code>qiskit.SparsePauliOp</code>, <code>openfermion.QubitOperator</code></td></tr>
+<tr><td>a second Pauli-propagation engine to cross-check against</td><td><code>PauliPropagation.jl</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The sections below give the measured basis for each row.
+Everything under <a href="#methodology">Methodology</a> is the provenance behind the cross-engine numbers rather than part of choosing a method.</p>
+<h2 id="vs-state-vector-simulation"><a class="header" href="#vs-state-vector-simulation">vs state-vector simulation</a></h2>
+<p>Not a competitor but a complementary oracle, and this suite uses it as one
+everywhere it reaches. Every exact reference on this site is a dense
+statevector (usually qiskit Aer); where two exact routes were affordable the
+reference is both of them, required to agree.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>state-vector</th><th>Pauli propagation</th></tr>
+</thead>
+<tbody>
+<tr><td>object carried</td><td><code>2ⁿ</code> amplitudes</td><td>the Pauli strings the <em>observable</em> spreads over</td></tr>
+<tr><td>cost driver</td><td>qubit count</td><td>circuit depth and operator spreading; <code>n</code> enters only through the channel count</td></tr>
+<tr><td>result</td><td>any observable, exactly</td><td>one observable, to a truncation error you must measure</td></tr>
+<tr><td>ceiling here</td><td>~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB)</td><td>127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two measured illustrations of where the boundary sits:</p>
+<ul>
+<li>Benchmark B needed an exact reference for a weight-10 observable whose causal
+cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
+26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
+cone took ~150 s and does not care about depth.</li>
+<li>The same benchmark’s weight-17 observable has a 59-qubit cone: <code>2^59</code>
+amplitudes rules out any dense method, and untruncated propagation is far
+past the wall above. Neither method reaches it, which is why those references
+are self-converged and reported as not converged.</li>
+</ul>
+<p>A state-vector simulator gives the answer; Pauli propagation gives the answer
+plus a truncation error to bound. That asymmetry is why every page on this site
+carries a convergence panel.</p>
+<h2 id="vs-stabilizer-stim-simulation"><a class="header" href="#vs-stabilizer-stim-simulation">vs stabilizer (<code>stim</code>) simulation</a></h2>
+<p>Also an oracle, not a competitor. At a Clifford point <code>stim</code> gives the exact ±1
+integer in under 0.1 s at any qubit count, and
+<a href="#benchmark-a--clifford-point">Benchmark A</a> exists to be scored against it.
+Benchmark B reproduces those integers bit-exactly at every one of eight
+cutoffs, for three observables at both Clifford endpoints.</p>
+<ul>
+<li><code>stim</code>: Clifford circuits, exactly, at enormous scale. Where a circuit is
+Clifford it is strictly the better tool.</li>
+<li>Pauli propagation: non-Clifford circuits, where the tableau method has
+nothing to say. The kicked-Ising kick angle separates the two: at
+<code>θ_h ∈ {0, π/2}</code> the circuit is Clifford and <code>stim</code> answers; at the hard
+interior angles the operator spreads over millions of Pauli strings.</li>
+</ul>
+<p>A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
+samples one Pauli error rather than averaging over them, which is why
+<a href="#validation-an-independent-dense-noisy-reference">Showcase B2</a>
+carries a hand-rolled Kraus density-matrix reference instead.</p>
+<h2 id="vs-tensor-network--mpo-methods"><a class="header" href="#vs-tensor-network--mpo-methods">vs tensor-network / MPO methods</a></h2>
+<p>No measured head-to-head, and this site does not claim one. What it has is a
+cost-model comparison on the same operators:
+<a href="#b6--resource-probes">Showcase B6</a> computes the Pauli-spectrum
+entropy (the quantity governing truncation error for this engine) alongside the
+operator entanglement across a bipartition (the quantity governing MPO bond
+dimension), and finds them saying different things about the same operator:
+<code>S_2</code> grows steadily with depth while <code>S_op</code> saturates around 1.3 nats from
+depth 5 on. A TDVP baseline at large <code>n</code> is
+<a href="#limitations">a named limitation of Benchmark D</a>, not
+silently approximated.</p>
+<h2 id="vs-qiskitsparsepauliop--openfermionqubitoperator"><a class="header" href="#vs-qiskitsparsepauliop--openfermionqubitoperator">vs <code>qiskit.SparsePauliOp</code> / <code>openfermion.QubitOperator</code></a></h2>
+<p>Different scope: these are Pauli-operator containers with algebraic
+manipulation, not propagation engines with truncation — no crossover concept
+applies. The committed comparison
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>)
+benchmarks construction from string terms and one-layer Clifford conjugation,
+seeded inputs, <code>n_terms ∈ {100, 1000, 10 000}</code>; medians in µs, ratio =
+library / paulistrings:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: right">construct</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">openfermion</th><th style="text-align: right">qiskit ratio</th><th style="text-align: right">openfermion ratio</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: right">100 terms</td><td style="text-align: right">99.9</td><td style="text-align: right">1 053.7</td><td style="text-align: right">982.4</td><td style="text-align: right">10.5×</td><td style="text-align: right">9.8×</td></tr>
+<tr><td style="text-align: right">1 000</td><td style="text-align: right">683.7</td><td style="text-align: right">9 693.8</td><td style="text-align: right">10 570.3</td><td style="text-align: right">14.2×</td><td style="text-align: right">15.5×</td></tr>
+<tr><td style="text-align: right">10 000</td><td style="text-align: right">3 070.0</td><td style="text-align: right">96 566.8</td><td style="text-align: right">106 078.9</td><td style="text-align: right">31.5×</td><td style="text-align: right">34.6×</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: right">conjugate by a Clifford layer</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">ratio</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: right">100 terms</td><td style="text-align: right">8.9</td><td style="text-align: right">2 133.8</td><td style="text-align: right">240×</td></tr>
+<tr><td style="text-align: right">1 000</td><td style="text-align: right">71.0</td><td style="text-align: right">4 978.4</td><td style="text-align: right">70×</td></tr>
+<tr><td style="text-align: right">10 000</td><td style="text-align: right">1 057.3</td><td style="text-align: right">32 642.0</td><td style="text-align: right">31×</td></tr>
+</tbody>
+</table>
+</div>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"><span class="img-wrapper"><img src="assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"></span></label></p>
+<p><code>openfermion</code> has no equivalent conjugation operation and is not in the second
+group. <code>PauliStrings.jl</code>, the library that inspired this one, is excluded for
+the same reason <code>PauliPropagation.jl</code> is driven by subprocess: no PyJulia
+wiring anywhere.</p>
+<h2 id="vs-paulipropagationjl"><a class="header" href="#vs-paulipropagationjl">vs <code>PauliPropagation.jl</code></a></h2>
+<p>The comparison baseline is subprocess-driven and out of CI, pinned to
+<strong>PauliPropagation.jl 0.8.2</strong> on julia 1.12.6 in a committed
+<code>Project.toml</code>/<code>Manifest.toml</code>. There is no PyJulia or juliacall anywhere: the
+entry points are a Julia script that reads a task JSON and emits a result JSON,
+and a <code>subprocess</code> wrapper that skips cleanly when no <code>julia</code> is on <code>PATH</code>.</p>
+<h3 id="performance-vs-tracked-set-size"><a class="header" href="#performance-vs-tracked-set-size">Performance vs tracked-set size</a></h3>
+<p>There is no single ratio: the ranking changes sign, and where it changes sign
+depends on the workload by an order of magnitude.</p>
+<p>The source is a dedicated head-to-head study
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>):
+single-threaded core versus core, five interleaved <code>abba</code> pairs per
+configuration, accepted on direction consistency, never on a difference of two
+independently-noisy means. Every configuration passes a per-layer term-count
+parity gate before any timing is reported. <code>ratio &gt; 1</code> means this engine is
+faster.</p>
+<h4 id="ranking-crossover"><a class="header" href="#ranking-crossover">Ranking crossover</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
+</thead>
+<tbody>
+<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
+<tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
+<tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
+</tbody>
+</table>
+</div>
+<p>The crossover spans 7× across these three workloads and the SU(4) matrix-gate
+path has none at all, so no single global crossover is quoted anywhere on this
+site.</p>
+<h4 id="above-the-crossover"><a class="header" href="#above-the-crossover">Above the crossover</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>peak terms</th><th>ratio</th></tr>
+</thead>
+<tbody>
+<tr><td>kicked-Ising</td><td>6.37 × 10⁵</td><td><strong>2.146</strong></td></tr>
+<tr><td>kicked-Ising</td><td>2.15 × 10⁶</td><td>1.610</td></tr>
+<tr><td>XXZ</td><td>2.66 × 10⁶</td><td><strong>2.023</strong>, still rising</td></tr>
+<tr><td>Haar SU(4)</td><td>2.30 × 10⁶</td><td><strong>2.921</strong>, still rising</td></tr>
+</tbody>
+</table>
+</div>
+<p>Memory, from the same study: process floors are 37.8 MB against Julia’s
+0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
+0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
+479. Both engines sample their own <code>/proc/self/status</code>, never a driver-side
+<code>getrusage(RUSAGE_CHILDREN)</code>.</p>
+<h4 id="below-the-crossover"><a class="header" href="#below-the-crossover">Below the crossover</a></h4>
+<p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
+a hash-map insert per term costs little at 10² terms, while the bucketed
+per-layer pipeline costs nearly the same whatever the term count.</p>
+<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
+2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
+configurations
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
+measured on the same binary against the default:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
+</thead>
+<tbody>
+<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
+<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
+<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
+<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
+</tbody>
+</table>
+</div>
+<p>Above its threshold the path is inert, measured as its own control: SU(4) at
+84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
+configurations passed the per-layer parity gate with the path enabled — 9 618
+per-layer counts, every one identical to PauliPropagation.jl’s.</p>
+<h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
+<p>How the <code>PauliPropagation.jl</code> comparison is made, and what had to be pinned before any number above could be quoted.</p>
+<h3 id="parity-discipline"><a class="header" href="#parity-discipline">Parity discipline</a></h3>
+<p>Term-count parity blocks timing: no cross-engine wall time is reported for a
+configuration whose evolved Pauli sums diverge term-for-term at matched
+truncation, so every timed comparison runs the parity check first, untimed.</p>
+<p>Four properties make the check strong:</p>
+<ol>
+<li>One description, two engines. Both sides are driven from the same schema-v1
+task JSON, built from the same recorded gate list; unknown keys, gate names
+and fields are hard errors on both sides.</li>
+<li>Per applied layer, not just the final count: a divergence that cancels by the
+end is exactly the truncation-schedule bug the check exists to catch.</li>
+<li>Term by term, not just the contracted expectation. Every gate name in the
+schema vocabulary (plus reversed-qubit variants of <code>cnot</code> and <code>unitary_2q</code>)
+gets a single-gate task compared coefficient by coefficient to <code>1e-12</code>.</li>
+<li>Along a sweep, not at one point: the parity legs use three cutoffs.</li>
+</ol>
+<p>The results, all from committed benchmark READMEs:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>where</th><th>configuration</th><th>compared</th><th>result</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="#cross-engine-parity">Benchmark B</a></td><td>127 q, 5 steps, 3 observables × 3 cutoffs</td><td>12 195 per-layer counts</td><td>9/9 pass, every count identical; 8 of 9 expectations agree to the last bit</td></tr>
+<tr><td><a href="#cross-engine-parity-at-the-deepest-point">Benchmark C</a></td><td>127 q, 20 steps, 3 dyadic cutoffs</td><td>16 260 per-layer counts</td><td>3/3 pass, final and peak counts exact, expectations ≤ 5.6e-17</td></tr>
+<tr><td><a href="#cross-engine-timing-and-the-crossover">Benchmark D</a></td><td>XXZ chain, 4 configurations</td><td>171–702 layers each</td><td>4/4 pass, expectations ≤ 1.7e-16</td></tr>
+<tr><td><a href="#cross-engine-comparison">Benchmark E</a></td><td>Haar SU(4) brickwork, <code>unitary_2q</code> gates</td><td>all layers at two sizes</td><td>exact, and the expectation to 1e-12</td></tr>
+<tr><td>parity gate itself</td><td>6 q, 57 gates, both directions, with and without truncation</td><td>57 layers per row, 5 rows</td><td>all identical, expectations ≤ 5.6e-17</td></tr>
+</tbody>
+</table>
+</div>
+<p>The truncated rows of the last entry are non-vacuous: the same circuit with no
+policy keeps 3 881 terms, so the <code>1e-4</code> row exercises coefficient truncation and
+the <code>max_weight=4</code> row exercises weight truncation.</p>
+<h3 id="convention-agreement"><a class="header" href="#convention-agreement">Convention agreement</a></h3>
+<p>Both engines are Hermitian-Y: a real coefficient multiplies the literal Pauli
+string, <code>Y</code> carries no phase of its own, and the coefficient type stays real
+under every gate in the vocabulary. This was verified by hand-derived probe:
+<code>S X S† = +Y</code> and <code>S† X S = −Y</code> come out identically on both sides, and a
+cross-engine test encodes the sign.</p>
+<p>Index conventions map cleanly: jl is 1-based with the leftmost Pauli character
+qubit 1, this repository 0-based with the leftmost character qubit 0. Observable
+keys map verbatim and gate indices map with a <code>+1</code>. Direction maps exactly:
+<code>"heisenberg"</code> ↔ <code>heisenberg=true</code> (jl’s default), <code>"forward"</code> ↔
+<code>heisenberg=false</code>.</p>
+<p>That mapping is not fully symmetric in practice: jl 0.8.2 defines no
+Schrödinger-picture transfer map at all for <code>unitary_1q</code>, <code>unitary_2q</code>,
+<code>amplitude_damping</code>, <code>pauli_channel</code> or <code>depolarize2</code>, so <code>direction="forward"</code>
+has no jl counterpart for any circuit using those gates. Every cross-engine
+comparison on this site is therefore run in the Heisenberg direction, where
+both sides agree.</p>
+<h3 id="semantic-divergences"><a class="header" href="#semantic-divergences">Semantic divergences</a></h3>
+<p>Established by probes whose expected values are hand-derived in comments, never
+read back from the library.</p>
+<h4 id="the-one-real-divergence"><a class="header" href="#the-one-real-divergence">The one real divergence: the coefficient boundary</a></h4>
+<p>jl truncates on <code>abs(coeff) &lt; min_abs_coeff</code>, so it <strong>keeps</strong> a coefficient
+exactly equal to the threshold; this repository’s <code>CoefficientThreshold</code> keeps
+<code>|c| &gt; eps</code>, so it <strong>drops</strong> it. Measured on both sides:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>coefficient</th><th><code>== 0.25</code>?</th><th>jl at <code>min_abs_coeff = 0.25</code></th><th>this engine</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0.25</code></td><td>true</td><td>1 term</td><td>0 terms</td></tr>
+<tr><td><code>0.24999999999999994</code></td><td>false</td><td>0 terms</td><td>0 terms</td></tr>
+<tr><td><code>0.25000000000000006</code></td><td>false</td><td>1 term</td><td>1 term</td></tr>
+</tbody>
+</table>
+</div>
+<p>For generic angles the divergence is a measure-zero event and every parity row
+above passes untouched. It is not measure-zero for dyadic cutoffs at Clifford
+angles, where coefficients are exact dyadics and can land on the cutoff
+bit-exactly (<a href="#the-dyadic-cutoffs-and-the-one-ulp-mitigation">Benchmark C hits this</a>).
+The mitigation, when it bites: perturb the <em>threshold</em> on one side by one ulp
+and report it, never a coefficient. jl gets <code>nextafter(eps, ∞)</code>; no float lies
+between, so jl’s <code>|c| &lt; eps′</code> becomes exactly this engine’s <code>|c| &lt;= eps</code>. A test
+pins the divergence so a version bump cannot change it silently.</p>
+<h4 id="the-second-narrower-divergence-exact-zeros"><a class="header" href="#the-second-narrower-divergence-exact-zeros">The second, narrower divergence: exact zeros</a></h4>
+<p>With <code>min_abs_coeff = 0.0</code>, <code>abs(c) &lt; 0</code> is never true, so jl keeps an
+exactly-zero coefficient; this engine’s merge kernels drop exact zeros
+unconditionally. Pinned with <code>amplitude_damping(γ=1)</code>, whose
+<code>X → √(1−γ)·X = 0</code> is bit-exact: this engine keeps 0 terms, jl keeps 1. Not
+measure-zero in practice, since Clifford-point angles produce exact
+cancellations. Mitigation for comparative runs: a strictly positive
+<code>min_abs_coeff</code> (any <code>eps &gt; 0</code> kills jl’s zeros too), stated in the results
+file.</p>
+<h4 id="verified-agreements"><a class="header" href="#verified-agreements">Verified agreements</a></h4>
+<ul>
+<li>The weight boundary: both engines keep <code>weight == max_weight</code>.</li>
+<li>When truncation is applied: jl truncates once per gate; this engine once per
+channel. The two coincide iff one gate object is one channel, which is the
+suite’s construction rule and structural in the schema. Measured: <code>rz(0.05)</code>
+on <code>X</code> with <code>min_abs_coeff = 0.1</code> kills the <code>sin</code> branch immediately, so the
+second gate sees 1 term, not 2.</li>
+<li>Noise-channel parameter scales: jl damps by <code>1 − λ</code> where this repository
+takes a probability <code>p</code>, so <code>depolarize(p)</code> maps to <code>λ = 4p/3</code> and
+<code>dephase(p)</code> to <code>λ = 2p</code>; <code>amplitude_damping(γ)</code> is 1:1. jl has no native
+general Pauli channel or two-qubit depolarizing gate, so the runner builds
+each as a single diagonal-PTM gate with the exact dual — one gate, one
+truncation point. Both verified term by term.</li>
+<li>Two-qubit matrix ordering for <code>unitary_2q</code> is undocumented upstream; it was
+pinned against a known CNOT in both qubit orderings.</li>
+</ul>
+<h4 id="noise-channel-parity"><a class="header" href="#noise-channel-parity">Noise-channel parity</a></h4>
+<p>Noise-channel semantics agree between the engines term by term, including the
+orientation of <code>amplitude_damping</code> under <code>direction="heisenberg"</code>: the
+Heisenberg map is the unital dual <code>Φ†</code> (<code>Φ†(I) = I</code>), so <code>⟨Z⟩</code> for a qubit in
+<code>|0⟩</code> — the channel’s fixed point — stays at <code>1</code>. The shared fixture gives 9
+terms on both engines with identical labels and bit-exact coefficients, a test
+pins the orientation from both sides, and
+<a href="#the-same-collapse-three-other-channels">Showcase B2</a>
+carries the physics.</p>
+<h3 id="known-gaps"><a class="header" href="#known-gaps">Known gaps</a></h3>
+<ul>
+<li><code>direction="forward"</code> with <code>unitary_1q</code>, <code>unitary_2q</code>, <code>amplitude_damping</code>,
+<code>pauli_channel</code>, <code>depolarize2</code>: PauliPropagation.jl 0.8.2 defines no
+Schrödinger transfer map for those, and the runner rejects such a task up
+front. Every benchmark in the suite is Heisenberg.</li>
+<li>Non-computational, non-uniform product states: jl evaluates against
+<code>|0…0⟩</code>-style states only; this repository’s per-qubit label alphabet is
+strictly larger, so such a state cannot be compared against jl.</li>
+<li>Stim-sourced circuits must be expanded into an inline gate list on the Python
+side; jl has no Stim parser, and the runner makes that a hard error.</li>
+<li><code>topn</code> truncation is absent from the interchange schema: jl has no
+equivalent. Likewise jl’s <code>max_freq</code> / <code>max_sins</code> truncations are excluded.</li>
+<li>jl’s experimental fused rotation kernel has no parity established, because it
+truncates during gate application.</li>
+</ul>
+<p><strong>Sources for this page:</strong>
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md"><code>benchmarks/julia/README.md</code></a>
+(the probes, the divergences, the gaps) and
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>,
+plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>
+(protocol and headline tables, engine <code>81c568a</code>),
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>
+and
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>.
+qiskit/openfermion numbers:
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>
+and its committed <code>results.json</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="truncation"><a class="header" href="#truncation">Truncation</a></h1>
 <p>Truncation is what makes the method work, and it is applied <strong>after every channel</strong> — not after every <code>propagate</code> call, and not after every “layer”.
@@ -1086,10 +1678,13 @@ assert np.allclose(split.coefficients_array(), whole.coefficients_array())
 </code></pre>
 <p>Application order is circuit order under <code>direction="forward"</code>, as above, but the <em>reverse</em> of circuit order under <code>direction="heisenberg"</code> — see <a href="#direction-semantics">Direction semantics</a>.
 A Heisenberg split must therefore propagate <code>back</code> before <code>front</code>, not <code>front</code> before <code>back</code>.
-A time series still costs one pass rather than one pass per time point, and a hybrid split still costs nothing in accuracy, once split at the right end — the identity <a href="#b5--hybrid-depth-reduction">Showcase B5</a> rests on.</p>
+A time series still costs one pass rather than one pass per time point, and a hybrid split still costs nothing in accuracy, once split at the right end — the identity <a href="#b5--hybrid-depth-reduction">Showcase B5</a> rests on.
+<a href="#observable-vs-time">Observable vs time</a> is that identity as a recipe, including the ordering trap for a time-dependent schedule.</p>
 <h2 id="a-gate-is-a-truncation-point"><a class="header" href="#a-gate-is-a-truncation-point">A gate is a truncation point</a></h2>
 <p>Fusing two gates into one channel changes the answer.
 That is why every circuit in this repository’s example suite is built one gate per push, and why the <a href="#against-other-tools">cross-engine comparison</a> can be compared <em>per layer</em> at all.</p>
+<p>In this library’s vocabulary a <strong>layer</strong> is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates.
+That is the sense “after every layer” carries throughout this book and in <a href="#propagationstats"><code>PropagationStats</code></a>.</p>
 <h2 id="a-noise-channel-is-a-truncation-point-too"><a class="header" href="#a-noise-channel-is-a-truncation-point-too">A noise channel is a truncation point too</a></h2>
 <p>In the Pauli basis a depolarizing channel is a coefficient rescale, so adding noise makes a fixed threshold bite harder at every depth.
 That is the whole mechanism behind <a href="#b2--noisy-circuit-verification">Showcase B2</a>, where noise makes the simulation cheaper rather than more expensive.</p>
@@ -1098,6 +1693,7 @@ That is the whole mechanism behind <a href="#b2--noisy-circuit-verification">Sho
 Discarded terms carry signs, so a partial sum can sit on either side of the truth and the error need not fall monotonically as the cutoff tightens.
 This is measured, not hypothetical — <a href="#b--kick-angle-sweep">Benchmark B</a> and <a href="#d--xxz-chain-scaling">Benchmark D</a> both record non-monotone rows.
 Read a convergence sweep as a trend across the grid, never as a point-to-point improvement.</p>
+<p>That is why a single number at a single cutoff is not a result, and <a href="#validate-a-result">Validate a result</a> is how to turn one into one.</p>
 <p>Which policy to reach for is a separate question — see <a href="#truncation-policy">Truncation policy</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="propagation-engine"><a class="header" href="#propagation-engine">Propagation engine</a></h1>
@@ -1178,7 +1774,8 @@ Every number is copied from a committed source, named inline and in the footer.<
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream only the bytes they use, and each column maps directly to a GPU device buffer.
 Buckets retain their capacity across layers, so a steady-state propagation loop allocates nothing (<code>ARCHITECTURE.md</code> §Data-Model).</p>
 <p>The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
-The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (<code>ARCHITECTURE.md</code> §Width).</p>
+The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (<code>ARCHITECTURE.md</code> §Width).
+That makes a term <code>16 × width + 16</code> bytes, which is what turns a projected term count into a memory bill — see <a href="#estimate-the-memory-a-run-needs">Propagation stats and logs</a>.</p>
 <h2 id="layer-time-breakdown"><a class="header" href="#layer-time-breakdown">Layer time breakdown</a></h2>
 <p>Measured on the reference host (2× Xeon Gold 6244, 16c/32t) with the repo’s phase-timing probe, per layer class, as a share of summed worker busy time (gather / sort / merge):</p>
 <div class="table-wrapper">
@@ -1487,330 +2084,6 @@ Intra-node, that is what would take the 2-rank case below 3.5×.</li>
 <li><strong>The library never initializes MPI.</strong> The application owns <code>MPI_Init</code> and <code>MPI_Finalize</code>.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="against-other-tools"><a class="header" href="#against-other-tools">Against other tools</a></h1>
-<p class="lead">Against <code>PauliPropagation.jl</code>, the other mature
-Pauli-propagation engine, the comparison is term for term: same circuits, same
-truncation, parity-gated timing. Against state-vector, stabilizer and MPO
-methods the tools do not overlap, and this page records where each applies.</p>
-
-<h2 id="vs-paulipropagationjl"><a class="header" href="#vs-paulipropagationjl">vs <code>PauliPropagation.jl</code></a></h2>
-<p>The comparison baseline is subprocess-driven and out of CI, pinned to
-<strong>PauliPropagation.jl 0.8.2</strong> on julia 1.12.6 in a committed
-<code>Project.toml</code>/<code>Manifest.toml</code>. There is no PyJulia or juliacall anywhere: the
-entry points are a Julia script that reads a task JSON and emits a result JSON,
-and a <code>subprocess</code> wrapper that skips cleanly when no <code>julia</code> is on <code>PATH</code>.</p>
-<h3 id="parity-discipline"><a class="header" href="#parity-discipline">Parity discipline</a></h3>
-<p>Term-count parity blocks timing: no cross-engine wall time is reported for a
-configuration whose evolved Pauli sums diverge term-for-term at matched
-truncation, so every timed comparison runs the parity check first, untimed.</p>
-<p>Four properties make the check strong:</p>
-<ol>
-<li>One description, two engines. Both sides are driven from the same schema-v1
-task JSON, built from the same recorded gate list; unknown keys, gate names
-and fields are hard errors on both sides.</li>
-<li>Per applied layer, not just the final count: a divergence that cancels by the
-end is exactly the truncation-schedule bug the check exists to catch.</li>
-<li>Term by term, not just the contracted expectation. Every gate name in the
-schema vocabulary (plus reversed-qubit variants of <code>cnot</code> and <code>unitary_2q</code>)
-gets a single-gate task compared coefficient by coefficient to <code>1e-12</code>.</li>
-<li>Along a sweep, not at one point: the parity legs use three cutoffs.</li>
-</ol>
-<p>The results, all from committed benchmark READMEs:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>where</th><th>configuration</th><th>compared</th><th>result</th></tr>
-</thead>
-<tbody>
-<tr><td><a href="#cross-engine-parity">Benchmark B</a></td><td>127 q, 5 steps, 3 observables × 3 cutoffs</td><td>12 195 per-layer counts</td><td>9/9 pass, every count identical; 8 of 9 expectations agree to the last bit</td></tr>
-<tr><td><a href="#cross-engine-parity-at-the-deepest-point">Benchmark C</a></td><td>127 q, 20 steps, 3 dyadic cutoffs</td><td>16 260 per-layer counts</td><td>3/3 pass, final and peak counts exact, expectations ≤ 5.6e-17</td></tr>
-<tr><td><a href="#cross-engine-timing-and-the-crossover">Benchmark D</a></td><td>XXZ chain, 4 configurations</td><td>171–702 layers each</td><td>4/4 pass, expectations ≤ 1.7e-16</td></tr>
-<tr><td><a href="#cross-engine-comparison">Benchmark E</a></td><td>Haar SU(4) brickwork, <code>unitary_2q</code> gates</td><td>all layers at two sizes</td><td>exact, and the expectation to 1e-12</td></tr>
-<tr><td>parity gate itself</td><td>6 q, 57 gates, both directions, with and without truncation</td><td>57 layers per row, 5 rows</td><td>all identical, expectations ≤ 5.6e-17</td></tr>
-</tbody>
-</table>
-</div>
-<p>The truncated rows of the last entry are non-vacuous: the same circuit with no
-policy keeps 3 881 terms, so the <code>1e-4</code> row exercises coefficient truncation and
-the <code>max_weight=4</code> row exercises weight truncation.</p>
-<h3 id="convention-agreement"><a class="header" href="#convention-agreement">Convention agreement</a></h3>
-<p>Both engines are Hermitian-Y: a real coefficient multiplies the literal Pauli
-string, <code>Y</code> carries no phase of its own, and the coefficient type stays real
-under every gate in the vocabulary. This was verified by hand-derived probe:
-<code>S X S† = +Y</code> and <code>S† X S = −Y</code> come out identically on both sides, and a
-cross-engine test encodes the sign.</p>
-<p>Index conventions map cleanly: jl is 1-based with the leftmost Pauli character
-qubit 1, this repository 0-based with the leftmost character qubit 0. Observable
-keys map verbatim and gate indices map with a <code>+1</code>. Direction maps exactly:
-<code>"heisenberg"</code> ↔ <code>heisenberg=true</code> (jl’s default), <code>"forward"</code> ↔
-<code>heisenberg=false</code>.</p>
-<p>That mapping is not fully symmetric in practice: jl 0.8.2 defines no
-Schrödinger-picture transfer map at all for <code>unitary_1q</code>, <code>unitary_2q</code>,
-<code>amplitude_damping</code>, <code>pauli_channel</code> or <code>depolarize2</code>, so <code>direction="forward"</code>
-has no jl counterpart for any circuit using those gates. Every cross-engine
-comparison on this site is therefore run in the Heisenberg direction, where
-both sides agree.</p>
-<h3 id="semantic-divergences"><a class="header" href="#semantic-divergences">Semantic divergences</a></h3>
-<p>Established by probes whose expected values are hand-derived in comments, never
-read back from the library.</p>
-<h4 id="the-one-real-divergence"><a class="header" href="#the-one-real-divergence">The one real divergence: the coefficient boundary</a></h4>
-<p>jl truncates on <code>abs(coeff) &lt; min_abs_coeff</code>, so it <strong>keeps</strong> a coefficient
-exactly equal to the threshold; this repository’s <code>CoefficientThreshold</code> keeps
-<code>|c| &gt; eps</code>, so it <strong>drops</strong> it. Measured on both sides:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>coefficient</th><th><code>== 0.25</code>?</th><th>jl at <code>min_abs_coeff = 0.25</code></th><th>this engine</th></tr>
-</thead>
-<tbody>
-<tr><td><code>0.25</code></td><td>true</td><td>1 term</td><td>0 terms</td></tr>
-<tr><td><code>0.24999999999999994</code></td><td>false</td><td>0 terms</td><td>0 terms</td></tr>
-<tr><td><code>0.25000000000000006</code></td><td>false</td><td>1 term</td><td>1 term</td></tr>
-</tbody>
-</table>
-</div>
-<p>For generic angles the divergence is a measure-zero event and every parity row
-above passes untouched. It is not measure-zero for dyadic cutoffs at Clifford
-angles, where coefficients are exact dyadics and can land on the cutoff
-bit-exactly (<a href="#the-dyadic-cutoffs-and-the-one-ulp-mitigation">Benchmark C hits this</a>).
-The mitigation, when it bites: perturb the <em>threshold</em> on one side by one ulp
-and report it, never a coefficient. jl gets <code>nextafter(eps, ∞)</code>; no float lies
-between, so jl’s <code>|c| &lt; eps′</code> becomes exactly this engine’s <code>|c| &lt;= eps</code>. A test
-pins the divergence so a version bump cannot change it silently.</p>
-<h4 id="the-second-narrower-divergence-exact-zeros"><a class="header" href="#the-second-narrower-divergence-exact-zeros">The second, narrower divergence: exact zeros</a></h4>
-<p>With <code>min_abs_coeff = 0.0</code>, <code>abs(c) &lt; 0</code> is never true, so jl keeps an
-exactly-zero coefficient; this engine’s merge kernels drop exact zeros
-unconditionally. Pinned with <code>amplitude_damping(γ=1)</code>, whose
-<code>X → √(1−γ)·X = 0</code> is bit-exact: this engine keeps 0 terms, jl keeps 1. Not
-measure-zero in practice, since Clifford-point angles produce exact
-cancellations. Mitigation for comparative runs: a strictly positive
-<code>min_abs_coeff</code> (any <code>eps &gt; 0</code> kills jl’s zeros too), stated in the results
-file.</p>
-<h4 id="verified-agreements"><a class="header" href="#verified-agreements">Verified agreements</a></h4>
-<ul>
-<li>The weight boundary: both engines keep <code>weight == max_weight</code>.</li>
-<li>When truncation is applied: jl truncates once per gate; this engine once per
-channel. The two coincide iff one gate object is one channel, which is the
-suite’s construction rule and structural in the schema. Measured: <code>rz(0.05)</code>
-on <code>X</code> with <code>min_abs_coeff = 0.1</code> kills the <code>sin</code> branch immediately, so the
-second gate sees 1 term, not 2.</li>
-<li>Noise-channel parameter scales: jl damps by <code>1 − λ</code> where this repository
-takes a probability <code>p</code>, so <code>depolarize(p)</code> maps to <code>λ = 4p/3</code> and
-<code>dephase(p)</code> to <code>λ = 2p</code>; <code>amplitude_damping(γ)</code> is 1:1. jl has no native
-general Pauli channel or two-qubit depolarizing gate, so the runner builds
-each as a single diagonal-PTM gate with the exact dual — one gate, one
-truncation point. Both verified term by term.</li>
-<li>Two-qubit matrix ordering for <code>unitary_2q</code> is undocumented upstream; it was
-pinned against a known CNOT in both qubit orderings.</li>
-</ul>
-<h4 id="noise-channel-parity"><a class="header" href="#noise-channel-parity">Noise-channel parity</a></h4>
-<p>Noise-channel semantics agree between the engines term by term, including the
-orientation of <code>amplitude_damping</code> under <code>direction="heisenberg"</code>: the
-Heisenberg map is the unital dual <code>Φ†</code> (<code>Φ†(I) = I</code>), so <code>⟨Z⟩</code> for a qubit in
-<code>|0⟩</code> — the channel’s fixed point — stays at <code>1</code>. The shared fixture gives 9
-terms on both engines with identical labels and bit-exact coefficients, a test
-pins the orientation from both sides, and
-<a href="#the-same-collapse-three-other-channels">Showcase B2</a>
-carries the physics.</p>
-<h3 id="known-gaps"><a class="header" href="#known-gaps">Known gaps</a></h3>
-<ul>
-<li><code>direction="forward"</code> with <code>unitary_1q</code>, <code>unitary_2q</code>, <code>amplitude_damping</code>,
-<code>pauli_channel</code>, <code>depolarize2</code>: PauliPropagation.jl 0.8.2 defines no
-Schrödinger transfer map for those, and the runner rejects such a task up
-front. Every benchmark in the suite is Heisenberg.</li>
-<li>Non-computational, non-uniform product states: jl evaluates against
-<code>|0…0⟩</code>-style states only; this repository’s per-qubit label alphabet is
-strictly larger, so such a state cannot be compared against jl.</li>
-<li>Stim-sourced circuits must be expanded into an inline gate list on the Python
-side; jl has no Stim parser, and the runner makes that a hard error.</li>
-<li><code>topn</code> truncation is absent from the interchange schema: jl has no
-equivalent. Likewise jl’s <code>max_freq</code> / <code>max_sins</code> truncations are excluded.</li>
-<li>jl’s experimental fused rotation kernel has no parity established, because it
-truncates during gate application.</li>
-</ul>
-<h3 id="performance-vs-tracked-set-size"><a class="header" href="#performance-vs-tracked-set-size">Performance vs tracked-set size</a></h3>
-<p>There is no single ratio: the ranking changes sign, and where it changes sign
-depends on the workload by an order of magnitude.</p>
-<p>The source is a dedicated head-to-head study
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>):
-single-threaded core versus core, five interleaved <code>abba</code> pairs per
-configuration, accepted on direction consistency, never on a difference of two
-independently-noisy means. Every configuration passes a per-layer term-count
-parity gate before any timing is reported. <code>ratio &gt; 1</code> means this engine is
-faster.</p>
-<h4 id="ranking-crossover"><a class="header" href="#ranking-crossover">Ranking crossover</a></h4>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
-</thead>
-<tbody>
-<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
-<tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
-<tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
-</tbody>
-</table>
-</div>
-<p>The crossover spans 7× across these three workloads and the SU(4) matrix-gate
-path has none at all, so no single global crossover is quoted anywhere on this
-site.</p>
-<h4 id="above-the-crossover"><a class="header" href="#above-the-crossover">Above the crossover</a></h4>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>peak terms</th><th>ratio</th></tr>
-</thead>
-<tbody>
-<tr><td>kicked-Ising</td><td>6.37 × 10⁵</td><td><strong>2.146</strong></td></tr>
-<tr><td>kicked-Ising</td><td>2.15 × 10⁶</td><td>1.610</td></tr>
-<tr><td>XXZ</td><td>2.66 × 10⁶</td><td><strong>2.023</strong>, still rising</td></tr>
-<tr><td>Haar SU(4)</td><td>2.30 × 10⁶</td><td><strong>2.921</strong>, still rising</td></tr>
-</tbody>
-</table>
-</div>
-<p>Memory, from the same study: process floors are 37.8 MB against Julia’s
-0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
-0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
-479. Both engines sample their own <code>/proc/self/status</code>, never a driver-side
-<code>getrusage(RUSAGE_CHILDREN)</code>.</p>
-<h4 id="below-the-crossover"><a class="header" href="#below-the-crossover">Below the crossover</a></h4>
-<p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
-a hash-map insert per term costs little at 10² terms, while the bucketed
-per-layer pipeline costs nearly the same whatever the term count.</p>
-<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
-measured on the same binary against the default:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
-</thead>
-<tbody>
-<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
-<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
-<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
-<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
-</tbody>
-</table>
-</div>
-<p>Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl’s.</p>
-<h2 id="vs-state-vector-simulation"><a class="header" href="#vs-state-vector-simulation">vs state-vector simulation</a></h2>
-<p>Not a competitor but a complementary oracle, and this suite uses it as one
-everywhere it reaches. Every exact reference on this site is a dense
-statevector (usually qiskit Aer); where two exact routes were affordable the
-reference is both of them, required to agree.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th></th><th>state-vector</th><th>Pauli propagation</th></tr>
-</thead>
-<tbody>
-<tr><td>object carried</td><td><code>2ⁿ</code> amplitudes</td><td>the Pauli strings the <em>observable</em> spreads over</td></tr>
-<tr><td>cost driver</td><td>qubit count</td><td>circuit depth and operator spreading; <code>n</code> enters only through the channel count</td></tr>
-<tr><td>result</td><td>any observable, exactly</td><td>one observable, to a truncation error you must measure</td></tr>
-<tr><td>ceiling here</td><td>~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB)</td><td>127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured</td></tr>
-</tbody>
-</table>
-</div>
-<p>Two measured illustrations of where the boundary sits:</p>
-<ul>
-<li>Benchmark B needed an exact reference for a weight-10 observable whose causal
-cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
-26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
-cone took ~150 s and does not care about depth.</li>
-<li>The same benchmark’s weight-17 observable has a 59-qubit cone: <code>2^59</code>
-amplitudes rules out any dense method, and untruncated propagation is far
-past the wall above. Neither method reaches it, which is why those references
-are self-converged and reported as not converged.</li>
-</ul>
-<p>A state-vector simulator gives the answer; Pauli propagation gives the answer
-plus a truncation error to bound. That asymmetry is why every page on this site
-carries a convergence panel.</p>
-<h2 id="vs-stabilizer-stim-simulation"><a class="header" href="#vs-stabilizer-stim-simulation">vs stabilizer (<code>stim</code>) simulation</a></h2>
-<p>Also an oracle, not a competitor. At a Clifford point <code>stim</code> gives the exact ±1
-integer in under 0.1 s at any qubit count, and
-<a href="#benchmark-a--clifford-point">Benchmark A</a> exists to be scored against it.
-Benchmark B reproduces those integers bit-exactly at every one of eight
-cutoffs, for three observables at both Clifford endpoints.</p>
-<ul>
-<li><code>stim</code>: Clifford circuits, exactly, at enormous scale. Where a circuit is
-Clifford it is strictly the better tool.</li>
-<li>Pauli propagation: non-Clifford circuits, where the tableau method has
-nothing to say. The kicked-Ising kick angle separates the two: at
-<code>θ_h ∈ {0, π/2}</code> the circuit is Clifford and <code>stim</code> answers; at the hard
-interior angles the operator spreads over millions of Pauli strings.</li>
-</ul>
-<p>A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
-samples one Pauli error rather than averaging over them, which is why
-<a href="#validation-an-independent-dense-noisy-reference">Showcase B2</a>
-carries a hand-rolled Kraus density-matrix reference instead.</p>
-<h2 id="vs-tensor-network--mpo-methods"><a class="header" href="#vs-tensor-network--mpo-methods">vs tensor-network / MPO methods</a></h2>
-<p>No measured head-to-head, and this site does not claim one. What it has is a
-cost-model comparison on the same operators:
-<a href="#b6--resource-probes">Showcase B6</a> computes the Pauli-spectrum
-entropy (the quantity governing truncation error for this engine) alongside the
-operator entanglement across a bipartition (the quantity governing MPO bond
-dimension), and finds them saying different things about the same operator:
-<code>S_2</code> grows steadily with depth while <code>S_op</code> saturates around 1.3 nats from
-depth 5 on. A TDVP baseline at large <code>n</code> is
-<a href="#limitations">a named limitation of Benchmark D</a>, not
-silently approximated.</p>
-<h2 id="vs-qiskitsparsepauliop--openfermionqubitoperator"><a class="header" href="#vs-qiskitsparsepauliop--openfermionqubitoperator">vs <code>qiskit.SparsePauliOp</code> / <code>openfermion.QubitOperator</code></a></h2>
-<p>Different scope: these are Pauli-operator containers with algebraic
-manipulation, not propagation engines with truncation — no crossover concept
-applies. The committed comparison
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>)
-benchmarks construction from string terms and one-layer Clifford conjugation,
-seeded inputs, <code>n_terms ∈ {100, 1000, 10 000}</code>; medians in µs, ratio =
-library / paulistrings:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th style="text-align: right">construct</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">openfermion</th><th style="text-align: right">qiskit ratio</th><th style="text-align: right">openfermion ratio</th></tr>
-</thead>
-<tbody>
-<tr><td style="text-align: right">100 terms</td><td style="text-align: right">99.9</td><td style="text-align: right">1 053.7</td><td style="text-align: right">982.4</td><td style="text-align: right">10.5×</td><td style="text-align: right">9.8×</td></tr>
-<tr><td style="text-align: right">1 000</td><td style="text-align: right">683.7</td><td style="text-align: right">9 693.8</td><td style="text-align: right">10 570.3</td><td style="text-align: right">14.2×</td><td style="text-align: right">15.5×</td></tr>
-<tr><td style="text-align: right">10 000</td><td style="text-align: right">3 070.0</td><td style="text-align: right">96 566.8</td><td style="text-align: right">106 078.9</td><td style="text-align: right">31.5×</td><td style="text-align: right">34.6×</td></tr>
-</tbody>
-</table>
-</div>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th style="text-align: right">conjugate by a Clifford layer</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">ratio</th></tr>
-</thead>
-<tbody>
-<tr><td style="text-align: right">100 terms</td><td style="text-align: right">8.9</td><td style="text-align: right">2 133.8</td><td style="text-align: right">240×</td></tr>
-<tr><td style="text-align: right">1 000</td><td style="text-align: right">71.0</td><td style="text-align: right">4 978.4</td><td style="text-align: right">70×</td></tr>
-<tr><td style="text-align: right">10 000</td><td style="text-align: right">1 057.3</td><td style="text-align: right">32 642.0</td><td style="text-align: right">31×</td></tr>
-</tbody>
-</table>
-</div>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"><span class="img-wrapper"><img src="assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"></span></label></p>
-<p><code>openfermion</code> has no equivalent conjugation operation and is not in the second
-group. <code>PauliStrings.jl</code>, the library that inspired this one, is excluded for
-the same reason <code>PauliPropagation.jl</code> is driven by subprocess: no PyJulia
-wiring anywhere.</p>
-<p><strong>Sources for this page:</strong>
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md"><code>benchmarks/julia/README.md</code></a>
-(the probes, the divergences, the gaps) and
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>,
-plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>
-(protocol and headline tables, engine <code>81c568a</code>),
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>
-and
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>.
-qiskit/openfermion numbers:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>
-and its committed <code>results.json</code>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="case-studies"><a class="header" href="#case-studies">Case studies</a></h1>
 <p>Ten measured pieces of work — five showcases and five benchmarks — each one a
 physics question or a performance question the engine was pointed at rather
@@ -1818,6 +2091,16 @@ than a demonstration written around a known answer. Every one carries an
 independent cross-check (a dense reference computed by a route that shares no
 code with the engine, or an exact oracle such as <code>stim</code>) and, where the result
 is truncated, a convergence panel that says where the converged window ends.</p>
+<h2 id="the-2d-ising-quench"><a class="header" href="#the-2d-ising-quench">The flagship worked example: a 2D Ising quench</a></h2>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
+<p>The site’s landing figure is a transverse-field Ising quench on a periodic 4×4 and 6×6 lattice at <code>J = h = 1</code>, first-order Trotterized at <code>δt = 0.05</code> out to <code>t = 2</code>.
+The average X magnetization is Heisenberg-propagated through the 40-step circuit and read against <code>|+…+⟩</code> at every step, under <code>coeff(1e-10) &amp; topn(k)</code> with <code>k</code> of 50 000 (4×4) and 200 000 (6×6).
+The 6×6 case is <code>2³⁶</code> amplitudes, already out of reach for exact diagonalization; the quench runs in ~11–12 s on the reference host.</p>
+<p>The honest error bar there is not floating point but the <code>topn</code> tie rule: <code>topn</code> keeps or drops a magnitude-tied symmetry orbit whole, and an alternative tiebreak that always keeps exactly <code>k</code> terms moves the trajectory by up to 1.7% (4×4) and 0.37% (6×6).
+The larger lattice is the better-resolved one, because the observable averages over more sites and the truncation error self-averages.</p>
+<p>The walkthrough is a Rust one — it is the crate’s own worked example, embedded into its rustdoc — and is the hand-off point for Rust users rather than part of this book:
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>, with the source at <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/examples/ising_2d_quench.rs"><code>ising_2d_quench.rs</code></a>.
+For the same pattern in Python — one Trotter step at a time, an expectation value per step — see <a href="#observable-vs-time">Observable vs time</a>.</p>
 <h2 id="showcases"><a class="header" href="#showcases">Showcases</a></h2>
 <p>Five measured applications.</p>
 <div class="table-wrapper">
@@ -1841,7 +2124,8 @@ cutoff is not a result here. The retained Hilbert–Schmidt norm <code>N = Σ|c_
 alongside it, conserved under exact unitary evolution and equal to 1 for a
 single Pauli seed, so <code>1 − N</code> is exactly the deleted fraction of the operator
 under truncation. Named dependencies rather than silent approximations: where
-a reference was not reachable, the page says so and what it would cost.</p>
+a reference was not reachable, the page says so and what it would cost.
+<a href="#validate-a-result">Validate a result</a> is that panel as a recipe, for your own runs.</p>
 <h3 id="reproducing-a-showcase"><a class="header" href="#reproducing-a-showcase">Reproducing a showcase</a></h3>
 <pre><code class="language-bash">./scripts/setup.sh
 source .venv/bin/activate
@@ -1883,8 +2167,8 @@ comparable:</p>
 <ol>
 <li>One gate per channel, everywhere. Truncation is applied after every
 channel, so fusing two gates into one channel changes the answer. Every
-circuit in the suite is built one gate per <code>Circuit.push</code>, which is also
-what makes a <em>per-layer</em> comparison against another engine meaningful.</li>
+circuit in the suite is built one gate per <code>Circuit</code> method call, which is
+also what makes a <em>per-layer</em> comparison against another engine meaningful.</li>
 <li>Term-count parity blocks timing. No cross-engine wall time is reported for
 a configuration whose evolved Pauli sums diverge term-for-term at matched
 truncation. The parity gate runs first, untimed, and compares every
@@ -1917,7 +2201,8 @@ ordinary slowly-converging series). A flat value with a still-growing sum is
 rejected. A sum truncated to zero terms is rejected outright, however flat it
 looks. The fix is worth a measured <strong>190×</strong> in accuracy.</p>
 <p>Benchmarks C and B2 import that criterion as a function object rather than
-re-implementing it, and a test asserts it is the same object.</p>
+re-implementing it, and a test asserts it is the same object.
+<a href="#validate-a-result">Validate a result</a> states it as user guidance, with the sweep that feeds it.</p>
 <h3 id="reproducing-a-benchmark"><a class="header" href="#reproducing-a-benchmark">Reproducing a benchmark</a></h3>
 <pre><code class="language-bash">./scripts/setup.sh &amp;&amp; source .venv/bin/activate
 pip install -e ".[examples,bench]"

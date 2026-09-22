@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -194,6 +194,22 @@
 </tbody>
 </table>
 </div>
+<p><code>None</code> selects <code>"forward"</code>, which is <strong>not</strong> the direction most examples on this site use; pass <code>direction</code> explicitly.</p>
+<h2 id="what-the-state-label-then-means"><a class="header" href="#what-the-state-label-then-means">What the state label then means</a></h2>
+<p><code>direction</code> also fixes which state a following <a href="measurement.html"><code>expectation(state)</code></a> call is read against, because <code>expectation</code> evaluates <code>⟨s|A|s⟩</code> for whatever sum <code>A</code> it is given.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>direction</code></th><th><code>evolved.expectation(s)</code> equals</th><th>so <code>s</code> is</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"heisenberg"</code></td><td><code>⟨s|U†OU|s⟩</code>, i.e. <code>O</code>’s expectation in <code>U|s⟩</code></td><td>the <strong>input</strong> state, the one the circuit acts on</td></tr>
+<tr><td><code>"forward"</code></td><td><code>⟨s|UOU†|s⟩</code>, i.e. <code>O</code>’s expectation in <code>U†|s⟩</code></td><td>the state at the circuit’s <strong>output</strong> end</td></tr>
+</tbody>
+</table>
+</div>
+<p>Swapping the two is silent: both give a number of the right magnitude and type, and neither raises.
+<a href="../how-to/choose-propagation-direction.html">Propagation direction</a> has the same circuit and observable run both ways, with the two different numbers.</p>
 <h2 id="push-order"><a class="header" href="#push-order">Push order</a></h2>
 <p>Push order interacts with direction. Under <code>"heisenberg"</code> the engine iterates channels in reverse, so pushing <code>ZZ</code> rotations before <code>X</code> rotations gives a step operator <code>U = U_X · U_ZZ</code>, and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Build the circuit in the order you want applied under <code>"forward"</code>; the direction flag handles the reversal.</p>

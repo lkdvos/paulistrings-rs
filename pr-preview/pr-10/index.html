@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-236bf281.js";
+            window.path_to_searchindex_js = "searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-25a9cda8.js"></script>
+        <script src="toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -196,8 +196,9 @@ compared, term for term, against
 average-X-magnetization observable through a Trotter circuit — a regime where
 exact diagonalization is already infeasible (<code>2^36</code> amplitudes for the 6×6
 lattice) but Pauli propagation with modest truncation finishes in seconds to
-minutes. Full walkthrough:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>.</p>
+minutes. Setup, truncation and error bar:
+<a href="explanation/case-studies/index.html#the-2d-ising-quench">the 2D Ising quench</a>,
+which links on to the crate’s full Rust walkthrough.</p>
 <h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
 <p>Write the observable, not the state, in the Pauli basis:</p>
 <pre><code class="language-text">O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n

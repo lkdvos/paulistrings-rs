@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -199,15 +199,49 @@ It starts from a wide operator, so the cost profile is different from the outset
 <pre><code class="language-python">evolved = observable.propagate(circuit, policy, direction="forward")
 </code></pre>
 <p><strong>Always pass <code>direction</code> explicitly.</strong> The Python binding defaults <code>direction=None</code> to <code>"forward"</code>, but the two pictures answer different questions — treat the default as a one-off exploration convenience, not an idiom.</p>
+<h2 id="which-state-the-label-is-read-against"><a class="header" href="#which-state-the-label-is-read-against">Which state the label is read against</a></h2>
+<p><code>expectation(state)</code> evaluates <code>⟨s|A|s⟩</code> for whatever sum it is handed, so <code>direction</code> decides what <code>s</code> refers to:</p>
+<ul>
+<li>under <code>"heisenberg"</code> the evolved sum is <code>U†OU</code>, so <code>expectation(s)</code> is <code>O</code>’s expectation in <code>U|s⟩</code> — <strong><code>s</code> is the input state, before the circuit</strong>;</li>
+<li>under <code>"forward"</code> the evolved sum is <code>UOU†</code>, so <code>expectation(s)</code> is <code>O</code>’s expectation in <code>U†|s⟩</code> — <strong><code>s</code> is a state at the circuit’s output end</strong>.</li>
+</ul>
+<p>Getting it backwards is silent.
+The same observable, the same circuit and the same state label give two perfectly plausible numbers:</p>
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+
+observable = PauliSum.from_strings({"ZII": 1.0}, num_qubits=3)
+
+both = Circuit(3)
+both.h(0)
+both.pauli_rotation("ZZ", [0, 1], 0.6)
+both.rx(0.9, 0)
+both.rx(0.9, 2)
+both.cnot(1, 2)
+
+exact = truncation.coeff(1e-12)
+heisenberg = observable.propagate(both, exact, direction="heisenberg")
+forward = observable.propagate(both, exact, direction="forward")
+
+print("heisenberg", heisenberg.expectation("x+").real)
+print("forward   ", forward.expectation("x+").real)
+</code></pre>
+<pre><code class="language-text">heisenberg 0.6216099682706644
+forward    0.8253356149096783
+</code></pre>
+<p><code>0.6216…</code> is <code>⟨Z_0⟩</code> measured after running this circuit on <code>|+++⟩</code> — the Heisenberg answer, and the one nearly every question of the form “what does this circuit measure?” wants.
+<code>0.8253…</code> is the same observable pushed forward through the circuit and then read against <code>|+++⟩</code> at the far end, which answers a different question.
+Both were checked against a dense <code>2³×2³</code> construction; neither is a bug.</p>
+<h2 id="push-order"><a class="header" href="#push-order">Push order</a></h2>
 <p>Push order interacts with direction: under <code>"heisenberg"</code> the engine walks the channel list <strong>in reverse</strong> and applies each channel’s adjoint, so pushing <code>ZZ</code> rotations before <code>X</code> rotations builds <code>U = U_X · U_ZZ</code> and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Get the circuit’s push order right and the direction flag does the rest.</p>
+<p>Direction also decides which end an <em>incremental</em> propagation extends, which is what a time series is built from — see <a href="propagate-a-time-series.html">Observable vs time</a>.</p>
 <p>See <a href="../reference/direction.html">Direction reference</a> for the full table and <a href="../explanation/comparisons.html">Comparisons</a> for the cross-engine asymmetry in what <code>"forward"</code> can express.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../how-to/choose-a-truncation-policy.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../how-to/validate-a-result.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -221,7 +255,7 @@ Get the circuit’s push order right and the direction flag does the rest.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../how-to/choose-a-truncation-policy.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../how-to/validate-a-result.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,7 +190,8 @@ Every number is copied from a committed source, named inline and in the footer.<
 Coefficient-only scans (truncation, expectation values) and key-only scans (weight, commutation) each stream only the bytes they use, and each column maps directly to a GPU device buffer.
 Buckets retain their capacity across layers, so a steady-state propagation loop allocates nothing (<code>ARCHITECTURE.md</code> §Data-Model).</p>
 <p>The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
-The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (<code>ARCHITECTURE.md</code> §Width).</p>
+The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (<code>ARCHITECTURE.md</code> §Width).
+That makes a term <code>16 × width + 16</code> bytes, which is what turns a projected term count into a memory bill — see <a href="../how-to/read-propagation-stats-and-logs.html#estimate-the-memory-a-run-needs">Propagation stats and logs</a>.</p>
 <h2 id="layer-time-breakdown"><a class="header" href="#layer-time-breakdown">Layer time breakdown</a></h2>
 <p>Measured on the reference host (2× Xeon Gold 6244, 16c/32t) with the repo’s phase-timing probe, per layer class, as a share of summed worker busy time (gather / sort / merge):</p>
 <div class="table-wrapper">

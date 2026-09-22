@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,12 +187,201 @@ Pauli-propagation engine, the comparison is term for term: same circuits, same
 truncation, parity-gated timing. Against state-vector, stabilizer and MPO
 methods the tools do not overlap, and this page records where each applies.</p>
 
+<h2 id="which-method-fits-which-problem"><a class="header" href="#which-method-fits-which-problem">Which method fits which problem</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>your problem</th><th>reach for</th></tr>
+</thead>
+<tbody>
+<tr><td>one observable, non-Clifford circuit, more qubits than a dense method holds</td><td>Pauli propagation — this engine</td></tr>
+<tr><td>any observable, exactly, at ~26–30 qubits or fewer</td><td>a state-vector simulator</td></tr>
+<tr><td>a Clifford circuit, at any qubit count</td><td><code>stim</code></td></tr>
+<tr><td>a low-operator-entanglement operator you need a bond-dimension bound for</td><td>an MPO/tensor-network method</td></tr>
+<tr><td>storing and algebraically manipulating a Pauli operator, without propagation</td><td><code>qiskit.SparsePauliOp</code>, <code>openfermion.QubitOperator</code></td></tr>
+<tr><td>a second Pauli-propagation engine to cross-check against</td><td><code>PauliPropagation.jl</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The sections below give the measured basis for each row.
+Everything under <a href="#methodology">Methodology</a> is the provenance behind the cross-engine numbers rather than part of choosing a method.</p>
+<h2 id="vs-state-vector-simulation"><a class="header" href="#vs-state-vector-simulation">vs state-vector simulation</a></h2>
+<p>Not a competitor but a complementary oracle, and this suite uses it as one
+everywhere it reaches. Every exact reference on this site is a dense
+statevector (usually qiskit Aer); where two exact routes were affordable the
+reference is both of them, required to agree.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>state-vector</th><th>Pauli propagation</th></tr>
+</thead>
+<tbody>
+<tr><td>object carried</td><td><code>2ⁿ</code> amplitudes</td><td>the Pauli strings the <em>observable</em> spreads over</td></tr>
+<tr><td>cost driver</td><td>qubit count</td><td>circuit depth and operator spreading; <code>n</code> enters only through the channel count</td></tr>
+<tr><td>result</td><td>any observable, exactly</td><td>one observable, to a truncation error you must measure</td></tr>
+<tr><td>ceiling here</td><td>~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB)</td><td>127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two measured illustrations of where the boundary sits:</p>
+<ul>
+<li>Benchmark B needed an exact reference for a weight-10 observable whose causal
+cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
+26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
+cone took ~150 s and does not care about depth.</li>
+<li>The same benchmark’s weight-17 observable has a 59-qubit cone: <code>2^59</code>
+amplitudes rules out any dense method, and untruncated propagation is far
+past the wall above. Neither method reaches it, which is why those references
+are self-converged and reported as not converged.</li>
+</ul>
+<p>A state-vector simulator gives the answer; Pauli propagation gives the answer
+plus a truncation error to bound. That asymmetry is why every page on this site
+carries a convergence panel.</p>
+<h2 id="vs-stabilizer-stim-simulation"><a class="header" href="#vs-stabilizer-stim-simulation">vs stabilizer (<code>stim</code>) simulation</a></h2>
+<p>Also an oracle, not a competitor. At a Clifford point <code>stim</code> gives the exact ±1
+integer in under 0.1 s at any qubit count, and
+<a href="case-studies/a-clifford.html">Benchmark A</a> exists to be scored against it.
+Benchmark B reproduces those integers bit-exactly at every one of eight
+cutoffs, for three observables at both Clifford endpoints.</p>
+<ul>
+<li><code>stim</code>: Clifford circuits, exactly, at enormous scale. Where a circuit is
+Clifford it is strictly the better tool.</li>
+<li>Pauli propagation: non-Clifford circuits, where the tableau method has
+nothing to say. The kicked-Ising kick angle separates the two: at
+<code>θ_h ∈ {0, π/2}</code> the circuit is Clifford and <code>stim</code> answers; at the hard
+interior angles the operator spreads over millions of Pauli strings.</li>
+</ul>
+<p>A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
+samples one Pauli error rather than averaging over them, which is why
+<a href="case-studies/b2-noisy-verification.html#validation-an-independent-dense-noisy-reference">Showcase B2</a>
+carries a hand-rolled Kraus density-matrix reference instead.</p>
+<h2 id="vs-tensor-network--mpo-methods"><a class="header" href="#vs-tensor-network--mpo-methods">vs tensor-network / MPO methods</a></h2>
+<p>No measured head-to-head, and this site does not claim one. What it has is a
+cost-model comparison on the same operators:
+<a href="case-studies/b6-resource-probes.html">Showcase B6</a> computes the Pauli-spectrum
+entropy (the quantity governing truncation error for this engine) alongside the
+operator entanglement across a bipartition (the quantity governing MPO bond
+dimension), and finds them saying different things about the same operator:
+<code>S_2</code> grows steadily with depth while <code>S_op</code> saturates around 1.3 nats from
+depth 5 on. A TDVP baseline at large <code>n</code> is
+<a href="case-studies/d-xxz-chain.html#limitations">a named limitation of Benchmark D</a>, not
+silently approximated.</p>
+<h2 id="vs-qiskitsparsepauliop--openfermionqubitoperator"><a class="header" href="#vs-qiskitsparsepauliop--openfermionqubitoperator">vs <code>qiskit.SparsePauliOp</code> / <code>openfermion.QubitOperator</code></a></h2>
+<p>Different scope: these are Pauli-operator containers with algebraic
+manipulation, not propagation engines with truncation — no crossover concept
+applies. The committed comparison
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>)
+benchmarks construction from string terms and one-layer Clifford conjugation,
+seeded inputs, <code>n_terms ∈ {100, 1000, 10 000}</code>; medians in µs, ratio =
+library / paulistrings:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: right">construct</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">openfermion</th><th style="text-align: right">qiskit ratio</th><th style="text-align: right">openfermion ratio</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: right">100 terms</td><td style="text-align: right">99.9</td><td style="text-align: right">1 053.7</td><td style="text-align: right">982.4</td><td style="text-align: right">10.5×</td><td style="text-align: right">9.8×</td></tr>
+<tr><td style="text-align: right">1 000</td><td style="text-align: right">683.7</td><td style="text-align: right">9 693.8</td><td style="text-align: right">10 570.3</td><td style="text-align: right">14.2×</td><td style="text-align: right">15.5×</td></tr>
+<tr><td style="text-align: right">10 000</td><td style="text-align: right">3 070.0</td><td style="text-align: right">96 566.8</td><td style="text-align: right">106 078.9</td><td style="text-align: right">31.5×</td><td style="text-align: right">34.6×</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: right">conjugate by a Clifford layer</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">ratio</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: right">100 terms</td><td style="text-align: right">8.9</td><td style="text-align: right">2 133.8</td><td style="text-align: right">240×</td></tr>
+<tr><td style="text-align: right">1 000</td><td style="text-align: right">71.0</td><td style="text-align: right">4 978.4</td><td style="text-align: right">70×</td></tr>
+<tr><td style="text-align: right">10 000</td><td style="text-align: right">1 057.3</td><td style="text-align: right">32 642.0</td><td style="text-align: right">31×</td></tr>
+</tbody>
+</table>
+</div>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"><span class="img-wrapper"><img src="../assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"></span></label></p>
+<p><code>openfermion</code> has no equivalent conjugation operation and is not in the second
+group. <code>PauliStrings.jl</code>, the library that inspired this one, is excluded for
+the same reason <code>PauliPropagation.jl</code> is driven by subprocess: no PyJulia
+wiring anywhere.</p>
 <h2 id="vs-paulipropagationjl"><a class="header" href="#vs-paulipropagationjl">vs <code>PauliPropagation.jl</code></a></h2>
 <p>The comparison baseline is subprocess-driven and out of CI, pinned to
 <strong>PauliPropagation.jl 0.8.2</strong> on julia 1.12.6 in a committed
 <code>Project.toml</code>/<code>Manifest.toml</code>. There is no PyJulia or juliacall anywhere: the
 entry points are a Julia script that reads a task JSON and emits a result JSON,
 and a <code>subprocess</code> wrapper that skips cleanly when no <code>julia</code> is on <code>PATH</code>.</p>
+<h3 id="performance-vs-tracked-set-size"><a class="header" href="#performance-vs-tracked-set-size">Performance vs tracked-set size</a></h3>
+<p>There is no single ratio: the ranking changes sign, and where it changes sign
+depends on the workload by an order of magnitude.</p>
+<p>The source is a dedicated head-to-head study
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>):
+single-threaded core versus core, five interleaved <code>abba</code> pairs per
+configuration, accepted on direction consistency, never on a difference of two
+independently-noisy means. Every configuration passes a per-layer term-count
+parity gate before any timing is reported. <code>ratio &gt; 1</code> means this engine is
+faster.</p>
+<h4 id="ranking-crossover"><a class="header" href="#ranking-crossover">Ranking crossover</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
+</thead>
+<tbody>
+<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
+<tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
+<tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
+</tbody>
+</table>
+</div>
+<p>The crossover spans 7× across these three workloads and the SU(4) matrix-gate
+path has none at all, so no single global crossover is quoted anywhere on this
+site.</p>
+<h4 id="above-the-crossover"><a class="header" href="#above-the-crossover">Above the crossover</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>peak terms</th><th>ratio</th></tr>
+</thead>
+<tbody>
+<tr><td>kicked-Ising</td><td>6.37 × 10⁵</td><td><strong>2.146</strong></td></tr>
+<tr><td>kicked-Ising</td><td>2.15 × 10⁶</td><td>1.610</td></tr>
+<tr><td>XXZ</td><td>2.66 × 10⁶</td><td><strong>2.023</strong>, still rising</td></tr>
+<tr><td>Haar SU(4)</td><td>2.30 × 10⁶</td><td><strong>2.921</strong>, still rising</td></tr>
+</tbody>
+</table>
+</div>
+<p>Memory, from the same study: process floors are 37.8 MB against Julia’s
+0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
+0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
+479. Both engines sample their own <code>/proc/self/status</code>, never a driver-side
+<code>getrusage(RUSAGE_CHILDREN)</code>.</p>
+<h4 id="below-the-crossover"><a class="header" href="#below-the-crossover">Below the crossover</a></h4>
+<p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
+a hash-map insert per term costs little at 10² terms, while the bucketed
+per-layer pipeline costs nearly the same whatever the term count.</p>
+<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
+2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
+configurations
+(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
+measured on the same binary against the default:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
+</thead>
+<tbody>
+<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
+<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
+<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
+<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
+</tbody>
+</table>
+</div>
+<p>Above its threshold the path is inert, measured as its own control: SU(4) at
+84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
+configurations passed the per-layer parity gate with the path enabled — 9 618
+per-layer counts, every one identical to PauliPropagation.jl’s.</p>
+<h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
+<p>How the <code>PauliPropagation.jl</code> comparison is made, and what had to be pinned before any number above could be quoted.</p>
 <h3 id="parity-discipline"><a class="header" href="#parity-discipline">Parity discipline</a></h3>
 <p>Term-count parity blocks timing: no cross-engine wall time is reported for a
 configuration whose evolved Pauli sums diverge term-for-term at matched
@@ -322,175 +511,6 @@ equivalent. Likewise jl’s <code>max_freq</code> / <code>max_sins</code> trunca
 <li>jl’s experimental fused rotation kernel has no parity established, because it
 truncates during gate application.</li>
 </ul>
-<h3 id="performance-vs-tracked-set-size"><a class="header" href="#performance-vs-tracked-set-size">Performance vs tracked-set size</a></h3>
-<p>There is no single ratio: the ranking changes sign, and where it changes sign
-depends on the workload by an order of magnitude.</p>
-<p>The source is a dedicated head-to-head study
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>):
-single-threaded core versus core, five interleaved <code>abba</code> pairs per
-configuration, accepted on direction consistency, never on a difference of two
-independently-noisy means. Every configuration passes a per-layer term-count
-parity gate before any timing is reported. <code>ratio &gt; 1</code> means this engine is
-faster.</p>
-<h4 id="ranking-crossover"><a class="header" href="#ranking-crossover">Ranking crossover</a></h4>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
-</thead>
-<tbody>
-<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
-<tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
-<tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
-</tbody>
-</table>
-</div>
-<p>The crossover spans 7× across these three workloads and the SU(4) matrix-gate
-path has none at all, so no single global crossover is quoted anywhere on this
-site.</p>
-<h4 id="above-the-crossover"><a class="header" href="#above-the-crossover">Above the crossover</a></h4>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>peak terms</th><th>ratio</th></tr>
-</thead>
-<tbody>
-<tr><td>kicked-Ising</td><td>6.37 × 10⁵</td><td><strong>2.146</strong></td></tr>
-<tr><td>kicked-Ising</td><td>2.15 × 10⁶</td><td>1.610</td></tr>
-<tr><td>XXZ</td><td>2.66 × 10⁶</td><td><strong>2.023</strong>, still rising</td></tr>
-<tr><td>Haar SU(4)</td><td>2.30 × 10⁶</td><td><strong>2.921</strong>, still rising</td></tr>
-</tbody>
-</table>
-</div>
-<p>Memory, from the same study: process floors are 37.8 MB against Julia’s
-0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
-0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
-479. Both engines sample their own <code>/proc/self/status</code>, never a driver-side
-<code>getrusage(RUSAGE_CHILDREN)</code>.</p>
-<h4 id="below-the-crossover"><a class="header" href="#below-the-crossover">Below the crossover</a></h4>
-<p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
-a hash-map insert per term costs little at 10² terms, while the bucketed
-per-layer pipeline costs nearly the same whatever the term count.</p>
-<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
-measured on the same binary against the default:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
-</thead>
-<tbody>
-<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
-<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
-<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
-<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
-</tbody>
-</table>
-</div>
-<p>Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl’s.</p>
-<h2 id="vs-state-vector-simulation"><a class="header" href="#vs-state-vector-simulation">vs state-vector simulation</a></h2>
-<p>Not a competitor but a complementary oracle, and this suite uses it as one
-everywhere it reaches. Every exact reference on this site is a dense
-statevector (usually qiskit Aer); where two exact routes were affordable the
-reference is both of them, required to agree.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th></th><th>state-vector</th><th>Pauli propagation</th></tr>
-</thead>
-<tbody>
-<tr><td>object carried</td><td><code>2ⁿ</code> amplitudes</td><td>the Pauli strings the <em>observable</em> spreads over</td></tr>
-<tr><td>cost driver</td><td>qubit count</td><td>circuit depth and operator spreading; <code>n</code> enters only through the channel count</td></tr>
-<tr><td>result</td><td>any observable, exactly</td><td>one observable, to a truncation error you must measure</td></tr>
-<tr><td>ceiling here</td><td>~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB)</td><td>127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured</td></tr>
-</tbody>
-</table>
-</div>
-<p>Two measured illustrations of where the boundary sits:</p>
-<ul>
-<li>Benchmark B needed an exact reference for a weight-10 observable whose causal
-cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
-26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
-cone took ~150 s and does not care about depth.</li>
-<li>The same benchmark’s weight-17 observable has a 59-qubit cone: <code>2^59</code>
-amplitudes rules out any dense method, and untruncated propagation is far
-past the wall above. Neither method reaches it, which is why those references
-are self-converged and reported as not converged.</li>
-</ul>
-<p>A state-vector simulator gives the answer; Pauli propagation gives the answer
-plus a truncation error to bound. That asymmetry is why every page on this site
-carries a convergence panel.</p>
-<h2 id="vs-stabilizer-stim-simulation"><a class="header" href="#vs-stabilizer-stim-simulation">vs stabilizer (<code>stim</code>) simulation</a></h2>
-<p>Also an oracle, not a competitor. At a Clifford point <code>stim</code> gives the exact ±1
-integer in under 0.1 s at any qubit count, and
-<a href="case-studies/a-clifford.html">Benchmark A</a> exists to be scored against it.
-Benchmark B reproduces those integers bit-exactly at every one of eight
-cutoffs, for three observables at both Clifford endpoints.</p>
-<ul>
-<li><code>stim</code>: Clifford circuits, exactly, at enormous scale. Where a circuit is
-Clifford it is strictly the better tool.</li>
-<li>Pauli propagation: non-Clifford circuits, where the tableau method has
-nothing to say. The kicked-Ising kick angle separates the two: at
-<code>θ_h ∈ {0, π/2}</code> the circuit is Clifford and <code>stim</code> answers; at the hard
-interior angles the operator spreads over millions of Pauli strings.</li>
-</ul>
-<p>A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
-samples one Pauli error rather than averaging over them, which is why
-<a href="case-studies/b2-noisy-verification.html#validation-an-independent-dense-noisy-reference">Showcase B2</a>
-carries a hand-rolled Kraus density-matrix reference instead.</p>
-<h2 id="vs-tensor-network--mpo-methods"><a class="header" href="#vs-tensor-network--mpo-methods">vs tensor-network / MPO methods</a></h2>
-<p>No measured head-to-head, and this site does not claim one. What it has is a
-cost-model comparison on the same operators:
-<a href="case-studies/b6-resource-probes.html">Showcase B6</a> computes the Pauli-spectrum
-entropy (the quantity governing truncation error for this engine) alongside the
-operator entanglement across a bipartition (the quantity governing MPO bond
-dimension), and finds them saying different things about the same operator:
-<code>S_2</code> grows steadily with depth while <code>S_op</code> saturates around 1.3 nats from
-depth 5 on. A TDVP baseline at large <code>n</code> is
-<a href="case-studies/d-xxz-chain.html#limitations">a named limitation of Benchmark D</a>, not
-silently approximated.</p>
-<h2 id="vs-qiskitsparsepauliop--openfermionqubitoperator"><a class="header" href="#vs-qiskitsparsepauliop--openfermionqubitoperator">vs <code>qiskit.SparsePauliOp</code> / <code>openfermion.QubitOperator</code></a></h2>
-<p>Different scope: these are Pauli-operator containers with algebraic
-manipulation, not propagation engines with truncation — no crossover concept
-applies. The committed comparison
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>)
-benchmarks construction from string terms and one-layer Clifford conjugation,
-seeded inputs, <code>n_terms ∈ {100, 1000, 10 000}</code>; medians in µs, ratio =
-library / paulistrings:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th style="text-align: right">construct</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">openfermion</th><th style="text-align: right">qiskit ratio</th><th style="text-align: right">openfermion ratio</th></tr>
-</thead>
-<tbody>
-<tr><td style="text-align: right">100 terms</td><td style="text-align: right">99.9</td><td style="text-align: right">1 053.7</td><td style="text-align: right">982.4</td><td style="text-align: right">10.5×</td><td style="text-align: right">9.8×</td></tr>
-<tr><td style="text-align: right">1 000</td><td style="text-align: right">683.7</td><td style="text-align: right">9 693.8</td><td style="text-align: right">10 570.3</td><td style="text-align: right">14.2×</td><td style="text-align: right">15.5×</td></tr>
-<tr><td style="text-align: right">10 000</td><td style="text-align: right">3 070.0</td><td style="text-align: right">96 566.8</td><td style="text-align: right">106 078.9</td><td style="text-align: right">31.5×</td><td style="text-align: right">34.6×</td></tr>
-</tbody>
-</table>
-</div>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th style="text-align: right">conjugate by a Clifford layer</th><th style="text-align: right">paulistrings</th><th style="text-align: right">qiskit</th><th style="text-align: right">ratio</th></tr>
-</thead>
-<tbody>
-<tr><td style="text-align: right">100 terms</td><td style="text-align: right">8.9</td><td style="text-align: right">2 133.8</td><td style="text-align: right">240×</td></tr>
-<tr><td style="text-align: right">1 000</td><td style="text-align: right">71.0</td><td style="text-align: right">4 978.4</td><td style="text-align: right">70×</td></tr>
-<tr><td style="text-align: right">10 000</td><td style="text-align: right">1 057.3</td><td style="text-align: right">32 642.0</td><td style="text-align: right">31×</td></tr>
-</tbody>
-</table>
-</div>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"><span class="img-wrapper"><img src="../assets/comparisons/baseline-ops.svg" alt="Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings"></span></label></p>
-<p><code>openfermion</code> has no equivalent conjugation operation and is not in the second
-group. <code>PauliStrings.jl</code>, the library that inspired this one, is excluded for
-the same reason <code>PauliPropagation.jl</code> is driven by subprocess: no PyJulia
-wiring anywhere.</p>
 <p><strong>Sources for this page:</strong>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md"><code>benchmarks/julia/README.md</code></a>
 (the probes, the divergences, the gaps) and
@@ -509,11 +529,11 @@ and its committed <code>results.json</code>.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../explanation/mpi.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../explanation/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../explanation/case-studies/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../explanation/truncation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -523,11 +543,11 @@ and its committed <code>results.json</code>.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../explanation/mpi.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../explanation/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../explanation/case-studies/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../explanation/truncation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

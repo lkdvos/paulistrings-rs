@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-236bf281.js";
+            window.path_to_searchindex_js = "../searchindex-149ef08b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-25a9cda8.js"></script>
+        <script src="../toc-9abada3b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,6 +204,9 @@ evolved = observable.propagate(
 )
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
+<pre><code class="language-text">5 0.7309698831278217
+</code></pre>
+<p>Five Pauli strings survived, and the average X magnetization in <code>|++++⟩</code> after the circuit is <code>0.731</code>.</p>
 <h2 id="step-by-step"><a class="header" href="#step-by-step">Step by step</a></h2>
 <p><code>PauliSum.from_strings</code> builds the observable directly from a dict of Pauli strings to coefficients.
 Here it is the average X magnetization on 4 qubits: a quarter weight on each single-qubit <code>X</code> string.</p>
@@ -218,10 +221,58 @@ Each call appends one gate, so the circuit is exactly the three-gate sequence wr
 <p><code>evolved</code> is the propagated <code>PauliSum</code>.
 <code>len(evolved)</code> is the number of surviving terms.
 <code>evolved.expectation("x+")</code> evaluates the expectation value in the uniform product state <code>|+…+⟩</code>; <code>.real</code> drops the (here zero) imaginary part.</p>
-<h2 id="see-also"><a class="header" href="#see-also">See also</a></h2>
+<h2 id="look-at-the-terms-that-survived"><a class="header" href="#look-at-the-terms-that-survived">Look at the terms that survived</a></h2>
+<p><code>PauliSum</code> has no term-listing accessor: it hands back the symplectic columns the engine stores, and a Pauli character is the pair of bits for that qubit.
+Qubit <code>q</code>’s Pauli is bit <code>q</code> of the x word and bit <code>q</code> of the z word — <code>(0,0)</code> is <code>I</code>, <code>(1,0)</code> is <code>X</code>, <code>(0,1)</code> is <code>Z</code>, <code>(1,1)</code> is <code>Y</code>.
+Decode the five terms and sort them by magnitude:</p>
+<pre><code class="language-python">import numpy as np
+
+PAULI = np.array([["I", "Z"], ["X", "Y"]])
+
+x = evolved.x_array()
+z = evolved.z_array()
+coefficients = evolved.coefficients_array()
+
+for row in np.argsort(-np.abs(coefficients)):
+    label = "".join(PAULI[(x[row, 0] &gt;&gt; q) &amp; 1, (z[row, 0] &gt;&gt; q) &amp; 1] for q in range(4))
+    print(f"{label}  {coefficients[row].real:+.9f}")
+</code></pre>
+<pre><code class="language-text">IIZI  +0.250000000
+IXII  +0.250000000
+IIIX  +0.250000000
+XXII  +0.230969883
+YXII  -0.095670858
+</code></pre>
+<p>Two of the four seed terms, <code>IXII</code> and <code>IIIX</code>, came through untouched, on the qubits the <code>cnot</code> and the <code>rz</code> never reach.
+<code>IIXI</code> picked up <code>circuit.h(2)</code> and became <code>IIZI</code>, since a Hadamard swaps <code>X</code> and <code>Z</code> on the qubit it acts on.
+<code>XIII</code> is the one the <code>cnot</code> and the <code>rz</code> both acted on, since qubit 0 is the CNOT’s control: <code>cnot(0, 1)</code> turns it into <code>XXII</code>, and <code>rz(math.pi / 8, 0)</code> then splits that into <code>XXII</code> and <code>YXII</code>.
+The <code>[row, 0]</code> index picks word 0 of the term, which is the whole key here because 4 qubits fit in one 64-bit word — see <a href="../how-to/build-observable-from-arrays.html">Observable from raw arrays</a> for the general layout.</p>
+<h2 id="check-the-cutoff"><a class="header" href="#check-the-cutoff">Check the cutoff</a></h2>
+<p><code>truncation.coeff(1e-10)</code> was a guess.
+Run the same propagation at a few looser cutoffs and watch the term count, the answer and the retained norm <code>Σ|c|²</code> together:</p>
+<pre><code class="language-python">norm_in = float(np.sum(np.abs(observable.coefficients_array()) ** 2))
+
+for eps in [1e-1, 1e-2, 1e-10]:
+    trial = observable.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
+    retained = float(np.sum(np.abs(trial.coefficients_array()) ** 2)) / norm_in
+    print(f"{eps:7.0e}  terms={len(trial):3d}  &lt;O&gt;={trial.expectation('x+').real:+.9f}  retained={retained:.6f}")
+</code></pre>
+<pre><code class="language-text">  1e-01  terms=  4  &lt;O&gt;=+0.730969883  retained=0.963388
+  1e-02  terms=  5  &lt;O&gt;=+0.730969883  retained=1.000000
+  1e-10  terms=  5  &lt;O&gt;=+0.730969883  retained=1.000000
+</code></pre>
+<p>The answer is the same to every printed digit at all three cutoffs, and <code>1e-2</code> already retains the whole operator — this circuit is small enough that the truncation never bit.</p>
+<p>Read the top row carefully, though.
+At <code>1e-1</code> the sum lost 3.7% of its norm and the answer did not move at all, because the deleted <code>YXII</code> term has a <code>Y</code> on qubit 0 and contributes nothing to <code>⟨++++|O|++++⟩</code>.
+A flat answer over a <em>changing</em> sum is not evidence of convergence, and on a real problem that is exactly the trap to check for — <a href="../how-to/validate-a-result.html">Validate a result</a> is the full recipe.</p>
+<h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
 <ul>
-<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> — more observable constructions.</li>
-<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more circuit constructions.</li>
+<li><a href="../how-to/index.html">How-to guides</a> — the task recipes: noise, truncation, interop, stats, NUMA, MPI.</li>
+<li><a href="../how-to/validate-a-result.html">Validate a result</a> — the cutoff sweep, the retained norm, and when a number may be quoted.</li>
+<li><a href="../how-to/choose-propagation-direction.html">Propagation direction</a> and <a href="../reference/direction.html">Direction semantics</a> — what <code>"heisenberg"</code> and <code>"forward"</code> compute, and which state <code>expectation</code> is then read against.</li>
+<li><a href="../how-to/propagate-a-time-series.html">Observable vs time</a> — the same walkthrough, stepped out into a Trotterized time series.</li>
+<li><a href="../explanation/comparisons.html">Comparisons</a> — whether Pauli propagation is the right method for your problem at all.</li>
+<li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> and <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more observable and circuit constructions.</li>
 </ul>
 
                     </main>

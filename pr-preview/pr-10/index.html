@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6dbfed79.js";
+            window.path_to_searchindex_js = "searchindex-9665f734.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -216,13 +216,13 @@ print(len(evolved), evolved.expectation("x+").real)
 <pre><code class="language-math">H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
 </code></pre>
 <p>This is achieved by propagating the total magnetization <code>M = \sum_i X_i</code> through a Trotterized circuit and measuring against the initial state <code>|+⟩⟨+|^{⊗N}</code>.
-However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings and discard coefficients with a magnitude below a threshold <code>ϵ</code>.
-Finally, we can extrapolate to the limit of zero truncation to validate our results.</p>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)"></span></label></p>
-<p>Three field strengths <code>h</code> (color) and three coefficient thresholds <code>ϵ = 10⁻³, 10⁻⁵, 10⁻⁷</code> (opacity) on an 8×8 periodic lattice, <code>J = 1</code>.
-At every <code>h</code> the two tighter thresholds stay on top of each other through <code>t = 0.4</code>: that overlap is the trusted regime, where tightening <code>ϵ</code> further would not move the curve.
-The loosest threshold peels away once the tracked sum has thrown out too much to represent the true operator, and it does so earlier at larger <code>h</code> — a bigger single-qubit rotation per Trotter step drives the operator across more of the Pauli sum faster, so the same <code>ϵ</code> buys less trustworthy time.
-<code>h = 2</code> also keeps far more terms at a given <code>ϵ</code> for the same reason: at <code>t = 0.4</code>, <code>ϵ = 10⁻⁵</code> holds 18,688 terms at <code>h = 0.5</code> against 174,048 at <code>h = 2</code>.
+However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings, for example by keeping only the largest-magnitude terms up to a fixed count.
+Finally, we can extrapolate to the limit of no truncation to validate our results.</p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"></span></label></p>
+<p>Two field strengths <code>h</code> (color) and five <code>TopN</code> term caps <code>10, 100, 1000, 10⁴, 10⁵</code> (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, <code>J = 1</code>.
+At every <code>h</code> the two largest caps sit on top of each other through <code>t = 0.6</code>: that overlap is the trusted regime, where raising the cap further would not move the curve.
+Smaller caps peel away once they can no longer hold enough of the operator, and they do so at a larger cap for <code>h = 3.1</code> than for <code>h = 0.1</code> — a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster, so the same term budget buys less trustworthy time.
+The smallest cap, <code>TopN = 10</code>, collapses to <code>⟨X⟩ = 0</code> at both field strengths for a specific reason, not just aggressiveness: <code>TopN</code> never splits a tie group, and once the sum’s largest surviving terms are exact symmetry-related ties, a cap that lands inside that tie group keeps nothing rather than an arbitrary slice of it.
 Figure script: <code>docs/figures/ising-quench-convergence/quench_convergence.py</code>.</p>
 <pre><code class="language-python">from paulistrings import truncation
 

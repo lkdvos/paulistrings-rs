@@ -5,6 +5,111 @@ Pauli-propagation engine, the comparison is term for term: same circuits, same
 truncation, parity-gated timing. Against state-vector, stabilizer and MPO
 methods the tools do not overlap, and this page records where each applies.</p>
 
+## Which method fits which problem
+
+| your problem | reach for |
+|---|---|
+| one observable, non-Clifford circuit, more qubits than a dense method holds | Pauli propagation — this engine |
+| any observable, exactly, at ~26–30 qubits or fewer | a state-vector simulator |
+| a Clifford circuit, at any qubit count | `stim` |
+| a low-operator-entanglement operator you need a bond-dimension bound for | an MPO/tensor-network method |
+| storing and algebraically manipulating a Pauli operator, without propagation | `qiskit.SparsePauliOp`, `openfermion.QubitOperator` |
+| a second Pauli-propagation engine to cross-check against | `PauliPropagation.jl` |
+
+The sections below give the measured basis for each row.
+Everything under [Methodology](#methodology) is the provenance behind the cross-engine numbers rather than part of choosing a method.
+
+## vs state-vector simulation
+
+Not a competitor but a complementary oracle, and this suite uses it as one
+everywhere it reaches. Every exact reference on this site is a dense
+statevector (usually qiskit Aer); where two exact routes were affordable the
+reference is both of them, required to agree.
+
+| | state-vector | Pauli propagation |
+|---|---|---|
+| object carried | `2ⁿ` amplitudes | the Pauli strings the *observable* spreads over |
+| cost driver | qubit count | circuit depth and operator spreading; `n` enters only through the channel count |
+| result | any observable, exactly | one observable, to a truncation error you must measure |
+| ceiling here | ~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB) | 127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured |
+
+Two measured illustrations of where the boundary sits:
+
+- Benchmark B needed an exact reference for a weight-10 observable whose causal
+  cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
+  26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
+  cone took ~150 s and does not care about depth.
+- The same benchmark's weight-17 observable has a 59-qubit cone: `2^59`
+  amplitudes rules out any dense method, and untruncated propagation is far
+  past the wall above. Neither method reaches it, which is why those references
+  are self-converged and reported as not converged.
+
+A state-vector simulator gives the answer; Pauli propagation gives the answer
+plus a truncation error to bound. That asymmetry is why every page on this site
+carries a convergence panel.
+
+## vs stabilizer (`stim`) simulation
+
+Also an oracle, not a competitor. At a Clifford point `stim` gives the exact ±1
+integer in under 0.1 s at any qubit count, and
+[Benchmark A](case-studies/a-clifford.md) exists to be scored against it.
+Benchmark B reproduces those integers bit-exactly at every one of eight
+cutoffs, for three observables at both Clifford endpoints.
+
+- `stim`: Clifford circuits, exactly, at enormous scale. Where a circuit is
+  Clifford it is strictly the better tool.
+- Pauli propagation: non-Clifford circuits, where the tableau method has
+  nothing to say. The kicked-Ising kick angle separates the two: at
+  `θ_h ∈ {0, π/2}` the circuit is Clifford and `stim` answers; at the hard
+  interior angles the operator spreads over millions of Pauli strings.
+
+A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
+samples one Pauli error rather than averaging over them, which is why
+[Showcase B2](case-studies/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
+carries a hand-rolled Kraus density-matrix reference instead.
+
+## vs tensor-network / MPO methods
+
+No measured head-to-head, and this site does not claim one. What it has is a
+cost-model comparison on the same operators:
+[Showcase B6](case-studies/b6-resource-probes.md) computes the Pauli-spectrum
+entropy (the quantity governing truncation error for this engine) alongside the
+operator entanglement across a bipartition (the quantity governing MPO bond
+dimension), and finds them saying different things about the same operator:
+`S_2` grows steadily with depth while `S_op` saturates around 1.3 nats from
+depth 5 on. A TDVP baseline at large `n` is
+[a named limitation of Benchmark D](case-studies/d-xxz-chain.md#limitations), not
+silently approximated.
+
+## vs `qiskit.SparsePauliOp` / `openfermion.QubitOperator`
+
+Different scope: these are Pauli-operator containers with algebraic
+manipulation, not propagation engines with truncation — no crossover concept
+applies. The committed comparison
+([`baseline_comparison/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md))
+benchmarks construction from string terms and one-layer Clifford conjugation,
+seeded inputs, `n_terms ∈ {100, 1000, 10 000}`; medians in µs, ratio =
+library / paulistrings:
+
+| construct | paulistrings | qiskit | openfermion | qiskit ratio | openfermion ratio |
+|---:|---:|---:|---:|---:|---:|
+| 100 terms | 99.9 | 1 053.7 | 982.4 | 10.5× | 9.8× |
+| 1 000 | 683.7 | 9 693.8 | 10 570.3 | 14.2× | 15.5× |
+| 10 000 | 3 070.0 | 96 566.8 | 106 078.9 | 31.5× | 34.6× |
+
+| conjugate by a Clifford layer | paulistrings | qiskit | ratio |
+|---:|---:|---:|---:|
+| 100 terms | 8.9 | 2 133.8 | 240× |
+| 1 000 | 71.0 | 4 978.4 | 70× |
+| 10 000 | 1 057.3 | 32 642.0 | 31× |
+
+![Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings](../assets/comparisons/baseline-ops.svg)
+
+`openfermion` has no equivalent conjugation operation and is not in the second
+group. `PauliStrings.jl`, the library that inspired this one, is excluded for
+the same reason `PauliPropagation.jl` is driven by subprocess: no PyJulia
+wiring anywhere.
+
 ## vs `PauliPropagation.jl`
 
 The comparison baseline is subprocess-driven and out of CI, pinned to
@@ -12,6 +117,74 @@ The comparison baseline is subprocess-driven and out of CI, pinned to
 `Project.toml`/`Manifest.toml`. There is no PyJulia or juliacall anywhere: the
 entry points are a Julia script that reads a task JSON and emits a result JSON,
 and a `subprocess` wrapper that skips cleanly when no `julia` is on `PATH`.
+
+### Performance vs tracked-set size
+
+There is no single ratio: the ranking changes sign, and where it changes sign
+depends on the workload by an order of magnitude.
+
+The source is a dedicated head-to-head study
+([`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)):
+single-threaded core versus core, five interleaved `abba` pairs per
+configuration, accepted on direction consistency, never on a difference of two
+independently-noisy means. Every configuration passes a per-layer term-count
+parity gate before any timing is reported. `ratio > 1` means this engine is
+faster.
+
+#### Ranking crossover
+
+| workload | channels | crossover (peak terms) |
+|---|---|---|
+| kicked-Ising, 127 q, 5 Trotter steps | 1 355 | **2.73 × 10³** (1.88 × 10³ with `engine="auto"`) |
+| XXZ chain, n = 100, 6 Trotter steps | 1 782 | **2.00 × 10⁴** |
+| Haar SU(4) brickwork, n = 36, depth 6 | 105 | none on the swept range: faster at every sign-consistent point |
+
+The crossover spans 7× across these three workloads and the SU(4) matrix-gate
+path has none at all, so no single global crossover is quoted anywhere on this
+site.
+
+#### Above the crossover
+
+| workload | peak terms | ratio |
+|---|---|---|
+| kicked-Ising | 6.37 × 10⁵ | **2.146** |
+| kicked-Ising | 2.15 × 10⁶ | 1.610 |
+| XXZ | 2.66 × 10⁶ | **2.023**, still rising |
+| Haar SU(4) | 2.30 × 10⁶ | **2.921**, still rising |
+
+Memory, from the same study: process floors are 37.8 MB against Julia's
+0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
+0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
+479. Both engines sample their own `/proc/self/status`, never a driver-side
+`getrusage(RUSAGE_CHILDREN)`.
+
+#### Below the crossover
+
+Below the crossover jl's hash-map backend is faster, by up to 3.6× at 68 terms:
+a hash-map insert per term costs little at 10² terms, while the bucketed
+per-layer pipeline costs nearly the same whatever the term count.
+
+That fixed cost is avoidable. `propagate(engine="auto")` routes layers below
+2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
+configurations
+([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)),
+measured on the same binary against the default:
+
+| workload | tracked set | `engine="sorted"` (default) | `engine="auto"` |
+|---|---|---|---|
+| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040×, a measured tie** |
+| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051×, a measured tie** |
+| Haar SU(4) | 1 416 terms | 1.097× | **1.660×** |
+| kicked-Ising crossover | — | 2.73 × 10³ terms | **1.88 × 10³ terms** |
+
+Above its threshold the path is inert, measured as its own control: SU(4) at
+84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
+configurations passed the per-layer parity gate with the path enabled — 9 618
+per-layer counts, every one identical to PauliPropagation.jl's.
+
+## Methodology {#methodology}
+
+How the `PauliPropagation.jl` comparison is made, and what had to be pinned before any number above could be quoted.
 
 ### Parity discipline
 
@@ -146,161 +319,6 @@ carries the physics.
   equivalent. Likewise jl's `max_freq` / `max_sins` truncations are excluded.
 - jl's experimental fused rotation kernel has no parity established, because it
   truncates during gate application.
-
-### Performance vs tracked-set size
-
-There is no single ratio: the ranking changes sign, and where it changes sign
-depends on the workload by an order of magnitude.
-
-The source is a dedicated head-to-head study
-([`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)):
-single-threaded core versus core, five interleaved `abba` pairs per
-configuration, accepted on direction consistency, never on a difference of two
-independently-noisy means. Every configuration passes a per-layer term-count
-parity gate before any timing is reported. `ratio > 1` means this engine is
-faster.
-
-#### Ranking crossover
-
-| workload | channels | crossover (peak terms) |
-|---|---|---|
-| kicked-Ising, 127 q, 5 Trotter steps | 1 355 | **2.73 × 10³** (1.88 × 10³ with `engine="auto"`) |
-| XXZ chain, n = 100, 6 Trotter steps | 1 782 | **2.00 × 10⁴** |
-| Haar SU(4) brickwork, n = 36, depth 6 | 105 | none on the swept range: faster at every sign-consistent point |
-
-The crossover spans 7× across these three workloads and the SU(4) matrix-gate
-path has none at all, so no single global crossover is quoted anywhere on this
-site.
-
-#### Above the crossover
-
-| workload | peak terms | ratio |
-|---|---|---|
-| kicked-Ising | 6.37 × 10⁵ | **2.146** |
-| kicked-Ising | 2.15 × 10⁶ | 1.610 |
-| XXZ | 2.66 × 10⁶ | **2.023**, still rising |
-| Haar SU(4) | 2.30 × 10⁶ | **2.921**, still rising |
-
-Memory, from the same study: process floors are 37.8 MB against Julia's
-0.601 GiB, a factor of 16; at the largest SU(4) configuration peak RSS is
-0.239 GiB against 1.625 GiB, or 95 floor-subtracted bytes per peak term against
-479. Both engines sample their own `/proc/self/status`, never a driver-side
-`getrusage(RUSAGE_CHILDREN)`.
-
-#### Below the crossover
-
-Below the crossover jl's hash-map backend is faster, by up to 3.6× at 68 terms:
-a hash-map insert per term costs little at 10² terms, while the bucketed
-per-layer pipeline costs nearly the same whatever the term count.
-
-That fixed cost is avoidable. `propagate(engine="auto")` routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)),
-measured on the same binary against the default:
-
-| workload | tracked set | `engine="sorted"` (default) | `engine="auto"` |
-|---|---|---|---|
-| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040×, a measured tie** |
-| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051×, a measured tie** |
-| Haar SU(4) | 1 416 terms | 1.097× | **1.660×** |
-| kicked-Ising crossover | — | 2.73 × 10³ terms | **1.88 × 10³ terms** |
-
-Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl's.
-
-## vs state-vector simulation
-
-Not a competitor but a complementary oracle, and this suite uses it as one
-everywhere it reaches. Every exact reference on this site is a dense
-statevector (usually qiskit Aer); where two exact routes were affordable the
-reference is both of them, required to agree.
-
-| | state-vector | Pauli propagation |
-|---|---|---|
-| object carried | `2ⁿ` amplitudes | the Pauli strings the *observable* spreads over |
-| cost driver | qubit count | circuit depth and operator spreading; `n` enters only through the channel count |
-| result | any observable, exactly | one observable, to a truncation error you must measure |
-| ceiling here | ~26–30 qubits (the 30-qubit cone reference cost ~150 s and 16.1 GiB) | 127 qubits routinely; 2.3 × 10⁸ terms in a single sum measured |
-
-Two measured illustrations of where the boundary sits:
-
-- Benchmark B needed an exact reference for a weight-10 observable whose causal
-  cone is 30 qubits. Untruncated Pauli propagation over that cone exceeded a
-  26 GiB address-space cap at 4.3 × 10⁸ terms; the statevector over the same
-  cone took ~150 s and does not care about depth.
-- The same benchmark's weight-17 observable has a 59-qubit cone: `2^59`
-  amplitudes rules out any dense method, and untruncated propagation is far
-  past the wall above. Neither method reaches it, which is why those references
-  are self-converged and reported as not converged.
-
-A state-vector simulator gives the answer; Pauli propagation gives the answer
-plus a truncation error to bound. That asymmetry is why every page on this site
-carries a convergence panel.
-
-## vs stabilizer (`stim`) simulation
-
-Also an oracle, not a competitor. At a Clifford point `stim` gives the exact ±1
-integer in under 0.1 s at any qubit count, and
-[Benchmark A](case-studies/a-clifford.md) exists to be scored against it.
-Benchmark B reproduces those integers bit-exactly at every one of eight
-cutoffs, for three observables at both Clifford endpoints.
-
-- `stim`: Clifford circuits, exactly, at enormous scale. Where a circuit is
-  Clifford it is strictly the better tool.
-- Pauli propagation: non-Clifford circuits, where the tableau method has
-  nothing to say. The kicked-Ising kick angle separates the two: at
-  `θ_h ∈ {0, π/2}` the circuit is Clifford and `stim` answers; at the hard
-  interior angles the operator spreads over millions of Pauli strings.
-
-A stabilizer simulator cannot serve as a noisy oracle: a tableau simulation
-samples one Pauli error rather than averaging over them, which is why
-[Showcase B2](case-studies/b2-noisy-verification.md#validation-an-independent-dense-noisy-reference)
-carries a hand-rolled Kraus density-matrix reference instead.
-
-## vs tensor-network / MPO methods
-
-No measured head-to-head, and this site does not claim one. What it has is a
-cost-model comparison on the same operators:
-[Showcase B6](case-studies/b6-resource-probes.md) computes the Pauli-spectrum
-entropy (the quantity governing truncation error for this engine) alongside the
-operator entanglement across a bipartition (the quantity governing MPO bond
-dimension), and finds them saying different things about the same operator:
-`S_2` grows steadily with depth while `S_op` saturates around 1.3 nats from
-depth 5 on. A TDVP baseline at large `n` is
-[a named limitation of Benchmark D](case-studies/d-xxz-chain.md#limitations), not
-silently approximated.
-
-## vs `qiskit.SparsePauliOp` / `openfermion.QubitOperator`
-
-Different scope: these are Pauli-operator containers with algebraic
-manipulation, not propagation engines with truncation — no crossover concept
-applies. The committed comparison
-([`baseline_comparison/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md))
-benchmarks construction from string terms and one-layer Clifford conjugation,
-seeded inputs, `n_terms ∈ {100, 1000, 10 000}`; medians in µs, ratio =
-library / paulistrings:
-
-| construct | paulistrings | qiskit | openfermion | qiskit ratio | openfermion ratio |
-|---:|---:|---:|---:|---:|---:|
-| 100 terms | 99.9 | 1 053.7 | 982.4 | 10.5× | 9.8× |
-| 1 000 | 683.7 | 9 693.8 | 10 570.3 | 14.2× | 15.5× |
-| 10 000 | 3 070.0 | 96 566.8 | 106 078.9 | 31.5× | 34.6× |
-
-| conjugate by a Clifford layer | paulistrings | qiskit | ratio |
-|---:|---:|---:|---:|
-| 100 terms | 8.9 | 2 133.8 | 240× |
-| 1 000 | 71.0 | 4 978.4 | 70× |
-| 10 000 | 1 057.3 | 32 642.0 | 31× |
-
-![Median time per operation and library, log scale; competitor dots carry their ratio to paulistrings](../assets/comparisons/baseline-ops.svg)
-
-`openfermion` has no equivalent conjugation operation and is not in the second
-group. `PauliStrings.jl`, the library that inspired this one, is excluded for
-the same reason `PauliPropagation.jl` is driven by subprocess: no PyJulia
-wiring anywhere.
 
 **Sources for this page:**
 [`benchmarks/julia/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/julia/README.md)

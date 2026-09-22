@@ -33,11 +33,15 @@ assert np.allclose(split.coefficients_array(), whole.coefficients_array())
 Application order is circuit order under `direction="forward"`, as above, but the *reverse* of circuit order under `direction="heisenberg"` — see [Direction semantics](../reference/direction.md).
 A Heisenberg split must therefore propagate `back` before `front`, not `front` before `back`.
 A time series still costs one pass rather than one pass per time point, and a hybrid split still costs nothing in accuracy, once split at the right end — the identity [Showcase B5](case-studies/b5-operator-backpropagation.md) rests on.
+[Observable vs time](../how-to/propagate-a-time-series.md) is that identity as a recipe, including the ordering trap for a time-dependent schedule.
 
 ## A gate is a truncation point
 
 Fusing two gates into one channel changes the answer.
 That is why every circuit in this repository's example suite is built one gate per push, and why the [cross-engine comparison](comparisons.md) can be compared *per layer* at all.
+
+In this library's vocabulary a **layer** is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates.
+That is the sense "after every layer" carries throughout this book and in [`PropagationStats`](../reference/propagate.md#propagationstats).
 
 ## A noise channel is a truncation point too
 
@@ -50,5 +54,7 @@ A truncated Pauli sum has no variational bound.
 Discarded terms carry signs, so a partial sum can sit on either side of the truth and the error need not fall monotonically as the cutoff tightens.
 This is measured, not hypothetical — [Benchmark B](case-studies/b-theta-sweep.md) and [Benchmark D](case-studies/d-xxz-chain.md) both record non-monotone rows.
 Read a convergence sweep as a trend across the grid, never as a point-to-point improvement.
+
+That is why a single number at a single cutoff is not a result, and [Validate a result](../how-to/validate-a-result.md) is how to turn one into one.
 
 Which policy to reach for is a separate question — see [Truncation policy](../how-to/choose-a-truncation-policy.md).

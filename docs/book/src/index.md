@@ -13,8 +13,9 @@ A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
 average-X-magnetization observable through a Trotter circuit — a regime where
 exact diagonalization is already infeasible (`2^36` amplitudes for the 6×6
 lattice) but Pauli propagation with modest truncation finishes in seconds to
-minutes. Full walkthrough:
-[`crates/paulistrings/docs/examples/ising_2d_quench.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md).
+minutes. Setup, truncation and error bar:
+[the 2D Ising quench](explanation/case-studies/index.md#the-2d-ising-quench),
+which links on to the crate's full Rust walkthrough.
 
 ## Pauli propagation
 

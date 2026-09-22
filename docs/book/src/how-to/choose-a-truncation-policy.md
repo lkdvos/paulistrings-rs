@@ -22,4 +22,6 @@ policy = truncation.weight(6) & truncation.coeff(1e-10)
 
 Keep `min_abs_coeff` above ~1e-12 on deep circuits — `cos(π/2)` is `6.123233995736766e-17`, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch that fans out without bound if untruncated.
 
+Whichever policy you pick, the cutoff is a guess until it has been swept — see [Validate a result](validate-a-result.md) for the sweep, the retained-norm diagnostic and the criterion for quoting a value.
+
 See [Truncation](../explanation/truncation.md) for what truncation actually does to the result (it has no variational bound, and reading a convergence sweep is not the same as reading a point-to-point improvement), [Truncation reference](../reference/truncation.md) for the full policy table, and [Propagation engine](../explanation/propagation-engine.md) for the mechanism.

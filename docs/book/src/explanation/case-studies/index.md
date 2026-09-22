@@ -7,6 +7,21 @@ independent cross-check (a dense reference computed by a route that shares no
 code with the engine, or an exact oracle such as `stim`) and, where the result
 is truncated, a convergence panel that says where the converged window ends.
 
+## The flagship worked example: a 2D Ising quench {#the-2d-ising-quench}
+
+![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](../../assets/ising-quench/ising_quench.svg)
+
+The site's landing figure is a transverse-field Ising quench on a periodic 4×4 and 6×6 lattice at `J = h = 1`, first-order Trotterized at `δt = 0.05` out to `t = 2`.
+The average X magnetization is Heisenberg-propagated through the 40-step circuit and read against `|+…+⟩` at every step, under `coeff(1e-10) & topn(k)` with `k` of 50 000 (4×4) and 200 000 (6×6).
+The 6×6 case is `2³⁶` amplitudes, already out of reach for exact diagonalization; the quench runs in ~11–12 s on the reference host.
+
+The honest error bar there is not floating point but the `topn` tie rule: `topn` keeps or drops a magnitude-tied symmetry orbit whole, and an alternative tiebreak that always keeps exactly `k` terms moves the trajectory by up to 1.7% (4×4) and 0.37% (6×6).
+The larger lattice is the better-resolved one, because the observable averages over more sites and the truncation error self-averages.
+
+The walkthrough is a Rust one — it is the crate's own worked example, embedded into its rustdoc — and is the hand-off point for Rust users rather than part of this book:
+[`crates/paulistrings/docs/examples/ising_2d_quench.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md), with the source at [`ising_2d_quench.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/examples/ising_2d_quench.rs).
+For the same pattern in Python — one Trotter step at a time, an expectation value per step — see [Observable vs time](../../how-to/propagate-a-time-series.md).
+
 ## Showcases
 
 Five measured applications.
@@ -29,6 +44,7 @@ alongside it, conserved under exact unitary evolution and equal to 1 for a
 single Pauli seed, so `1 − N` is exactly the deleted fraction of the operator
 under truncation. Named dependencies rather than silent approximations: where
 a reference was not reachable, the page says so and what it would cost.
+[Validate a result](../../how-to/validate-a-result.md) is that panel as a recipe, for your own runs.
 
 ### Reproducing a showcase
 
@@ -73,8 +89,8 @@ comparable:
 
 1. One gate per channel, everywhere. Truncation is applied after every
    channel, so fusing two gates into one channel changes the answer. Every
-   circuit in the suite is built one gate per `Circuit.push`, which is also
-   what makes a *per-layer* comparison against another engine meaningful.
+   circuit in the suite is built one gate per `Circuit` method call, which is
+   also what makes a *per-layer* comparison against another engine meaningful.
 2. Term-count parity blocks timing. No cross-engine wall time is reported for
    a configuration whose evolved Pauli sums diverge term-for-term at matched
    truncation. The parity gate runs first, untimed, and compares every
@@ -111,6 +127,7 @@ looks. The fix is worth a measured **190×** in accuracy.
 
 Benchmarks C and B2 import that criterion as a function object rather than
 re-implementing it, and a test asserts it is the same object.
+[Validate a result](../../how-to/validate-a-result.md) states it as user guidance, with the sweep that feeds it.
 
 ### Reproducing a benchmark
 

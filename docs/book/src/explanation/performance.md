@@ -12,6 +12,7 @@ Buckets retain their capacity across layers, so a steady-state propagation loop 
 
 The word width is fixed per qubit-count tier at compile time, so the compiler unrolls all bit operations and keeps a Pauli string a small, cheaply-copied value.
 The Python bindings ship tiers of 1, 2, 4, 8 and 16 words (64–1024 qubits) and pick one once, outside any hot loop (`ARCHITECTURE.md` §Width).
+That makes a term `16 × width + 16` bytes, which is what turns a projected term count into a memory bill — see [Propagation stats and logs](../how-to/read-propagation-stats-and-logs.md#estimate-the-memory-a-run-needs).
 
 ## Layer time breakdown
 

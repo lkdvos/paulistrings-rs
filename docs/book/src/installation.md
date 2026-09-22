@@ -1,13 +1,19 @@
 # Installation
 
-Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) — no Rust toolchain needed:
+**`paulistrings` is not published to PyPI**, so `pip install paulistrings` will not find it.
+Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) instead — no Rust toolchain needed.
+
+With the [GitHub CLI](https://cli.github.com/), which resolves the latest release for you:
 
 ```bash
-pip install "paulistrings @ https://github.com/lkdvos/paulistrings-rs/releases/download/vX.Y.Z/paulistrings-X.Y.Z-cp39-abi3-<platform-tag>.whl"
+gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
+pip install ./paulistrings-*.whl
 ```
 
-`<platform-tag>` is `manylinux_2_28_x86_64` (Linux, including Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac); one abi3 wheel per platform serves every Python >= 3.9.
-Or download the `.whl` asset for your platform and `pip install ./paulistrings-*.whl`.
+Substitute the platform tag for your machine: `manylinux_2_28_x86_64` (Linux, including Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac).
+One abi3 wheel per platform serves every Python >= 3.9.
+
+Without `gh`, take the `.whl` asset for your platform from the [latest release](https://github.com/lkdvos/paulistrings-rs/releases/latest) and `pip install ./paulistrings-*.whl`.
 
 These wheels cover the default engine only.
 The `mpi` feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster's loaded MPI module:

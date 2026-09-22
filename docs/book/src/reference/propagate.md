@@ -22,7 +22,7 @@ The GIL is released for the duration of both calls.
 |---|---|---|---|
 | `circuit` | `Circuit` | required | must share `num_qubits` with `sum` |
 | `policy` | `Truncation \| None` | `None` | `None` applies no per-term filtering beyond the engine's exact-zero drop |
-| `direction` | `"forward" \| "heisenberg" \| None` | `None` = `"forward"` | see [Direction semantics](direction.md) |
+| `direction` | `"forward" \| "heisenberg" \| None` | `None` = `"forward"` | **the default is not the Heisenberg picture most examples here use** — pass it explicitly; see [Direction semantics](direction.md) |
 | `engine` | `"sorted" \| "auto" \| "direct" \| None` | `None` = `"sorted"` | `"sorted"`: always bucketed. `"auto"`: a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass (e.g. `topn`). `"direct"`: same threshold, always. All three agree to floating-point tolerance |
 | `small_sum_threshold` | `int \| None` | `None` = `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` | term-count cutoff for `"auto"`/`"direct"` |
 | `target_bucket_len` | `int \| None` | `None` = `1024` | sorting engine's per-layer bucket-sizing knob |
@@ -58,6 +58,9 @@ See [NUMA partitions](../how-to/run-on-numa-partitions.md) and [MPI ranks](../ho
 ## `PropagationStats`
 
 One entry per layer applied, in application order (reverse circuit order under `direction="heisenberg"`).
+
+A **layer** here is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates in the field-standard sense.
+A broadcast call such as `circuit.depolarize(p, [0, 1])` contributes two layers, and `len(circuit) == stats.layers`.
 
 | Field | Type | Meaning |
 |---|---|---|

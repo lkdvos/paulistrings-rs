@@ -44,14 +44,21 @@ exactly one artifact per deployment.
 ## Building it locally
 
 ```bash
-cargo install mdbook --locked --version 0.5.4   # once; or grab the release binary
-./docs/sync-assets.sh                           # refresh the figure links
-mdbook build docs/book                          # renders to docs/book/site/ (gitignored)
-mdbook serve docs/book --open                   # live-reloading preview
+cargo install mdbook --locked --version 0.5.4         # once; or grab the release binary
+cargo install mdbook-katex --locked --version 0.10.0  # once; no prebuilt binary published
+./docs/sync-assets.sh                                 # refresh the figure links
+mdbook build docs/book                                # renders to docs/book/site/ (gitignored)
+mdbook serve docs/book --open                         # live-reloading preview
 ```
 
-Pin the same mdBook version the workflow uses (`MDBOOK_VERSION` there) so a local
-build and CI cannot disagree about rendering.
+Pin the same mdBook and mdbook-katex versions the workflow uses (`MDBOOK_VERSION` and
+`MDBOOK_KATEX_VERSION` there) so a local build and CI cannot disagree about rendering.
+
+Math is `$...$` inline and `$$ ... $$` on its own lines for a display equation,
+rendered by the [`mdbook-katex`](https://github.com/lzanini/mdbook-katex)
+preprocessor (`[preprocessor.katex]` in [`book/book.toml`](book/book.toml)). It
+depends on a CDN-hosted KaTeX stylesheet, so a local `mdbook serve` needs network
+access to see it styled.
 
 `create-missing = false` in [`book/book.toml`](book/book.toml) makes a
 `SUMMARY.md` entry with no file behind it an **error** rather than a silently

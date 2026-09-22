@@ -10,6 +10,9 @@ build-dir = "site"
 # empty page — the site is assembled from committed material only.
 create-missing = false
 
+[preprocessor.katex]
+after = ["links"]
+
 [output.html]
 site-url = "/paulistrings-rs/"
 git-repository-url = "https://github.com/lkdvos/paulistrings-rs"

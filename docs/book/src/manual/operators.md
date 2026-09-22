@@ -1,27 +1,27 @@
 # Operators
 
-The primary objects of this library are operators acting on ``L`` qubits.
+The primary objects of this library are operators acting on $L$ qubits.
 For a single qubit, the identity along with the Pauli matrices forms an orthonormal basis.
 Therefore, we can generate any multi-qubit operator as a linear combination of so-called **Pauli strings**.
-These are strings of length ``L`` containing the letters ``\{I, X, Y, Z\}``, such that all possible strings carry all possible basis elements.
+These are strings of length $L$ containing the letters $\{I, X, Y, Z\}$, such that all possible strings carry all possible basis elements.
 
 ## Pauli strings
 
-A single Pauli string ``P`` is stored in the so-called symplectic encoding.
+A single Pauli string $P$ is stored in the so-called symplectic encoding.
 This means that for each qubit, we store two separate bits that dictate what operator is used.
-Concretely, for bits ``x`` and ``z``, we encode the operator in a Hermitian convention as:
+Concretely, for bits $x$ and $z$, we encode the operator in a Hermitian convention as:
 
-```math
+$$
 P = i^{xz}X^xZ^z
-```
+$$
 
-In particular, this gives ``X = (1, 0)``, ``Z = (0, 1)``, and ``Y = iXZ = i(1, 1)``.
+In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = iXZ = i(1, 1)$.
 
-For an ``L``-qubit string, we can collect these into two masks, or in components:
+For an $L$-qubit string, we can collect these into two masks, or in components:
 
-```math
-P(\vec{x}, \vec{z}) = i^{\sum_j^L x_jz_j} ⨂_j^L X_j^{x_j} Z_j^{z_j}
-```
+$$
+P(\vec{x}, \vec{z}) = i^{\sum_j^L x_jz_j} \bigotimes_j^L X_j^{x_j} Z_j^{z_j}
+$$
 
 
 ### The `PauliString` type
@@ -80,8 +80,8 @@ That closure — one string in, one string and a phase out — is why a gate's i
 
 ## Pauli sums
 
-As the basis of Pauli strings spans the full operator space, any operator can be written as a linear combination of Pauli strings: ``O = \sum_P c_P P``.
-Since the total space is ``4^L``-dimensional, we wish to store a **sparse** representation of the unique non-zero coefficient-string pairs.
+As the basis of Pauli strings spans the full operator space, any operator can be written as a linear combination of Pauli strings: $O = \sum_P c_P P$.
+Since the total space is $4^L$-dimensional, we wish to store a **sparse** representation of the unique non-zero coefficient-string pairs.
 To allow for efficient merging of the strings, we store two separate lists, one for the coefficients and one for the strings, sorted by the string.
 
 ### The `PauliSum` type {#the-paulisum-type}

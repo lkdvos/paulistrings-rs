@@ -6,13 +6,13 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 
 ## Quickstart
 
-In many quantum simulations, the object of interest is typically the expectation value ``⟨O⟩ = \text{tr}(ρ U^† O U)``.
-Here we start from some initial density matrix ``ρ`` which is evolved through a circuit ``U`` and then measured with an operator ``O``.
-For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator ``O``, which is then evolved backwards through the circuit ``U``, and finally measured against a density matrix ``ρ``.
+In many quantum simulations, the object of interest is typically the expectation value $\langle O \rangle = \text{tr}(\rho U^\dagger O U)$.
+Here we start from some initial density matrix $\rho$ which is evolved through a circuit $U$ and then measured with an operator $O$.
+For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator $O$, which is then evolved backwards through the circuit $U$, and finally measured against a density matrix $\rho$.
 
 ### Simple circuit
 
-As a simple example, we may look at a four-qubit initial state ``|++++⟩``, and measure the total magnetization after propagating through the following simple circuit:
+As a simple example, we may look at a four-qubit initial state $|++++\rangle$, and measure the total magnetization after propagating through the following simple circuit:
 
 ![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](assets/quickstart/circuit.svg)
 
@@ -40,13 +40,13 @@ print(len(evolved), evolved.expectation("x+").real)
 
 ### Quenched time-evolution
 
-For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the ``|+⟩^{⊗N}``.
+For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the $|+\rangle^{\otimes N}$.
 
-```math
-H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
-```
+$$
+H = -J \sum_{\langle i, j \rangle} Z_i Z_j - h \sum_i X_i
+$$
 
-This is achieved by propagating the total magnetization ``M = \sum_i X_i`` through a Trotterized circuit and measuring against the initial state ``|+⟩⟨+|^{⊗N}``.
+This is achieved by propagating the total magnetization $M = \sum_i X_i$ through a Trotterized circuit and measuring against the initial state $|+\rangle\langle+|^{\otimes N}$.
 However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings, for example by keeping only the largest-magnitude terms up to a fixed count.
 Finally, we can extrapolate to the limit of no truncation to validate our results.
 

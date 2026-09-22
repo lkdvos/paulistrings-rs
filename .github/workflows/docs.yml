@@ -18,6 +18,7 @@ env:
   # Keep this in step with the version docs/README.md tells contributors to
   # install, so a local build and CI cannot disagree about rendering.
   MDBOOK_VERSION: 0.5.4
+  MDBOOK_KATEX_VERSION: 0.10.0
 
 jobs:
   build:
@@ -45,6 +46,11 @@ jobs:
             cargo install mdbook --locked --version "${MDBOOK_VERSION}"
           fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # No prebuilt binary is published for this one; rust-cache below keeps
+      # the rebuild cheap on every run after the first.
+      - name: Install mdbook-katex
+        run: cargo install mdbook-katex --locked --version "${MDBOOK_KATEX_VERSION}"
 
       # The figures are relative symlinks into the repository (see
       # docs/sync-assets.sh); this both validates them and proves the committed

@@ -9,9 +9,10 @@ drives a larger single-qubit rotation angle per Trotter step, i.e. more
 "magic" injected per step, so the two curves separate at a lower term cap
 than the weak-field pair does.
 
-Runtime is dominated by the two largest caps: this script takes a couple of
-minutes single-shot, since it is a one-off landing-page figure and not part
-of the doc-snippet CI checker.
+Runtime is dominated by the two largest caps, which saturate the sum and pay
+full sort-and-truncate cost on every layer: this script takes on the order of
+ten minutes single-shot, since it is a one-off landing-page figure and not
+part of the doc-snippet CI checker.
 
 Regenerate the committed SVG with:
 
@@ -31,14 +32,26 @@ from paulistrings import Circuit, PauliSum, truncation
 LX, LY = 6, 6
 J = 1.0
 DT = 0.05
-N_STEPS = 12
+N_STEPS = 16
 H_VALUES = [0.1, 3.1]
 H_COLORS = {0.1: "#2a78d6", 3.1: "#eb6834"}
-TOPN_CAPS = [10, 100, 1_000, 10_000, 100_000]
-TOPN_ALPHAS = {10: 0.2, 100: 0.4, 1_000: 0.6, 10_000: 0.8, 100_000: 1.0}
+TOPN_CAPS = [100, 1_000, 10_000, 100_000, 300_000]
+TOPN_ALPHAS = {100: 0.25, 1_000: 0.45, 10_000: 0.65, 100_000: 0.85, 300_000: 1.0}
 
 GRID_COLOR = "#e1e0d9"
 MUTED_TEXT = "#898781"
+
+
+def topn_label(n_cap: int) -> str:
+    """`10^d` mathtext, or `m×10^d` when `n_cap` is not a bare power of ten."""
+    exponent = 0
+    mantissa = n_cap
+    while mantissa % 10 == 0:
+        mantissa //= 10
+        exponent += 1
+    if mantissa == 1:
+        return f"$10^{{{exponent}}}$"
+    return f"${mantissa}\\times10^{{{exponent}}}$"
 
 
 def x_magnetization(lx: int, ly: int) -> PauliSum:
@@ -112,7 +125,7 @@ def main() -> None:
     ax.add_artist(h_legend)
 
     topn_handles = [
-        Line2D([0], [0], color=MUTED_TEXT, alpha=TOPN_ALPHAS[n_cap], linewidth=2.0, label=f"TopN = {n_cap:,}")
+        Line2D([0], [0], color=MUTED_TEXT, alpha=TOPN_ALPHAS[n_cap], linewidth=2.0, label=f"TopN = {topn_label(n_cap)}")
         for n_cap in TOPN_CAPS
     ]
     ax.legend(handles=topn_handles, title="term cap", loc="lower left", frameon=False)

@@ -52,10 +52,10 @@ Finally, we can extrapolate to the limit of no truncation to validate our result
 
 ![Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)](assets/ising-quench-convergence/quench_convergence.svg)
 
-Two field strengths `h` (color) and five `TopN` term caps `10, 100, 1000, 10⁴, 10⁵` (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, `J = 1`.
-At every `h` the two largest caps sit on top of each other through `t = 0.6`: that overlap is the trusted regime, where raising the cap further would not move the curve.
-Smaller caps peel away once they can no longer hold enough of the operator, and they do so at a larger cap for `h = 3.1` than for `h = 0.1` — a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster, so the same term budget buys less trustworthy time.
-The smallest cap, `TopN = 10`, collapses to `⟨X⟩ = 0` at both field strengths for a specific reason, not just aggressiveness: `TopN` never splits a tie group, and once the sum's largest surviving terms are exact symmetry-related ties, a cap that lands inside that tie group keeps nothing rather than an arbitrary slice of it.
+Two field strengths `h` (color) and five `TopN` term caps `10², 10³, 10⁴, 10⁵, 3×10⁵` (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, `J = 1`.
+At `h = 0.1` the three largest caps already sit on top of each other through `t = 0.8`: that overlap is the trusted regime, where raising the cap further would not move the curve.
+At `h = 3.1` even the two largest caps are still visibly tightening rather than fully flat by `t = 0.8` — the same term budget buys less trustworthy time here, because a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster.
+The smallest cap, `TopN = 10²`, peels away from the trusted band by `t ≈ 0.2` at both field strengths, well before the run ends.
 Figure script: `docs/figures/ising-quench-convergence/quench_convergence.py`.
 
 ```python

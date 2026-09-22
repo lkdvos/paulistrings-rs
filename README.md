@@ -8,24 +8,21 @@
      The docs site pulls this same text in mechanically through the ANCHOR markers below
      (docs/book/src/index.md), so it cannot drift there; only these two files need syncing by hand. -->
 <!-- ANCHOR: pitch -->
-Classical simulation of quantum circuits by Pauli propagation — evolving
-operators in the Pauli basis under gates and noise channels, in either
-the forward or Heisenberg picture. Aimed at workloads where state-vector
-or tensor-network simulators are infeasible (10⁶–10⁸ terms) but the
-operator stays sparse in the Pauli basis.
+Library for Pauli propagation built to scale across threads, processes and nodes.
+Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
+As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
+Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.
 <!-- ANCHOR_END: pitch -->
 
 Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl).
 
 ## Highlights
 
-- **Operator-basis Pauli propagation at 10⁶–10⁸ terms** — evolve the observable, not the wavefunction, in either the forward or Heisenberg picture.
+- **Operator-basis Pauli propagation at scale** — evolve the observable, not the wavefunction, in either the Schroedinger or Heisenberg picture.
 - **GF(2)-bucketed, write-disjoint parallel engine** — layers are partitioned by a GF(2)-linear hash, so output buckets are statically predictable and never collide across threads.
-  No global sort.
-- **Partitioned across NUMA domains and MPI ranks** — split the sum by GF(2) partition rows, one pinned thread pool or one process per partition, with only the rows a layer moves across a boundary exchanged and the transfer pipelined under the layer.
+- **Partitioned across NUMA domains and MPI ranks** — Support for scaling to arbitrary amount of nodes.
 - **Open extension traits for research** — plug in a custom `Channel` (gate or noise model) or `TruncationPolicy` without touching the engine.
-- **One core, two front ends** — the pure-Rust crate, or Python bindings installed via `maturin`/`pip`.
-- **GPU-ready data layout** — `#[repr(C)]`, `Pod` types, fixed-fanout output buffers; a future GPU backend is an added kernel, not a rewrite.
+- **Rust core, Python front-end** — Low-overhead efficient engine with a convenient interface.
 
 ## Python quickstart
 

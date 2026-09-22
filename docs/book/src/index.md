@@ -2,10 +2,7 @@
 
 {{#include ../../../README.md:pitch}}
 
-Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl);
-compared, term for term, against
-[`PauliPropagation.jl`](https://github.com/MSRudolph/PauliPropagation.jl) — see
-[Against other tools](examples/comparisons.md).
+Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl).
 
 ## Quickstart
 

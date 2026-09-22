@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-fb1189b1.js";
+            window.path_to_searchindex_js = "../searchindex-1d94ccf3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28a3b63b.js"></script>
@@ -181,7 +181,8 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="circuits"><a class="header" href="#circuits">Circuits</a></h1>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="circuits"><a class="header" href="#circuits">Circuits</a></h1>
 <h2 id="building-a-circuit"><a class="header" href="#building-a-circuit">Building a circuit</a></h2>
 <p>A <code>Circuit</code> is an ordered list of channels on a fixed register, and every method call on it pushes exactly one channel.
 <code>Circuit(n)</code> is the empty circuit; the named gates are <code>h</code>, <code>s</code>, <code>sdg</code>, <code>x</code>, <code>y</code>, <code>z</code>, <code>cnot</code>, <code>cz</code>, <code>swap</code>, the rotations <code>rx</code>, <code>ry</code>, <code>rz</code> and <code>pauli_rotation</code>, and the checked matrices <code>unitary_1q</code> and <code>unitary_2q</code>.</p>

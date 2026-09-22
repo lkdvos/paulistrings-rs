@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fb1189b1.js";
+            window.path_to_searchindex_js = "searchindex-1d94ccf3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -179,18 +179,19 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="paulistrings-rs"><a class="header" href="#paulistrings-rs">paulistrings-rs</a></h1>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="paulistrings-rs"><a class="header" href="#paulistrings-rs">paulistrings-rs</a></h1>
 <p>Library for Pauli propagation built to scale across threads, processes and nodes.
 Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
 As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
 Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.</p>
 <p>Inspired by <a href="https://github.com/nicolasloizeau/PauliStrings.jl"><code>PauliStrings.jl</code></a>.</p>
 <h2 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h2>
-<p>In many quantum simulations, the object of interest is typically the expectation value <code>⟨O⟩ = \text{tr}(ρ U^† O U)</code>.
-Here we start from some initial density matrix <code>ρ</code> which is evolved through a circuit <code>U</code> and then measured with an operator <code>O</code>.
-For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator <code>O</code>, which is then evolved backwards through the circuit <code>U</code>, and finally measured against a density matrix <code>ρ</code>.</p>
+<p>In many quantum simulations, the object of interest is typically the expectation value <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">⟨</span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mclose">⟩</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0991em;vertical-align:-0.25em;"></span><span class="mord text"><span class="mord">tr</span></span><span class="mopen">(</span><span class="mord mathnormal">ρ</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.10903em;">U</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8491em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mbin mtight">†</span></span></span></span></span></span></span></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mord mathnormal" style="margin-right:0.10903em;">U</span><span class="mclose">)</span></span></span></span>.
+Here we start from some initial density matrix <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> which is evolved through a circuit <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">U</span></span></span></span> and then measured with an operator <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span></span></span></span>.
+For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span></span></span></span>, which is then evolved backwards through the circuit <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">U</span></span></span></span>, and finally measured against a density matrix <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span>.</p>
 <h3 id="simple-circuit"><a class="header" href="#simple-circuit">Simple circuit</a></h3>
-<p>As a simple example, we may look at a four-qubit initial state <code>|++++⟩</code>, and measure the total magnetization after propagating through the following simple circuit:</p>
+<p>As a simple example, we may look at a four-qubit initial state <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">∣</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6667em;vertical-align:-0.0833em;"></span><span class="mord">+</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">+</span><span class="mclose">⟩</span></span></span></span>, and measure the total magnetization after propagating through the following simple circuit:</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-python">import math
 from paulistrings import Circuit, PauliSum
@@ -210,10 +211,9 @@ print(len(evolved), evolved.expectation("x+").real)
 <pre><code class="language-text">5 0.7309698831278217
 </code></pre>
 <h3 id="quenched-time-evolution"><a class="header" href="#quenched-time-evolution">Quenched time-evolution</a></h3>
-<p>For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the <code>|+⟩^{⊗N}</code>.</p>
-<pre><code class="language-math">H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
-</code></pre>
-<p>This is achieved by propagating the total magnetization <code>M = \sum_i X_i</code> through a Trotterized circuit and measuring against the initial state <code>|+⟩⟨+|^{⊗N}</code>.
+<p>For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1.0913em;vertical-align:-0.25em;"></span><span class="mord">∣</span><span class="mord">+</span><span class="mclose"><span class="mclose">⟩</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8413em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">⊗</span><span class="mord mathnormal mtight" style="margin-right:0.10903em;">N</span></span></span></span></span></span></span></span></span></span></span></span>.</p>
+<p><span class="katex-display"><span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.08125em;">H</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.566em;vertical-align:-1.516em;"></span><span class="mord">−</span><span class="mord mathnormal" style="margin-right:0.09618em;">J</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.05em;"><span style="top:-1.809em;margin-left:0em;"><span class="pstrut" style="height:3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mopen mtight">⟨</span><span class="mord mathnormal mtight">i</span><span class="mpunct mtight">,</span><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span><span class="mclose mtight">⟩</span></span></span></span><span style="top:-3.05em;"><span class="pstrut" style="height:3.05em;"></span><span><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.516em;"><span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:2.3277em;vertical-align:-1.2777em;"></span><span class="mord mathnormal">h</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.05em;"><span style="top:-1.8723em;margin-left:0em;"><span class="pstrut" style="height:3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span><span style="top:-3.05em;"><span class="pstrut" style="height:3.05em;"></span><span><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.2777em;"><span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:-0.0785em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span></span></p>
+<p>This is achieved by propagating the total magnetization <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">M</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0497em;vertical-align:-0.2997em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.162em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:-0.0785em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span> through a Trotterized circuit and measuring against the initial state <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1.0913em;vertical-align:-0.25em;"></span><span class="mord">∣</span><span class="mord">+</span><span class="mclose">⟩</span><span class="mopen">⟨</span><span class="mord">+</span><span class="mord"><span class="mord">∣</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8413em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">⊗</span><span class="mord mathnormal mtight" style="margin-right:0.10903em;">N</span></span></span></span></span></span></span></span></span></span></span></span>.
 However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings, for example by keeping only the largest-magnitude terms up to a fixed count.
 Finally, we can extrapolate to the limit of no truncation to validate our results.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"></span></label></p>
@@ -345,7 +345,7 @@ The design source of truth is
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a>;
 the site’s <a href="#manual">Manual</a> is its public summary.
 Dual-licensed MIT OR Apache-2.0.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
 <p><strong><code>paulistrings</code> is not published to PyPI</strong>, so <code>pip install paulistrings</code> will not find it.
 Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to <a href="https://github.com/lkdvos/paulistrings-rs/releases">GitHub Releases</a> instead — no Rust toolchain needed.</p>
@@ -389,7 +389,7 @@ pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 <p>With the package installed, the <a href="#manual">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
 <a href="#first-propagation">First propagation</a> carries that same run further, into term inspection and a validation sweep.
 Building for MPI is covered separately in <a href="#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="manual"><a class="header" href="#manual">Manual</a></h1>
 <p>The Manual is the reading path through the library: what each object is, how to use it, and where it bites.
 Every computation here has the same shape: write an observable, build a circuit, propagate the observable through the circuit, measure the result against a state, then validate that the truncation did not decide the answer.</p>
@@ -427,22 +427,20 @@ Afterwards, enter by topic from the sidebar: every section is self-contained eno
 <li><a href="#library">Library</a> is the signature-and-table reference the Manual cites throughout; it holds no rationale of its own.</li>
 <li><a href="#first-propagation">First propagation</a> carries the run above further, into the surviving terms’ identities and a cutoff-sweep validation.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="operators"><a class="header" href="#operators">Operators</a></h1>
-<p>The primary objects of this library are operators acting on <code>L</code> qubits.
+<p>The primary objects of this library are operators acting on <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span> qubits.
 For a single qubit, the identity along with the Pauli matrices forms an orthonormal basis.
 Therefore, we can generate any multi-qubit operator as a linear combination of so-called <strong>Pauli strings</strong>.
-These are strings of length <code>L</code> containing the letters <code>\{I, X, Y, Z\}</code>, such that all possible strings carry all possible basis elements.</p>
+These are strings of length <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span> containing the letters <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">{</span><span class="mord mathnormal" style="margin-right:0.07847em;">I</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="mclose">}</span></span></span></span>, such that all possible strings carry all possible basis elements.</p>
 <h2 id="pauli-strings"><a class="header" href="#pauli-strings">Pauli strings</a></h2>
-<p>A single Pauli string <code>P</code> is stored in the so-called symplectic encoding.
+<p>A single Pauli string <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.13889em;">P</span></span></span></span> is stored in the so-called symplectic encoding.
 This means that for each qubit, we store two separate bits that dictate what operator is used.
-Concretely, for bits <code>x</code> and <code>z</code>, we encode the operator in a Hermitian convention as:</p>
-<pre><code class="language-math">P = i^{xz}X^xZ^z
-</code></pre>
-<p>In particular, this gives <code>X = (1, 0)</code>, <code>Z = (0, 1)</code>, and <code>Y = iXZ = i(1, 1)</code>.</p>
-<p>For an <code>L</code>-qubit string, we can collect these into two masks, or in components:</p>
-<pre><code class="language-math">P(\vec{x}, \vec{z}) = i^{\sum_j^L x_jz_j} ⨂_j^L X_j^{x_j} Z_j^{z_j}
-</code></pre>
+Concretely, for bits <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal">x</span></span></span></span> and <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal" style="margin-right:0.04398em;">z</span></span></span></span>, we encode the operator in a Hermitian convention as:</p>
+<p><span class="katex-display"><span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.13889em;">P</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.7144em;"></span><span class="mord"><span class="mord mathnormal">i</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7144em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="mord mathnormal mtight" style="margin-right:0.04398em;">z</span></span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7144em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7144em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.04398em;">z</span></span></span></span></span></span></span></span></span></span></span></span></p>
+<p>In particular, this gives <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">(</span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0</span><span class="mclose">)</span></span></span></span>, <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">(</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">1</span><span class="mclose">)</span></span></span></span>, and <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">i</span><span class="mord mathnormal" style="margin-right:0.07153em;">XZ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">i</span><span class="mopen">(</span><span class="mord">1</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">1</span><span class="mclose">)</span></span></span></span>.</p>
+<p>For an <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span>-qubit string, we can collect these into two masks, or in components:</p>
+<p><span class="katex-display"><span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.13889em;">P</span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.714em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">x</span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2077em;"><span class="overlay" style="height:0.714em;width:0.471em;"><svg xmlns="http://www.w3.org/2000/svg" width="0.471em" height="0.714em" style="width:0.471em" viewbox="0 0 471 714" preserveaspectratio="xMinYMin"><path d="M377 20c0-5.333 1.833-10 5.5-14S391 0 397 0c4.667 0 8.667 1.667 12 5 3.333 2.667 6.667 9 10 19 6.667 24.667 20.333 43.667 41 57 7.333 4.667 11 10.667 11 18 0 6-1 10-3 12s-6.667 5-14 9c-28.667 14.667-53.667 35.667-75 63 -1.333 1.333-3.167 3.5-5.5 6.5s-4 4.833-5 5.5c-1 .667-2.5 1.333-4.5 2s-4.333 1 -7 1c-4.667 0-9.167-1.833-13.5-5.5S337 184 337 178c0-12.667 15.667-32.333 47-59 H213l-171-1c-8.667-6-13-12.333-13-19 0-4.667 4.333-11.333 13-20h359 c-16-25.333-24-45-24-59z" /></svg></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.714em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal" style="margin-right:0.04398em;">z</span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.1799em;"><span class="overlay" style="height:0.714em;width:0.471em;"><svg xmlns="http://www.w3.org/2000/svg" width="0.471em" height="0.714em" style="width:0.471em" viewbox="0 0 471 714" preserveaspectratio="xMinYMin"><path d="M377 20c0-5.333 1.833-10 5.5-14S391 0 397 0c4.667 0 8.667 1.667 12 5 3.333 2.667 6.667 9 10 19 6.667 24.667 20.333 43.667 41 57 7.333 4.667 11 10.667 11 18 0 6-1 10-3 12s-6.667 5-14 9c-28.667 14.667-53.667 35.667-75 63 -1.333 1.333-3.167 3.5-5.5 6.5s-4 4.833-5 5.5c-1 .667-2.5 1.333-4.5 2s-4.333 1 -7 1c-4.667 0-9.167-1.833-13.5-5.5S337 184 337 178c0-12.667 15.667-32.333 47-59 H213l-171-1c-8.667-6-13-12.333-13-19 0-4.667 4.333-11.333 13-20h359 c-16-25.333-24-45-24-59z" /></svg></span></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:3.2421em;vertical-align:-1.4138em;"></span><span class="mord"><span class="mord mathnormal">i</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:1.0733em;"><span style="top:-3.13em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mop mtight"><span class="mop op-symbol small-op mtight" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.9191em;"><span style="top:-2.1786em;margin-left:0em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span><span style="top:-2.931em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight">L</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.4603em;"><span></span></span></span></span></span></span><span class="mspace mtight" style="margin-right:0.1952em;"></span><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:0em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2819em;"><span></span></span></span></span></span></span><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.04398em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:-0.044em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2819em;"><span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.8283em;"><span style="top:-1.8723em;margin-left:0em;"><span class="pstrut" style="height:3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span><span style="top:-3.05em;"><span class="pstrut" style="height:3.05em;"></span><span><span class="mop op-symbol large-op">⨂</span></span></span><span style="top:-4.3em;margin-left:0em;"><span class="pstrut" style="height:3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.4138em;"><span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8435em;"><span style="top:-2.4231em;margin-left:-0.0785em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span><span style="top:-3.2421em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathnormal mtight">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:0em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2819em;"><span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.413em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">Z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8435em;"><span style="top:-2.4231em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span><span style="top:-3.2421em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.04398em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:-0.044em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.05724em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2819em;"><span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.413em;"><span></span></span></span></span></span></span></span></span></span></span></p>
 <h3 id="the-paulistring-type"><a class="header" href="#the-paulistring-type">The <code>PauliString</code> type</a></h3>
 <p>A single Pauli string is its own type, <code>PauliString</code> — the object the symplectic encoding above describes, before any coefficient is attached to it.
 It is immutable and carries <code>num_qubits</code>, a <code>weight</code> (the number of non-identity factors, the same quantity <a href="#choosing-a-policy"><code>truncation.weight</code></a> caps), and a <code>label</code> (the <code>IXYZ</code> string <code>str(p)</code> also gives).</p>
@@ -484,8 +482,8 @@ print(phase, product.label)
 <code>mul</code> is the other half: multiplying two Pauli strings is never ambiguous or a sum of several strings, it is exactly one string and a phase <code>i^k</code> the caller folds into a coefficient, <code>X·Z = -iY</code> above being the canonical instance (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code> §Engine</a> states the general rule).
 That closure — one string in, one string and a phase out — is why a gate’s image is a short, enumerable list of terms rather than a combinatorial explosion; <a href="#cost-model">Cost is terms, not qubits</a> is what a whole sum inherits from this one-string fact.</p>
 <h2 id="pauli-sums"><a class="header" href="#pauli-sums">Pauli sums</a></h2>
-<p>As the basis of Pauli strings spans the full operator space, any operator can be written as a linear combination of Pauli strings: <code>O = \sum_P c_P P</code>.
-Since the total space is <code>4^L</code>-dimensional, we wish to store a <strong>sparse</strong> representation of the unique non-zero coefficient-string pairs.
+<p>As the basis of Pauli strings spans the full operator space, any operator can be written as a linear combination of Pauli strings: <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0497em;vertical-align:-0.2997em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1786em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.13889em;">P</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal">c</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.13889em;">P</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord mathnormal" style="margin-right:0.13889em;">P</span></span></span></span>.
+Since the total space is <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8413em;"></span><span class="mord"><span class="mord">4</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8413em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span></span></span></span></span></span></span></span>-dimensional, we wish to store a <strong>sparse</strong> representation of the unique non-zero coefficient-string pairs.
 To allow for efficient merging of the strings, we store two separate lists, one for the coefficients and one for the strings, sorted by the string.</p>
 <h3 id="the-paulisum-type"><a class="header" href="#the-paulisum-type">The <code>PauliSum</code> type</a></h3>
 <p>A <code>PauliSum</code> is an operator on <code>n</code> qubits written in the Pauli basis: <code>O = Σ_P c_P P</code>, one complex coefficient per <code>PauliString</code> <code>P</code>, each string appearing at most once.
@@ -620,7 +618,7 @@ The third source is a previous propagation: its result is an ordinary <code>Paul
 <li><a href="#validation-1">B5 — Hybrid depth reduction</a> — an evolved observable saved to <code>.npz</code>, read back, and embedded in a task JSON, with the round-trip gap measured.</li>
 <li><a href="#paulisum">PauliSum</a> — the dry constructor, accessor and format reference this chapter cites throughout.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="circuits"><a class="header" href="#circuits">Circuits</a></h1>
 <h2 id="building-a-circuit"><a class="header" href="#building-a-circuit">Building a circuit</a></h2>
 <p>A <code>Circuit</code> is an ordered list of channels on a fixed register, and every method call on it pushes exactly one channel.
@@ -757,7 +755,7 @@ The edge is therefore what a three-qubit gate becomes when you need one: a decom
 <li><a href="#benchmark-a--clifford-point">A — Clifford point</a> — the same recorded gate list handed to the engine and, as schema-v1 task JSON, to <code>PauliPropagation.jl</code>, for a term-for-term parity check.</li>
 <li><a href="#benchmark-c--deep-trotter-circuits">C — Deep Trotter circuits</a> — a kicked-Ising Trotter step on 127 qubits, one rotation per push, 5 420 channels at 20 steps.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="engine-and-propagation"><a class="header" href="#engine-and-propagation">Engine and propagation</a></h1>
 <p>Propagation is the one thing this library does: take a Pauli sum, push it through a circuit one channel at a time, and truncate after every channel so the sum stays tractable.
 Everything else on this site — observables, circuits, measurements — exists to feed that loop or read its output.
@@ -819,7 +817,7 @@ A result computed in the wrong picture is a plausible number with no error raise
 <li><a href="#mpi-ranks">MPI ranks</a> — the same split across processes, for capacity.</li>
 </ul>
 <p><a href="#first-propagation">First propagation</a> runs this whole chapter once on four qubits; <a href="#d--xxz-chain-scaling">Benchmark D</a> is the cost model measured, with term growth against depth and chain length.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="direction"><a class="header" href="#direction">Direction</a></h1>
 <p><code>direction</code> selects which conjugation <code>propagate</code> performs, and the two choices compute different operators.
 Under <code>"heisenberg"</code> the evolved sum is <code>U†OU</code>; under <code>"forward"</code> it is <code>UOU†</code>.
@@ -887,7 +885,7 @@ And an incremental propagation extends the evolved operator at the <em>applicati
 <p>The full two-row table is in the <a href="#direction-semantics">Library</a>.
 Every cross-engine comparison on this site is run in the Heisenberg direction, because <code>PauliPropagation.jl</code> defines no forward map for several of the gates in the shared vocabulary — <a href="#methodology">Against other tools</a> has the asymmetry.
 <a href="#b5--hybrid-depth-reduction">Showcase B5</a> is a Heisenberg run whose evolved observable is then handed to a shorter front circuit, which only works because the label denotes the input state.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation"><a class="header" href="#truncation">Truncation</a></h1>
 <p>Truncation is what makes Pauli propagation work, and it is the one argument to <code>propagate</code> that trades accuracy for time.
 It runs <strong>after every layer</strong> — after every applied channel, not once per <code>propagate</code> call (<a href="#the-loop">The loop</a>) — and what it deletes is gone for every later layer.
@@ -984,7 +982,7 @@ The same absence of a bound also means the sweep’s self-estimated uncertainty 
 <li><a href="#e--random-su4-brickwork">Benchmark E — Random SU(4) brickwork</a> is the generic worst case for a <code>coeff</code> policy: rise, plateau, then collapse to zero terms.</li>
 <li><a href="#check-the-cutoff">First propagation</a> runs a first cutoff sweep on four qubits.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="validating-a-result"><a class="header" href="#validating-a-result">Validating a result</a></h1>
 <p>One expectation value at one cutoff is not a result.
 Truncation has <a href="#no-variational-bound">no variational bound</a>, so nothing in the number itself says how far it is from the truth.
@@ -1066,7 +1064,7 @@ The sweep above bottoms out at 4 478 terms, one short of the 4 479 that <code>ob
 <p>An exact reference at a reachable corner of the parameter space also calibrates the sweep at the corners you cannot reach.</p>
 <p>A time series is a grid of truncated results and carries the same obligation at every point — <a href="#keeping-the-series-honest">Incremental propagation</a>.
 The term counts and memory behind a sweep are on <a href="#stats-memory-and-logging">Stats, memory and logging</a>, and the sweep as a cross-engine convergence panel is what every page under <a href="#the-plateau-criterion">Benchmarks</a> ends with.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="incremental-propagation"><a class="header" href="#incremental-propagation">Incremental propagation</a></h1>
 <p><code>propagate</code> returns a new sum, and that sum is a perfectly good input to another <code>propagate</code> call.
 Because truncation runs after every layer rather than once per call, chaining calls costs nothing in accuracy, and that identity is what turns a time series from one run per time point into a single pass read out along the way.
@@ -1150,7 +1148,7 @@ The two-row table on <a href="#push-order">Direction</a> is the rule this follow
 The sweep on <a href="#validating-a-result">Validating a result</a> <em>is</em> the series above at step 6, swept over five cutoffs, and shows that <code>1e-4</code> is one row short of bottoming out.</p>
 <p>Term growth across the series is the cost signal — <code>propagate_with_stats</code> reports it per layer rather than per step, and running the loop on a short prefix is the cheapest way to see whether the growth is saturating (<a href="#stats">Stats</a>).
 <a href="#b1--operator-scrambling">Showcase B1</a> reads support growth and OTOCs off exactly this kind of series, and <a href="#d--xxz-chain-scaling">Benchmark D</a> measures how the term count at each step scales with the chain length.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="stats-memory-and-logging"><a class="header" href="#stats-memory-and-logging">Stats, memory and logging</a></h1>
 <p>The pages before this one were about what <code>propagate</code> computes.
 This one is about watching it run: the per-layer counters, how to turn a term count into a memory bill before committing to a run, the log stream, and the handful of arguments and environment variables that change how fast the answer arrives without changing the answer.</p>
@@ -1251,7 +1249,7 @@ print(len(exact), "terms untruncated")
 </code></pre>
 <p>Afford it deliberately: term growth without a filter is exponential in depth for a generic circuit, and at a Clifford angle the numerically dead residual branches described under <a href="#choosing-a-policy">Choosing a policy</a> fan out without bound.
 Estimate <code>peak_terms</code> from a prefix and the bytes-per-term arithmetic above before running a deep circuit untruncated, and expect the untruncated run to be the most expensive point of any sweep by a wide margin.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="inside-the-engine"><a class="header" href="#inside-the-engine">Inside the engine</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer’s data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
@@ -1320,7 +1318,7 @@ Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the s
 The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>
 <p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>, and <code>ARCHITECTURE.md</code> §Partitioning for the mechanism.</p>
 <p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum.rs"><code>pauli_sum.rs</code></a>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one thread pool across the whole box.
 Each domain gets its own pinned pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
@@ -1380,7 +1378,7 @@ At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 </ul>
 <h2 id="see-it-in-use-2"><a class="header" href="#see-it-in-use-2">See it in use</a></h2>
 <p><a href="#partitioned">Engine performance</a> has the <code>P = 2</code> versus <code>P = 1</code> tables per host and thread count, the per-layer times of an exchange-free layer, the bandwidth counters behind the gain, and the benchmarking protocol for reproducing them.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="#numa-partitions">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
@@ -1504,7 +1502,7 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <a href="#distributed">Engine performance</a>.</li>
 <li><strong>The library never initializes MPI.</strong> The application owns <code>MPI_Init</code> and <code>MPI_Finalize</code>.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="measurements"><a class="header" href="#measurements">Measurements</a></h1>
 <h2 id="product-states"><a class="header" href="#product-states">Product states</a></h2>
 <p>A propagated sum is read out with <code>expectation(state)</code>, which evaluates <code>⟨s|A|s⟩</code> for a single-qubit product state <code>|s⟩</code> in one masked pass over the terms.
@@ -1608,7 +1606,7 @@ What turns the number into a result is <a href="#validating-a-result">Validating
 <li><a href="#running-it">B1 — Operator scrambling</a> — the OTOC and the conserved norm computed from the coefficient arrays rather than an expectation call, the array route of <a href="#symplectic-arrays">Symplectic arrays</a>.</li>
 <li><a href="#the-same-collapse-three-other-channels">B2 — Noisy circuit verification</a> — one <code>Z</code> expectation under four noise channels, and why amplitude damping moves it where the Pauli channels only shrink it.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
 <h2 id="the-2d-ising-quench"><a class="header" href="#the-2d-ising-quench">The flagship worked example: a 2D Ising quench</a></h2>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
@@ -1628,7 +1626,7 @@ For the same pattern in Python — one Trotter step at a time, an expectation va
 <li><a href="#engine-performance">Engine performance</a> — roofline analysis, layer-time breakdown, and partitioned/distributed scaling, all measured.</li>
 <li><a href="#against-other-tools">Against other tools</a> — where this method fits against state-vector, stabilizer and MPO simulation.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="first-propagation"><a class="header" href="#first-propagation">First propagation</a></h1>
 <p><em>Manual: <a href="#operators">Operators</a>, <a href="#engine-and-propagation">Engine and propagation</a></em></p>
 <p>This walks through one Heisenberg-picture propagation end to end: build an observable, build a circuit, propagate it, read out an expectation value.</p>
@@ -1724,7 +1722,7 @@ A flat answer over a <em>changing</em> sum is not evidence of convergence, and o
 <li><a href="#against-other-tools">Against other tools</a> — whether Pauli propagation is the right method for your problem at all.</li>
 <li><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/observables.py"><code>examples/common/observables.py</code></a> and <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/common/circuits.py"><code>examples/common/circuits.py</code></a> — more observable and circuit constructions.</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="showcases"><a class="header" href="#showcases">Showcases</a></h1>
 <p>Five measured applications.</p>
 <div class="table-wrapper">
@@ -1768,7 +1766,7 @@ runs in about a second on numpy alone — the physics is checked on every commit
 even though the full runs are manual.</p>
 <p><strong>Source:</strong>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/README.md"><code>examples/README.md</code></a>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b1--operator-scrambling"><a class="header" href="#b1--operator-scrambling">B1 — Operator scrambling</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a>, <a href="#direction">Direction</a></em></p>
 <p class="lead">Heisenberg-evolve a single-site <code>Z</code> through a kicked Ising
@@ -1966,7 +1964,7 @@ with full per-<code>(cutoff, step)</code> records in <code>results_1d.json</code
 <code>results_2d.json</code> and the headline table in
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b1_operator_scrambling/README.md">the README</a>.
 No number here is from literature.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b2--noisy-circuit-verification"><a class="header" href="#b2--noisy-circuit-verification">B2 — Noisy circuit verification</a></h1>
 <p><em>Manual: <a href="#noise-channels">Noise channels</a>, <a href="#truncation">Truncation</a></em></p>
 <p class="lead">The 127-qubit heavy-hex kicked-Ising circuit from
@@ -2166,7 +2164,7 @@ the end.</p>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b2_noisy_verification/results.json"><code>examples/b2_noisy_verification/results.json</code></a>,
 verdicts in <code>summary.json</code> next to it, source and provenance in
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b2_noisy_verification/README.md"><code>examples/b2_noisy_verification/README.md</code></a>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b5--hybrid-depth-reduction"><a class="header" href="#b5--hybrid-depth-reduction">B5 — Hybrid depth reduction</a></h1>
 <p><em>Manual: <a href="#incremental-propagation">Incremental propagation</a>, <a href="#truncation">Truncation</a></em></p>
 <p class="lead">Split a circuit near the end, back-propagate the observable through the tail classically, and hand a QPU the shorter front circuit plus an evolved observable. The composed expectation is <em>exactly</em> the full-circuit one — so the trade is QPU depth against classical term count, and this page measures both sides of it.</p>
@@ -2247,7 +2245,7 @@ composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
 </div>
 <p>The residual circuit shrinks linearly in Trotter steps while the weight-capped evolved-observable term count grows roughly exponentially before the cap bites — the classic operator-spreading-vs-light-cone shape, and exactly the cost paid classically for every layer moved off the QPU.</p>
 <p><strong>Numbers:</strong> every value on this page comes from <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b5_operator_backpropagation/run_b5.py"><code>examples/b5_operator_backpropagation/run_b5.py</code></a>, committed alongside its outputs — <code>task_exact.json</code>, <code>task_truncated.json</code>, <code>evolved_observable_exact.npz</code>, <code>depth_vs_terms.csv</code>, <code>depth_vs_terms.svg</code>, and <code>convergence_panel.svg</code> — in the showcase directory.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b6--resource-probes"><a class="header" href="#b6--resource-probes">B6 — Resource probes</a></h1>
 <p><em>Manual: <a href="#cost-model">Cost is terms, not qubits</a>, <a href="#inside-the-engine">Inside the engine</a></em></p>
 <p class="lead">Two diagnostics read off the evolved sum's numpy export, each answering "how hard is this operator?" under a different cost model: Pauli-spectrum entropy (a magic-adjacent diagnostic for truncation-based Pauli propagation) and operator entanglement, the cost model for matrix-product-operator methods. Both are zero on a single Pauli string.</p>
@@ -2361,7 +2359,7 @@ python examples/b6_resource_probes/run_b6.py
 <li>T. Prosen, I. Pižorn, “Operator space entanglement entropy in transverse Ising chain”, Phys. Rev. A 76, 032316 (2007). OSEE as the cost model for simulating observables.</li>
 </ol>
 <p><strong>Numbers:</strong> raw sweeps in <code>examples/b6_resource_probes/theta_sweep.csv</code> / <code>depth_sweep.csv</code>, cross-check in <code>exact_cross_check.json</code>, full convergence tables and reproduction detail in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b6_resource_probes/README.md"><code>examples/b6_resource_probes/README.md</code></a>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b7--stabilizer-state-preparation"><a class="header" href="#b7--stabilizer-state-preparation">B7 — Stabilizer-state preparation</a></h1>
 <p><em>Manual: <a href="#stabilizer-states">Stabilizer states</a></em></p>
 <p class="lead">stim prepares a 36-qubit 2D cluster state as a stabilizer
@@ -2502,7 +2500,7 @@ every artifact in the showcase directory.</p>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b7_stabilizer_prep/README.md"><code>examples/b7_stabilizer_prep/README.md</code></a>
 and its committed artifacts — <code>theta_sweep.csv</code>, <code>scaling.csv</code>,
 <code>prep_depth.csv</code>, <code>validation_b7.json</code>, <code>results_b7.json</code>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
 <p>Five benchmarks, each with a setup, an oracle, and a result.
 Two of the five results are negative.</p>
@@ -2591,7 +2589,7 @@ consistency across every pair), not these tables.</p>
 <p><strong>Sources:</strong>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>
 and the per-benchmark READMEs linked from each page.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="benchmark-a--clifford-point"><a class="header" href="#benchmark-a--clifford-point">Benchmark A — Clifford point</a></h1>
 <p><em>Manual: <a href="#validating-a-result">Validating a result</a></em></p>
 <p class="lead">The one point in the suite where the exact answer is an integer.
@@ -2652,7 +2650,7 @@ the driver’s own module docstring in
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/bench_a_clifford.py"><code>benchmarks/python/bench_a_clifford.py</code></a>,
 and, for the reproduced integers,
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/theta_sweep/README.md"><code>benchmarks/python/theta_sweep/README.md</code></a>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b--kick-angle-sweep"><a class="header" href="#b--kick-angle-sweep">B — Kick-angle sweep</a></h1>
 <p><em>Manual: <a href="#validating-a-result">Validating a result</a>, <a href="#truncation">Truncation</a></em></p>
 <p class="lead">Six kick angles, three published observables, 5 Trotter steps:
@@ -2857,7 +2855,7 @@ the recorded measurements; that file’s <code>notes</code> field says so.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/theta_sweep/README.md"><code>benchmarks/python/theta_sweep/README.md</code></a>,
 with the 236 raw records in <code>results.json</code> and the verdicts in <code>summary.json</code>
 next to it.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="benchmark-c--deep-trotter-circuits"><a class="header" href="#benchmark-c--deep-trotter-circuits">Benchmark C — Deep Trotter circuits</a></h1>
 <p><em>Manual: <a href="#validating-a-result">Validating a result</a></em></p>
 <p class="lead">At 5 Trotter steps the 0.01 accuracy target is met in a tenth
@@ -3150,7 +3148,7 @@ uses the peak, since that is what a run has to hold.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/deep_trotter/README.md"><code>benchmarks/python/deep_trotter/bench_c_deep_trotter.py</code></a>,
 with the raw records in <code>results.json</code> and the full convergence evidence in
 <code>summary.json</code> next to it.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="d--xxz-chain-scaling"><a class="header" href="#d--xxz-chain-scaling">D — XXZ chain scaling</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a>, <a href="#stats-memory-and-logging">Stats, memory and logging</a></em></p>
 <p class="lead">The only benchmark in the suite with an <em>analytic</em> prediction to check
@@ -3348,7 +3346,7 @@ recalibration would rerun each point for no gain, and the memory curve needs one
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/xxz_chain/README.md"><code>examples/xxz_chain/README.md</code></a>
 and the raw sweeps in <code>examples/xxz_chain/results/</code>. Host: ccqlin038, Intel Xeon Gold 6244 @ 3.60 GHz,
 <code>RAYON_NUM_THREADS=1</code>, <code>RUST_LOG</code> unset.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="e--random-su4-brickwork"><a class="header" href="#e--random-su4-brickwork">E — Random SU(4) brickwork</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a></em></p>
 <p class="lead">The deliberate worst case. Every other benchmark here is built
@@ -3506,7 +3504,7 @@ disagree.</p>
 <p><strong>Numbers:</strong> every figure on this page traces to
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/su4_staircase/README.md"><code>benchmarks/python/su4_staircase/README.md</code></a>,
 including the run command, with the raw records in <code>results.json</code> next to it.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="engine-performance"><a class="header" href="#engine-performance">Engine performance</a></h1>
 <p>Where the engine’s measured limits are: a roofline analysis of the current engine against the reference host’s measured memory bandwidth, then the partitioned and distributed measurements.
 Every number is copied from a committed source, named inline and in the footer.</p>
@@ -3710,7 +3708,7 @@ A remote layer is <strong>transfer-bound</strong> — the pipeline runs the cose
 <p>Single-shot campaign noise on the reference host is ±5–8% single-threaded and ±10–26% at 8–32 threads; untouched code moves that much between campaigns.
 Effects below that need the interleaved A/B protocol (<code>scripts/ab-compare.sh</code>), whose acceptance criterion is direction consistency across every pair.</p>
 <p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Width, §Performance-Model (layout and dispatch).</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="against-other-tools"><a class="header" href="#against-other-tools">Against other tools</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a>, <a href="#engine-and-propagation">Engine and propagation</a></em></p>
 <p class="lead">Against <code>PauliPropagation.jl</code>, the other mature
@@ -4055,7 +4053,7 @@ and
 qiskit/openfermion numbers:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>
 and its committed <code>results.json</code>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="library"><a class="header" href="#library">Library</a></h1>
 <p>Signatures and tables for the Python API. Usage and rationale are in the <a href="#manual">Manual</a>.</p>
 <div class="table-wrapper">
@@ -4074,7 +4072,7 @@ and its committed <code>results.json</code>.</p>
 </tbody>
 </table>
 </div>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="paulisum"><a class="header" href="#paulisum">PauliSum</a></h1>
 <h2 id="constructors"><a class="header" href="#constructors">Constructors</a></h2>
 <div class="table-wrapper">
@@ -4137,7 +4135,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 </table>
 </div>
 <p>See <a href="#saving-and-loading">Saving and loading</a> for the recipe.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="circuit"><a class="header" href="#circuit">Circuit</a></h1>
 <h2 id="constructor"><a class="header" href="#constructor">Constructor</a></h2>
 <p><code>Circuit(num_qubits)</code> — an empty circuit.</p>
@@ -4229,7 +4227,7 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 </table>
 </div>
 <p>See <a href="#importing-circuits">Importing circuits</a> for the recipe.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="propagate--propagate_with_stats"><a class="header" href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></h1>
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, engine=None,
                small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
@@ -4333,7 +4331,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 </table>
 </div>
 <p>Under <code>comm=</code>, a distributed run’s per-layer lists (<code>terms_in</code>, <code>terms_out</code>, <code>rows_exported</code>, <code>bytes_exported</code>, <code>nanos</code>) hold this rank’s own entry only — nothing gathers the group’s counters, since that would add a collective per layer for a diagnostic. Reduce over <code>comm</code> for the group’s picture; <code>imbalance</code> is always <code>1.0</code> in that case.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation-policies"><a class="header" href="#truncation-policies">Truncation policies</a></h1>
 <p>All four live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
 <div class="table-wrapper">
@@ -4366,7 +4364,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="#choosing-a-policy">Truncation</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="direction-semantics"><a class="header" href="#direction-semantics">Direction semantics</a></h1>
 <p><code>direction=</code> selects which conjugation <code>propagate</code>/<code>propagate_with_stats</code> performs.</p>
 <div class="table-wrapper">
@@ -4400,7 +4398,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <p>Push order interacts with direction. Under <code>"heisenberg"</code> the engine iterates channels in reverse, so pushing <code>ZZ</code> rotations before <code>X</code> rotations gives a step operator <code>U = U_X · U_ZZ</code>, and Heisenberg evolution computes <code>U_ZZ† U_X† O U_X U_ZZ</code>.
 Build the circuit in the order you want applied under <code>"forward"</code>; the direction flag handles the reversal.</p>
 <p>See <a href="#direction">Direction</a> for guidance on which picture answers which question.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="measurement"><a class="header" href="#measurement">Measurement</a></h1>
 <h2 id="expectationstatex"><a class="header" href="#expectationstatex"><code>expectation(state="x+")</code></a></h2>
 <p>Expectation value in a single-qubit product state. <code>state</code> is either:</p>
@@ -4429,7 +4427,7 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <p>Coefficient of the <code>I...I</code> term, i.e. <code>tr(O) / 2^n</code>.</p>
 <h2 id="propagate_with_stats"><a class="header" href="#propagate_with_stats"><code>propagate_with_stats</code></a></h2>
 <p><code>propagate_with_stats(...)</code> returns <code>(evolved, PropagationStats)</code>; see <a href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a> for the full signature and stats fields.</p>
-<div style="break-before: page; page-break-before: always;"></div>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="module-helpers"><a class="header" href="#module-helpers">Module helpers</a></h1>
 <div class="table-wrapper">
 <table>

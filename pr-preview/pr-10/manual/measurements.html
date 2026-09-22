@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-fb1189b1.js";
+            window.path_to_searchindex_js = "../searchindex-1d94ccf3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28a3b63b.js"></script>
@@ -181,7 +181,8 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="measurements"><a class="header" href="#measurements">Measurements</a></h1>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="measurements"><a class="header" href="#measurements">Measurements</a></h1>
 <h2 id="product-states"><a class="header" href="#product-states">Product states</a></h2>
 <p>A propagated sum is read out with <code>expectation(state)</code>, which evaluates <code>⟨s|A|s⟩</code> for a single-qubit product state <code>|s⟩</code> in one masked pass over the terms.
 The state is either a uniform shorthand — <code>"x+"</code>, <code>"y+"</code>, <code>"z+"</code>, the <code>+1</code> eigenstate of that Pauli on every qubit — or a per-qubit label string of exactly <code>num_qubits</code> characters from <code>0 1 + - r l</code>, qiskit’s <code>Statevector.from_label</code> alphabet, with <code>0</code>/<code>1</code> the <code>Z</code> eigenstates, <code>+</code>/<code>-</code> the <code>X</code> ones and <code>r</code>/<code>l</code> the <code>Y</code> ones.

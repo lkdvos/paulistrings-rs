@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-fb1189b1.js";
+            window.path_to_searchindex_js = "../../searchindex-1d94ccf3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-28a3b63b.js"></script>
@@ -181,7 +181,8 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="partitions.html">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
 What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning, subsection “Transport composition”).</p>

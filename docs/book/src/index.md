@@ -6,8 +6,15 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 
 ## Quickstart
 
-An observable is a weighted sum of Pauli strings, a circuit is a list of gates, and propagating the observable through the circuit in the Heisenberg picture conjugates it by every gate in reverse: `O ↦ U†OU`.
-Four qubits, three gates, one readout:
+In many quantum simulations, the object of interest is typically the expectation value ``⟨O⟩ = \text{tr}(ρ U^† O U)``.
+Here we start from some initial density matrix ``ρ`` which is evolved through a circuit ``U`` and then measured with an operator ``O``.
+For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator ``O``, which is then evolved backwards through the circuit ``U``, and finally measured against a density matrix ``ρ``.
+
+### Simple circuit
+
+As a simple example, we may look at a four-qubit initial state ``|++++⟩``, and measure the total magnetization after propagating through the following simple circuit:
+
+![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](assets/quickstart/circuit.svg)
 
 ```python
 import math
@@ -26,27 +33,30 @@ evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 ```
 
-![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](assets/quickstart/circuit.svg)
 
 ```text
 5 0.7309698831278217
 ```
 
-The observable starts as four single-qubit `X` strings, one per qubit; the circuit only touches qubits 0–2, so the `IIIX` term comes through untouched while the other three spread and recombine into the five surviving terms above.
-`evolved.expectation("x+")` then reads the evolved operator against the product state `|++++⟩`, giving the average X magnetization after the circuit: `0.731`.
-An observable, a circuit, a propagation, a readout — the [Manual](manual/index.md) opens with this same run and explains each line; [First propagation](examples/first-propagation.md) carries it further, into term inspection and a validation sweep.
+### Quenched time-evolution
 
-![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](assets/ising-quench/ising_quench.svg)
+For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the ``|+⟩^{⊗N}``.
 
-A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
-average-X-magnetization observable through a Trotter circuit — a regime where
-exact diagonalization is already infeasible (`2^36` amplitudes for the 6×6
-lattice) but Pauli propagation with modest truncation finishes in seconds to
-minutes. Setup, truncation and error bar:
-[the 2D Ising quench](examples/index.md#the-2d-ising-quench),
-which links on to the crate's full Rust walkthrough.
+```math
+H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
+```
 
-The same pattern at a scale this page can run live — a 3×3 periodic lattice, five Trotter steps, no term-count cap — as one `propagate` call per step, exactly [Incremental propagation](manual/propagation/incremental.md)'s pattern:
+This is achieved by propagating the total magnetization ``M = \sum_i X_i`` through a Trotterized circuit and measuring against the initial state ``|+⟩⟨+|^{⊗N}``.
+However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings and discard coefficients with a magnitude below a threshold ``ϵ``.
+Finally, we can extrapolate to the limit of zero truncation to validate our results.
+
+![Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)](assets/ising-quench-convergence/quench_convergence.svg)
+
+Three field strengths `h` (color) and three coefficient thresholds `ϵ = 10⁻³, 10⁻⁵, 10⁻⁷` (opacity) on an 8×8 periodic lattice, `J = 1`.
+At every `h` the two tighter thresholds stay on top of each other through `t = 0.4`: that overlap is the trusted regime, where tightening `ϵ` further would not move the curve.
+The loosest threshold peels away once the tracked sum has thrown out too much to represent the true operator, and it does so earlier at larger `h` — a bigger single-qubit rotation per Trotter step drives the operator across more of the Pauli sum faster, so the same `ϵ` buys less trustworthy time.
+`h = 2` also keeps far more terms at a given `ϵ` for the same reason: at `t = 0.4`, `ϵ = 10⁻⁵` holds 18,688 terms at `h = 0.5` against 174,048 at `h = 2`.
+Figure script: `docs/figures/ising-quench-convergence/quench_convergence.py`.
 
 ```python
 from paulistrings import truncation
@@ -99,31 +109,6 @@ t=0.50  <X>=+0.183984  terms=98698
 
 The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver [Scope](#scope) below names, measured here rather than asserted.
 This run is single-threaded and untruncated below `1e-6`, so it is not the headline figure's numbers; it is the same loop at a size this page can execute rather than only show.
-
-## Pauli propagation
-
-Write the observable, not the state, in the Pauli basis:
-
-```text
-O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n
-```
-
-and evolve *it*. Each gate maps every Pauli string to a short sum of Pauli
-strings — one string for a Clifford gate, two for a Pauli rotation
-`exp(-iθP/2)`, a rescale for most noise channels — so a circuit layer is a
-fan-out over the terms followed by a deduplicating merge. In the Heisenberg
-picture the channel list is walked in reverse and each channel's adjoint is
-applied, giving `U†OU`; in the forward picture it is walked as written, giving
-`UOU†`. The expectation value against a product state is then one masked pass
-over the surviving terms — never an expansion over `2^n` amplitudes.
-
-The cost is not the qubit count. It is the number of Pauli strings the operator
-spreads over, which grows with circuit depth until **truncation** holds it: a
-coefficient threshold, a Pauli-weight cap, a top-`k` budget. What every result on
-this site therefore has to report is how much of the operator the truncation
-deleted, and whether the answer still moves when the cutoff is tightened. Every
-showcase and benchmark page answers that with a convergence sweep, and says so
-when the point is *not resolved*.
 
 ## Scope
 

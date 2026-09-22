@@ -58,26 +58,6 @@ The constructor, accessor and operation tables are in [PauliString](../library/p
 
 Four operations on bare Pauli strings are closed-form from the symplectic encoding: whether two strings (anti-)commute, their product, and their (anti-)commutator.
 
-```python
-from paulistrings import PauliString
-
-x = PauliString.x(0, 1)
-z = PauliString.z(0, 1)
-
-print(x.commutes_with(z), x.anticommutes_with(z))
-phase, product = x.mul(z)
-comm_coeff, _ = x.commutator(z)
-anti_coeff, _ = x.anticommutator(z)
-print(phase, product)
-print(comm_coeff, anti_coeff)
-```
-
-```text
-False True
--1j Y
--2j 0j
-```
-
 `mul` is the closed form itself: multiplying two Pauli strings results in exactly one output string, up to a phase $j^k$ the caller must keep track of.
 The canonical example being $XZ = -jY$ above.
 In general, writing $(x^P, z^P)$ and $(x^Q, z^Q)$ for the two operands' symplectic bits, the phase is:
@@ -87,6 +67,8 @@ j^k, \qquad k = \sum_q \Big(x^P_q z^P_q + x^Q_q z^Q_q - (x^P_q \oplus x^Q_q)(z^P
 $$
 
 ```python
+from paulistrings import PauliString
+
 a, b = PauliString.from_label("XZY"), PauliString.from_label("ZXY")
 phase, product = a.mul(b)
 print(phase, product)
@@ -96,8 +78,7 @@ print(phase, product)
 (1+0j) YYI
 ```
 
-`commutes_with` is the symplectic inner product read as a boolean, `False` here since $X$ and $Z$ do not commute on the same qubit.
-In the Pauli algebra, this is mutually exclusive with `anticommutes_with`, which is therefore defined for convenience as the negation of `commutes_with`.
+`commutes_with` is the symplectic inner product read as a boolean; `anticommutes_with` is its negation, since a pair of Pauli strings always does one or the other and never neither.
 Generally, the computation follows:
 
 $$
@@ -108,11 +89,11 @@ with the two strings commuting exactly when $\langle P, Q \rangle = 0$:
 
 ```python
 a, b = PauliString.from_label("XY"), PauliString.from_label("XY")
-print(a.commutes_with(b))
+print(a.commutes_with(b), a.anticommutes_with(b))
 ```
 
 ```text
-True
+True False
 ```
 
 Finally, both `commutator` and `anticommutator` result in a single string and coefficient again.
@@ -127,6 +108,7 @@ $$
 so an exact zero is a `0` coefficient here, never a `PauliSum` with nothing worth holding it:
 
 ```python
+x, z = PauliString.x(0, 1), PauliString.z(0, 1)
 print(x.commutator(z), x.anticommutator(z))
 ```
 

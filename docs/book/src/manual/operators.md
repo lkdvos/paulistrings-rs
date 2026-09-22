@@ -15,7 +15,7 @@ $$
 P = j^{xz}X^xZ^z
 $$
 
-In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = jXZ = j(1, 1)$.
+In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = jXZ = j(1, 1)$, equivalently $XZ = -jY$.
 
 For an $L$-qubit string, we can collect these into two masks, or in components:
 
@@ -150,7 +150,7 @@ print(len(observable), observable.num_qubits)
 ```
 
 A wrong key length or a character outside `IXYZ` is a `ValueError` naming the offending string; an exact-zero coefficient is dropped rather than stored.
-A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — the next section builds a Hamiltonian this way, and [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, once each piece is already its own sum.
+A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — [Hamiltonians and programmatic construction](#hamiltonians-and-programmatic-construction) below merges them by hand this way, and [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, once each piece is already its own sum.
 The constructor table is in [PauliSum](../library/pauli-sum.md#constructors); [First propagation](../examples/first-propagation.md) runs this exact observable through a circuit.
 
 **The Hermitian convention above is a storage detail, not an input or display rule.**

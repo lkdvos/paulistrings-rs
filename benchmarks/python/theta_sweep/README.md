@@ -1,7 +1,7 @@
 # Benchmark B — Kick-angle sweep
 
 Heavy-hex kicked Ising, 127 qubits, 5 Trotter steps, swept over six kick angles and three observables, scored against the tightest exact or self-converged reference reachable at each point.
-Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/b-theta-sweep.html
+Full writeup: https://lkdvos.github.io/paulistrings-rs/examples/benchmarks/b-theta-sweep.html
 
 ## Run it
 

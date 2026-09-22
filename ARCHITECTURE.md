@@ -3,7 +3,7 @@
 This document is the design reference for `paulistrings-rs`.
 Code comments cite it by section name (`ARCHITECTURE.md §Engine`), so the `##` headings are a stable anchor vocabulary — do not rename one without sweeping the citations in `crates/` and `python/`.
 It records contracts and invariants only.
-Measured results live in `research/FINDINGS.md`, host facts in `research/HARDWARE.md`, measurement method in `benchmarks/PROFILING.md`, and reader-facing narrative on the docs site (`docs/book/src/design/`).
+Measured results live in `research/FINDINGS.md`, host facts in `research/HARDWARE.md`, measurement method in `benchmarks/PROFILING.md`, and reader-facing narrative on the docs site (`docs/book/src/manual/propagation/engine.md`).
 
 ## Overview
 

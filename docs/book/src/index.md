@@ -5,7 +5,32 @@
 Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.jl);
 compared, term for term, against
 [`PauliPropagation.jl`](https://github.com/MSRudolph/PauliPropagation.jl) — see
-[Comparisons](explanation/comparisons.md).
+[Against other tools](examples/comparisons.md).
+
+## Quickstart
+
+```python
+import math
+from paulistrings import Circuit, PauliSum
+
+observable = PauliSum.from_strings(
+    {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4
+)
+
+circuit = Circuit(4)
+circuit.rz(math.pi / 8, 0)
+circuit.cnot(0, 1)
+circuit.h(2)
+
+evolved = observable.propagate(circuit, direction="heisenberg")
+print(len(evolved), evolved.expectation("x+").real)
+```
+
+```text
+5 0.7309698831278217
+```
+
+An observable, a circuit, a propagation, a readout — the [Manual](manual/index.md) opens with this same run and explains each line; [First propagation](examples/first-propagation.md) carries it further, into term inspection and a validation sweep.
 
 ![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](assets/ising-quench/ising_quench.svg)
 
@@ -14,7 +39,7 @@ average-X-magnetization observable through a Trotter circuit — a regime where
 exact diagonalization is already infeasible (`2^36` amplitudes for the 6×6
 lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Setup, truncation and error bar:
-[the 2D Ising quench](explanation/case-studies/index.md#the-2d-ising-quench),
+[the 2D Ising quench](examples/index.md#the-2d-ising-quench),
 which links on to the crate's full Rust walkthrough.
 
 ## Pauli propagation
@@ -64,7 +89,7 @@ when the point is *not resolved*.
 State-vector, tensor-network, stabilizer and matrix-product-state simulation
 are **explicit non-goals**. This engine has one storage type — a bucketed sum
 of parallel x/z/coefficient columns — and one loop.
-[Comparisons](explanation/comparisons.md) says which method fits which
+[Against other tools](examples/comparisons.md) says which method fits which
 problem, including the two places this engine is measurably *slower* than the
 alternative.
 
@@ -76,25 +101,18 @@ Two hard edges worth knowing before you start:
 - A truncated Pauli sum has **no variational bound**. Discarded terms carry
   signs, so a partial sum can sit on either side of the truth and the error
   need not be monotone in the cutoff. This is measured, not hypothetical —
-  [Benchmark B](explanation/case-studies/b-theta-sweep.md#non-monotone-truncation-error)
-  and [Benchmark C](explanation/case-studies/c-deep-trotter.md) both show it
+  [Benchmark B](examples/benchmarks/b-theta-sweep.md#non-monotone-truncation-error)
+  and [Benchmark C](examples/benchmarks/c-deep-trotter.md) both show it
   happening.
-
-New to the library? Build an observable, run it through a circuit, and read
-out an expectation value in one guided walkthrough:
-[Tutorial](tutorial/index.md).
 
 ## Sections
 
 | | |
 |---|---|
 | [Installation](installation.md) | install the Python package |
-| [Tutorial](tutorial/index.md) | one guided walkthrough: observable, circuit, propagate, measure |
-| [How-to guides](how-to/index.md) | task recipes — noise, truncation, direction, NUMA, MPI, interop |
-| [Explanation](explanation/index.md) | how it works and why it's fast: the bucketed layout, coset parallelism, and the measured roofline |
-| [Case studies](explanation/case-studies/index.md) | measured applications and benchmarks: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, XXZ scaling, and more, including the negative results |
-| [Comparisons](explanation/comparisons.md) | vs `PauliPropagation.jl` (term-for-term parity, and the measured crossover), vs state-vector and stabilizer simulators |
-| [Python reference](reference/index.md) | this book's Python API reference |
+| [Manual](manual/index.md) | operators, circuits, engine and propagation, measurements — read start to finish, or by topic |
+| [Examples](examples/index.md) | a guided first propagation, measured showcases and benchmarks, and comparisons against other tools |
+| [Library](library/index.md) | this book's Python API reference |
 | [Rust API](api/paulistrings/index.html) | rustdoc for the core crate, plus [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) on GitHub — the hand-off point for Rust users, not part of this book |
 
 ## Numbers on this site
@@ -122,5 +140,5 @@ Source, issues and the full research record:
 [github.com/lkdvos/paulistrings-rs](https://github.com/lkdvos/paulistrings-rs).
 The design source of truth is
 [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md);
-the site's [Explanation pages](explanation/index.md) are its public summary.
+the site's [Manual](manual/index.md) is its public summary.
 Dual-licensed MIT OR Apache-2.0.

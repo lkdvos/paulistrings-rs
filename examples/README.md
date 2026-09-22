@@ -21,6 +21,6 @@ RAYON_NUM_THREADS=1 python examples/xxz_chain/run_benchmark_d.py all
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts, since Rayon's global pool is built once at the first `propagate` call and never resized.
 Every CI-visible test lives under `examples/tests/` (showcases) or `benchmarks/python/tests/` (benchmarks) and `importorskip`s `stim`/`qiskit`/`matplotlib`, so the numpy-only CI job stays green without the `examples` extra installed; the scripts under this directory are not collected by CI and run manually as above.
 
-Full writeup of every showcase, what it demonstrates, and its independent cross-check: https://lkdvos.github.io/paulistrings-rs/showcases/index.html
+Full writeup of every showcase, what it demonstrates, and its independent cross-check: https://lkdvos.github.io/paulistrings-rs/examples/showcases/index.html
 
 The `PauliPropagation.jl` baseline, its task-JSON schema, and the measured semantics divergences between the two engines are documented in [`../benchmarks/julia/README.md`](../benchmarks/julia/README.md).

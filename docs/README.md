@@ -63,16 +63,15 @@ by rendering `cargo doc` alongside the book. Everything else resolves locally.
 
 ## What is in it
 
-The book follows a [Diataxis](https://diataxis.fr/) structure, Python-only —
-the Rust interface's home is the crate's own rustdoc and `ARCHITECTURE.md`.
+The book is organized into four areas, Python-only — the Rust interface's home
+is the crate's own rustdoc and `ARCHITECTURE.md`.
 
 | section | contents |
 |---|---|
 | `book/src/index.md`, `installation.md` | landing page and install |
-| `book/src/tutorial/` | one guided walkthrough: observable → circuit → propagate → measure |
-| `book/src/how-to/` | goal-oriented recipes (noise, truncation, direction, stats, NUMA, MPI, interop, io) |
-| `book/src/reference/` | terse Python API reference: `PauliSum`, `Circuit`, `propagate`, truncation, direction, measurement |
-| `book/src/explanation/` | how it works, performance, NUMA/MPI, comparisons, and `case-studies/` (the Part-B showcases and Part-A benchmarks) |
+| `book/src/manual/` | Operators, Circuits, Engine and propagation (direction, truncation, validation, incremental propagation, stats/memory/logging, the engine internals, NUMA partitions, MPI ranks), Measurements |
+| `book/src/examples/` | a guided first propagation, `showcases/` (the Part-B applications) and `benchmarks/` (the Part-A benchmarks plus engine performance), and comparisons against other tools |
+| `book/src/library/` | terse Python API reference: `PauliSum`, `Circuit`, `propagate`, truncation, direction, measurement, module helpers |
 
 ## Two rules the content follows
 

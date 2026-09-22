@@ -1,4 +1,4 @@
-"""Catches a `propagate`/`Circuit` kwarg or gate/noise method added, renamed, or removed without updating docs/book/src/reference/.
+"""Catches a `propagate`/`Circuit` kwarg or gate/noise method added, renamed, or removed without updating docs/book/src/library/.
 
 Skipped outside a repo checkout (an installed wheel ships this test file but not `docs/`).
 """
@@ -53,7 +53,7 @@ def _factory_name(cell: str) -> str | None:
 
 
 def test_propagate_reference_lists_exactly_the_actual_kwargs():
-    doc = _strip_fences((BOOK_SRC / "reference" / "propagate.md").read_text())
+    doc = _strip_fences((BOOK_SRC / "library" / "propagate.md").read_text())
     rows = _table_rows(doc, "Parameter")
     documented = {_backtick_name(row[0]) for row in rows if _backtick_name(row[0])}
     documented -= {"circuit"}  # positional, listed for completeness, not a kwarg
@@ -72,7 +72,7 @@ def test_propagate_reference_lists_exactly_the_actual_kwargs():
 
 
 def test_circuit_reference_lists_exactly_the_actual_gate_and_noise_surface():
-    doc = _strip_fences((BOOK_SRC / "reference" / "circuit.md").read_text())
+    doc = _strip_fences((BOOK_SRC / "library" / "circuit.md").read_text())
     gate_rows = _table_rows(doc, "gates.")
     noise_rows = _table_rows(doc, "noise.")
 
@@ -87,14 +87,14 @@ def test_circuit_reference_lists_exactly_the_actual_gate_and_noise_surface():
     noise_factories = {name for name in dir(noise) if not name.startswith("_")}
 
     assert documented_methods == circuit_methods, (
-        f"reference/circuit.md's method columns disagree with Circuit's actual gate/noise methods: "
+        f"library/circuit.md's method columns disagree with Circuit's actual gate/noise methods: "
         f"missing {circuit_methods - documented_methods}, stale {documented_methods - circuit_methods}"
     )
     assert documented_gate_factories == gate_factories, (
-        f"reference/circuit.md's gates. column disagrees with the gates module: "
+        f"library/circuit.md's gates. column disagrees with the gates module: "
         f"missing {gate_factories - documented_gate_factories}, stale {documented_gate_factories - gate_factories}"
     )
     assert documented_noise_factories == noise_factories, (
-        f"reference/circuit.md's noise. column disagrees with the noise module: "
+        f"library/circuit.md's noise. column disagrees with the noise module: "
         f"missing {noise_factories - documented_noise_factories}, stale {documented_noise_factories - noise_factories}"
     )

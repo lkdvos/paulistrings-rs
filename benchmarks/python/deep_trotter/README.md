@@ -1,7 +1,7 @@
 # Benchmark C — Deep Trotter circuits
 
 Heavy-hex kicked Ising, 127 qubits, a depth ladder of 5/9/15/20 Trotter steps in the hard interior, scored against the tightest exact or self-converged reference reachable at each depth.
-Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/c-deep-trotter.html
+Full writeup: https://lkdvos.github.io/paulistrings-rs/examples/benchmarks/c-deep-trotter.html
 
 ## Run it
 

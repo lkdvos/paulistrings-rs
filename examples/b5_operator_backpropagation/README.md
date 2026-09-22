@@ -11,4 +11,4 @@ pytest examples/tests/test_showcase_b5.py
 
 The script rewrites every artifact in this directory: both task JSONs, the `.npz`, `depth_vs_terms.csv`, and both SVG figures.
 
-Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/showcases/b5-operator-backpropagation.html
+Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/examples/showcases/b5-operator-backpropagation.html

@@ -7,7 +7,7 @@ light-cone shortcut). Driver:
 [`../bench_e_su4.py`](../bench_e_su4.py). CI-safe correctness gate:
 [`../tests/test_benchmark_e_su4.py`](../tests/test_benchmark_e_su4.py).
 
-Full writeup: https://lkdvos.github.io/paulistrings-rs/benchmarks/e-su4-brickwork.html
+Full writeup: https://lkdvos.github.io/paulistrings-rs/examples/benchmarks/e-su4-brickwork.html
 
 ## Run it
 

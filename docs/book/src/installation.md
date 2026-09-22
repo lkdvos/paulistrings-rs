@@ -47,10 +47,17 @@ Build `--release`. The release profile uses `lto = "fat"` and
 `codegen-units = 1`; a debug build of this workload is dramatically slower, and
 never worth benchmarking.
 
-The optional extras matter only for the example suite and the cross-library
-benchmarks — the library itself needs nothing but `numpy`:
+Core propagation needs nothing but `numpy`.
+The optional extras matter for the example suite and the cross-library
+benchmarks, and also cover `stim`/`qiskit`, which `interop.circuit_from_stim`,
+`interop.circuit_from_qiskit` and `interop.stabilizers_from_stim` import lazily
+on first use — install one of these extras before reaching for those:
 
 ```bash
 pip install -e ".[examples]"   # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
 pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 ```
+
+With the package installed, the [Manual](manual/index.md) is where to go next; it opens with a four-line run and explains each part in turn.
+[First propagation](examples/first-propagation.md) carries that same run further, into term inspection and a validation sweep.
+Building for MPI is covered separately in [MPI ranks](manual/propagation/mpi.md#building-from-source), since it needs the extra build step above plus a launcher.

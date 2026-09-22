@@ -1,7 +1,7 @@
 # Baseline comparison — qiskit / openfermion container operations
 
 Committed results of `benchmarks/python/bench_baseline.py`: `paulistrings` against `qiskit.quantum_info.SparsePauliOp` and `openfermion.QubitOperator` on Pauli-sum container operations (construction from string terms, one-layer Heisenberg conjugation by an H+CNOT Clifford circuit).
-Tables and interpretation: [Comparisons — vs qiskit/openfermion](https://lkdvos.github.io/paulistrings-rs/comparisons.html#vs-qiskitsparsepauliop-openfermionqubitoperator).
+Tables and interpretation: [Comparisons — vs qiskit/openfermion](https://lkdvos.github.io/paulistrings-rs/examples/comparisons.html#vs-qiskitsparsepauliop-openfermionqubitoperator).
 
 ## Provenance
 

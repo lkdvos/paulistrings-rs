@@ -47,15 +47,15 @@ H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
 ```
 
 This is achieved by propagating the total magnetization ``M = \sum_i X_i`` through a Trotterized circuit and measuring against the initial state ``|+⟩⟨+|^{⊗N}``.
-However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings and discard coefficients with a magnitude below a threshold ``ϵ``.
-Finally, we can extrapolate to the limit of zero truncation to validate our results.
+However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings, for example by keeping only the largest-magnitude terms up to a fixed count.
+Finally, we can extrapolate to the limit of no truncation to validate our results.
 
-![Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)](assets/ising-quench-convergence/quench_convergence.svg)
+![Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)](assets/ising-quench-convergence/quench_convergence.svg)
 
-Three field strengths `h` (color) and three coefficient thresholds `ϵ = 10⁻³, 10⁻⁵, 10⁻⁷` (opacity) on an 8×8 periodic lattice, `J = 1`.
-At every `h` the two tighter thresholds stay on top of each other through `t = 0.4`: that overlap is the trusted regime, where tightening `ϵ` further would not move the curve.
-The loosest threshold peels away once the tracked sum has thrown out too much to represent the true operator, and it does so earlier at larger `h` — a bigger single-qubit rotation per Trotter step drives the operator across more of the Pauli sum faster, so the same `ϵ` buys less trustworthy time.
-`h = 2` also keeps far more terms at a given `ϵ` for the same reason: at `t = 0.4`, `ϵ = 10⁻⁵` holds 18,688 terms at `h = 0.5` against 174,048 at `h = 2`.
+Two field strengths `h` (color) and five `TopN` term caps `10, 100, 1000, 10⁴, 10⁵` (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, `J = 1`.
+At every `h` the two largest caps sit on top of each other through `t = 0.6`: that overlap is the trusted regime, where raising the cap further would not move the curve.
+Smaller caps peel away once they can no longer hold enough of the operator, and they do so at a larger cap for `h = 3.1` than for `h = 0.1` — a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster, so the same term budget buys less trustworthy time.
+The smallest cap, `TopN = 10`, collapses to `⟨X⟩ = 0` at both field strengths for a specific reason, not just aggressiveness: `TopN` never splits a tie group, and once the sum's largest surviving terms are exact symmetry-related ties, a cap that lands inside that tie group keeps nothing rather than an arbitrary slice of it.
 Figure script: `docs/figures/ising-quench-convergence/quench_convergence.py`.
 
 ```python

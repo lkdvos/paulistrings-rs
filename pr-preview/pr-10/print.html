@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-94539b5c.js";
+            window.path_to_searchindex_js = "searchindex-f2158827.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -180,16 +180,14 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="paulistrings-rs"><a class="header" href="#paulistrings-rs">paulistrings-rs</a></h1>
-<p>Classical simulation of quantum circuits by Pauli propagation — evolving
-operators in the Pauli basis under gates and noise channels, in either
-the forward or Heisenberg picture. Aimed at workloads where state-vector
-or tensor-network simulators are infeasible (10⁶–10⁸ terms) but the
-operator stays sparse in the Pauli basis.</p>
-<p>Inspired by <a href="https://github.com/nicolasloizeau/PauliStrings.jl"><code>PauliStrings.jl</code></a>;
-compared, term for term, against
-<a href="https://github.com/MSRudolph/PauliPropagation.jl"><code>PauliPropagation.jl</code></a> — see
-<a href="#against-other-tools">Against other tools</a>.</p>
+<p>Library for Pauli propagation built to scale across threads, processes and nodes.
+Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
+As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
+Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.</p>
+<p>Inspired by <a href="https://github.com/nicolasloizeau/PauliStrings.jl"><code>PauliStrings.jl</code></a>.</p>
 <h2 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h2>
+<p>An observable is a weighted sum of Pauli strings, a circuit is a list of gates, and propagating the observable through the circuit in the Heisenberg picture conjugates it by every gate in reverse: <code>O ↦ U†OU</code>.
+Four qubits, three gates, one readout:</p>
 <pre><code class="language-python">import math
 from paulistrings import Circuit, PauliSum
 
@@ -205,9 +203,12 @@ circuit.h(2)
 evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-text">5 0.7309698831278217
 </code></pre>
-<p>An observable, a circuit, a propagation, a readout — the <a href="#manual">Manual</a> opens with this same run and explains each line; <a href="#first-propagation">First propagation</a> carries it further, into term inspection and a validation sweep.</p>
+<p>The observable starts as four single-qubit <code>X</code> strings, one per qubit; the circuit only touches qubits 0–2, so the <code>IIIX</code> term comes through untouched while the other three spread and recombine into the five surviving terms above.
+<code>evolved.expectation("x+")</code> then reads the evolved operator against the product state <code>|++++⟩</code>, giving the average X magnetization after the circuit: <code>0.731</code>.
+An observable, a circuit, a propagation, a readout — the <a href="#manual">Manual</a> opens with this same run and explains each line; <a href="#first-propagation">First propagation</a> carries it further, into term inspection and a validation sweep.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
 <p>A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
 average-X-magnetization observable through a Trotter circuit — a regime where
@@ -216,6 +217,54 @@ lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Setup, truncation and error bar:
 <a href="#the-2d-ising-quench">the 2D Ising quench</a>,
 which links on to the crate’s full Rust walkthrough.</p>
+<p>The same pattern at a scale this page can run live — a 3×3 periodic lattice, five Trotter steps, no term-count cap — as one <code>propagate</code> call per step, exactly <a href="#incremental-propagation">Incremental propagation</a>’s pattern:</p>
+<pre><code class="language-python">from paulistrings import truncation
+
+
+def x_magnetization(lx, ly):
+    n = lx * ly
+    terms = {}
+    for site in range(n):
+        key = ["I"] * n
+        key[site] = "X"
+        terms["".join(key)] = 1.0 / n
+    return PauliSum.from_strings(terms, num_qubits=n)
+
+
+def trotter_step(lx, ly, dt, J=1.0, h=1.0):
+    n = lx * ly
+    circuit = Circuit(n)
+
+    def idx(x, y):
+        return (y % ly) * lx + (x % lx)
+
+    for y in range(ly):
+        for x in range(lx):
+            i = idx(x, y)
+            for nx, ny in ((x + 1, y), (x, y + 1)):
+                j = idx(nx, ny)
+                circuit.pauli_rotation("ZZ", [i, j], 2 * J * dt)
+    for site in range(n):
+        circuit.rx(2 * h * dt, site)
+    return circuit
+
+
+lx, ly = 3, 3
+dt = 0.1
+step_circuit = trotter_step(lx, ly, dt)
+observable = x_magnetization(lx, ly)
+for k in range(1, 6):
+    observable = observable.propagate(step_circuit, truncation.coeff(1e-6), direction="heisenberg")
+    print(f"t={k * dt:.2f}  &lt;X&gt;={observable.expectation('x+').real:+.6f}  terms={len(observable)}")
+</code></pre>
+<pre><code class="language-text">t=0.10  &lt;X&gt;=+0.922619  terms=144
+t=0.20  &lt;X&gt;=+0.720483  terms=7323
+t=0.30  &lt;X&gt;=+0.472221  terms=23067
+t=0.40  &lt;X&gt;=+0.271814  terms=57493
+t=0.50  &lt;X&gt;=+0.183984  terms=98698
+</code></pre>
+<p>The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver <a href="#scope">Scope</a> below names, measured here rather than asserted.
+This run is single-threaded and untruncated below <code>1e-6</code>, so it is not the headline figure’s numbers; it is the same loop at a size this page can execute rather than only show.</p>
 <h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
 <p>Write the observable, not the state, in the Pauli basis:</p>
 <pre><code class="language-text">O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n
@@ -374,9 +423,11 @@ circuit.h(2)
 evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-text">5 0.7309698831278217
 </code></pre>
-<p>Four lines, four chapters: <code>PauliSum.from_strings</code> is <a href="#operators">Operators</a>, <code>Circuit</code>/<code>rz</code>/<code>cnot</code>/<code>h</code> is <a href="#circuits">Circuits</a>, <code>propagate(..., direction=...)</code> is <a href="#engine-and-propagation">Engine and propagation</a>, and <code>expectation(...)</code> is <a href="#measurements">Measurements</a>.
+<p><code>from_strings</code> accumulates the observable, the three gates conjugate it in reverse under <code>direction="heisenberg"</code>, and <code>expectation</code> reads the result against <code>|++++⟩</code>.
+Four lines, four chapters: <code>PauliSum.from_strings</code> is <a href="#operators">Operators</a>, <code>Circuit</code>/<code>rz</code>/<code>cnot</code>/<code>h</code> is <a href="#circuits">Circuits</a>, <code>propagate(..., direction=...)</code> is <a href="#engine-and-propagation">Engine and propagation</a>, and <code>expectation(...)</code> is <a href="#measurements">Measurements</a>.
 The four chapters follow that same order.</p>
 <ul>
 <li><a href="#operators">Operators</a> — the Pauli sum: how an observable or Hamiltonian is written, stored, inspected and saved.</li>

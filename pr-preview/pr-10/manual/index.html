@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-94539b5c.js";
+            window.path_to_searchindex_js = "../searchindex-f2158827.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28a3b63b.js"></script>
@@ -199,9 +199,11 @@ circuit.h(2)
 evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="../assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-text">5 0.7309698831278217
 </code></pre>
-<p>Four lines, four chapters: <code>PauliSum.from_strings</code> is <a href="operators.html">Operators</a>, <code>Circuit</code>/<code>rz</code>/<code>cnot</code>/<code>h</code> is <a href="circuits.html">Circuits</a>, <code>propagate(..., direction=...)</code> is <a href="propagation/index.html">Engine and propagation</a>, and <code>expectation(...)</code> is <a href="measurements.html">Measurements</a>.
+<p><code>from_strings</code> accumulates the observable, the three gates conjugate it in reverse under <code>direction="heisenberg"</code>, and <code>expectation</code> reads the result against <code>|++++⟩</code>.
+Four lines, four chapters: <code>PauliSum.from_strings</code> is <a href="operators.html">Operators</a>, <code>Circuit</code>/<code>rz</code>/<code>cnot</code>/<code>h</code> is <a href="circuits.html">Circuits</a>, <code>propagate(..., direction=...)</code> is <a href="propagation/index.html">Engine and propagation</a>, and <code>expectation(...)</code> is <a href="measurements.html">Measurements</a>.
 The four chapters follow that same order.</p>
 <ul>
 <li><a href="operators.html">Operators</a> — the Pauli sum: how an observable or Hamiltonian is written, stored, inspected and saved.</li>

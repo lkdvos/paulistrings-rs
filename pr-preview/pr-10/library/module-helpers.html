@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d6978923.js";
+            window.path_to_searchindex_js = "../searchindex-0e53ae77.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-28a3b63b.js"></script>
+        <script src="../toc-6d08c121.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -189,6 +189,7 @@
 <tr><th>Call</th><th>Returns</th></tr>
 </thead>
 <tbody>
+<tr><td><code>paulistrings.p(label)</code></td><td>a <a href="pauli-string.html"><code>PauliString</code></a> from its <code>IXYZ</code> label, shorthand for <code>PauliString.from_label</code></td></tr>
 <tr><td><code>paulistrings.numa_nodes()</code></td><td><code>list[list[int]]</code>, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process’s CPU affinity mask</td></tr>
 <tr><td><code>paulistrings.mpi_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(comm=...)</code> (compiled with the <code>mpi</code> feature)</td></tr>
 <tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>

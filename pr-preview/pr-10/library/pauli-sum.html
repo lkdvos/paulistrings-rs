@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d6978923.js";
+            window.path_to_searchindex_js = "../searchindex-0e53ae77.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-28a3b63b.js"></script>
+        <script src="../toc-6d08c121.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -230,6 +230,22 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 </table>
 </div>
 <p>All four array/list accessors return the sum’s canonical order (partition-bucket index ascending, then lexicographic <code>(x, z)</code>), consistently across calls.</p>
+<h2 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Call</th><th>Returns</th></tr>
+</thead>
+<tbody>
+<tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept</td></tr>
+<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge, in place</td></tr>
+<tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Both operands of <code>+</code>/<code>-</code> must have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
+Terms whose coefficients cancel exactly are dropped, as is every term when <code>c</code> is exactly zero.
+<code>*</code> is scalar-only: multiplying two sums is a full operator product, which this library does not implement.</p>
 <h2 id="saving-loading-importing"><a class="header" href="#saving-loading-importing">Saving, loading, importing</a></h2>
 <div class="table-wrapper">
 <table>
@@ -249,7 +265,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../library/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../library/pauli-string.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -263,7 +279,7 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../library/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../library/pauli-string.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

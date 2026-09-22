@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9665f734.js";
+            window.path_to_searchindex_js = "searchindex-418e6393.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -219,10 +219,10 @@ print(len(evolved), evolved.expectation("x+").real)
 However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings, for example by keeping only the largest-magnitude terms up to a fixed count.
 Finally, we can extrapolate to the limit of no truncation to validate our results.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)"></span></label></p>
-<p>Two field strengths <code>h</code> (color) and five <code>TopN</code> term caps <code>10, 100, 1000, 10⁴, 10⁵</code> (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, <code>J = 1</code>.
-At every <code>h</code> the two largest caps sit on top of each other through <code>t = 0.6</code>: that overlap is the trusted regime, where raising the cap further would not move the curve.
-Smaller caps peel away once they can no longer hold enough of the operator, and they do so at a larger cap for <code>h = 3.1</code> than for <code>h = 0.1</code> — a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster, so the same term budget buys less trustworthy time.
-The smallest cap, <code>TopN = 10</code>, collapses to <code>⟨X⟩ = 0</code> at both field strengths for a specific reason, not just aggressiveness: <code>TopN</code> never splits a tie group, and once the sum’s largest surviving terms are exact symmetry-related ties, a cap that lands inside that tie group keeps nothing rather than an arbitrary slice of it.
+<p>Two field strengths <code>h</code> (color) and five <code>TopN</code> term caps <code>10², 10³, 10⁴, 10⁵, 3×10⁵</code> (opacity, faintest at the smallest cap) on a 6×6 periodic lattice, <code>J = 1</code>.
+At <code>h = 0.1</code> the three largest caps already sit on top of each other through <code>t = 0.8</code>: that overlap is the trusted regime, where raising the cap further would not move the curve.
+At <code>h = 3.1</code> even the two largest caps are still visibly tightening rather than fully flat by <code>t = 0.8</code> — the same term budget buys less trustworthy time here, because a bigger single-qubit rotation per Trotter step spreads the operator across more of the Pauli sum faster.
+The smallest cap, <code>TopN = 10²</code>, peels away from the trusted band by <code>t ≈ 0.2</code> at both field strengths, well before the run ends.
 Figure script: <code>docs/figures/ising-quench-convergence/quench_convergence.py</code>.</p>
 <pre><code class="language-python">from paulistrings import truncation
 

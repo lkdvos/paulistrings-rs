@@ -8,7 +8,7 @@
 
         <!-- Custom HTML head -->
 
-        <meta name="description" content="Pauli propagation from Python: tutorial, how-to guides, reference, and explanation.">
+        <meta name="description" content="Pauli propagation from Python: a Manual, worked Examples, and a Library reference.">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-149ef08b.js";
+            window.path_to_searchindex_js = "searchindex-94539b5c.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-9abada3b.js"></script>
+        <script src="toc-28a3b63b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,14 +190,33 @@ operator stays sparse in the Pauli basis.</p>
 <p>Inspired by <a href="https://github.com/nicolasloizeau/PauliStrings.jl"><code>PauliStrings.jl</code></a>;
 compared, term for term, against
 <a href="https://github.com/MSRudolph/PauliPropagation.jl"><code>PauliPropagation.jl</code></a> — see
-<a href="explanation/comparisons.html">Comparisons</a>.</p>
+<a href="examples/comparisons.html">Against other tools</a>.</p>
+<h2 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h2>
+<pre><code class="language-python">import math
+from paulistrings import Circuit, PauliSum
+
+observable = PauliSum.from_strings(
+    {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4
+)
+
+circuit = Circuit(4)
+circuit.rz(math.pi / 8, 0)
+circuit.cnot(0, 1)
+circuit.h(2)
+
+evolved = observable.propagate(circuit, direction="heisenberg")
+print(len(evolved), evolved.expectation("x+").real)
+</code></pre>
+<pre><code class="language-text">5 0.7309698831278217
+</code></pre>
+<p>An observable, a circuit, a propagation, a readout — the <a href="manual/index.html">Manual</a> opens with this same run and explains each line; <a href="examples/first-propagation.html">First propagation</a> carries it further, into term inspection and a validation sweep.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
 <p>A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
 average-X-magnetization observable through a Trotter circuit — a regime where
 exact diagonalization is already infeasible (<code>2^36</code> amplitudes for the 6×6
 lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Setup, truncation and error bar:
-<a href="explanation/case-studies/index.html#the-2d-ising-quench">the 2D Ising quench</a>,
+<a href="examples/index.html#the-2d-ising-quench">the 2D Ising quench</a>,
 which links on to the crate’s full Rust walkthrough.</p>
 <h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
 <p>Write the observable, not the state, in the Pauli basis:</p>
@@ -239,7 +258,7 @@ buffers: a future GPU backend is an added kernel, not a rewrite.</li>
 <p>State-vector, tensor-network, stabilizer and matrix-product-state simulation
 are <strong>explicit non-goals</strong>. This engine has one storage type — a bucketed sum
 of parallel x/z/coefficient columns — and one loop.
-<a href="explanation/comparisons.html">Comparisons</a> says which method fits which
+<a href="examples/comparisons.html">Against other tools</a> says which method fits which
 problem, including the two places this engine is measurably <em>slower</em> than the
 alternative.</p>
 <p>Two hard edges worth knowing before you start:</p>
@@ -250,13 +269,10 @@ fallback path.</li>
 <li>A truncated Pauli sum has <strong>no variational bound</strong>. Discarded terms carry
 signs, so a partial sum can sit on either side of the truth and the error
 need not be monotone in the cutoff. This is measured, not hypothetical —
-<a href="explanation/case-studies/b-theta-sweep.html#non-monotone-truncation-error">Benchmark B</a>
-and <a href="explanation/case-studies/c-deep-trotter.html">Benchmark C</a> both show it
+<a href="examples/benchmarks/b-theta-sweep.html#non-monotone-truncation-error">Benchmark B</a>
+and <a href="examples/benchmarks/c-deep-trotter.html">Benchmark C</a> both show it
 happening.</li>
 </ul>
-<p>New to the library? Build an observable, run it through a circuit, and read
-out an expectation value in one guided walkthrough:
-<a href="tutorial/index.html">Tutorial</a>.</p>
 <h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
 <div class="table-wrapper">
 <table>
@@ -265,12 +281,9 @@ out an expectation value in one guided walkthrough:
 </thead>
 <tbody>
 <tr><td><a href="installation.html">Installation</a></td><td>install the Python package</td></tr>
-<tr><td><a href="tutorial/index.html">Tutorial</a></td><td>one guided walkthrough: observable, circuit, propagate, measure</td></tr>
-<tr><td><a href="how-to/index.html">How-to guides</a></td><td>task recipes — noise, truncation, direction, NUMA, MPI, interop</td></tr>
-<tr><td><a href="explanation/index.html">Explanation</a></td><td>how it works and why it’s fast: the bucketed layout, coset parallelism, and the measured roofline</td></tr>
-<tr><td><a href="explanation/case-studies/index.html">Case studies</a></td><td>measured applications and benchmarks: scrambling and OTOCs, noisy verification at 127 qubits, hybrid depth reduction, XXZ scaling, and more, including the negative results</td></tr>
-<tr><td><a href="explanation/comparisons.html">Comparisons</a></td><td>vs <code>PauliPropagation.jl</code> (term-for-term parity, and the measured crossover), vs state-vector and stabilizer simulators</td></tr>
-<tr><td><a href="reference/index.html">Python reference</a></td><td>this book’s Python API reference</td></tr>
+<tr><td><a href="manual/index.html">Manual</a></td><td>operators, circuits, engine and propagation, measurements — read start to finish, or by topic</td></tr>
+<tr><td><a href="examples/index.html">Examples</a></td><td>a guided first propagation, measured showcases and benchmarks, and comparisons against other tools</td></tr>
+<tr><td><a href="library/index.html">Library</a></td><td>this book’s Python API reference</td></tr>
 <tr><td><a href="api/paulistrings/index.html">Rust API</a></td><td>rustdoc for the core crate, plus <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> on GitHub — the hand-off point for Rust users, not part of this book</td></tr>
 </tbody>
 </table>
@@ -298,7 +311,7 @@ ends with the exact invocation that regenerates its figures and JSON.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs">github.com/lkdvos/paulistrings-rs</a>.
 The design source of truth is
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a>;
-the site’s <a href="explanation/index.html">Explanation pages</a> are its public summary.
+the site’s <a href="manual/index.html">Manual</a> is its public summary.
 Dual-licensed MIT OR Apache-2.0.</p>
 
                     </main>

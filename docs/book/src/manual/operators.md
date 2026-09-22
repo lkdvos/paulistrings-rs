@@ -27,21 +27,21 @@ $$
 ### The `PauliString` type
 
 A single Pauli string is its own type, `PauliString` — the object the symplectic encoding above describes, before any coefficient is attached to it.
-It is immutable and carries `num_qubits`, a `weight` (the number of non-identity factors, the same quantity [`truncation.weight`](propagation/truncation.md#choosing-a-policy) caps), and a `label` (the `IXYZ` string `str(p)` also gives).
+It is immutable and carries `num_qubits`, a `weight` (the number of non-identity factors, the same quantity [`truncation.weight`](propagation/truncation.md#choosing-a-policy) caps), and a `label` (the `IXYZ` string).
+`str(p)` and `repr(p)` both print the label directly — a bare Pauli string has nothing else worth showing — so it pretty-prints itself in a REPL or a plain `print()` call with no extra step.
 
 <!-- doctest: skip -->
 ```python
-from paulistrings import PauliString
+from paulistrings import PauliString, p
 
-identity = PauliString.identity(num_qubits=3)
-x0 = PauliString.x(0, num_qubits=3)
-y1 = PauliString.y(1, num_qubits=3)
-z2 = PauliString.z(2, num_qubits=3)
-from_label = PauliString.from_label("XYZ")
+identity = PauliString.identity(3)
+x0 = PauliString.x(0, 3)
+y1 = PauliString.y(1, 3)
+z2 = PauliString.z(2, 3)
 
-print(identity.label, identity.weight)
-print(x0.label, y1.label, z2.label)
-print(from_label == (x0.mul(y1)[1].mul(z2)[1]))
+print(identity, identity.weight)
+print(x0, y1, z2)
+print(p("XYZ") == x0.mul(y1)[1].mul(z2)[1])
 ```
 
 ```text
@@ -50,32 +50,38 @@ XII IYI IIZ
 True
 ```
 
-`identity`, `x`, `y`, `z` and `from_label` are the five constructors; each single-site constructor takes the qubit index and the register size, and `from_label` takes a full-length `IXYZ` string the same way [`PauliSum.from_strings`](#the-paulisum-type) keys do.
+`identity`, `x`, `y`, `z` and `from_label` are the five constructors on the class itself; `num_qubits` is a plain positional argument, not a required keyword, and each single-site constructor takes the qubit index first.
+`p(label)` is a package-level shorthand for `PauliString.from_label(label)`, for the common case of writing one down by hand.
 Two strings compare equal when their labels and `num_qubits` agree; there is no coefficient here to compare, which is exactly the difference from a one-term `PauliSum`.
 
 ### Single string operations
 
-The only two operations a bare Pauli string supports are the two the symplectic encoding makes closed-form: whether two strings commute, and what their product is.
+Four operations on bare Pauli strings are closed-form from the symplectic encoding: whether two strings commute, whether they anticommute, their product, and their commutator and anticommutator.
 
 <!-- doctest: skip -->
 ```python
 from paulistrings import PauliString
 
-x = PauliString.x(0, num_qubits=1)
-z = PauliString.z(0, num_qubits=1)
+x = PauliString.x(0, 1)
+z = PauliString.z(0, 1)
 
-print(x.commutes_with(z))
+print(x.commutes_with(z), x.anticommutes_with(z))
 phase, product = x.mul(z)
-print(phase, product.label)
+comm_coeff, _ = x.commutator(z)
+anti_coeff, _ = x.anticommutator(z)
+print(phase, product)
+print(comm_coeff, anti_coeff)
 ```
 
 ```text
-False
+False True
 (-0-1j) Y
+(-0-2j) 0j
 ```
 
-`commutes_with` is the symplectic inner product read as a boolean — `False` here is `X` and `Z` anticommuting on the same qubit, the textbook case.
-`mul` is the other half: multiplying two Pauli strings is never ambiguous or a sum of several strings, it is exactly one string and a phase `i^k` the caller folds into a coefficient, `X·Z = -iY` above being the canonical instance ([`ARCHITECTURE.md` §Engine](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) states the general rule).
+`commutes_with` is the symplectic inner product read as a boolean — `False` here is $X$ and $Z$ anticommuting on the same qubit, the textbook case — and `anticommutes_with` is exactly its complement: a pair of Pauli strings always does one or the other, never neither, so it is always the boolean negation of `commutes_with`.
+`mul` is the closed form itself: multiplying two Pauli strings is never ambiguous or a sum of several strings, it is exactly one string and a phase $i^k$ the caller folds into a coefficient, $XZ = -iY$ above being the canonical instance ([`ARCHITECTURE.md` §Engine](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) states the general rule).
+`commutator` and `anticommutator` reuse `mul`'s coefficient-and-product result, only on the side where the strings do not simply cancel: for Pauli strings $P$ and $Q$, $[P, Q] = 2 \cdot \text{mul}(P, Q)$ when they anticommute and $0$ otherwise, $\{P, Q\}$ the other way around — so an exact zero is a `0` coefficient here, never a `PauliSum` with nothing worth holding it.
 That closure — one string in, one string and a phase out — is why a gate's image is a short, enumerable list of terms rather than a combinatorial explosion; [Cost is terms, not qubits](propagation/index.md#cost-model) is what a whole sum inherits from this one-string fact.
 
 ## Pauli sums
@@ -86,12 +92,11 @@ To allow for efficient merging of the strings, we store two separate lists, one 
 
 ### The `PauliSum` type {#the-paulisum-type}
 
-A `PauliSum` is an operator on `n` qubits written in the Pauli basis: `O = Σ_P c_P P`, one complex coefficient per `PauliString` `P`, each string appearing at most once.
+A `PauliSum` is an operator on $L$ qubits written in the Pauli basis, $O = \sum_P c_P P$, one (complex) coefficient per `PauliString` $P$, each string appearing at most once — real-valued sums are on the roadmap but not yet supported.
 It is the one storage type in this library: the observable you start from, the Hamiltonian you Trotterize, the result a propagation hands back, and the "state" an overlap is taken against are all the same `PauliSum`.
-The convention is Hermitian everywhere a Pauli string is written or read: a coefficient multiplies the literal Hermitian Pauli string, and `Y` carries no phase of its own.
-That is the same convention stim uses, and it differs from the phased "canonical" `Y` some operator libraries carry, so a coefficient that reads `+1` here reads `+1` in stim and may not in a library that stores `iXZ`.
+The convention is Hermitian everywhere a Pauli string is written or read: a coefficient multiplies the literal Hermitian Pauli string, and $Y$ carries no phase of its own.
 
-What a sum costs is its term count, not its qubit count; 127 qubits with a thousand terms is cheap and 4 qubits with a million terms is not, which is why every accessor below reports terms and every result page reports how many survived.
+What a sum costs is its term count $N$, not its qubit count $L$; $L = 127$ with $N$ in the thousands is cheap and $L = 4$ with $N$ in the millions is not, which is why every accessor below reports terms and every result page reports how many survived.
 [Cost is terms, not qubits](propagation/index.md#cost-model) is the full statement.
 
 The direct way to write one is a dict from Pauli strings to coefficients.
@@ -111,15 +116,43 @@ print(len(observable), observable.num_qubits)
 ```
 
 A wrong key length or a character outside `IXYZ` is a `ValueError` naming the offending string; an exact-zero coefficient is dropped rather than stored.
-A Python dict cannot hold a duplicate key, so merging repeated strings is your job before the call, which is what the next section does.
+A Python dict cannot hold a duplicate key, so merging repeated strings into one dict entry is your job before the call — the next section builds a Hamiltonian this way, and [Combining sums](#combining-sums) covers doing it with `PauliSum` arithmetic instead, once each piece is already its own sum.
 The constructor table is in [PauliSum](../library/pauli-sum.md#constructors); [First propagation](../examples/first-propagation.md) runs this exact observable through a circuit.
 
+**The Hermitian convention above is a storage detail, not an input or display rule.**
+It does not change what `from_strings` accepts or what a decoded label reads back as — `Y` is always literally `Y`, on the way in and on the way out.
+It matters only when comparing a coefficient against another library's internal representation: stim stores `Y` the same Hermitian way, so a coefficient that reads `+1` here reads `+1` in stim, but a library that keeps the phased "canonical" $Y = iXZ$ instead would read the same physical operator's coefficient differently.
+
 ### Multi-string operations
+
+#### Combining sums {#combining-sums}
+
+Building a sum by hand, as above, means merging duplicate strings into one dict entry yourself before the call — get that wrong and a later dict assignment silently overwrites an earlier coefficient instead of adding to it.
+`PauliSum` arithmetic avoids that risk directly: `+` and `-` combine two sums by adding or subtracting coefficients on matching strings and keeping the rest, `+=` and `-=` do the same in place, and `*`/`*=` scale every coefficient by a number.
+
+<!-- doctest: skip -->
+```python
+from paulistrings import PauliSum
+
+bond = PauliSum.from_strings({"ZZII": -1.0}, num_qubits=4)
+combined = bond + bond
+combined += PauliSum.from_strings({"IZZI": -1.0}, num_qubits=4)
+combined *= 2.0
+
+print(len(combined), combined.overlap(bond).real)
+```
+
+```text
+2 4.0
+```
+
+`bond + bond` adds onto the shared `ZZII` string instead of needing `2 * bond`'s coefficient computed by hand, and the `+=` after it adds a string that was not there yet without disturbing `ZZII`.
+This does not extend to multiplying two sums together — that is a full operator product, a much larger and entirely different operation this page does not cover — so `*`/`*=` on a `PauliSum` is scalar-only.
 
 #### Hamiltonians and programmatic construction
 
 A Hamiltonian is a weighted sum of Pauli strings and is built the same way, by accumulating a dict and handing it over once.
-This is a transverse-field Ising chain, `H = -J Σ Z_i Z_{i+1} - h Σ X_i`:
+This is a transverse-field Ising chain, $H = -J \sum_i Z_i Z_{i+1} - h \sum_i X_i$:
 
 ```python
 n = 4
@@ -154,7 +187,7 @@ To evolve *under* a Hamiltonian, it enters as a circuit of Pauli rotations, one 
 
 #### Symplectic arrays {#symplectic-arrays}
 
-Underneath, a Pauli string is two bit vectors: qubit `q`'s Pauli is bit `q` of an `x` word and bit `q` of a `z` word, with `(0,0)` = `I`, `(1,0)` = `X`, `(0,1)` = `Z` and `(1,1)` = `Y`.
+Underneath, a Pauli string is two bit vectors: qubit `q`'s Pauli is bit `q` of an `x` word and bit `q` of a `z` word, with $(0,0) = I$, $(1,0) = X$, $(0,1) = Z$ and $(1,1) = Y$.
 Words are 64 bits, and a sum's `width` is how many words each term carries: one for up to 64 qubits, two for up to 128, then 4, 8 and 16, so 1024 qubits is the ceiling.
 `x_array()` and `z_array()` return the two columns as `uint64` arrays of shape `(len, width)`, where column `j` covers qubits `64*j .. 64*j + 63`; `coefficients_array()` is the matching `complex128` column.
 
@@ -210,10 +243,10 @@ Layout and dtypes are tabulated under [PauliSum](../library/pauli-sum.md#accesso
 
 #### Inspecting a sum {#inspecting}
 
-`len(sum)` is the term count, `.num_qubits` the register size, `.width` the word tier, and `PauliSum(n)` is the empty sum on `n` qubits, which is what a propagation that truncated everything returns.
+`len(...)` gives the term count $N$, `.num_qubits` the qubit count $L$, and `.width` the word tier; `PauliSum(4)` below constructs the empty sum on four qubits, which is what a propagation that truncated everything returns.
 `.coefficients()` is the coefficient column as a Python list, for small sums where NumPy is overkill.
 
-The one scalar worth knowing by name is the Hilbert–Schmidt norm `Σ|c|²`, which equals `tr(O†O) / 2^n` because Pauli strings are orthonormal under that inner product; `sum.overlap(sum).real` computes it in one call.
+The one scalar worth knowing by name is the Hilbert–Schmidt norm $\sum_P |c_P|^2$, which equals $\text{tr}(O^\dagger O) / 2^L$ because Pauli strings are orthonormal under that inner product; calling `.overlap()` on a sum against itself computes it in one call.
 Unitary evolution conserves it exactly, so after a truncated propagation the drop from the input's value to the output's is precisely the norm truncation deleted, which makes it the first diagnostic of any result.
 
 ```python
@@ -251,7 +284,7 @@ print(len(reloaded), reloaded.num_qubits, psio.FORMAT)
 This is how a propagated observable is handed to a second run: propagate, save, load elsewhere, propagate further, which is the whole mechanism of [B5](../examples/showcases/b5-operator-backpropagation.md#validation).
 The format is specified under [PauliSum](../library/pauli-sum.md#saving-loading-importing).
 
-### Where else observables come from
+### Importing from external sources
 
 Two importers hand back a `PauliSum` you did not write by hand.
 `interop.circuit_from_stim` returns `(circuit, observable)`, where the observable is built from the stim program's `OBSERVABLE_INCLUDE` instructions, or `None` when it has none; `interop.load_task` parses a task-JSON file and its `.observable` is the task's observable when one is defined.

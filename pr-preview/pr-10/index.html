@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f2158827.js";
+            window.path_to_searchindex_js = "searchindex-6dbfed79.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28a3b63b.js"></script>
@@ -188,8 +188,12 @@ As a result, the library can efficiently parallelize the work and compute the co
 Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.</p>
 <p>Inspired by <a href="https://github.com/nicolasloizeau/PauliStrings.jl"><code>PauliStrings.jl</code></a>.</p>
 <h2 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h2>
-<p>An observable is a weighted sum of Pauli strings, a circuit is a list of gates, and propagating the observable through the circuit in the Heisenberg picture conjugates it by every gate in reverse: <code>O ↦ U†OU</code>.
-Four qubits, three gates, one readout:</p>
+<p>In many quantum simulations, the object of interest is typically the expectation value <code>⟨O⟩ = \text{tr}(ρ U^† O U)</code>.
+Here we start from some initial density matrix <code>ρ</code> which is evolved through a circuit <code>U</code> and then measured with an operator <code>O</code>.
+For Pauli propagation methods, instead we work in the Heisenberg picture and work backwards: we start from the operator <code>O</code>, which is then evolved backwards through the circuit <code>U</code>, and finally measured against a density matrix <code>ρ</code>.</p>
+<h3 id="simple-circuit"><a class="header" href="#simple-circuit">Simple circuit</a></h3>
+<p>As a simple example, we may look at a four-qubit initial state <code>|++++⟩</code>, and measure the total magnetization after propagating through the following simple circuit:</p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-python">import math
 from paulistrings import Circuit, PauliSum
 
@@ -205,21 +209,21 @@ circuit.h(2)
 evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 </code></pre>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-text">5 0.7309698831278217
 </code></pre>
-<p>The observable starts as four single-qubit <code>X</code> strings, one per qubit; the circuit only touches qubits 0–2, so the <code>IIIX</code> term comes through untouched while the other three spread and recombine into the five surviving terms above.
-<code>evolved.expectation("x+")</code> then reads the evolved operator against the product state <code>|++++⟩</code>, giving the average X magnetization after the circuit: <code>0.731</code>.
-An observable, a circuit, a propagation, a readout — the <a href="manual/index.html">Manual</a> opens with this same run and explains each line; <a href="examples/first-propagation.html">First propagation</a> carries it further, into term inspection and a validation sweep.</p>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
-<p>A 2D transverse-field Ising quench, computed by Heisenberg-propagating the
-average-X-magnetization observable through a Trotter circuit — a regime where
-exact diagonalization is already infeasible (<code>2^36</code> amplitudes for the 6×6
-lattice) but Pauli propagation with modest truncation finishes in seconds to
-minutes. Setup, truncation and error bar:
-<a href="examples/index.html#the-2d-ising-quench">the 2D Ising quench</a>,
-which links on to the crate’s full Rust walkthrough.</p>
-<p>The same pattern at a scale this page can run live — a 3×3 periodic lattice, five Trotter steps, no term-count cap — as one <code>propagate</code> call per step, exactly <a href="manual/propagation/incremental.html">Incremental propagation</a>’s pattern:</p>
+<h3 id="quenched-time-evolution"><a class="header" href="#quenched-time-evolution">Quenched time-evolution</a></h3>
+<p>For a slightly more involved example, we can consider the 2D transverse-field Ising model, and measure the magnetization after a quench from the <code>|+⟩^{⊗N}</code>.</p>
+<pre><code class="language-math">H = -J \sum_{⟨i, j⟩} Z_i Z_j - h \sum_i X_i
+</code></pre>
+<p>This is achieved by propagating the total magnetization <code>M = \sum_i X_i</code> through a Trotterized circuit and measuring against the initial state <code>|+⟩⟨+|^{⊗N}</code>.
+However, in order to keep this computation tractable at longer times, we truncate the intermediate sums of strings and discard coefficients with a magnitude below a threshold <code>ϵ</code>.
+Finally, we can extrapolate to the limit of zero truncation to validate our results.</p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)"><span class="img-wrapper"><img src="assets/ising-quench-convergence/quench_convergence.svg" alt="Average X magnetization vs time for an 8x8 periodic Ising quench, three field strengths h (color) and three coefficient truncation thresholds each (opacity)"></span></label></p>
+<p>Three field strengths <code>h</code> (color) and three coefficient thresholds <code>ϵ = 10⁻³, 10⁻⁵, 10⁻⁷</code> (opacity) on an 8×8 periodic lattice, <code>J = 1</code>.
+At every <code>h</code> the two tighter thresholds stay on top of each other through <code>t = 0.4</code>: that overlap is the trusted regime, where tightening <code>ϵ</code> further would not move the curve.
+The loosest threshold peels away once the tracked sum has thrown out too much to represent the true operator, and it does so earlier at larger <code>h</code> — a bigger single-qubit rotation per Trotter step drives the operator across more of the Pauli sum faster, so the same <code>ϵ</code> buys less trustworthy time.
+<code>h = 2</code> also keeps far more terms at a given <code>ϵ</code> for the same reason: at <code>t = 0.4</code>, <code>ϵ = 10⁻⁵</code> holds 18,688 terms at <code>h = 0.5</code> against 174,048 at <code>h = 2</code>.
+Figure script: <code>docs/figures/ising-quench-convergence/quench_convergence.py</code>.</p>
 <pre><code class="language-python">from paulistrings import truncation
 
 
@@ -267,25 +271,6 @@ t=0.50  &lt;X&gt;=+0.183984  terms=98698
 </code></pre>
 <p>The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver <a href="#scope">Scope</a> below names, measured here rather than asserted.
 This run is single-threaded and untruncated below <code>1e-6</code>, so it is not the headline figure’s numbers; it is the same loop at a size this page can execute rather than only show.</p>
-<h2 id="pauli-propagation"><a class="header" href="#pauli-propagation">Pauli propagation</a></h2>
-<p>Write the observable, not the state, in the Pauli basis:</p>
-<pre><code class="language-text">O = Σ_P c_P P ,      P ∈ {I, X, Y, Z}^n
-</code></pre>
-<p>and evolve <em>it</em>. Each gate maps every Pauli string to a short sum of Pauli
-strings — one string for a Clifford gate, two for a Pauli rotation
-<code>exp(-iθP/2)</code>, a rescale for most noise channels — so a circuit layer is a
-fan-out over the terms followed by a deduplicating merge. In the Heisenberg
-picture the channel list is walked in reverse and each channel’s adjoint is
-applied, giving <code>U†OU</code>; in the forward picture it is walked as written, giving
-<code>UOU†</code>. The expectation value against a product state is then one masked pass
-over the surviving terms — never an expansion over <code>2^n</code> amplitudes.</p>
-<p>The cost is not the qubit count. It is the number of Pauli strings the operator
-spreads over, which grows with circuit depth until <strong>truncation</strong> holds it: a
-coefficient threshold, a Pauli-weight cap, a top-<code>k</code> budget. What every result on
-this site therefore has to report is how much of the operator the truncation
-deleted, and whether the answer still moves when the cutoff is tightened. Every
-showcase and benchmark page answers that with a convergence sweep, and says so
-when the point is <em>not resolved</em>.</p>
 <h2 id="scope"><a class="header" href="#scope">Scope</a></h2>
 <ul>
 <li><strong>Operator-basis Pauli propagation at 10⁶–10⁸ terms</strong>, in either picture.</li>

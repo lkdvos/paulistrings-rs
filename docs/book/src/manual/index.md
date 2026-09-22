@@ -20,10 +20,13 @@ evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 ```
 
+![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](../assets/quickstart/circuit.svg)
+
 ```text
 5 0.7309698831278217
 ```
 
+`from_strings` accumulates the observable, the three gates conjugate it in reverse under `direction="heisenberg"`, and `expectation` reads the result against `|++++⟩`.
 Four lines, four chapters: `PauliSum.from_strings` is [Operators](operators.md), `Circuit`/`rz`/`cnot`/`h` is [Circuits](circuits.md), `propagate(..., direction=...)` is [Engine and propagation](propagation/index.md), and `expectation(...)` is [Measurements](measurements.md).
 The four chapters follow that same order.
 

@@ -6,6 +6,9 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 
 ## Quickstart
 
+An observable is a weighted sum of Pauli strings, a circuit is a list of gates, and propagating the observable through the circuit in the Heisenberg picture conjugates it by every gate in reverse: `O ↦ U†OU`.
+Four qubits, three gates, one readout:
+
 ```python
 import math
 from paulistrings import Circuit, PauliSum
@@ -23,10 +26,14 @@ evolved = observable.propagate(circuit, direction="heisenberg")
 print(len(evolved), evolved.expectation("x+").real)
 ```
 
+![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](assets/quickstart/circuit.svg)
+
 ```text
 5 0.7309698831278217
 ```
 
+The observable starts as four single-qubit `X` strings, one per qubit; the circuit only touches qubits 0–2, so the `IIIX` term comes through untouched while the other three spread and recombine into the five surviving terms above.
+`evolved.expectation("x+")` then reads the evolved operator against the product state `|++++⟩`, giving the average X magnetization after the circuit: `0.731`.
 An observable, a circuit, a propagation, a readout — the [Manual](manual/index.md) opens with this same run and explains each line; [First propagation](examples/first-propagation.md) carries it further, into term inspection and a validation sweep.
 
 ![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](assets/ising-quench/ising_quench.svg)
@@ -38,6 +45,60 @@ lattice) but Pauli propagation with modest truncation finishes in seconds to
 minutes. Setup, truncation and error bar:
 [the 2D Ising quench](examples/index.md#the-2d-ising-quench),
 which links on to the crate's full Rust walkthrough.
+
+The same pattern at a scale this page can run live — a 3×3 periodic lattice, five Trotter steps, no term-count cap — as one `propagate` call per step, exactly [Incremental propagation](manual/propagation/incremental.md)'s pattern:
+
+```python
+from paulistrings import truncation
+
+
+def x_magnetization(lx, ly):
+    n = lx * ly
+    terms = {}
+    for site in range(n):
+        key = ["I"] * n
+        key[site] = "X"
+        terms["".join(key)] = 1.0 / n
+    return PauliSum.from_strings(terms, num_qubits=n)
+
+
+def trotter_step(lx, ly, dt, J=1.0, h=1.0):
+    n = lx * ly
+    circuit = Circuit(n)
+
+    def idx(x, y):
+        return (y % ly) * lx + (x % lx)
+
+    for y in range(ly):
+        for x in range(lx):
+            i = idx(x, y)
+            for nx, ny in ((x + 1, y), (x, y + 1)):
+                j = idx(nx, ny)
+                circuit.pauli_rotation("ZZ", [i, j], 2 * J * dt)
+    for site in range(n):
+        circuit.rx(2 * h * dt, site)
+    return circuit
+
+
+lx, ly = 3, 3
+dt = 0.1
+step_circuit = trotter_step(lx, ly, dt)
+observable = x_magnetization(lx, ly)
+for k in range(1, 6):
+    observable = observable.propagate(step_circuit, truncation.coeff(1e-6), direction="heisenberg")
+    print(f"t={k * dt:.2f}  <X>={observable.expectation('x+').real:+.6f}  terms={len(observable)}")
+```
+
+```text
+t=0.10  <X>=+0.922619  terms=144
+t=0.20  <X>=+0.720483  terms=7323
+t=0.30  <X>=+0.472221  terms=23067
+t=0.40  <X>=+0.271814  terms=57493
+t=0.50  <X>=+0.183984  terms=98698
+```
+
+The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver [Scope](#scope) below names, measured here rather than asserted.
+This run is single-threaded and untruncated below `1e-6`, so it is not the headline figure's numbers; it is the same loop at a size this page can execute rather than only show.
 
 ## Pauli propagation
 

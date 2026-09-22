@@ -18,6 +18,7 @@ mod gates;
 #[cfg(feature = "mpi")]
 mod mpi;
 mod noise;
+mod pauli_string;
 mod sum;
 mod truncation;
 mod truncation_spec;
@@ -66,6 +67,17 @@ fn mpi_available() -> bool {
     cfg!(feature = "mpi")
 }
 
+/// Shorthand for `PauliString.from_label(label)`, for writing one down by hand.
+///
+/// ```python
+/// from paulistrings import p
+/// p("XYZ").weight   # 3
+/// ```
+#[pyfunction]
+fn p(label: &str) -> PyResult<pauli_string::PauliString> {
+    pauli_string::PauliString::parse(label)
+}
+
 #[pymodule]
 fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route the core crate's `log` records to Python's `logging`. Fails only if some other logger is already installed, which is not an import error.
@@ -75,6 +87,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(reset_log_cache, m)?)?;
     m.add_function(wrap_pyfunction!(numa_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
+    m.add_function(wrap_pyfunction!(p, m)?)?;
 
     // Re-exported from the core so the Python default cannot drift from the Rust one.
     m.add(
@@ -82,6 +95,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         paulistrings::DEFAULT_SMALL_SUM_THRESHOLD,
     )?;
 
+    m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;
     m.add_class::<sum::PartitionStats>()?;

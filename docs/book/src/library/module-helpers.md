@@ -2,6 +2,7 @@
 
 | Call | Returns |
 |---|---|
+| `paulistrings.p(label)` | a [`PauliString`](pauli-string.md) from its `IXYZ` label, shorthand for `PauliString.from_label` |
 | `paulistrings.numa_nodes()` | `list[list[int]]`, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process's CPU affinity mask |
 | `paulistrings.mpi_available()` | `bool`, whether this build can run `PauliSum.propagate(comm=...)` (compiled with the `mpi` feature) |
 | `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` | `int`, the default `small_sum_threshold` `propagate`/`propagate_with_stats` use when the kwarg is omitted |

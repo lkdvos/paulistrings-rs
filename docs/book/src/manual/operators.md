@@ -30,7 +30,6 @@ A single Pauli string is its own type, `PauliString` — the object the symplect
 It is immutable and carries `num_qubits`, a `weight` (the number of non-identity factors, the same quantity [`truncation.weight`](propagation/truncation.md#choosing-a-policy) caps), and a `label` (the `IXYZ` string).
 `str(p)` and `repr(p)` both print the label directly — a bare Pauli string has nothing else worth showing — so it pretty-prints itself in a REPL or a plain `print()` call with no extra step.
 
-<!-- doctest: skip -->
 ```python
 from paulistrings import PauliString, p
 
@@ -53,12 +52,12 @@ True
 `identity`, `x`, `y`, `z` and `from_label` are the five constructors on the class itself; `num_qubits` is a plain positional argument, not a required keyword, and each single-site constructor takes the qubit index first.
 `p(label)` is a package-level shorthand for `PauliString.from_label(label)`, for the common case of writing one down by hand.
 Two strings compare equal when their labels and `num_qubits` agree; there is no coefficient here to compare, which is exactly the difference from a one-term `PauliSum`.
+The constructor, accessor and operation tables are in [PauliString](../library/pauli-string.md).
 
 ### Single string operations
 
-Four operations on bare Pauli strings are closed-form from the symplectic encoding: whether two strings commute, whether they anticommute, their product, and their commutator and anticommutator.
+Four operations on bare Pauli strings are closed-form from the symplectic encoding: whether two strings (anti-)commute, their product, and their (anti-)commutator.
 
-<!-- doctest: skip -->
 ```python
 from paulistrings import PauliString
 
@@ -75,13 +74,88 @@ print(comm_coeff, anti_coeff)
 
 ```text
 False True
-(-0-1j) Y
-(-0-2j) 0j
+-1j Y
+-2j 0j
 ```
 
-`commutes_with` is the symplectic inner product read as a boolean — `False` here is $X$ and $Z$ anticommuting on the same qubit, the textbook case — and `anticommutes_with` is exactly its complement: a pair of Pauli strings always does one or the other, never neither, so it is always the boolean negation of `commutes_with`.
-`mul` is the closed form itself: multiplying two Pauli strings is never ambiguous or a sum of several strings, it is exactly one string and a phase $i^k$ the caller folds into a coefficient, $XZ = -iY$ above being the canonical instance ([`ARCHITECTURE.md` §Engine](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) states the general rule).
-`commutator` and `anticommutator` reuse `mul`'s coefficient-and-product result, only on the side where the strings do not simply cancel: for Pauli strings $P$ and $Q$, $[P, Q] = 2 \cdot \text{mul}(P, Q)$ when they anticommute and $0$ otherwise, $\{P, Q\}$ the other way around — so an exact zero is a `0` coefficient here, never a `PauliSum` with nothing worth holding it.
+`mul` is the closed form itself: multiplying two Pauli strings results in exactly one output string, up to a phase $i^k$ the caller must keep track of.
+The canonical example being $XZ = -iY$ above.
+In general, writing $(x^P, z^P)$ and $(x^Q, z^Q)$ for the two operands' symplectic bits, the phase is:
+
+$$
+i^k, \qquad k = \sum_j \Big(x^P_j z^P_j + x^Q_j z^Q_j - (x^P_j \oplus x^Q_j)(z^P_j \oplus z^Q_j)\Big) + 2 \sum_j z^P_j x^Q_j \pmod 4
+$$
+
+```python
+def bits(label):
+    x = [ch in "XY" for ch in label]
+    z = [ch in "ZY" for ch in label]
+    return x, z
+
+
+def mul_phase(label_p, label_q):
+    xp, zp = bits(label_p)
+    xq, zq = bits(label_q)
+    k = 0
+    for a, b, c, d in zip(xp, zp, xq, zq):
+        a, b, c, d = int(a), int(b), int(c), int(d)
+        xr, zr = a ^ c, b ^ d
+        k += a * b + c * d - xr * zr + 2 * b * c
+    return 1j ** (k % 4)
+
+
+p, q = PauliString.from_label("XZY"), PauliString.from_label("ZXY")
+phase, product = p.mul(q)
+print(phase, product, mul_phase("XZY", "ZXY"))
+```
+
+```text
+(1+0j) YYI (1+0j)
+```
+
+`commutes_with` is the symplectic inner product read as a boolean, `False` here since $X$ and $Z$ do not commute on the same qubit.
+In the Pauli algebra, this is mutually exclusive with `anticommutes_with`, which is therefore defined for convenience as the negation of `commutes_with`.
+Generally, the computation follows:
+
+$$
+\langle P, Q \rangle = \sum_j \Big(x^P_j z^Q_j + z^P_j x^Q_j\Big) \bmod 2
+$$
+
+with the two strings commuting exactly when $\langle P, Q \rangle = 0$:
+
+```python
+def symplectic_inner(label_p, label_q):
+    xp, zp = bits(label_p)
+    xq, zq = bits(label_q)
+    return sum(a * d + b * c for a, b, c, d in zip(xp, zp, xq, zq)) % 2
+
+
+print(symplectic_inner("X", "Z"), symplectic_inner("XY", "XY"))
+```
+
+```text
+1 0
+```
+
+Finally, both `commutator` and `anticommutator` result in a single string and coefficient again.
+Generally these simplify and again a closed-form formula exists, reusing $\langle P, Q \rangle$ and `mul`'s phase from above:
+
+$$
+[P, Q] = \begin{cases} 2 \cdot \text{mul}(P, Q) & \langle P, Q \rangle = 1 \\ 0 & \langle P, Q \rangle = 0 \end{cases}
+\qquad
+\{P, Q\} = \begin{cases} 2 \cdot \text{mul}(P, Q) & \langle P, Q \rangle = 0 \\ 0 & \langle P, Q \rangle = 1 \end{cases}
+$$
+
+so an exact zero is a `0` coefficient here, never a `PauliSum` with nothing worth holding it:
+
+```python
+print(x.commutator(z), x.anticommutator(z))
+```
+
+```text
+(-2j, Y) (0j, Y)
+```
+
 That closure — one string in, one string and a phase out — is why a gate's image is a short, enumerable list of terms rather than a combinatorial explosion; [Cost is terms, not qubits](propagation/index.md#cost-model) is what a whole sum inherits from this one-string fact.
 
 ## Pauli sums
@@ -130,7 +204,6 @@ It matters only when comparing a coefficient against another library's internal 
 Building a sum by hand, as above, means merging duplicate strings into one dict entry yourself before the call — get that wrong and a later dict assignment silently overwrites an earlier coefficient instead of adding to it.
 `PauliSum` arithmetic avoids that risk directly: `+` and `-` combine two sums by adding or subtracting coefficients on matching strings and keeping the rest, `+=` and `-=` do the same in place, and `*`/`*=` scale every coefficient by a number.
 
-<!-- doctest: skip -->
 ```python
 from paulistrings import PauliSum
 
@@ -297,4 +370,5 @@ The third source is a previous propagation: its result is an ordinary `PauliSum`
 - [B1 — Operator scrambling](../examples/showcases/b1-operator-scrambling.md#running-it) — the light cone, OTOC and two-point function all read from `x_array`, `z_array` and `coefficients_array` exported once per Trotter step.
 - [B6 — Resource probes](../examples/showcases/b6-resource-probes.md) — Pauli-spectrum entropy and operator entanglement computed in pure NumPy over the same three arrays.
 - [B5 — Hybrid depth reduction](../examples/showcases/b5-operator-backpropagation.md#validation) — an evolved observable saved to `.npz`, read back, and embedded in a task JSON, with the round-trip gap measured.
+- [PauliString](../library/pauli-string.md) — the dry constructor, accessor and operation reference for a single string.
 - [PauliSum](../library/pauli-sum.md) — the dry constructor, accessor and format reference this chapter cites throughout.

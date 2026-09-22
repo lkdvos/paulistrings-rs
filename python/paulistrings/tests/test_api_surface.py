@@ -12,6 +12,8 @@ from paulistrings import Circuit, PauliSum, gates, noise, truncation
 
 def test_top_level_names():
     assert hasattr(paulistrings, "PauliSum")
+    assert hasattr(paulistrings, "PauliString")
+    assert hasattr(paulistrings, "p")
     assert hasattr(paulistrings, "Circuit")
     assert hasattr(paulistrings, "gates")
     assert hasattr(paulistrings, "noise")

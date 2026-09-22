@@ -34,6 +34,18 @@ Duplicate keys/rows sum their coefficients; exact-zero coefficients are dropped.
 
 All four array/list accessors return the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`), consistently across calls.
 
+## Arithmetic
+
+| Call | Returns |
+|---|---|
+| `a + b`, `a - b` | a new sum, coefficients combined on matching strings and the rest kept |
+| `a += b`, `a -= b` | the same merge, in place |
+| `a * c`, `c * a`, `a *= c` | every coefficient scaled by a complex or real `c` |
+
+Both operands of `+`/`-` must have the same `num_qubits`; anything else is a `ValueError`.
+Terms whose coefficients cancel exactly are dropped, as is every term when `c` is exactly zero.
+`*` is scalar-only: multiplying two sums is a full operator product, which this library does not implement.
+
 ## Saving, loading, importing
 
 | Call | Does |

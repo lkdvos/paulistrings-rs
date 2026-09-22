@@ -33,6 +33,7 @@
     - [Engine performance](examples/benchmarks/engine-performance.md)
   - [Against other tools](examples/comparisons.md)
 - [Library](library/index.md)
+  - [PauliString](library/pauli-string.md)
   - [PauliSum](library/pauli-sum.md)
   - [Circuit](library/circuit.md)
   - [propagate](library/propagate.md)

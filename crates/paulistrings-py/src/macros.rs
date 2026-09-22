@@ -28,6 +28,36 @@ macro_rules! for_each_width_pair {
     };
 }
 
+/// [`for_each_width_pair`] for an operation whose result is itself width-carrying (`PauliSum::__add__`, `PauliString::mul`).
+/// The body cannot name its own variant, so the arm binds the variant's constructor as `$wrap`; `$body` applies it to the core value it produced. `Some($body)` on a match, `None` on a width mismatch.
+macro_rules! for_each_width_pair_rewrap {
+    (($a:expr, $b:expr), |$x:ident, $y:ident, $wrap:ident| $body:expr) => {
+        match ($a, $b) {
+            (Self::W1($x), Self::W1($y)) => {
+                let $wrap = Self::W1;
+                Some($body)
+            }
+            (Self::W2($x), Self::W2($y)) => {
+                let $wrap = Self::W2;
+                Some($body)
+            }
+            (Self::W4($x), Self::W4($y)) => {
+                let $wrap = Self::W4;
+                Some($body)
+            }
+            (Self::W8($x), Self::W8($y)) => {
+                let $wrap = Self::W8;
+                Some($body)
+            }
+            (Self::W16($x), Self::W16($y)) => {
+                let $wrap = Self::W16;
+                Some($body)
+            }
+            _ => None,
+        }
+    };
+}
+
 /// Cross-enum width dispatch for `PauliSum::propagate`: pairs a `PauliSumImpl` with the `CircuitImpl` of the same width, binds the active width to a local `const $w: usize` for `$body` (needed for `SpecPolicy::<W>`), and rewraps the result in the matching `PauliSumImpl` variant.
 /// The `else` arm handles the width-mismatch case, unreachable in practice but surfaced by `propagate` as a `PyResult` error rather than a panic, so the caller supplies the `return Err(...)`.
 macro_rules! for_each_width_propagate {

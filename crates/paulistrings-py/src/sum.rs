@@ -25,6 +25,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Width-dispatch enum. The Python boundary picks the smallest width that fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
+#[derive(Clone)]
 pub enum PauliSumImpl {
     W1(CorePauliSum<1>),
     W2(CorePauliSum<2>),
@@ -76,6 +77,25 @@ impl PauliSumImpl {
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
     pub fn overlap(&self, other: &Self) -> Option<Complex64> {
         for_each_width_pair!((self, other), |a, b| a.overlap(b))
+    }
+
+    /// `self + factor · other`, matching strings combined and the rest kept; `None` on a width mismatch.
+    /// Caller checks the qubit counts first: equal widths are not equal qubit counts, and the core's merge asserts on the latter.
+    pub fn add_scaled(&self, other: &Self, factor: Complex64) -> Option<Self> {
+        for_each_width_pair_rewrap!((self, other), |a, b, wrap| {
+            if factor == Complex64::new(1.0, 0.0) {
+                wrap(a.add(b))
+            } else {
+                let mut scaled = b.clone();
+                scaled.scale(factor);
+                wrap(a.add(&scaled))
+            }
+        })
+    }
+
+    /// Multiply every coefficient by `factor`, in place.
+    pub fn scale(&mut self, factor: Complex64) {
+        for_each_width!(self, |s| s.scale(factor))
     }
 
     /// Snapshot of the coefficient column, in the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`; equal to plain lex order for sums of ≤ 1024 terms).
@@ -176,7 +196,7 @@ fn parse_terms<const W: usize>(
 
 /// Parse an `I/X/Y/Z` label into a symplectic key (the crate's Hermitian convention: `Y` maps to `(x=1, z=1)` with no phase factor).
 /// Caller checks the label's length against `num_qubits` first; this only rejects characters outside the alphabet.
-fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
+pub(crate) fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
     let mut x = [0u64; W];
     let mut z = [0u64; W];
     for (i, ch) in s.chars().enumerate() {
@@ -1213,6 +1233,67 @@ pub struct PauliSum {
     pub(crate) inner: PauliSumImpl,
 }
 
+impl PauliSum {
+    /// `self + factor · other`, with the qubit counts checked first — the core's merge asserts on a mismatch, and two different qubit counts can still share a width band.
+    fn checked_add(&self, other: &PauliSumImpl, factor: Complex64) -> PyResult<PauliSumImpl> {
+        if self.inner.num_qubits() != other.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "num_qubits mismatch ({} vs {})",
+                self.inner.num_qubits(),
+                other.num_qubits(),
+            )));
+        }
+        self.inner
+            .add_scaled(other, factor)
+            .ok_or_else(|| PyValueError::new_err("sums were monomorphized at different widths"))
+    }
+
+    /// `self` scaled by a Python number. An exact-zero factor gives the empty sum, keeping the "no stored zero coefficient" invariant `from_strings` and the merge both hold.
+    fn scaled(&self, factor: &Bound<'_, PyAny>) -> PyResult<PauliSumImpl> {
+        let factor = scalar_factor(factor)?;
+        if factor == Complex64::new(0.0, 0.0) {
+            return PauliSumImpl::empty_for(self.inner.num_qubits())
+                .ok_or_else(|| PyValueError::new_err("internal: width band lost"));
+        }
+        let mut inner = self.inner.clone();
+        inner.scale(factor);
+        Ok(inner)
+    }
+
+    /// `slf += factor · other`, in place.
+    /// `a += a` aliases one Python object into both operands, so that case merges against a snapshot rather than taking two borrows of the same cell.
+    fn add_in_place(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        factor: Complex64,
+    ) -> PyResult<()> {
+        let combined = if slf.is(other) {
+            let this = slf.borrow();
+            let snapshot = this.inner.clone();
+            this.checked_add(&snapshot, factor)?
+        } else {
+            let this = slf.borrow();
+            let that = other.borrow();
+            this.checked_add(&that.inner, factor)?
+        };
+        slf.borrow_mut().inner = combined;
+        Ok(())
+    }
+}
+
+/// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
+fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
+    if factor.downcast::<PauliSum>().is_ok() {
+        return Err(PyTypeError::new_err(
+            "PauliSum * PauliSum is not supported: that is a full operator product, not a scalar \
+             scaling; * and *= take a complex or real number",
+        ));
+    }
+    extract_complex(factor).map_err(|_| {
+        PyTypeError::new_err("PauliSum * x: x must be a complex or real number (scalar scaling)")
+    })
+}
+
 #[pymethods]
 impl PauliSum {
     /// Empty Pauli sum on `num_qubits` qubits.
@@ -1355,6 +1436,50 @@ impl PauliSum {
     /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
     fn identity_coefficient(&self) -> Complex64 {
         self.inner.identity_coefficient()
+    }
+
+    /// `self + other`: coefficients added on matching strings, the rest kept. Both operands are left untouched.
+    fn __add__(&self, other: &Self) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.checked_add(&other.inner, Complex64::new(1.0, 0.0))?,
+        })
+    }
+
+    /// `self - other`, the same merge with `other`'s coefficients negated.
+    fn __sub__(&self, other: &Self) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.checked_add(&other.inner, Complex64::new(-1.0, 0.0))?,
+        })
+    }
+
+    /// `self += other`, in place.
+    fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        Self::add_in_place(slf, other, Complex64::new(1.0, 0.0))
+    }
+
+    /// `self -= other`, in place.
+    fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        Self::add_in_place(slf, other, Complex64::new(-1.0, 0.0))
+    }
+
+    /// `self * scalar`: every coefficient scaled by a complex or real number.
+    ///
+    /// Scalar-only. Multiplying two sums is a full operator product, a much larger operation this class does not implement.
+    fn __mul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.scaled(factor)?,
+        })
+    }
+
+    /// `scalar * self`, identical to `self * scalar`.
+    fn __rmul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__mul__(factor)
+    }
+
+    /// `self *= scalar`, in place.
+    fn __imul__(&mut self, factor: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.inner = self.scaled(factor)?;
+        Ok(())
     }
 
     /// Snapshot of the coefficient column as a 1-D NumPy `complex128` array.

@@ -144,6 +144,16 @@ fn trotter_matches_propagate_w2() {
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
 }
 
+/// `BuiltinTruncation`'s collective layer pass, per rank.
+#[test]
+fn builtin_truncation_tree_matches_propagate() {
+    use paulistrings::truncation::BuiltinTruncation as T;
+    let circuit = trotter_circuit::<1>(24, THETA);
+    let sum = rand_sum_real::<1>(1_200, 24, 0x0D17);
+    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(2_000)));
+    check(&circuit, &sum, &tree, "trotter tree w1");
+}
+
 /// Dense two-qubit blocks and a noise channel, at both widths: the layer
 /// shapes with the widest fan-out, and the one that must issue no exchange at
 /// all.

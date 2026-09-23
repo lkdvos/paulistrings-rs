@@ -6,14 +6,16 @@ use paulistrings::channel::{
 };
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::test_support::{
-    assert_same_terms, assert_terms_close, cancellation_channel, cancellation_sum,
-    differential_channels_w1, differential_channels_w2, haar_su4_matrix, rand_sum, random_circuit,
-    trotter_circuit, zz_rotation, KeepAll, ShiftX, Xs64,
+    assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
+    differential_channels_w2, haar_su4_matrix, rand_sum, random_circuit, trotter_circuit,
+    zz_rotation, KeepAll, ShiftX, Xs64,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::truncation::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff,
+};
 use paulistrings::{
     propagate, propagate_with_options, Circuit, Direction, Gf2Hash, PartitionedTruncation,
-    PauliString, PauliSum, PropagateOptions,
+    PauliString, PauliSum, PropagateOptions, TruncationPolicy,
 };
 
 const TOL: f64 = 1e-11;
@@ -183,26 +185,129 @@ fn truncation_policies_match_the_host_term_for_term() {
     );
 }
 
+fn and(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
+    BuiltinTruncation::And(Box::new(a), Box::new(b))
+}
+
+fn or(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
+    BuiltinTruncation::Or(Box::new(a), Box::new(b))
+}
+
+/// The truncation matrix on a dense random circuit, host `propagate` and the device driven by the same `BuiltinTruncation` value.
+/// `ApproxTopN` is partition-exact and the per-term filters are exact, so the term counts must match as well as the terms.
+fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64) {
+    use BuiltinTruncation as T;
+    let input = rand_sum::<W>(2000, num_qubits, seed);
+    let circuit = random_circuit::<W>(num_qubits, layers, seed ^ 0x5555, true);
+    // Half the untruncated output, so the octave cut bites.
+    let n = propagate(&circuit, input.clone(), &T::Keep, Direction::Forward).len() / 2;
+    assert!(n > 1000, "the fixture must grow");
+    let matrix = [
+        ("keep", T::Keep),
+        ("coeff 1e-3", T::Coeff(1e-3)),
+        ("weight 4", T::Weight(4)),
+        ("approx n", T::ApproxTopN(n)),
+        ("coeff & approx", and(T::Coeff(1e-3), T::ApproxTopN(n))),
+        ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
+        ("coeff | weight", or(T::Coeff(1e-3), T::Weight(4))),
+    ];
+    for (name, policy) in &matrix {
+        check(&circuit, &input, policy, &format!("W={W} {name}"));
+    }
+}
+
 #[test]
-fn finalizing_and_composed_policies_are_rejected_before_the_first_layer() {
+fn truncation_matrix_matches_the_host_w1() {
     require_cuda!();
+    truncation_matrix::<1>(8, 30, 0x4401);
+}
+
+#[test]
+fn truncation_matrix_matches_the_host_w2() {
+    require_cuda!();
+    truncation_matrix::<2>(70, 20, 0x4402);
+}
+
+/// The same cells through the builtin policy types, so the lowering from the real policies is what runs.
+#[test]
+fn builtin_policy_types_lower_and_match_the_host() {
+    require_cuda!();
+    let input = rand_sum::<2>(3000, 128, 0x4403);
+    let circuit = random_circuit::<2>(128, 12, 0x5557, true);
+    check(&circuit, &input, &CoefficientThreshold(1e-3), "coeff");
+    check(&circuit, &input, &ApproxTopN(500), "approx 500");
+    check(
+        &circuit,
+        &input,
+        &And(CoefficientThreshold(1e-3), ApproxTopN(500)),
+        "coeff & approx",
+    );
+    check(
+        &circuit,
+        &input,
+        &And(ApproxTopN(800), WeightCutoff(4)),
+        "approx & weight",
+    );
+    check(
+        &circuit,
+        &input,
+        &Or(CoefficientThreshold(1e-3), WeightCutoff(4)),
+        "coeff | weight",
+    );
+}
+
+/// An `ApproxTopN` that cuts every layer keeps the device and host counts equal through a long run, and the count stays within `n`.
+#[test]
+fn approx_top_n_bounds_every_layer_like_the_host() {
+    require_cuda!();
+    let input = rand_sum::<1>(2000, 12, 0x4404);
+    let circuit = random_circuit::<1>(12, 30, 0x5558, true);
+    let policy = ApproxTopN(1500);
+    check(&circuit, &input, &policy, "approx 1500, 30 layers");
+    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    dev.propagate(&circuit, &policy, Direction::Forward)
+        .expect("device propagate");
+    assert!(dev.len() <= 1500 && !dev.is_empty());
+}
+
+fn assert_rejected_untouched<T>(policy: &T, what: &str)
+where
+    T: PartitionedTruncation<1> + ?Sized,
+{
     let input = rand_sum::<1>(100, 8, 0x55);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-    assert!(matches!(
-        dev.propagate(&circuit, &ApproxTopN(10), Direction::Forward),
-        Err(GpuError::Unsupported(_))
-    ));
-    assert!(matches!(
-        dev.propagate(
-            &circuit,
-            &And(CoefficientThreshold(1e-3), WeightCutoff(4)),
-            Direction::Forward
-        ),
-        Err(GpuError::Unsupported(_))
-    ));
-    assert_eq!(dev.len(), input.len(), "nothing ran");
-    assert_same_terms(&dev.to_host().unwrap(), &input, "untouched");
+    let r = dev.propagate(&circuit, policy, Direction::Forward);
+    assert!(matches!(r, Err(GpuError::Unsupported(_))), "{what}: {r:?}");
+    assert_eq!(dev.len(), input.len(), "{what}: nothing ran");
+    assert_eq!(
+        dev.to_host().unwrap().to_arrays(),
+        input.to_arrays(),
+        "{what}: bitwise untouched"
+    );
+}
+
+#[test]
+fn exact_top_n_and_unlowerable_policies_are_rejected_before_the_first_layer() {
+    require_cuda!();
+    use BuiltinTruncation as T;
+    assert_rejected_untouched(&T::TopN(10), "TopN(10)");
+    assert_rejected_untouched(&and(T::Coeff(1e-3), T::TopN(10)), "coeff & topn");
+    assert_rejected_untouched(&or(T::Coeff(1e-3), T::TopN(10)), "coeff | topn");
+    let chain = (1..9).fold(T::Coeff(0.0), |acc, k| and(acc, T::Weight(k)));
+    assert_rejected_untouched(&chain, "17-node program");
+    struct Custom;
+    impl<const W: usize> TruncationPolicy<W> for Custom {}
+    impl<const W: usize> PartitionedTruncation<W> for Custom {}
+    assert_rejected_untouched(&Custom, "custom policy");
+    let input = rand_sum::<1>(100, 8, 0x55);
+    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
+    let r = dev.propagate(&circuit, &T::TopN(10), Direction::Forward);
+    assert!(
+        matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),
+        "{r:?}"
+    );
 }
 
 #[test]

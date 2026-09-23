@@ -12,11 +12,12 @@ use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN
 use super::prepared::DevicePrepared;
 use super::scan::exclusive_scan_with_max;
 use super::sum::GpuSum;
-use super::truncation::DeviceKeep;
+use super::truncation::KeepProgram;
 use crate::bucket::hash::B_MAX_BITS;
 use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::Gf2Span;
+use crate::truncation::builtin::APPROX_BINS;
 
 /// Records per fused block the default bucket policy aims for.
 pub const DEFAULT_RECORDS_PER_BLOCK: usize = 4096;
@@ -121,6 +122,8 @@ pub struct GpuKernelMs {
     pub rescale: f64,
     /// K6, refines the layer issued.
     pub refine: f64,
+    /// K7, the `ApproxTopN` histogram and retain.
+    pub truncate: f64,
 }
 
 /// Grow-only device buffers one partition keeps between layers.
@@ -130,7 +133,9 @@ pub(crate) struct LayerScratch<const W: usize> {
     rows: CudaSlice<u32>,
     seg_start: CudaSlice<u32>,
     out_len_pos: CudaSlice<u32>,
-    dst_off: CudaSlice<u32>,
+    pub(super) dst_off: CudaSlice<u32>,
+    /// K7's `[len, bins…]`.
+    pub(super) hist: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
     amp: CudaSlice<f64>,
     mask: CudaSlice<u64>,
@@ -151,7 +156,7 @@ pub(crate) struct LayerScratch<const W: usize> {
     next_event: usize,
 }
 
-fn grow<T: DeviceRepr>(
+pub(super) fn grow<T: DeviceRepr>(
     stream: &Arc<CudaStream>,
     s: &mut CudaSlice<T>,
     n: usize,
@@ -166,7 +171,7 @@ fn grow<T: DeviceRepr>(
     Ok(())
 }
 
-fn warp_per_bucket(b: usize) -> LaunchConfig {
+pub(super) fn warp_per_bucket(b: usize) -> LaunchConfig {
     LaunchConfig {
         grid_dim: ((b as u32).div_ceil(8).max(1), 1, 1),
         block_dim: (256, 1, 1),
@@ -192,6 +197,7 @@ impl<const W: usize> LayerScratch<W> {
             seg_start: s.alloc_zeros(2)?,
             out_len_pos: s.alloc_zeros(1)?,
             dst_off: s.alloc_zeros(2)?,
+            hist: s.alloc_zeros(1 + APPROX_BINS)?,
             fallback: s.alloc_zeros(2)?,
             amp: s.alloc_zeros(512)?,
             mask: s.alloc_zeros(32 * W)?,
@@ -211,7 +217,7 @@ impl<const W: usize> LayerScratch<W> {
         })
     }
 
-    fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
+    pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
         if !self.time_kernels {
             return Ok(None);
         }
@@ -225,7 +231,7 @@ impl<const W: usize> LayerScratch<W> {
         Ok(Some(i))
     }
 
-    fn lap(
+    pub(super) fn lap(
         &mut self,
         sum: &GpuSum<W>,
         from: Option<usize>,
@@ -334,7 +340,7 @@ impl<const W: usize> LayerScratch<W> {
 pub(crate) fn apply_layer_device<const W: usize>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
-    keep: DeviceKeep,
+    keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
     target_bits: u8,
 ) -> Result<(), GpuError> {
@@ -452,7 +458,6 @@ pub(crate) fn apply_layer_device<const W: usize>(
     out.reserve(out.term_capacity(), b)?;
     grow(&s, &mut scratch.out_len_pos, b, o)?;
     s.memset_zeros(&mut scratch.fallback)?;
-    let (keep_kind, keep_eps, keep_k) = keep.args();
     let e32 = table.entries as u32;
 
     let mut running = 0u32;
@@ -484,9 +489,7 @@ pub(crate) fn apply_layer_device<const W: usize>(
                 .arg(&scratch.nz)
                 .arg(&scratch.bd)
                 .arg(&scratch.gm)
-                .arg(&keep_kind)
-                .arg(&keep_eps)
-                .arg(&keep_k)
+                .arg(keep)
                 .arg(&p0u)
                 .arg(&mut arena.x)
                 .arg(&mut arena.z)
@@ -562,7 +565,7 @@ pub(crate) fn apply_layer_device<const W: usize>(
 fn rescale_device<const W: usize>(
     sum: &mut GpuSum<W>,
     table: &DevicePrepared<W>,
-    keep: DeviceKeep,
+    keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
 ) -> Result<(), GpuError> {
     let s = sum.stream.clone();
@@ -579,7 +582,6 @@ fn rescale_device<const W: usize>(
     out.reserve(extent, b)?;
     grow(&s, &mut scratch.dst_off, b + 1, o)?;
     s.memcpy_htod(&table.amp, &mut scratch.amp)?;
-    let (keep_kind, keep_eps, keep_k) = keep.args();
     let b32 = b as u32;
     let t0 = scratch.event(sum)?;
     // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
@@ -596,9 +598,7 @@ fn rescale_device<const W: usize>(
             .arg(&table.q0)
             .arg(&table.q1)
             .arg(&scratch.amp)
-            .arg(&keep_kind)
-            .arg(&keep_eps)
-            .arg(&keep_k)
+            .arg(keep)
             .arg(&mut out.x)
             .arg(&mut out.z)
             .arg(&mut out.coeff)
@@ -672,7 +672,7 @@ mod tests {
         let mut sum = GpuSum::from_host(&input, 0)?;
         let mut scratch = LayerScratch::new(&sum, opts)?;
         let prep = ch.prepare(sum.hash(), false).expect("prepared");
-        apply_layer_device(&mut sum, &prep, DeviceKeep::Keep, &mut scratch, 0)?;
+        apply_layer_device(&mut sum, &prep, &KeepProgram::KEEP, &mut scratch, 0)?;
         let want = naive_apply_layer(&input, ch, &KeepAll, false);
         assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
         Ok(scratch.counters)

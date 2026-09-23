@@ -41,10 +41,19 @@ typedef unsigned char u8;
 #define MODE_LOCAL 0
 #define MODE_ROTATION 1
 
-// Per-term truncation kinds, `DeviceKeep` in truncation.rs.
-#define KEEP_ALL 0
-#define KEEP_COEFF 1
-#define KEEP_WEIGHT 2
+// The per-term truncation program, `KeepProgram` in truncation.rs: postfix over a one-bit-per-entry stack.
+#define KEEP_NODES 15
+#define OP_KEEP 0
+#define OP_COEFF 1
+#define OP_WEIGHT 2
+#define OP_AND 3
+#define OP_OR 4
+
+struct KeepProg {
+    u32 len;
+    u32 op[KEEP_NODES];
+    u64 arg[KEEP_NODES];
+};
 
 struct Key {
     u64 x[W];
@@ -204,11 +213,38 @@ __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 
     pi = ti * T.rot_sin;
 }
 
-// `TruncationPolicy::keep_term` for the lowered builtins on the summed coefficient.
-__device__ __forceinline__ bool keep_term(u32 kind, double eps, u32 kmax, const Key& k, double cr, double ci) {
-    if (kind == KEEP_COEFF) return eps < 0.0 || (cr * cr + ci * ci) > eps * eps;
-    if (kind == KEEP_WEIGHT) return pauli_weight(k) <= kmax;
-    return true;
+// `TruncationPolicy::keep_term` of the lowered tree on the summed coefficient; `key()` is called at most once, and only by a weight node.
+template <class KeyFn>
+__device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, double cr, double ci) {
+    if (P.len == 1 && P.op[0] == OP_KEEP) return true;
+    const double m = cr * cr + ci * ci;
+    u32 st = 0;
+    int wgt = -1;
+    for (u32 i = 0; i < P.len; ++i) {
+        u32 v;
+        switch (P.op[i]) {
+            case OP_COEFF: {
+                const double eps = __longlong_as_double((long long)P.arg[i]);
+                st = (st << 1) | (u32)(eps < 0.0 || m > eps * eps);
+                break;
+            }
+            case OP_WEIGHT:
+                if (wgt < 0) wgt = (int)pauli_weight(key());
+                st = (st << 1) | (u32)((u64)wgt <= P.arg[i]);
+                break;
+            case OP_AND:
+                v = st & (st >> 1) & 1u;
+                st = ((st >> 2) << 1) | v;
+                break;
+            case OP_OR:
+                v = (st | (st >> 1)) & 1u;
+                st = ((st >> 2) << 1) | v;
+                break;
+            default:
+                st = (st << 1) | 1u;
+        }
+    }
+    return (st & 1u) != 0;
 }
 
 // Exclusive scan of v[0..n) in shared memory, ITEMS contiguous entries per thread; returns the total to every thread.

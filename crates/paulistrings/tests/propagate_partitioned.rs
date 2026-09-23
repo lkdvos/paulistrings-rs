@@ -82,6 +82,16 @@ fn trotter_matches_propagate_w2() {
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter w2", &PS);
 }
 
+/// `BuiltinTruncation` drives the partitioned engines through its own `finalize_layer_partitioned`, one collective per layer as the builtin `And` it names.
+#[test]
+fn builtin_truncation_tree_matches_propagate() {
+    use paulistrings::truncation::BuiltinTruncation as T;
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = rand_sum_real::<1>(2_000, 32, 0x71A2);
+    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(3_000)));
+    check(&circuit, &sum, &tree, "trotter tree", &PS);
+}
+
 /// A 30-layer random circuit over every channel class at `W = 1`.
 ///
 /// Six qubits, so the whole Pauli group is 4⁶ = 4096 keys and an untruncated

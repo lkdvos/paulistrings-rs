@@ -620,8 +620,8 @@ impl<const W: usize> TruncationPolicy<W> for KeepAll {
         false
     }
 
-    fn device_policy(&self) -> Option<crate::truncation::DeviceKeep> {
-        Some(crate::truncation::DeviceKeep::Keep)
+    fn device_policy(&self) -> Option<crate::truncation::BuiltinTruncation> {
+        Some(crate::truncation::BuiltinTruncation::Keep)
     }
 }
 

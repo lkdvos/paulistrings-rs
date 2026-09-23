@@ -6,6 +6,7 @@ use super::error::GpuError;
 use super::layer::{GpuKernelMs, GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
 use super::sum::GpuSum;
+use super::truncation::DevicePolicy;
 use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
 use crate::engine::partitioned::backend::PartitionStorage;
@@ -22,7 +23,8 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 ///
 /// Built by [`Self::from_host`], stepped by [`Self::propagate`], read back by [`Self::to_host`].
 /// The layer loop is the partitioned engine's at `P = 1`, so the bucket-count schedule, trace and log lines are those of [`PartitionedSum`](crate::engine::partitioned::PartitionedSum).
-/// Only per-term policies with a device form run here: [`TruncationPolicy::device_policy`](crate::TruncationPolicy::device_policy) must return `Some`, or `propagate` fails with [`GpuError::Unsupported`] before touching the device.
+/// A policy runs here through its [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) tree from [`TruncationPolicy::device_policy`](crate::TruncationPolicy::device_policy): per-term filters inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host.
+/// `propagate` fails with [`GpuError::Unsupported`] before touching the device if the policy has no tree, if the tree contains an exact `TopN` (not implemented on device), or if its per-term part lowers to more than 15 nodes.
 ///
 /// A device error mid-run leaves the sum in the state of the last completed layer and is returned from `propagate`.
 pub struct GpuPauliSum<const W: usize> {
@@ -75,7 +77,7 @@ impl<const W: usize> GpuPauliSum<W> {
     ///
     /// # Errors
     ///
-    /// [`GpuError::Unsupported`] before any layer if `policy` has no device form or a channel's support is wider than `MAX_LOCAL_SUPPORT`; any device error from a layer, after which the sum holds the last completed layer's output and a later call resumes from it.
+    /// [`GpuError::Unsupported`] before any layer if `policy` cannot run on device (see the type docs) or a channel's support is wider than `MAX_LOCAL_SUPPORT`; any device error from a layer, after which the sum holds the last completed layer's output and a later call resumes from it.
     pub fn propagate_with_options<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -86,13 +88,19 @@ impl<const W: usize> GpuPauliSum<W> {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        let keep = policy.device_policy().ok_or(GpuError::Unsupported(
+        let tree = policy.device_policy().ok_or(GpuError::Unsupported(
             "truncation policy without a device form",
         ))?;
-        if policy.finalizes_layer() {
-            return Err(GpuError::Unsupported("truncation policy with a layer pass"));
+        if tree.contains_exact_top_n() {
+            return Err(GpuError::Unsupported("exact TopN on device"));
         }
-        self.part.keep = keep;
+        // The driver runs the layer pass iff `policy` says so, so a tree that disagrees would be skipped or run wrongly.
+        if <_ as crate::TruncationPolicy<W>>::finalizes_layer(&tree) != policy.finalizes_layer() {
+            return Err(GpuError::Unsupported(
+                "a device_policy whose layer pass disagrees with finalizes_layer",
+            ));
+        }
+        let lowered = DevicePolicy::lower(tree)?;
         self.part.take_error()?;
         let adjoint = matches!(direction, Direction::Heisenberg);
         if circuit
@@ -104,6 +112,7 @@ impl<const W: usize> GpuPauliSum<W> {
                 "channel with support wider than MAX_LOCAL_SUPPORT",
             ));
         }
+        self.part.policy = lowered;
         let n = circuit.channels.len();
         let terms_in = self.len();
         let started = Instant::now();

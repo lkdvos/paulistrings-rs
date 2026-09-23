@@ -6,6 +6,7 @@ mod columns;
 mod device;
 mod driver;
 mod error;
+mod finalize;
 mod fingerprint;
 mod layer;
 mod module;
@@ -24,4 +25,3 @@ pub use layer::{
     DEFAULT_RECORDS_PER_BLOCK,
 };
 pub use sum::GpuSum;
-pub use truncation::DeviceKeep;

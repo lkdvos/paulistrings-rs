@@ -89,7 +89,7 @@ __device__ __forceinline__ void layer_body(
     u32 mode, u32 E, u32 kq, u32 q0, u32 q1, double rcos, double rsin,
     const double* __restrict__ amp, const u64* __restrict__ mask, const u32* __restrict__ nz,
     const u32* __restrict__ bd, const u64* __restrict__ gm,
-    u32 keep_kind, double keep_eps, u32 keep_k, u32 p0,
+    const KeepProg& prog, u32 p0,
     u64* __restrict__ out_x, u64* __restrict__ out_z, double* __restrict__ out_c, u64* __restrict__ out_g,
     u32* __restrict__ out_len_pos, u32* __restrict__ fallback) {
     extern __shared__ __align__(16) u8 smem_raw[];
@@ -276,8 +276,7 @@ __device__ __forceinline__ void layer_body(
     };
     auto survives = [&](u32 j, double ar, double ai) -> bool {
         if (ar == 0.0 && ai == 0.0) return false;
-        if (keep_kind == KEEP_ALL) return true;
-        return keep_term(keep_kind, keep_eps, keep_k, out_key(j), ar, ai);
+        return keep_eval(prog, [&]() -> Key { return out_key(j); }, ar, ai);
     };
 
     if (SEGSCAN) {
@@ -401,16 +400,16 @@ __device__ __forceinline__ void layer_body(
     }
 }
 
-#define LAYER_KERNEL(C, SEG, NAME)                                                                          \
+#define LAYER_KERNEL(C, SEG, NAME)                                                                         \
     extern "C" __global__ void __launch_bounds__(THREADS) NAME(                                            \
         const u64* x, const u64* z, const double* c, const u64* g, const u32* in_start, const u32* in_len, \
-        const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 kq, u32 q0,      \
-        u32 q1, double rcos, double rsin, const double* amp, const u64* mask, const u32* nz,              \
-        const u32* bd, const u64* gm, u32 keep_kind, double keep_eps, u32 keep_k, u32 p0, u64* out_x,     \
-        u64* out_z, double* out_c, u64* out_g, u32* out_len_pos, u32* fallback) {                         \
-        layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, kq, q0, q1,  \
-                           rcos, rsin, amp, mask, nz, bd, gm, keep_kind, keep_eps, keep_k, p0, out_x,     \
-                           out_z, out_c, out_g, out_len_pos, fallback);                                   \
+        const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 kq, u32 q0,       \
+        u32 q1, double rcos, double rsin, const double* amp, const u64* mask, const u32* nz,               \
+        const u32* bd, const u64* gm, const __grid_constant__ KeepProg prog, u32 p0, u64* out_x,           \
+        u64* out_z, double* out_c, u64* out_g, u32* out_len_pos, u32* fallback) {                          \
+        layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, kq, q0, q1,   \
+                           rcos, rsin, amp, mask, nz, bd, gm, prog, p0, out_x,                             \
+                           out_z, out_c, out_g, out_len_pos, fallback);                                    \
     }
 
 #define LAYER_PAIR(C) LAYER_KERNEL(C, false, k_layer_serial_##C) LAYER_KERNEL(C, true, k_layer_segscan_##C)

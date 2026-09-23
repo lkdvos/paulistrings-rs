@@ -23,6 +23,7 @@ const COUNT: &str = include_str!("kernels/count.cu");
 const LAYER: &str = include_str!("kernels/layer.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
+const TRUNCATE: &str = include_str!("kernels/truncate.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
 const KERNEL_SOURCES: &[&str] = &[
@@ -37,6 +38,7 @@ const KERNEL_SOURCES: &[&str] = &[
     LAYER,
     COMPACT,
     RESCALE,
+    TRUNCATE,
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
@@ -89,6 +91,8 @@ pub(crate) struct KernelSet {
     pub(crate) rows: CudaFunction,
     pub(crate) compact: CudaFunction,
     pub(crate) rescale: CudaFunction,
+    pub(crate) octave_hist: CudaFunction,
+    pub(crate) retain: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     threads: usize,
@@ -223,6 +227,8 @@ pub(crate) fn kernel_set_with_options(
         rows: f("k_rows")?,
         compact: f("k_compact")?,
         rescale: f("k_rescale")?,
+        octave_hist: f("k_octave_hist")?,
+        retain: f("k_retain")?,
         layer,
         threads,
     });

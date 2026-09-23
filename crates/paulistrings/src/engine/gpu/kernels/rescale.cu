@@ -4,7 +4,7 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
                                      const double* __restrict__ c, const u64* __restrict__ g,
                                      const u32* __restrict__ in_start, const u32* __restrict__ in_len, u32 B,
                                      u32 kq, u32 q0, u32 q1, const double* __restrict__ amp,
-                                     u32 keep_kind, double keep_eps, u32 keep_k,
+                                     const __grid_constant__ KeepProg keep,
                                      u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc,
                                      u64* __restrict__ og, u32* __restrict__ out_start, u32* __restrict__ out_len) {
     const u32 lane = lane_id();
@@ -25,7 +25,7 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
             const double ar = amp[s * 2], ai = amp[s * 2 + 1];
             pr = cr * ar - ci * ai;
             pi = cr * ai + ci * ar;
-            ok = (pr != 0.0 || pi != 0.0) && keep_term(keep_kind, keep_eps, keep_k, k, pr, pi);
+            ok = (pr != 0.0 || pi != 0.0) && keep_eval(keep, [&]() -> Key { return k; }, pr, pi);
         }
         const u32 bal = __ballot_sync(~0u, ok);
         if (ok) {

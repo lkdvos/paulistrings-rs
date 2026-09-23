@@ -8,7 +8,7 @@ use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, DeviceRepr, LaunchConfig,
 use super::columns::DeviceColumns;
 use super::error::GpuError;
 use super::fingerprint::FingerprintRows;
-use super::module::{layer_shared_bytes, layer_threads, KernelSet, LAYER_CAP, MAX_BUCKET_LEN};
+use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::exclusive_scan_with_max;
 use super::sum::GpuSum;
@@ -46,6 +46,8 @@ pub struct GpuLayerOptions {
     pub bucket_policy: GpuBucketPolicy,
     /// Bytes the loose output arena may hold; positions are batched so no batch's pre-dedup rows exceed it.
     pub arena_bytes: usize,
+    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`]; `B_MAX_BITS` by default.
+    pub max_bits: u8,
 }
 
 impl Default for GpuLayerOptions {
@@ -53,6 +55,7 @@ impl Default for GpuLayerOptions {
         Self {
             bucket_policy: GpuBucketPolicy::default(),
             arena_bytes: DEFAULT_ARENA_BYTES,
+            max_bits: B_MAX_BITS,
         }
     }
 }
@@ -143,7 +146,9 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(crate) counters: GpuLayerCounters,
     pub(crate) time_kernels: bool,
     pub(crate) kernel_ms: GpuKernelMs,
+    /// Timing events, reused across layers.
     events: Vec<CudaEvent>,
+    next_event: usize,
 }
 
 fn grow<T: DeviceRepr>(
@@ -202,6 +207,7 @@ impl<const W: usize> LayerScratch<W> {
             time_kernels: false,
             kernel_ms: GpuKernelMs::default(),
             events: Vec::new(),
+            next_event: 0,
         })
     }
 
@@ -209,10 +215,14 @@ impl<const W: usize> LayerScratch<W> {
         if !self.time_kernels {
             return Ok(None);
         }
-        let ev = sum.ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
-        ev.record(&sum.stream)?;
-        self.events.push(ev);
-        Ok(Some(self.events.len() - 1))
+        if self.next_event == self.events.len() {
+            self.events
+                .push(sum.ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?);
+        }
+        let i = self.next_event;
+        self.events[i].record(&sum.stream)?;
+        self.next_event += 1;
+        Ok(Some(i))
     }
 
     fn lap(
@@ -320,12 +330,15 @@ impl<const W: usize> LayerScratch<W> {
 }
 
 /// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
+/// `target_bits` is the bucket count the driver settled on; the device refines to it and to the bucket policy in one pass.
 pub(crate) fn apply_layer_device<const W: usize>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
     keep: DeviceKeep,
     scratch: &mut LayerScratch<W>,
+    target_bits: u8,
 ) -> Result<(), GpuError> {
+    scratch.next_event = 0;
     let fp = FingerprintRows::<W>::new(sum.hash.seed());
     let mut table = DevicePrepared::new(prep, &sum.hash, &fp);
     scratch.counters = GpuLayerCounters {
@@ -333,16 +346,7 @@ pub(crate) fn apply_layer_device<const W: usize>(
         dense: table.dense,
         ..GpuLayerCounters::default()
     };
-    if table.key_preserving {
-        return rescale_device(sum, &table, keep, scratch);
-    }
-    let n_in = sum.len();
-    let want = gpu_desired_bits(
-        n_in,
-        table.fanout,
-        scratch.options.bucket_policy,
-        sum.hash.bits(),
-    );
+    let max_bits = scratch.options.max_bits.min(B_MAX_BITS);
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
             let t = scratch.event(sum)?;
@@ -352,19 +356,40 @@ pub(crate) fn apply_layer_device<const W: usize>(
             scratch.counters.refine_passes += 1;
             Ok(())
         };
+    if table.key_preserving {
+        if target_bits > sum.hash.bits() {
+            refine(sum, scratch, target_bits)?;
+        }
+        return rescale_device(sum, &table, keep, scratch);
+    }
+    let n_in = sum.len();
+    if n_in.saturating_mul(table.fanout.max(1)) >= u32::MAX as usize {
+        return Err(GpuError::Unsupported(
+            "more than 2^32 pre-dedup records in one layer",
+        ));
+    }
+    let want = gpu_desired_bits(
+        n_in,
+        table.fanout,
+        scratch.options.bucket_policy,
+        sum.hash.bits(),
+    )
+    .min(max_bits)
+    .max(target_bits);
     if want > sum.hash.bits() {
         refine(sum, scratch, want)?;
         table.rehash(&sum.hash);
     }
-    // Oversize segments and over-long source buckets are known from the count table; one more bit halves both.
+    // Oversize blocks and over-long source buckets are known from the count table; one more bit halves both.
+    let cap = sum.kernels.layer_cap();
     let (records, records_max) = loop {
         let (total, max_seg, max_len) = scratch.count(sum, &table)?;
-        if max_seg as usize <= LAYER_CAP && max_len as usize <= MAX_BUCKET_LEN {
+        if max_seg as usize <= cap && max_len as usize <= MAX_BUCKET_LEN {
             break (total, max_seg);
         }
-        if sum.hash.bits() >= B_MAX_BITS {
+        if sum.hash.bits() >= max_bits {
             return Err(GpuError::Unsupported(
-                "a fused-layer segment exceeds CAP at B_MAX_BITS",
+                "a fused-layer block exceeds the record cap at the bucket-bit limit",
             ));
         }
         refine(sum, scratch, sum.hash.bits() + 1)?;
@@ -390,8 +415,7 @@ pub(crate) fn apply_layer_device<const W: usize>(
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena.
     let seg = &scratch.seg_host;
-    let cap_rows =
-        (scratch.options.arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(LAYER_CAP);
+    let cap_rows = (scratch.options.arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(cap);
     let mut batches: Vec<(usize, usize)> = Vec::new();
     let mut p0 = 0usize;
     while p0 < b {
@@ -489,7 +513,14 @@ pub(crate) fn apply_layer_device<const W: usize>(
         let batch_out = s.clone_dtoh(&tot)?[0];
         s.synchronize()?;
         out.len = running as usize;
-        out.reserve((running + batch_out) as usize, b)?;
+        let need = (running + batch_out) as usize;
+        if need > out.term_capacity() {
+            // Geometric growth, capped by the pre-dedup total no output can exceed.
+            let grown = (2 * out.term_capacity())
+                .max(need)
+                .min((records as usize).max(need));
+            out.reserve(grown, b)?;
+        }
         // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.
         unsafe {
             s.launch_builder(&k.compact)
@@ -597,6 +628,98 @@ fn rescale_device<const W: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bucket::hash::Gf2Hash;
+    use crate::channel::{Channel, GeneralUnitary2Q};
+    use crate::test_support::{
+        assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,
+    };
+    use num_complex::Complex64;
+
+    /// `SWAP·CNOT` as a matrix: its symplectic map has no fixed nonzero vector, so all 16 deltas are realized and every row emits exactly one record.
+    fn sixteen_delta_permutation() -> GeneralUnitary2Q {
+        let e = |i: usize| -> [Complex64; 4] {
+            let mut r = [Complex64::new(0.0, 0.0); 4];
+            r[i] = Complex64::new(1.0, 0.0);
+            r
+        };
+        GeneralUnitary2Q::from_matrix(0, 1, [e(0), e(3), e(1), e(2)])
+    }
+
+    /// One layer on a single-bucket device sum under `opts`, against the naive oracle; returns the counters.
+    /// With `x0`, every term carries `X` on qubit 0, so a two-qubit table on `(0, 1)` never sees the identity pattern and every entry emits for every row.
+    fn single_bucket_layer(
+        n: usize,
+        x0: bool,
+        ch: &dyn Channel<2>,
+        opts: GpuLayerOptions,
+    ) -> Result<GpuLayerCounters, GpuError> {
+        let mut input = rand_sum::<2>(n, 128, 0x4096 + n as u64);
+        if x0 {
+            let mut acc = crate::accumulator::BuildAccumulator::<2>::new(128);
+            for (x, z, c) in input.iter() {
+                let mut x = *x;
+                x[0] |= 1;
+                acc.add_term(
+                    crate::pauli_string::PauliString::<2> { x, z: *z },
+                    crate::phase::Phase::ONE,
+                    c,
+                );
+            }
+            input = acc.finalize();
+        }
+        let input = input.with_hash(Gf2Hash::new(128, 0, crate::bucket::sum::DEFAULT_HASH_SEED));
+        assert_eq!(input.len(), n);
+        let mut sum = GpuSum::from_host(&input, 0)?;
+        let mut scratch = LayerScratch::new(&sum, opts)?;
+        let prep = ch.prepare(sum.hash(), false).expect("prepared");
+        apply_layer_device(&mut sum, &prep, DeviceKeep::Keep, &mut scratch, 0)?;
+        let want = naive_apply_layer(&input, ch, &KeepAll, false);
+        assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
+        Ok(scratch.counters)
+    }
+
+    #[test]
+    fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
+        crate::require_cuda!();
+        let opts = GpuLayerOptions {
+            bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+            ..GpuLayerOptions::default()
+        };
+        let perm = sixteen_delta_permutation();
+        let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, opts).unwrap();
+        assert_eq!(
+            (c.bits, c.refine_passes, c.records, c.records_max),
+            (0, 0, 4096, 4096)
+        );
+        let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, opts).unwrap();
+        assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
+
+        // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
+        let su4 = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+        let cap = crate::engine::gpu::module::kernel_set(0, 2)
+            .unwrap()
+            .layer_cap();
+        let c = single_bucket_layer(cap / 15, true, &su4, opts).unwrap();
+        assert_eq!(
+            (
+                c.bits,
+                c.refine_passes,
+                c.records_max as usize,
+                c.n_cap as usize
+            ),
+            (0, 0, 15 * (cap / 15), cap)
+        );
+        let c = single_bucket_layer(cap / 15 + 1, true, &su4, opts).unwrap();
+        assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
+        let capped = GpuLayerOptions {
+            max_bits: 0,
+            ..opts
+        };
+        assert!(matches!(
+            single_bucket_layer(cap / 15 + 1, true, &su4, capped),
+            Err(GpuError::Unsupported(_))
+        ));
+    }
 
     #[test]
     fn records_per_block_policy_scales_with_fanout_and_is_grow_only() {

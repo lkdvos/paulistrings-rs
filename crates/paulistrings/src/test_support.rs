@@ -745,6 +745,26 @@ pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     acc.finalize()
 }
 
+/// A channel with no identity delta: every term moves to `v ⊕ x₀` with its coefficient unchanged.
+/// Not physical; it exercises a prepared table whose entry 0 is not the identity.
+pub struct ShiftX;
+
+impl<const W: usize> Channel<W> for ShiftX {
+    fn max_fanout(&self) -> usize {
+        1
+    }
+
+    fn support(&self) -> [u64; W] {
+        crate::channel::support_mask(&[0])
+    }
+
+    fn apply(&self, x: &[u64; W], z: &[u64; W], c: Complex64, out: &mut OutputBuffer<'_, W>) {
+        let mut kx = *x;
+        kx[0] ^= 1;
+        out.push(kx, *z, c);
+    }
+}
+
 /// The channel [`cancellation_sum`] is built for.
 pub fn cancellation_channel() -> crate::channel::noise::AmplitudeDamping {
     crate::channel::noise::AmplitudeDamping {

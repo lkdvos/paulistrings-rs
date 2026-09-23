@@ -16,8 +16,8 @@ use crate::engine::stats::PhaseStats;
 
 /// A partition whose sum lives on a device.
 ///
-/// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop.
-/// `hash` mirrors the device sum's hash and stands in for it on a detached placeholder.
+/// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU-Readiness).
+/// `hash` is the driver's view of the bucket count: `refine` advances it alone, `apply_layer` brings the device up to it, and [`Self::take_error`] re-syncs it to the device.
 pub(crate) struct DevicePartition<const W: usize> {
     sum: Option<GpuSum<W>>,
     scratch: Option<LayerScratch<W>>,
@@ -58,7 +58,11 @@ impl<const W: usize> DevicePartition<W> {
         self.scratch().counters
     }
 
+    /// The recorded error, if any, after re-syncing the hash mirror to the device sum.
     pub(crate) fn take_error(&mut self) -> Result<(), GpuError> {
+        if let Some(sum) = self.sum.as_ref() {
+            self.hash = sum.hash().clone();
+        }
         match self.error.take() {
             Some(e) => Err(e),
             None => Ok(()),
@@ -84,22 +88,8 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
     }
 
     fn refine(&mut self) {
-        // The mirror always advances, so the loop's `while bits < want` terminates even after a device error.
+        // Only the mirror moves; the layer refines the device to the mirror and the bucket policy in one pass.
         self.hash.refine();
-        if self.error.is_some() {
-            return;
-        }
-        let want = self.hash.bits();
-        let r = match self.sum.as_mut() {
-            Some(sum) => sum.refine_to(want),
-            None => Ok(()),
-        };
-        if r.is_ok() {
-            if let (Some(sum), Some(scratch)) = (self.sum.as_ref(), self.scratch.as_mut()) {
-                scratch.extent = sum.len();
-            }
-        }
-        self.record(r);
     }
 
     fn detach(&mut self) -> Self {
@@ -144,8 +134,7 @@ where
         let (Some(sum), Some(scratch)) = (self.sum.as_mut(), self.scratch.as_mut()) else {
             panic!("DevicePartition: apply_layer on a detached placeholder");
         };
-        let r = apply_layer_device(sum, prep, keep, scratch);
-        debug_assert!(sum.hash().bits() >= self.hash.bits());
+        let r = apply_layer_device(sum, prep, keep, scratch, self.hash.bits());
         self.hash = sum.hash().clone();
         self.record(r);
         LayerExchangeCounts::none(size)

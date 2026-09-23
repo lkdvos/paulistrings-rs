@@ -440,6 +440,28 @@ Everything those methods do is spec-rewriting outside any hot loop — no core c
 The design decisions a GPU backend needs are already in place: `PauliString` is `Pod` with a defined layout; bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
 The extension to distributed memory is no longer forward-looking: §Partitioning is that exchange, and MPI is the same exchange over ranks.
 
+**The device sum.**
+`engine::gpu::GpuSum` holds the flat SoA columns `x`, `z`, `coeff` and a CSR `start`/`lens` per bucket under the same `Gf2Hash` as the host, plus a 64-bit GF(2)-linear fingerprint `g(v) = G·v` per term with `G` drawn from a salted seed, so `g(v ⊕ d) = g(v) ⊕ g(d)` is one XOR per delta.
+Within a bucket the device keeps unique keys in no particular order; `to_host` re-sorts each bucket to the host's lexicographic order.
+
+**The fused layer.**
+One block per output position `p`, the coset-contiguous renumbering `Gf2Span::perm_index` of a bucket `β`.
+For every entry `e` of the prepared table and every row `r` of source bucket `β ⊕ δ_e` that the entry emits (`amp_e[s] ≠ 0` on the table entry, never on the product), the block builds a record `(g_lo32, tag)` in shared memory with `tag = e:4 | r:12`.
+A 16-bit index array is radix-sorted by `g_lo32`; adjacent equal-`g_lo32` records with different keys trigger eight more passes over `g_hi32`, and a pair still colliding a full lex-key sort, so equal keys always end adjacent.
+A segmented sum over each equal-key run (a warp-shuffle block scan on dense tables, a head-serial walk on sparse ones) gives the coefficient; a row survives if the sum is not exactly zero and `keep_term` accepts it, and its key and coefficient are recomputed from the input at write time.
+`CAP = 8192` records per block and the 12-bit offset caps a source bucket at 4096 rows; both are checked from the count table before the launch, and a violation refines the bucket count by one bit and recounts, up to `max_bits`.
+A device with less opt-in shared memory loads fewer block variants and runs under a lower cap.
+Rows land in a loose arena sized by the exact pre-dedup counts, batched over contiguous position ranges so the arena stays under `arena_bytes`, then compact into the output columns at running offsets; input and output columns ping-pong between layers.
+The block width is a per-`W` constant (`THREADS`): 1024 threads at `W ≤ 2`, 512 at `W = 4`, 256 above, register-bound.
+The kernels are named K1 count table `cnt[β][e]`, K2 segment sizes and scan, K3 the fused layer, K4 compaction, K5 the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`), K6 refine, K7 the octave histogram of `ApproxTopN`, and K11 the device invariant check.
+
+**Bucket policy on device.**
+The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ 4096 × 2^b`, where `fanout` is the number of table entries with any nonzero amplitude, never below the current count, and capped at `B_MAX_BITS`.
+
+**Errors.**
+Every device operation returns `GpuError`; the layer loop's seam is infallible, so `DevicePartition` records the first error, skips every later layer, and the driver returns it after the loop with the sum holding the last completed layer's output.
+`DevicePartition::refine` advances only a host mirror of the hash; the layer refines the device to the mirror and the bucket policy in one pass, and the mirror is re-synced to the device whenever the driver reads the error.
+
 ## Performance-Model
 
 Gather and merge dominate a layer; the sort only matters for dense two-qubit unitaries.

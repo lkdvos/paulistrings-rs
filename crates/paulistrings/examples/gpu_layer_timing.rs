@@ -67,6 +67,7 @@ fn main() {
         dev.set_layer_options(GpuLayerOptions {
             bucket_policy: policy,
             arena_bytes: DEFAULT_ARENA_BYTES,
+            ..GpuLayerOptions::default()
         });
         dev.propagate(&circuit, &KeepAll, Direction::Forward)
             .expect("growth layer");

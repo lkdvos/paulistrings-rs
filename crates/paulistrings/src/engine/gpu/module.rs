@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use cudarc::driver::sys::CUfunction_attribute;
+use cudarc::driver::sys::{CUdevice_attribute, CUfunction_attribute};
 use cudarc::driver::CudaFunction;
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
@@ -39,8 +39,12 @@ const KERNEL_SOURCES: &[&str] = &[
     RESCALE,
 ];
 
-/// Records per fused-layer block; must match `CAP` in `kernels/prelude.cuh`.
+/// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
+/// A device with a smaller opt-in limit loads fewer variants and [`KernelSet::layer_cap`] is lower.
 pub(crate) const LAYER_CAP: usize = 8192;
+
+/// Test hook: an extra option `-DTEST_SHARED_LIMIT=<bytes>` caps the opt-in shared memory the loader assumes, which is inert to NVRTC.
+const TEST_SHARED_LIMIT: &str = "-DTEST_SHARED_LIMIT=";
 
 /// Source-bucket rows the 12-bit tag offset can address; must match `MAX_BUCKET_LEN` in `kernels/prelude.cuh`.
 pub(crate) const MAX_BUCKET_LEN: usize = 1 << 12;
@@ -87,6 +91,14 @@ pub(crate) struct KernelSet {
     pub(crate) rescale: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
+    threads: usize,
+}
+
+impl KernelSet {
+    /// Records per fused block the largest loaded variant holds; `LAYER_CAP` unless the device's opt-in shared memory is smaller.
+    pub(crate) fn layer_cap(&self) -> usize {
+        self.layer.last().map_or(0, |v| v.items * self.threads)
+    }
 }
 
 /// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook). Needs only NVRTC, no device.
@@ -159,9 +171,20 @@ pub(crate) fn kernel_set_with_options(
     let module = ctx.load_module(ptx).map_err(GpuError::from)?;
     let f = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;
+    let mut limit = ctx
+        .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
+        .map_err(GpuError::from)?
+        .max(0) as usize;
+    if let Some(cap) = extra_options
+        .iter()
+        .find_map(|o| o.strip_prefix(TEST_SHARED_LIMIT))
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        limit = limit.min(cap);
+    }
     let mut layer = Vec::new();
     let mut items = 1usize;
-    while items * threads <= LAYER_CAP {
+    while items * threads <= LAYER_CAP && layer_shared_bytes(items * threads, w) as usize <= limit {
         let smem = layer_shared_bytes(items * threads, w) as i32;
         let serial = f(&format!("k_layer_serial_{items}"))?;
         let segscan = f(&format!("k_layer_segscan_{items}"))?;
@@ -180,6 +203,11 @@ pub(crate) fn kernel_set_with_options(
         });
         items *= 2;
     }
+    if layer.is_empty() {
+        return Err(GpuError::Unsupported(
+            "device opt-in shared memory too small for the fused layer",
+        ));
+    }
     let set = Arc::new(KernelSet {
         probe: f("k_probe")?,
         bucket_of: f("k_bucket_of")?,
@@ -196,6 +224,7 @@ pub(crate) fn kernel_set_with_options(
         compact: f("k_compact")?,
         rescale: f("k_rescale")?,
         layer,
+        threads,
     });
     cache()
         .lock()
@@ -235,15 +264,16 @@ mod tests {
         }
     }
 
-    /// Register and local-memory footprint of every fused-layer variant; `--nocapture` prints it.
+    /// Every fused-layer variant honours its `__launch_bounds__` register budget and spills at most a few words; `--nocapture` prints the footprint.
     #[test]
-    fn layer_variants_report_their_register_footprint() {
+    fn layer_variants_fit_their_register_budget() {
         crate::require_cuda!();
         use cudarc::driver::sys::CUfunction_attribute::{
             CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, CU_FUNC_ATTRIBUTE_NUM_REGS,
         };
-        for w in [1usize, 2, 4] {
+        for w in [1usize, 2, 4, 8, 16] {
             let set = kernel_set(0, w).expect("compile+load");
+            let budget = 65_536 / layer_threads(w) as i32;
             for v in &set.layer {
                 for (name, f) in [("serial", &v.serial), ("segscan", &v.segscan)] {
                     let regs = f.get_attribute(CU_FUNC_ATTRIBUTE_NUM_REGS).unwrap();
@@ -252,9 +282,35 @@ mod tests {
                         "W={w} items={} {name}: {regs} regs, {local} B local",
                         v.items
                     );
+                    assert!(
+                        regs <= budget,
+                        "W={w} items={} {name}: {regs} regs",
+                        v.items
+                    );
+                    assert!(
+                        local < 1024,
+                        "W={w} items={} {name}: {local} B local",
+                        v.items
+                    );
                 }
             }
         }
+    }
+
+    /// A device with less opt-in shared memory loads fewer variants, and the loader never fails on it.
+    #[test]
+    fn a_small_shared_memory_limit_loads_fewer_variants() {
+        crate::require_cuda!();
+        let set = kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=40000".to_string()])
+            .expect("load");
+        assert_eq!(set.layer.len(), 2);
+        assert_eq!(set.layer_cap(), 2048);
+        assert!(matches!(
+            kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=1000".to_string()]),
+            Err(GpuError::Unsupported(_))
+        ));
+        let full = kernel_set(0, 2).expect("load");
+        assert_eq!(full.layer_cap(), LAYER_CAP);
     }
 
     #[test]

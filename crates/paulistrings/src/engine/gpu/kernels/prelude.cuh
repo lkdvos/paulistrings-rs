@@ -105,8 +105,11 @@ __device__ __forceinline__ u32 row_parity(const Key& k, const u64* rows, u32 r) 
     return (u32)(__popcll(acc) & 1);
 }
 
+// FP_ZERO_LO is the test hook that clears the low word instead, so every block takes the g_hi32 fallback and resolves there.
 __device__ __forceinline__ u64 fp_mask() {
-#if FP_BITS >= 64
+#if defined(FP_ZERO_LO)
+    return ~0xFFFFFFFFull;
+#elif FP_BITS >= 64
     return ~0ull;
 #else
     return (1ull << FP_BITS) - 1ull;

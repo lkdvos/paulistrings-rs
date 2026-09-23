@@ -8,6 +8,7 @@ use super::partition::DevicePartition;
 use super::sum::GpuSum;
 use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
+use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::driver::{run_layers, PartitionCtx, PartitionWork};
 use crate::engine::partitioned::trace::{assemble, PartitionTrace};
 use crate::engine::partitioned::transport::InProcessTransport;
@@ -37,7 +38,7 @@ impl<const W: usize> GpuPauliSum<W> {
     }
 
     /// As [`Self::from_host`] with extra NVRTC options, the `-DFP_BITS=<b>` collision hook.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn from_host_with_options(
         sum: &PauliSum<W>,
         ordinal: u32,
@@ -74,7 +75,7 @@ impl<const W: usize> GpuPauliSum<W> {
     ///
     /// # Errors
     ///
-    /// [`GpuError::Unsupported`] before any layer if `policy` has no device form; any device error from a layer, after which the sum holds the last completed layer's output.
+    /// [`GpuError::Unsupported`] before any layer if `policy` has no device form or a channel's support is wider than `MAX_LOCAL_SUPPORT`; any device error from a layer, after which the sum holds the last completed layer's output and a later call resumes from it.
     pub fn propagate_with_options<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -93,6 +94,16 @@ impl<const W: usize> GpuPauliSum<W> {
         }
         self.part.keep = keep;
         self.part.take_error()?;
+        let adjoint = matches!(direction, Direction::Heisenberg);
+        if circuit
+            .channels
+            .iter()
+            .any(|ch| ch.prepare(self.part.hash(), adjoint).is_none())
+        {
+            return Err(GpuError::Unsupported(
+                "channel with support wider than MAX_LOCAL_SUPPORT",
+            ));
+        }
         let n = circuit.channels.len();
         let terms_in = self.len();
         let started = Instant::now();

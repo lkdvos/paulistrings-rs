@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-0f1f86cc.js";
+            window.path_to_searchindex_js = "../../searchindex-34e3f3bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-6d08c121.js"></script>
@@ -367,10 +367,7 @@ At <code>1e-10</code>, for all five channels mixed with <code>h</code>/<code>s</
 </div>
 <p>29 tests, ~1 s, 97 MiB peak RSS, numpy-only.</p>
 <h2 id="caveats"><a class="header" href="#caveats">Caveats</a></h2>
-<p>Wall times are indicative, not campaign-grade: single-threaded on a shared
-workstation whose stated single-thread noise is ±5–8%, run with <code>warmup=False</code>;
-term counts, expectation values, and convergence verdicts are the load-independent
-numbers to quote. A truncated Pauli sum has <a href="../../manual/propagation/truncation.html#no-variational-bound">no variational bound</a>, since discarded
+<p>A truncated Pauli sum has <a href="../../manual/propagation/truncation.html#no-variational-bound">no variational bound</a>, since discarded
 terms carry signs and the error need not shrink monotonically with the cutoff;
 <code>converged = false</code> means no usable uncertainty estimate, not a slightly weaker one.
 The noise model is a model, not a device: a real Eagle device has different error

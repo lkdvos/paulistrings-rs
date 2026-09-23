@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0f1f86cc.js";
+            window.path_to_searchindex_js = "searchindex-34e3f3bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6d08c121.js"></script>
@@ -269,44 +269,7 @@ t=0.30  &lt;X&gt;=+0.472221  terms=23067
 t=0.40  &lt;X&gt;=+0.271814  terms=57493
 t=0.50  &lt;X&gt;=+0.183984  terms=98698
 </code></pre>
-<p>The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver <a href="#scope">Scope</a> below names, measured here rather than asserted.
-This run is single-threaded and untruncated below <code>1e-6</code>, so it is not the headline figure’s numbers; it is the same loop at a size this page can execute rather than only show.</p>
-<h2 id="scope"><a class="header" href="#scope">Scope</a></h2>
-<ul>
-<li><strong>Operator-basis Pauli propagation at 10⁶–10⁸ terms</strong>, in either picture.</li>
-<li><strong>A GF(2)-bucketed, write-disjoint parallel engine.</strong> Terms are partitioned by
-a GF(2)-linear hash <code>h(v) = H·v</code>, which makes a channel’s output buckets
-statically predictable and deduplication bucket-local — so the unit of
-parallel work is a coset that no other worker writes to. No atomics, no locks,
-no global sort in the propagation loop.</li>
-<li><strong>Open extension points for research.</strong> A custom gate, noise model or
-truncation policy plugs in without touching the engine; implementing one is
-a Rust-side hand-off — see the rustdoc linked below.</li>
-<li><strong>Handles 64–1024 qubits via compile-time width tiers</strong>, picked
-automatically from the qubit count, with dispatch done once outside the hot
-loop.</li>
-<li><strong>A GPU-ready, C-compatible plain-data layout</strong> with fixed-fanout output
-buffers: a future GPU backend is an added kernel, not a rewrite.</li>
-</ul>
-<h2 id="non-goals"><a class="header" href="#non-goals">Non-goals</a></h2>
-<p>State-vector, tensor-network, stabilizer and matrix-product-state simulation
-are <strong>explicit non-goals</strong>. This engine has one storage type — a bucketed sum
-of parallel x/z/coefficient columns — and one loop.
-<a href="examples/comparisons.html">Against other tools</a> says which method fits which
-problem, including the two places this engine is measurably <em>slower</em> than the
-alternative.</p>
-<p>Two hard edges worth knowing before you start:</p>
-<ul>
-<li>A channel with support on more than two qubits (other than a Pauli rotation,
-which handles any generator weight) makes <code>propagate</code> <strong>panic</strong>. There is no
-fallback path.</li>
-<li>A truncated Pauli sum has <strong>no variational bound</strong>. Discarded terms carry
-signs, so a partial sum can sit on either side of the truth and the error
-need not be monotone in the cutoff. This is measured, not hypothetical —
-<a href="examples/benchmarks/b-theta-sweep.html#non-monotone-truncation-error">Benchmark B</a>
-and <a href="examples/benchmarks/c-deep-trotter.html">Benchmark C</a> both show it
-happening.</li>
-</ul>
+<p>The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count.</p>
 <h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
 <div class="table-wrapper">
 <table>
@@ -322,30 +285,7 @@ happening.</li>
 </tbody>
 </table>
 </div>
-<h2 id="numbers-on-this-site"><a class="header" href="#numbers-on-this-site">Numbers on this site</a></h2>
-<p>Every number here is copied from a <strong>committed</strong> results file or README in the
-repository, and every page names the file it came from. No measurement was
-taken to build this site. Three consequences:</p>
-<ul>
-<li><strong>Wall times are indicative, not campaign-grade.</strong> They were taken on a
-shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, <code>ccqlin038</code>) whose stated
-single-thread run-to-run noise is ±5–8%, and ±10–26% at 8–32 threads. Term
-counts, expectation values, parity outcomes and convergence verdicts are
-load-independent; those are the numbers to quote. Anything under ~10% needs
-the repo’s A/B protocol (<code>scripts/ab-compare.sh</code>), not these tables.</li>
-<li><strong>“Not claimable” is a result.</strong> Several pages report a configuration whose
-convergence sweep never plateaued, and therefore quote no value. That verdict
-comes from a criterion fixed in code before the run, and it is not bent to fit
-an answer.</li>
-<li><strong>Reproduction is one command per page.</strong> Each showcase and benchmark page
-ends with the exact invocation that regenerates its figures and JSON.</li>
-</ul>
-<h2 id="repository"><a class="header" href="#repository">Repository</a></h2>
-<p>Source, issues and the full research record:
-<a href="https://github.com/lkdvos/paulistrings-rs">github.com/lkdvos/paulistrings-rs</a>.
-The design source of truth is
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a>;
-the site’s <a href="manual/index.html">Manual</a> is its public summary.
+<p>Source, issues and the full research record: <a href="https://github.com/lkdvos/paulistrings-rs">github.com/lkdvos/paulistrings-rs</a>.
 Dual-licensed MIT OR Apache-2.0.</p>
 
                     </main>

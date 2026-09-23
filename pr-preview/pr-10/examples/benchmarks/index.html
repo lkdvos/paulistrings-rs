@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-0f1f86cc.js";
+            window.path_to_searchindex_js = "../../searchindex-34e3f3bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-6d08c121.js"></script>
@@ -254,19 +254,15 @@ RAYON_NUM_THREADS=1 python benchmarks/python/bench_e_su4.py
 </code></pre>
 <p>None of these is in CI. Each has a CI-safe correctness gate at smaller scale
 under <code>benchmarks/python/tests/</code>, so the physics is checked on every commit.</p>
-<p>There is a further benchmark surface this section does not cover: the cross-<em>library</em>
-construction/conjugation comparison against <code>qiskit.SparsePauliOp</code> and
-<code>openfermion.QubitOperator</code> in <code>benchmarks/python/bench_baseline.py</code>.</p>
-<h2 id="caveat-for-every-benchmark-page"><a class="header" href="#caveat-for-every-benchmark-page">Caveat for every benchmark page</a></h2>
-<p><strong>Wall times are indicative of shape, not campaign-grade.</strong> They were taken on a
-shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, <code>ccqlin038</code>) whose stated
-single-thread run-to-run noise is ±5–8% — and concurrent load was heavier than
-that at times: the same configuration in Benchmark B measured 13.8 s and 28.6 s
-in two probes minutes apart. Term counts, expectation values, parity outcomes and
-convergence verdicts are load-independent, and those are the numbers to quote.
-Anything under ~10% needs <code>scripts/ab-compare.sh</code> (two prebuilt binaries
-alternated adjacent in time, paired per-run deltas, acceptance by direction
-consistency across every pair), not these tables.</p>
+<p>The cross-<em>library</em> construction/conjugation comparison against
+<code>qiskit.SparsePauliOp</code> and <code>openfermion.QubitOperator</code> lives in
+<code>benchmarks/python/bench_baseline.py</code>.</p>
+<h2 id="reading-a-wall-time"><a class="header" href="#reading-a-wall-time">Reading a wall time</a></h2>
+<p>Term counts, expectation values, parity outcomes and convergence verdicts are
+load-independent — quote those. A wall-time delta under ~10% needs
+<code>scripts/ab-compare.sh</code> (two prebuilt binaries alternated adjacent in time,
+paired per-run deltas, acceptance by direction consistency across every pair),
+not these tables.</p>
 <p><strong>Sources:</strong>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>
 and the per-benchmark READMEs linked from each page.</p>

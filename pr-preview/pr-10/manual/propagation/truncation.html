@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-0f1f86cc.js";
+            window.path_to_searchindex_js = "../../searchindex-34e3f3bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-6d08c121.js"></script>
@@ -264,8 +264,7 @@ And the granularity rule above applies to noise as well: a broadcast <code>depol
 <h2 id="no-variational-bound"><a class="header" href="#no-variational-bound">No variational bound</a></h2>
 <p>A truncated Pauli sum has no variational bound.
 Discarded terms carry signs, so a partial sum can sit on either side of the truth, and the error need not fall monotonically as the cutoff tightens.</p>
-<p>This is measured, not hypothetical.
-<a href="../../examples/benchmarks/b-theta-sweep.html#non-monotone-truncation-error">Benchmark B</a> records a weight-10 observable at <code>θ_h = π/4</code> whose error against an exact reference is <code>1.10e-3</code> at <code>coeff(1e-2)</code>, <code>2.31e-3</code> at <code>1e-3</code> and <code>2.00e-3</code> at <code>1e-4</code> — the loosest cutoff is the closest.
+<p><a href="../../examples/benchmarks/b-theta-sweep.html#non-monotone-truncation-error">Benchmark B</a> records a weight-10 observable at <code>θ_h = π/4</code> whose error against an exact reference is <code>1.10e-3</code> at <code>coeff(1e-2)</code>, <code>2.31e-3</code> at <code>1e-3</code> and <code>2.00e-3</code> at <code>1e-4</code> — the loosest cutoff is the closest.
 <a href="../../examples/benchmarks/d-xxz-chain.html#convergence-panels">Benchmark D</a> records the same thing on an XXZ chain: <code>3.3e-6</code> at <code>1e-4</code> then <code>9.0e-6</code> at <code>1e-5</code> in the free regime, <code>2.9e-7</code> at <code>1e-7</code> then <code>4.3e-7</code> at <code>1e-8</code> in the interacting one, while the trend across the whole grid still converges.</p>
 <p>Read a convergence sweep as a trend across the grid, never as a point-to-point improvement, and never read agreement between two adjacent cutoffs as an error bound.
 That is why a single number at a single cutoff is not a result, and why the next page exists.

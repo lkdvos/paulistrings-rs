@@ -25,6 +25,16 @@ pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" 
   --config-settings=build-args="--features mpi"
 ```
 
+The `cuda` feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.
+
+```bash
+pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features cuda"
+```
+
+At runtime it needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.8.0` on a Flatiron host, or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` directory on `LD_LIBRARY_PATH` elsewhere.
+Without them `paulistrings.cuda_available()` is `False` and everything else works as in the default build.
+
 Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates `./.venv` and builds the extension into it:
 
 ```bash
@@ -60,4 +70,4 @@ pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 
 With the package installed, the [Manual](manual/index.md) is where to go next; it opens with a four-line run and explains each part in turn.
 [First propagation](examples/first-propagation.md) carries that same run further, into term inspection and a validation sweep.
-Building for MPI is covered separately in [MPI ranks](manual/propagation/mpi.md#building-from-source), since it needs the extra build step above plus a launcher.
+Building for MPI is covered separately in [MPI ranks](manual/propagation/mpi.md#building-from-source), since it needs the extra build step above plus a launcher, and building for a GPU in [CUDA devices](manual/propagation/gpu.md#building-from-source).

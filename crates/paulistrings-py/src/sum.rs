@@ -482,7 +482,7 @@ fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
 }
 
 /// `"forward"` (the default when `None`) or `"heisenberg"`, shared by `propagate` and `propagate_with_stats` so the accepted spellings and error message cannot drift apart.
-fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
+pub(crate) fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     match direction.unwrap_or("forward") {
         "forward" => Ok(Direction::Forward),
         "heisenberg" => Ok(Direction::Heisenberg),
@@ -496,7 +496,7 @@ fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
 /// `"sorted"` (default), `"auto"` or `"direct"`, paired with an optional small-sum threshold and the per-layer bucket-sizing knobs, as a core [`PropagateOptions`].
 /// `None`/`None`/`None`/`None` is `PropagateOptions::default()` exactly, so the kwargs are additive and omitting them changes nothing; parsed once at the boundary, outside the width dispatch.
 /// Shared by `propagate` and `propagate_with_stats`, like `parse_direction`.
-fn parse_engine(
+pub(crate) fn parse_engine(
     engine: Option<&str>,
     small_sum_threshold: Option<usize>,
     target_bucket_len: Option<usize>,
@@ -756,12 +756,15 @@ fn runtime_for(config: &PartitionConfig) -> Result<Arc<PartitionRuntime>, Topolo
 }
 
 /// What can go wrong inside the GIL-released region of a propagate call.
-/// Both variants are turned into Python exceptions after the GIL is reacquired; neither can be raised from inside `allow_threads`.
-enum PropagateFailure {
+/// Every variant is turned into a Python exception after the GIL is reacquired; none can be raised from inside `allow_threads`.
+pub(crate) enum PropagateFailure {
     /// The sum and the circuit monomorphized at different widths — impossible, but surfaced as an error rather than a panic.
     WidthMismatch,
     /// The partitioned placement could not be realized on this machine.
     Topology(TopologyError),
+    /// A device run failed; see [`crate::gpu::gpu_error`] for the exception each variant becomes.
+    #[cfg(feature = "cuda")]
+    Gpu(paulistrings::gpu::GpuError),
 }
 
 impl From<PropagateFailure> for PyErr {
@@ -771,6 +774,8 @@ impl From<PropagateFailure> for PyErr {
                 PyValueError::new_err("internal: PauliSum and Circuit width mismatch")
             }
             PropagateFailure::Topology(err) => topology_error(err),
+            #[cfg(feature = "cuda")]
+            PropagateFailure::Gpu(err) => crate::gpu::gpu_error(err),
         }
     }
 }
@@ -831,6 +836,9 @@ enum RunMode {
     /// duplicate.
     #[cfg(feature = "mpi")]
     Distributed(crate::mpi::MpiRun),
+    /// The whole sum on one CUDA device (`device=`), uploaded and downloaded around the run.
+    #[cfg(feature = "cuda")]
+    Cuda { device: u32 },
 }
 
 /// The per-layer records a run produced, tagged by which engine produced them.
@@ -842,6 +850,9 @@ enum RunTrace {
     /// A distributed run's records — **this rank's only** — plus `(rank, size)`.
     #[cfg(feature = "mpi")]
     Distributed(PartitionTrace, u32, u32),
+    /// A device run's records at one partition, plus the device ordinal.
+    #[cfg(feature = "cuda")]
+    Device(PartitionTrace, u32),
 }
 
 impl RunMode {
@@ -882,6 +893,14 @@ impl RunMode {
             RunMode::Distributed(run) => run
                 .propagate(circuit, sum, &policy, direction, options)
                 .map_err(PropagateFailure::Topology),
+            #[cfg(feature = "cuda")]
+            RunMode::Cuda { device } => {
+                let mut dev = paulistrings::gpu::GpuPauliSum::from_host(sum, device)
+                    .map_err(PropagateFailure::Gpu)?;
+                dev.propagate_with_options(circuit, &policy, direction, options)
+                    .map_err(PropagateFailure::Gpu)?;
+                dev.to_host().map_err(PropagateFailure::Gpu)
+            }
         }
     }
 
@@ -940,6 +959,17 @@ impl RunMode {
                     .map_err(PropagateFailure::Topology)?;
                 Ok((out, RunTrace::Distributed(trace, rank, size)))
             }
+            #[cfg(feature = "cuda")]
+            RunMode::Cuda { device } => {
+                let mut dev = paulistrings::gpu::GpuPauliSum::from_host(sum, device)
+                    .map_err(PropagateFailure::Gpu)?;
+                dev.enable_trace();
+                dev.propagate_with_options(circuit, &policy, direction, options)
+                    .map_err(PropagateFailure::Gpu)?;
+                let trace = dev.take_trace().unwrap_or_default();
+                let out = dev.to_host().map_err(PropagateFailure::Gpu)?;
+                Ok((out, RunTrace::Device(trace, device)))
+            }
         }
     }
 }
@@ -955,10 +985,21 @@ fn parse_run_mode(
     partition_row_blocks: Option<&Bound<'_, PyAny>>,
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
+    device: Option<&Bound<'_, PyAny>>,
     spec: &PolicySpec,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     let distributed = comm_requested(comm);
+    if let Some(device) = device.filter(|obj| !obj.is_none()) {
+        return parse_device_mode(
+            device,
+            partitions.is_some_and(|obj| !obj.is_none()),
+            distributed,
+            gather,
+            partition_row_blocks.is_some_and(|obj| !obj.is_none()),
+            spec,
+        );
+    }
     // Before `parse_partitions`, so the conflict is reported as a conflict
     // whatever the placement would have resolved to on this machine.
     if distributed && partitions.is_some_and(|obj| !obj.is_none()) {
@@ -1036,14 +1077,69 @@ fn parse_run_mode(
     })
 }
 
-/// Both propagation entry points require the sum and the circuit to agree on
-/// the qubit count (they would otherwise be monomorphized at different widths,
-/// which the width dispatch cannot pair up).
-fn check_num_qubits(sum: &PauliSumImpl, circuit: &crate::circuit::Circuit) -> PyResult<()> {
-    if sum.num_qubits() != circuit.inner.num_qubits() {
+/// `parse_run_mode`'s `device=` branch: every conflict is a `ValueError` before the value itself is read, then exact `topn`, then whether this build and machine can honour the request.
+fn parse_device_mode(
+    device: &Bound<'_, PyAny>,
+    partitioned: bool,
+    distributed: bool,
+    gather: bool,
+    row_blocks: bool,
+    spec: &PolicySpec,
+) -> PyResult<RunMode> {
+    if partitioned {
+        return Err(PyValueError::new_err(
+            "device= and partitions= are alternatives: a device run holds the whole sum on one \
+             CUDA device",
+        ));
+    }
+    if distributed {
+        return Err(PyValueError::new_err(
+            "device= and comm= are alternatives: one CUDA device per MPI rank is not available \
+             yet",
+        ));
+    }
+    if !gather {
+        return Err(PyValueError::new_err(
+            "result=\"local\" is a comm= option; a device= run returns the whole sum",
+        ));
+    }
+    if row_blocks {
+        return Err(PyValueError::new_err(
+            "partition_row_blocks= needs partitions= or comm= (it has no effect on a device= run)",
+        ));
+    }
+    let request = crate::gpu::parse_device(device)?;
+    let shown = device
+        .repr()
+        .map_or_else(|_| "…".to_string(), |repr| repr.to_string());
+    let shown = format!("device={shown}");
+    if spec_has_exact_topn(spec) {
+        return Err(PyNotImplementedError::new_err(format!(
+            "{shown}: {}",
+            crate::gpu::TOPN_DEVICE_MSG
+        )));
+    }
+    #[cfg(feature = "cuda")]
+    {
+        let device = crate::gpu::resolve_device(&request, &shown)?;
+        Ok(RunMode::Cuda { device })
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        let _ = request;
+        Err(crate::gpu::cuda_unavailable_error())
+    }
+}
+
+/// Every propagation entry point requires the sum and the circuit to agree on the qubit count (they would otherwise be monomorphized at different widths, which the width dispatch cannot pair up); `what` names the sum's class in the message.
+pub(crate) fn check_num_qubits(
+    what: &str,
+    num_qubits: usize,
+    circuit: &crate::circuit::Circuit,
+) -> PyResult<()> {
+    if num_qubits != circuit.inner.num_qubits() {
         return Err(PyValueError::new_err(format!(
-            "PauliSum.num_qubits ({}) != Circuit.num_qubits ({})",
-            sum.num_qubits(),
+            "{what}.num_qubits ({num_qubits}) != Circuit.num_qubits ({})",
             circuit.inner.num_qubits()
         )));
     }
@@ -1108,6 +1204,7 @@ impl PropagationStats {
     }
 
     /// The partitioned run's own record, or `None` for an unpartitioned call (including `partitions="auto"` on a single-NUMA-node box).
+    /// A `device=` run fills it as a one-partition run, with `devices` naming the device.
     /// Its per-layer lists are indexed the same way as `terms_in` / `terms_out`.
     #[getter]
     fn partition(&self) -> Option<PartitionStats> {
@@ -1186,6 +1283,7 @@ impl PropagationStats {
         partitions: usize,
         final_terms: usize,
         ranks: Option<(u32, u32)>,
+        devices: Option<Vec<u32>>,
     ) -> Self {
         let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
         let gate_trace = GateTrace {
@@ -1201,7 +1299,9 @@ impl PropagationStats {
                 .collect(),
         };
         Self {
-            partition: Some(PartitionStats::from_trace(trace, partitions, ranks)),
+            partition: Some(PartitionStats::from_trace(
+                trace, partitions, ranks, devices,
+            )),
             ..Self::from_trace(gate_trace, final_terms)
         }
     }
@@ -1211,13 +1311,28 @@ impl PropagationStats {
         match trace {
             RunTrace::Term(trace) => Self::from_trace(trace, final_terms),
             RunTrace::Partition(trace, partitions) => {
-                Self::from_partition_trace(&trace, partitions, final_terms, None)
+                Self::from_partition_trace(&trace, partitions, final_terms, None, None)
             }
             #[cfg(feature = "mpi")]
-            RunTrace::Distributed(trace, rank, size) => {
-                Self::from_partition_trace(&trace, size as usize, final_terms, Some((rank, size)))
-            }
+            RunTrace::Distributed(trace, rank, size) => Self::from_partition_trace(
+                &trace,
+                size as usize,
+                final_terms,
+                Some((rank, size)),
+                None,
+            ),
+            #[cfg(feature = "cuda")]
+            RunTrace::Device(trace, device) => Self::from_device_trace(&trace, device, final_terms),
         }
+    }
+
+    /// A one-device run's record: one partition, `partition.devices == [device]`.
+    pub(crate) fn from_device_trace(
+        trace: &PartitionTrace,
+        device: u32,
+        final_terms: usize,
+    ) -> Self {
+        Self::from_partition_trace(trace, 1, final_terms, None, Some(vec![device]))
     }
 }
 
@@ -1230,6 +1345,7 @@ pub struct PartitionStats {
     partitions: usize,
     rank: Option<u32>,
     size: Option<u32>,
+    devices: Option<Vec<u32>>,
     local: Vec<bool>,
     rows_exported: Vec<u64>,
     bytes_exported: Vec<u64>,
@@ -1258,6 +1374,12 @@ impl PartitionStats {
     #[getter]
     fn size(&self) -> Option<u32> {
         self.size
+    }
+
+    /// The CUDA device ordinal of each partition for a `device=` run, or `None` for a host run.
+    #[getter]
+    fn devices(&self) -> Option<Vec<u32>> {
+        self.devices.clone()
     }
 
     /// Whether each layer was purely local: moved no row across a partition boundary. `local[k]` is exactly `rows_exported[k] == 0`.
@@ -1303,7 +1425,7 @@ impl PartitionStats {
         self.nanos.clone()
     }
 
-    /// All nine fields, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
+    /// Every field but `nanos`, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
     fn __repr__(&self) -> String {
         // Spelled with Python's `True`/`False`/`None` rather than Rust's `Debug`, so the line pastes back into a REPL.
         let local = self
@@ -1313,12 +1435,18 @@ impl PartitionStats {
             .collect::<Vec<_>>()
             .join(", ");
         let show = |value: Option<u32>| value.map_or_else(|| "None".to_string(), |v| v.to_string());
+        let devices = self
+            .devices
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |d| format!("{d:?}"));
         format!(
-            "PartitionStats(partitions={}, rank={}, size={}, local=[{}], rows_exported={:?}, \
-             bytes_exported={:?}, terms_in={:?}, terms_out={:?}, imbalance={:?})",
+            "PartitionStats(partitions={}, rank={}, size={}, devices={}, local=[{}], \
+             rows_exported={:?}, bytes_exported={:?}, terms_in={:?}, terms_out={:?}, \
+             imbalance={:?})",
             self.partitions,
             show(self.rank),
             show(self.size),
+            devices,
             local,
             self.rows_exported,
             self.bytes_exported,
@@ -1331,13 +1459,19 @@ impl PartitionStats {
 
 impl PartitionStats {
     /// Transpose a core [`PartitionTrace`] into the Python-facing record.
-    /// `partitions` comes from the runtime (or group size), not the trace, so a zero-layer circuit still reports its placement. `ranks` is `Some((rank, size))` for a distributed run, `None` for in-process — the only distinguishing input.
-    fn from_trace(trace: &PartitionTrace, partitions: usize, ranks: Option<(u32, u32)>) -> Self {
+    /// `partitions` comes from the runtime (or group size), not the trace, so a zero-layer circuit still reports its placement. `ranks` is `Some((rank, size))` for a distributed run and `devices` `Some` for a device run, both `None` for an in-process host run.
+    fn from_trace(
+        trace: &PartitionTrace,
+        partitions: usize,
+        ranks: Option<(u32, u32)>,
+        devices: Option<Vec<u32>>,
+    ) -> Self {
         let total = |matrix: &[Vec<u64>]| matrix.iter().flat_map(|row| row.iter()).sum::<u64>();
         Self {
             partitions,
             rank: ranks.map(|(rank, _)| rank),
             size: ranks.map(|(_, size)| size),
+            devices,
             local: trace.layers.iter().map(|l| l.remote_deltas == 0).collect(),
             rows_exported: trace.layers.iter().map(|l| total(&l.rows_sent)).collect(),
             bytes_exported: trace.layers.iter().map(|l| total(&l.bytes_sent)).collect(),
@@ -1725,10 +1859,12 @@ impl PauliSum {
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
     /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
     ///
+    /// `device` runs the whole propagation on one CUDA device: an `int` ordinal, or `"auto"` for the only visible device; the sum is uploaded before the first layer and downloaded after the last. It is an alternative to `partitions` and `comm`, ignores `engine`, and raises `NotImplementedError` on `truncation.topn` (use `approx_topn`) and on a list of several devices or an `"auto"` that sees more than one. Raises `RuntimeError` without the `cuda` feature. `PauliSum.to_device` keeps the sum resident across calls instead.
+    ///
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -1746,11 +1882,12 @@ impl PauliSum {
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
+        device: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
         let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
-        check_num_qubits(&self.inner, circuit)?;
+        check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
@@ -1766,6 +1903,7 @@ impl PauliSum {
             partition_row_blocks,
             comm,
             gather,
+            device,
             spec,
             self.inner.num_qubits(),
         )?;
@@ -1781,9 +1919,10 @@ impl PauliSum {
         // after the GIL is reacquired.
         let inner = py.allow_threads(move || -> Result<PauliSumImpl, PropagateFailure> {
             Ok(for_each_width_propagate!(
+                PauliSumImpl,
                 &self.inner,
                 &circuit.inner,
-                |s, c, W| mode.run::<W>(c, s, spec, dir, options)?,
+                |s, c, W, wrap| wrap(mode.run::<W>(c, s, spec, dir, options)?),
                 else {
                     // Same num_qubits but different widths is impossible
                     // because both width pickers map num_qubits to the
@@ -1800,7 +1939,8 @@ impl PauliSum {
     /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
     /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather"))]
+    /// A device (`device=`) call fills it as a one-partition run, with `PartitionStats.devices` naming the device.
+    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -1818,11 +1958,12 @@ impl PauliSum {
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
+        device: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
         let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
-        check_num_qubits(&self.inner, circuit)?;
+        check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec: &PolicySpec = match policy {
             Some(p) => &p.spec,
@@ -1836,6 +1977,7 @@ impl PauliSum {
             partition_row_blocks,
             comm,
             gather,
+            device,
             spec,
             self.inner.num_qubits(),
         )?;
@@ -1850,12 +1992,13 @@ impl PauliSum {
         let slot = &mut recorded;
         let inner = py.allow_threads(move || -> Result<PauliSumImpl, PropagateFailure> {
             Ok(for_each_width_propagate!(
+                PauliSumImpl,
                 &self.inner,
                 &circuit.inner,
-                |s, c, W| {
+                |s, c, W, wrap| {
                     let (out, trace) = mode.run_traced::<W>(c, s, spec, dir, options)?;
                     *slot = Some(trace);
-                    out
+                    wrap(out)
                 },
                 else {
                     // Unreachable for the same reason as in `propagate`.
@@ -1868,6 +2011,15 @@ impl PauliSum {
             inner.len(),
         );
         Ok((Self { inner }, stats))
+    }
+
+    /// Upload `self` to CUDA device `device`, returning a resident `GpuPauliSum`; `self` is left untouched.
+    ///
+    /// The resident sum is stepped in place by `GpuPauliSum.propagate` and read back by `GpuPauliSum.to_host`, so a loop of many short propagations pays one upload and one download rather than one of each per call.
+    /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
+    #[pyo3(signature = (device=0))]
+    fn to_device(&self, py: Python<'_>, device: i64) -> PyResult<crate::gpu::GpuPauliSum> {
+        crate::gpu::to_device(py, &self.inner, device)
     }
 }
 

@@ -15,6 +15,7 @@ mod macros;
 mod channel_spec;
 mod circuit;
 mod gates;
+mod gpu;
 #[cfg(feature = "mpi")]
 mod mpi;
 mod noise;
@@ -119,6 +120,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sum::PauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;
     m.add_class::<sum::PartitionStats>()?;
+    m.add_class::<gpu::GpuPauliSum>()?;
     m.add_class::<circuit::Circuit>()?;
     m.add_class::<channel_spec::PyChannel>()?;
     m.add_class::<truncation_spec::PyTruncation>()?;

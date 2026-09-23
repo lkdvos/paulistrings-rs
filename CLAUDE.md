@@ -90,6 +90,16 @@ python3 -m venv --system-site-packages .venv-mpi   # gitignored
 
 Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:rustc-link-arg` is not inherited from a dependency, so without the py crate's copy the cdylib cannot find `libmpi.so.40` at import time.
 
+The `cuda` feature needs no build-script support and no toolkit to compile: `cudarc` loads `libcuda` and `libnvrtc` at runtime and NVRTC compiles the kernels on first use, so only running needs the module (or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` on `LD_LIBRARY_PATH`):
+
+```bash
+module load cuda/12.8.0                                          # libnvrtc at runtime
+cargo test -p paulistrings --features cuda                       # unit nets + tests/propagate_gpu.rs; pass without a device
+cargo clippy -p paulistrings-py --features cuda -- -D warnings
+maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+pytest python/paulistrings/tests/test_cuda.py                    # skipped unless cuda_available()
+```
+
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 **Submitting is the user's step, never an agent's** — adjust the template and hand over the `sbatch` line.
 
@@ -121,6 +131,7 @@ Unit tests live in `#[cfg(test)] mod tests` beside the code, cross-module behavi
 - The differential oracle for engine work is `test_support::naive_apply_layer`, a direct `Channel::apply` loop independent of the bucketed path.
 - Shared fixtures live in `crates/paulistrings/src/test_support.rs` behind the `test-utils` feature — add helpers there rather than copy-pasting between test files.
 - The partitioned engine's differential nets are `tests/propagate_partitioned.rs` and the per-layer matrices in `engine/partitioned/layer.rs`; every test configuration uses `Placement::Unpinned` so the suite runs on a one-node box.
+- The CUDA backend's differential net is `tests/propagate_gpu.rs` (`required-features = ["cuda", "test-utils"]`) against `propagate`, every device test opening with `test_support::require_cuda!()` so it returns early without a device; the bindings' net is `python/paulistrings/tests/test_cuda.py`, whose device tests skip unless `cuda_available()`.
 - The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank).
 - No `#[ignore]`d tests, and benchmarks follow tests rather than the reverse.
 - Commit logical units and check in with the user at feature boundaries.
@@ -132,6 +143,7 @@ The correctness bar is agreement to floating-point tolerance (`test_support::ass
 Tests that pin exact output bits are convenience tripwires for *unintended* perturbation: when one trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit, with a one-line note.
 Never design, constrain, or reject an optimization to keep output bits stable.
 `propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance.
+A device run agrees with the host to tolerance and is bitwise reproducible run-to-run on one device, since no reduction uses a float atomic.
 
 ## Performance discipline
 
@@ -156,6 +168,8 @@ It records what was measured and rejected, including several ideas that look obv
 - `PauliSum::from_strings` is `pub(crate)` + `#[cfg(test)]`, so Rust tests build sums through it or `BuildAccumulator`.
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits makes `propagate` **panic**; there is no fallback path. `PauliRotation` is exempt, overriding `prepare` at any generator weight.
 - Partitioned mode rejects exact `TopN` at compile time, since a distributed `k`-th selection has no collective form yet; `ApproxTopN` is partition-exact and is the partitioned default.
+- The CUDA backend runs a policy only through its `TruncationPolicy::device_policy` tree: every builtin and every Python policy lowers, while a custom `TruncationPolicy` and exact `TopN` return `GpuError::Unsupported` before the first layer.
+- One CUDA device per process for now: the bindings raise `NotImplementedError` on `device=` with several ordinals or an `"auto"` that sees more than one, and `device=` excludes `partitions=` and `comm=`.
 - Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
 - A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
@@ -169,7 +183,8 @@ crates/paulistrings/      pure Rust core, no Python deps
   src/                    pauli_string, phase, pauli_sum, bucket/{hash,sum}, accumulator, circuit,
                           channel/{clifford,rotation,unitary,noise,identity,prepared},
                           truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
-                          engine/partitioned/*, stabilizer, test_support
+                          engine/partitioned/*, engine/gpu/* (CUDA, behind `cuda`),
+                          stabilizer, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

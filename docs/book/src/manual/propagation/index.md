@@ -31,7 +31,7 @@ Three arguments carry the physics and one carries the cost.
 The GIL is released for the duration of the call.
 
 `propagate_with_stats` takes the same arguments and returns `(evolved, stats)`, where `stats` is a `PropagationStats` with per-layer term counts and timings; enabling it does not change the evolved sum — [Stats, memory and logging](settings.md#stats).
-The remaining keyword arguments (`engine`, `partitions`, `comm`, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the [settings](settings.md#engine-selection), [NUMA partitions](partitions.md) and [MPI ranks](mpi.md) pages.
+The remaining keyword arguments (`engine`, `partitions`, `comm`, `device`, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the [settings](settings.md#engine-selection), [NUMA partitions](partitions.md), [MPI ranks](mpi.md) and [CUDA devices](gpu.md) pages.
 The full signature is in the [Library](../../library/propagate.md).
 
 ## The loop {#the-loop}
@@ -76,5 +76,6 @@ A result computed in the wrong picture is a plausible number with no error raise
 - [Inside the engine](engine.md) — the bucketed layout, the GF(2) hash, and write-disjoint cosets.
 - [NUMA partitions](partitions.md) — one pinned pool and one share of the sum per NUMA domain.
 - [MPI ranks](mpi.md) — the same split across processes, for capacity.
+- [CUDA devices](gpu.md) — the whole sum on one GPU, and a resident `GpuPauliSum` for loops of short calls.
 
 [First propagation](../../examples/first-propagation.md) runs this whole chapter once on four qubits; [Benchmark D](../../examples/benchmarks/d-xxz-chain.md) is the cost model measured, with term growth against depth and chain length.

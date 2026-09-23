@@ -1,4 +1,4 @@
-//! Width-dispatch macros for the `{W1, W2, W4, W8, W16}` monomorphization enums (`PauliSumImpl`, `CircuitImpl`). See `sum.rs` / `circuit.rs`.
+//! Width-dispatch macros for the `{W1, W2, W4, W8, W16}` monomorphization enums (`PauliSumImpl`, `CircuitImpl`, `GpuPauliSumImpl`). See `sum.rs` / `circuit.rs`.
 //! Deliberately narrow (single dispatch, same-enum pairs, cross-enum pairs, num_qubits-keyed construction) rather than one maximally general macro, for call-site readability.
 
 /// Dispatch a single width-monomorphized enum value across `Self::{W1..W16}`. Resolves `Self` lexically at the expansion site, so it works inside any `impl` block over `PauliSumImpl`/`CircuitImpl`.
@@ -58,32 +58,52 @@ macro_rules! for_each_width_pair_rewrap {
     };
 }
 
-/// Cross-enum width dispatch for `PauliSum::propagate`: pairs a `PauliSumImpl` with the `CircuitImpl` of the same width, binds the active width to a local `const $w: usize` for `$body` (needed for `SpecPolicy::<W>`), and rewraps the result in the matching `PauliSumImpl` variant.
-/// The `else` arm handles the width-mismatch case, unreachable in practice but surfaced by `propagate` as a `PyResult` error rather than a panic, so the caller supplies the `return Err(...)`.
+/// Cross-enum width dispatch for the propagate entry points: pairs a `$enum` value (`PauliSumImpl`, `GpuPauliSumImpl`) with the `CircuitImpl` of the same width and binds the active width to a local `const $w: usize` for `$body` (needed for `SpecPolicy::<W>`).
+/// `$wrap` is bound to the matching `$enum` variant's constructor, for a body whose result is itself width-carrying; an in-place body ignores it.
+/// The `else` arm handles the width-mismatch case, unreachable in practice but surfaced as an error rather than a panic, so the caller supplies the `return Err(...)`.
 macro_rules! for_each_width_propagate {
-    ($sum:expr, $circuit:expr, |$s:ident, $c:ident, $w:ident| $body:expr, else $mismatch:expr) => {
+    ($enum:ident, $sum:expr, $circuit:expr, |$s:ident, $c:ident, $w:ident, $wrap:ident| $body:expr, else $mismatch:expr) => {
         match ($sum, $circuit) {
-            (PauliSumImpl::W1($s), crate::circuit::CircuitImpl::W1($c)) => {
+            ($enum::W1($s), crate::circuit::CircuitImpl::W1($c)) => {
                 const $w: usize = 1;
-                PauliSumImpl::W1($body)
+                let $wrap = $enum::W1;
+                $body
             }
-            (PauliSumImpl::W2($s), crate::circuit::CircuitImpl::W2($c)) => {
+            ($enum::W2($s), crate::circuit::CircuitImpl::W2($c)) => {
                 const $w: usize = 2;
-                PauliSumImpl::W2($body)
+                let $wrap = $enum::W2;
+                $body
             }
-            (PauliSumImpl::W4($s), crate::circuit::CircuitImpl::W4($c)) => {
+            ($enum::W4($s), crate::circuit::CircuitImpl::W4($c)) => {
                 const $w: usize = 4;
-                PauliSumImpl::W4($body)
+                let $wrap = $enum::W4;
+                $body
             }
-            (PauliSumImpl::W8($s), crate::circuit::CircuitImpl::W8($c)) => {
+            ($enum::W8($s), crate::circuit::CircuitImpl::W8($c)) => {
                 const $w: usize = 8;
-                PauliSumImpl::W8($body)
+                let $wrap = $enum::W8;
+                $body
             }
-            (PauliSumImpl::W16($s), crate::circuit::CircuitImpl::W16($c)) => {
+            ($enum::W16($s), crate::circuit::CircuitImpl::W16($c)) => {
                 const $w: usize = 16;
-                PauliSumImpl::W16($body)
+                let $wrap = $enum::W16;
+                $body
             }
             _ => $mismatch,
+        }
+    };
+}
+
+/// Single dispatch from one width enum into the same variant of another (`PauliSumImpl` <-> `GpuPauliSumImpl`); a `?` in `$body` returns from the enclosing function.
+#[cfg(feature = "cuda")]
+macro_rules! for_each_width_convert {
+    ($from:ident => $to:ident, $value:expr, |$s:ident| $body:expr) => {
+        match $value {
+            $from::W1($s) => $to::W1($body),
+            $from::W2($s) => $to::W2($body),
+            $from::W4($s) => $to::W4($body),
+            $from::W8($s) => $to::W8($body),
+            $from::W16($s) => $to::W16($body),
         }
     };
 }

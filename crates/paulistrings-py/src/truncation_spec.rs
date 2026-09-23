@@ -6,7 +6,8 @@ use num_complex::Complex64;
 use paulistrings::engine::partitioned::Collectives;
 use paulistrings::pauli_sum::PauliSum;
 use paulistrings::truncation::{
-    And, ApproxTopN, CoefficientThreshold, Or, TopN, TruncationPolicy, WeightCutoff,
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, TopN, TruncationPolicy,
+    WeightCutoff,
 };
 use paulistrings::PartitionedTruncation;
 use pyo3::prelude::*;
@@ -28,6 +29,29 @@ pub enum PolicySpec {
     NoOp,
 }
 
+impl PolicySpec {
+    /// The core [`BuiltinTruncation`] tree this spec names, node for node (`NoOp` is `Keep`).
+    pub(crate) fn to_builtin(&self) -> BuiltinTruncation {
+        let pair =
+            |a: &PolicySpec, b: &PolicySpec| (Box::new(a.to_builtin()), Box::new(b.to_builtin()));
+        match self {
+            PolicySpec::Coeff(eps) => BuiltinTruncation::Coeff(*eps),
+            PolicySpec::Weight(k) => BuiltinTruncation::Weight(*k),
+            PolicySpec::TopN(n) => BuiltinTruncation::TopN(*n),
+            PolicySpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(*n),
+            PolicySpec::And(a, b) => {
+                let (a, b) = pair(a, b);
+                BuiltinTruncation::And(a, b)
+            }
+            PolicySpec::Or(a, b) => {
+                let (a, b) = pair(a, b);
+                BuiltinTruncation::Or(a, b)
+            }
+            PolicySpec::NoOp => BuiltinTruncation::Keep,
+        }
+    }
+}
+
 /// Borrow-only adapter implementing `TruncationPolicy<W>` for a `PolicySpec`. The `'a` lifetime keeps the spec live for `propagate`'s duration, avoiding a clone per layer.
 pub struct SpecPolicy<'a, const W: usize>(pub &'a PolicySpec);
 
@@ -45,6 +69,11 @@ impl<'a, const W: usize> TruncationPolicy<W> for SpecPolicy<'a, W> {
     /// Mirrors [`finalize_spec`]'s recursion exactly; both matches are exhaustive so a new `PolicySpec` variant cannot be added to one without the other.
     fn finalizes_layer(&self) -> bool {
         finalizes_spec(self.0)
+    }
+
+    /// Every spec lowers, so a Python policy reaches the CUDA backend instead of the trait's `None` rejecting it.
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(self.0.to_builtin())
     }
 }
 
@@ -479,6 +508,60 @@ mod tests {
             Box::new(PolicySpec::TopN(4)),
         );
         partitioned_finalize(&spec, vec![strided_sum(16, 0, 1)]);
+    }
+
+    /// `to_builtin` is node for node, and the lowered tree agrees with the spec on the two questions the device driver asks of it.
+    #[test]
+    fn to_builtin_is_one_to_one_and_agrees_on_finalize_and_topn() {
+        use BuiltinTruncation as T;
+        let spec = PolicySpec::And(
+            Box::new(PolicySpec::Or(
+                Box::new(PolicySpec::Coeff(0.5)),
+                Box::new(PolicySpec::Weight(2)),
+            )),
+            Box::new(PolicySpec::And(
+                Box::new(PolicySpec::ApproxTopN(7)),
+                Box::new(PolicySpec::NoOp),
+            )),
+        );
+        let want = T::And(
+            Box::new(T::Or(Box::new(T::Coeff(0.5)), Box::new(T::Weight(2)))),
+            Box::new(T::And(Box::new(T::ApproxTopN(7)), Box::new(T::Keep))),
+        );
+        assert_eq!(spec.to_builtin(), want);
+        assert_eq!(PolicySpec::TopN(3).to_builtin(), T::TopN(3));
+        assert_eq!(
+            <SpecPolicy<'_, TEST_W> as TruncationPolicy<TEST_W>>::device_policy(&SpecPolicy(
+                &PolicySpec::NoOp
+            )),
+            Some(T::Keep)
+        );
+
+        let specs = [
+            PolicySpec::NoOp,
+            PolicySpec::Coeff(0.1),
+            PolicySpec::Weight(1),
+            PolicySpec::TopN(4),
+            PolicySpec::ApproxTopN(4),
+            spec,
+            PolicySpec::Or(
+                Box::new(PolicySpec::TopN(4)),
+                Box::new(PolicySpec::ApproxTopN(4)),
+            ),
+        ];
+        for spec in &specs {
+            let tree = spec.to_builtin();
+            assert_eq!(
+                <BuiltinTruncation as TruncationPolicy<TEST_W>>::finalizes_layer(&tree),
+                finalizes_spec(spec),
+                "{spec:?}",
+            );
+            assert_eq!(
+                tree.contains_exact_top_n(),
+                spec_has_exact_topn(spec),
+                "{spec:?}"
+            );
+        }
     }
 
     /// The gate `PauliSum.propagate` consults before entering partitioned

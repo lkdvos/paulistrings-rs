@@ -24,6 +24,8 @@ def test_top_level_names():
     assert hasattr(paulistrings, "numa_nodes")
     assert hasattr(paulistrings, "mpi_available")
     assert hasattr(paulistrings, "cuda_available")
+    assert hasattr(paulistrings, "GpuPauliSum")
+    assert hasattr(PauliSum, "to_device")
 
 
 def test_cuda_available_answers_without_a_device():

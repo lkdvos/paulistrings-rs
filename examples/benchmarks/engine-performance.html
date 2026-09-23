@@ -1,0 +1,445 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Engine performance - paulistrings-rs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Pauli propagation from Python: a Manual, worked Examples, and a Library reference.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../../theme/custom-3b5c21d8.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../../searchindex-34e3f3bf.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc-6d08c121.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">paulistrings-rs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/lkdvos/paulistrings-rs" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/lkdvos/paulistrings-rs/edit/main/docs/book/src/examples/benchmarks/engine-performance.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="engine-performance"><a class="header" href="#engine-performance">Engine performance</a></h1>
+<p>Where the engine’s measured limits are: a roofline analysis of the current engine against the reference host’s measured memory bandwidth, then the partitioned and distributed measurements.
+Every number is copied from a committed source, named inline and in the footer.</p>
+<p><em>Manual: <a href="../../manual/propagation/settings.html">Stats, memory and logging</a>, <a href="../../manual/propagation/partitions.html">NUMA partitions</a>, <a href="../../manual/propagation/mpi.html">MPI ranks</a></em></p>
+<p>The design these numbers measure is <a href="../../manual/propagation/engine.html">Inside the engine</a>; the thread-count advice they support is in <a href="../../manual/propagation/settings.html#threads">Stats, memory and logging</a>.</p>
+<h2 id="layer-time-breakdown"><a class="header" href="#layer-time-breakdown">Layer time breakdown</a></h2>
+<p>Measured on the reference host (2× Xeon Gold 6244, 16c/32t) with the repo’s phase-timing probe, per layer class, as a share of summed worker busy time (gather / sort / merge):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>layer class</th><th>1 thread</th><th>16 threads</th><th>32 threads</th></tr>
+</thead>
+<tbody>
+<tr><td>ZZ rotation (m = 4.50e6)</td><td>54 / 9 / 37</td><td>53 / 10 / 36</td><td>68 / 9 / 22</td></tr>
+<tr><td>general 2q unitary, sparse PTM (m = 3.0e6)</td><td>38 / 33 / 29</td><td>35 / 31 / 33</td><td>39 / 29 / 31</td></tr>
+<tr><td>dense 2q PTM, <code>su4</code> (m = 4.24e7)</td><td>41 / 51 / 8</td><td>35 / 55 / 10</td><td>26 / 65 / 9</td></tr>
+</tbody>
+</table>
+</div>
+<p>Gather + merge dominate the sparse classes; the sort dominates only dense two-qubit PTMs.
+Parallel efficiency (busy time over coset-loop wall × threads) is 0.99 for <code>su4</code> at 16 threads: load balance is a solved problem, and the scaling limits below are memory-system effects, not imbalance.</p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/design/phase-shares.svg" alt="Share of worker busy time in gather, sort and merge per layer class, one thread"><span class="img-wrapper"><img src="../../assets/design/phase-shares.svg" alt="Share of worker busy time in gather, sort and merge per layer class, one thread"></span></label></p>
+<p>Per-term cost is flat in the sum size over the measured range: 30.5–30.6 ns/term for the ZZ rotation across m = 1.50e6 → 4.50e6, 138.5–141.3 for the sparse 2q unitary, 322–327 for <code>su4</code> (single thread).</p>
+<h2 id="memory-wall"><a class="header" href="#memory-wall">Memory wall</a></h2>
+<p>The ceiling comes from a STREAM-style probe (<code>crates/membench</code> via <code>scripts/bandwidth.sh</code>), nominal bytes with plain write-allocating stores — the same store pattern the engine uses.
+Best GB/s on the reference host:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>placement</th><th style="text-align: right">read</th><th style="text-align: right">write</th><th style="text-align: right">copy</th><th style="text-align: right">triad</th></tr>
+</thead>
+<tbody>
+<tr><td>1 core, node-local</td><td style="text-align: right">11.3</td><td style="text-align: right">10.1</td><td style="text-align: right">9.5</td><td style="text-align: right">11.3</td></tr>
+<tr><td>one socket, 8 physical</td><td style="text-align: right">39.0</td><td style="text-align: right">18.6</td><td style="text-align: right">35.6</td><td style="text-align: right">28.1</td></tr>
+<tr><td>both sockets, 16 physical</td><td style="text-align: right">45.0</td><td style="text-align: right">25.3</td><td style="text-align: right">40.0</td><td style="text-align: right">38.1</td></tr>
+<tr><td>both sockets, 32 threads</td><td style="text-align: right">48.8</td><td style="text-align: right">23.1</td><td style="text-align: right">33.8</td><td style="text-align: right">36.5</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two structural facts from the ceiling measurement: hyperthreads add no bandwidth (39.0 → 39.2 GB/s), and the second socket adds only 15–25% under first-touch page placement with work-stealing, not 2×.</p>
+<p>The modeled traffic side prices each layer from its row counts at <code>T = 48</code> B/term (<code>benchmarks/PROFILING.md</code> §Roofline model):</p>
+<pre><code class="language-text">bytes/layer = terms_in×T + 2×(rows_gathered−rows_id)×T + 2×rows_id×16
+              + 2×rows_sorted×T + terms_out×T
+</code></pre>
+<p>Reading the ratio of measured DRAM traffic to ceiling as a classification: at or above ~70% of the measured ceiling a phase is bandwidth-bound; modeled traffic far above measured means the working set is cache-served; far below ceiling with a high LLC miss rate points at latency, not bandwidth.</p>
+<h2 id="single-thread-roofline"><a class="header" href="#single-thread-roofline">Single-thread roofline</a></h2>
+<p>Measured on the current engine (fact sheet: <code>research/HARDWARE.md</code> §Engine roofline, single thread; ceilings per the 1-core row above):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>cell</th><th style="text-align: right">ns/term</th><th style="text-align: right">model GB/s</th><th style="text-align: right">measured GB/s</th><th style="text-align: right">% of copy ceiling</th><th style="text-align: right">IPC</th><th style="text-align: right">LLC load-miss</th><th>verdict</th></tr>
+</thead>
+<tbody>
+<tr><td>ZZ rotation, m = 4.50e6</td><td style="text-align: right">30.5</td><td style="text-align: right">8.3</td><td style="text-align: right">3.29</td><td style="text-align: right">35%</td><td style="text-align: right">2.24</td><td style="text-align: right">38.3%</td><td>latency-bound</td></tr>
+<tr><td>sparse 2q, m = 3.0e6</td><td style="text-align: right">141.3</td><td style="text-align: right">9.0</td><td style="text-align: right">2.08</td><td style="text-align: right">22%</td><td style="text-align: right">2.62</td><td style="text-align: right">34.9%</td><td>latency-bound</td></tr>
+<tr><td><code>su4</code>, m = 1.41e7</td><td style="text-align: right">327.3</td><td style="text-align: right">8.6</td><td style="text-align: right">0.67</td><td style="text-align: right">7%</td><td style="text-align: right">2.98</td><td style="text-align: right">2.1%</td><td>compute-bound</td></tr>
+</tbody>
+</table>
+</div>
+<p>The byte model over-counts DRAM traffic by 2.5–12.8× at one thread because most modeled traffic is served from cache.
+The sparse classes are limited by load latency (IPC ≈ 2.2–2.6 with 34–41% LLC load-miss); <code>su4</code> is compute-bound in its sort (IPC 2.98, 2.1% LLC load-miss).</p>
+<h2 id="multi-thread-roofline"><a class="header" href="#multi-thread-roofline">Multi-thread roofline</a></h2>
+<p><code>su4</code> at m = 1.41e7 (both-socket ceilings: read 45.0 / write 25.3 at 8–16t, 48.8 / 23.1 at 32t):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: right">threads</th><th style="text-align: right">ns/term</th><th style="text-align: right">speedup</th><th style="text-align: right">read GB/s</th><th style="text-align: right">write GB/s</th><th style="text-align: right">% read ceil</th><th style="text-align: right">% write ceil</th><th>verdict</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: right">1</td><td style="text-align: right">327.3</td><td style="text-align: right">—</td><td style="text-align: right">0.61</td><td style="text-align: right">0.27</td><td style="text-align: right">5%</td><td style="text-align: right">1%</td><td>compute-bound</td></tr>
+<tr><td style="text-align: right">8</td><td style="text-align: right">56.2</td><td style="text-align: right">5.8×</td><td style="text-align: right">25.9</td><td style="text-align: right">18.2</td><td style="text-align: right">58%</td><td style="text-align: right">72%</td><td>approaching write ceiling</td></tr>
+<tr><td style="text-align: right">16</td><td style="text-align: right"><strong>49.3</strong></td><td style="text-align: right"><strong>6.6×</strong></td><td style="text-align: right">39.3</td><td style="text-align: right"><strong>28.1</strong></td><td style="text-align: right">87%</td><td style="text-align: right"><strong>111%</strong></td><td>write-bandwidth-bound</td></tr>
+<tr><td style="text-align: right">32</td><td style="text-align: right">55.3</td><td style="text-align: right">5.9×</td><td style="text-align: right">39.5</td><td style="text-align: right">27.6</td><td style="text-align: right">81%</td><td style="text-align: right">120%</td><td>write-bandwidth-bound</td></tr>
+</tbody>
+</table>
+</div>
+<p>By 16 threads the dense-PTM class sits at the machine’s write ceiling — the figures above 100% are against the STREAM nominal-store ceiling, which the engine’s write-allocating stores share, so “at the ceiling” is the correct reading.
+32 threads buy zero additional bandwidth (67.0 vs 67.0 GB/s attributable) and cost 12% of wall time.</p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../../assets/design/roofline-threads.svg" alt="su4 attributable DRAM traffic against thread count, with the measured read and write ceilings"><span class="img-wrapper"><img src="../../assets/design/roofline-threads.svg" alt="su4 attributable DRAM traffic against thread count, with the measured read and write ceilings"></span></label></p>
+<p>The sparse classes at 32 threads stay latency-bound and keep scaling:</p>
+<p>| cell | ns/term | speedup vs 1t | read GB/s | write GB/s | % write ceil | verdict |
+|—|—:|—:|—:|—:|—:|—:|—|
+| ZZ rotation, m = 4.50e6 | 2.7 | 11.3× | 8.9 | 11.5 | 50% | latency-bound |
+| sparse 2q, m = 3.0e6 | 10.8 | 13.1× | 11.7 | 11.3 | 49% | latency-bound |</p>
+<p>They stop at half the write ceiling with 70–90% of their modeled traffic cache-served: bandwidth is not what limits them, and they take the full thread count profitably.</p>
+<h2 id="partitioned"><a class="header" href="#partitioned">Partitioned: P = 2 vs P = 1</a></h2>
+<p>Two facts above — the second socket adding 15–25% rather than 2×, and the dense-PTM class pinned to the write ceiling — are the same effect: pages are placed by first touch and the thread pool then steals work across sockets, so roughly half of the second socket’s reads are remote.
+The engine can instead be run partitioned, one pinned pool and one share of the sum per NUMA domain, with only the rows a layer moves across a domain boundary exchanged (<a href="../../manual/propagation/partitions.html">NUMA partitions</a>).</p>
+<p><strong>Locality decides everything.</strong>
+A layer whose gates leave the partition rows fixed runs entirely inside its own domain and gains; a layer that moves any row across a boundary pays for the export pass, the copy and the receiver’s larger merge stream.
+Measured at <code>P = 2</code> against <code>P = 1</code> on the same binary, on two-socket hosts from 8 to 48 cores per socket:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>layer class</th><th><code>P = 2</code> vs <code>P = 1</code></th></tr>
+</thead>
+<tbody>
+<tr><td>dense two-qubit unitaries, no row crossing</td><td><strong>4–18% faster</strong>, direction-consistent on every host</td></tr>
+<tr><td>Pauli rotations, no row crossing</td><td>coset loop 12–22% faster on two of three hosts</td></tr>
+<tr><td>any layer that exports rows (random rows)</td><td><strong>2–8.4× slower</strong>, and worse at higher core counts</td></tr>
+</tbody>
+</table>
+</div>
+<p>The gain grows with cores per socket, as a memory-system effect should: −4% on an 8-core-per-socket workstation, −18% on a 48-core Genoa at 96 threads.
+Load imbalance across partitions stays within 1.000–1.004 with random rows.
+Random partition rows put roughly half of a dense two-qubit gate’s deltas across a boundary, so the default draw lands a mixed circuit in the bottom row of that table.</p>
+<p>The per-host cells behind the summary, copied from <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, P=1 vs P=2 in-process: <code>scripts/ab-compare.sh</code> runtime-knob A/B, 5 pairs <code>abba</code>, <code>--n 1000000 --qubits 128</code> (<code>W = 2</code>), random partition rows, each partition pinned to its socket with <code>MPOL_BIND</code>; steady-state <code>m</code> ≈ 1.5e6 for rotations, 1.0e6 for <code>gu2q</code>, 1.4e7 for <code>su4</code>/<code>su4_local</code>.
+Wall time per layer, P=2 vs P=1 (median Δ%, pairs agreeing):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>cell</th><th>ccqlin038 16t</th><th>ccqlin038 32t</th><th>Icelake 32t</th><th>Icelake 64t</th><th>Genoa 48t</th><th>Genoa 96t</th></tr>
+</thead>
+<tbody>
+<tr><td><code>su4</code> (random rows)</td><td>+128% 6/6</td><td>+118% 5/5</td><td>+241% 5/5</td><td>+274% 5/5</td><td>+403% 5/5</td><td>+373% 5/5</td></tr>
+<tr><td><code>gu2q</code></td><td>—</td><td>+282% 5/5</td><td>—</td><td>—</td><td>+597% 5/5</td><td>+574% 5/5</td></tr>
+<tr><td><code>rotation_remote</code></td><td>+204% 5/5</td><td>+217% 5/5</td><td>+310% 5/5</td><td>+461% 5/5</td><td>+730% 5/5</td><td>+737% 5/5</td></tr>
+<tr><td><code>rotation_local</code> (no exchange)</td><td>−13.6% 4/5</td><td>−4.9% 4/5</td><td>+16% 4/5</td><td>+21% 5/5</td><td>−12.0% 5/5</td><td>−29.9% 4/5</td></tr>
+<tr><td><code>su4_local</code> (no exchange)</td><td>−4.1% 5/5</td><td>−3.5% 5/5</td><td>−6.6% 5/5</td><td>−7.3% 5/5</td><td>−8.7% 5/5</td><td>−18.2% 5/5</td></tr>
+</tbody>
+</table>
+</div>
+<p>Exchange-free rotation layer, per layer (from the probe sidecars):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>host, threads</th><th>P=1 wall</th><th>P=2 wall</th><th>P=2 collective (<code>barrier_ns</code>)</th><th>coset loop P=1 → P=2</th></tr>
+</thead>
+<tbody>
+<tr><td>ccqlin038, 16</td><td>4.24 ms</td><td>3.33 ms</td><td>0.11 ms</td><td>4.15 → 3.25 ms (−22%)</td></tr>
+<tr><td>Genoa, 48</td><td>1.10 ms</td><td>0.97 ms</td><td>0.04 ms</td><td>1.02 → 0.88 ms (−14%)</td></tr>
+<tr><td>Icelake, 32</td><td>1.62 ms</td><td>2.14 ms</td><td>0.30 ms</td><td>1.54 → 1.77 ms (+15%)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Counters, ccqlin038, dense layers at 16 threads (8 per socket at P=2); <code>scripts/perf-stat.sh</code>, shared box:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>cell</th><th>IPC</th><th>LLC load-miss</th><th>cycles/string</th><th>S0 read / write GB/s (% of 39.0 / 18.6)</th><th>S1 read / write</th><th>total GB/s</th></tr>
+</thead>
+<tbody>
+<tr><td><code>su4</code> P=1</td><td>1.13</td><td>76%</td><td>7178</td><td>15.8 / 14.3 (40% / 77%)</td><td>15.8 / 12.8 (41% / 69%)</td><td>60.2</td></tr>
+<tr><td><code>su4</code> P=2</td><td>1.03</td><td>89%</td><td>8229</td><td>12.4 / 9.7 (32% / 52%)</td><td>11.8 / 9.5 (30% / 51%)</td><td>44.0</td></tr>
+<tr><td><code>su4_local</code> P=1</td><td>1.09</td><td>75%</td><td>—</td><td>16.4 / 13.8 (42% / 74%)</td><td>16.4 / 13.4 (42% / 72%)</td><td>60.7</td></tr>
+<tr><td><code>su4_local</code> P=2</td><td>1.27</td><td>75%</td><td>—</td><td>18.6 / 12.9 (48% / 70%)</td><td>18.8 / 13.1 (48% / 70%)</td><td>64.0</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>partition_imbalance</code> is 1.000–1.004 everywhere; exchange volume is <code>bytes ≈ rows × 48</code>.</p>
+<h3 id="benchmarking"><a class="header" href="#benchmarking">Benchmarking</a></h3>
+<p><code>P = 1</code> versus <code>P = N</code> is a runtime-knob A/B of one binary, not a code A/B:</p>
+<pre><code class="language-bash">scripts/ab-compare.sh partitions-1v2 --a . --b . \
+  --probe   '--n 1000000 --threads 32 --layers su4_local --partitions 1' \
+  --probe-b '--n 1000000 --threads 32 --layers su4_local --partitions 2 \
+             --partition-cpus "0-15,32-47;16-31,48-63"'
+</code></pre>
+<p><code>--threads</code> is the total at every <code>P</code>.
+A partitioned cell runs under <strong>no</strong> placement prefix: <code>numactl</code> and <code>taskset</code> both defeat the split the engine is making.
+On an exclusive cluster node, <code>scripts/slurm/ab-campaign.sbatch</code> builds the CPU lists from the node’s own topology.
+The protocol and the sidecar fields are in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a>.</p>
+<h2 id="distributed"><a class="header" href="#distributed">Distributed: weak scaling</a></h2>
+<p>The same split across <em>processes</em> is one partition per MPI rank (<a href="../../manual/propagation/mpi.html">MPI ranks</a>), and there the goal is capacity rather than bandwidth.
+Measured on Icelake <code>ccq</code> nodes (2 × 32 cores), one rank per NUMA domain, 32 threads per rank, UCX shared memory within a node and InfiniBand between nodes, at 6·10⁶ terms per rank:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>2 ranks (1 node)</th><th>4 ranks (2 nodes)</th><th>8 ranks (4 nodes)</th></tr>
+</thead>
+<tbody>
+<tr><td>layer with no row crossing</td><td>10.6 ms</td><td>11.1 ms</td><td>10.3 ms</td></tr>
+<tr><td>Pauli rotation whose generator crosses</td><td>37.5 ms (<strong>3.5×</strong>)</td><td>48.3 ms (<strong>4.4×</strong>)</td><td>48.6 ms (<strong>4.7×</strong>)</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Weak scaling is flat once the exchange leaves the node</strong>: the remote layer costs the same at 4 and 8 ranks, and local layers cost ~10.5 ms whatever the rank count.
+The step from 2 to 4 is shared memory giving way to InfiniBand.
+A remote layer is <strong>transfer-bound</strong> — the pipeline runs the coset loop under the transfer, so what is left is the export pass plus the bytes on the wire — which means the lever is fewer bytes (locality rows, a lower truncation), not more threads.</p>
+<p>The full per-layer breakdown, copied from <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> §Partitioned engine, MPI weak scaling: <code>phase_breakdown --mpi</code>, replicated input <code>--n 4e6 × ranks</code> → 6.0e6 terms per rank (4.0e6 for <code>cnot</code>), <code>--reps 8</code>; medians over ranks, ms per layer.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>ranks (nodes)</th><th>layer</th><th>wall</th><th>export</th><th>hidden transfer (chunk wait, busy/32)</th><th>coset loop</th><th>remote/local</th><th>peak RSS/rank</th></tr>
+</thead>
+<tbody>
+<tr><td>2 (1)</td><td>rotation_local</td><td>10.6</td><td>0</td><td>0</td><td>8.6</td><td>1</td><td>2.3 GB</td></tr>
+<tr><td>2 (1)</td><td>rotation_remote</td><td>37.5</td><td>8.0</td><td>~20</td><td>26.1</td><td>3.5×</td><td>2.3 GB</td></tr>
+<tr><td>2 (1)</td><td>cnot</td><td>29.5</td><td>10.0</td><td>~9</td><td>14.6</td><td>—</td><td>2.4 GB</td></tr>
+<tr><td>4 (2)</td><td>rotation_local</td><td>11.1</td><td>0</td><td>0</td><td>6.9</td><td>1</td><td>3.3 GB</td></tr>
+<tr><td>4 (2)</td><td>rotation_remote</td><td>48.3</td><td>7.2</td><td>~27</td><td>32.7</td><td>4.4×</td><td>3.3 GB</td></tr>
+<tr><td>4 (2)</td><td>cnot</td><td>28.7</td><td>8.8</td><td>~11</td><td>16.3</td><td>—</td><td>3.3 GB</td></tr>
+<tr><td>8 (4)</td><td>rotation_local</td><td>10.3</td><td>0</td><td>0</td><td>6.8</td><td>1</td><td>6.3 GB</td></tr>
+<tr><td>8 (4)</td><td>rotation_remote</td><td>48.6</td><td>7.3</td><td>~28</td><td>33.3</td><td>4.7×</td><td>6.3 GB</td></tr>
+<tr><td>8 (4)</td><td>cnot</td><td>42.8</td><td>—</td><td>—</td><td>—</td><td>—</td><td>6.3 GB</td></tr>
+</tbody>
+</table>
+</div>
+<p>The remote layer is transfer-bound: ~6–8 ms compute, 7–8 ms export, ~30 ms transfer for 192 MB per rank (two ranks share a NIC → ~13 GB/s per node).
+<code>vmhwm</code> growth with rank count is the probe’s replicated input, not the engine; engine-side peak per rank is flat.</p>
+<h2 id="noise-floor"><a class="header" href="#noise-floor">Noise floor</a></h2>
+<p>Single-shot campaign noise on the reference host is ±5–8% single-threaded and ±10–26% at 8–32 threads; untouched code moves that much between campaigns.
+Effects below that need the interleaved A/B protocol (<code>scripts/ab-compare.sh</code>), whose acceptance criterion is direction consistency across every pair.</p>
+<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Width, §Performance-Model (layout and dispatch).</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../examples/benchmarks/e-su4-brickwork.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../../examples/comparisons.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../examples/benchmarks/e-su4-brickwork.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../../examples/comparisons.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../../mark-09e88c2c.min.js"></script>
+        <script src="../../searcher-09f2665d.js"></script>
+
+        <script src="../../clipboard-1626706a.min.js"></script>
+        <script src="../../highlight-abc7f01d.js"></script>
+        <script src="../../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

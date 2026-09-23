@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AmplitudeDamping","Dephasing","Depolarizing","Depolarizing2Q","PauliChannel"]};

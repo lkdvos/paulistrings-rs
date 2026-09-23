@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["LOCAL_DIM","MAX_LOCAL_SUPPORT"],"enum":["Prepared"],"struct":["DeltaEntry","LocalPtm","RotationPrep"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["ising_2d_quench"]};

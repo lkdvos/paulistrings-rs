@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["B_MAX_BITS","P_MAX_BITS"],"struct":["Gf2Hash","PartitionRows"]};

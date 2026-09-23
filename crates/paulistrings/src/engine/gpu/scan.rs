@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaStream, CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaSlice, CudaStream, CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
 
 use super::error::GpuError;
 use super::module::KernelSet;
@@ -19,6 +19,17 @@ pub(crate) fn exclusive_scan(
     out: &mut CudaViewMut<'_, u32>,
     n: usize,
 ) -> Result<(), GpuError> {
+    exclusive_scan_with_max(stream, k, input, out, n).map(|_| ())
+}
+
+/// [`exclusive_scan`] that also returns a two-element device buffer `[total, max]` of `input[0..n]`.
+pub(crate) fn exclusive_scan_with_max(
+    stream: &Arc<CudaStream>,
+    k: &KernelSet,
+    input: &CudaView<'_, u32>,
+    out: &mut CudaViewMut<'_, u32>,
+    n: usize,
+) -> Result<CudaSlice<u32>, GpuError> {
     let nb = n.div_ceil(SCAN_BLOCK).max(1);
     if nb > SCAN_BLOCK {
         return Err(GpuError::Unsupported("scan of more than 2^24 elements"));
@@ -67,5 +78,5 @@ pub(crate) fn exclusive_scan(
                 shared_mem_bytes: 0,
             })?;
     }
-    Ok(())
+    Ok(tot_max)
 }

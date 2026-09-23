@@ -9,21 +9,16 @@
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
-use num_complex::Complex64;
-use paulistrings::channel::{
-    AmplitudeDamping, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, Depolarizing2Q,
-    GeneralUnitary1Q, GeneralUnitary2Q, PauliChannel, PauliRotation,
-};
 use paulistrings::engine::partitioned::{
     propagate_partitioned, propagate_partitioned_with_options, PartitionConfig, Placement,
 };
 use paulistrings::test_support::{
-    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, sqrt_swap_matrix,
-    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll, Xs64,
+    assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
+    unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
-    propagate, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum, PropagateOptions,
+    propagate, Circuit, Direction, PartitionedTruncation, PauliSum, PropagateOptions,
     TruncationPolicy,
 };
 
@@ -35,92 +30,6 @@ const THETA: f64 = 0.1;
 /// without its placement.
 fn config(partitions: usize) -> PartitionConfig {
     unpinned_partitions(partitions, 2, 0x5EED_C0FF_EE00_1234)
-}
-
-fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.x[q as usize / 64] |= 1u64 << (q % 64);
-}
-
-fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.z[q as usize / 64] |= 1u64 << (q % 64);
-}
-
-/// A seeded circuit drawing from every built-in channel class.
-///
-/// `dense` adds the wide-fanout classes (a dense 1Q PTM, sqrt-SWAP, a Haar
-/// SU(4) block); without it every layer has fanout at most 2, which is what
-/// keeps an untruncated run bounded.
-fn random_circuit<const W: usize>(
-    num_qubits: usize,
-    layers: usize,
-    seed: u64,
-    dense: bool,
-) -> Circuit<W> {
-    let mut rng = Xs64::new(seed);
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    let kinds: u64 = if dense { 17 } else { 14 };
-    let n = num_qubits as u64;
-    for _ in 0..layers {
-        let q0 = (rng.next_u64() % n) as u32;
-        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
-        let wrap = |q: u32, d: u32| (q + d) % num_qubits as u32;
-        match rng.next_u64() % kinds {
-            0 => circuit.push(Clifford1Q::h(q0)),
-            1 => circuit.push(Clifford1Q::s(q0)),
-            2 => circuit.push(Clifford1Q::y(q0)),
-            3 => circuit.push(Clifford2Q::cnot(q0, q1)),
-            4 => circuit.push(Clifford2Q::cz(q0, q1)),
-            5 => circuit.push(Clifford2Q::swap(q0, q1)),
-            6 => circuit.push(PauliRotation::new(PauliString::<W>::z(q0), 0.37)),
-            7 => circuit.push(zz_rotation::<W>(q0, q1, 0.21)),
-            8 => {
-                // Weight 4, so `prepare` takes the `Prepared::Rotation` arm and
-                // the generator pass is the one that can cross a partition.
-                let mut gen = PauliString::<W> {
-                    x: [0u64; W],
-                    z: [0u64; W],
-                };
-                set_x(&mut gen, q0);
-                set_z(&mut gen, wrap(q0, 1));
-                set_x(&mut gen, wrap(q0, 2));
-                set_z(&mut gen, wrap(q0, 3));
-                circuit.push(PauliRotation::new(gen, 0.29));
-            }
-            9 => circuit.push(Depolarizing {
-                support: [q0],
-                p: 0.05,
-            }),
-            10 => circuit.push(Dephasing {
-                support: [q0],
-                p: 0.11,
-            }),
-            11 => circuit.push(PauliChannel {
-                support: [q0],
-                px: 0.03,
-                py: 0.04,
-                pz: 0.05,
-            }),
-            12 => circuit.push(Depolarizing2Q {
-                support: [q0, q1],
-                p: 0.07,
-            }),
-            13 => circuit.push(AmplitudeDamping {
-                support: [q0],
-                gamma: 0.09,
-            }),
-            14 => circuit.push(GeneralUnitary1Q::from_matrix(
-                q0,
-                [
-                    [Complex64::new(0.6, 0.0), Complex64::new(0.0, -0.8)],
-                    [Complex64::new(0.0, -0.8), Complex64::new(0.6, 0.0)],
-                ],
-            )),
-            15 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, sqrt_swap_matrix())),
-            16 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
-            _ => unreachable!(),
-        }
-    }
-    circuit
 }
 
 /// One policy against one circuit: the unpartitioned engine is the oracle, and

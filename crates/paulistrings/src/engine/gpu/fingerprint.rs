@@ -37,7 +37,6 @@ impl<const W: usize> FingerprintRows<W> {
     }
 
     /// The unmasked 64-bit `g(x, z)`; the device applies its compile-time `FP_BITS` mask on top.
-    #[cfg(test)]
     pub(crate) fn fingerprint(&self, x: &[u64; W], z: &[u64; W]) -> u64 {
         let mut out = 0u64;
         for r in 0..FP_ROWS {

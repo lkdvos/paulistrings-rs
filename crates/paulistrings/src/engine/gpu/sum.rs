@@ -61,18 +61,18 @@ fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -
 /// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run, since the sum keeps the previous columns as the next refine's target.
 /// Every fallible operation returns a [`GpuError`], including device allocation failure as [`GpuError::OutOfMemory`].
 pub struct GpuSum<const W: usize> {
-    ctx: Arc<CudaContext>,
-    stream: Arc<CudaStream>,
-    kernels: Arc<KernelSet>,
-    hash: Gf2Hash<W>,
-    num_qubits: usize,
-    cols: DeviceColumns<W>,
-    /// The previous columns, kept as the next refine's target.
-    spare: Option<DeviceColumns<W>>,
+    pub(super) ctx: Arc<CudaContext>,
+    pub(super) stream: Arc<CudaStream>,
+    pub(super) kernels: Arc<KernelSet>,
+    pub(super) hash: Gf2Hash<W>,
+    pub(super) num_qubits: usize,
+    pub(super) cols: DeviceColumns<W>,
+    /// The previous columns, kept as the next refine's or layer's target.
+    pub(super) spare: Option<DeviceColumns<W>>,
     /// All `B_MAX_BITS` rows of `hash`, so a refine uploads nothing.
-    hash_rows: CudaSlice<u64>,
+    pub(super) hash_rows: CudaSlice<u64>,
     /// The fingerprint rows `FingerprintRows::new(hash.seed())` in device layout.
-    fp_rows: CudaSlice<u64>,
+    pub(super) fp_rows: CudaSlice<u64>,
     /// Page-locked download staging, allocated on first [`Self::to_host`] and reused.
     staging: Mutex<HostStaging>,
 }
@@ -85,8 +85,8 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// As [`Self::from_host`] with extra NVRTC options, the `-DFP_BITS=<b>` collision hook.
-    #[cfg(test)]
-    pub(crate) fn from_host_with_options(
+    #[doc(hidden)]
+    pub fn from_host_with_options(
         sum: &PauliSum<W>,
         ordinal: u32,
         extra_options: &[String],
@@ -327,7 +327,8 @@ impl<const W: usize> GpuSum<W> {
         Ok(())
     }
 
-    /// Check the device-side invariant, the analogue of [`PauliSum::assert_invariants`]: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`, every fingerprint current, and the bucket table consistent with [`Self::len`].
+    /// Check the device-side invariant, the analogue of [`PauliSum::assert_invariants`]: every term in its hash bucket, every key unique within its bucket, every key within `num_qubits`, every fingerprint current, and the bucket table consistent with [`Self::len`].
+    /// Order within a bucket is free on the device; [`Self::to_host`] restores the host's lexicographic order.
     /// Returns a description of the first class of violation, or of the device error that stopped the check.
     pub fn assert_invariants_device(&self) -> Result<(), String> {
         self.check_invariants().map_err(|e| e.to_string())?
@@ -371,7 +372,7 @@ impl<const W: usize> GpuSum<W> {
         s.synchronize()?;
         if bad[..4].iter().any(|&v| v != 0) {
             return Ok(Err(format!(
-                "GpuSum: {} misplaced, {} out of order, {} beyond num_qubits, {} stale fingerprints (first in bucket {})",
+                "GpuSum: {} misplaced, {} duplicate keys, {} beyond num_qubits, {} stale fingerprints (first in bucket {})",
                 bad[0], bad[1], bad[2], bad[3], bad[4]
             )));
         }
@@ -408,7 +409,7 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// Debug builds run the device invariant check after every structural change.
-    fn debug_check(&self) {
+    pub(super) fn debug_check(&self) {
         #[cfg(debug_assertions)]
         if let Ok(Err(msg)) = self.check_invariants() {
             panic!("{msg}");
@@ -804,7 +805,15 @@ mod tests {
             .unwrap();
         s.memcpy_htod(&c, &mut dev.cols.coeff.slice_mut(2 * r0..2 * (r0 + l)))
             .unwrap();
-        assert!(dev.assert_invariants_device().is_err());
+        let fp = FingerprintRows::<2>::new(sum.hash().seed());
+        let g: Vec<u64> = (0..l)
+            .rev()
+            .map(|i| fp.fingerprint(&bx[i], &bz[i]))
+            .collect();
+        s.memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0..r0 + l))
+            .unwrap();
+        dev.assert_invariants_device()
+            .expect("order within a bucket is free on the device");
         assert_same_buckets(&dev.to_host().unwrap(), &sum, "reversed bucket");
     }
 
@@ -820,25 +829,20 @@ mod tests {
 
         let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
         let (bx, bz, _) = sum.bucket(b0);
-        let swapped = [bx[1][0], bx[0][0]];
-        let z_swapped = [bz[1][0], bz[0][0]];
         let r0: usize = (0..b0).map(|b| sum.bucket_len(b)).sum();
         dev.stream
-            .memcpy_htod(&swapped, &mut dev.cols.x.slice_mut(r0..r0 + 2))
+            .memcpy_htod(&bx[0], &mut dev.cols.x.slice_mut(r0 + 1..r0 + 2))
             .unwrap();
         dev.stream
-            .memcpy_htod(&z_swapped, &mut dev.cols.z.slice_mut(r0..r0 + 2))
+            .memcpy_htod(&bz[0], &mut dev.cols.z.slice_mut(r0 + 1..r0 + 2))
             .unwrap();
         let fp = FingerprintRows::<1>::new(sum.hash().seed());
-        let g = [
-            fp.fingerprint(&bx[1], &bz[1]),
-            fp.fingerprint(&bx[0], &bz[0]),
-        ];
+        let g = [fp.fingerprint(&bx[0], &bz[0])];
         dev.stream
-            .memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0..r0 + 2))
+            .memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0 + 1..r0 + 2))
             .unwrap();
         let msg = dev.assert_invariants_device().unwrap_err();
-        assert!(msg.contains("0 misplaced, 1 out of order"), "{msg}");
+        assert!(msg.contains("0 misplaced, 1 duplicate keys"), "{msg}");
         assert!(msg.contains(&format!("bucket {b0})")), "{msg}");
 
         let mut dev = GpuSum::from_host(&sum, 0).expect("upload");

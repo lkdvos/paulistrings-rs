@@ -80,4 +80,25 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     fn finalizes_layer(&self) -> bool {
         true
     }
+
+    /// The per-term rule as the CUDA backend evaluates it, or `None` if this policy has no device form.
+    ///
+    /// The default is `None`, so a custom policy is rejected by the GPU engine rather than silently ignored.
+    /// The builtins [`CoefficientThreshold`] and [`WeightCutoff`] return `Some`; policies with a layer pass or a composition do not yet.
+    fn device_policy(&self) -> Option<DeviceKeep> {
+        None
+    }
+}
+
+/// A per-term truncation rule in the form the CUDA backend evaluates on device.
+///
+/// Returned by [`TruncationPolicy::device_policy`]; independent of the `cuda` feature so any policy can declare its lowering.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeviceKeep {
+    /// Keep every nonzero term.
+    Keep,
+    /// [`CoefficientThreshold`]: keep `|c|² > eps²`, everything when `eps < 0`.
+    Coeff(f64),
+    /// [`WeightCutoff`]: keep Pauli weight `≤ k`.
+    Weight(u32),
 }

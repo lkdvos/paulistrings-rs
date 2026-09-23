@@ -103,3 +103,12 @@ required-features = ["phase-timing"]
 name = "mpi_ranks"
 harness = false
 required-features = ["mpi", "test-utils"]
+
+# The CUDA backend's differential net; every case returns early without a device.
+[[test]]
+name = "propagate_gpu"
+required-features = ["cuda", "test-utils"]
+
+[[example]]
+name = "gpu_layer_timing"
+required-features = ["cuda", "test-utils"]

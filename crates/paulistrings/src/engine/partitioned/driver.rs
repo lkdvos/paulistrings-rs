@@ -86,18 +86,18 @@ impl Collectives for CountingCollectives<'_> {
 
 /// One partition's payload, moved into its thread for the duration of a call
 /// and handed back.
-pub(super) struct PartitionWork<B> {
+pub(crate) struct PartitionWork<B> {
     /// This partition's share of the sum and its retained scratch.
-    pub(super) local: B,
+    pub(crate) local: B,
     /// One row per layer, empty unless tracing is on. Written on this
     /// partition's driving thread only, and transposed into the shared
     /// [`PartitionTrace`] after the join.
-    pub(super) rows: Vec<PartitionLayerRow>,
+    pub(crate) rows: Vec<PartitionLayerRow>,
 }
 
 impl<B> PartitionWork<B> {
     /// Move one partition out of the driver for the duration of a call through [`PartitionStorage::detach`], which leaves a valid empty partition behind.
-    pub(super) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
+    pub(crate) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
     where
         B: PartitionStorage<W>,
     {
@@ -571,16 +571,16 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 /// What a partition knows about itself while it walks the layers: which keys are its own, where it sits in the group, and whether it is recording.
 ///
 /// The two drivers fill this differently — `rank` and `size` come from `map_partitions` in one and from the transport in the other — and nothing in the loop below cares which.
-pub(super) struct PartitionCtx<'a, const W: usize> {
+pub(crate) struct PartitionCtx<'a, const W: usize> {
     /// The rows deciding which partition a key belongs to.
-    pub(super) rows: &'a PartitionRows<W>,
+    pub(crate) rows: &'a PartitionRows<W>,
     /// This partition's index, for the per-layer log line.
-    pub(super) rank: usize,
+    pub(crate) rank: usize,
     /// Partitions in the group, likewise.
-    pub(super) size: usize,
+    pub(crate) size: usize,
     /// Whether to append a [`PartitionLayerRow`] per layer. Hoisted out of the
     /// loop: nothing inside one can turn tracing on or off.
-    pub(super) tracing: bool,
+    pub(crate) tracing: bool,
 }
 
 /// [`Channel::prepare`] or the engine's one hard error.
@@ -612,7 +612,7 @@ fn prepare_or_panic<const W: usize>(
 /// Runs on the partition's driving thread inside its own pool, in lock-step with its peers: the same channels in the same order, the same collectives per layer.
 /// The two drivers differ only in *what a partition is* — a NUMA domain and an in-process endpoint, or a whole process and an MPI rank — which is entirely the transport's business, so the body below is generic over it and there is exactly one copy of the per-layer sequence.
 /// Every touch of the partition's storage goes through [`PartitionStorage`] and [`PartitionBackend`], so the loop is generic over where the partition lives as well.
-pub(super) fn run_layers<const W: usize, T, X, B>(
+pub(crate) fn run_layers<const W: usize, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,

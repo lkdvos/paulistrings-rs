@@ -1,6 +1,6 @@
 //! Built-in truncation policies and combinators. See ARCHITECTURE.md §Truncation.
 
-use super::TruncationPolicy;
+use super::{DeviceKeep, TruncationPolicy};
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -44,6 +44,10 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn finalizes_layer(&self) -> bool {
         false
     }
+
+    fn device_policy(&self) -> Option<DeviceKeep> {
+        Some(DeviceKeep::Coeff(self.0))
+    }
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -70,6 +74,10 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     /// Per-term only — no layer pass.
     fn finalizes_layer(&self) -> bool {
         false
+    }
+
+    fn device_policy(&self) -> Option<DeviceKeep> {
+        Some(DeviceKeep::Weight(self.0))
     }
 }
 

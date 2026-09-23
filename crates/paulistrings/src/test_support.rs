@@ -619,9 +619,139 @@ impl<const W: usize> TruncationPolicy<W> for KeepAll {
     fn finalizes_layer(&self) -> bool {
         false
     }
+
+    fn device_policy(&self) -> Option<crate::truncation::DeviceKeep> {
+        Some(crate::truncation::DeviceKeep::Keep)
+    }
 }
 
 impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
+
+fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
+    p.x[q as usize / 64] |= 1u64 << (q % 64);
+}
+
+fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
+    p.z[q as usize / 64] |= 1u64 << (q % 64);
+}
+
+/// A seeded circuit drawing from every built-in channel class.
+///
+/// `dense` adds the wide-fanout classes (a dense 1Q PTM, sqrt-SWAP, a Haar SU(4) block); without it every layer has fanout at most 2, which is what keeps an untruncated run bounded.
+/// Kind 8 is a weight-4 rotation, so `prepare` takes the `Prepared::Rotation` arm.
+pub fn random_circuit<const W: usize>(
+    num_qubits: usize,
+    layers: usize,
+    seed: u64,
+    dense: bool,
+) -> crate::Circuit<W> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    use crate::channel::noise::{
+        AmplitudeDamping, Dephasing, Depolarizing, Depolarizing2Q, PauliChannel,
+    };
+    use crate::channel::rotation::PauliRotation;
+    use crate::channel::{GeneralUnitary1Q, GeneralUnitary2Q};
+
+    let mut rng = Xs64::new(seed);
+    let mut circuit = crate::Circuit::<W>::new(num_qubits);
+    let kinds: u64 = if dense { 17 } else { 14 };
+    let n = num_qubits as u64;
+    for _ in 0..layers {
+        let q0 = (rng.next_u64() % n) as u32;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
+        let wrap = |q: u32, d: u32| (q + d) % num_qubits as u32;
+        match rng.next_u64() % kinds {
+            0 => circuit.push(Clifford1Q::h(q0)),
+            1 => circuit.push(Clifford1Q::s(q0)),
+            2 => circuit.push(Clifford1Q::y(q0)),
+            3 => circuit.push(Clifford2Q::cnot(q0, q1)),
+            4 => circuit.push(Clifford2Q::cz(q0, q1)),
+            5 => circuit.push(Clifford2Q::swap(q0, q1)),
+            6 => circuit.push(PauliRotation::new(PauliString::<W>::z(q0), 0.37)),
+            7 => circuit.push(zz_rotation::<W>(q0, q1, 0.21)),
+            8 => {
+                let mut gen = PauliString::<W> {
+                    x: [0u64; W],
+                    z: [0u64; W],
+                };
+                set_x(&mut gen, q0);
+                set_z(&mut gen, wrap(q0, 1));
+                set_x(&mut gen, wrap(q0, 2));
+                set_z(&mut gen, wrap(q0, 3));
+                circuit.push(PauliRotation::new(gen, 0.29));
+            }
+            9 => circuit.push(Depolarizing {
+                support: [q0],
+                p: 0.05,
+            }),
+            10 => circuit.push(Dephasing {
+                support: [q0],
+                p: 0.11,
+            }),
+            11 => circuit.push(PauliChannel {
+                support: [q0],
+                px: 0.03,
+                py: 0.04,
+                pz: 0.05,
+            }),
+            12 => circuit.push(Depolarizing2Q {
+                support: [q0, q1],
+                p: 0.07,
+            }),
+            13 => circuit.push(AmplitudeDamping {
+                support: [q0],
+                gamma: 0.09,
+            }),
+            14 => circuit.push(GeneralUnitary1Q::from_matrix(
+                q0,
+                [
+                    [Complex64::new(0.6, 0.0), Complex64::new(0.0, -0.8)],
+                    [Complex64::new(0.0, -0.8), Complex64::new(0.6, 0.0)],
+                ],
+            )),
+            15 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, sqrt_swap_matrix())),
+            16 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
+            _ => unreachable!(),
+        }
+    }
+    circuit
+}
+
+/// A sum on which `cancellation_channel` produces an exact `±0` coefficient: `-0.5·I + 1.0·Z₀` under amplitude damping at `γ = 0.5` sums `-0.5 + 0.5·1.0` onto the identity key.
+/// The other terms keep the layer from being trivial.
+pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
+    let mut acc = BuildAccumulator::<W>::new(num_qubits);
+    let identity = PauliString::<W> {
+        x: [0u64; W],
+        z: [0u64; W],
+    };
+    acc.add_term(identity, Phase::ONE, Complex64::new(-0.5, 0.0));
+    acc.add_term(PauliString::<W>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(
+        PauliString::<W>::x(0),
+        Phase::ONE,
+        Complex64::new(0.25, 0.25),
+    );
+    acc.add_term(
+        PauliString::<W>::y(1),
+        Phase::ONE,
+        Complex64::new(0.75, -0.5),
+    );
+    acc.add_term(
+        PauliString::<W>::z(2),
+        Phase::ONE,
+        Complex64::new(0.125, 0.0),
+    );
+    acc.finalize()
+}
+
+/// The channel [`cancellation_sum`] is built for.
+pub fn cancellation_channel() -> crate::channel::noise::AmplitudeDamping {
+    crate::channel::noise::AmplitudeDamping {
+        support: [0],
+        gamma: 0.5,
+    }
+}
 
 /// A weight-2 `ZZ` rotation — the TFIM bond term, the smallest layer whose generator can cross a partition boundary.
 pub fn zz_rotation<const W: usize>(

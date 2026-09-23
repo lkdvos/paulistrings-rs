@@ -13,7 +13,8 @@ re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 places one pinned thread pool per NUMA domain in this process, ``comm=`` takes
 an ``mpi4py`` communicator and places one partition per rank. ``numa_nodes()``
 reports what ``partitions="auto"`` has to place against, and
-``mpi_available()`` whether this build was compiled with the ``mpi`` feature.
+``mpi_available()`` whether this build was compiled with the ``mpi`` feature, and
+``cuda_available()`` whether it was compiled with ``cuda`` *and* a CUDA device is visible.
 """
 
 from . import _paulistrings
@@ -24,6 +25,7 @@ from ._paulistrings import (
     PauliString,
     PauliSum,
     PropagationStats,
+    cuda_available,
     mpi_available,
     numa_nodes,
     p,
@@ -47,6 +49,7 @@ __all__ = [
     "interop",
     "io",
     "mpi_available",
+    "cuda_available",
     "numa_nodes",
     "reset_log_cache",
 ]

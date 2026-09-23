@@ -16,6 +16,18 @@ use crate::truncation::TruncationPolicy;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
+/// Returns early from the calling test when no CUDA device is available, so a device test is
+/// never `#[ignore]`d — it just does nothing on a box without a GPU.
+#[cfg(feature = "cuda")]
+#[macro_export]
+macro_rules! require_cuda {
+    () => {
+        if !$crate::engine::gpu::cuda_available() {
+            return;
+        }
+    };
+}
+
 /// Apply one channel layer the obvious way, as a differential oracle.
 ///
 /// For every input term: [`Channel::apply`] (or `apply_adjoint` when `adjoint`) into a `max_fanout`-sized [`OutputBuffer`], accumulate into a hashmap keyed by `(x, z)`, filter the summed coefficients through [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, rebuild a [`PauliSum`].

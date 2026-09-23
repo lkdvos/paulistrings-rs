@@ -2,9 +2,9 @@
 
 use crate::pauli_string::PauliString;
 
-/// Maximum number of bucket bits, i.e. `B ≤ 2^20 = 1_048_576` buckets.
+/// Maximum number of bucket bits, i.e. `B ≤ 2^22 = 4_194_304` buckets.
 /// Rows for all `B_MAX_BITS` bits are generated up front so that [`Gf2Hash::refine`] is free: the active hash is always a prefix of the same fixed matrix, so refinement is a single parity pass rather than a re-hash.
-pub const B_MAX_BITS: u8 = 20;
+pub const B_MAX_BITS: u8 = 22;
 
 /// Maximum number of partition bits, i.e. `P ≤ 2^6 = 64` partitions.
 /// Partitions are the coarse split of a sum across independent workers (see [`PartitionRows`]); the bucket bits of [`Gf2Hash`] refine within one partition. The cap is deliberately small: `P` tracks hardware parallelism (NUMA domains in-process, nodes under a distributed run), not term count.

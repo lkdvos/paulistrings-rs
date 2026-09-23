@@ -20,6 +20,10 @@ crate-type = ["cdylib"]
 # the default cdylib must stay unchanged. Build it with
 # `maturin develop --release --features mpi`.
 mpi = ["paulistrings/mpi"]
+# Compile the CUDA surface of the bindings: `paulistrings.cuda_available()`.
+# Off by default, like `mpi`. Build it with `maturin develop --release
+# --features cuda`.
+cuda = ["paulistrings/cuda"]
 
 [dependencies]
 paulistrings = { workspace = true }

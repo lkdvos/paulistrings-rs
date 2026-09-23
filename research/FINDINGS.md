@@ -153,6 +153,52 @@ Resolved: every parser now uses the core's Hermitian convention, `Y ↔ (x=1, z=
 The PauliPropagation.jl cross-engine baseline caught `apply`/`apply_adjoint` swapped relative to every other channel, so `direction="heisenberg"` applied `Φ` instead of its dual `Φ†`.
 The two bodies were swapped; the Heisenberg fixture is now bit-exact against jl on all 9 terms, and a unit test pins the orientation from both sides.
 
+## GPU spike
+
+Measured on ccqlin038 (RTX A6000, sm_86, 48 GB, shared box, clocks unlocked at 1800 MHz SM / 7601 MHz memory) with a throwaway `gpu_spike` example; CPU references from `phase_breakdown` at 16 threads with `scripts/jcc-rustflags.sh` sourced.
+Every GPU number is the second application of the gate on the saturated sum, CUDA events per kernel, 5 warm repetitions, medians.
+
+### GPU fused layer clears the spike gate at the threshold
+
+Asked whether one A6000 runs a saturated dense two-qubit layer ten times faster than the 16-thread host at 5e7 terms, under 30 GB, with no oversize segment.
+`su4` at 5.65e7 steady terms takes **318 ms of kernels (5.6 ns/term) against 3293 ms on the host, 10.4× (10.1× on wall)**, peak 22.6 GB, zero fallbacks and zero oversize segments; at 1.41e7 terms it is 12.2×.
+The margin is one measurement's noise wide, so the verdict is "go, at the threshold", and the two levers below are what would widen it.
+
+### Segmented sum must be a block scan, not a head-serial walk
+
+Asked whether the per-run reduction in the fused layer kernel could be one thread per run head walking its duplicates.
+On a saturated `su4` sum every key arrives 16 times, so the walk leaves 15 of 16 lanes idle and the kernel costs 0.70 ns per record; a warp-shuffle segmented scan brings it to 0.29 ns and the layer from **604 ms to 318 ms (1.9×)**.
+On sparse layers, whose runs have length one, the scan is 15–20% slower than the walk, so the reduction should be chosen per prepared table.
+
+### Records are index-sorted, not record-sorted
+
+Asked whether 8-byte `(g, tag)` records could be radix-sorted in a shared-memory ping-pong at `CAP = 8192`.
+Two 64 KB buffers exceed the 99 KB sm_86 block limit; sorting a 16-bit index over `(g_lo32, tag16)` records costs 11 bytes per record and fits at 95 KB with `CAP = 8192`.
+The 12-bit tag offset caps a source bucket at 4096 rows, which the device refine enforces.
+
+### Device refine is one multi-bit pass
+
+Asked what a second layer costs when the sum has grown 14× since its partition was chosen.
+Without a device `rebucket` every segment overflows `CAP` (43,108 records at 2^9 buckets for 1.4e6 terms); a four-bit refine in one counting pass costs **12.4 ms at 1.41e7 terms and 53 ms at 5.65e7**, bitwise the host's term set.
+The steady-state layer then pays nothing, since the bucket count is grow-only.
+
+### Compaction stays; the loose CSR is rejected
+
+Asked whether skipping compaction and keeping the pre-dedup arena as the next layer's `start/len` sum would pay for its memory.
+Compaction is **2.5 ms of a 144 ms layer (1.7%)** while the loose sum is 11.8 GB resident against 0.8 GB compact and its peak 34 GB against 11.8.
+Not worth a 15× memory footprint; arena batching over contiguous positions at 4 GiB (12 batches at the gate cell) is the design.
+
+### Occupancy is not the fused kernel's lever
+
+Asked whether 512-thread blocks or `--maxrregcount=32` (two blocks per SM instead of one) speed the saturated `su4` layer.
+All four variants land within 3% (136.7–140.8 ms at 1.41e7 terms).
+The 64-register, one-block-per-SM configuration is fine; the time is in the reduction and the per-record global loads.
+
+### Pinned staging is 4.8× the pageable download
+
+Asked what the 0.8 GB saturated sum costs to bring back and re-sort.
+Pinned D2H runs at **12.9 GB/s (61 ms)** against 2.7 GB/s pageable including the `Vec` allocation; the host per-bucket lex re-sort is 77 ms (5.4 ns/term at 16 threads); allocating the pinned buffer itself took 4.8 s, so it must be pooled.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
@@ -190,3 +236,21 @@ Only algorithmic shapes remain: emit both candidate rows and compact, or change 
 
 Every result in the front-end campaign is single-threaded on a shared box; the 16-thread arms are "no consistent change" on wall while their phase deltas hold direction.
 The radix kernel's scratch grows 16 B/row and its win shrinks toward the write ceiling (−30.3% at `m` = 9884 down to −10.5% at `m` = 9.9e5 at 8 threads), so the second gate arm in particular wants a quiet-box multi-thread cell.
+
+### Sparse layers are per-block-overhead bound at a 256-term bucket target
+
+Asked how the GPU does on `cnot`, `gu2q` and `rotation_zz` at steady state.
+1.3–2.0 ns per steady term, only **1.3–3.6× the 16-thread host**, because a position holds ~300 records padded to a 1024-record block whose eight radix passes and syncs dominate (1.1–1.4 ns per record against 0.26 on dense layers).
+The bucket target should track records per block (fanout × terms per bucket), not terms per bucket; untested.
+
+### `Gf2Hash` rows are xorshift successors
+
+Asked why weight-2 keys collided in a fingerprint drawn with the crate's `Xs64` construction: consecutive xorshift outputs are GF(2)-linear in one state, so `rows_z[r] = M·rows_x[r]`.
+The same holds for `Gf2Hash`: the 64 deltas `d_j = (row_j(M), e_j)`, mean weight 7.1, satisfy `h(d_j) = 0` under every seed and bucket count (192/192 at 20 bits, three seeds), so `u` and `u ⊕ d_j` always share a bucket.
+Correctness is unaffected; load balance on structured sums is, and `PartitionRows` inherits it; unmeasured.
+
+### CPU/GPU crossover is below 1e4 terms for a second layer
+
+Asked at what size a device layer stops paying for its launches and syncs.
+With pooled buffers a layer carries 0.08–0.4 ms of host time over its kernels (5 syncs), and the GPU wins at every measured size: `cnot` 2.3× at 1e4, 7.5× at 1e5, 12.4× at 1e6 against in-process `propagate_with_scratch` on the same partition.
+In-process `propagate` ran 1.6–2.9× slower than the probe on the same cell even after re-partitioning to the CPU policy; unexplained.

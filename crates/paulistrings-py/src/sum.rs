@@ -25,6 +25,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Width-dispatch enum. The Python boundary picks the smallest width that fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
+#[derive(Clone)]
 pub enum PauliSumImpl {
     W1(CorePauliSum<1>),
     W2(CorePauliSum<2>),
@@ -78,6 +79,44 @@ impl PauliSumImpl {
         for_each_width_pair!((self, other), |a, b| a.overlap(b))
     }
 
+    /// `self + factor · other`, matching strings combined and the rest kept; `None` on a width mismatch.
+    /// Caller checks the qubit counts first: equal widths are not equal qubit counts, and the core's merge asserts on the latter.
+    pub fn add_scaled(&self, other: &Self, factor: Complex64) -> Option<Self> {
+        for_each_width_pair_rewrap!((self, other), |a, b, wrap| {
+            if factor == Complex64::new(1.0, 0.0) {
+                wrap(a.add(b))
+            } else {
+                let mut scaled = b.clone();
+                scaled.scale(factor);
+                wrap(a.add(&scaled))
+            }
+        })
+    }
+
+    /// Multiply every coefficient by `factor`, in place.
+    pub fn scale(&mut self, factor: Complex64) {
+        for_each_width!(self, |s| s.scale(factor))
+    }
+
+    /// First `k` terms in canonical order, decoded to `(label, coefficient)` — `O(k)`, not `O(len())`, so `__repr__`/`__str__` stay cheap on a huge sum.
+    pub fn preview(&self, k: usize) -> Vec<(String, Complex64)> {
+        fn preview_of<const W: usize>(
+            s: &CorePauliSum<W>,
+            num_qubits: usize,
+            k: usize,
+        ) -> Vec<(String, Complex64)> {
+            s.iter()
+                .take(k)
+                .map(|(x, z, c)| {
+                    let key = PauliString::<W> { x: *x, z: *z };
+                    (crate::pauli_string::label_of(&key, num_qubits), c)
+                })
+                .collect()
+        }
+        let num_qubits = self.num_qubits();
+        for_each_width!(self, |s| preview_of(s, num_qubits, k))
+    }
+
     /// Snapshot of the coefficient column, in the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`; equal to plain lex order for sums of ≤ 1024 terms).
     pub fn coeffs(&self) -> Vec<Complex64> {
         fn coeffs_of<const W: usize>(s: &CorePauliSum<W>) -> Vec<Complex64> {
@@ -105,11 +144,91 @@ impl PauliSumImpl {
         for_each_width!(self, |s| xz_of(s))
     }
 
-    /// Build from a `{pauli_string: coefficient}` Python dict at the requested width; the width must already match `num_qubits` (caller's job).
-    pub fn from_strings_dict(num_qubits: usize, terms: &Bound<'_, PyDict>) -> PyResult<Self> {
+    /// Build from a `{pauli_string: coefficient}` Python dict. `num_qubits` is inferred from the first key's length when `None`.
+    pub fn from_strings_dict(
+        terms: &Bound<'_, PyDict>,
+        num_qubits: Option<usize>,
+    ) -> PyResult<Self> {
+        let num_qubits = match num_qubits {
+            Some(n) => n,
+            None => match terms.iter().next() {
+                Some((key, _)) => {
+                    let s: String = key.extract().map_err(|_| {
+                        PyTypeError::new_err("PauliSum.from_strings keys must be str")
+                    })?;
+                    s.chars().count()
+                }
+                None => {
+                    return Err(PyValueError::new_err(
+                        "PauliSum.from_strings: cannot infer num_qubits from an empty dict; pass num_qubits explicitly",
+                    ))
+                }
+            },
+        };
         for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
         })
+    }
+
+    /// Build from two equal-length sequences, `labels` (`I/X/Y/Z` strings) and `coefficients`. `num_qubits` is inferred from the first label's length when `None`. A label repeated in `labels` accumulates rather than overwriting, unlike a dict's keys.
+    pub fn from_label_list(
+        labels: &Bound<'_, PyAny>,
+        coefficients: &Bound<'_, PyAny>,
+        num_qubits: Option<usize>,
+    ) -> PyResult<Self> {
+        let labels: Vec<String> = labels.extract().map_err(|_| {
+            PyTypeError::new_err("PauliSum.from_strings: labels must be a sequence of str")
+        })?;
+        let n_coeffs = coefficients.len()?;
+        if labels.len() != n_coeffs {
+            return Err(PyValueError::new_err(format!(
+                "PauliSum.from_strings: {} labels but {} coefficients",
+                labels.len(),
+                n_coeffs
+            )));
+        }
+        let num_qubits = match num_qubits {
+            Some(n) => n,
+            None => labels.first().map(|s| s.chars().count()).ok_or_else(|| {
+                PyValueError::new_err(
+                    "PauliSum.from_strings: cannot infer num_qubits from zero terms; pass num_qubits explicitly",
+                )
+            })?,
+        };
+        for_num_qubits!(num_qubits, |W| parse_label_list::<W>(
+            num_qubits,
+            &labels,
+            coefficients
+        )?)
+        .ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
+    }
+
+    /// Single-term sum from a `PauliString`'s key and a coefficient — `PauliString.__mul__`'s body.
+    /// `coeff` may be exactly zero; `BuildAccumulator::finalize` already drops it, giving the empty sum.
+    pub fn from_single(
+        term: &crate::pauli_string::PauliStringImpl,
+        num_qubits: usize,
+        coeff: Complex64,
+    ) -> Self {
+        fn build<const W: usize>(
+            p: &PauliString<W>,
+            num_qubits: usize,
+            coeff: Complex64,
+        ) -> CorePauliSum<W> {
+            let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
+            acc.add_term(*p, Phase::ONE, coeff);
+            acc.finalize()
+        }
+        use crate::pauli_string::PauliStringImpl as PS;
+        match term {
+            PS::W1(p) => PauliSumImpl::W1(build(p, num_qubits, coeff)),
+            PS::W2(p) => PauliSumImpl::W2(build(p, num_qubits, coeff)),
+            PS::W4(p) => PauliSumImpl::W4(build(p, num_qubits, coeff)),
+            PS::W8(p) => PauliSumImpl::W8(build(p, num_qubits, coeff)),
+            PS::W16(p) => PauliSumImpl::W16(build(p, num_qubits, coeff)),
+        }
     }
 
     /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
@@ -174,9 +293,31 @@ fn parse_terms<const W: usize>(
     Ok(acc.finalize())
 }
 
+/// Build a `PauliSum<W>` from parallel `labels`/`coefficients` sequences. Unlike [`parse_terms`]'s dict, a label repeated in `labels` is not an error — `BuildAccumulator::add_term` sums it, the same accumulation the manual's Hamiltonian example does by hand with a dict.
+fn parse_label_list<const W: usize>(
+    num_qubits: usize,
+    labels: &[String],
+    coefficients: &Bound<'_, PyAny>,
+) -> PyResult<CorePauliSum<W>> {
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, labels.len());
+    for (i, s) in labels.iter().enumerate() {
+        if s.len() != num_qubits {
+            return Err(PyValueError::new_err(format!(
+                "Pauli string {:?} has length {}, expected {} (length must match num_qubits)",
+                s,
+                s.len(),
+                num_qubits
+            )));
+        }
+        let c = extract_complex(&coefficients.get_item(i)?)?;
+        acc.add_term(parse_pauli_key::<W>(s)?, Phase::ONE, c);
+    }
+    Ok(acc.finalize())
+}
+
 /// Parse an `I/X/Y/Z` label into a symplectic key (the crate's Hermitian convention: `Y` maps to `(x=1, z=1)` with no phase factor).
 /// Caller checks the label's length against `num_qubits` first; this only rejects characters outside the alphabet.
-fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
+pub(crate) fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
     let mut x = [0u64; W];
     let mut z = [0u64; W];
     for (i, ch) in s.chars().enumerate() {
@@ -314,7 +455,7 @@ fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
 }
 
 /// Extract a Python complex/float/int into `Complex64`.
-fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
+pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if let Ok(c) = val.downcast::<PyComplex>() {
         return Ok(Complex64::new(c.real(), c.imag()));
     }
@@ -1213,6 +1354,106 @@ pub struct PauliSum {
     pub(crate) inner: PauliSumImpl,
 }
 
+impl PauliSum {
+    /// `self + factor · other`, with the qubit counts checked first — the core's merge asserts on a mismatch, and two different qubit counts can still share a width band.
+    fn checked_add(&self, other: &PauliSumImpl, factor: Complex64) -> PyResult<PauliSumImpl> {
+        if self.inner.num_qubits() != other.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "num_qubits mismatch ({} vs {})",
+                self.inner.num_qubits(),
+                other.num_qubits(),
+            )));
+        }
+        self.inner
+            .add_scaled(other, factor)
+            .ok_or_else(|| PyValueError::new_err("sums were monomorphized at different widths"))
+    }
+
+    /// `self` scaled by a Python number. An exact-zero factor gives the empty sum, keeping the "no stored zero coefficient" invariant `from_strings` and the merge both hold.
+    fn scaled(&self, factor: &Bound<'_, PyAny>) -> PyResult<PauliSumImpl> {
+        let factor = scalar_factor(factor)?;
+        if factor == Complex64::new(0.0, 0.0) {
+            return PauliSumImpl::empty_for(self.inner.num_qubits())
+                .ok_or_else(|| PyValueError::new_err("internal: width band lost"));
+        }
+        let mut inner = self.inner.clone();
+        inner.scale(factor);
+        Ok(inner)
+    }
+
+    /// `slf += factor · other`, in place.
+    /// `a += a` aliases one Python object into both operands, so that case merges against a snapshot rather than taking two borrows of the same cell.
+    fn add_in_place(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        factor: Complex64,
+    ) -> PyResult<()> {
+        let combined = if slf.is(other) {
+            let this = slf.borrow();
+            let snapshot = this.inner.clone();
+            this.checked_add(&snapshot, factor)?
+        } else {
+            let this = slf.borrow();
+            let that = other.borrow();
+            this.checked_add(&that.inner, factor)?
+        };
+        slf.borrow_mut().inner = combined;
+        Ok(())
+    }
+}
+
+/// How many terms `__repr__`/`__str__` show before falling back to `... (N more terms)`.
+const PREVIEW_TERMS: usize = 4;
+
+/// `0.25` for a real coefficient, `(0.25+0.5j)` otherwise — dropping the `+0j` tail Python's own `complex.__repr__` always carries, since most coefficients in this library are real.
+fn format_coeff(c: Complex64) -> String {
+    if c.im == 0.0 {
+        format!("{}", c.re)
+    } else {
+        format!(
+            "({}{}{}j)",
+            c.re,
+            if c.im < 0.0 { "-" } else { "+" },
+            c.im.abs()
+        )
+    }
+}
+
+/// `PauliSum.__repr__`/`__str__`'s body: the first [`PREVIEW_TERMS`] terms as `coefficient*label`, `+`-joined, with a trailing count of however many more there are.
+/// `0` for the empty sum — the zero operator, not "no terms".
+fn format_sum(inner: &PauliSumImpl) -> String {
+    let len = inner.len();
+    if len == 0 {
+        return "0".to_string();
+    }
+    let shown = inner.preview(PREVIEW_TERMS);
+    let mut parts: Vec<String> = shown
+        .iter()
+        .map(|(label, c)| format!("{}*{}", format_coeff(*c), label))
+        .collect();
+    if len > shown.len() {
+        parts.push(format!(
+            "... ({} more term{})",
+            len - shown.len(),
+            if len - shown.len() == 1 { "" } else { "s" }
+        ));
+    }
+    parts.join(" + ")
+}
+
+/// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
+fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
+    if factor.downcast::<PauliSum>().is_ok() {
+        return Err(PyTypeError::new_err(
+            "PauliSum * PauliSum is not supported: that is a full operator product, not a scalar \
+             scaling; * and *= take a complex or real number",
+        ));
+    }
+    extract_complex(factor).map_err(|_| {
+        PyTypeError::new_err("PauliSum * x: x must be a complex or real number (scalar scaling)")
+    })
+}
+
 #[pymethods]
 impl PauliSum {
     /// Empty Pauli sum on `num_qubits` qubits.
@@ -1225,18 +1466,39 @@ impl PauliSum {
             })
     }
 
-    /// Build from a `{pauli_string: coefficient}` dict.
+    /// Build from a `{pauli_string: coefficient}` dict, or from `(labels, coefficients)` — two equal-length sequences.
     ///
-    /// Each key is a string of `I/X/Y/Z` characters, one per qubit (index
+    /// Each label is a string of `I/X/Y/Z` characters, one per qubit (index
     /// `i` addresses qubit `i`). Coefficients multiply the literal Hermitian
     /// Pauli string, so a Hermitian observable has real coefficients.
+    /// `num_qubits` is inferred from the first label's length when omitted.
+    /// A label repeated in the two-sequence form accumulates, unlike a dict's keys.
     #[classmethod]
+    #[pyo3(signature = (terms, coefficients=None, *, num_qubits=None))]
     fn from_strings(
         _cls: &Bound<'_, pyo3::types::PyType>,
-        terms: &Bound<'_, PyDict>,
-        num_qubits: usize,
+        terms: &Bound<'_, PyAny>,
+        coefficients: Option<&Bound<'_, PyAny>>,
+        num_qubits: Option<usize>,
     ) -> PyResult<Self> {
-        let inner = PauliSumImpl::from_strings_dict(num_qubits, terms)?;
+        let inner = match coefficients {
+            Some(coefficients) => {
+                if terms.downcast::<PyDict>().is_ok() {
+                    return Err(PyTypeError::new_err(
+                        "PauliSum.from_strings: pass either a dict, or (labels, coefficients) as two sequences — not a dict with coefficients also given",
+                    ));
+                }
+                PauliSumImpl::from_label_list(terms, coefficients, num_qubits)?
+            }
+            None => {
+                let dict = terms.downcast::<PyDict>().map_err(|_| {
+                    PyTypeError::new_err(
+                        "PauliSum.from_strings: pass a dict, or (labels, coefficients) as two equal-length sequences",
+                    )
+                })?;
+                PauliSumImpl::from_strings_dict(dict, num_qubits)?
+            }
+        };
         Ok(Self { inner })
     }
 
@@ -1264,6 +1526,16 @@ impl PauliSum {
 
     fn __len__(&self) -> usize {
         self.inner.len()
+    }
+
+    /// The first few terms as `coefficient*label`, `+`-joined; `0` for the empty sum.
+    /// Always a prefix in canonical storage order, never sorted by magnitude — that would cost `O(len() log len())` just to print, on a type whose whole point is staying cheap at a huge term count.
+    fn __repr__(&self) -> String {
+        format_sum(&self.inner)
+    }
+
+    fn __str__(&self) -> String {
+        format_sum(&self.inner)
     }
 
     /// Current bucket count the sum's storage is partitioned into.
@@ -1355,6 +1627,50 @@ impl PauliSum {
     /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
     fn identity_coefficient(&self) -> Complex64 {
         self.inner.identity_coefficient()
+    }
+
+    /// `self + other`: coefficients added on matching strings, the rest kept. Both operands are left untouched.
+    fn __add__(&self, other: &Self) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.checked_add(&other.inner, Complex64::new(1.0, 0.0))?,
+        })
+    }
+
+    /// `self - other`, the same merge with `other`'s coefficients negated.
+    fn __sub__(&self, other: &Self) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.checked_add(&other.inner, Complex64::new(-1.0, 0.0))?,
+        })
+    }
+
+    /// `self += other`, in place.
+    fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        Self::add_in_place(slf, other, Complex64::new(1.0, 0.0))
+    }
+
+    /// `self -= other`, in place.
+    fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        Self::add_in_place(slf, other, Complex64::new(-1.0, 0.0))
+    }
+
+    /// `self * scalar`: every coefficient scaled by a complex or real number.
+    ///
+    /// Scalar-only. Multiplying two sums is a full operator product, a much larger operation this class does not implement.
+    fn __mul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.scaled(factor)?,
+        })
+    }
+
+    /// `scalar * self`, identical to `self * scalar`.
+    fn __rmul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__mul__(factor)
+    }
+
+    /// `self *= scalar`, in place.
+    fn __imul__(&mut self, factor: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.inner = self.scaled(factor)?;
+        Ok(())
     }
 
     /// Snapshot of the coefficient column as a 1-D NumPy `complex128` array.

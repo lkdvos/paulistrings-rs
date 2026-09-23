@@ -1,6 +1,6 @@
 [book]
 title = "paulistrings-rs"
-description = "Pauli propagation in Rust: showcases, benchmarks, and cross-engine comparisons."
+description = "Pauli propagation from Python: a Manual, worked Examples, and a Library reference."
 language = "en"
 src = "src"
 
@@ -9,6 +9,9 @@ build-dir = "site"
 # A SUMMARY.md entry with no file behind it is an error, not a silently created
 # empty page — the site is assembled from committed material only.
 create-missing = false
+
+[preprocessor.katex]
+after = ["links"]
 
 [output.html]
 site-url = "/paulistrings-rs/"

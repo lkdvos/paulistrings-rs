@@ -13,4 +13,4 @@ Both scripts run on the default 32-worker Rayon pool.
 These are not laptop runs: peak RSS reaches double-digit GB.
 Each run rewrites `results_1d.json` / `results_2d.json` and the `.svg` figures next to itself.
 
-Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/showcases/b1-operator-scrambling.html
+Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/examples/showcases/b1-operator-scrambling.html

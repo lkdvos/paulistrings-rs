@@ -11,4 +11,4 @@ pytest examples/tests/test_showcase_b7.py                                 # 36 t
 
 The run writes `theta_sweep.csv`/`.svg`, `scaling.csv`/`.svg`, `prep_depth.csv`, `convergence_panel.svg`, `results_b7.json`, and `validation_b7.json` next to this README.
 
-Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/showcases/b7-stabilizer-prep.html
+Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/examples/showcases/b7-stabilizer-prep.html

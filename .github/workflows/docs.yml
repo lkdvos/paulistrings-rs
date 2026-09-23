@@ -3,38 +3,29 @@ name: docs
 on:
   push:
     branches: [main]
-  # A pull request that touches the site builds and link-checks it, but stops
-  # short of the Pages steps (a fork PR's token cannot write Pages).
+  # A pull request that touches the site builds, link-checks, and live-runs
+  # the doc snippets; same-repo PRs (forks can't write) also get a preview
+  # deploy under pr-preview/pr-<n>/, removed again when the PR closes.
   pull_request:
+    types: [opened, reopened, synchronize, closed]
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"
       - "README.md"
   workflow_dispatch:
 
-# Pages deployment needs these scopes.
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-# Allow only one concurrent deployment; in-progress runs are not cancelled
-# so the most recent push always wins.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 env:
   # Keep this in step with the version docs/README.md tells contributors to
   # install, so a local build and CI cannot disagree about rendering.
   MDBOOK_VERSION: 0.5.4
+  MDBOOK_KATEX_VERSION: 0.10.0
 
 jobs:
   build:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
-      PUBLISHING: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +46,11 @@ jobs:
             cargo install mdbook --locked --version "${MDBOOK_VERSION}"
           fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # No prebuilt binary is published for this one; rust-cache below keeps
+      # the rebuild cheap on every run after the first.
+      - name: Install mdbook-katex
+        run: cargo install mdbook-katex --locked --version "${MDBOOK_KATEX_VERSION}"
 
       # The figures are relative symlinks into the repository (see
       # docs/sync-assets.sh); this both validates them and proves the committed
@@ -118,21 +114,110 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      - uses: actions/configure-pages@v5
-        if: env.PUBLISHING == 'true'
-
-      - uses: actions/upload-pages-artifact@v3
-        if: env.PUBLISHING == 'true'
+      - uses: actions/setup-python@v5
         with:
+          python-version: "3.11"
+
+      # Debug-profile build, same as the `python` CI job: these snippets check
+      # correctness, not performance. `stim`/`qiskit` cover the interop how-to.
+      - name: Build the Python extension
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install 'maturin>=1.5,<2.0' 'numpy>=1.24' stim qiskit
+          maturin develop -m crates/paulistrings-py/Cargo.toml
+
+      # Every ```python fence in the book runs for real against the built
+      # extension, except ones marked `<!-- doctest: skip -->` (MPI/NUMA
+      # snippets this runner has no hardware for, and case-study excerpts
+      # already covered by `pytest examples/tests`).
+      - name: Run the doc snippets
+        run: |
+          source .venv/bin/activate
+          python scripts/test-doc-snippets.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
           path: _site
 
-  deploy:
-    if: github.event_name != 'pull_request'
-    needs: build
+  # Non-fork PRs and pushes to main can write to this repo; deploy/preview
+  # need that to push to `gh-pages`, so both are skipped otherwise.
+  can-write:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.can-write.outputs.allowed == 'true'
+    needs: [build, can-write]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages-write
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: _site
+      # `keep_files` preserves the `pr-preview/` subtrees the preview job
+      # below writes to the same branch — a plain force-push would wipe them.
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _site
+          publish_branch: gh-pages
+          keep_files: true
+
+  preview:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && needs.can-write.outputs.allowed == 'true'
+    needs: [build, can-write]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: gh-pages-write
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: _site
+      - uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: _site
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+
+  preview-remove:
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action == 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: gh-pages-write
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rossjrw/pr-preview-action@v1
+        with:
+          action: remove
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview

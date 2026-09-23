@@ -13,4 +13,4 @@ pytest examples/tests/test_showcase_b2.py                                     # 
 `RAYON_NUM_THREADS=1` must be exported before the interpreter starts; the driver refuses to run otherwise.
 The full run writes `results.json`, `summary.json`, and three `.svg` figures next to this README.
 
-Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/showcases/b2-noisy-verification.html
+Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/examples/showcases/b2-noisy-verification.html

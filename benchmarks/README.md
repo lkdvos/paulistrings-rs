@@ -1,7 +1,7 @@
 # Benchmarks
 
 Three benchmark surfaces: Rust microbenchmarks, Python end-to-end benchmarks (including the examples-and-benchmarks suite's Part A entries), and a Julia cross-engine baseline.
-Full narrative, rules, and headline results: [Benchmarks](https://lkdvos.github.io/paulistrings-rs/benchmarks/index.html) and [Against other tools](https://lkdvos.github.io/paulistrings-rs/comparisons.html).
+Full narrative, rules, and headline results: [Benchmarks](https://lkdvos.github.io/paulistrings-rs/examples/benchmarks/index.html) and [Against other tools](https://lkdvos.github.io/paulistrings-rs/examples/comparisons.html).
 
 ## Rust microbenchmarks (criterion)
 

@@ -1,33 +1,43 @@
 # Summary
 
 [paulistrings-rs](index.md)
-[Getting started](getting-started.md)
+[Installation](installation.md)
 
-# Showcases
-
-- [Overview](showcases/index.md)
-- [B1 — Operator scrambling](showcases/b1-operator-scrambling.md)
-- [B2 — Noisy circuit verification](showcases/b2-noisy-verification.md)
-- [B5 — Hybrid depth reduction](showcases/b5-operator-backpropagation.md)
-- [B6 — Resource probes of the evolved operator](showcases/b6-resource-probes.md)
-- [B7 — Stabilizer-state preparation](showcases/b7-stabilizer-prep.md)
-
-# Benchmarks
-
-- [Overview](benchmarks/index.md)
-- [A — Clifford point](benchmarks/a-clifford.md)
-- [B — Kick-angle sweep](benchmarks/b-theta-sweep.md)
-- [C — Deep Trotter circuits](benchmarks/c-deep-trotter.md)
-- [D — XXZ chain scaling](benchmarks/d-xxz-chain.md)
-- [E — Random SU(4) brickwork](benchmarks/e-su4-brickwork.md)
-
-# Design
-
-- [How it works](design/index.md)
-- [Performance](design/performance.md)
-- [Running across NUMA nodes](design/numa.md)
-- [Running across MPI ranks](design/mpi.md)
-
-# Comparisons
-
-- [Against other tools](comparisons.md)
+- [Manual](manual/index.md)
+  - [Operators](manual/operators.md)
+  - [Circuits](manual/circuits.md)
+  - [Engine and propagation](manual/propagation/index.md)
+    - [Direction](manual/propagation/direction.md)
+    - [Truncation](manual/propagation/truncation.md)
+    - [Validating a result](manual/propagation/validation.md)
+    - [Incremental propagation](manual/propagation/incremental.md)
+    - [Stats, memory and logging](manual/propagation/settings.md)
+    - [Inside the engine](manual/propagation/engine.md)
+    - [NUMA partitions](manual/propagation/partitions.md)
+    - [MPI ranks](manual/propagation/mpi.md)
+  - [Measurements](manual/measurements.md)
+- [Examples](examples/index.md)
+  - [First propagation](examples/first-propagation.md)
+  - [Showcases](examples/showcases/index.md)
+    - [B1 — Operator scrambling](examples/showcases/b1-operator-scrambling.md)
+    - [B2 — Noisy circuit verification](examples/showcases/b2-noisy-verification.md)
+    - [B5 — Hybrid depth reduction](examples/showcases/b5-operator-backpropagation.md)
+    - [B6 — Resource probes](examples/showcases/b6-resource-probes.md)
+    - [B7 — Stabilizer-state preparation](examples/showcases/b7-stabilizer-prep.md)
+  - [Benchmarks](examples/benchmarks/index.md)
+    - [A — Clifford point](examples/benchmarks/a-clifford.md)
+    - [B — Kick-angle sweep](examples/benchmarks/b-theta-sweep.md)
+    - [C — Deep Trotter circuits](examples/benchmarks/c-deep-trotter.md)
+    - [D — XXZ chain scaling](examples/benchmarks/d-xxz-chain.md)
+    - [E — Random SU(4) brickwork](examples/benchmarks/e-su4-brickwork.md)
+    - [Engine performance](examples/benchmarks/engine-performance.md)
+  - [Against other tools](examples/comparisons.md)
+- [Library](library/index.md)
+  - [PauliString](library/pauli-string.md)
+  - [PauliSum](library/pauli-sum.md)
+  - [Circuit](library/circuit.md)
+  - [propagate](library/propagate.md)
+  - [Truncation policies](library/truncation.md)
+  - [Direction semantics](library/direction.md)
+  - [Measurement](library/measurement.md)
+  - [Module helpers](library/module-helpers.md)

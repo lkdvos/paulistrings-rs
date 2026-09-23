@@ -2,7 +2,7 @@
 
 Single-threaded, core versus core, on parity-gated configurations, under an interleaved-pair protocol.
 This directory is the index for the study: driver `benchmarks/python/bench_jl_performance.py`, figures `benchmarks/python/jl_performance_figures.py`.
-Method, headline numbers and interpretation: [Against other tools](https://lkdvos.github.io/paulistrings-rs/comparisons.html).
+Method, headline numbers and interpretation: [Against other tools](https://lkdvos.github.io/paulistrings-rs/examples/comparisons.html).
 
 Every record directory carries `results.json` (one record per configuration per engine), `summary.json` (per-pair ratios, crossovers, parity evidence), `run.log` and its figures; most also carry `tasks/`, the schema-v1 task files both engines read.
 

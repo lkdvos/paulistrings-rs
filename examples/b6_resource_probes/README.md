@@ -10,4 +10,4 @@ pytest examples/tests/test_showcase_b6.py   # CI-safe gate, 18 tests, numpy-only
 
 Regenerates `theta_sweep.csv`, `depth_sweep.csv`, `exact_cross_check.json`, and all three SVGs in well under a minute.
 
-Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/showcases/b6-resource-probes.html
+Full writeup, headline numbers, and provenance: https://lkdvos.github.io/paulistrings-rs/examples/showcases/b6-resource-probes.html

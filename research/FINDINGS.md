@@ -153,6 +153,13 @@ Resolved: every parser now uses the core's Hermitian convention, `Y ↔ (x=1, z=
 The PauliPropagation.jl cross-engine baseline caught `apply`/`apply_adjoint` swapped relative to every other channel, so `direction="heisenberg"` applied `Φ` instead of its dual `Φ†`.
 The two bodies were swapped; the Heisenberg fixture is now bit-exact against jl on all 9 terms, and a unit test pins the orientation from both sides.
 
+### `Gf2Hash` rows are splitmix64, not xorshift successors
+
+Asked whether rows drawn as consecutive xorshift64 outputs cost load balance: they satisfy `rows_z[r] = M·rows_x[r]` word for word, so the 64 deltas `d_j = (row_j(M), e_j)`, mean Pauli weight 6.1, hashed to 0 under every seed and bucket count (192/192 at 20 bits over three seeds) and a 64-row fingerprint collided on 1258 of 18 337 weight-≤2 keys.
+Every row word is now splitmix64 of `(seed, row, word, x-or-z)`, for `Gf2Hash` and `PartitionRows` alike: 0/192 kernel deltas hash to 0 and the fingerprint is injective.
+On a sum closed under ten of the `d_j` (1024 weight-4 bases × 2^10, `B` = 1024) the old rows left **371 buckets empty and a max of 6144** against a median of 1024; the new rows leave none empty, max 1084.
+The probe's layers never contain the family, so their occupancy is unchanged: `su4` median/p95/max 862/913/985 → 861/915/970, `heavyhex_step` 682/692/692 → 695/725/725 at 8 buckets, no empty buckets either way.
+
 ## GPU spike
 
 Measured on ccqlin038 (RTX A6000, sm_86, 48 GB, shared box, clocks unlocked at 1800 MHz SM / 7601 MHz memory) with a throwaway `gpu_spike` example; CPU references from `phase_breakdown` at 16 threads with `scripts/jcc-rustflags.sh` sourced.
@@ -242,12 +249,6 @@ The radix kernel's scratch grows 16 B/row and its win shrinks toward the write c
 Asked how the GPU does on `cnot`, `gu2q` and `rotation_zz` at steady state.
 1.3–2.0 ns per steady term, only **1.3–3.6× the 16-thread host**, because a position holds ~300 records padded to a 1024-record block whose eight radix passes and syncs dominate (1.1–1.4 ns per record against 0.26 on dense layers).
 The bucket target should track records per block (fanout × terms per bucket), not terms per bucket; untested.
-
-### `Gf2Hash` rows are xorshift successors
-
-Asked why weight-2 keys collided in a fingerprint drawn with the crate's `Xs64` construction: consecutive xorshift outputs are GF(2)-linear in one state, so `rows_z[r] = M·rows_x[r]`.
-The same holds for `Gf2Hash`: the 64 deltas `d_j = (row_j(M), e_j)`, mean weight 7.1, satisfy `h(d_j) = 0` under every seed and bucket count (192/192 at 20 bits, three seeds), so `u` and `u ⊕ d_j` always share a bucket.
-Correctness is unaffected; load balance on structured sums is, and `PartitionRows` inherits it; unmeasured.
 
 ### CPU/GPU crossover is below 1e4 terms for a second layer
 

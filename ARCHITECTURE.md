@@ -90,7 +90,7 @@ This is what makes a *persistent* partition viable while `n` swings by orders of
 
 ## Hash
 
-`Gf2Hash<W>` stores `b_max` rows as `(rows_x, rows_z)` word masks, an active prefix length `b`, and the seed that generated the rows (a xorshift64 construction, reproducible with no added dependency).
+`Gf2Hash<W>` stores `b_max` rows as `(rows_x, rows_z)` word masks, an active prefix length `b`, and the seed that generated the rows; each row word is splitmix64 of `(seed, row, word, x-or-z)`, so the rows are reproducible with no added dependency and the same at every `W`.
 `bucket_of(x, z)` sets result bit `i` to `parity(x & rows_x[i]) ^ parity(z & rows_z[i])`; `row_parity` evaluates a single row for the refinement pass, making refine `O(n)` rather than `O(n·b)`.
 Columns beyond `2·num_qubits` are masked to zero at construction.
 The hash is stored with the sum; two sums combine only if they share it.
@@ -99,6 +99,7 @@ The hash is stored with the sum; two sums combine only if they share it.
 **The rows must be dense and random.**
 A coordinate projection is also GF(2)-linear, but weight-based truncation keeps sums low-weight, so chosen coordinates are almost always zero and load balance collapses exactly on the workloads that matter.
 A dense random `H` is a universal hash family on the key space: maximum bucket load is `m/B + O(√(m log B / B))` with high probability *independent of input structure*, and `rank(H|_D) = dim D` holds with probability `≥ 1 − 2^{dim D − b}`.
+Random must also mean free of GF(2)-linear relations between row words: consecutive outputs of a GF(2)-linear generator such as xorshift satisfy `rows_z = M·rows_x`, which puts a fixed family of weight-≈6 keys in the kernel of `H` under every seed.
 The `b × 2W` popcount cost per term is paid only at ingestion and rehash, never in the layer loop.
 Known wart: `h(0) = 0`, so the identity string always sits in bucket 0.
 

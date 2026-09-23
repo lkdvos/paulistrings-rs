@@ -75,21 +75,17 @@ RAYON_NUM_THREADS=1 python benchmarks/python/bench_e_su4.py
 None of these is in CI. Each has a CI-safe correctness gate at smaller scale
 under `benchmarks/python/tests/`, so the physics is checked on every commit.
 
-There is a further benchmark surface this section does not cover: the cross-*library*
-construction/conjugation comparison against `qiskit.SparsePauliOp` and
-`openfermion.QubitOperator` in `benchmarks/python/bench_baseline.py`.
+The cross-*library* construction/conjugation comparison against
+`qiskit.SparsePauliOp` and `openfermion.QubitOperator` lives in
+`benchmarks/python/bench_baseline.py`.
 
-## Caveat for every benchmark page
+## Reading a wall time
 
-**Wall times are indicative of shape, not campaign-grade.** They were taken on a
-shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, `ccqlin038`) whose stated
-single-thread run-to-run noise is ±5–8% — and concurrent load was heavier than
-that at times: the same configuration in Benchmark B measured 13.8 s and 28.6 s
-in two probes minutes apart. Term counts, expectation values, parity outcomes and
-convergence verdicts are load-independent, and those are the numbers to quote.
-Anything under ~10% needs `scripts/ab-compare.sh` (two prebuilt binaries
-alternated adjacent in time, paired per-run deltas, acceptance by direction
-consistency across every pair), not these tables.
+Term counts, expectation values, parity outcomes and convergence verdicts are
+load-independent — quote those. A wall-time delta under ~10% needs
+`scripts/ab-compare.sh` (two prebuilt binaries alternated adjacent in time,
+paired per-run deltas, acceptance by direction consistency across every pair),
+not these tables.
 
 **Sources:**
 [`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md)

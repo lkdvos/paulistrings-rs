@@ -185,10 +185,7 @@ At `1e-10`, for all five channels mixed with `h`/`s`/`cnot`/`cz`/`swap`, non-Cli
 
 ## Caveats
 
-Wall times are indicative, not campaign-grade: single-threaded on a shared
-workstation whose stated single-thread noise is ±5–8%, run with `warmup=False`;
-term counts, expectation values, and convergence verdicts are the load-independent
-numbers to quote. A truncated Pauli sum has [no variational bound](../../manual/propagation/truncation.md#no-variational-bound), since discarded
+A truncated Pauli sum has [no variational bound](../../manual/propagation/truncation.md#no-variational-bound), since discarded
 terms carry signs and the error need not shrink monotonically with the cutoff;
 `converged = false` means no usable uncertainty estimate, not a slightly weaker one.
 The noise model is a model, not a device: a real Eagle device has different error

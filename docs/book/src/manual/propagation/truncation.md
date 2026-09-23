@@ -110,7 +110,6 @@ And the granularity rule above applies to noise as well: a broadcast `depolarize
 A truncated Pauli sum has no variational bound.
 Discarded terms carry signs, so a partial sum can sit on either side of the truth, and the error need not fall monotonically as the cutoff tightens.
 
-This is measured, not hypothetical.
 [Benchmark B](../../examples/benchmarks/b-theta-sweep.md#non-monotone-truncation-error) records a weight-10 observable at `θ_h = π/4` whose error against an exact reference is `1.10e-3` at `coeff(1e-2)`, `2.31e-3` at `1e-3` and `2.00e-3` at `1e-4` — the loosest cutoff is the closest.
 [Benchmark D](../../examples/benchmarks/d-xxz-chain.md#convergence-panels) records the same thing on an XXZ chain: `3.3e-6` at `1e-4` then `9.0e-6` at `1e-5` in the free regime, `2.9e-7` at `1e-7` then `4.3e-7` at `1e-8` in the interacting one, while the trend across the whole grid still converges.
 

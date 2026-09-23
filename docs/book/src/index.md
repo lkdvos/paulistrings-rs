@@ -107,46 +107,7 @@ t=0.40  <X>=+0.271814  terms=57493
 t=0.50  <X>=+0.183984  terms=98698
 ```
 
-The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count — the cost driver [Scope](#scope) below names, measured here rather than asserted.
-This run is single-threaded and untruncated below `1e-6`, so it is not the headline figure's numbers; it is the same loop at a size this page can execute rather than only show.
-
-## Scope
-
-- **Operator-basis Pauli propagation at 10⁶–10⁸ terms**, in either picture.
-- **A GF(2)-bucketed, write-disjoint parallel engine.** Terms are partitioned by
-  a GF(2)-linear hash `h(v) = H·v`, which makes a channel's output buckets
-  statically predictable and deduplication bucket-local — so the unit of
-  parallel work is a coset that no other worker writes to. No atomics, no locks,
-  no global sort in the propagation loop.
-- **Open extension points for research.** A custom gate, noise model or
-  truncation policy plugs in without touching the engine; implementing one is
-  a Rust-side hand-off — see the rustdoc linked below.
-- **Handles 64–1024 qubits via compile-time width tiers**, picked
-  automatically from the qubit count, with dispatch done once outside the hot
-  loop.
-- **A GPU-ready, C-compatible plain-data layout** with fixed-fanout output
-  buffers: a future GPU backend is an added kernel, not a rewrite.
-
-## Non-goals
-
-State-vector, tensor-network, stabilizer and matrix-product-state simulation
-are **explicit non-goals**. This engine has one storage type — a bucketed sum
-of parallel x/z/coefficient columns — and one loop.
-[Against other tools](examples/comparisons.md) says which method fits which
-problem, including the two places this engine is measurably *slower* than the
-alternative.
-
-Two hard edges worth knowing before you start:
-
-- A channel with support on more than two qubits (other than a Pauli rotation,
-  which handles any generator weight) makes `propagate` **panic**. There is no
-  fallback path.
-- A truncated Pauli sum has **no variational bound**. Discarded terms carry
-  signs, so a partial sum can sit on either side of the truth and the error
-  need not be monotone in the cutoff. This is measured, not hypothetical —
-  [Benchmark B](examples/benchmarks/b-theta-sweep.md#non-monotone-truncation-error)
-  and [Benchmark C](examples/benchmarks/c-deep-trotter.md) both show it
-  happening.
+The magnetization falls and the tracked term count climbs by more than two orders of magnitude over five steps at fixed qubit count.
 
 ## Sections
 
@@ -158,30 +119,6 @@ Two hard edges worth knowing before you start:
 | [Library](library/index.md) | this book's Python API reference |
 | [Rust API](api/paulistrings/index.html) | rustdoc for the core crate, plus [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) on GitHub — the hand-off point for Rust users, not part of this book |
 
-## Numbers on this site
 
-Every number here is copied from a **committed** results file or README in the
-repository, and every page names the file it came from. No measurement was
-taken to build this site. Three consequences:
-
-- **Wall times are indicative, not campaign-grade.** They were taken on a
-  shared workstation (Intel Xeon Gold 6244 @ 3.60 GHz, `ccqlin038`) whose stated
-  single-thread run-to-run noise is ±5–8%, and ±10–26% at 8–32 threads. Term
-  counts, expectation values, parity outcomes and convergence verdicts are
-  load-independent; those are the numbers to quote. Anything under ~10% needs
-  the repo's A/B protocol (`scripts/ab-compare.sh`), not these tables.
-- **"Not claimable" is a result.** Several pages report a configuration whose
-  convergence sweep never plateaued, and therefore quote no value. That verdict
-  comes from a criterion fixed in code before the run, and it is not bent to fit
-  an answer.
-- **Reproduction is one command per page.** Each showcase and benchmark page
-  ends with the exact invocation that regenerates its figures and JSON.
-
-## Repository
-
-Source, issues and the full research record:
-[github.com/lkdvos/paulistrings-rs](https://github.com/lkdvos/paulistrings-rs).
-The design source of truth is
-[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md);
-the site's [Manual](manual/index.md) is its public summary.
+Source, issues and the full research record: [github.com/lkdvos/paulistrings-rs](https://github.com/lkdvos/paulistrings-rs).
 Dual-licensed MIT OR Apache-2.0.

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["apply_layer_bucketed"],"struct":["GateTrace","LayerScratch","TermTrace"]};

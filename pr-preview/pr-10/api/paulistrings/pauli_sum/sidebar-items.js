@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["PauliAxis","ProductState"],"struct":["ProductBasis"]};

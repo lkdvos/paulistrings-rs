@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["accumulator","bucket","channel","circuit","engine","examples","pauli_string","pauli_sum","phase","stabilizer","truncation"]};

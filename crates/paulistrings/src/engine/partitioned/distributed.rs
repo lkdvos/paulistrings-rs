@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
+use super::backend::{HostPartition, PartitionBackend};
 use super::driver::{run_layers, scatter_local, PartitionCtx, PartitionWork};
-use super::layer::PartitionState;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
@@ -55,6 +55,8 @@ pub enum PartitionRowPolicy {
 ///
 /// Held across calls — the split, the rows, the pool and the layer scratch all persist — so a Trotter driver scatters once, steps many times, and gathers once.
 /// See the module docs for the input/output contract.
+///
+/// `B` is where the rank's partition lives; only the default, host memory, is constructible outside the crate.
 ///
 /// # Examples
 ///
@@ -115,15 +117,13 @@ pub enum PartitionRowPolicy {
 /// let out = gathered.expect("rank 0 gathers");
 /// assert_eq!(out.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
 /// ```
-pub struct DistributedSum<const W: usize, X: Transport> {
-    /// This rank's share of the sum.
-    local: PauliSum<W>,
+pub struct DistributedSum<const W: usize, X: Transport, B = HostPartition<W>> {
+    /// This rank's share of the sum and its layer and export scratch, retained across calls.
+    local: B,
     /// The rows deciding which rank a key belongs to.
     rows: PartitionRows<W>,
     /// The one-partition runtime this rank's work runs on.
     runtime: Arc<PartitionRuntime>,
-    /// This rank's layer and export scratch, retained across calls.
-    state: PartitionState<W>,
     /// This rank's endpoint in the group.
     transport: X,
     /// The opt-in per-layer trace, `None` unless [`enable_trace`](Self::enable_trace) was called.
@@ -139,6 +139,117 @@ pub struct DistributedSum<const W: usize, X: Transport> {
     /// Layers driven since the counters were drained.
     #[cfg(feature = "phase-timing")]
     layers: u64,
+}
+
+impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
+    /// This rank's index in the group.
+    pub fn rank(&self) -> u32 {
+        self.transport.rank()
+    }
+
+    /// Ranks in the group, which is also the partition count.
+    pub fn size(&self) -> u32 {
+        self.transport.size()
+    }
+
+    /// This rank's endpoint, for a caller that needs a collective of its own (a reduction over per-rank measurements, say).
+    pub fn transport(&self) -> &X {
+        &self.transport
+    }
+
+    /// The rows deciding which rank a key belongs to.
+    pub fn rows(&self) -> &PartitionRows<W> {
+        &self.rows
+    }
+
+    /// The runtime this rank's work runs on, for handing to another [`DistributedSum`].
+    pub fn runtime(&self) -> &Arc<PartitionRuntime> {
+        &self.runtime
+    }
+
+    /// Start recording a [`PartitionTrace`] of **this rank's** layers on every subsequent propagation.
+    /// Idempotent.
+    pub fn enable_trace(&mut self) {
+        self.trace.get_or_insert_with(PartitionTrace::default);
+    }
+
+    /// Drain and return this rank's records, or `None` if tracing was never enabled.
+    ///
+    /// Per rank: each record's `terms_in`, `terms_out` and `rows_received` have exactly one entry (this rank's), while `rows_sent[0]` and `bytes_sent[0]` are indexed by destination rank over the whole group.
+    /// Draining leaves tracing enabled with no records.
+    pub fn take_trace(&mut self) -> Option<PartitionTrace> {
+        self.trace.as_mut().map(std::mem::take)
+    }
+
+    /// [`DistributedSum::propagate_with_options`] on any backend.
+    pub(crate) fn propagate_on_backend<T>(
+        &mut self,
+        circuit: &Circuit<W>,
+        policy: &T,
+        direction: Direction,
+        options: PropagateOptions,
+    ) where
+        T: PartitionedTruncation<W> + ?Sized,
+        B: PartitionBackend<W, T>,
+    {
+        let n = circuit.channels.len();
+        let rank = self.transport.rank() as usize;
+        let size = self.transport.size() as usize;
+        let terms_in = self.local.len();
+        let started = Instant::now();
+        log::info!(
+            target: LOG_TARGET,
+            "propagate_distributed: rank {rank}/{size}, {terms_in} local terms through {n} \
+             channels ({direction:?}) [{}]",
+            self.runtime.placement_summary(),
+        );
+
+        self.transport.check_consistency(run_fingerprint(
+            n,
+            direction,
+            options,
+            self.rows.num_qubits(),
+            W,
+        ));
+
+        if n > 0 {
+            let tracing = self.trace.is_some();
+            let mut work = PartitionWork::take(&mut self.local, n, tracing);
+
+            {
+                let runtime = Arc::clone(&self.runtime);
+                let rows = &self.rows;
+                let transport = &self.transport;
+                let work = &mut work;
+                let ctx = PartitionCtx {
+                    rows,
+                    rank,
+                    size,
+                    tracing,
+                };
+                runtime.install(move || {
+                    run_layers(circuit, policy, direction, options, ctx, work, transport);
+                });
+            }
+
+            self.local = work.local;
+            if let Some(trace) = self.trace.as_mut() {
+                assemble(trace, vec![work.rows]);
+            }
+            #[cfg(feature = "phase-timing")]
+            {
+                self.layers += n as u64;
+            }
+        }
+
+        log::info!(
+            target: LOG_TARGET,
+            "propagate_distributed: rank {rank}/{size}, {n} layers applied, {terms_in} -> {} \
+             local terms, {:.3} s",
+            self.local.len(),
+            started.elapsed().as_secs_f64(),
+        );
+    }
 }
 
 impl<const W: usize, X: Transport> DistributedSum<W, X> {
@@ -280,10 +391,9 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         );
 
         Self {
-            local,
+            local: HostPartition::new(local),
             rows,
             runtime,
-            state: PartitionState::default(),
             transport,
             trace: None,
             #[cfg(feature = "phase-timing")]
@@ -324,64 +434,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ) where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        let n = circuit.channels.len();
-        let rank = self.transport.rank() as usize;
-        let size = self.transport.size() as usize;
-        let terms_in = self.local.len();
-        let started = Instant::now();
-        log::info!(
-            target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {terms_in} local terms through {n} \
-             channels ({direction:?}) [{}]",
-            self.runtime.placement_summary(),
-        );
-
-        self.transport.check_consistency(run_fingerprint(
-            n,
-            direction,
-            options,
-            self.num_qubits(),
-            W,
-        ));
-
-        if n > 0 {
-            let tracing = self.trace.is_some();
-            let mut work = PartitionWork::take(&mut self.local, &mut self.state, n, tracing);
-
-            {
-                let runtime = Arc::clone(&self.runtime);
-                let rows = &self.rows;
-                let transport = &self.transport;
-                let work = &mut work;
-                let ctx = PartitionCtx {
-                    rows,
-                    rank,
-                    size,
-                    tracing,
-                };
-                runtime.install(move || {
-                    run_layers(circuit, policy, direction, options, ctx, work, transport);
-                });
-            }
-
-            self.local = work.local;
-            self.state = work.state;
-            if let Some(trace) = self.trace.as_mut() {
-                assemble(trace, vec![work.rows]);
-            }
-            #[cfg(feature = "phase-timing")]
-            {
-                self.layers += n as u64;
-            }
-        }
-
-        log::info!(
-            target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {n} layers applied, {terms_in} -> {} \
-             local terms, {:.3} s",
-            self.local.len(),
-            started.elapsed().as_secs_f64(),
-        );
+        self.propagate_on_backend(circuit, policy, direction, options);
     }
 
     /// Collect the whole sum on rank 0: `Some(sum)` there, `None` elsewhere.
@@ -395,10 +448,10 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
 
-        let lens: Vec<u64> = (0..self.local.num_buckets())
-            .map(|b| self.local.bucket_len(b) as u64)
+        let lens: Vec<u64> = (0..self.local.sum.num_buckets())
+            .map(|b| self.local.sum.bucket_len(b) as u64)
             .collect();
-        let (x, z, coeff) = self.local.to_arrays();
+        let (x, z, coeff) = self.local.sum.to_arrays();
         let parts: Vec<&[u8]> = vec![
             bytemuck::cast_slice(&lens),
             bytemuck::cast_slice(x.as_flattened()),
@@ -409,8 +462,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         drop((x, z, coeff));
 
         let out = all.map(|all| {
-            let hash = self.local.hash().clone();
-            let num_qubits = self.local.num_qubits();
+            let hash = self.local.sum.hash().clone();
+            let num_qubits = self.local.sum.num_qubits();
             let parts: Vec<PauliSum<W>> = all
                 .into_iter()
                 .enumerate()
@@ -429,32 +482,17 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
     /// This rank's share of the sum — a valid [`PauliSum`] under the group's shared hash, holding exactly the keys of partition [`rank`](Self::rank).
     pub fn local(&self) -> &PauliSum<W> {
-        &self.local
-    }
-
-    /// This rank's index in the group.
-    pub fn rank(&self) -> u32 {
-        self.transport.rank()
-    }
-
-    /// Ranks in the group, which is also the partition count.
-    pub fn size(&self) -> u32 {
-        self.transport.size()
-    }
-
-    /// This rank's endpoint, for a caller that needs a collective of its own (a reduction over per-rank measurements, say).
-    pub fn transport(&self) -> &X {
-        &self.transport
+        &self.local.sum
     }
 
     /// Terms this rank holds. Local, and cheap.
     pub fn len_local(&self) -> usize {
-        self.local.len()
+        self.local.sum.len()
     }
 
     /// Terms in the whole sum. **Collective** — one all-reduce, same answer on every rank.
     pub fn len(&self) -> usize {
-        let mut buf = [self.local.len() as u64];
+        let mut buf = [self.local.sum.len() as u64];
         self.transport.allreduce_sum_u64(&mut buf);
         buf[0] as usize
     }
@@ -466,22 +504,12 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
     /// The bucket bits this rank holds. Equal on every rank by construction — the count is agreed collectively every layer.
     pub fn bits(&self) -> u8 {
-        self.local.hash().bits()
+        self.local.sum.hash().bits()
     }
 
     /// Qubits the sum is over.
     pub fn num_qubits(&self) -> usize {
-        self.local.num_qubits()
-    }
-
-    /// The rows deciding which rank a key belongs to.
-    pub fn rows(&self) -> &PartitionRows<W> {
-        &self.rows
-    }
-
-    /// The runtime this rank's work runs on, for handing to another [`DistributedSum`].
-    pub fn runtime(&self) -> &Arc<PartitionRuntime> {
-        &self.runtime
+        self.local.sum.num_qubits()
     }
 
     /// `⟨ψ|O|ψ⟩` in a uniform single-qubit product state, over the whole sum.
@@ -489,28 +517,14 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// Not collective — it cannot be, [`Collectives`](super::Collectives) reducing only integers — so it is this rank's contribution alone.
     /// Sum the ranks' answers however the application reduces its own scalars (`MPI_Allreduce` on two `f64`s, through the communicator the transport was built from).
     pub fn local_expectation_product_state(&self, state: ProductState) -> Complex64 {
-        self.local.expectation_product_state(state)
-    }
-
-    /// Start recording a [`PartitionTrace`] of **this rank's** layers on every
-    /// subsequent propagation. Idempotent.
-    pub fn enable_trace(&mut self) {
-        self.trace.get_or_insert_with(PartitionTrace::default);
-    }
-
-    /// Drain and return this rank's records, or `None` if tracing was never enabled.
-    ///
-    /// Per rank: each record's `terms_in`, `terms_out` and `rows_received` have exactly one entry (this rank's), while `rows_sent[0]` and `bytes_sent[0]` are indexed by destination rank over the whole group.
-    /// Draining leaves tracing enabled with no records.
-    pub fn take_trace(&mut self) -> Option<PartitionTrace> {
-        self.trace.as_mut().map(std::mem::take)
+        self.local.sum.expectation_product_state(state)
     }
 
     /// Drain and return this rank's phase counters, in the same shape the in-process driver reports: `per_partition` has one entry.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         PartitionPhaseStats {
-            per_partition: vec![self.state.layer.take_stats()],
+            per_partition: vec![self.local.state.layer.take_stats()],
             scatter_ns: std::mem::take(&mut self.scatter_ns),
             gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
             layers: std::mem::take(&mut self.layers),
@@ -527,8 +541,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// If this rank's sum is internally inconsistent or holds a key belonging to another rank.
     pub fn assert_invariants(&self) {
         #[cfg(any(test, debug_assertions))]
-        self.local.assert_invariants();
-        let held = self.local.partition_rank_of_all(&self.rows);
+        self.local.sum.assert_invariants();
+        let held = self.local.sum.partition_rank_of_all(&self.rows);
         assert!(
             held.is_none() || held == Some(self.rank()),
             "rank {} holds keys of partition {held:?}",

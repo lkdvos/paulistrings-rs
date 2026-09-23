@@ -315,6 +315,12 @@ The engine's *partition* is not a thread and not a process: it is whatever a `Tr
 `PartitionedSum` holds `P` partitions inside one process and fans out to them per call; `DistributedSum` *is* one partition, and its peers are other processes (`MpiTransport`, behind the off-by-default `mpi` feature — or the in-process transport, which is how the distributed shape is tested with no MPI in the picture).
 They differ in the transport group's lifetime (per call, against one endpoint for the process's whole life, because an `MPI_Comm` is not something to duplicate per layer), in scatter and gather (one sum split locally and merged back bitwise, against a replicated input and a byte-framed gather to rank 0), and in the consistency check (one process cannot hand its own partitions different circuits, so only the distributed driver pays for it).
 
+**Backend composition.**
+Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
+Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
+The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
+`HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
+
 **In-process: a moved payload, shared-memory collectives.**
 `InProcessTransport` moves its payload through a `P × P` matrix of `mpsc` channels — there is nothing to encode and nothing to overlap — but the **collectives are shared atomics with a spin wait**: each rank numbers its own transport calls and publishes `(generation, kind)` plus its contribution into its own cache-line-padded slot, and a waiter spins, then yields, then sleeps briefly, with a dropped endpoint as the fail-fast signal.
 The partition threads are pinned and dedicated for the whole call, so a spin wait rather than a futex is what makes an unconditional per-layer collective affordable.

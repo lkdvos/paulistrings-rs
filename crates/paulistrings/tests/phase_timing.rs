@@ -5,7 +5,9 @@
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::channel::{Depolarizing, PauliRotation};
-use paulistrings::engine::partitioned::{PartitionRuntime, PartitionedSum};
+use paulistrings::engine::partitioned::{
+    DistributedSum, InProcessTransport, PartitionRuntime, PartitionedSum,
+};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
@@ -179,6 +181,82 @@ fn partitioned_stats_are_attributed() {
     assert_eq!(drained.per_partition[0], PhaseStats::default());
     let _ = split.gather();
     assert!(split.take_stats().gather_ns > 0);
+}
+
+/// The distributed driver's counters, over the in-process transport: one breakdown per rank with the collective, export and exchange phases attributed, plus the rank's own scatter and gather.
+#[test]
+fn distributed_stats_are_attributed() {
+    // The same remote-generator circuit and partition row as `partitioned_stats_are_attributed`.
+    let gen = PauliString::<1> {
+        x: [0b0101],
+        z: [0b1010],
+    };
+    let mut circuit = Circuit::<1>::new(16);
+    for _ in 0..3 {
+        circuit.push(PauliRotation::new(gen, 0.3));
+    }
+    let sum = rand_sum_real::<1>(20_000, 16, 0x9A17);
+
+    let per_rank = std::thread::scope(|scope| {
+        let handles: Vec<_> = InProcessTransport::group(2)
+            .into_iter()
+            .map(|transport| {
+                let (circuit, sum) = (&circuit, sum.clone());
+                scope.spawn(move || {
+                    let config = unpinned_partitions(1, 1, 0x51A75);
+                    let runtime = PartitionRuntime::new(&config).expect("topology resolves");
+                    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
+                    let mut split =
+                        DistributedSum::scatter_with_rows(sum, transport, runtime, rows);
+
+                    let started = std::time::Instant::now();
+                    split.propagate(circuit, &KeepAll, Direction::Forward);
+                    let wall = started.elapsed().as_nanos() as u64;
+                    let stats = split.take_stats();
+
+                    let drained = split.take_stats();
+                    let _ = split.gather();
+                    let gathered = split.take_stats();
+                    (split.rank(), wall, stats, drained, gathered)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread"))
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(per_rank.len(), 2);
+    for (rank, wall, stats, drained, gathered) in per_rank {
+        assert_eq!(stats.layers, 3, "rank {rank}: {stats:?}");
+        assert_eq!(stats.per_partition.len(), 1, "rank {rank}: {stats:?}");
+        assert!(stats.scatter_ns > 0, "rank {rank}: {stats:?}");
+        assert_eq!(
+            stats.gather_ns, 0,
+            "rank {rank}: nothing gathered yet: {stats:?}"
+        );
+
+        let p = &stats.per_partition[0];
+        assert_eq!(p.layers, 3, "rank {rank}: {p:?}");
+        assert!(p.collective_ns > 0, "rank {rank}: {p:?}");
+        assert!(p.export_ns > 0, "rank {rank}: {p:?}");
+        assert!(p.exchange_ns > 0, "rank {rank}: {p:?}");
+        assert!(p.rows_exported > 0, "rank {rank}: {p:?}");
+        assert!(p.recv_rows > 0, "rank {rank}: {p:?}");
+        assert!(p.coset_loop_ns > 0, "rank {rank}: {p:?}");
+        assert!(p.terms_in > 0 && p.terms_out > 0, "rank {rank}: {p:?}");
+        assert!(
+            p.wall_total_ns() <= wall,
+            "rank {rank}: phases {} exceed the call's {wall} ns",
+            p.wall_total_ns(),
+        );
+
+        assert_eq!(drained.layers, 0, "rank {rank}: {drained:?}");
+        assert_eq!(drained.per_partition, vec![PhaseStats::default()]);
+        assert_eq!(drained.scatter_ns, 0, "rank {rank}: {drained:?}");
+        assert!(gathered.gather_ns > 0, "rank {rank}: {gathered:?}");
+    }
 }
 
 /// The unpartitioned engine leaves the partitioned counters at zero.

@@ -1,9 +1,10 @@
 //! Partitioned execution: the sum split across NUMA domains or MPI ranks by designated partition rows of the GF(2) hash, one pinned Rayon pool per partition, and a push-model exchange of the rows a layer moves across partitions.
 //! See ARCHITECTURE.md §Partitioning.
-//! `PartitionedSum` (`driver`) holds `P` partitions in one process and fans out per call; `DistributedSum` (`distributed`) *is* one partition, its peers other processes; both share `run_layers`, `PartitionWork`, and `apply_layer_partitioned` (`layer`).
+//! `PartitionedSum` (`driver`) holds `P` partitions in one process and fans out per call; `DistributedSum` (`distributed`) *is* one partition, its peers other processes; both share `run_layers`, `PartitionWork`, the `PartitionStorage`/`PartitionBackend` seam (`backend`), and `apply_layer_partitioned` (`layer`).
 //! Setting a run up returns `Result` (`TopologyError`, `MpiError`); everything past that is a contract violation and panics, since the group is already out of step by then.
 //! `size` ([`Collectives::size`]) is a transport's group cardinality; `num_partitions` ([`PartitionRuntime::num_partitions`], [`PartitionRows::num_partitions`](crate::PartitionRows::num_partitions)) is a placement's or row set's — equal in any well-formed run.
 
+pub(crate) mod backend;
 pub(crate) mod distributed;
 pub(crate) mod driver;
 pub(crate) mod export;

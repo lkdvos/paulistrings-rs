@@ -87,6 +87,13 @@ pub struct PhaseStats {
     pub append_ns: u64,
     /// **Distributed only, worker busy time.** Blocking for a chunk of the layer's rows to land. A part of `append_ns`; zero means the rows were always there when a task reached them.
     pub chunk_wait_ns: u64,
+    // -- device only (feature `cuda`); zero on a host partition --
+    /// **Device only, kernel time.** K4, compaction of the arena into the output columns. A part of `coset_loop_ns`, as `gather_ns` and `merge_ns` are on a device row.
+    pub compact_ns: u64,
+    /// **Device only.** Host-to-device copies inside a layer (the position map and the prepared table). A part of `coset_loop_ns` or `rescale_ns`.
+    pub h2d_ns: u64,
+    /// **Device only.** Device-to-host copies inside a layer (segment offsets and totals). A part of `coset_loop_ns` or `rescale_ns`.
+    pub d2h_ns: u64,
 }
 
 impl PhaseStats {
@@ -122,6 +129,9 @@ impl PhaseStats {
         self.recv_rows += o.recv_rows;
         self.append_ns += o.append_ns;
         self.chunk_wait_ns += o.chunk_wait_ns;
+        self.compact_ns += o.compact_ns;
+        self.h2d_ns += o.h2d_ns;
+        self.d2h_ns += o.d2h_ns;
     }
 
     /// Fold one coset task's busy-time counters into the totals.
@@ -155,9 +165,15 @@ impl PhaseStats {
             + self.exchange_ns
     }
 
-    /// Sum of the worker busy-time phase fields (see the type docs for how this relates to `coset_loop_ns`).
+    /// Sum of the worker busy-time phase fields (see the type docs for how this relates to `coset_loop_ns`); on a device row, the kernel time inside the coset loop.
     pub fn busy_total_ns(&self) -> u64 {
-        self.swap_ns + self.size_ns + self.gather_ns + self.sort_ns + self.merge_ns + self.clear_ns
+        self.swap_ns
+            + self.size_ns
+            + self.gather_ns
+            + self.sort_ns
+            + self.merge_ns
+            + self.clear_ns
+            + self.compact_ns
     }
 
     /// Upper-bound estimate of the number of `Instant::now()` reads behind these counters: ~11 per layer, ~5 per coset task, 2 per run.

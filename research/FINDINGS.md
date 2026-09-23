@@ -72,6 +72,13 @@ Asked whether a greedy search over circuit generators can choose partition rows 
 On the primary heavy-hex workload it buys two remote layers per step instead of four but at **1.30 imbalance** against `cut`'s 1.085, and on the chain its tie order once left a partition empty.
 Removed from the crate; `PartitionRows::cut` is the recommendation wherever the lattice is known.
 
+### Carried key in the fused layer's collision check
+
+Asked whether the equal-`g32` collision check, which gathers both keys of every adjacent pair, gets cheaper when each thread walks a contiguous chunk and carries the previous key in registers (one gather per record instead of two).
+5 `abab` pairs, wall per layer: `su4` at 1.41e7 **+4.18% (5/5 slower)**, `rotation_zz` −0.57% (5/5), `cnot` no consistent change.
+The strided loop issues its `C` independent gathers at once; the carried-key walk chains them through the register, and on a saturated sum the lost memory-level parallelism outweighs the halved gather count.
+Redundant key gathers remain the fused kernel's largest known cost (`product` and `write_row` gather again), but the shape that removes them must keep the gathers independent.
+
 ## Shipped
 
 ### Direct-apply path for small sums
@@ -132,6 +139,31 @@ Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and movin
 
 The capability register designed for the examples and benchmarks suite is implemented and shipped.
 The Python docstrings are canonical for those signatures and semantics.
+
+### GPU layer vs host, first table
+
+Asked how one A6000 compares with the 16- and 32-thread host on the probe's cells under one protocol (`phase_breakdown --device 0` against `--threads 16,32`, steady-state sum, five timed applications), and whether the fused kernel's 77.8 ms on `su4` at 1.41e7 terms against the spike's 58.8 ms was real.
+The dense layer is **11.0× the 16-thread host at 1.41e7 terms (4.65 ns/term) and 15.9× at 5.65e7**; the sparse layers run at 1.0–1.2 ns/term, 2–4.7× the host; `heavyhex_step` at `2^-13` is 1.9×; `trotter`'s 64 layers on a ≤ 6.7e4-term sum are 0.9× (slower than the host).
+The alarm was three shipped costs, not one: padding in the radix passes, per-layer allocation and re-upload, and the amplitude-table load, together −14.7% on the layer (76.8 → 65.7 ms wall); K3 is now 62.0 ms against the spike's 58.8, the remainder within the two harnesses' bucket-count difference.
+The full table, clocks and load are in `research/HARDWARE.md` § ccqlin038 — GPU.
+
+### Fused layer: block-uniform chunk early-out
+
+Asked whether the fused kernel's launch-wide `n_cap = next_pow2(records_max)` costs the average block real work, since under the records-per-block policy a 2048–4096-record block pads to 8192 and runs its eight radix passes over the padding.
+Each radix pass now skips whole item chunks past `ceil(n_rows / THREADS)` (block-uniform), with the `n_it == C` case a separate instantiation so a block with nothing to skip pays no test.
+`scripts/ab-report.py` over 5 `abab` pairs on the A6000, wall per layer: `su4` at 1.41e7 **−11.45% (5/5)**, `cnot` at 1e6 −2.14% (5/5), `rotation_zz` +0.16% with pairs disagreeing in sign; the runtime-test-only form cost `rotation_zz` a consistent +1.49%, which the specialization removed.
+
+### Fused layer: no allocation and no re-upload in steady state
+
+Asked what the layer's host side costs when nothing changes between layers: every device scan allocated three buffers, and the count rebuilt and re-uploaded the position map every layer.
+The scan buffers are grow-only scratch and the position map is cached on `(bits, bucket deltas)`.
+5 `abab` pairs, wall per layer: `su4` −1.43%, `rotation_zz` −2.52%, `cnot` −3.14%, all 5/5.
+
+### Fused layer: table load and count-table registers
+
+Asked whether the 4 KB amplitude table loaded per block in rotation mode, and K1's `c[MAX_ENTRIES]` indexed by a runtime entry (local memory), cost anything.
+The load is skipped for a rotation table and the K1 loop is unrolled over `MAX_ENTRIES` with the entry test inside.
+5 `abab` pairs, wall per layer: `su4` −2.17% (5/5), `rotation_zz` −1.12% (5/5), `cnot` −0.83% with pairs disagreeing in sign.
 
 ### Rule: a direction-consistent phase delta is not an effect if the total is flat
 
@@ -248,7 +280,7 @@ The radix kernel's scratch grows 16 B/row and its win shrinks toward the write c
 
 Asked how the GPU does on `cnot`, `gu2q` and `rotation_zz` at steady state.
 1.3–2.0 ns per steady term, only **1.3–3.6× the 16-thread host**, because a position holds ~300 records padded to a 1024-record block whose eight radix passes and syncs dominate (1.1–1.4 ns per record against 0.26 on dense layers).
-The bucket target should track records per block (fanout × terms per bucket), not terms per bucket; untested.
+Under the shipped records-per-block policy (4096) they run at 1.0–1.2 ns per steady term, 2–4.7× the host, at 0.34–0.76 ns per record against 0.29 on `su4` (`research/HARDWARE.md` § ccqlin038 — GPU); the per-block floor is now the eight passes over a ~1000-record block, and merging positions into one block or a shorter sort for short runs is the open lever.
 
 ### CPU/GPU crossover is below 1e4 terms for a second layer
 

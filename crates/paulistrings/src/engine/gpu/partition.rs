@@ -136,7 +136,16 @@ where
         let (Some(sum), Some(scratch)) = (self.sum.as_mut(), self.scratch.as_mut()) else {
             panic!("DevicePartition: apply_layer on a detached placeholder");
         };
+        #[cfg(feature = "phase-timing")]
+        let (t0, before) = (std::time::Instant::now(), scratch.kernel_ms);
         let r = apply_layer_device(sum, prep, &self.policy.keep, scratch, self.hash.bits());
+        #[cfg(feature = "phase-timing")]
+        fold_layer_stats(
+            &mut self.stats,
+            scratch,
+            before,
+            t0.elapsed().as_nanos() as u64,
+        );
         self.hash = sum.hash().clone();
         self.record(r);
         LayerExchangeCounts::none(size)
@@ -159,6 +168,43 @@ where
             };
             self.record(r);
         });
+        // The driver's `finalize_ns` lap is the wall of this pass; the events only need reading so the kernel counters stay complete.
+        if let (Some(sum), Some(scratch)) = (self.sum.as_ref(), self.scratch.as_mut()) {
+            let r = scratch.resolve(sum);
+            self.record(r);
+        }
+    }
+}
+
+/// One device layer's counters into the partition's [`PhaseStats`]: kernel families onto the host phases they replace, the driving thread's wall minus the refine and rescale kernels as the coset loop.
+/// `sort_ns` stays zero: the sort is inside the fused layer, so it is part of `merge_ns` on a device row.
+#[cfg(feature = "phase-timing")]
+fn fold_layer_stats<const W: usize>(
+    stats: &mut PhaseStats,
+    scratch: &mut LayerScratch<W>,
+    before: super::layer::GpuKernelMs,
+    wall_ns: u64,
+) {
+    let after = scratch.kernel_ms;
+    let ns = |ms: f64| (ms.max(0.0) * 1e6) as u64;
+    let refine = ns(after.refine - before.refine);
+    let rescale = ns(after.rescale - before.rescale);
+    stats.rebucket_ns += refine;
+    stats.rescale_ns += rescale;
+    stats.coset_loop_ns += wall_ns.saturating_sub(refine + rescale);
+    stats.gather_ns += ns(after.count - before.count) + ns(after.sizes - before.sizes);
+    stats.merge_ns += ns(after.layer - before.layer);
+    stats.compact_ns += ns(after.compact - before.compact);
+    let [h2d, d2h] = std::mem::take(&mut scratch.xfer_ns);
+    stats.h2d_ns += h2d;
+    stats.d2h_ns += d2h;
+    let c = scratch.counters;
+    if !c.rescaled {
+        // Every pre-dedup record is gathered and sorted on the device; nothing takes the identity stream's shortcut.
+        stats.cosets += u64::from(c.batches);
+        stats.runs += 1u64 << c.bits;
+        stats.rows_gathered += c.records;
+        stats.rows_sorted += c.records;
     }
 }
 

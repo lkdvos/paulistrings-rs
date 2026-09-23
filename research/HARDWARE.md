@@ -72,6 +72,59 @@ Phase shares (share of summed worker busy time, gather/sort/merge):
 Parallel efficiency (busy / (coset-loop wall × threads)) is 0.99 for `su4` at 16t.
 Thread guidance on this host: 16 threads for dense-PTM-heavy circuits, 32 for sparse-rotation circuits.
 
+## ccqlin038 — GPU
+
+NVIDIA RTX A6000 (GA102, sm_86, 48 GB GDDR6, 768 GB/s spec), driver-managed clocks: 210 / 405 MHz idle, 1800 MHz SM / 7601 MHz memory under load, 44–66 °C, 175–183 W during the cells below.
+Shared box; load average 2–5 during the device cells, 6–11 during the host cells.
+
+### Device memory bandwidth ceilings
+
+`crates/membench --device 0` (feature `cuda`) via `scripts/bandwidth.sh --device 0`; STREAM-convention nominal bytes, grid-stride f64 kernels, best of 5 reps.
+
+| arrays | read | write | copy | triad |
+|---|---:|---:|---:|---:|
+| 512 MiB | 703.7 | 706.6 | 674.4 | 676.2 |
+| 2 GiB | 709.7 | 711.4 | 658.8 | 673.0 |
+
+GB/s; read and write reach 92% of the 768 GB/s spec.
+
+### Device layer vs host, first table
+
+`phase_breakdown --device 0` against `phase_breakdown --threads 16,32` (`scripts/jcc-rustflags.sh` sourced), `--qubits 128` (`W = 2`), truncation `keep`, `--reps 5`: one untimed application drives the sum to its steady state, the timed call applies the layer five more times, both sides identically.
+`m` is the steady-state term count; ns per term is wall per layer over `m`; the ratio is host over device.
+
+| cell | m | device ms/layer | device ns/term | host 16t ns/term | host 32t ns/term | ratio vs 16t | ratio vs 32t |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.50e6 | 1.845 | 1.23 | 2.48 | 2.59 | 2.0× | 2.1× |
+| `rotation_zz` | 6.00e6 | 6.920 | 1.15 | 2.63 | 2.80 | 2.3× | 2.4× |
+| `rotation_zz` | 2.40e7 | 26.84 | 1.12 | 4.17 | 3.34 | 3.7× | 3.0× |
+| `cnot` | 1.00e6 | 1.109 | 1.11 | 3.37 | 3.61 | 3.0× | 3.3× |
+| `cnot` | 4.00e6 | 3.948 | 0.99 | 4.66 | 3.91 | 4.7× | 4.0× |
+| `cnot` | 1.60e7 | 15.35 | 0.96 | 3.76 | 3.74 | 3.9× | 3.9× |
+| `gu2q` | 3.25e6 | 3.528 | 1.09 | 3.07 | 3.05 | 2.8× | 2.8× |
+| `gu2q` | 1.30e7 | 13.58 | 1.04 | 3.88 | 3.25 | 3.7× | 3.1× |
+| `gu2q` | 5.20e7 | 52.25 | 1.00 | 3.90 | 3.04 | 3.9× | 3.0× |
+| `su4` | 1.41e7 | 65.65 | 4.65 | 51.3 | 61.4 | 11.0× | 13.2× |
+| `su4` | 5.65e7 | 263.3 | 4.66 | 74.3 | 69.8 | 15.9× | 15.0× |
+| `heavyhex_step` (5 steps, `coeff:2^-13`, 1355 layers, final m) | 1.16e6 | 2.122 | 1.84 | 3.53 | 3.52 | 1.9× | 1.9× |
+| `trotter` (64 layers, 100 → 6.7e4 terms) | 6.7e4 | 9.316 | 139.5 | 130.8 | 121.7 | 0.94× | 0.87× |
+
+`su4` at `--n 16000000` (2.3e8 steady terms) does not fit the 48 GB device and was not run.
+The host `su4` row at 5.65e7 (74.3 ns/term at 16t) is above the 49–58 ns/term of earlier quiet measurements; the box carried a load average of 6–11 during it.
+
+Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = `merge_ns`, K4 = `compact_ns`, `coset_loop_ns` the driving thread's wall):
+
+| cell | m | K1+K2 | K3 | K4 | coset loop | records/layer | ns per record (K3) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.50e6 | 0.126 | 1.370 | 0.283 | 1.840 | 2.50e6 | 0.55 |
+| `cnot` | 1.00e6 | 0.085 | 0.760 | 0.200 | 1.103 | 1.00e6 | 0.76 |
+| `gu2q` | 3.25e6 | 0.208 | 2.900 | 0.349 | 3.521 | 8.65e6 | 0.34 |
+| `su4` | 1.41e7 | 1.044 | 61.98 | 2.440 | 65.64 | 2.11e8 | 0.29 |
+| `su4` | 5.65e7 | 4.035 | 248.7 | 9.838 | 263.3 | 8.44e8 | 0.29 |
+
+ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one, where the fixed per-block cost (0.55–0.76 ns per record at ~1000 records per block) dominates.
+In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-process NVRTC compile is 3.5 s inside the first cell's `upload_ns`, and `download_ns` (`to_host`, pinned D2H plus the host re-sort into `PauliSum`) is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
+
 ## `ccq` cluster node types
 
 `scripts/slurm/jcc-portability.sbatch`, one exclusive node each, governor `performance`; family/model read from `/proc/cpuinfo`.

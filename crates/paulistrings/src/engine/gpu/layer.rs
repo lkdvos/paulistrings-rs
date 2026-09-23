@@ -10,7 +10,7 @@ use super::error::GpuError;
 use super::fingerprint::FingerprintRows;
 use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
-use super::scan::exclusive_scan_with_max;
+use super::scan::{exclusive_scan_with_max_into, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
 use crate::bucket::hash::B_MAX_BITS;
@@ -145,6 +145,12 @@ pub(crate) struct LayerScratch<const W: usize> {
     arena: Option<DeviceColumns<W>>,
     seg_host: Vec<u32>,
     bucket_at_host: Vec<u32>,
+    /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
+    bucket_at_key: Option<(u8, Vec<u32>)>,
+    scan: ScanScratch,
+    /// Scan totals, two slots so a count's pair of scans can be read together.
+    tot_a: CudaSlice<u32>,
+    tot_b: CudaSlice<u32>,
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
@@ -154,6 +160,45 @@ pub(crate) struct LayerScratch<const W: usize> {
     /// Timing events, reused across layers.
     events: Vec<CudaEvent>,
     next_event: usize,
+    /// Recorded event pairs not yet read; [`Self::resolve`] reads them behind one synchronization instead of one per kernel.
+    pending: Vec<(usize, usize, KernelSlot)>,
+    /// Host-to-device and device-to-host copy time inside the current layer.
+    pub(crate) xfer_ns: XferNs,
+}
+
+type KernelSlot = fn(&mut GpuKernelMs) -> &mut f64;
+
+#[cfg(feature = "phase-timing")]
+pub(crate) type XferNs = [u64; 2];
+#[cfg(not(feature = "phase-timing"))]
+pub(crate) type XferNs = ();
+
+/// Which direction a timed copy in [`xfer`] runs.
+#[derive(Clone, Copy)]
+pub(super) enum Xfer {
+    H2d,
+    D2h,
+}
+
+/// Run `f`, a synchronous host<->device copy, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
+#[inline]
+pub(super) fn xfer<T>(
+    ns: &mut XferNs,
+    dir: Xfer,
+    f: impl FnOnce() -> Result<T, GpuError>,
+) -> Result<T, GpuError> {
+    #[cfg(feature = "phase-timing")]
+    {
+        let t0 = std::time::Instant::now();
+        let r = f();
+        ns[dir as usize] += t0.elapsed().as_nanos() as u64;
+        r
+    }
+    #[cfg(not(feature = "phase-timing"))]
+    {
+        let _ = (ns, dir);
+        f()
+    }
 }
 
 pub(super) fn grow<T: DeviceRepr>(
@@ -207,6 +252,10 @@ impl<const W: usize> LayerScratch<W> {
             arena: None,
             seg_host: Vec::new(),
             bucket_at_host: Vec::new(),
+            bucket_at_key: None,
+            scan: ScanScratch::new(s)?,
+            tot_a: s.alloc_zeros(2)?,
+            tot_b: s.alloc_zeros(2)?,
             extent: sum.len(),
             options,
             counters: GpuLayerCounters::default(),
@@ -214,11 +263,18 @@ impl<const W: usize> LayerScratch<W> {
             kernel_ms: GpuKernelMs::default(),
             events: Vec::new(),
             next_event: 0,
+            pending: Vec::new(),
+            xfer_ns: XferNs::default(),
         })
     }
 
+    /// Whether kernel events are recorded this layer: on request, or always under `phase-timing`.
+    fn timing(&self) -> bool {
+        self.time_kernels || cfg!(feature = "phase-timing")
+    }
+
     pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
-        if !self.time_kernels {
+        if !self.timing() {
             return Ok(None);
         }
         if self.next_event == self.events.len() {
@@ -231,19 +287,33 @@ impl<const W: usize> LayerScratch<W> {
         Ok(Some(i))
     }
 
+    /// Close the interval opened by `from` with a new event; read at the next [`Self::resolve`].
     pub(super) fn lap(
         &mut self,
         sum: &GpuSum<W>,
         from: Option<usize>,
-        into: fn(&mut GpuKernelMs) -> &mut f64,
+        into: KernelSlot,
     ) -> Result<(), GpuError> {
         let Some(i) = from else { return Ok(()) };
         let Some(j) = self.event(sum)? else {
             return Ok(());
         };
+        self.pending.push((i, j, into));
+        Ok(())
+    }
+
+    /// Read every pending interval into `kernel_ms` behind one synchronization and free the events for reuse.
+    pub(super) fn resolve(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
+        if self.pending.is_empty() {
+            self.next_event = 0;
+            return Ok(());
+        }
         sum.stream.synchronize()?;
-        let ms = f64::from(self.events[i].elapsed_ms(&self.events[j])?);
-        *into(&mut self.kernel_ms) += ms;
+        for (i, j, into) in std::mem::take(&mut self.pending) {
+            let ms = f64::from(self.events[i].elapsed_ms(&self.events[j])?);
+            *into(&mut self.kernel_ms) += ms;
+        }
+        self.next_event = 0;
         Ok(())
     }
 
@@ -258,23 +328,47 @@ impl<const W: usize> LayerScratch<W> {
         let o = sum.device();
         let b = sum.hash.num_buckets();
         let e = table.entries;
-        let span = Gf2Span::new(&table.bucket_deltas(), sum.hash.bits());
-        self.bucket_at_host.clear();
-        self.bucket_at_host.resize(b, 0);
-        for beta in 0..b as u32 {
-            self.bucket_at_host[span.perm_index(beta) as usize] = beta;
+        let key = (sum.hash.bits(), table.bucket_deltas());
+        // The position map depends on the bucket count and the deltas alone, so a steady-state layer reuses the resident one.
+        let map_stale = self.bucket_at_key.as_ref() != Some(&key);
+        if map_stale {
+            let span = Gf2Span::new(&key.1, key.0);
+            self.bucket_at_host.clear();
+            self.bucket_at_host.resize(b, 0);
+            for beta in 0..b as u32 {
+                self.bucket_at_host[span.perm_index(beta) as usize] = beta;
+            }
+            grow(s, &mut self.bucket_at, b, o)?;
         }
-        grow(s, &mut self.bucket_at, b, o)?;
         grow(s, &mut self.cnt, b * e, o)?;
         grow(s, &mut self.rows, b, o)?;
         grow(s, &mut self.seg_start, b + 1, o)?;
         grow(s, &mut self.dst_off, b + 1, o)?;
-        s.memcpy_htod(&self.bucket_at_host, &mut self.bucket_at.slice_mut(0..b))?;
-        s.memcpy_htod(&table.amp, &mut self.amp)?;
-        s.memcpy_htod(&table.mask, &mut self.mask)?;
-        s.memcpy_htod(&table.nz, &mut self.nz)?;
-        s.memcpy_htod(&table.bucket_delta, &mut self.bd)?;
-        s.memcpy_htod(&table.gm, &mut self.gm)?;
+        // A pageable upload synchronizes the stream first, so the copy's wall includes any refine still running; the timed region starts after its own sync.
+        #[cfg(feature = "phase-timing")]
+        s.synchronize()?;
+        let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
+        let (amp, mask, nz, bd, gm) = (
+            &mut self.amp,
+            &mut self.mask,
+            &mut self.nz,
+            &mut self.bd,
+            &mut self.gm,
+        );
+        xfer(&mut self.xfer_ns, Xfer::H2d, || {
+            if map_stale {
+                s.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
+            }
+            s.memcpy_htod(&table.amp, amp)?;
+            s.memcpy_htod(&table.mask, mask)?;
+            s.memcpy_htod(&table.nz, nz)?;
+            s.memcpy_htod(&table.bucket_delta, bd)?;
+            s.memcpy_htod(&table.gm, gm)?;
+            Ok(())
+        })?;
+        if map_stale {
+            self.bucket_at_key = Some(key);
+        }
         let (b32, e32) = (b as u32, e as u32);
         let t0 = self.event(sum)?;
         // SAFETY: arguments match `k_count` in count.cu; `cnt` holds `b * e` entries.
@@ -311,26 +405,38 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&e32)
                 .launch(thread_per(b, 1024))?;
         }
-        let tot_max = exclusive_scan_with_max(
+        exclusive_scan_with_max_into(
             s,
             k,
             &self.rows.slice(0..b),
             &mut self.seg_start.slice_mut(0..b + 1),
             b,
+            &mut self.scan,
+            &mut self.tot_a,
         )?;
-        let lens_max = exclusive_scan_with_max(
+        exclusive_scan_with_max_into(
             s,
             k,
             &sum.cols.lens.slice(0..b),
             &mut self.dst_off.slice_mut(0..b + 1),
             b,
+            &mut self.scan,
+            &mut self.tot_b,
         )?;
         self.lap(sum, t1, |m| &mut m.sizes)?;
-        let tm = s.clone_dtoh(&tot_max)?;
-        let lm = s.clone_dtoh(&lens_max)?;
-        self.seg_host.resize(b + 1, 0);
-        s.memcpy_dtoh(&self.seg_start.slice(0..b + 1), &mut self.seg_host[..])?;
+        // Downloads wait for the scans, so the timed region again starts after its own sync.
+        #[cfg(feature = "phase-timing")]
         s.synchronize()?;
+        self.seg_host.resize(b + 1, 0);
+        let (seg_start, seg_host) = (&self.seg_start, &mut self.seg_host);
+        let (tot_a, tot_b) = (&self.tot_a, &self.tot_b);
+        let (tm, lm) = xfer(&mut self.xfer_ns, Xfer::D2h, || {
+            let tm = s.clone_dtoh(tot_a)?;
+            let lm = s.clone_dtoh(tot_b)?;
+            s.memcpy_dtoh(&seg_start.slice(0..b + 1), &mut seg_host[..])?;
+            s.synchronize()?;
+            Ok((tm, lm))
+        })?;
         Ok((tm[0], tm[1], lm[1]))
     }
 }
@@ -338,6 +444,17 @@ impl<const W: usize> LayerScratch<W> {
 /// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
 /// `target_bits` is the bucket count the driver settled on; the device refines to it and to the bucket policy in one pass.
 pub(crate) fn apply_layer_device<const W: usize>(
+    sum: &mut GpuSum<W>,
+    prep: &Prepared<W>,
+    keep: &KeepProgram,
+    scratch: &mut LayerScratch<W>,
+    target_bits: u8,
+) -> Result<(), GpuError> {
+    let r = apply_layer_body(sum, prep, keep, scratch, target_bits);
+    r.and(scratch.resolve(sum))
+}
+
+fn apply_layer_body<const W: usize>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
     keep: &KeepProgram,
@@ -506,15 +623,24 @@ pub(crate) fn apply_layer_device<const W: usize>(
         scratch.lap(sum, t0, |m| &mut m.layer)?;
         let n = p1 - p0;
         let t1 = scratch.event(sum)?;
-        let tot = exclusive_scan_with_max(
+        exclusive_scan_with_max_into(
             &s,
             &k,
             &scratch.out_len_pos.slice(p0..p1),
             &mut scratch.dst_off.slice_mut(0..n + 1),
             n,
+            &mut scratch.scan,
+            &mut scratch.tot_a,
         )?;
-        let batch_out = s.clone_dtoh(&tot)?[0];
+        // The download would otherwise absorb the wait for the fused kernel.
+        #[cfg(feature = "phase-timing")]
         s.synchronize()?;
+        let tot = &scratch.tot_a;
+        let batch_out = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+            let v = s.clone_dtoh(tot)?;
+            s.synchronize()?;
+            Ok(v[0])
+        })?;
         out.len = running as usize;
         let need = (running + batch_out) as usize;
         if need > out.term_capacity() {
@@ -581,7 +707,13 @@ fn rescale_device<const W: usize>(
     out.buckets = 0;
     out.reserve(extent, b)?;
     grow(&s, &mut scratch.dst_off, b + 1, o)?;
-    s.memcpy_htod(&table.amp, &mut scratch.amp)?;
+    #[cfg(feature = "phase-timing")]
+    s.synchronize()?;
+    let amp = &mut scratch.amp;
+    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
+        s.memcpy_htod(&table.amp, amp)?;
+        Ok(())
+    })?;
     let b32 = b as u32;
     let t0 = scratch.event(sum)?;
     // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
@@ -607,16 +739,24 @@ fn rescale_device<const W: usize>(
             .arg(&mut out.lens)
             .launch(warp_per_bucket(b))?;
     }
-    let tot = exclusive_scan_with_max(
+    exclusive_scan_with_max_into(
         &s,
         &k,
         &out.lens.slice(0..b),
         &mut scratch.dst_off.slice_mut(0..b + 1),
         b,
+        &mut scratch.scan,
+        &mut scratch.tot_a,
     )?;
     scratch.lap(sum, t0, |m| &mut m.rescale)?;
-    let total = s.clone_dtoh(&tot)?[0];
+    #[cfg(feature = "phase-timing")]
     s.synchronize()?;
+    let tot = &scratch.tot_a;
+    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+        let v = s.clone_dtoh(tot)?;
+        s.synchronize()?;
+        Ok(v[0])
+    })?;
     out.len = total as usize;
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.cols, out));

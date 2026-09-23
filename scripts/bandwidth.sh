@@ -19,11 +19,24 @@ export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
 cd "$(dirname "$0")/.."
 source scripts/host-topology.sh
 
+# --device N appends a `=== gpu<N> <name> ===` section measured on that CUDA device (membench's `cuda` feature).
+DEVICE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device) DEVICE=$2; shift 2 ;;
+        *) echo "bandwidth.sh: unknown argument $1" >&2; exit 2 ;;
+    esac
+done
+
 MIB=${MIB:-512}
 REPS=${REPS:-5}
-BIN=target/release/membench
+BIN=${CARGO_TARGET_DIR:-target}/release/membench
 
-cargo build --release --offline -p membench >/dev/null
+if [[ -n $DEVICE ]]; then
+    cargo build --release --offline -p membench --features cuda >/dev/null
+else
+    cargo build --release --offline -p membench >/dev/null
+fi
 
 run() { # run <label> <threads> [prefix...]
     local label=$1 threads=$2
@@ -61,7 +74,15 @@ echo "=== uncore cross-check (node0, 8 physical, read+triad) ==="
 # traffic is inside the window too — read the per-socket split, not absolutes.
 perf stat -a --per-socket -e uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ \
     numactl --cpunodebind=0 --membind=0 \
-    "$BIN" --threads 8 --mib "$MIB" --reps "$REPS" --kernels read,triad 2>&1
+    "$BIN" --threads 8 --mib "$MIB" --reps "$REPS" --kernels read,triad 2>&1 \
+    || echo "uncore cross-check unavailable on this host (perf exit $?)"
+
+if [[ -n $DEVICE ]]; then
+    echo
+    echo "=== gpu$DEVICE $(nvidia-smi --query-gpu=name --format=csv,noheader -i "$DEVICE" 2>/dev/null || echo unknown) ==="
+    echo "clocks: $(nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv,noheader -i "$DEVICE" 2>/dev/null || echo unknown)"
+    "$BIN" --device "$DEVICE" --mib "$MIB" --reps "$REPS"
+fi
 
 echo
 echo "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"

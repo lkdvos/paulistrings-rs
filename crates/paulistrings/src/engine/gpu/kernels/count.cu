@@ -17,7 +17,11 @@ extern "C" __global__ void k_count(const u64* __restrict__ x, const u64* __restr
     for (int e = 0; e < MAX_ENTRIES; ++e) c[e] = 0;
     for (u32 r = start + lane; r < end; r += WARP) {
         const Key k = load_key(x, z, r);
-        for (u32 e = 0; e < E; ++e) c[e] += entry_emits(T, k, e) ? 1u : 0u;
+        // Unrolled with a constant index so `c` stays in registers rather than local memory.
+#pragma unroll
+        for (int e = 0; e < MAX_ENTRIES; ++e) {
+            if ((u32)e < E) c[e] += entry_emits(T, k, (u32)e) ? 1u : 0u;
+        }
     }
 #pragma unroll
     for (int e = 0; e < MAX_ENTRIES; ++e) {

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use cudarc::driver::{CudaSlice, CudaStream, CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
 
 use super::error::GpuError;
+use super::layer::grow;
 use super::module::KernelSet;
 
 /// Elements per scan block; must match `SCAN_BLOCK` in `kernels/scan.cu`.
@@ -30,14 +31,48 @@ pub(crate) fn exclusive_scan_with_max(
     out: &mut CudaViewMut<'_, u32>,
     n: usize,
 ) -> Result<CudaSlice<u32>, GpuError> {
+    let mut scratch = ScanScratch::new(stream)?;
+    let mut tot_max = stream.alloc_zeros::<u32>(2)?;
+    exclusive_scan_with_max_into(stream, k, input, out, n, &mut scratch, &mut tot_max)?;
+    Ok(tot_max)
+}
+
+/// Grow-only per-block buffers a scan needs, kept between layers so a scan allocates nothing.
+pub(crate) struct ScanScratch {
+    block_sum: CudaSlice<u32>,
+    block_max: CudaSlice<u32>,
+}
+
+impl ScanScratch {
+    pub(crate) fn new(stream: &Arc<CudaStream>) -> Result<Self, GpuError> {
+        Ok(Self {
+            block_sum: stream.alloc_zeros(1)?,
+            block_max: stream.alloc_zeros(1)?,
+        })
+    }
+}
+
+/// [`exclusive_scan_with_max`] over caller-owned buffers: `tot_max` (two elements) receives `[total, max]`.
+pub(crate) fn exclusive_scan_with_max_into(
+    stream: &Arc<CudaStream>,
+    k: &KernelSet,
+    input: &CudaView<'_, u32>,
+    out: &mut CudaViewMut<'_, u32>,
+    n: usize,
+    scratch: &mut ScanScratch,
+    tot_max: &mut CudaSlice<u32>,
+) -> Result<(), GpuError> {
     let nb = n.div_ceil(SCAN_BLOCK).max(1);
     if nb > SCAN_BLOCK {
         return Err(GpuError::Unsupported("scan of more than 2^24 elements"));
     }
-    debug_assert!(input.len() >= n && out.len() > n);
-    let mut block_sum = stream.alloc_zeros::<u32>(nb)?;
-    let mut block_max = stream.alloc_zeros::<u32>(nb)?;
-    let mut tot_max = stream.alloc_zeros::<u32>(2)?;
+    debug_assert!(input.len() >= n && out.len() > n && tot_max.len() >= 2);
+    let ordinal = stream.context().ordinal() as u32;
+    // Every block writes its own slot before `scan_single` reads it, so no zero fill is needed.
+    grow(stream, &mut scratch.block_sum, nb, ordinal)?;
+    grow(stream, &mut scratch.block_max, nb, ordinal)?;
+    let block_sum = &mut scratch.block_sum;
+    let block_max = &mut scratch.block_max;
     let (n32, nb32) = (n as u32, nb as u32);
     let block = (SCAN_THREADS, 1, 1);
     // SAFETY: argument lists match the `extern "C"` signatures in scan.cu, and every buffer holds the elements indexed.
@@ -46,8 +81,8 @@ pub(crate) fn exclusive_scan_with_max(
             .launch_builder(&k.scan_block)
             .arg(input)
             .arg(&mut *out)
-            .arg(&mut block_sum)
-            .arg(&mut block_max)
+            .arg(&mut *block_sum)
+            .arg(&mut *block_max)
             .arg(&n32)
             .launch(LaunchConfig {
                 grid_dim: (nb32, 1, 1),
@@ -56,12 +91,12 @@ pub(crate) fn exclusive_scan_with_max(
             })?;
         stream
             .launch_builder(&k.scan_single)
-            .arg(&mut block_sum)
-            .arg(&block_max)
+            .arg(&mut *block_sum)
+            .arg(&*block_max)
             .arg(&nb32)
             .arg(&mut *out)
             .arg(&n32)
-            .arg(&mut tot_max)
+            .arg(&mut *tot_max)
             .launch(LaunchConfig {
                 grid_dim: (1, 1, 1),
                 block_dim: block,
@@ -70,7 +105,7 @@ pub(crate) fn exclusive_scan_with_max(
         stream
             .launch_builder(&k.scan_add)
             .arg(&mut *out)
-            .arg(&block_sum)
+            .arg(&*block_sum)
             .arg(&n32)
             .launch(LaunchConfig {
                 grid_dim: ((n as u32).div_ceil(SCAN_THREADS).max(1), 1, 1),
@@ -78,5 +113,5 @@ pub(crate) fn exclusive_scan_with_max(
                 shared_mem_bytes: 0,
             })?;
     }
-    Ok(tot_max)
+    Ok(())
 }

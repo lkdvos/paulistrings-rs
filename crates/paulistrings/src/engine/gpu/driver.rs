@@ -204,6 +204,14 @@ impl<const W: usize> GpuPauliSum<W> {
         self.part.counters()
     }
 
+    /// Drain the per-phase counters accumulated since the last call (feature `phase-timing`).
+    ///
+    /// Kernel families land on the host phases they replace: K1+K2 in `gather_ns`, the fused K3 in `merge_ns` (`sort_ns` stays zero, the sort being inside it), K4 in `compact_ns`, K5 in `rescale_ns`, refines in `rebucket_ns`; `coset_loop_ns` is the driving thread's wall over the fused path.
+    #[cfg(feature = "phase-timing")]
+    pub fn take_stats(&mut self) -> crate::PhaseStats {
+        std::mem::take(self.part.stats())
+    }
+
     /// Start recording one [`PartitionTrace`] record per layer.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);

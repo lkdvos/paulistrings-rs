@@ -46,8 +46,10 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
 
 // One stable counting-sort pass on 4-bit digits; item i = it * THREADS + tid holds record ia[i].
 // Ranks come from warp ballots and group counts [digit][it][warp] are scanned digit-major, so the pass is stable and deterministic.
-template <int C, class DigitFn>
-__device__ __forceinline__ void radix_pass(u16* ia, u16* ib, u16* scnt, u32* swarp, DigitFn digit) {
+// Only the first n_it chunks hold live records (block-uniform); the pad records beyond them never move and are never read.
+// FULL is the n_it == C instantiation with the chunk test compiled out.
+template <int C, bool FULL, class DigitFn>
+__device__ __forceinline__ void radix_pass_n(u16* ia, u16* ib, u16* scnt, u32* swarp, u32 n_it, DigitFn digit) {
     const u32 tid = threadIdx.x, warp = warp_id();
     const u32 n_groups = C * WARPS;
     for (u32 k = tid; k < 16 * n_groups; k += THREADS) scnt[k] = 0;
@@ -56,6 +58,7 @@ __device__ __forceinline__ void radix_pass(u16* ia, u16* ib, u16* scnt, u32* swa
     u16 rec[C];
 #pragma unroll
     for (int it = 0; it < C; ++it) {
+        if (!FULL && (u32)it >= n_it) break;
         const u32 i = it * THREADS + tid;
         const u16 j = ia[i];
         const u32 d = digit((u32)j);
@@ -75,10 +78,17 @@ __device__ __forceinline__ void radix_pass(u16* ia, u16* ib, u16* scnt, u32* swa
     block_exscan<(C >= 2 ? C / 2 : 1), u16>(scnt, 16 * n_groups, swarp);
 #pragma unroll
     for (int it = 0; it < C; ++it) {
+        if (!FULL && (u32)it >= n_it) break;
         const u32 dest = (u32)scnt[dig[it] * n_groups + it * WARPS + warp] + rank[it];
         ib[dest] = rec[it];
     }
     __syncthreads();
+}
+
+template <int C, class DigitFn>
+__device__ __forceinline__ void radix_pass(u16* ia, u16* ib, u16* scnt, u32* swarp, u32 n_it, DigitFn digit) {
+    if (n_it >= (u32)C) radix_pass_n<C, true>(ia, ib, scnt, swarp, n_it, digit);
+    else radix_pass_n<C, false>(ia, ib, scnt, swarp, n_it, digit);
 }
 
 template <int C, bool SEGSCAN>
@@ -105,7 +115,8 @@ __device__ __forceinline__ void layer_body(
         return;
     }
 
-    for (u32 i = tid; i < 512; i += THREADS) S.s_amp[i] = amp[i];
+    // A rotation table never reads `amp`.
+    if (mode == MODE_LOCAL) for (u32 i = tid; i < 512; i += THREADS) S.s_amp[i] = amp[i];
     for (u32 i = tid; i < 32 * W; i += THREADS) S.s_mask[i] = mask[i];
     if (tid < MAX_ENTRIES) {
         S.s_gm[tid] = gm[tid] & fp_mask();
@@ -198,8 +209,9 @@ __device__ __forceinline__ void layer_body(
         return g[src] ^ s_gm[e];
     };
 
+    const u32 n_it = (n_rows + THREADS - 1) / THREADS;
     for (int pass = 0; pass < 8; ++pass) {
-        radix_pass<C>(ia, ib, S.scnt, S.swarp, [&](u32 j) -> u32 { return (sg[j] >> (4 * pass)) & 15u; });
+        radix_pass<C>(ia, ib, S.scnt, S.swarp, n_it, [&](u32 j) -> u32 { return (sg[j] >> (4 * pass)) & 15u; });
         u16* t = ia; ia = ib; ib = t;
     }
 
@@ -214,7 +226,7 @@ __device__ __forceinline__ void layer_body(
     if (bykey) {
         if (tid == 0) atomicAdd(fallback, 1u);
         for (int pass = 0; pass < 8; ++pass) {
-            radix_pass<C>(ia, ib, S.scnt, S.swarp, [&](u32 j) -> u32 {
+            radix_pass<C>(ia, ib, S.scnt, S.swarp, n_it, [&](u32 j) -> u32 {
                 return j >= n_rows ? 15u : (u32)(g_full(j) >> (32 + 4 * pass)) & 15u;
             });
             u16* t = ia; ia = ib; ib = t;
@@ -230,7 +242,7 @@ __device__ __forceinline__ void layer_body(
             if (tid == 0) atomicAdd(fallback + 1, 1u);
             for (int pass = 0; pass < 32 * W; ++pass) {
                 const u32 wi = pass / 16, nib = pass % 16;
-                radix_pass<C>(ia, ib, S.scnt, S.swarp, [&](u32 j) -> u32 {
+                radix_pass<C>(ia, ib, S.scnt, S.swarp, n_it, [&](u32 j) -> u32 {
                     if (j >= n_rows) return 15u;
                     const Key k = out_key(j);
                     const u64 word = (wi < W) ? k.z[W - 1 - wi] : k.x[2 * W - 1 - wi];
@@ -241,15 +253,12 @@ __device__ __forceinline__ void layer_body(
         }
     }
 
-    // Heads of equal-key runs, into ib.
-    for (u32 i = tid; i < n_cap; i += THREADS) {
-        u16 h = 0;
-        if (i < n_rows) {
-            if (i == 0) h = 1;
-            else {
-                const u32 j0 = ia[i - 1], j1 = ia[i];
-                h = bykey ? (u16)(!key_eq(out_key(j0), out_key(j1))) : (u16)(sg[j0] != sg[j1]);
-            }
+    // Heads of equal-key runs, into ib; only ib[0..n_rows) is read below.
+    for (u32 i = tid; i < n_rows; i += THREADS) {
+        u16 h = 1;
+        if (i > 0) {
+            const u32 j0 = ia[i - 1], j1 = ia[i];
+            h = bykey ? (u16)(!key_eq(out_key(j0), out_key(j1))) : (u16)(sg[j0] != sg[j1]);
         }
         ib[i] = h;
     }

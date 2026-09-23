@@ -121,6 +121,11 @@ seeded one.
 A distributed cell (`--mpi`) adds two more, and only there: `rank` and `ranks`. Each rank writes its
 own sidecar file, `<--json-out path>.rank<N>`.
 
+Three device-only phase fields are written on every row and are zero on a host row: `compact_ns` (K4, kernel time, contained in `coset_loop_ns` like `gather_ns`/`merge_ns`), `h2d_ns` and `d2h_ns` (the copies inside a layer, contained in `coset_loop_ns` or `rescale_ns` — sub-phases, never summed into a total).
+A device cell (`--device`, feature `cuda`) adds three more, and only there: `device` (the ordinal), `upload_ns` (`GpuPauliSum::from_host` of the input, including the first-use NVRTC compile) and `download_ns` (`to_host` of the timed call's output); both are outside `wall_ns`.
+`--format tsv` carries all six as trailing columns, `device` as `-1` on a host row.
+See The device axis below for what the host phase names mean on a device row.
+
 Two further keys are **sub-phases, contained in the phase above rather than additional to it**, so
 never add them to a total: `append_ns`, worker busy time inside `gather_ns`, for merging received rows
 into the output buckets' rest streams, of which `chunk_wait_ns` is the part spent blocked waiting for a
@@ -160,7 +165,7 @@ Change the line's fields or order, fix `perf-stat.sh`'s awk in the same change.
 **(c) Criterion snapshot JSON.** `criterion-report.py snapshot` and `bench-campaign.sh`'s `criterion:`/`scaling:` items write `{full_id: {median_ns, mean_ns, stddev_ns, throughput_elems, melem_per_s}}`, consumed by `compare` and `perf-viz.py`'s criterion and scaling sections.
 Thread-scaling groups rely on a naming contract: a `BenchmarkId` of `<group>/<threads>` where `<group>` starts with `thread_scaling` and `<threads>` is a bare integer; `perf-viz.py` splits on the last `/` and parses the tail as an int, silently skipping anything else.
 
-**(d) `bandwidth.txt`**, written by `bandwidth.sh` and read by `perf-viz.py`'s bandwidth section and roofline model: an optional first line `# ceiling-map: <key>=<label>;...` (keys are thread counts or `default`), then one or more `=== <section label> ===` headers each followed by `kernel=<name> threads=<n> mib=<n> reps=<n> best_gbps=<f> avg_gbps=<f>` lines from `crates/membench`.
+**(d) `bandwidth.txt`**, written by `bandwidth.sh` and read by `perf-viz.py`'s bandwidth section and roofline model: an optional first line `# ceiling-map: <key>=<label>;...` (keys are thread counts or `default`), then one or more `=== <section label> ===` headers each followed by `kernel=<name> threads=<n> mib=<n> reps=<n> best_gbps=<f> avg_gbps=<f>` lines from `crates/membench`. A `--device N` run appends a `=== gpu<N> <name> ===` section whose lines carry `threads=gpu<N>`.
 Without a ceiling-map header, `perf-viz.py` falls back to a hard-coded ccqlin038-shaped thread-count → section table.
 
 **(e) The campaign results directory** (`benchmarks/results/<date>-<host>/`). Per campaign name:
@@ -219,6 +224,25 @@ mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
 - **`chunk_wait_ns` is only filled here.** The in-process transport has no transfer to wait on, so it is zero for a `--partitions` cell and nonzero for an `--mpi` one.
 - **`PAULISTRINGS_EXCHANGE_CHUNKS`** overrides the pipeline's chunk count, read once per process (needs `mpirun -x`). `K = 1` is the two-phase shape with no pipelining, the control for "did the overlap do anything".
 - Reference numbers and the weak-scaling table: `research/HARDWARE.md`. On Rusty, `scripts/slurm/mpi-ranks.sbatch` runs the differential net and then this probe across the allocation.
+
+### The device axis
+
+`--device <ordinal>` (feature `cuda`) runs each cell on one CUDA device through `GpuPauliSum`, the same shape as a `P = 1` partitioned cell: the input is uploaded untimed, an untimed warm-up call drives the resident sum to its steady state, the timed call applies the layer set again, and the output is downloaded untimed.
+`wall_ns` therefore means the same thing on a device row as on a host row, and `n` is the steady-state term count on the device.
+
+```bash
+export CUDA_ROOT=<toolkit>; export PATH=$CUDA_ROOT/bin:$PATH LD_LIBRARY_PATH=$CUDA_ROOT/lib64:$LD_LIBRARY_PATH
+cargo build --release --features phase-timing,cuda --example phase_breakdown
+target/release/examples/phase_breakdown --device 0 --n 4000000 --reps 5 --layers rotation_zz,cnot,gu2q,su4 --json-out out.jsonl
+```
+
+- **`--threads` is not swept**: one cell per layer, `--threads[0]` echoed into the row. `--partitions` must stay at `1`, `rotation_remote` and `topn:<N>` are refused, `--occupancy-at` is unsupported.
+- **The host phase names carry the kernel family that replaces them**: `gather_ns` is K1+K2 (count and segment sizes with their scans), `merge_ns` the fused K3 — the sort is inside it, so `sort_ns` stays `0` — `compact_ns` K4, `rescale_ns` K5, `rebucket_ns` the device refines, `finalize_ns` the driver's wall around K7. All are CUDA-event times, read behind one synchronization at the end of the layer.
+- **`coset_loop_ns` is the driving thread's wall over the fused path** (count, layer, compaction, and the copies between them), so `gather_ns + merge_ns + compact_ns ≤ coset_loop_ns`, and the gap is launch, scan and copy overhead.
+- **`busy / (coset_loop_ns × threads)` is not a parallel-efficiency figure on a device row.** The busy fields are kernel time on one device, not summed worker time, and `threads` is an echoed flag; read `Σbusy / coset_loop_ns` as the fraction of the loop the kernels themselves account for instead.
+- `rows_gathered` and `rows_sorted` are both the layer's pre-dedup record count and `rows_id` is `0`: every record is gathered and sorted on the device. `cosets` is the arena batch count and `runs` the block (position) count.
+- The first cell of a process pays the NVRTC compile inside `upload_ns` (seconds); a later cell's upload is the copy alone.
+- The denominator: `scripts/bandwidth.sh --device N` appends an `=== gpu<N> <name> ===` section from `membench --device N` (feature `cuda`), the same contract (d) lines with `threads=gpu<N>`.
 
 ## Flamegraphs
 

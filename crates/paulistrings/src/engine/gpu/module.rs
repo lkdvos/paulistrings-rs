@@ -1,8 +1,6 @@
-//! NVRTC kernel compilation, cached per `(ordinal, W)`.
+//! NVRTC kernel compilation, cached per `(ordinal, W, extra options)`.
 //!
 //! Every `.cu` family in [`KERNEL_SOURCES`] is concatenated behind `kernels/prelude.cuh` into one translation unit, and [`KernelSet`] holds the loaded functions.
-// The scaffold's only caller is its own test; the allow goes when the device storage takes a `KernelSet`.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,30 +13,41 @@ use super::error::GpuError;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
 const PROBE: &str = include_str!("kernels/probe.cu");
+const HASH: &str = include_str!("kernels/hash.cu");
+const FINGERPRINT: &str = include_str!("kernels/fingerprint.cu");
+const SCAN: &str = include_str!("kernels/scan.cu");
+const REFINE: &str = include_str!("kernels/refine.cu");
+const INVARIANTS: &str = include_str!("kernels/invariants.cu");
 
-/// Every kernel family, concatenated into one NVRTC translation unit.
-const KERNEL_SOURCES: &[&str] = &[PRELUDE, PROBE];
+/// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
+const KERNEL_SOURCES: &[&str] = &[PRELUDE, PROBE, HASH, FINGERPRINT, SCAN, REFINE, INVARIANTS];
 
-/// One device's compiled kernels for one `W`. `CudaFunction` itself keeps its owning
-/// `CudaModule` alive, so there is nothing else to hold here.
+/// One device's compiled kernels for one `W`; each `CudaFunction` keeps its `CudaModule` alive.
 pub(crate) struct KernelSet {
-    probe: CudaFunction,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) probe: CudaFunction,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) bucket_of: CudaFunction,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) partition_of: CudaFunction,
+    pub(crate) fingerprint: CudaFunction,
+    pub(crate) scan_block: CudaFunction,
+    pub(crate) scan_single: CudaFunction,
+    pub(crate) scan_add: CudaFunction,
+    pub(crate) refine_count: CudaFunction,
+    pub(crate) refine_scatter: CudaFunction,
+    pub(crate) check_invariants: CudaFunction,
 }
 
-impl KernelSet {
-    pub(crate) fn probe(&self) -> &CudaFunction {
-        &self.probe
-    }
-}
-
-/// Compiled NVRTC PTX for `w`, at `arch` (`compute_<major><minor>`), with an optional extra
-/// options hook (`extra_options`) — a future `FP_BITS` knob plugs in here without a signature
-/// change. Needs only NVRTC, no device or context.
+/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook). Needs only NVRTC, no device.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
     extra_options: &[String],
 ) -> Result<cudarc::nvrtc::Ptx, GpuError> {
+    if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+        return Err(GpuError::LibraryMissing("libnvrtc"));
+    }
     let src = KERNEL_SOURCES.concat();
     let mut options = vec![format!("-DW={w}"), "--std=c++17".to_string()];
     options.extend_from_slice(extra_options);
@@ -57,9 +66,7 @@ pub(crate) fn compile_ptx(
     })
 }
 
-/// `arch` strings are always one of a small fixed set (`compute_50`..`compute_90`), so this leaks
-/// nothing unusual: `CompileOptions::arch` wants `&'static str`, and every caller here passes a
-/// string built once per test/probe run, not a hot-path allocation.
+/// `CompileOptions::arch` wants `&'static str`; the arch set is small and fixed, so leaking an unlisted one is bounded.
 fn arch_static(arch: &str) -> &'static str {
     match arch {
         "compute_80" => "compute_80",
@@ -68,33 +75,55 @@ fn arch_static(arch: &str) -> &'static str {
     }
 }
 
-type KernelCache = Mutex<HashMap<(u32, usize), Arc<KernelSet>>>;
+type CacheKey = (u32, usize, Vec<String>);
+type KernelCache = Mutex<HashMap<CacheKey, Arc<KernelSet>>>;
 static KERNEL_CACHE: OnceLock<KernelCache> = OnceLock::new();
 
 fn cache() -> &'static KernelCache {
     KERNEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The compiled [`KernelSet`] for `(ordinal, w)`, compiling and caching it on first use.
+/// The compiled [`KernelSet`] for `(ordinal, w)` with no extra options.
 pub(crate) fn kernel_set(ordinal: u32, w: usize) -> Result<Arc<KernelSet>, GpuError> {
+    kernel_set_with_options(ordinal, w, &[])
+}
+
+/// The compiled [`KernelSet`] for `(ordinal, w, extra_options)`, compiling and caching it on first use.
+pub(crate) fn kernel_set_with_options(
+    ordinal: u32,
+    w: usize,
+    extra_options: &[String],
+) -> Result<Arc<KernelSet>, GpuError> {
+    let key = (ordinal, w, extra_options.to_vec());
     if let Some(set) = cache()
         .lock()
         .expect("kernel cache mutex poisoned")
-        .get(&(ordinal, w))
+        .get(&key)
     {
         return Ok(set.clone());
     }
     let ctx = device::context(ordinal)?;
     let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
-    let ptx = compile_ptx(w, &arch, &[])?;
+    let ptx = compile_ptx(w, &arch, extra_options)?;
     let module = ctx.load_module(ptx).map_err(GpuError::from)?;
-    let probe = module.load_function("k_probe").map_err(GpuError::from)?;
-    let set = Arc::new(KernelSet { probe });
+    let f = |name: &str| module.load_function(name).map_err(GpuError::from);
+    let set = Arc::new(KernelSet {
+        probe: f("k_probe")?,
+        bucket_of: f("k_bucket_of")?,
+        partition_of: f("k_partition_of")?,
+        fingerprint: f("k_fingerprint")?,
+        scan_block: f("k_scan_block")?,
+        scan_single: f("k_scan_single")?,
+        scan_add: f("k_scan_add")?,
+        refine_count: f("k_refine_count")?,
+        refine_scatter: f("k_refine_scatter")?,
+        check_invariants: f("k_check_invariants")?,
+    });
     cache()
         .lock()
         .expect("kernel cache mutex poisoned")
-        .insert((ordinal, w), set.clone());
+        .insert(key, set.clone());
     Ok(set)
 }
 
@@ -113,6 +142,8 @@ mod tests {
         for w in [1usize, 2, 4, 8, 16] {
             compile_ptx(w, "compute_80", &[]).unwrap_or_else(|e| panic!("W={w}: {e}"));
         }
+        compile_ptx(2, "compute_80", &["-DFP_BITS=8".to_string()])
+            .unwrap_or_else(|e| panic!("FP_BITS=8: {e}"));
     }
 
     #[test]
@@ -126,7 +157,7 @@ mod tests {
             let mut out = stream.alloc_zeros::<u64>(n).expect("alloc");
             unsafe {
                 stream
-                    .launch_builder(set.probe())
+                    .launch_builder(&set.probe)
                     .arg(&mut out)
                     .arg(&(n as i32))
                     .launch(LaunchConfig {

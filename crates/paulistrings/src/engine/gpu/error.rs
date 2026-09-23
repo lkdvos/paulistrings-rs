@@ -46,6 +46,16 @@ impl fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
+impl GpuError {
+    /// `e` with an out-of-memory result attributed to `device` and a request of `bytes`.
+    pub(crate) fn from_alloc(e: cudarc::driver::DriverError, device: u32, bytes: u64) -> Self {
+        match GpuError::from(e) {
+            GpuError::OutOfMemory { .. } => GpuError::OutOfMemory { device, bytes },
+            other => other,
+        }
+    }
+}
+
 impl From<cudarc::driver::DriverError> for GpuError {
     /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`
     /// (the driver error carries neither); a caller that knows better should build the variant itself.

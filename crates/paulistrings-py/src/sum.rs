@@ -1410,7 +1410,12 @@ fn format_coeff(c: Complex64) -> String {
     if c.im == 0.0 {
         format!("{}", c.re)
     } else {
-        format!("({}{}{}j)", c.re, if c.im < 0.0 { "-" } else { "+" }, c.im.abs())
+        format!(
+            "({}{}{}j)",
+            c.re,
+            if c.im < 0.0 { "-" } else { "+" },
+            c.im.abs()
+        )
     }
 }
 
@@ -1427,7 +1432,11 @@ fn format_sum(inner: &PauliSumImpl) -> String {
         .map(|(label, c)| format!("{}*{}", format_coeff(*c), label))
         .collect();
     if len > shown.len() {
-        parts.push(format!("... ({} more term{})", len - shown.len(), if len - shown.len() == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "... ({} more term{})",
+            len - shown.len(),
+            if len - shown.len() == 1 { "" } else { "s" }
+        ));
     }
     parts.join(" + ")
 }

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BuiltinTruncation"],"mod":["builtin"],"trait":["TruncationPolicy"]};

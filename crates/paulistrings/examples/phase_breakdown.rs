@@ -487,6 +487,9 @@ struct Config {
     /// `--device <ordinal>`: run each cell on one CUDA device. Only settable when the `cuda` feature is on.
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     device: Option<u32>,
+    /// `--gpu-partitions`: virtual device partitions of a `--device` cell.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    gpu_partitions: usize,
     /// Placement spec for the partitioned cells. See `--partition-cpus`.
     partition_cpus: PartitionCpus,
     /// Whether each partition binds its allocations to its NUMA node.
@@ -572,6 +575,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut initial: Option<Initial> = None;
     let mut mpi = false;
     let mut device: Option<u32> = None;
+    let mut gpu_partitions: usize = 1;
 
     let mut i = 0;
     while i < args.len() {
@@ -639,6 +643,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                         .map_err(|_| format!("--device expects a small ordinal, got '{value}'"))?,
                 );
             }
+            "--gpu-partitions" => gpu_partitions = parse_usize(value, "--gpu-partitions")?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -766,22 +771,29 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
-    // The device axis: one partition, one process, no remote layer, no exact selection.
+    // The device axis: one process, `--gpu-partitions` virtual partitions on one device, no exact selection.
+    if gpu_partitions == 0 || !gpu_partitions.is_power_of_two() {
+        return Err(format!(
+            "--gpu-partitions {gpu_partitions} must be a power of two"
+        ));
+    }
+    if gpu_partitions > 1 && device.is_none() {
+        return Err("--gpu-partitions needs --device".to_string());
+    }
     if device.is_some() {
         if partitions != vec![1] {
             return Err(
-                "--device runs one device partition, so --partitions must stay at 1: \
-                        the device backend has no exchange"
+                "--device places partitions with --gpu-partitions, so --partitions must stay at 1"
                     .to_string(),
             );
         }
         if mpi {
             return Err("--device and --mpi are exclusive".to_string());
         }
-        if layers.contains(&LayerKind::RotationRemote) {
+        if layers.contains(&LayerKind::RotationRemote) && gpu_partitions == 1 {
             return Err(
                 "--layers rotation_remote needs a remote delta, which only exists at \
-                        --partitions > 1; the device backend runs one partition"
+                        --gpu-partitions > 1"
                     .to_string(),
             );
         }
@@ -808,6 +820,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         partitions,
         mpi,
         device,
+        gpu_partitions,
         partition_cpus,
         bind_memory,
         partition_seed,
@@ -1468,6 +1481,119 @@ where
         partition_rows: cfg.partition_rows.label(),
         row_stats: RowChoiceStats::default(),
         partitioned: None,
+        mpi: None,
+        occupancy: None,
+        device: Some(DeviceCellStats {
+            ordinal: device,
+            upload_ns,
+            download_ns,
+        }),
+    }
+}
+
+/// One cell of `--gpu-partitions` virtual partitions on one device: [`run_cell_partitioned`] with `GpuPartitionedSum`.
+/// `upload_ns` is the scatter (filter and upload), `download_ns` the gather, both outside `wall_ns`.
+#[cfg(feature = "cuda")]
+fn run_cell_gpu_partitioned<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    device: u32,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    use paulistrings::gpu::GpuPartitionedSum;
+
+    let partitions = cfg.gpu_partitions;
+    let base = build_base_sum::<W>(layer, cfg);
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![device],
+            per_device: partitions,
+        },
+        bind_memory: false,
+        partition_row_seed: cfg.partition_seed,
+    };
+    let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
+        eprintln!("phase_breakdown: cannot resolve the device placement: {err}");
+        std::process::exit(2);
+    });
+    let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
+        eprintln!(
+            "phase_breakdown: {} on device {device} x{partitions}: {what}: {e}",
+            layer.name()
+        );
+        std::process::exit(2);
+    };
+    let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
+    let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+    let split_hash_seed = base.hash().seed();
+
+    let started = Instant::now();
+    let mut split = GpuPartitionedSum::scatter_with_rows(base, rows, runtime)
+        .unwrap_or_else(|e| fail("scatter", e));
+    let upload_ns = started.elapsed().as_nanos() as u64;
+    split.enable_trace();
+
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("warm-up", e));
+    let _ = split.take_trace();
+    let _ = split.take_stats();
+
+    let steady_n = split.len();
+    let started = Instant::now();
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("timed call", e));
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let trace = split.take_trace().expect("tracing was enabled");
+    let per_partition = split.take_stats();
+
+    let started = Instant::now();
+    let output = split.gather().unwrap_or_else(|e| fail("gather", e));
+    let download_ns = started.elapsed().as_nanos() as u64;
+    std::hint::black_box(&output);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+    let stats = fold_partition_stats(&per_partition);
+    let summary = summarize_partitions(partitions, &trace, &per_partition, &stats);
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: split_hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions,
+        partition_cpus: "gpu".to_string(),
+        pin_memory: false,
+        gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
+        partition_rows: cfg.partition_rows.label(),
+        row_stats,
+        partitioned: Some(summary),
         mpi: None,
         occupancy: None,
         device: Some(DeviceCellStats {
@@ -2620,7 +2746,11 @@ where
         let policy = partitioned_policy
             .expect("a device cell without a partitioned policy — parse_args rejects topn");
         for &layer in &cfg.layers {
-            let cell = run_cell_gpu::<W, PP>(layer, cfg.threads[0], device, cfg, policy);
+            let cell = if cfg.gpu_partitions > 1 {
+                run_cell_gpu_partitioned::<W, PP>(layer, cfg.threads[0], device, cfg, policy)
+            } else {
+                run_cell_gpu::<W, PP>(layer, cfg.threads[0], device, cfg, policy)
+            };
             emit_cell(cfg, &cell, sidecar.as_mut());
         }
         return;
@@ -2721,6 +2851,11 @@ const DEVICE_USAGE: &str = "\
                             report those two, `wall_ns` the timed call, so it
                             means the same as on a host row. --threads is not
                             swept: one cell per layer, --threads[0] echoed.
+  --gpu-partitions <n>     With --device: split the sum into <n> virtual device
+                            partitions on that device (a power of two, default 1)
+                            and run them through GpuPartitionedSum, so remote
+                            layers export, exchange and merge received rows.
+                            The row carries partitions=<n>, partition_cpus=gpu.
                             --partitions must stay at 1, rotation_remote and
                             topn:<N> are refused, --occupancy-at is
                             unsupported. Phases: gather = K1+K2, merge = the

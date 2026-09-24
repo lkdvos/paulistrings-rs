@@ -19,6 +19,17 @@ pub(crate) trait PartitionStorage<const W: usize>: Send + Sized {
     fn hash(&self) -> &Gf2Hash<W>;
     /// Add one bucket bit, as [`PauliSum::refine`].
     fn refine(&mut self);
+    /// The bucket bits this partition proposes to the group's agreement for the layer `prep` prepares: the host formula, which a backend may raise but never lower.
+    fn proposed_bits(
+        &self,
+        prep: &Prepared<W>,
+        target_bucket_len: usize,
+        min_buckets: usize,
+    ) -> u8 {
+        let _ = prep;
+        crate::bucket::sum::desired_bits(self.len(), target_bucket_len, min_buckets)
+            .max(self.hash().bits())
+    }
     /// Move the partition out, leaving a valid empty partition under the same hash behind.
     ///
     /// The placeholder keeps a driver self-consistent (same rows, same hash, same bucket count on every partition) if the partition panics and the work is never handed back.
@@ -50,13 +61,13 @@ pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W
 /// Nominally `pub` only so it can be `DistributedSum`'s default backend; the module is crate-private, so it cannot be named outside the crate.
 #[derive(Debug)]
 pub struct HostPartition<const W: usize> {
-    pub(super) sum: PauliSum<W>,
+    pub(crate) sum: PauliSum<W>,
     pub(super) state: PartitionState<W>,
 }
 
 impl<const W: usize> HostPartition<W> {
     /// `sum` with fresh scratch.
-    pub(super) fn new(sum: PauliSum<W>) -> Self {
+    pub(crate) fn new(sum: PauliSum<W>) -> Self {
         Self {
             sum,
             state: PartitionState::default(),

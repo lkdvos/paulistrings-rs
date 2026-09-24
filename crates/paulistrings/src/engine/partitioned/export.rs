@@ -352,7 +352,7 @@ impl<'a, const W: usize> BlockCols<'a, W> {
 /// Debug builds only, `O(exported rows)`.
 /// A failure means either the plan misclassified a delta or the caller's `local` sum was not the pure partition it claims to be.
 #[cfg(debug_assertions)]
-pub(super) fn debug_assert_exported_partitions<const W: usize>(
+pub(crate) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],
     rows: &crate::bucket::hash::PartitionRows<W>,
 ) {

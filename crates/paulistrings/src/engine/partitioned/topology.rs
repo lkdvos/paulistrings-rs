@@ -334,6 +334,8 @@ pub struct PartitionSlot {
     pub node: Option<usize>,
     /// Worker count for the slot's Rayon pool.
     pub threads: usize,
+    /// The CUDA device a device partition runs on, `None` for a host partition.
+    pub device: Option<u32>,
 }
 
 /// Builds the Rayon pool for one partition, pinning each worker to the slot's CPUs and (when `bind_memory`) binding its allocations to the slot's node.
@@ -411,7 +413,21 @@ pub enum Placement {
         /// evenly (at least one thread each).
         threads_per_partition: Option<usize>,
     },
+    /// `per_device` partitions on each listed CUDA device, in rank order, for the `cuda` backend's [`GpuPartitionedSum`](crate::gpu::GpuPartitionedSum).
+    ///
+    /// `devices.len() × per_device` must be a power of two; each slot is unpinned with a small host pool for the export and receive plumbing, and the device's context is bound on the driving thread.
+    #[cfg(feature = "cuda")]
+    Devices {
+        /// Device ordinals, one entry per device.
+        devices: Vec<u32>,
+        /// Partitions sharing each device; `1` in production, more to test the exchange on one device.
+        per_device: usize,
+    },
 }
+
+/// Host workers of a device partition's pool: enough for the export staging and payload plumbing.
+#[cfg(feature = "cuda")]
+pub const DEVICE_PARTITION_THREADS: usize = 4;
 
 /// Placement plus the knobs the partitioned engine reads alongside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -463,8 +479,38 @@ impl PartitionConfig {
                 partitions,
                 threads_per_partition,
             } => resolve_unpinned(*partitions, *threads_per_partition),
+            #[cfg(feature = "cuda")]
+            Placement::Devices {
+                devices,
+                per_device,
+            } => resolve_devices(devices, *per_device),
         }
     }
+}
+
+#[cfg(feature = "cuda")]
+fn resolve_devices(
+    devices: &[u32],
+    per_device: usize,
+) -> Result<Vec<PartitionSlot>, TopologyError> {
+    let count = devices.len() * per_device;
+    if count == 0 || !count.is_power_of_two() {
+        return Err(TopologyError::NotPowerOfTwo(count));
+    }
+    Ok(devices
+        .iter()
+        .flat_map(|&d| {
+            std::iter::repeat_n(
+                PartitionSlot {
+                    cpus: None,
+                    node: None,
+                    threads: DEVICE_PARTITION_THREADS,
+                    device: Some(d),
+                },
+                per_device,
+            )
+        })
+        .collect())
 }
 
 fn resolve_auto(max_partitions: Option<usize>) -> Vec<PartitionSlot> {
@@ -489,6 +535,7 @@ fn resolve_auto(max_partitions: Option<usize>) -> Vec<PartitionSlot> {
             node: (group.len() == 1).then(|| group[0].0),
             threads: cpus.len(),
             cpus: Some(cpus),
+            device: None,
         });
     }
     slots
@@ -522,6 +569,7 @@ fn resolve_explicit(sets: &[CpuSet]) -> Result<Vec<PartitionSlot>, TopologyError
             node,
             threads: cpus.len(),
             cpus: Some(cpus),
+            device: None,
         });
     }
 
@@ -558,6 +606,7 @@ fn resolve_unpinned(
             cpus: None,
             node: None,
             threads,
+            device: None,
         };
         partitions
     ])
@@ -820,6 +869,7 @@ mod tests {
             cpus: Some(CpuSet(vec![cpu])),
             node: None,
             threads: 2,
+            device: None,
         };
         let pool = build_pool(&slot, false, "test-pinned").unwrap();
         let seen: Vec<Option<usize>> = pool.broadcast(|_| current_cpu());
@@ -837,6 +887,7 @@ mod tests {
             cpus: None,
             node: None,
             threads: 2,
+            device: None,
         };
         let pool = build_pool(&slot, false, "test-unpinned").unwrap();
         assert_eq!(pool.install(|| (0..100).sum::<usize>()), 4950);

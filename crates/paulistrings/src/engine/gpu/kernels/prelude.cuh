@@ -36,6 +36,8 @@ typedef unsigned char u8;
 #define TAG_OFF_MASK 0xFFFu
 #define MAX_BUCKET_LEN (1u << TAG_OFF_BITS)
 #define LOCAL_DIM 16
+// `rem[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Partitioning).
+#define NO_REMOTE 0xFFFFFFFFu
 
 // Prepared-table kinds: a `LocalPtm` and a wide `RotationPrep` (ARCHITECTURE.md §Prepared-Channels).
 #define MODE_LOCAL 0

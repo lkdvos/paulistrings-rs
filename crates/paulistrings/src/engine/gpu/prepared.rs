@@ -5,6 +5,10 @@ use num_complex::Complex64;
 use super::fingerprint::FingerprintRows;
 use crate::bucket::hash::Gf2Hash;
 use crate::channel::prepared::{Prepared, LOCAL_DIM};
+use crate::engine::partitioned::plan::RemoteDelta;
+
+/// `rem[e]` of an entry sourced from a local bucket; matches `NO_REMOTE` in `kernels/prelude.cuh`.
+pub(crate) const NO_REMOTE: u32 = u32::MAX;
 
 /// Entries with any nonzero amplitude per pattern, averaged over the active patterns, at or above which a table counts as dense.
 /// Dense tables reduce by the block-wide segmented scan, sparse ones by the head-serial walk.
@@ -31,17 +35,27 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) bucket_delta: Vec<u32>,
     /// `g(mask)` per entry, unmasked.
     pub(crate) gm: Vec<u64>,
-    /// Entries that emit for some pattern; 2 for a rotation.
+    /// Per entry, the received block's slot (its index in the plan's remote list) or [`NO_REMOTE`].
+    pub(crate) rem: Vec<u32>,
+    /// Received entries.
+    pub(crate) n_remote: usize,
+    /// Entries that emit for some pattern, local and received alike; 2 for a rotation.
     pub(crate) fanout: usize,
     /// The reduction choice.
     pub(crate) dense: bool,
-    /// One identity entry only: the K5 rescale path.
+    /// One identity entry and no received entry: the K5 rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
     pub(crate) key_preserving: bool,
     masks: Vec<([u64; W], [u64; W])>,
 }
 
 impl<const W: usize> DevicePrepared<W> {
-    pub(crate) fn new(prep: &Prepared<W>, hash: &Gf2Hash<W>, fp: &FingerprintRows<W>) -> Self {
+    /// `remote` names the entries whose rows arrive from a partner instead of a local bucket, in the plan's order.
+    pub(crate) fn new(
+        prep: &Prepared<W>,
+        hash: &Gf2Hash<W>,
+        fp: &FingerprintRows<W>,
+        remote: &[RemoteDelta],
+    ) -> Self {
         let mut amp = vec![0f64; 16 * LOCAL_DIM * 2];
         let mut nz = vec![0u32; 16];
         let mut masks: Vec<([u64; W], [u64; W])> = Vec::new();
@@ -98,6 +112,15 @@ impl<const W: usize> DevicePrepared<W> {
             mask[(e * 2 + 1) * W..(e * 2 + 2) * W].copy_from_slice(mz);
             gm[e] = fp.fingerprint(mx, mz);
         }
+        let mut rem = vec![NO_REMOTE; 16];
+        for (k, r) in remote.iter().enumerate() {
+            assert!(
+                r.entry < entries,
+                "remote entry {} outside the table",
+                r.entry
+            );
+            rem[r.entry] = k as u32;
+        }
         let mut out = Self {
             mode,
             entries,
@@ -111,9 +134,11 @@ impl<const W: usize> DevicePrepared<W> {
             nz,
             bucket_delta: vec![0u32; 16],
             gm,
+            rem,
+            n_remote: remote.len(),
             fanout,
             dense,
-            key_preserving,
+            key_preserving: key_preserving && remote.is_empty(),
             masks,
         };
         out.rehash(hash);
@@ -127,9 +152,12 @@ impl<const W: usize> DevicePrepared<W> {
         }
     }
 
-    /// The distinct bucket deltas, ascending, always containing `0`: the input to `Gf2Span::new`.
+    /// The distinct bucket deltas of the local entries, ascending, always containing `0`: the input to `Gf2Span::new`, equal to the plan's `local_bucket_deltas`.
     pub(crate) fn bucket_deltas(&self) -> Vec<u32> {
-        let mut v: Vec<u32> = self.bucket_delta[..self.entries].to_vec();
+        let mut v: Vec<u32> = (0..self.entries)
+            .filter(|&e| self.rem[e] == NO_REMOTE)
+            .map(|e| self.bucket_delta[e])
+            .collect();
         v.push(0);
         v.sort_unstable();
         v.dedup();
@@ -151,7 +179,7 @@ mod tests {
     fn table<const W: usize>(ch: &dyn Channel<W>, nq: usize) -> DevicePrepared<W> {
         let hash = Gf2Hash::<W>::new(nq, 6, DEFAULT_HASH_SEED);
         let prep = ch.prepare(&hash, false).expect("prepared");
-        DevicePrepared::new(&prep, &hash, &FingerprintRows::new(hash.seed()))
+        DevicePrepared::new(&prep, &hash, &FingerprintRows::new(hash.seed()), &[])
     }
 
     #[test]
@@ -189,13 +217,45 @@ mod tests {
         assert_eq!(rot.bucket_deltas().len(), 2);
     }
 
+    /// An identity-only retained table with received entries must not take the K5 path, and its position map spans the local deltas only.
+    #[test]
+    fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
+        use crate::bucket::hash::PartitionRows;
+        use crate::engine::partitioned::plan::PartitionPlan;
+        let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
+        let fp = FingerprintRows::new(hash.seed());
+        // `H` has the deltas `{0, X₁Z₁}`; a row reading qubit 1's x-bit makes the one non-identity entry remote.
+        let ch = crate::channel::clifford::Clifford1Q::h(1);
+        let prep = ch.prepare(&hash, false).unwrap();
+        let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
+        let plan = PartitionPlan::new(&prep, &rows, 0);
+        let Prepared::Local(ptm) = &prep else {
+            unreachable!()
+        };
+        let retained = ptm.retain_entries(&plan.local_entries);
+        assert!(
+            retained.is_key_preserving() || plan.remote.is_empty(),
+            "fixture: the retained table must be identity-only"
+        );
+        let t = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
+        assert!(!plan.remote.is_empty());
+        assert!(!t.key_preserving, "received rows force the full path");
+        assert_eq!(t.n_remote, plan.remote.len());
+        for r in &plan.remote {
+            assert_ne!(t.rem[r.entry], NO_REMOTE);
+        }
+        assert_eq!(t.bucket_deltas(), plan.local_bucket_deltas);
+        let local = DevicePrepared::new(&prep, &hash, &fp, &[]);
+        assert!(!local.key_preserving && local.n_remote == 0);
+    }
+
     #[test]
     fn rehash_tracks_the_hash_and_gm_is_the_fingerprint_of_the_mask() {
         let hash = Gf2Hash::<1>::new(8, 3, DEFAULT_HASH_SEED);
         let ch = Clifford2Q::cnot(1, 3);
         let prep = ch.prepare(&hash, false).unwrap();
         let fp = FingerprintRows::new(hash.seed());
-        let mut t = DevicePrepared::new(&prep, &hash, &fp);
+        let mut t = DevicePrepared::new(&prep, &hash, &fp, &[]);
         let Prepared::Local(ptm) = &prep else {
             unreachable!()
         };

@@ -31,6 +31,8 @@ pub use plan::count_remote_deltas;
 pub use rows::{circuit_generators, GeneratorWeight};
 pub use runtime::PartitionRuntime;
 // Where partitions run: CPU sets, NUMA nodes, and the placement a caller asks for.
+#[cfg(feature = "cuda")]
+pub use topology::DEVICE_PARTITION_THREADS;
 pub use topology::{numa_nodes, CpuSet, PartitionConfig, PartitionSlot, Placement, TopologyError};
 // What a partitioned run did, layer by layer: term counts, bucket bits, exchange volume.
 pub use trace::{PartitionLayerRecord, PartitionTrace};

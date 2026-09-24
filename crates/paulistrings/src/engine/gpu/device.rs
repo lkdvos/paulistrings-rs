@@ -101,7 +101,7 @@ impl DeviceTable {
 }
 
 /// The cached context for `ordinal`, for the modules that bind one.
-pub(super) fn context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
+pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libcuda"));
     }

@@ -108,3 +108,7 @@ required-features = ["mpi", "test-utils"]
 [[test]]
 name = "propagate_gpu"
 required-features = ["cuda", "test-utils"]
+
+[[test]]
+name = "propagate_gpu_partitioned"
+required-features = ["cuda", "test-utils"]

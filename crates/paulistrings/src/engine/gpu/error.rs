@@ -27,6 +27,8 @@ pub enum GpuError {
     },
     /// A feature this backend does not implement.
     Unsupported(&'static str),
+    /// A device placement did not resolve.
+    Topology(crate::engine::partitioned::TopologyError),
 }
 
 impl fmt::Display for GpuError {
@@ -40,6 +42,7 @@ impl fmt::Display for GpuError {
                 write!(f, "device {device} out of memory (requested {bytes} bytes)")
             }
             GpuError::Unsupported(what) => write!(f, "unsupported on the CUDA backend: {what}"),
+            GpuError::Topology(e) => write!(f, "device placement: {e}"),
         }
     }
 }

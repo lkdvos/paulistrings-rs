@@ -1,5 +1,5 @@
 // K3: the fused layer, one block per output position (ARCHITECTURE.md §Engine, §GPU-Readiness).
-// Records (g_lo32, tag) for every emitting (source bucket, entry) pair live in shared memory; a 16-bit index array is radix-sorted over them, equal-g32 runs are checked on the full key, and a segmented sum deduplicates before the surviving rows are written to the arena at seg_start[p].
+// Records (g_lo32, tag) for every emitting (source bucket, entry) pair, local or received, live in shared memory; a 16-bit index array is radix-sorted over them, equal-g32 runs are checked on the full key, and a segmented sum deduplicates before the surviving rows are written to the arena at seg_start[p].
 // Fallbacks are block-uniform: a colliding adjacent pair (equal g_lo32, different key) triggers eight more passes over g_hi32, and a pair still colliding after that a full lex-key sort.
 
 struct Smem {
@@ -15,6 +15,8 @@ struct Smem {
     u32* s_bd;      // 16
     u32* s_nz;      // 16
     u32* s_sb;      // 16
+    u32* s_rem;     // 16
+    u32* s_len;     // 16
     u32* s_ebase;   // 18
     u32* s_flag;    // 4
     double* s_segr; // 32
@@ -36,7 +38,9 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
     s.s_bd = (u32*)(s.s_gm + 16);
     s.s_nz = s.s_bd + 16;
     s.s_sb = s.s_nz + 16;
-    s.s_ebase = s.s_sb + 16;
+    s.s_rem = s.s_sb + 16;
+    s.s_len = s.s_rem + 16;
+    s.s_ebase = s.s_len + 16;
     s.s_flag = s.s_ebase + 18;
     s.s_segr = (double*)(s.s_flag + 4);
     s.s_segi = s.s_segr + 32;
@@ -99,6 +103,8 @@ __device__ __forceinline__ void layer_body(
     u32 mode, u32 E, u32 kq, u32 q0, u32 q1, double rcos, double rsin,
     const double* __restrict__ amp, const u64* __restrict__ mask, const u32* __restrict__ nz,
     const u32* __restrict__ bd, const u64* __restrict__ gm,
+    const u32* __restrict__ rem, const u32* __restrict__ recv_off, const u32* __restrict__ rbase, u32 B,
+    const u64* __restrict__ rx, const u64* __restrict__ rz, const double* __restrict__ rc, const u64* __restrict__ rg,
     const KeepProg& prog, u32 p0,
     u64* __restrict__ out_x, u64* __restrict__ out_z, double* __restrict__ out_c, u64* __restrict__ out_g,
     u32* __restrict__ out_len_pos, u32* __restrict__ fallback) {
@@ -118,18 +124,35 @@ __device__ __forceinline__ void layer_body(
     // A rotation table never reads `amp`.
     if (mode == MODE_LOCAL) for (u32 i = tid; i < 512; i += THREADS) S.s_amp[i] = amp[i];
     for (u32 i = tid; i < 32 * W; i += THREADS) S.s_mask[i] = mask[i];
+    // A received entry's source is segment p of its block: rows already shifted and multiplied by the sender.
     if (tid < MAX_ENTRIES) {
         S.s_gm[tid] = gm[tid] & fp_mask();
         S.s_bd[tid] = bd[tid];
         S.s_nz[tid] = nz[tid];
-        S.s_sb[tid] = (tid < E) ? in_start[beta ^ bd[tid]] : 0u;
+        const u32 k = rem[tid];
+        S.s_rem[tid] = k;
+        u32 sb_start = 0, sb_len = 0;
+        if (tid < E) {
+            if (k == NO_REMOTE) {
+                const u32 sb = beta ^ bd[tid];
+                sb_start = in_start[sb];
+                sb_len = in_len[sb];
+            } else {
+                const size_t o = (size_t)k * (B + 1) + p;
+                const u32 lo = recv_off[o];
+                sb_start = rbase[k] + lo;
+                sb_len = recv_off[o + 1] - lo;
+            }
+        }
+        S.s_sb[tid] = sb_start;
+        S.s_len[tid] = sb_len;
     }
     __syncthreads();
     if (tid == 0) {
         u32 run = 0;
         for (u32 e = 0; e < E; ++e) {
             S.s_ebase[e] = run;
-            run += cnt[(size_t)(beta ^ S.s_bd[e]) * E + e];
+            run += (S.s_rem[e] == NO_REMOTE) ? cnt[(size_t)(beta ^ S.s_bd[e]) * E + e] : S.s_len[e];
         }
         S.s_ebase[E] = run;
         S.s_flag[0] = 0;
@@ -149,9 +172,9 @@ __device__ __forceinline__ void layer_body(
 
     // Build: one warp per entry, warp-compacted in source order; a narrow block takes several entries per warp.
     for (u32 e = warp; e < E; e += WARPS) {
-        const u32 sb = beta ^ S.s_bd[e];
         const u32 start = S.s_sb[e];
-        const u32 len = in_len[sb];
+        const u32 len = S.s_len[e];
+        const bool received = S.s_rem[e] != NO_REMOTE;
         u32 wbase = S.s_ebase[e];
         const u64 gme = S.s_gm[e];
         for (u32 r0 = 0; r0 < len; r0 += WARP) {
@@ -159,9 +182,14 @@ __device__ __forceinline__ void layer_body(
             bool ok = false;
             u64 gv = 0;
             if (r < len) {
-                const Key k = load_key(x, z, start + r);
-                ok = entry_emits(T, k, e);
-                if (ok) gv = g[start + r] ^ gme;
+                if (received) {
+                    ok = true;
+                    gv = rg[start + r];
+                } else {
+                    const Key k = load_key(x, z, start + r);
+                    ok = entry_emits(T, k, e);
+                    if (ok) gv = g[start + r] ^ gme;
+                }
             }
             const u32 bal = __ballot_sync(~0u, ok);
             if (ok) {
@@ -184,17 +212,21 @@ __device__ __forceinline__ void layer_body(
     u16* stag = S.stag;
     u32* sg = S.sg;
     const u32* s_sb = S.s_sb;
+    const u32* s_rem = S.s_rem;
     const u64* s_mask = S.s_mask;
     const u64* s_gm = S.s_gm;
 
-    auto src_of = [&](u32 j, u32& e) -> u32 {
+    auto src_of = [&](u32 j, u32& e, bool& received) -> u32 {
         const u32 t = stag[j];
         e = t >> TAG_OFF_BITS;
+        received = s_rem[e] != NO_REMOTE;
         return s_sb[e] + (t & TAG_OFF_MASK);
     };
     auto out_key = [&](u32 j) -> Key {
         u32 e;
-        const u32 src = src_of(j, e);
+        bool received;
+        const u32 src = src_of(j, e, received);
+        if (received) return load_key(rx, rz, src);
         Key k = load_key(x, z, src);
 #pragma unroll
         for (int w = 0; w < W; ++w) {
@@ -205,8 +237,9 @@ __device__ __forceinline__ void layer_body(
     };
     auto g_full = [&](u32 j) -> u64 {
         u32 e;
-        const u32 src = src_of(j, e);
-        return g[src] ^ s_gm[e];
+        bool received;
+        const u32 src = src_of(j, e, received);
+        return received ? rg[src] : (g[src] ^ s_gm[e]);
     };
 
     const u32 n_it = (n_rows + THREADS - 1) / THREADS;
@@ -264,24 +297,42 @@ __device__ __forceinline__ void layer_body(
     }
     __syncthreads();
 
+    // A received row's product is the identity: the sender already applied the entry.
     auto product = [&](u32 j, double& pr, double& pi) {
         u32 e;
-        const u32 src = src_of(j, e);
+        bool received;
+        const u32 src = src_of(j, e, received);
+        if (received) {
+            pr = rc[2 * (size_t)src];
+            pi = rc[2 * (size_t)src + 1];
+            return;
+        }
         const Key k = load_key(x, z, src);
         entry_product(T, k, e, c[2 * (size_t)src], c[2 * (size_t)src + 1], pr, pi);
     };
     auto write_row = [&](u32 slot, u32 j, double ar, double ai) {
         u32 e;
-        const u32 src = src_of(j, e);
-        const Key k = load_key(x, z, src);
+        bool received;
+        const u32 src = src_of(j, e, received);
+        if (received) {
+            const Key k = load_key(rx, rz, src);
 #pragma unroll
-        for (int w = 0; w < W; ++w) {
-            out_x[(size_t)slot * W + w] = k.x[w] ^ s_mask[(e * 2) * W + w];
-            out_z[(size_t)slot * W + w] = k.z[w] ^ s_mask[(e * 2 + 1) * W + w];
+            for (int w = 0; w < W; ++w) {
+                out_x[(size_t)slot * W + w] = k.x[w];
+                out_z[(size_t)slot * W + w] = k.z[w];
+            }
+            out_g[slot] = rg[src];
+        } else {
+            const Key k = load_key(x, z, src);
+#pragma unroll
+            for (int w = 0; w < W; ++w) {
+                out_x[(size_t)slot * W + w] = k.x[w] ^ s_mask[(e * 2) * W + w];
+                out_z[(size_t)slot * W + w] = k.z[w] ^ s_mask[(e * 2 + 1) * W + w];
+            }
+            out_g[slot] = g[src] ^ s_gm[e];
         }
         out_c[2 * (size_t)slot] = ar;
         out_c[2 * (size_t)slot + 1] = ai;
-        out_g[slot] = g[src] ^ s_gm[e];
     };
     auto survives = [&](u32 j, double ar, double ai) -> bool {
         if (ar == 0.0 && ai == 0.0) return false;
@@ -414,11 +465,13 @@ __device__ __forceinline__ void layer_body(
         const u64* x, const u64* z, const double* c, const u64* g, const u32* in_start, const u32* in_len, \
         const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 kq, u32 q0,       \
         u32 q1, double rcos, double rsin, const double* amp, const u64* mask, const u32* nz,               \
-        const u32* bd, const u64* gm, const __grid_constant__ KeepProg prog, u32 p0, u64* out_x,           \
+        const u32* bd, const u64* gm, const u32* rem, const u32* recv_off, const u32* rbase, u32 B,         \
+        const u64* rx, const u64* rz, const double* rc, const u64* rg,                                     \
+        const __grid_constant__ KeepProg prog, u32 p0, u64* out_x,                                         \
         u64* out_z, double* out_c, u64* out_g, u32* out_len_pos, u32* fallback) {                          \
         layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, kq, q0, q1,   \
-                           rcos, rsin, amp, mask, nz, bd, gm, prog, p0, out_x,                             \
-                           out_z, out_c, out_g, out_len_pos, fallback);                                    \
+                           rcos, rsin, amp, mask, nz, bd, gm, rem, recv_off, rbase, B, rx, rz, rc, rg,     \
+                           prog, p0, out_x, out_z, out_c, out_g, out_len_pos, fallback);                   \
     }
 
 #define LAYER_PAIR(C) LAYER_KERNEL(C, false, k_layer_serial_##C) LAYER_KERNEL(C, true, k_layer_segscan_##C)

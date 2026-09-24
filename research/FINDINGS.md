@@ -238,6 +238,22 @@ The 64-register, one-block-per-SM configuration is fine; the time is in the redu
 Asked what the 0.8 GB saturated sum costs to bring back and re-sort.
 Pinned D2H runs at **12.9 GB/s (61 ms)** against 2.7 GB/s pageable including the `Vec` allocation; the host per-bucket lex re-sort is 77 ms (5.4 ns/term at 16 threads); allocating the pinned buffer itself took 4.8 s, so it must be pooled.
 
+### Exported blocks stage through a pinned pool
+
+Asked how an exported block's columns should reach the pooled `PartnerPayload` `Vec`s: a D2H copy straight into pageable memory, or a page-locked pool allocated once plus one `memcpy`.
+`cuMemHostRegister` of the pool was not tried: the pooled `Vec`s circulate through the partners and reallocate on growth, so a registration has no owner to unregister it.
+Two virtual partitions on one RTX A6000, medians of 5 runs, 1e6 initial terms, 3 layers: `su4` (1.05e8 exported rows, 4.8 GB per layer) runs **1689 ms/layer pinned against 2189 ms pageable (−23%)**, D2H at 4.0 GB/s against 2.6 GB/s per partition; `rotation_remote` (1e6 rows, 48 MB per layer) 21.9 against 26.6 ms (−18%).
+Pinned is the default; `PAULISTRINGS_GPU_STAGING=pageable` keeps the alternative measurable.
+
+### A dense remote layer on device partitions is staging-bound
+
+Asked what a remote layer costs at `P = 2` virtual partitions on one device against `P = 1`, a runtime-knob A/B on one binary (`--device 0` against `--device 0 --gpu-partitions 2`, medians of 5 runs).
+`su4` at 1.4e7 steady-state terms: **68.5 ms/layer at `P = 1` against 1760 ms at `P = 2`**, of which export 728 ms (D2H 700 ms per partition), the received rows' upload 710 ms per partition inside the coset loop's 893 ms, exchange 23 ms, the kernels about 200 ms.
+`rotation_zz` 1.85 ms against `rotation_remote` 20.9 ms (export 8.6 ms, upload 7.9 ms per partition).
+Host staging is about 80% of a dense remote layer, above the 50% replan trigger: two copies move 4.8 GB per layer at 3.6–4.0 GB/s for 0.2 s of device work.
+`chunk_wait_ns` is zero, the in-process transport having nothing to wait on.
+The virtual shape is a correctness net and shares the host wire format; capacity across devices at dense layers needs a device-direct transport (peer copy or CUDA-aware MPI).
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

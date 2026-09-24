@@ -1,4 +1,4 @@
-//! One layer on the device: bucket policy, count, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine and §GPU-Readiness.
+//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine, §Partitioning and §GPU-Readiness.
 
 use std::sync::Arc;
 
@@ -7,16 +7,20 @@ use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, DeviceRepr, LaunchConfig,
 
 use super::columns::DeviceColumns;
 use super::error::GpuError;
+use super::export::{exchange_rows, DeviceExport, MAX_RECV_SEGMENT};
 use super::fingerprint::FingerprintRows;
 use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan_with_max_into, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
-use crate::bucket::hash::B_MAX_BITS;
+use crate::bucket::hash::{PartitionRows, B_MAX_BITS};
 use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::Gf2Span;
+use crate::engine::partitioned::layer::LayerExchangeCounts;
+use crate::engine::partitioned::plan::PartitionPlan;
+use crate::engine::partitioned::transport::Transport;
 use crate::truncation::builtin::APPROX_BINS;
 
 /// Records per fused block the default bucket policy aims for.
@@ -82,6 +86,22 @@ pub(crate) fn gpu_desired_bits(
     want.max(current).min(B_MAX_BITS)
 }
 
+/// The entries `prep` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
+pub(crate) fn prepared_fanout<const W: usize>(prep: &Prepared<W>) -> usize {
+    match prep {
+        Prepared::Local(ptm) => ptm
+            .deltas()
+            .iter()
+            .filter(|d| {
+                d.amp
+                    .iter()
+                    .any(|a| *a != num_complex::Complex64::new(0.0, 0.0))
+            })
+            .count(),
+        Prepared::Rotation(_) => 2,
+    }
+}
+
 /// Per-layer counters of the most recent device layer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuLayerCounters {
@@ -105,6 +125,8 @@ pub struct GpuLayerCounters {
     pub rescaled: bool,
     /// The layer reduced by the segmented scan rather than the head-serial walk.
     pub dense: bool,
+    /// Rows received from partners and merged by the fused layer.
+    pub rows_received: u64,
 }
 
 /// Kernel milliseconds per family, accumulated while [`GpuPauliSum::set_kernel_timing`](super::GpuPauliSum::set_kernel_timing) is on.
@@ -124,12 +146,25 @@ pub struct GpuKernelMs {
     pub refine: f64,
     /// K7, the `ApproxTopN` histogram and retain.
     pub truncate: f64,
+    /// K10, the export blocks' counts and fill.
+    pub export: f64,
+}
+
+/// The exchange's laps of one partition, drained into its `PhaseStats` per layer.
+#[cfg(feature = "phase-timing")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ExchangeLaps {
+    pub export_ns: u64,
+    pub exchange_ns: u64,
+    pub chunk_wait_ns: u64,
+    pub rows_exported: u64,
+    pub recv_rows: u64,
 }
 
 /// Grow-only device buffers one partition keeps between layers.
 pub(crate) struct LayerScratch<const W: usize> {
-    bucket_at: CudaSlice<u32>,
-    cnt: CudaSlice<u32>,
+    pub(super) bucket_at: CudaSlice<u32>,
+    pub(super) cnt: CudaSlice<u32>,
     rows: CudaSlice<u32>,
     seg_start: CudaSlice<u32>,
     out_len_pos: CudaSlice<u32>,
@@ -137,20 +172,23 @@ pub(crate) struct LayerScratch<const W: usize> {
     /// K7's `[len, bins…]`.
     pub(super) hist: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
-    amp: CudaSlice<f64>,
-    mask: CudaSlice<u64>,
-    nz: CudaSlice<u32>,
+    pub(super) amp: CudaSlice<f64>,
+    pub(super) mask: CudaSlice<u64>,
+    pub(super) nz: CudaSlice<u32>,
     bd: CudaSlice<u32>,
     gm: CudaSlice<u64>,
+    rem: CudaSlice<u32>,
     arena: Option<DeviceColumns<W>>,
     seg_host: Vec<u32>,
     bucket_at_host: Vec<u32>,
     /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
     bucket_at_key: Option<(u8, Vec<u32>)>,
-    scan: ScanScratch,
+    pub(super) scan: ScanScratch,
     /// Scan totals, two slots so a count's pair of scans can be read together.
-    tot_a: CudaSlice<u32>,
+    pub(super) tot_a: CudaSlice<u32>,
     tot_b: CudaSlice<u32>,
+    /// Export, exchange and receive buffers.
+    pub(super) export: DeviceExport<W>,
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
@@ -164,6 +202,8 @@ pub(crate) struct LayerScratch<const W: usize> {
     pending: Vec<(usize, usize, KernelSlot)>,
     /// Host-to-device and device-to-host copy time inside the current layer.
     pub(crate) xfer_ns: XferNs,
+    #[cfg(feature = "phase-timing")]
+    pub(crate) laps: ExchangeLaps,
 }
 
 type KernelSlot = fn(&mut GpuKernelMs) -> &mut f64;
@@ -224,7 +264,7 @@ pub(super) fn warp_per_bucket(b: usize) -> LaunchConfig {
     }
 }
 
-fn thread_per(n: usize, threads: u32) -> LaunchConfig {
+pub(super) fn thread_per(n: usize, threads: u32) -> LaunchConfig {
     LaunchConfig {
         grid_dim: ((n as u32).div_ceil(threads).max(1), 1, 1),
         block_dim: (threads, 1, 1),
@@ -249,6 +289,7 @@ impl<const W: usize> LayerScratch<W> {
             nz: s.alloc_zeros(16)?,
             bd: s.alloc_zeros(16)?,
             gm: s.alloc_zeros(16)?,
+            rem: s.alloc_zeros(16)?,
             arena: None,
             seg_host: Vec::new(),
             bucket_at_host: Vec::new(),
@@ -256,6 +297,7 @@ impl<const W: usize> LayerScratch<W> {
             scan: ScanScratch::new(s)?,
             tot_a: s.alloc_zeros(2)?,
             tot_b: s.alloc_zeros(2)?,
+            export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
             counters: GpuLayerCounters::default(),
@@ -265,6 +307,8 @@ impl<const W: usize> LayerScratch<W> {
             next_event: 0,
             pending: Vec::new(),
             xfer_ns: XferNs::default(),
+            #[cfg(feature = "phase-timing")]
+            laps: ExchangeLaps::default(),
         })
     }
 
@@ -317,14 +361,13 @@ impl<const W: usize> LayerScratch<W> {
         Ok(())
     }
 
-    /// Upload the table and the position map for `bits`, then run K1 and K2; returns `(records total, records max, longest bucket)`.
-    fn count(
+    /// Upload the table and the position map (over the local deltas) for the current bucket count.
+    pub(super) fn upload_table(
         &mut self,
         sum: &GpuSum<W>,
         table: &DevicePrepared<W>,
-    ) -> Result<(u32, u32, u32), GpuError> {
+    ) -> Result<(), GpuError> {
         let s = &sum.stream;
-        let k = &sum.kernels;
         let o = sum.device();
         let b = sum.hash.num_buckets();
         let e = table.entries;
@@ -348,12 +391,13 @@ impl<const W: usize> LayerScratch<W> {
         #[cfg(feature = "phase-timing")]
         s.synchronize()?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
-        let (amp, mask, nz, bd, gm) = (
+        let (amp, mask, nz, bd, gm, rem) = (
             &mut self.amp,
             &mut self.mask,
             &mut self.nz,
             &mut self.bd,
             &mut self.gm,
+            &mut self.rem,
         );
         xfer(&mut self.xfer_ns, Xfer::H2d, || {
             if map_stale {
@@ -364,16 +408,28 @@ impl<const W: usize> LayerScratch<W> {
             s.memcpy_htod(&table.nz, nz)?;
             s.memcpy_htod(&table.bucket_delta, bd)?;
             s.memcpy_htod(&table.gm, gm)?;
+            s.memcpy_htod(&table.rem, rem)?;
             Ok(())
         })?;
         if map_stale {
             self.bucket_at_key = Some(key);
         }
-        let (b32, e32) = (b as u32, e as u32);
+        Ok(())
+    }
+
+    /// K1 over the local buckets.
+    pub(super) fn count_local(
+        &mut self,
+        sum: &GpuSum<W>,
+        table: &DevicePrepared<W>,
+    ) -> Result<(), GpuError> {
+        let s = &sum.stream;
+        let b = sum.hash.num_buckets();
+        let (b32, e32) = (b as u32, table.entries as u32);
         let t0 = self.event(sum)?;
         // SAFETY: arguments match `k_count` in count.cu; `cnt` holds `b * e` entries.
         unsafe {
-            s.launch_builder(&k.count)
+            s.launch_builder(&sum.kernels.count)
                 .arg(&sum.cols.x)
                 .arg(&sum.cols.z)
                 .arg(&sum.cols.start)
@@ -392,14 +448,28 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&mut self.cnt)
                 .launch(warp_per_bucket(b))?;
         }
-        self.lap(sum, t0, |m| &mut m.count)?;
+        self.lap(sum, t0, |m| &mut m.count)
+    }
+
+    /// K2 and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
+    fn sizes(
+        &mut self,
+        sum: &GpuSum<W>,
+        table: &DevicePrepared<W>,
+    ) -> Result<(u32, u32, u32), GpuError> {
+        let s = &sum.stream;
+        let k = &sum.kernels;
+        let b = sum.hash.num_buckets();
+        let (b32, e32) = (b as u32, table.entries as u32);
         let t1 = self.event(sum)?;
-        // SAFETY: arguments match `k_rows` in count.cu.
+        // SAFETY: arguments match `k_rows` in count.cu; `recv_off` holds `K × (b + 1)` entries for the `K` received entries `rem` names.
         unsafe {
             s.launch_builder(&k.rows)
                 .arg(&self.cnt)
                 .arg(&self.bucket_at)
                 .arg(&self.bd)
+                .arg(&self.rem)
+                .arg(&self.export.recv_off)
                 .arg(&mut self.rows)
                 .arg(&b32)
                 .arg(&e32)
@@ -442,34 +512,48 @@ impl<const W: usize> LayerScratch<W> {
 }
 
 /// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
-/// `target_bits` is the bucket count the driver settled on; the device refines to it and to the bucket policy in one pass.
-pub(crate) fn apply_layer_device<const W: usize>(
+/// `target_bits` is the bucket count the group settled on; the device refines to it and, on a layer with no remote delta, to the bucket policy in one pass.
+/// A layer with remote deltas exports through K10, exchanges over `transport`, and merges the received rows in the fused layer at exactly `target_bits`, since both sides index the blocks by it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
+    plan: &PartitionPlan,
+    rows: &PartitionRows<W>,
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
     target_bits: u8,
-) -> Result<(), GpuError> {
-    let r = apply_layer_body(sum, prep, keep, scratch, target_bits);
-    r.and(scratch.resolve(sum))
+    transport: &X,
+) -> Result<LayerExchangeCounts, GpuError> {
+    let r = apply_layer_body(sum, prep, plan, rows, keep, scratch, target_bits, transport);
+    let resolved = scratch.resolve(sum);
+    r.and_then(|c| resolved.map(|()| c))
 }
 
-fn apply_layer_body<const W: usize>(
+#[allow(clippy::too_many_arguments)]
+fn apply_layer_body<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
+    plan: &PartitionPlan,
+    rows: &PartitionRows<W>,
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
     target_bits: u8,
-) -> Result<(), GpuError> {
+    transport: &X,
+) -> Result<LayerExchangeCounts, GpuError> {
+    let size = transport.size();
     scratch.next_event = 0;
     let fp = FingerprintRows::<W>::new(sum.hash.seed());
-    let mut table = DevicePrepared::new(prep, &sum.hash, &fp);
+    let mut table = DevicePrepared::new(prep, &sum.hash, &fp, &plan.remote);
+    let has_remote = plan.has_remote();
+    debug_assert_eq!(table.n_remote, plan.remote.len());
     scratch.counters = GpuLayerCounters {
         bits: sum.hash.bits(),
         dense: table.dense,
         ..GpuLayerCounters::default()
     };
-    let max_bits = scratch.options.max_bits.min(B_MAX_BITS);
+    scratch.export.recv_rows = 0;
+    scratch.export.recv_max_segment = 0;
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
             let t = scratch.event(sum)?;
@@ -480,10 +564,12 @@ fn apply_layer_body<const W: usize>(
             Ok(())
         };
     if table.key_preserving {
+        debug_assert!(!has_remote);
         if target_bits > sum.hash.bits() {
             refine(sum, scratch, target_bits)?;
         }
-        return rescale_device(sum, &table, keep, scratch);
+        rescale_device(sum, &table, keep, scratch)?;
+        return Ok(LayerExchangeCounts::none(size));
     }
     let n_in = sum.len();
     if n_in.saturating_mul(table.fanout.max(1)) >= u32::MAX as usize {
@@ -491,38 +577,79 @@ fn apply_layer_body<const W: usize>(
             "more than 2^32 pre-dedup records in one layer",
         ));
     }
-    let want = gpu_desired_bits(
-        n_in,
-        table.fanout,
-        scratch.options.bucket_policy,
-        sum.hash.bits(),
-    )
-    .min(max_bits)
-    .max(target_bits);
+    // A remote layer runs at the agreed count and nothing else: the device's own wish entered the agreement through `proposed_bits`.
+    let max_bits = if has_remote {
+        target_bits.max(sum.hash.bits())
+    } else {
+        scratch.options.max_bits.min(B_MAX_BITS)
+    };
+    let want = if has_remote {
+        target_bits
+    } else {
+        gpu_desired_bits(
+            n_in,
+            table.fanout,
+            scratch.options.bucket_policy,
+            sum.hash.bits(),
+        )
+        .min(max_bits)
+        .max(target_bits)
+    };
     if want > sum.hash.bits() {
-        refine(sum, scratch, want)?;
+        if let Err(e) = refine(sum, scratch, want) {
+            if has_remote {
+                super::export::pair_empty_exchange::<W, X>(transport);
+            }
+            return Err(e);
+        }
         table.rehash(&sum.hash);
     }
-    // Oversize blocks and over-long source buckets are known from the count table; one more bit halves both.
     let cap = sum.kernels.layer_cap();
-    let (records, records_max) = loop {
-        let (total, max_seg, max_len) = scratch.count(sum, &table)?;
-        if max_seg as usize <= cap && max_len as usize <= MAX_BUCKET_LEN {
-            break (total, max_seg);
+    let mut counts = LayerExchangeCounts::none(size);
+    let (records, records_max) = if has_remote {
+        // Whatever fails before the exchange still owes the partners their call.
+        if let Err(e) = scratch
+            .upload_table(sum, &table)
+            .and_then(|()| scratch.count_local(sum, &table))
+        {
+            super::export::pair_empty_exchange::<W, X>(transport);
+            return Err(e);
         }
-        if sum.hash.bits() >= max_bits {
+        counts = exchange_rows(sum, &table, plan, rows, scratch, transport)?;
+        let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
+        if max_seg as usize > cap
+            || max_len as usize > MAX_BUCKET_LEN
+            || scratch.export.recv_max_segment > MAX_RECV_SEGMENT
+        {
             return Err(GpuError::Unsupported(
-                "a fused-layer block exceeds the record cap at the bucket-bit limit",
+                "a fused-layer block or a received segment exceeds the record cap at the agreed bucket count",
             ));
         }
-        refine(sum, scratch, sum.hash.bits() + 1)?;
-        table.rehash(&sum.hash);
+        (total, max_seg)
+    } else {
+        // Oversize blocks and over-long source buckets are known from the count table; one more bit halves both.
+        loop {
+            scratch.upload_table(sum, &table)?;
+            scratch.count_local(sum, &table)?;
+            let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
+            if max_seg as usize <= cap && max_len as usize <= MAX_BUCKET_LEN {
+                break (total, max_seg);
+            }
+            if sum.hash.bits() >= max_bits {
+                return Err(GpuError::Unsupported(
+                    "a fused-layer block exceeds the record cap at the bucket-bit limit",
+                ));
+            }
+            refine(sum, scratch, sum.hash.bits() + 1)?;
+            table.rehash(&sum.hash);
+        }
     };
     let bits = sum.hash.bits();
     let b = sum.hash.num_buckets();
     scratch.counters.bits = bits;
     scratch.counters.records = u64::from(records);
     scratch.counters.records_max = records_max;
+    scratch.counters.rows_received = counts.rows_received;
 
     let threads = layer_threads(W) as usize;
     let n_cap = (records_max as usize).max(threads).next_power_of_two();
@@ -576,13 +703,14 @@ fn apply_layer_body<const W: usize>(
     grow(&s, &mut scratch.out_len_pos, b, o)?;
     s.memset_zeros(&mut scratch.fallback)?;
     let e32 = table.entries as u32;
+    let b32 = b as u32;
 
     let mut running = 0u32;
     for &(p0, p1) in &batches {
         let nblk = (p1 - p0) as u32;
         let p0u = p0 as u32;
         let t0 = scratch.event(sum)?;
-        // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds this batch's pre-dedup rows and `out_len_pos` has `b` entries.
+        // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds this batch's pre-dedup rows, `out_len_pos` has `b` entries, and the received columns hold `recv_rows` rows.
         unsafe {
             s.launch_builder(func)
                 .arg(&sum.cols.x)
@@ -606,6 +734,14 @@ fn apply_layer_body<const W: usize>(
                 .arg(&scratch.nz)
                 .arg(&scratch.bd)
                 .arg(&scratch.gm)
+                .arg(&scratch.rem)
+                .arg(&scratch.export.recv_off)
+                .arg(&scratch.export.recv_base)
+                .arg(&b32)
+                .arg(&scratch.export.recv_x)
+                .arg(&scratch.export.recv_z)
+                .arg(&scratch.export.recv_c)
+                .arg(&scratch.export.recv_g)
                 .arg(keep)
                 .arg(&p0u)
                 .arg(&mut arena.x)
@@ -684,7 +820,7 @@ fn apply_layer_body<const W: usize>(
     sum.spare = Some(std::mem::replace(&mut sum.cols, out));
     scratch.extent = sum.len();
     sum.debug_check();
-    Ok(())
+    Ok(counts)
 }
 
 /// K5: the key-preserving fast path, into the spare columns at the input's offsets.
@@ -770,6 +906,7 @@ mod tests {
     use super::*;
     use crate::bucket::hash::Gf2Hash;
     use crate::channel::{Channel, GeneralUnitary2Q};
+    use crate::engine::partitioned::transport::InProcessTransport;
     use crate::test_support::{
         assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,
     };
@@ -812,7 +949,19 @@ mod tests {
         let mut sum = GpuSum::from_host(&input, 0)?;
         let mut scratch = LayerScratch::new(&sum, opts)?;
         let prep = ch.prepare(sum.hash(), false).expect("prepared");
-        apply_layer_device(&mut sum, &prep, &KeepProgram::KEEP, &mut scratch, 0)?;
+        let rows = PartitionRows::<2>::none(128);
+        let plan = PartitionPlan::new(&prep, &rows, 0);
+        let solo = InProcessTransport::group(1);
+        apply_layer_device(
+            &mut sum,
+            &prep,
+            &plan,
+            &rows,
+            &KeepProgram::KEEP,
+            &mut scratch,
+            0,
+            &solo[0],
+        )?;
         let want = naive_apply_layer(&input, ch, &KeepAll, false);
         assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
         Ok(scratch.counters)

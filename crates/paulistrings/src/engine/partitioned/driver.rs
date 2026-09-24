@@ -546,7 +546,7 @@ pub struct PartitionPhaseStats {
 ///
 /// Runs on the partition's own pool (the caller is inside `install`), so every column is first-touched in the domain that will read it.
 /// One collective: the per-partition [`desired_bits`] maximum, which is what makes the group agree on a count before the first layer.
-pub(super) fn scatter_local<const W: usize>(
+pub(crate) fn scatter_local<const W: usize>(
     sum: &PauliSum<W>,
     rows: &PartitionRows<W>,
     rank: u32,
@@ -674,8 +674,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         let solo = size32 == 1;
         if solo || plan.has_remote() || agrees_bucket_bits(k) {
             let mut want =
-                desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
-                    .max(local.hash().bits());
+                local.proposed_bits(&prep, options.target_bucket_len, options.min_buckets);
             if !solo {
                 want = transport.allreduce_max_u8(want);
                 collectives += 1;

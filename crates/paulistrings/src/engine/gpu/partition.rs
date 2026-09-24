@@ -2,10 +2,14 @@
 
 use super::error::GpuError;
 use super::finalize::approx_top_n_device;
-use super::layer::{apply_layer_device, GpuLayerCounters, GpuLayerOptions, LayerScratch};
+use super::layer::{
+    apply_layer_device, gpu_desired_bits, prepared_fanout, GpuLayerCounters, GpuLayerOptions,
+    LayerScratch,
+};
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, DevicePolicy};
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
+use crate::bucket::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
+use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::partitioned::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
@@ -95,6 +99,27 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
         self.hash.refine();
     }
 
+    /// The host formula raised to the device bucket policy's wish, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
+    fn proposed_bits(
+        &self,
+        prep: &Prepared<W>,
+        target_bucket_len: usize,
+        min_buckets: usize,
+    ) -> u8 {
+        let host = desired_bits(self.len(), target_bucket_len, min_buckets).max(self.hash.bits());
+        let Some(scratch) = self.scratch.as_ref() else {
+            return host;
+        };
+        let device = gpu_desired_bits(
+            self.len(),
+            prepared_fanout(prep),
+            scratch.options.bucket_policy,
+            self.hash.bits(),
+        )
+        .min(scratch.options.max_bits.min(B_MAX_BITS));
+        host.max(device)
+    }
+
     fn detach(&mut self) -> Self {
         Self {
             sum: self.sum.take(),
@@ -121,16 +146,16 @@ where
         &mut self,
         prep: &Prepared<W>,
         plan: &PartitionPlan,
-        _rows: &PartitionRows<W>,
+        rows: &PartitionRows<W>,
         _policy: &T,
         transport: &X,
     ) -> LayerExchangeCounts {
-        assert!(
-            !plan.has_remote(),
-            "DevicePartition: a layer with remote deltas needs the device exchange, which this backend does not implement; run with one partition"
-        );
         let size = transport.size();
         if self.error.is_some() {
+            // A failed partition must still pair its partners' exchange, or the group hangs on it.
+            if plan.has_remote() {
+                super::export::pair_empty_exchange::<W, X>(transport);
+            }
             return LayerExchangeCounts::none(size);
         }
         let (Some(sum), Some(scratch)) = (self.sum.as_mut(), self.scratch.as_mut()) else {
@@ -138,7 +163,16 @@ where
         };
         #[cfg(feature = "phase-timing")]
         let (t0, before) = (std::time::Instant::now(), scratch.kernel_ms);
-        let r = apply_layer_device(sum, prep, &self.policy.keep, scratch, self.hash.bits());
+        let r = apply_layer_device(
+            sum,
+            prep,
+            plan,
+            rows,
+            &self.policy.keep,
+            scratch,
+            self.hash.bits(),
+            transport,
+        );
         #[cfg(feature = "phase-timing")]
         fold_layer_stats(
             &mut self.stats,
@@ -147,8 +181,13 @@ where
             t0.elapsed().as_nanos() as u64,
         );
         self.hash = sum.hash().clone();
-        self.record(r);
-        LayerExchangeCounts::none(size)
+        match r {
+            Ok(counts) => counts,
+            Err(e) => {
+                self.record(Err(e));
+                LayerExchangeCounts::none(size)
+            }
+        }
     }
 
     /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host impl's for the same policy.
@@ -176,7 +215,7 @@ where
     }
 }
 
-/// One device layer's counters into the partition's [`PhaseStats`]: kernel families onto the host phases they replace, the driving thread's wall minus the refine and rescale kernels as the coset loop.
+/// One device layer's counters into the partition's [`PhaseStats`]: kernel families onto the host phases they replace, the driving thread's wall minus the refine, rescale, export and exchange as the coset loop.
 /// `sort_ns` stays zero: the sort is inside the fused layer, so it is part of `merge_ns` on a device row.
 #[cfg(feature = "phase-timing")]
 fn fold_layer_stats<const W: usize>(
@@ -189,9 +228,16 @@ fn fold_layer_stats<const W: usize>(
     let ns = |ms: f64| (ms.max(0.0) * 1e6) as u64;
     let refine = ns(after.refine - before.refine);
     let rescale = ns(after.rescale - before.rescale);
+    let laps = std::mem::take(&mut scratch.laps);
     stats.rebucket_ns += refine;
     stats.rescale_ns += rescale;
-    stats.coset_loop_ns += wall_ns.saturating_sub(refine + rescale);
+    stats.export_ns += laps.export_ns;
+    stats.exchange_ns += laps.exchange_ns;
+    stats.chunk_wait_ns += laps.chunk_wait_ns;
+    stats.rows_exported += laps.rows_exported;
+    stats.recv_rows += laps.recv_rows;
+    stats.coset_loop_ns +=
+        wall_ns.saturating_sub(refine + rescale + laps.export_ns + laps.exchange_ns);
     stats.gather_ns += ns(after.count - before.count) + ns(after.sizes - before.sizes);
     stats.merge_ns += ns(after.layer - before.layer);
     stats.compact_ns += ns(after.compact - before.compact);
@@ -282,6 +328,103 @@ mod tests {
                 "{tree:?}: terms"
             );
         }
+    }
+
+    /// Rank 0 on the host and rank 1 on the device over one in-process group, gathered against `propagate`: the wire format is shared.
+    fn mixed_group<const W: usize, P>(
+        circuit: &crate::Circuit<W>,
+        input: &crate::PauliSum<W>,
+        policy: &P,
+        direction: crate::Direction,
+        what: &str,
+    ) where
+        P: PartitionedTruncation<W> + Sync,
+    {
+        use crate::engine::partitioned::backend::HostPartition;
+        use crate::engine::partitioned::driver::{
+            run_layers, scatter_local, PartitionCtx, PartitionWork,
+        };
+        use crate::engine::partitioned::transport::InProcessTransport;
+        let nq = input.num_qubits();
+        let rows = PartitionRows::<W>::from_seed(nq, 1, 0x3D1);
+        let n = circuit.channels.len();
+        let options = crate::PropagateOptions::default();
+        let mut group = InProcessTransport::group(2).into_iter();
+        let (t0, t1) = (group.next().unwrap(), group.next().unwrap());
+        let (host, device) = std::thread::scope(|s| {
+            let rows = &rows;
+            let h = s.spawn(move || {
+                let mut part = HostPartition::new(scatter_local(input, rows, 0, &t0));
+                let mut work = PartitionWork::take(&mut part, n, false);
+                let ctx = PartitionCtx {
+                    rows,
+                    rank: 0,
+                    size: 2,
+                    tracing: false,
+                };
+                run_layers(circuit, policy, direction, options, ctx, &mut work, &t0);
+                work.local.sum
+            });
+            let d = s.spawn(move || -> Result<crate::PauliSum<W>, GpuError> {
+                let local = scatter_local(input, rows, 1, &t1);
+                let mut part = DevicePartition::new(
+                    GpuSum::from_host(&local, 0)?,
+                    GpuLayerOptions::default(),
+                )?;
+                part.policy = DevicePolicy::lower(policy.device_policy().unwrap())?;
+                let mut work = PartitionWork::take(&mut part, n, false);
+                let ctx = PartitionCtx {
+                    rows,
+                    rank: 1,
+                    size: 2,
+                    tracing: false,
+                };
+                run_layers(circuit, policy, direction, options, ctx, &mut work, &t1);
+                work.local.take_error()?;
+                work.local.sum().to_host()
+            });
+            (h.join().unwrap(), d.join().unwrap())
+        });
+        let device = device.expect("device rank");
+        let got = crate::PauliSum::merge_partitions(vec![host, device]);
+        let want = crate::propagate(circuit, input.clone(), policy, direction);
+        assert_eq!(got.len(), want.len(), "{what}: term count");
+        crate::test_support::assert_terms_close(&got, &want, 1e-11, what);
+    }
+
+    #[test]
+    fn a_host_and_a_device_partition_interoperate() {
+        crate::require_cuda!();
+        use crate::test_support::{rand_sum, random_circuit, trotter_circuit, KeepAll};
+        use crate::truncation::ApproxTopN;
+        let trotter = trotter_circuit::<1>(24, 0.1);
+        let input = rand_sum_real::<1>(1200, 24, 0x3D2);
+        for direction in [crate::Direction::Forward, crate::Direction::Heisenberg] {
+            mixed_group(
+                &trotter,
+                &input,
+                &ApproxTopN(2000),
+                direction,
+                &format!("mixed trotter {direction:?}"),
+            );
+        }
+        // Short enough that the group's collective wait never times out while the rest of the suite shares the device.
+        let dense = random_circuit::<2>(70, 10, 0x3D3, true);
+        let input2 = rand_sum::<2>(800, 70, 0x3D4);
+        mixed_group(
+            &dense,
+            &input2,
+            &KeepAll,
+            crate::Direction::Forward,
+            "mixed dense keep",
+        );
+        mixed_group(
+            &dense,
+            &input2,
+            &ApproxTopN(3000),
+            crate::Direction::Heisenberg,
+            "mixed dense approx",
+        );
     }
 
     /// A partition that already failed still enters every reduction, so a group cannot fall out of step on one device's error.

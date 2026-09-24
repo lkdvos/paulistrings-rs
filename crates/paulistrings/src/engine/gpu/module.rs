@@ -21,6 +21,7 @@ const REFINE: &str = include_str!("kernels/refine.cu");
 const INVARIANTS: &str = include_str!("kernels/invariants.cu");
 const COUNT: &str = include_str!("kernels/count.cu");
 const LAYER: &str = include_str!("kernels/layer.cu");
+const EXPORT: &str = include_str!("kernels/export.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
@@ -35,6 +36,7 @@ const KERNEL_SOURCES: &[&str] = &[
     REFINE,
     INVARIANTS,
     COUNT,
+    EXPORT,
     LAYER,
     COMPACT,
     RESCALE,
@@ -62,7 +64,7 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
 
 /// Dynamic shared bytes the fused layer needs for `n_cap` records, the `carve` layout in `kernels/layer.cu`.
 pub(crate) fn layer_shared_bytes(n_cap: usize, w: usize) -> u32 {
-    (11 * n_cap + 144 + 4096 + 256 * w + 128 + 192 + 72 + 16 + 640) as u32
+    (11 * n_cap + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
 }
 
 /// One compiled fused-layer variant: `items` records per thread, so `items * layer_threads(W)` records per block.
@@ -89,6 +91,8 @@ pub(crate) struct KernelSet {
     pub(crate) check_invariants: CudaFunction,
     pub(crate) count: CudaFunction,
     pub(crate) rows: CudaFunction,
+    pub(crate) export_counts: CudaFunction,
+    pub(crate) export_fill: CudaFunction,
     pub(crate) compact: CudaFunction,
     pub(crate) rescale: CudaFunction,
     pub(crate) octave_hist: CudaFunction,
@@ -225,6 +229,8 @@ pub(crate) fn kernel_set_with_options(
         check_invariants: f("k_check_invariants")?,
         count: f("k_count")?,
         rows: f("k_rows")?,
+        export_counts: f("k_export_counts")?,
+        export_fill: f("k_export_fill")?,
         compact: f("k_compact")?,
         rescale: f("k_rescale")?,
         octave_hist: f("k_octave_hist")?,

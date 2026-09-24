@@ -118,9 +118,10 @@ impl PartitionRuntime {
             if rank > 0 {
                 s.push_str(", ");
             }
-            match &slot.cpus {
-                Some(cpus) => s.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
-                None => s.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
+            match (&slot.cpus, slot.device) {
+                (_, Some(d)) => s.push_str(&format!("{rank}:gpu{d} x{}", slot.threads)),
+                (Some(cpus), None) => s.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
+                (None, None) => s.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
             }
         }
         s
@@ -197,6 +198,19 @@ impl PartitionRuntime {
 
 /// Pins a partition's driving thread to its slot, warning (not failing) when the platform declines — the same degradation policy `build_pool` applies to pool workers.
 fn place_current_thread(slot: &PartitionSlot, bind_memory: bool) {
+    #[cfg(feature = "cuda")]
+    if let Some(device) = slot.device {
+        match crate::engine::gpu::device::context(device) {
+            Ok(ctx) => {
+                if let Err(err) = ctx.bind_to_thread() {
+                    log::warn!(target: LOG_TARGET, "failed to bind device {device} to the partition driver: {err}");
+                }
+            }
+            Err(err) => {
+                log::warn!(target: LOG_TARGET, "device {device} for the partition driver: {err}")
+            }
+        }
+    }
     if let Some(cpus) = &slot.cpus {
         if let Err(err) = pin_current_thread(cpus) {
             log::warn!(target: LOG_TARGET, "failed to pin partition driver to {cpus}: {err}");

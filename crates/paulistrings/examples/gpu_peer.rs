@@ -56,34 +56,83 @@ fn addr(buf: &CudaSlice<u64>, stream: &Arc<CudaStream>) -> u64 {
     p
 }
 
-/// `cuMemcpyDtoDAsync` over unified addresses and a copy kernel run on `on`, from `src` into `dst`.
-fn raw_paths(
+fn show(r: Res<f64>) -> String {
+    match r {
+        Ok(bw) => format!("{bw:.1} GB/s"),
+        Err(e) => format!("error {e}"),
+    }
+}
+
+/// `cuMemcpyDtoDAsync` over unified addresses, from `src` into `dst` on `on`.
+fn uva_copy(on: &Arc<CudaStream>, src: u64, dst: u64, len: usize) -> Res<f64> {
+    let bytes = len * 8;
+    on.context().bind_to_thread()?;
+    // SAFETY: both addresses are live allocations of `bytes` bytes.
+    timed(on, bytes, || {
+        Ok(unsafe { sys::cuMemcpyDtoDAsync_v2(dst, src, bytes, on.cu_stream()) }.result()?)
+    })
+}
+
+/// The copy kernel launched on `on`, from `src` into `dst`.
+fn kernel_copy(
     on: &Arc<CudaStream>,
     kernel: &CudaFunction,
     src: u64,
     dst: u64,
     len: usize,
-) -> Res<(f64, f64)> {
-    let bytes = len * 8;
-    on.context().bind_to_thread()?;
-    // SAFETY: both addresses are live allocations of `bytes` bytes, and peer access is enabled for the pair.
-    let uva = timed(on, bytes, || {
-        Ok(unsafe { sys::cuMemcpyDtoDAsync_v2(dst, src, bytes, on.cu_stream()) }.result()?)
-    })?;
+) -> Res<f64> {
     let n = len as u64;
     let cfg = LaunchConfig {
         grid_dim: (1024, 1, 1),
         block_dim: (512, 1, 1),
         shared_mem_bytes: 0,
     };
-    let kern = timed(on, bytes, || {
+    timed(on, len * 8, || {
         let mut b = on.launch_builder(kernel);
         b.arg(&src).arg(&dst).arg(&n);
         // SAFETY: the kernel reads and writes `n` u64s at addresses that hold them.
         unsafe { b.launch(cfg) }?;
         Ok(())
-    })?;
-    Ok((uva, kern))
+    })
+}
+
+/// The driver's P2P attributes for `src -> dst` and the device each address resolves to.
+fn p2p_facts(src: usize, dst: usize, sa: u64, da: u64) -> String {
+    use sys::CUdevice_P2PAttribute as A;
+    let attr = |a: A| {
+        let mut v = -1i32;
+        // SAFETY: a driver query on two live ordinals.
+        let r = unsafe { sys::cuDeviceGetP2PAttribute(&mut v, a, src as i32, dst as i32) };
+        if r == sys::CUresult::CUDA_SUCCESS {
+            v.to_string()
+        } else {
+            format!("{r:?}")
+        }
+    };
+    let ordinal = |p: u64| {
+        let mut v = -1i32;
+        // SAFETY: the attribute is an int written into `v`.
+        let r = unsafe {
+            sys::cuPointerGetAttribute(
+                (&mut v as *mut i32).cast(),
+                sys::CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                p,
+            )
+        };
+        if r == sys::CUresult::CUDA_SUCCESS {
+            v.to_string()
+        } else {
+            format!("{r:?}")
+        }
+    };
+    format!(
+        "access_supported={} native_atomic={} performance_rank={}, src address on device {}, dst address on device {}",
+        attr(A::CU_DEVICE_P2P_ATTRIBUTE_ACCESS_SUPPORTED),
+        attr(A::CU_DEVICE_P2P_ATTRIBUTE_NATIVE_ATOMIC_SUPPORTED),
+        attr(A::CU_DEVICE_P2P_ATTRIBUTE_PERFORMANCE_RANK),
+        ordinal(sa),
+        ordinal(da),
+    )
 }
 
 fn main() -> Res<()> {
@@ -106,13 +155,13 @@ fn main() -> Res<()> {
     for d in 0..n {
         let [a, b] = &mut bufs[d];
         let same = dtod(&streams[d], a, b)?;
-        let (_, same_kernel) = raw_paths(
+        let same_kernel = show(kernel_copy(
             &streams[d],
             &kernels[d],
             addr(a, &streams[d]),
             addr(b, &streams[d]),
             len,
-        )?;
+        ));
         // SAFETY: the pinned buffer is written by the first copy before anything reads it.
         let mut host = unsafe { ctxs[d].alloc_pinned::<u64>(len)? };
         streams[d].memcpy_dtoh(a, &mut host)?;
@@ -129,7 +178,7 @@ fn main() -> Res<()> {
         }
         streams[d].synchronize()?;
         let h2d = gbps(len * 8, t.elapsed().as_secs_f64());
-        println!("device {d}: same-device {same:.1} GB/s (copy kernel {same_kernel:.1}), pinned d2h {d2h:.1} GB/s, pinned h2d {h2d:.1} GB/s");
+        println!("device {d}: same-device {same:.1} GB/s (copy kernel {same_kernel}), pinned d2h {d2h:.1} GB/s, pinned h2d {h2d:.1} GB/s");
     }
 
     for dst in 0..n {
@@ -144,21 +193,31 @@ fn main() -> Res<()> {
             } else {
                 (&hi[0][0], &mut lo[dst][1])
             };
-            let bw = dtod(&streams[dst], s, d)?;
+            let bw = show(dtod(&streams[dst], s, d));
             let (sa, da) = (addr(s, &streams[src]), addr(d, &streams[dst]));
             let note = if access == PeerAccess::Enabled {
                 ""
             } else {
                 "  (host-staged)"
             };
-            println!("{src} -> {dst}: {access:?}, cuMemcpyPeerAsync {bw:.1} GB/s{note}");
+            println!("{src} -> {dst}: {access:?}, cuMemcpyPeerAsync {bw}{note}");
+            println!("{src} -> {dst}: {}", p2p_facts(src, dst, sa, da));
             // The pushing kernel needs the reverse mapping, which the pair loop may not have reached yet.
             let reverse = gpu::peer_access(src as u32, dst as u32)?;
-            if access == PeerAccess::Enabled && reverse == PeerAccess::Enabled {
-                let (uva, pull) = raw_paths(&streams[dst], &kernels[dst], sa, da, len)?;
-                let (_, push) = raw_paths(&streams[src], &kernels[src], sa, da, len)?;
-                println!("{src} -> {dst}: cuMemcpyDtoDAsync {uva:.1} GB/s, kernel on {dst} pulling {pull:.1} GB/s, kernel on {src} pushing {push:.1} GB/s");
-            }
+            println!("{src} -> {dst}: reverse access {reverse:?}");
+            // Each path on its own line, so a failing one does not hide the rest.
+            println!(
+                "{src} -> {dst}: cuMemcpyDtoDAsync on {dst}: {}",
+                show(uva_copy(&streams[dst], sa, da, len))
+            );
+            println!(
+                "{src} -> {dst}: kernel on {dst} pulling: {}",
+                show(kernel_copy(&streams[dst], &kernels[dst], sa, da, len))
+            );
+            println!(
+                "{src} -> {dst}: kernel on {src} pushing: {}",
+                show(kernel_copy(&streams[src], &kernels[src], sa, da, len))
+            );
         }
     }
 

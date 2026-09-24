@@ -31,6 +31,15 @@ pub(crate) struct DevicePartition<const W: usize> {
     hash: Gf2Hash<W>,
     pub(crate) policy: DevicePolicy,
     pub(crate) error: Option<GpuError>,
+    /// Partitions in the group this partition runs in; above one, the layer never refines off-schedule and the proposal carries growth headroom.
+    pub(crate) group_size: u32,
+    /// Layers `apply_layer` was asked for since construction.
+    layers_applied: usize,
+    /// The layer index (in `layers_applied` terms) at which the first error was recorded.
+    pub(crate) failed_layer: Option<usize>,
+    /// Test hook: fail before the exchange on this layer index.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fail_at_layer: Option<usize>,
     #[cfg(feature = "phase-timing")]
     stats: PhaseStats,
 }
@@ -44,6 +53,11 @@ impl<const W: usize> DevicePartition<W> {
             scratch: Some(scratch),
             policy: DevicePolicy::keep_all(),
             error: None,
+            group_size: 1,
+            layers_applied: 0,
+            failed_layer: None,
+            #[cfg(any(test, feature = "test-utils"))]
+            fail_at_layer: None,
             #[cfg(feature = "phase-timing")]
             stats: PhaseStats::default(),
         })
@@ -80,6 +94,7 @@ impl<const W: usize> DevicePartition<W> {
         if let Err(e) = r {
             if self.error.is_none() {
                 self.error = Some(e);
+                self.failed_layer = Some(self.layers_applied.saturating_sub(1));
             }
         }
     }
@@ -110,13 +125,18 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
         let Some(scratch) = self.scratch.as_ref() else {
             return host;
         };
-        let device = gpu_desired_bits(
-            self.len(),
-            prepared_fanout(prep),
-            scratch.options.bucket_policy,
-            self.hash.bits(),
-        )
-        .min(scratch.options.max_bits.min(B_MAX_BITS));
+        // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
+        let policy = match scratch.options.bucket_policy {
+            p if self.group_size == 1 => p,
+            super::layer::GpuBucketPolicy::RecordsPerBlock(t) => {
+                super::layer::GpuBucketPolicy::RecordsPerBlock((t / 2).max(1))
+            }
+            super::layer::GpuBucketPolicy::TermsPerBucket(t) => {
+                super::layer::GpuBucketPolicy::TermsPerBucket((t / 2).max(1))
+            }
+        };
+        let device = gpu_desired_bits(self.len(), prepared_fanout(prep), policy, self.hash.bits())
+            .min(scratch.options.max_bits.min(B_MAX_BITS));
         host.max(device)
     }
 
@@ -127,6 +147,11 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
             hash: self.hash.clone(),
             policy: self.policy.clone(),
             error: self.error.take(),
+            group_size: self.group_size,
+            layers_applied: self.layers_applied,
+            failed_layer: self.failed_layer.take(),
+            #[cfg(any(test, feature = "test-utils"))]
+            fail_at_layer: self.fail_at_layer.take(),
             #[cfg(feature = "phase-timing")]
             stats: std::mem::take(&mut self.stats),
         }
@@ -151,16 +176,27 @@ where
         transport: &X,
     ) -> LayerExchangeCounts {
         let size = transport.size();
-        if self.error.is_some() {
-            // A failed partition must still pair its partners' exchange, or the group hangs on it.
-            if plan.has_remote() {
-                super::export::pair_empty_exchange::<W, X>(transport);
-            }
-            return LayerExchangeCounts::none(size);
+        self.layers_applied += 1;
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.fail_at_layer == Some(self.layers_applied - 1) {
+            self.record(Err(GpuError::Unsupported("injected before the exchange")));
         }
+        let bits = self.hash.bits();
         let (Some(sum), Some(scratch)) = (self.sum.as_mut(), self.scratch.as_mut()) else {
             panic!("DevicePartition: apply_layer on a detached placeholder");
         };
+        if self.error.is_some() {
+            // A failed partition still pairs its partners' exchange with empty blocks, or the group hangs on it.
+            if plan.has_remote() {
+                super::export::pair_empty_exchange::<W, X>(
+                    transport,
+                    plan,
+                    bits,
+                    &mut scratch.export,
+                );
+            }
+            return LayerExchangeCounts::none(size);
+        }
         #[cfg(feature = "phase-timing")]
         let (t0, before) = (std::time::Instant::now(), scratch.kernel_ms);
         let r = apply_layer_device(
@@ -330,14 +366,36 @@ mod tests {
         }
     }
 
-    /// Rank 0 on the host and rank 1 on the device over one in-process group, gathered against `propagate`: the wire format is shared.
-    fn mixed_group<const W: usize, P>(
+    /// How one mixed run is set up: the rows, an optional common bucket count replacing the scatter's, and a failure to inject on the device rank.
+    struct Mixed<const W: usize> {
+        rows: PartitionRows<W>,
+        bits: Option<u8>,
+        options: crate::PropagateOptions,
+        device_options: GpuLayerOptions,
+        fail_at: Option<usize>,
+    }
+
+    impl<const W: usize> Mixed<W> {
+        fn seeded(nq: usize) -> Self {
+            Self {
+                rows: PartitionRows::<W>::from_seed(nq, 1, 0x3D1),
+                bits: None,
+                options: crate::PropagateOptions::default(),
+                device_options: GpuLayerOptions::default(),
+                fail_at: None,
+            }
+        }
+    }
+
+    /// Rank 0 on the host and rank 1 on the device over one in-process group; returns the host share and the device rank's outcome.
+    fn mixed_run<const W: usize, P>(
         circuit: &crate::Circuit<W>,
         input: &crate::PauliSum<W>,
         policy: &P,
         direction: crate::Direction,
-        what: &str,
-    ) where
+        m: &Mixed<W>,
+    ) -> (crate::PauliSum<W>, Result<crate::PauliSum<W>, GpuError>)
+    where
         P: PartitionedTruncation<W> + Sync,
     {
         use crate::engine::partitioned::backend::HostPartition;
@@ -346,15 +404,23 @@ mod tests {
         };
         use crate::engine::partitioned::transport::InProcessTransport;
         let nq = input.num_qubits();
-        let rows = PartitionRows::<W>::from_seed(nq, 1, 0x3D1);
         let n = circuit.channels.len();
-        let options = crate::PropagateOptions::default();
-        let mut group = InProcessTransport::group(2).into_iter();
+        let mut group =
+            InProcessTransport::group_with_timeout(2, std::time::Duration::from_secs(120))
+                .into_iter();
         let (t0, t1) = (group.next().unwrap(), group.next().unwrap());
-        let (host, device) = std::thread::scope(|s| {
-            let rows = &rows;
+        let share =
+            |rank: u32, coll: &dyn crate::engine::partitioned::Collectives| match m.bits {
+                Some(bits) => input.filter_partition(&m.rows, rank).with_hash(
+                    crate::bucket::hash::Gf2Hash::new(nq, bits, input.hash().seed()),
+                ),
+                None => scatter_local(input, &m.rows, rank, coll),
+            };
+        std::thread::scope(|s| {
+            let rows = &m.rows;
+            let share = &share;
             let h = s.spawn(move || {
-                let mut part = HostPartition::new(scatter_local(input, rows, 0, &t0));
+                let mut part = HostPartition::new(share(0, &t0));
                 let mut work = PartitionWork::take(&mut part, n, false);
                 let ctx = PartitionCtx {
                     rows,
@@ -362,15 +428,15 @@ mod tests {
                     size: 2,
                     tracing: false,
                 };
-                run_layers(circuit, policy, direction, options, ctx, &mut work, &t0);
+                run_layers(circuit, policy, direction, m.options, ctx, &mut work, &t0);
                 work.local.sum
             });
             let d = s.spawn(move || -> Result<crate::PauliSum<W>, GpuError> {
-                let local = scatter_local(input, rows, 1, &t1);
-                let mut part = DevicePartition::new(
-                    GpuSum::from_host(&local, 0)?,
-                    GpuLayerOptions::default(),
-                )?;
+                let local = share(1, &t1);
+                let mut part =
+                    DevicePartition::new(GpuSum::from_host(&local, 0)?, m.device_options)?;
+                part.group_size = 2;
+                part.fail_at_layer = m.fail_at;
                 part.policy = DevicePolicy::lower(policy.device_policy().unwrap())?;
                 let mut work = PartitionWork::take(&mut part, n, false);
                 let ctx = PartitionCtx {
@@ -379,12 +445,26 @@ mod tests {
                     size: 2,
                     tracing: false,
                 };
-                run_layers(circuit, policy, direction, options, ctx, &mut work, &t1);
+                run_layers(circuit, policy, direction, m.options, ctx, &mut work, &t1);
                 work.local.take_error()?;
                 work.local.sum().to_host()
             });
             (h.join().unwrap(), d.join().unwrap())
-        });
+        })
+    }
+
+    /// A mixed run gathered against `propagate`: the wire format is shared.
+    fn mixed_group<const W: usize, P>(
+        circuit: &crate::Circuit<W>,
+        input: &crate::PauliSum<W>,
+        policy: &P,
+        direction: crate::Direction,
+        m: &Mixed<W>,
+        what: &str,
+    ) where
+        P: PartitionedTruncation<W> + Sync,
+    {
+        let (host, device) = mixed_run(circuit, input, policy, direction, m);
         let device = device.expect("device rank");
         let got = crate::PauliSum::merge_partitions(vec![host, device]);
         let want = crate::propagate(circuit, input.clone(), policy, direction);
@@ -399,23 +479,26 @@ mod tests {
         use crate::truncation::ApproxTopN;
         let trotter = trotter_circuit::<1>(24, 0.1);
         let input = rand_sum_real::<1>(1200, 24, 0x3D2);
+        let m = Mixed::<1>::seeded(24);
         for direction in [crate::Direction::Forward, crate::Direction::Heisenberg] {
             mixed_group(
                 &trotter,
                 &input,
                 &ApproxTopN(2000),
                 direction,
+                &m,
                 &format!("mixed trotter {direction:?}"),
             );
         }
-        // Short enough that the group's collective wait never times out while the rest of the suite shares the device.
         let dense = random_circuit::<2>(70, 10, 0x3D3, true);
         let input2 = rand_sum::<2>(800, 70, 0x3D4);
+        let m2 = Mixed::<2>::seeded(70);
         mixed_group(
             &dense,
             &input2,
             &KeepAll,
             crate::Direction::Forward,
+            &m2,
             "mixed dense keep",
         );
         mixed_group(
@@ -423,8 +506,162 @@ mod tests {
             &input2,
             &ApproxTopN(3000),
             crate::Direction::Heisenberg,
+            &m2,
             "mixed dense approx",
         );
+    }
+
+    /// `n` distinct terms carrying `X₀` and the identity on qubit 63: all on rank 0 under a row reading `Z₆₃`, and every one anticommutes with `Z₀Z₆₃`, so a `ZZ(0, 63)` layer exports all `n` to rank 1.
+    fn x0_terms_identity_on_q63(n: usize, seed: u64) -> crate::PauliSum<1> {
+        let base = crate::test_support::rand_sum::<1>(n, 64, seed);
+        let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
+        for (x, z, c) in base.iter() {
+            let p = crate::pauli_string::PauliString::<1> {
+                x: [(x[0] | 1) & !(1u64 << 63)],
+                z: [z[0] & !(1u64 << 63)],
+            };
+            acc.add_term(p, crate::phase::Phase::ONE, c);
+        }
+        let out = acc.finalize();
+        assert_eq!(out.len(), n, "fixture: the terms must stay distinct");
+        let zz = crate::pauli_string::PauliString::<1> {
+            x: [0],
+            z: [1 | (1u64 << 63)],
+        };
+        assert!(
+            out.iter().all(|(x, z, _)| {
+                !crate::pauli_string::PauliString::<1> { x: *x, z: *z }.commutes_with(&zz)
+            }),
+            "fixture: every term must anticommute with Z₀Z₆₃ or the layer exports fewer than {n} rows"
+        );
+        out
+    }
+
+    /// Rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every `x0_terms_identity_on_q63` term sits on rank 0.
+    fn rows_reading_z63() -> PartitionRows<1> {
+        PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
+    }
+
+    /// The device rank is empty, so it ships empty blocks the host receives; the host ships rows the device merges.
+    #[test]
+    fn an_empty_device_partition_ships_empty_blocks_to_the_host() {
+        crate::require_cuda!();
+        use crate::test_support::{zz_rotation, KeepAll};
+        let input = x0_terms_identity_on_q63(500, 0xE0);
+        let mut c = crate::Circuit::<1>::new(64);
+        c.push(zz_rotation::<1>(0, 63, 0.3));
+        c.push(crate::channel::clifford::Clifford1Q::h(5));
+        c.push(crate::channel::clifford::Clifford2Q::cnot(2, 63));
+        c.push(zz_rotation::<1>(7, 63, 0.4));
+        let m = Mixed::<1> {
+            rows: rows_reading_z63(),
+            ..Mixed::seeded(64)
+        };
+        mixed_group(
+            &c,
+            &input,
+            &KeepAll,
+            crate::Direction::Forward,
+            &m,
+            "empty device rank",
+        );
+    }
+
+    /// A received segment of exactly `MAX_BUCKET_LEN` rows is merged; one more is `Unsupported` on the device while the host finishes.
+    #[test]
+    fn a_received_segment_at_the_tag_limit_is_accepted_and_one_more_is_unsupported() {
+        crate::require_cuda!();
+        use super::super::module::MAX_BUCKET_LEN;
+        use crate::test_support::{zz_rotation, KeepAll};
+        let mut c = crate::Circuit::<1>::new(64);
+        c.push(zz_rotation::<1>(0, 63, 0.3));
+        let m = Mixed::<1> {
+            rows: rows_reading_z63(),
+            bits: Some(0),
+            options: crate::PropagateOptions {
+                target_bucket_len: 1 << 20,
+                min_buckets: 1,
+                ..crate::PropagateOptions::default()
+            },
+            device_options: GpuLayerOptions {
+                bucket_policy: super::super::layer::GpuBucketPolicy::TermsPerBucket(1 << 20),
+                ..GpuLayerOptions::default()
+            },
+            fail_at: None,
+        };
+        let fits = x0_terms_identity_on_q63(MAX_BUCKET_LEN, 0xF1);
+        mixed_group(
+            &c,
+            &fits,
+            &KeepAll,
+            crate::Direction::Forward,
+            &m,
+            "segment of 4096 rows",
+        );
+        let over = x0_terms_identity_on_q63(MAX_BUCKET_LEN + 1, 0xF2);
+        let (host, device) = mixed_run(&c, &over, &KeepAll, crate::Direction::Forward, &m);
+        assert!(
+            matches!(device, Err(GpuError::Unsupported(_))),
+            "device: {:?}, host {} terms",
+            device.as_ref().map(|s| s.len()),
+            host.len()
+        );
+        assert_eq!(host.len(), over.len(), "the host rank finished its layer");
+    }
+
+    /// The tag limit is per segment, not per block: a received block of well over `MAX_BUCKET_LEN` rows split across two positions is merged in full.
+    #[test]
+    fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
+        crate::require_cuda!();
+        use super::super::module::MAX_BUCKET_LEN;
+        use crate::test_support::{zz_rotation, KeepAll};
+        let mut c = crate::Circuit::<1>::new(64);
+        c.push(zz_rotation::<1>(0, 63, 0.3));
+        let m = Mixed::<1> {
+            rows: rows_reading_z63(),
+            bits: Some(1),
+            options: crate::PropagateOptions {
+                target_bucket_len: 1 << 20,
+                min_buckets: 1,
+                ..crate::PropagateOptions::default()
+            },
+            device_options: GpuLayerOptions {
+                bucket_policy: super::super::layer::GpuBucketPolicy::TermsPerBucket(1 << 20),
+                ..GpuLayerOptions::default()
+            },
+            fail_at: None,
+        };
+        let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
+        mixed_group(
+            &c,
+            &input,
+            &KeepAll,
+            crate::Direction::Forward,
+            &m,
+            "block of 6144 rows over two segments",
+        );
+    }
+
+    /// A device rank failing before its exchange leaves the host rank a finished run and returns the injected error.
+    #[test]
+    fn an_injected_failure_before_the_exchange_lets_the_host_partner_finish() {
+        crate::require_cuda!();
+        use crate::test_support::{rand_sum, random_circuit, KeepAll};
+        let dense = random_circuit::<1>(8, 6, 0x3D5, true);
+        let input = rand_sum::<1>(300, 8, 0x3D6);
+        let m = Mixed::<1> {
+            fail_at: Some(1),
+            ..Mixed::seeded(8)
+        };
+        let (host, device) = mixed_run(&dense, &input, &KeepAll, crate::Direction::Forward, &m);
+        assert!(
+            matches!(
+                device,
+                Err(GpuError::Unsupported("injected before the exchange"))
+            ),
+            "{device:?}"
+        );
+        assert!(!host.is_empty(), "the host rank finished all six layers");
     }
 
     /// A partition that already failed still enters every reduction, so a group cannot fall out of step on one device's error.

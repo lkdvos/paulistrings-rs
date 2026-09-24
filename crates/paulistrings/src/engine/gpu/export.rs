@@ -90,10 +90,42 @@ impl<const W: usize> DeviceExport<W> {
     }
 }
 
-/// The exchange call a partition owes its partners when its own layer failed before exporting: `None` to everyone, so the group stays in step and reports the error after the loop.
-pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(transport: &X) {
-    let send: Vec<Option<PartnerPayload<W>>> = (0..transport.size()).map(|_| None).collect();
-    let _ = transport.exchange(send, &mut Vec::new());
+/// The exchange call a partition owes its partners when its own layer failed before exporting: one well-formed empty block per remote delta the plan names, under the real chunk map, so a host or device receiver finishes the layer and the error surfaces after the loop.
+pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
+    transport: &X,
+    plan: &PartitionPlan,
+    bits: u8,
+    export: &mut DeviceExport<W>,
+) {
+    let size = transport.size();
+    let b = 1usize << bits;
+    let zero = vec![0u32; b];
+    let mut send: Vec<Option<PartnerPayload<W>>> = (0..size).map(|_| None).collect();
+    let mut used = vec![0usize; size as usize];
+    for r in &plan.remote {
+        let q = r.partner as usize;
+        let payload = send[q].get_or_insert_with(|| export.pool.pop().unwrap_or_default());
+        let j = used[q];
+        used[q] += 1;
+        if payload.blocks.len() <= j {
+            payload
+                .blocks
+                .resize_with(j + 1, ExchangeBlock::<W>::default);
+        }
+        payload.blocks[j].set_counts(r.entry as u32, &zero);
+    }
+    for (q, payload) in send.iter_mut().enumerate() {
+        if let Some(payload) = payload {
+            payload.blocks.truncate(used[q]);
+        }
+    }
+    export.chunks.rebuild(
+        &Gf2Span::new(&plan.local_bucket_deltas, bits),
+        b,
+        exchange_chunks(),
+    );
+    let (recv, ()) = transport.exchange_layer(send, &mut export.pool, &export.chunks, |_, _| ());
+    export.pool.extend(recv.into_iter().flatten());
 }
 
 /// Export → exchange → upload of the received rows, with their fingerprints computed on device.
@@ -112,7 +144,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let (send, mut counts) = match export_blocks(sum, table, plan, scratch, size) {
         Ok(v) => v,
         Err(e) => {
-            pair_empty_exchange::<W, X>(transport);
+            pair_empty_exchange::<W, X>(transport, plan, sum.hash.bits(), &mut scratch.export);
             return Err(e);
         }
     };
@@ -153,7 +185,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let (recv, body) = transport.exchange_layer(send, pool, map, |recv, wait| {
         #[cfg(feature = "phase-timing")]
         let t_body = std::time::Instant::now();
-        // v1 waits for the whole transfer before the one upload; a chunked upload overlapping the tail is v2.
+        // The whole transfer is waited out before the one upload, so the received columns are complete when K0 runs.
         for k in 0..map.chunks() {
             wait.wait_chunk(k);
         }
@@ -168,11 +200,14 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
         base_host.clear();
         base_host.resize(16, 0);
         for (k, block) in blocks.iter().enumerate() {
-            debug_assert_eq!(block.offsets.len(), b + 1);
+            assert_eq!(
+                block.header.num_buckets as usize, b,
+                "a partner sent a block indexed by {} buckets where this partition has {b}",
+                block.header.num_buckets
+            );
             base_host[k] = total as u32;
             off_host.extend_from_slice(&block.offsets[..b + 1]);
-            max_seg = block
-                .offsets
+            max_seg = block.offsets[..b + 1]
                 .windows(2)
                 .map(|w| (w[1] - w[0]) as usize)
                 .max()
@@ -473,6 +508,7 @@ mod tests {
             ("zz", Box::new(zz_rotation::<W>(0, 2, 0.3))),
         ];
         let mut remote_layers = 0;
+        let mut multi_block_payloads = 0;
         for (name, ch) in &channels {
             for rank in 0..size {
                 let local = input.filter_partition(&rows, rank);
@@ -515,6 +551,9 @@ mod tests {
                     match (g, w) {
                         (None, None) => {}
                         (Some(g), Some(w)) => {
+                            if g.blocks.len() >= 2 {
+                                multi_block_payloads += 1;
+                            }
                             assert_eq!(g.blocks.len(), w.blocks.len(), "{what}: blocks to {q}");
                             for (j, (gb, wb)) in g.blocks.iter().zip(&w.blocks).enumerate() {
                                 assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
@@ -528,6 +567,44 @@ mod tests {
             }
         }
         assert!(remote_layers > 0, "the fixture must export something");
+        assert!(
+            multi_block_payloads > 0,
+            "the SU(4) layer must ship several remote deltas to one partner"
+        );
+    }
+
+    /// A partition with no terms still ships one empty block per remote delta, bitwise the host's.
+    #[test]
+    fn an_empty_partition_ships_empty_blocks() {
+        crate::require_cuda!();
+        let nq = 12;
+        let seed = 0xE55u64;
+        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 3, seed);
+        let local = crate::PauliSum::<1>::empty_with_hash(nq, hash.clone());
+        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
+        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+        let prep = ch.prepare(&hash, false).expect("prepared");
+        let plan = PartitionPlan::new(&prep, &rows, 0);
+        assert!(plan.has_remote(), "fixture: the SU(4) must cross");
+        let mut map = ChunkMap::default();
+        map.rebuild(&Gf2Span::new(&plan.local_bucket_deltas, 3), 8, 1);
+        let (want, _) = export_layer(&local, &prep, &plan, 2, &map, &mut ExportScratch::default());
+        let dev = GpuSum::from_host(&local, 0).expect("upload");
+        let mut scratch = LayerScratch::new(&dev, GpuLayerOptions::default()).expect("scratch");
+        let fp = FingerprintRows::<1>::new(seed);
+        let table = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
+        scratch.upload_table(&dev, &table).expect("table");
+        scratch.count_local(&dev, &table).expect("count");
+        let (got, counts) = export_blocks(&dev, &table, &plan, &mut scratch, 2).expect("export");
+        let payload = got[1].as_ref().expect("a payload for the partner");
+        assert_eq!(payload.blocks.len(), plan.remote.len());
+        for block in &payload.blocks {
+            assert_eq!(block.rows(), 0);
+            assert!(block.offsets.iter().all(|&o| o == 0));
+            assert_eq!(block.offsets.len(), 9);
+        }
+        assert_eq!(payload, want[1].as_ref().unwrap());
+        assert_eq!(counts.rows_sent, vec![0, 0]);
     }
 
     #[test]

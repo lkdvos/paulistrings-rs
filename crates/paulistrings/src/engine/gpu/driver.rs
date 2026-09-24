@@ -269,6 +269,8 @@ pub struct GpuPartitionedSum<const W: usize> {
     rows: PartitionRows<W>,
     runtime: Arc<PartitionRuntime>,
     trace: Option<PartitionTrace>,
+    /// `(rank, layer)` of the first partition error; set once, refuses every later call.
+    poison: Option<(usize, usize)>,
     #[cfg(feature = "phase-timing")]
     scatter_ns: u64,
     #[cfg(feature = "phase-timing")]
@@ -338,7 +340,9 @@ impl<const W: usize> GpuPartitionedSum<W> {
             runtime.map_partitions((0..size).collect(), |rank, _, transport| {
                 let local = scatter_local(sum, rows, rank as u32, transport);
                 let dev = GpuSum::from_host(&local, devices[rank])?;
-                DevicePartition::new(dev, GpuLayerOptions::default())
+                let mut part = DevicePartition::new(dev, GpuLayerOptions::default())?;
+                part.group_size = size as u32;
+                Ok(part)
             })
         };
         let parts = parts.into_iter().collect::<Result<Vec<_>, _>>()?;
@@ -355,6 +359,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
             rows,
             runtime,
             trace: None,
+            poison: None,
             #[cfg(feature = "phase-timing")]
             scatter_ns: started.elapsed().as_nanos() as u64,
             #[cfg(feature = "phase-timing")]
@@ -381,7 +386,9 @@ impl<const W: usize> GpuPartitionedSum<W> {
     ///
     /// # Errors
     ///
-    /// As [`GpuPauliSum::propagate_with_options`]; a device error on any partition is returned after the loop, the first by rank, and every partition holds its last completed layer.
+    /// As [`GpuPauliSum::propagate_with_options`] before the first layer.
+    /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry; a device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
+    /// The split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
     pub fn propagate_with_options<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -392,6 +399,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
+        self.check_poison()?;
         let lowered = lower_for_run(circuit, policy, direction, self.parts[0].hash())?;
         for part in &mut self.parts {
             part.take_error()?;
@@ -449,17 +457,37 @@ impl<const W: usize> GpuPartitionedSum<W> {
             started.elapsed().as_secs_f64(),
         );
         let mut first = Ok(());
-        for part in &mut self.parts {
+        for (rank, part) in self.parts.iter_mut().enumerate() {
+            let layer = part.failed_layer.take();
             let r = part.take_error();
-            if first.is_ok() {
+            if r.is_err() && first.is_ok() {
+                self.poison = Some((rank, layer.unwrap_or(0)));
                 first = r;
             }
         }
         first
     }
 
+    fn check_poison(&self) -> Result<(), GpuError> {
+        match self.poison {
+            Some((rank, layer)) => Err(GpuError::Poisoned { rank, layer }),
+            None => Ok(()),
+        }
+    }
+
+    /// Fail partition `rank` before the exchange of its `layer`-th layer of the next call (test hook).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_failure(&mut self, rank: usize, layer: usize) {
+        self.parts[rank].fail_at_layer = Some(layer);
+    }
+
     /// Download every partition and merge them back into one sum.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Poisoned`] after a failed call, otherwise any download error.
     pub fn gather(&self) -> Result<PauliSum<W>, GpuError> {
+        self.check_poison()?;
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
         let parts = self

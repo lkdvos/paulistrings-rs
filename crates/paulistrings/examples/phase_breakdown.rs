@@ -2851,19 +2851,20 @@ const DEVICE_USAGE: &str = "\
                             report those two, `wall_ns` the timed call, so it
                             means the same as on a host row. --threads is not
                             swept: one cell per layer, --threads[0] echoed.
+                            --partitions must stay at 1 and topn:<N> is
+                            refused; --occupancy-at is unsupported. Phases:
+                            gather = K1+K2, merge = the fused K3 (sort
+                            included, sort_ns = 0), compact = K4, rescale = K5,
+                            rebucket = device refines, coset_loop = the driving
+                            thread's wall of the fused path; h2d_ns/d2h_ns are
+                            the copies inside a layer.
   --gpu-partitions <n>     With --device: split the sum into <n> virtual device
                             partitions on that device (a power of two, default 1)
                             and run them through GpuPartitionedSum, so remote
-                            layers export, exchange and merge received rows.
-                            The row carries partitions=<n>, partition_cpus=gpu.
-                            --partitions must stay at 1, rotation_remote and
-                            topn:<N> are refused, --occupancy-at is
-                            unsupported. Phases: gather = K1+K2, merge = the
-                            fused K3 (sort included, sort_ns = 0), compact =
-                            K4, rescale = K5, rebucket = device refines,
-                            coset_loop = the driving thread's wall of the
-                            fused path; h2d_ns/d2h_ns are the copies inside a
-                            layer.";
+                            layers export, exchange and merge received rows;
+                            rotation_remote needs n > 1. The row carries
+                            partitions=<n>, partition_cpus=gpu, upload_ns the
+                            scatter and download_ns the gather.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

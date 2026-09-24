@@ -29,7 +29,7 @@ pub use driver::{
 pub use plan::count_remote_deltas;
 // Choosing partition rows: the circuit's generator masks and the weighted MAX-XOR-SAT selector over them.
 pub use rows::{circuit_generators, GeneratorWeight};
-pub use runtime::PartitionRuntime;
+pub use runtime::{PartitionRuntime, DEFAULT_WAIT_TIMEOUT, DEVICE_WAIT_TIMEOUT};
 // Where partitions run: CPU sets, NUMA nodes, and the placement a caller asks for.
 #[cfg(feature = "cuda")]
 pub use topology::DEVICE_PARTITION_THREADS;

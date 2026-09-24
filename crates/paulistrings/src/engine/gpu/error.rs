@@ -29,6 +29,13 @@ pub enum GpuError {
     Unsupported(&'static str),
     /// A device placement did not resolve.
     Topology(crate::engine::partitioned::TopologyError),
+    /// A partitioned split whose partition `rank` failed at layer `layer` of an earlier call; its partitions no longer hold one consistent sum, so every later call is refused until the caller scatters again.
+    Poisoned {
+        /// The partition that failed.
+        rank: usize,
+        /// The layer index within that call, in application order.
+        layer: usize,
+    },
 }
 
 impl fmt::Display for GpuError {
@@ -43,6 +50,10 @@ impl fmt::Display for GpuError {
             }
             GpuError::Unsupported(what) => write!(f, "unsupported on the CUDA backend: {what}"),
             GpuError::Topology(e) => write!(f, "device placement: {e}"),
+            GpuError::Poisoned { rank, layer } => write!(
+                f,
+                "device partition {rank} failed at layer {layer} of an earlier propagate; scatter again"
+            ),
         }
     }
 }

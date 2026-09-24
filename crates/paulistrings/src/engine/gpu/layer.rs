@@ -512,8 +512,8 @@ impl<const W: usize> LayerScratch<W> {
 }
 
 /// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
-/// `target_bits` is the bucket count the group settled on; the device refines to it and, on a layer with no remote delta, to the bucket policy in one pass.
-/// A layer with remote deltas exports through K10, exchanges over `transport`, and merges the received rows in the fused layer at exactly `target_bits`, since both sides index the blocks by it.
+/// `target_bits` is the bucket count the group settled on; a lone partition refines to it and to its bucket policy in one pass, a partition of a group runs at exactly `target_bits` and reports `Unsupported` rather than refine off-schedule.
+/// A layer with remote deltas exports through K10, exchanges over `transport`, and merges the received rows in the fused layer.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
@@ -571,21 +571,27 @@ fn apply_layer_body<const W: usize, X: Transport>(
         rescale_device(sum, &table, keep, scratch)?;
         return Ok(LayerExchangeCounts::none(size));
     }
+    let solo = size == 1;
     let n_in = sum.len();
+    // Every failure before the exchange still owes the partners their call.
+    let pair = |scratch: &mut LayerScratch<W>, bits: u8| {
+        if has_remote {
+            super::export::pair_empty_exchange::<W, X>(transport, plan, bits, &mut scratch.export);
+        }
+    };
     if n_in.saturating_mul(table.fanout.max(1)) >= u32::MAX as usize {
+        pair(scratch, sum.hash.bits());
         return Err(GpuError::Unsupported(
             "more than 2^32 pre-dedup records in one layer",
         ));
     }
-    // A remote layer runs at the agreed count and nothing else: the device's own wish entered the agreement through `proposed_bits`.
-    let max_bits = if has_remote {
-        target_bits.max(sum.hash.bits())
-    } else {
+    // In a group every layer runs at exactly the agreed count and nobody refines off-schedule (ARCHITECTURE.md §Partitioning); the device steers the count through `proposed_bits` alone.
+    let max_bits = if solo {
         scratch.options.max_bits.min(B_MAX_BITS)
-    };
-    let want = if has_remote {
-        target_bits
     } else {
+        target_bits.max(sum.hash.bits())
+    };
+    let want = if solo {
         gpu_desired_bits(
             n_in,
             table.fanout,
@@ -594,12 +600,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
         )
         .min(max_bits)
         .max(target_bits)
+    } else {
+        target_bits
     };
     if want > sum.hash.bits() {
         if let Err(e) = refine(sum, scratch, want) {
-            if has_remote {
-                super::export::pair_empty_exchange::<W, X>(transport);
-            }
+            pair(scratch, sum.hash.bits());
             return Err(e);
         }
         table.rehash(&sum.hash);
@@ -607,12 +613,11 @@ fn apply_layer_body<const W: usize, X: Transport>(
     let cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
     let (records, records_max) = if has_remote {
-        // Whatever fails before the exchange still owes the partners their call.
         if let Err(e) = scratch
             .upload_table(sum, &table)
             .and_then(|()| scratch.count_local(sum, &table))
         {
-            super::export::pair_empty_exchange::<W, X>(transport);
+            pair(scratch, sum.hash.bits());
             return Err(e);
         }
         counts = exchange_rows(sum, &table, plan, rows, scratch, transport)?;
@@ -626,7 +631,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             ));
         }
         (total, max_seg)
-    } else {
+    } else if solo {
         // Oversize blocks and over-long source buckets are known from the count table; one more bit halves both.
         loop {
             scratch.upload_table(sum, &table)?;
@@ -643,6 +648,16 @@ fn apply_layer_body<const W: usize, X: Transport>(
             refine(sum, scratch, sum.hash.bits() + 1)?;
             table.rehash(&sum.hash);
         }
+    } else {
+        scratch.upload_table(sum, &table)?;
+        scratch.count_local(sum, &table)?;
+        let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
+        if max_seg as usize > cap || max_len as usize > MAX_BUCKET_LEN {
+            return Err(GpuError::Unsupported(
+                "a fused-layer block exceeds the record cap at the agreed bucket count",
+            ));
+        }
+        (total, max_seg)
     };
     let bits = sum.hash.bits();
     let b = sum.hash.num_buckets();

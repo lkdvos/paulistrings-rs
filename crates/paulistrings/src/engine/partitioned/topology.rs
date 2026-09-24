@@ -353,6 +353,8 @@ pub(crate) fn build_pool(
 ) -> Result<rayon::ThreadPool, TopologyError> {
     let cpus = slot.cpus.clone();
     let node = slot.node;
+    #[cfg(feature = "cuda")]
+    let device = slot.device;
     let pool_name = name.to_string();
     rayon::ThreadPoolBuilder::new()
         .num_threads(slot.threads)
@@ -367,6 +369,10 @@ pub(crate) fn build_pool(
                 builder = builder.stack_size(size);
             }
             builder.spawn(move || {
+                #[cfg(feature = "cuda")]
+                if let Some(device) = device {
+                    bind_device_context(device);
+                }
                 if let Some(cpus) = &cpus {
                     if let Err(err) = pin_current_thread(cpus) {
                         log::warn!(target: LOG_TARGET, "failed to pin worker to {cpus}: {err}");
@@ -383,6 +389,19 @@ pub(crate) fn build_pool(
         })
         .build()
         .map_err(|err| TopologyError::Io(io::Error::other(err.to_string())))
+}
+
+/// Make `device`'s CUDA context current on this thread, warning rather than failing like the pinning calls.
+#[cfg(feature = "cuda")]
+pub(crate) fn bind_device_context(device: u32) {
+    match crate::engine::gpu::device::context(device) {
+        Ok(ctx) => {
+            if let Err(err) = ctx.bind_to_thread() {
+                log::warn!(target: LOG_TARGET, "failed to bind device {device} to a partition thread: {err}");
+            }
+        }
+        Err(err) => log::warn!(target: LOG_TARGET, "device {device} for a partition thread: {err}"),
+    }
 }
 
 /// How partitions map onto the machine.
@@ -415,7 +434,7 @@ pub enum Placement {
     },
     /// `per_device` partitions on each listed CUDA device, in rank order, for the `cuda` backend's [`GpuPartitionedSum`](crate::gpu::GpuPartitionedSum).
     ///
-    /// `devices.len() × per_device` must be a power of two; each slot is unpinned with a small host pool for the export and receive plumbing, and the device's context is bound on the driving thread.
+    /// `devices.len() × per_device` must be a power of two; each slot is unpinned with a small host pool for the export and receive plumbing, and every worker of that pool binds the device's context when it starts.
     #[cfg(feature = "cuda")]
     Devices {
         /// Device ordinals, one entry per device.

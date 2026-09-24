@@ -927,6 +927,8 @@ struct RankSlot {
 struct GroupState {
     /// Ranks in the group.
     size: u32,
+    /// The backstop wait for a partner's publication.
+    timeout: Duration,
     /// Bit `q` set once rank `q`'s transport has been dropped — it will publish nothing further.
     /// `P ≤ 64` (`P_MAX_BITS`), so a `u64` mask is ample.
     departed: AtomicU64,
@@ -935,9 +937,10 @@ struct GroupState {
 }
 
 impl GroupState {
-    fn new(size: u32) -> Self {
+    fn new(size: u32, timeout: Duration) -> Self {
         Self {
             size,
+            timeout,
             departed: AtomicU64::new(0),
             slots: (0..size).map(|_| RankSlot::default()).collect(),
         }
@@ -1005,12 +1008,12 @@ impl GroupState {
                     );
                 }
                 let since = waiting_since.get_or_insert_with(Instant::now);
-                if since.elapsed() > WAIT_TIMEOUT {
+                if since.elapsed() > self.timeout {
                     panic!(
                         "partition {src} terminated before completing the {}: no response in \
                          {} s (this partition is at transport call {gen}, that one at {})",
                         kind.name(),
-                        WAIT_TIMEOUT.as_secs(),
+                        self.timeout.as_secs(),
                         slot.progress.load(Ordering::Acquire) >> 8,
                     );
                 }
@@ -1118,6 +1121,11 @@ impl InProcessTransport {
     ///
     /// If `size` is zero.
     pub fn group(size: u32) -> Vec<InProcessTransport> {
+        Self::group_with_timeout(size, WAIT_TIMEOUT)
+    }
+
+    /// [`Self::group`] with the collective wait's backstop set to `timeout`; a group sharing one device queue needs more than the default.
+    pub fn group_with_timeout(size: u32, timeout: Duration) -> Vec<InProcessTransport> {
         assert!(size > 0, "a transport group needs at least one partition");
         let n = size as usize;
         let mut senders: Vec<Vec<Option<std::sync::mpsc::Sender<Message>>>> =
@@ -1134,7 +1142,7 @@ impl InProcessTransport {
             }
         }
 
-        let state = Arc::new(GroupState::new(size));
+        let state = Arc::new(GroupState::new(size, timeout));
         (0..n)
             .map(|rank| InProcessTransport {
                 rank: rank as u32,

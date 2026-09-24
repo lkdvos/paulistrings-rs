@@ -252,7 +252,9 @@ Asked what a remote layer costs at `P = 2` virtual partitions on one device agai
 `rotation_zz` 1.85 ms against `rotation_remote` 20.9 ms (export 8.6 ms, upload 7.9 ms per partition).
 Host staging is about 80% of a dense remote layer, above the 50% replan trigger: two copies move 4.8 GB per layer at 3.6–4.0 GB/s for 0.2 s of device work.
 `chunk_wait_ns` is zero, the in-process transport having nothing to wait on.
-The virtual shape is a correctness net and shares the host wire format; capacity across devices at dense layers needs a device-direct transport (peer copy or CUDA-aware MPI).
+Between agreements a device partition cannot refine, so a remote or off-schedule layer whose block or received segment exceeds the fused kernel's cap is `Unsupported` at `P > 1`, never a wrong answer; the proposal carries a factor of two of headroom for that.
+The receive waits for the whole transfer before one upload; a chunked upload overlapping the tail is the cheap next step, a device-direct transport (peer copy or CUDA-aware MPI) the one the numbers ask for.
+The virtual shape is a correctness net and shares the host wire format.
 
 ## Open
 

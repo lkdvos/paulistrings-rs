@@ -90,7 +90,9 @@ mod cuda {
             GpuError::NoDevice
             | GpuError::LibraryMissing(_)
             | GpuError::Driver(_)
-            | GpuError::Compile { .. } => PyRuntimeError::new_err(err.to_string()),
+            | GpuError::Compile { .. }
+            | GpuError::Topology(_)
+            | GpuError::Poisoned { .. } => PyRuntimeError::new_err(err.to_string()),
         }
     }
 

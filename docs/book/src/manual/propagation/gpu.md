@@ -7,8 +7,8 @@ The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-r
 ## When a device pays {#when-it-pays}
 
 **Dense two-qubit layers at a million terms and up are where the device wins.**
-On an RTX A6000 a saturated `su4` layer at 5.65e7 terms runs 10.1× faster on wall than the 16-thread host engine, and 12.2× at 1.41e7 terms ([`research/FINDINGS.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/FINDINGS.md) §GPU spike).
-Sparse layers (`cnot`, a Pauli rotation) gain less, because each output bucket receives few rows and a block's fixed sort and synchronization cost weighs more.
+On an RTX A6000 a saturated `su4` layer runs 11× faster on wall than the 16-thread host engine at 1.41e7 terms, and 15× at 5.65e7 ([`research/HARDWARE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md) § ccqlin038 — GPU).
+Sparse layers (`cnot`, a Pauli rotation) gain 2–5×, because each output bucket receives few rows and a block's fixed sort and synchronization cost weighs more.
 Every layer carries a fixed cost of a few launches and synchronizations that the host engine does not pay, so the advantage shrinks below about 1e4 terms.
 
 The upload and download are paid once per `propagate(device=...)` call.
@@ -159,6 +159,9 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 - **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions lower to the device; a custom Rust `TruncationPolicy` without a `device_policy` is refused before the first layer.
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.
 - **Widths `W ≥ 8` (more than 256 qubits) are correct but untuned.**
+- **A multi-device or MPI group trades staging time for device memory.** Exchanging device-resident payloads keeps one export volume and one receive volume resident on a partition's device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count the host-staged path (or a single device) still fits.
+- **A device partition in a group cannot refine mid-run.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap.
+- **The cross-device peer copy is untested on a real multi-GPU node.** Today's multi-device numbers come from virtual partitions sharing one card; a physical multi-GPU run is expected to use the same path but has not been measured.
 
 ## See it in use
 

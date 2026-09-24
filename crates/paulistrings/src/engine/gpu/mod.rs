@@ -27,7 +27,7 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
-pub use payload::GpuExchange;
+pub use payload::{peer_access, GpuExchange, PeerAccess};
 pub use rank::{local_device_for_rank, GpuDistributedSum};
 #[cfg(feature = "mpi")]
 pub use rank::{propagate_mpi_gpu, MpiGpuSum};

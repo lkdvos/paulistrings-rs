@@ -189,34 +189,99 @@ pub(crate) fn drain_bin() {
     BIN.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
-/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair, when the devices allow it.
-/// A pair that does not is still correct: `cuMemcpyPeerAsync` stages through the host, so nothing here is an error.
-pub(crate) fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) {
-    static DONE: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+/// Whether a device-to-device copy between two devices goes direct or through the host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerAccess {
+    /// Both ends are the same device.
+    SameDevice,
+    /// The destination's context maps the source's memory, so `cuMemcpyPeerAsync` goes over NVLink or PCIe peer-to-peer.
+    Enabled,
+    /// The driver reports the pair cannot access each other; copies stage through the host.
+    Unsupported,
+    /// The driver allows the pair but enabling failed with this error; copies stage through the host.
+    Failed(String),
+}
+
+/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair, and report the outcome.
+/// A pair without access is still correct: `cuMemcpyPeerAsync` stages through the host, so the outcome is logged rather than an error.
+pub(crate) fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAccess {
+    static DONE: Mutex<Vec<((usize, usize), PeerAccess)>> = Mutex::new(Vec::new());
     let pair = (dst.ordinal(), src.ordinal());
     if pair.0 == pair.1 {
-        return;
+        return PeerAccess::SameDevice;
     }
     let mut done = DONE.lock().unwrap_or_else(PoisonError::into_inner);
-    if done.contains(&pair) {
-        return;
+    if let Some((_, access)) = done.iter().find(|(p, _)| *p == pair) {
+        return access.clone();
     }
-    done.push(pair);
+    let access = try_enable_peer_access(dst, src, pair);
+    match &access {
+        PeerAccess::Enabled => log::info!("gpu: peer access {} -> {} enabled", pair.1, pair.0),
+        other => log::warn!(
+            "gpu: peer access {} -> {} is {other:?}; copies between them stage through the host",
+            pair.1,
+            pair.0
+        ),
+    }
+    done.push((pair, access.clone()));
+    access
+}
+
+fn try_enable_peer_access(
+    dst: &Arc<CudaContext>,
+    src: &Arc<CudaContext>,
+    pair: (usize, usize),
+) -> PeerAccess {
+    let failed = |e: sys::CUresult| PeerAccess::Failed(format!("{e:?}"));
     let mut can = 0i32;
-    // SAFETY: driver queries on live ordinals; the raw handle of `src` is read while it is the bound context and used only while both contexts are alive.
-    unsafe {
-        if sys::cuDeviceCanAccessPeer(&mut can, pair.0 as i32, pair.1 as i32)
-            .result()
-            .is_err()
-            || can == 0
-            || src.bind_to_thread().is_err()
-        {
-            return;
+    // SAFETY: a driver query on two live ordinals.
+    if let Err(e) =
+        unsafe { sys::cuDeviceCanAccessPeer(&mut can, pair.0 as i32, pair.1 as i32) }.result()
+    {
+        return failed(e.0);
+    }
+    if can == 0 {
+        return PeerAccess::Unsupported;
+    }
+    if let Err(e) = dst.bind_to_thread() {
+        return failed(e.0);
+    }
+    // SAFETY: `dst` is the bound context and `src`'s handle stays valid while `src` is alive.
+    match unsafe { sys::cuCtxEnablePeerAccess(src.cu_ctx(), 0) } {
+        sys::CUresult::CUDA_SUCCESS | sys::CUresult::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {
+            PeerAccess::Enabled
         }
-        let mut peer: sys::CUcontext = std::ptr::null_mut();
-        if sys::cuCtxGetCurrent(&mut peer).result().is_err() || dst.bind_to_thread().is_err() {
-            return;
+        e => failed(e),
+    }
+}
+
+/// Enable direct access from device `dst` to device `src`'s memory, as the device exchange does before its first copy, and report whether it took.
+pub fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
+    let dst = super::device::context(dst)?;
+    let src = super::device::context(src)?;
+    Ok(enable_peer_access(&dst, &src))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_access_is_reported_for_every_pair() {
+        crate::require_cuda!();
+        let n = super::super::device_count() as u32;
+        for dst in 0..n {
+            for src in 0..n {
+                let access = peer_access(dst, src).expect("visible devices");
+                if dst == src {
+                    assert_eq!(access, PeerAccess::SameDevice);
+                } else {
+                    assert!(
+                        !matches!(access, PeerAccess::Failed(_)),
+                        "{dst} <- {src}: {access:?}"
+                    );
+                }
+            }
         }
-        let _ = sys::cuCtxEnablePeerAccess(peer, 0);
     }
 }

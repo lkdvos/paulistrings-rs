@@ -466,7 +466,7 @@ pub(crate) fn adopt_blocks<const W: usize>(
             continue;
         }
         if block.x.context().ordinal() != sum.ctx.ordinal() {
-            payload::enable_peer_access(&sum.ctx, block.x.context());
+            let _ = payload::enable_peer_access(&sum.ctx, block.x.context());
         }
         let base = base_host[k] as usize;
         s.memcpy_dtod(

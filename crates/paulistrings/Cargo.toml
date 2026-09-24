@@ -93,6 +93,10 @@ harness = false
 name = "phase_breakdown"
 required-features = ["phase-timing"]
 
+[[example]]
+name = "gpu_peer"
+required-features = ["cuda"]
+
 # The multi-rank differential net. `harness = false`: the cases are collective,
 # so they must run in the same order on every rank, one at a time — none of
 # which the libtest harness (which may run cases in parallel, in an unspecified

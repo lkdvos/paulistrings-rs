@@ -65,6 +65,11 @@ echo "gpus: $ngpu, multi-device list: $DEVICES"
 cargo build --offline --release -p paulistrings --features cuda,phase-timing,test-utils --example phase_breakdown
 probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
 
+if [ "$ngpu" -ge 2 ]; then
+    echo "== gpu_peer: peer access and copy bandwidth between devices"
+    cargo run --offline --release -p paulistrings --features cuda,phase-timing,test-utils --example gpu_peer | tee "$out/gpu-${SLURM_JOB_ID:-local}-peer.txt"
+fi
+
 if [ "${TESTS:-1}" = "1" ]; then
     echo "== cargo test --features cuda (single device)"
     cargo test --offline -p paulistrings --features cuda

@@ -118,7 +118,7 @@ env -u SBATCH_RESERVATION sbatch --nodes=1 scripts/slurm/mpi-gpu-ranks.sbatch
 PROBE=0 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-ranks.sbatch
 ```
 
-`gpu-devices.sbatch` writes `benchmarks/results/<date>-<node>/gpu-<job>-dev0.jsonl` and `gpu-<job>-dev0123.jsonl`, plus `gpu-<job>-topo.txt` (`nvidia-smi topo -m`) and the clock, power and temperature dumps at start and end.
+`gpu-devices.sbatch` writes `benchmarks/results/<date>-<node>/gpu-<job>-dev0.jsonl` and `gpu-<job>-dev0123.jsonl`, plus `gpu-<job>-topo.txt` (`nvidia-smi topo -m`), `gpu-<job>-peer.txt` (the `gpu_peer` example: peer access and copy bandwidth per device pair, on two or more GPUs) and the clock, power and temperature dumps at start and end.
 `mpi-gpu-ranks.sbatch` writes one sidecar per rank, `benchmarks/results/<date>-mpi-gpu/mpi-gpu-<job>-r<ranks>.jsonl.rank<N>`, each row carrying `rank`, `ranks` and the rank's `device`.
 Render either directory with `scripts/perf-viz.py <dir>/<prefix>` for the phase charts, and read the numbers for `research/HARDWARE.md` straight from the sidecars: per row `n`, `wall_ns / layers`, the device phases (`gather_ns`, `merge_ns`, `compact_ns`, `coset_loop_ns`, `h2d_ns`, `d2h_ns`), and on a multi-device or rank row `export_ns`, `exchange_ns`, `chunk_wait_ns`, `bytes_exported` and `vmhwm_kb` (medians over ranks, as the MPI weak-scaling table does).
 The table skeletons are under the cluster GPU sections of `research/HARDWARE.md`.

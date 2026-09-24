@@ -127,36 +127,46 @@ In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-proce
 
 ## `gpu` cluster nodes — one process, several devices
 
-Filled from `scripts/slurm/gpu-devices.sbatch` runs (`scripts/slurm/README.md`, The GPU jobs); empty until then.
-Same conventions as the ccqlin038 tables: `--qubits 128`, truncation `keep` (`heavyhex_step` five steps under `coeff:2^-13`), `--reps 5`, `m` the steady-state term count, ms per layer.
+From `scripts/slurm/gpu-devices.sbatch` runs (`scripts/slurm/README.md`, The GPU jobs).
+Same conventions as the ccqlin038 tables: `--qubits 128`, truncation `keep` (`heavyhex_step` five steps under `coeff:2^-13`, 1355 layers), `--reps 5`, `m` the steady-state term count, ms per layer, device exchange (`PAULISTRINGS_GPU_EXCHANGE` unset).
+The partitioned row keeps the single device's total `m`, so its speedup is strong scaling.
 
-| node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | power under load |
+| node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | job |
 |---|---|---|---|---|
-| A100-SXM4-80GB | 4 | | | |
+| workergpu068, A100-SXM4-80GB | 2 of 4 | NV4 between the pair | 1410 / 1593 MHz | 7101047, rev 01df3eb |
 | H100-SXM5 | 4 | | | |
 
-| node | cell | m | 1 device ms/layer | 1 device ns/term | 4 devices ms/layer | 4 devices ns/term | speedup | export ms | exchange ms | bytes exported/layer |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| A100 | `rotation_zz` | | | | | | | | | |
-| A100 | `cnot` | | | | | | | | | |
-| A100 | `gu2q` | | | | | | | | | |
-| A100 | `su4` | | | | | | | | | |
-| A100 | `heavyhex_step` | | | | | | | | | |
-| A100 | `rotation_remote` | | — | — | | | — | | | |
+| node | cell | m | 1 device ms/layer | 1 device ns/term | 2 devices ms/layer | 2 devices ns/term | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A100 | `rotation_zz` | 6.00e6 | 5.743 | 0.96 | 3.105 | 0.52 | 1.85× | 0 | 0 | 0.03 | 0 |
+| A100 | `cnot` | 4.00e6 | 3.329 | 0.83 | 8.319 | 2.08 | 0.40× | 0.48 | 5.19 | 1.26 | 1.12e8 |
+| A100 | `gu2q` | 1.30e7 | 10.66 | 0.82 | 51.27 | 3.94 | 0.21× | 1.83 | 38.27 | 11.97 | 9.41e8 |
+| A100 | `su4` | 5.65e7 | 204.1 | 3.61 | 1249 | 22.11 | 0.16× | 42.78 | 884.0 | 308.0 | 2.35e10 |
+| A100 | `heavyhex_step` | 1.16e6 | 1.731 | 1.50 | 1.308 | 1.13 | 1.32× | 0.05 | 0.26 | 0.04 | 4.86e6 |
+| A100 | `rotation_remote` | 6.00e6 | — | — | 12.86 | 2.14 | — | 0.53 | 9.50 | 2.51 | 2.24e8 |
+
+A layer without remote deltas scales; a layer with them is exchange-bound, at ≈ 27 GB/s aggregate for `su4` (2.35e10 bytes in 884 ms) against the 100 GB/s per direction of four NVLink3 links.
+The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
+One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
 
 ## `gpu` cluster nodes — one device per MPI rank
 
-Filled from `scripts/slurm/mpi-gpu-ranks.sbatch` runs; empty until then.
-Replicated input `--n 4e6 × ranks`, one GPU and 8 CPUs per rank, medians over ranks, ms per layer.
+From `scripts/slurm/mpi-gpu-ranks.sbatch` runs.
+Replicated input, so `m` per rank equals the single-device `m` above (`heavyhex_step` excepted: its sum is split, 5.8e5 per rank); one GPU and 8 CPUs per rank, rank 0 shown (rank 1 within 4%), ms per layer.
+Exchange goes through host memory (`h2d` + `d2h` is 55–57% of a remote layer's wall).
 
-| ranks (nodes) | node | layer | m per rank | wall | export | exchange | chunk wait | coset loop | bytes exported/rank | peak RSS/rank |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| 4 (1) | A100 | `rotation_zz` | | | | | | | | |
-| 4 (1) | A100 | `rotation_remote` | | | | | | | | |
-| 4 (1) | A100 | `su4` | | | | | | | | |
-| 8 (2) | A100 | `rotation_zz` | | | | | | | | |
-| 8 (2) | A100 | `rotation_remote` | | | | | | | | |
-| 8 (2) | A100 | `su4` | | | | | | | | |
+| ranks (nodes) | node | layer | m per rank | wall | export | exchange | chunk wait | coset loop | h2d + d2h | bytes exported/rank | peak RSS/rank |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 (1) | A100, job 7101048 | `rotation_zz` | 6.00e6 | 5.75 | 0 | 0 | 0 | 5.72 | 0.05 | 0 | 2.1 GB |
+| 2 (1) | A100 | `cnot` | 4.00e6 | 45.66 | 17.00 | 0.20 | 14.53 | 28.40 | 26.16 | 9.61e7 | 2.2 GB |
+| 2 (1) | A100 | `gu2q` | 1.30e7 | 296.4 | 89.92 | 7.40 | 105.3 | 197.9 | 165.5 | 8.07e8 | 4.9 GB |
+| 2 (1) | A100 | `su4` | 5.65e7 | 7357 | 2253 | 172.7 | 2669 | 4871 | 4145 | 2.02e10 | 58.7 GB |
+| 2 (1) | A100 | `rotation_remote` | 6.00e6 | 72.83 | 22.01 | 0.08 | 26.04 | 50.70 | 39.98 | 1.92e8 | 58.7 GB |
+| 2 (1) | A100 | `heavyhex_step` | 5.77e5 | 1.95 | 0.47 | 0.04 | 0.29 | 1.42 | 0.65 | 2.08e6 | 0.6 GB |
+| 4 (1) | A100 | | | | | | | | | | |
+| 8 (2) | A100 | | | | | | | | | | |
+
+`rotation_zz` weak-scales flat (5.75 vs 5.74 ms on one device); the peak RSS is the probe's replicated input, carried from `su4` into the later cells.
 
 ## `ccq` cluster node types
 

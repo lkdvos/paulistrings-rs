@@ -1,4 +1,4 @@
-//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance, and `P = 1` is `GpuPauliSum` bit for bit (ARCHITECTURE.md §Partitioning, §Determinism).
+//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance under both exchange modes, and `P = 1` is `GpuPauliSum` bit for bit (ARCHITECTURE.md §Partitioning, §Determinism).
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
@@ -6,11 +6,11 @@ use paulistrings::engine::partitioned::{
     count_remote_deltas, PartitionConfig, PartitionRuntime, Placement,
 };
 use paulistrings::gpu::{
-    propagate_gpu_partitioned, GpuBucketPolicy, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
+    GpuBucketPolicy, GpuError, GpuExchange, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
 };
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
-    trotter_circuit, zz_rotation, KeepAll,
+    rows_reading_z63, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
@@ -22,6 +22,7 @@ const TOL: f64 = 1e-11;
 const THETA: f64 = 0.1;
 const ROW_SEED: u64 = 0x5EED_C0FF_EE00_1234;
 const PS: [usize; 3] = [1, 2, 4];
+const MODES: [GpuExchange; 2] = [GpuExchange::Host, GpuExchange::Device];
 
 macro_rules! require_cuda {
     () => {
@@ -67,6 +68,35 @@ fn config(partitions: usize) -> PartitionConfig {
     }
 }
 
+/// A split of `sum` over `p` partitions exchanging through `mode`.
+fn split_of<const W: usize>(
+    sum: &PauliSum<W>,
+    p: usize,
+    mode: GpuExchange,
+) -> GpuPartitionedSum<W> {
+    let runtime = PartitionRuntime::new(&config(p)).expect("placement");
+    let mut split = GpuPartitionedSum::scatter(sum.clone(), runtime, &config(p)).expect("scatter");
+    split.set_exchange(mode);
+    split
+}
+
+/// One propagation and gather under `mode`.
+fn run<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    p: usize,
+    mode: GpuExchange,
+) -> Result<PauliSum<W>, GpuError>
+where
+    T: PartitionedTruncation<W> + ?Sized,
+{
+    let mut split = split_of(sum, p, mode);
+    split.propagate(circuit, policy, direction)?;
+    split.gather()
+}
+
 fn check<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -79,14 +109,27 @@ fn check<const W: usize, T>(
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
         for &p in partitions {
-            let got =
-                propagate_gpu_partitioned(circuit, sum.clone(), policy, direction, &config(p))
-                    .expect("device propagate");
-            let what = format!("{name} P={p} {direction:?}");
-            assert_eq!(got.len(), want.len(), "{what}: term count");
-            assert_terms_close(&got, &want, TOL, &what);
+            for mode in MODES {
+                let got = run(circuit, sum, policy, direction, p, mode).expect("device propagate");
+                let what = format!("{name} P={p} {direction:?} {mode:?}");
+                assert_eq!(got.len(), want.len(), "{what}: term count");
+                assert_terms_close(&got, &want, TOL, &what);
+            }
         }
     }
+}
+
+#[test]
+fn the_default_exchange_is_the_device_one_unless_the_knob_says_host() {
+    require_cuda!();
+    let sum = rand_sum::<1>(50, 6, 0xDE);
+    let runtime = PartitionRuntime::new(&config(2)).expect("placement");
+    let split = GpuPartitionedSum::scatter(sum, runtime, &config(2)).expect("scatter");
+    let want = match std::env::var("PAULISTRINGS_GPU_EXCHANGE").as_deref() {
+        Ok("host") => GpuExchange::Host,
+        _ => GpuExchange::Device,
+    };
+    assert_eq!(split.exchange(), want);
 }
 
 #[test]
@@ -214,23 +257,26 @@ fn cut_rows_agree() {
         let rows = PartitionRows::<1>::cut(nq, &blocks);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_500), direction);
-            let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-            let mut split =
-                GpuPartitionedSum::scatter_with_rows(sum.clone(), rows.clone(), runtime)
-                    .expect("scatter");
-            split.enable_trace();
-            split
-                .propagate(&circuit, &ApproxTopN(2_500), direction)
-                .expect("propagate");
-            let trace = split.take_trace().expect("tracing on");
-            assert!(
-                trace.remote_layers() > 0,
-                "P={p}: a cut still crosses somewhere"
-            );
-            let got = split.gather().expect("gather");
-            let what = format!("cut P={p} {direction:?}");
-            assert_eq!(got.len(), want.len(), "{what}: term count");
-            assert_terms_close(&got, &want, TOL, &what);
+            for mode in MODES {
+                let runtime = PartitionRuntime::new(&config(p)).expect("placement");
+                let mut split =
+                    GpuPartitionedSum::scatter_with_rows(sum.clone(), rows.clone(), runtime)
+                        .expect("scatter");
+                split.set_exchange(mode);
+                split.enable_trace();
+                split
+                    .propagate(&circuit, &ApproxTopN(2_500), direction)
+                    .expect("propagate");
+                let trace = split.take_trace().expect("tracing on");
+                assert!(
+                    trace.remote_layers() > 0,
+                    "P={p}: a cut still crosses somewhere"
+                );
+                let got = split.gather().expect("gather");
+                let what = format!("cut P={p} {direction:?} {mode:?}");
+                assert_eq!(got.len(), want.len(), "{what}: term count");
+                assert_terms_close(&got, &want, TOL, &what);
+            }
         }
     }
 }
@@ -240,33 +286,32 @@ fn edge_cases() {
     require_cuda!();
     let circuit = random_circuit::<1>(6, 8, 0x9AA1, true);
     for &p in &PS {
-        let empty = PauliSum::<1>::empty(6);
-        let out =
-            propagate_gpu_partitioned(&circuit, empty, &KeepAll, Direction::Forward, &config(p))
-                .expect("empty");
-        assert!(out.is_empty(), "P={p}: an empty sum stays empty");
+        for mode in MODES {
+            let empty = PauliSum::<1>::empty(6);
+            let out = run(&circuit, &empty, &KeepAll, Direction::Forward, p, mode).expect("empty");
+            assert!(out.is_empty(), "P={p} {mode:?}: an empty sum stays empty");
 
-        let one = rand_sum::<1>(1, 6, 0x1);
-        let want = propagate(&circuit, one.clone(), &KeepAll, Direction::Forward);
-        let got =
-            propagate_gpu_partitioned(&circuit, one, &KeepAll, Direction::Forward, &config(p))
-                .expect("one term");
-        assert_terms_close(&got, &want, TOL, &format!("single term P={p}"));
+            let one = rand_sum::<1>(1, 6, 0x1);
+            let want = propagate(&circuit, one.clone(), &KeepAll, Direction::Forward);
+            let got = run(&circuit, &one, &KeepAll, Direction::Forward, p, mode).expect("one term");
+            assert_terms_close(&got, &want, TOL, &format!("single term P={p} {mode:?}"));
 
-        let sum = rand_sum::<1>(300, 6, 0x9AA2);
-        let got = propagate_gpu_partitioned(
-            &Circuit::<1>::new(6),
-            sum.clone(),
-            &KeepAll,
-            Direction::Heisenberg,
-            &config(p),
-        )
-        .expect("zero layers");
-        assert_eq!(
-            got.to_arrays(),
-            sum.to_arrays(),
-            "P={p}: a zero-layer circuit is the identity"
-        );
+            let sum = rand_sum::<1>(300, 6, 0x9AA2);
+            let got = run(
+                &Circuit::<1>::new(6),
+                &sum,
+                &KeepAll,
+                Direction::Heisenberg,
+                p,
+                mode,
+            )
+            .expect("zero layers");
+            assert_eq!(
+                got.to_arrays(),
+                sum.to_arrays(),
+                "P={p} {mode:?}: a zero-layer circuit is the identity"
+            );
+        }
     }
 }
 
@@ -293,16 +338,16 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
             TOL,
             &format!("GpuPauliSum vs host {direction:?}"),
         );
-        let got = propagate_gpu_partitioned(
-            &circuit,
-            sum.clone(),
-            &ApproxTopN(4_000),
-            direction,
-            &config(1),
-        )
-        .expect("partitioned");
-        assert_same_terms(&got, &want, &format!("P=1 {direction:?}"));
-        assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 {direction:?} bits");
+        for mode in MODES {
+            let got =
+                run(&circuit, &sum, &ApproxTopN(4_000), direction, 1, mode).expect("partitioned");
+            assert_same_terms(&got, &want, &format!("P=1 {direction:?} {mode:?}"));
+            assert_eq!(
+                got.to_arrays(),
+                want.to_arrays(),
+                "P=1 {direction:?} {mode:?} bits"
+            );
+        }
     }
 }
 
@@ -310,26 +355,27 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
 #[test]
 fn repeated_propagate_on_one_split() {
     require_cuda!();
-    let mut host = rand_sum::<1>(2_000, 8, 0x8E9);
-    let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split = GpuPartitionedSum::scatter(host.clone(), runtime, &config(2)).expect("scatter");
-    let circuits = [
-        random_circuit::<1>(8, 4, 0x1111, false),
-        random_circuit::<1>(8, 3, 0x2222, true),
-        random_circuit::<1>(8, 5, 0x3333, true),
-    ];
-    for (i, c) in circuits.iter().enumerate() {
-        host = propagate(c, host, &ApproxTopN(3_000), Direction::Heisenberg);
-        split
-            .propagate(c, &ApproxTopN(3_000), Direction::Heisenberg)
-            .expect("propagate");
-        assert_eq!(split.len(), host.len(), "call {i}");
-        assert_terms_close(
-            &split.gather().expect("gather"),
-            &host,
-            TOL,
-            &format!("call {i}"),
-        );
+    for mode in MODES {
+        let mut host = rand_sum::<1>(2_000, 8, 0x8E9);
+        let mut split = split_of(&host, 2, mode);
+        let circuits = [
+            random_circuit::<1>(8, 4, 0x1111, false),
+            random_circuit::<1>(8, 3, 0x2222, true),
+            random_circuit::<1>(8, 5, 0x3333, true),
+        ];
+        for (i, c) in circuits.iter().enumerate() {
+            host = propagate(c, host, &ApproxTopN(3_000), Direction::Heisenberg);
+            split
+                .propagate(c, &ApproxTopN(3_000), Direction::Heisenberg)
+                .expect("propagate");
+            assert_eq!(split.len(), host.len(), "call {i} {mode:?}");
+            assert_terms_close(
+                &split.gather().expect("gather"),
+                &host,
+                TOL,
+                &format!("call {i} {mode:?}"),
+            );
+        }
     }
 }
 
@@ -345,18 +391,18 @@ fn options_are_honoured() {
     };
     let want = propagate_with_options(&circuit, sum.clone(), &KeepAll, Direction::Forward, options);
     for &p in &PS {
-        let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-        let mut split =
-            GpuPartitionedSum::scatter(sum.clone(), runtime, &config(p)).expect("scatter");
-        split
-            .propagate_with_options(&circuit, &KeepAll, Direction::Forward, options)
-            .expect("propagate");
-        assert_terms_close(
-            &split.gather().expect("gather"),
-            &want,
-            TOL,
-            &format!("coarse buckets P={p}"),
-        );
+        for mode in MODES {
+            let mut split = split_of(&sum, p, mode);
+            split
+                .propagate_with_options(&circuit, &KeepAll, Direction::Forward, options)
+                .expect("propagate");
+            assert_terms_close(
+                &split.gather().expect("gather"),
+                &want,
+                TOL,
+                &format!("coarse buckets P={p} {mode:?}"),
+            );
+        }
     }
 }
 
@@ -369,97 +415,183 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
     let sum = rand_sum::<1>(3_000, nq, 0x7ACE);
     let circuit = random_circuit::<1>(nq, 16, 0x7ACF, true);
     for p in [2usize, 4] {
-        let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-        let mut split =
-            GpuPartitionedSum::scatter(sum.clone(), runtime, &config(p)).expect("scatter");
-        split.set_layer_options(GpuLayerOptions {
-            bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
-            ..GpuLayerOptions::default()
-        });
-        split.enable_trace();
-        split
-            .propagate(&circuit, &ApproxTopN(6_000), Direction::Forward)
-            .expect("propagate");
-        let trace = split.take_trace().expect("tracing on");
-        assert_eq!(trace.layers.len(), circuit.channels.len());
-        assert!(trace.remote_layers() > 0 && trace.local_layers() > 0);
-        for (k, layer) in trace.layers.iter().enumerate() {
-            assert_eq!(layer.rows_sent.len(), p, "layer {k}");
-            for (r, row) in layer.rows_sent.iter().enumerate() {
-                assert_eq!(row.len(), p);
-                assert_eq!(row[r], 0, "layer {k}: partition {r} ships to itself");
+        for mode in MODES {
+            let mut split = split_of(&sum, p, mode);
+            split.set_layer_options(GpuLayerOptions {
+                bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
+                ..GpuLayerOptions::default()
+            });
+            split.enable_trace();
+            split
+                .propagate(&circuit, &ApproxTopN(6_000), Direction::Forward)
+                .expect("propagate");
+            let trace = split.take_trace().expect("tracing on");
+            assert_eq!(trace.layers.len(), circuit.channels.len());
+            assert!(trace.remote_layers() > 0 && trace.local_layers() > 0);
+            for (k, layer) in trace.layers.iter().enumerate() {
+                assert_eq!(layer.rows_sent.len(), p, "layer {k}");
+                for (r, row) in layer.rows_sent.iter().enumerate() {
+                    assert_eq!(row.len(), p);
+                    assert_eq!(row[r], 0, "layer {k}: partition {r} ships to itself");
+                }
+                let sent: u64 = layer.rows_sent.iter().flat_map(|r| r.iter()).sum();
+                let received: u64 = layer.rows_received.iter().sum();
+                assert_eq!(sent, received, "layer {k}: rows sent equal rows received");
+                for q in 0..p {
+                    let to_q: u64 = layer.rows_sent.iter().map(|r| r[q]).sum();
+                    assert_eq!(to_q, layer.rows_received[q], "layer {k}: partition {q}");
+                }
+                if layer.remote_deltas == 0 {
+                    assert_eq!(sent, 0, "layer {k}: a local layer ships nothing");
+                }
             }
-            let sent: u64 = layer.rows_sent.iter().flat_map(|r| r.iter()).sum();
-            let received: u64 = layer.rows_received.iter().sum();
-            assert_eq!(sent, received, "layer {k}: rows sent equal rows received");
-            for q in 0..p {
-                let to_q: u64 = layer.rows_sent.iter().map(|r| r[q]).sum();
-                assert_eq!(to_q, layer.rows_received[q], "layer {k}: partition {q}");
+            let last = trace.layers.last().unwrap();
+            for r in 0..p {
+                assert_eq!(
+                    split.last_layer_counters(r).bits,
+                    last.bits,
+                    "P={p} rank {r} {mode:?}"
+                );
             }
-            if layer.remote_deltas == 0 {
-                assert_eq!(sent, 0, "layer {k}: a local layer ships nothing");
-            }
-        }
-        let last = trace.layers.last().unwrap();
-        for r in 0..p {
-            assert_eq!(
-                split.last_layer_counters(r).bits,
-                last.bits,
-                "P={p} rank {r}"
+            let want = propagate(
+                &circuit,
+                sum.clone(),
+                &ApproxTopN(6_000),
+                Direction::Forward,
+            );
+            assert_terms_close(
+                &split.gather().expect("gather"),
+                &want,
+                TOL,
+                &format!("traced P={p} {mode:?}"),
             );
         }
-        let want = propagate(
-            &circuit,
-            sum.clone(),
-            &ApproxTopN(6_000),
-            Direction::Forward,
+    }
+}
+
+/// Under both modes a dense layer at `P = 2` ships several remote deltas to its one partner, the output agrees with the host, and two runs of one mode are bitwise equal.
+#[test]
+fn several_deltas_to_one_partner_agree_and_each_mode_is_reproducible() {
+    require_cuda!();
+    let nq = 10;
+    let sum = rand_sum::<1>(2_000, nq, 0x5E7);
+    let circuit = random_circuit::<1>(nq, 6, 0x5E8, true);
+    let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    for mode in MODES {
+        let mut split = split_of(&sum, 2, mode);
+        split.enable_trace();
+        split
+            .propagate(&circuit, &KeepAll, Direction::Forward)
+            .expect("propagate");
+        let trace = split.take_trace().expect("tracing on");
+        let widest = trace
+            .layers
+            .iter()
+            .map(|l| l.remote_deltas)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest >= 2,
+            "{mode:?}: the SU(4) layers must ship at least two remote deltas to the partner"
         );
-        assert_terms_close(
-            &split.gather().expect("gather"),
-            &want,
-            TOL,
-            &format!("traced P={p}"),
+        let first = split.gather().expect("gather");
+        assert_eq!(first.len(), want.len(), "{mode:?}: term count");
+        assert_terms_close(&first, &want, TOL, &format!("several deltas {mode:?}"));
+        let again = run(&circuit, &sum, &KeepAll, Direction::Forward, 2, mode).expect("again");
+        assert_eq!(
+            first.to_arrays(),
+            again.to_arrays(),
+            "{mode:?}: two runs of one mode are bitwise equal"
         );
     }
 }
 
-/// A partition failing before its exchange returns the error, its partners finish, and the split refuses every later call.
+/// A partition failing before its exchange returns the error, its partners finish, and the split refuses every later call, under both payload forms.
 #[test]
 fn an_injected_failure_poisons_the_split_and_the_partners_finish() {
     require_cuda!();
     let circuit = random_circuit::<1>(8, 8, 0x1F01, true);
     let sum = rand_sum::<1>(400, 8, 0x1F02);
     for p in [2usize, 4] {
-        let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-        let mut split =
-            GpuPartitionedSum::scatter(sum.clone(), runtime, &config(p)).expect("scatter");
-        split.inject_failure(1, 2);
-        let r = split.propagate(&circuit, &KeepAll, Direction::Forward);
-        assert!(
-            matches!(
-                r,
-                Err(paulistrings::gpu::GpuError::Unsupported(
-                    "injected before the exchange"
-                ))
-            ),
-            "P={p}: {r:?}"
-        );
-        let again = split.propagate(&circuit, &KeepAll, Direction::Forward);
-        assert!(
-            matches!(
-                again,
-                Err(paulistrings::gpu::GpuError::Poisoned { rank: 1, layer: 2 })
-            ),
-            "P={p}: {again:?}"
-        );
-        assert!(
-            matches!(
-                split.gather(),
-                Err(paulistrings::gpu::GpuError::Poisoned { .. })
-            ),
-            "P={p}: gather"
-        );
+        for mode in MODES {
+            let mut split = split_of(&sum, p, mode);
+            split.inject_failure(1, 2);
+            let r = split.propagate(&circuit, &KeepAll, Direction::Forward);
+            assert!(
+                matches!(
+                    r,
+                    Err(GpuError::Unsupported("injected before the exchange"))
+                ),
+                "P={p} {mode:?}: {r:?}"
+            );
+            let again = split.propagate(&circuit, &KeepAll, Direction::Forward);
+            assert!(
+                matches!(again, Err(GpuError::Poisoned { rank: 1, layer: 2 })),
+                "P={p} {mode:?}: {again:?}"
+            );
+            assert!(
+                matches!(split.gather(), Err(GpuError::Poisoned { .. })),
+                "P={p} {mode:?}: gather"
+            );
+        }
     }
+}
+
+/// A received segment of exactly `MAX_BUCKET_LEN` rows is merged from a device payload; one more is `Unsupported`, the receiver's segment and the sender's source bucket both exceeding the tag limit.
+#[test]
+fn a_received_device_segment_at_the_tag_limit_is_accepted_and_one_more_is_unsupported() {
+    require_cuda!();
+    const MAX_BUCKET_LEN: usize = 4096;
+    let mut circuit = Circuit::<1>::new(64);
+    circuit.push(zz_rotation::<1>(0, 63, 0.3));
+    let options = PropagateOptions {
+        target_bucket_len: 1 << 20,
+        min_buckets: 1,
+        ..PropagateOptions::default()
+    };
+    let layer_options = GpuLayerOptions {
+        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        ..GpuLayerOptions::default()
+    };
+    let one_bucket = |sum: PauliSum<1>| {
+        let seed = sum.hash().seed();
+        sum.with_hash(paulistrings::Gf2Hash::new(64, 0, seed))
+    };
+    let run_zz = |n: usize, seed: u64| -> (PauliSum<1>, Result<PauliSum<1>, GpuError>) {
+        let input = one_bucket(x0_terms_identity_on_q63(n, seed));
+        let runtime = PartitionRuntime::new(&config(2)).expect("placement");
+        let mut split =
+            GpuPartitionedSum::scatter_with_rows(input.clone(), rows_reading_z63(), runtime)
+                .expect("scatter");
+        split.set_exchange(GpuExchange::Device);
+        split.set_layer_options(layer_options);
+        split.enable_trace();
+        let r = split
+            .propagate_with_options(&circuit, &KeepAll, Direction::Forward, options)
+            .and_then(|()| split.gather());
+        // A device sender's own bucket cap is the same 4096 rows, so only the fitting case reports its counts.
+        if let Some(trace) = split.take_trace().filter(|_| n <= MAX_BUCKET_LEN) {
+            let sent: u64 = trace.layers[0].rows_sent[0].iter().sum();
+            assert_eq!(sent as usize, n, "every term is exported from rank 0");
+        }
+        (input, r)
+    };
+    let (input, fits) = run_zz(MAX_BUCKET_LEN, 0xF1);
+    let want = propagate_with_options(&circuit, input, &KeepAll, Direction::Forward, options);
+    let fits = fits.expect("a segment of 4096 rows is merged");
+    assert_eq!(fits.len(), want.len());
+    assert_terms_close(
+        &fits,
+        &want,
+        TOL,
+        "segment of 4096 rows over a device payload",
+    );
+    let (_, over) = run_zz(MAX_BUCKET_LEN + 1, 0xF2);
+    assert!(
+        matches!(over, Err(GpuError::Unsupported(_))),
+        "{:?}",
+        over.map(|s| s.len())
+    );
 }
 
 /// An agreed count the device cannot make its blocks fit under is `Unsupported`, and the call returns.
@@ -475,23 +607,24 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
         .with_hash(paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()));
     let mut circuit = Circuit::<1>::new(10);
     circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
-    let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split = GpuPartitionedSum::scatter(sum, runtime, &config(2)).expect("scatter");
-    split.set_layer_options(GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
-        max_bits: 0,
-        ..GpuLayerOptions::default()
-    });
-    let options = PropagateOptions {
-        target_bucket_len: 1 << 20,
-        min_buckets: 1,
-        ..PropagateOptions::default()
-    };
-    let r = split.propagate_with_options(&circuit, &KeepAll, Direction::Forward, options);
-    assert!(
-        matches!(r, Err(paulistrings::gpu::GpuError::Unsupported(_))),
-        "{r:?}"
-    );
+    for mode in MODES {
+        let mut split = split_of(&sum, 2, mode);
+        split.set_layer_options(GpuLayerOptions {
+            bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+            max_bits: 0,
+            ..GpuLayerOptions::default()
+        });
+        let options = PropagateOptions {
+            target_bucket_len: 1 << 20,
+            min_buckets: 1,
+            ..PropagateOptions::default()
+        };
+        let r = split.propagate_with_options(&circuit, &KeepAll, Direction::Forward, options);
+        assert!(
+            matches!(r, Err(GpuError::Unsupported(_))),
+            "{mode:?}: {r:?}"
+        );
+    }
 }
 
 /// Off-schedule layers never refine, so uneven partitions keep equal bucket counts through a long dense run, and the trace and the gather both accept them.
@@ -502,20 +635,28 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     let sum = rand_sum::<1>(2_000, nq, 0x1F04);
     let circuit = random_circuit::<1>(nq, 20, 0x1F05, true);
     let rows = PartitionRows::<1>::cut(nq, &[(0..3).collect(), (3..16).collect()]);
-    let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_with_rows(sum.clone(), rows, runtime).expect("scatter");
-    split.enable_trace();
-    split
-        .propagate(&circuit, &ApproxTopN(4_000), Direction::Forward)
-        .expect("propagate");
-    let trace = split.take_trace().expect("tracing on");
-    assert_eq!(trace.layers.len(), 20);
-    assert!(trace.local_layers() > 0);
-    let want = propagate(&circuit, sum, &ApproxTopN(4_000), Direction::Forward);
-    let got = split.gather().expect("gather");
-    assert_eq!(got.len(), want.len());
-    assert_terms_close(&got, &want, TOL, "uneven cut");
+    let want = propagate(
+        &circuit,
+        sum.clone(),
+        &ApproxTopN(4_000),
+        Direction::Forward,
+    );
+    for mode in MODES {
+        let runtime = PartitionRuntime::new(&config(2)).expect("placement");
+        let mut split = GpuPartitionedSum::scatter_with_rows(sum.clone(), rows.clone(), runtime)
+            .expect("scatter");
+        split.set_exchange(mode);
+        split.enable_trace();
+        split
+            .propagate(&circuit, &ApproxTopN(4_000), Direction::Forward)
+            .expect("propagate");
+        let trace = split.take_trace().expect("tracing on");
+        assert_eq!(trace.layers.len(), 20);
+        assert!(trace.local_layers() > 0);
+        let got = split.gather().expect("gather");
+        assert_eq!(got.len(), want.len());
+        assert_terms_close(&got, &want, TOL, &format!("uneven cut {mode:?}"));
+    }
 }
 
 /// Four cut blocks with gates only inside blocks and between blocks 0 and 1: the partner pairs at partition delta 2 and 3 never exchange.

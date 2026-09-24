@@ -12,6 +12,7 @@ mod fingerprint;
 mod layer;
 mod module;
 mod partition;
+mod payload;
 mod prepared;
 mod rank;
 mod scan;
@@ -26,6 +27,7 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
+pub use payload::GpuExchange;
 pub use rank::{local_device_for_rank, GpuDistributedSum};
 #[cfg(feature = "mpi")]
 pub use rank::{propagate_mpi_gpu, MpiGpuSum};

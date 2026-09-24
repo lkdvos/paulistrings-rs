@@ -6,6 +6,7 @@ use std::time::Instant;
 use super::error::GpuError;
 use super::layer::{GpuKernelMs, GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
+use super::payload::{self, GpuExchange};
 use super::sum::GpuSum;
 use super::truncation::DevicePolicy;
 use crate::bucket::hash::{Gf2Hash, PartitionRows};
@@ -262,6 +263,7 @@ where
 /// A [`PauliSum`] split across the device partitions of a [`PartitionRuntime`] resolved from [`Placement::Devices`](crate::engine::partitioned::Placement::Devices) (ARCHITECTURE.md §Partitioning).
 ///
 /// Every partition is a [`GpuPauliSum`]'s worth of device state driven by the shared layer loop, with the rows a layer moves across partitions exported by K10, exchanged through the in-process transport and merged by the fused layer.
+/// The exchange moves device-resident blocks by default ([`GpuExchange::Device`]): the receiver copies them device-to-device, across devices through a peer copy, and no row touches the host; [`Self::set_exchange`] or `PAULISTRINGS_GPU_EXCHANGE=host` selects the host-staged form.
 /// Several partitions may share one device (`per_device > 1`), which is the testing shape; one partition per device is the production one.
 /// Held across calls like [`PartitionedSum`](crate::engine::partitioned::PartitionedSum): scatter once, step many times, gather once.
 pub struct GpuPartitionedSum<const W: usize> {
@@ -335,6 +337,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
             })
             .collect::<Result<_, _>>()?;
         let started = Instant::now();
+        let exchange = payload::gpu_exchange_default();
         let parts: Vec<Result<DevicePartition<W>, GpuError>> = {
             let (sum, rows, devices) = (&sum, &rows, &devices);
             runtime.map_partitions((0..size).collect(), |rank, _, transport| {
@@ -342,6 +345,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
                 let dev = GpuSum::from_host(&local, devices[rank])?;
                 let mut part = DevicePartition::new(dev, GpuLayerOptions::default())?;
                 part.group_size = size as u32;
+                part.scratch_mut().export.mode = exchange;
                 Ok(part)
             })
         };
@@ -551,6 +555,18 @@ impl<const W: usize> GpuPartitionedSum<W> {
         self.parts[rank].counters()
     }
 
+    /// How exchange blocks travel between the partitions from the next layer on; see [`GpuExchange`].
+    pub fn set_exchange(&mut self, mode: GpuExchange) {
+        for part in &mut self.parts {
+            part.scratch_mut().export.mode = mode;
+        }
+    }
+
+    /// The exchange mode the partitions run under.
+    pub fn exchange(&self) -> GpuExchange {
+        self.parts[0].scratch().export.mode
+    }
+
     /// Start recording one [`PartitionTrace`] record per layer.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);
@@ -574,6 +590,13 @@ impl<const W: usize> GpuPartitionedSum<W> {
             gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
             layers: std::mem::take(&mut self.layers),
         }
+    }
+}
+
+/// The pooled device payloads outlive any one split, so a dropped split frees them; a live split allocates its own again on its next remote layer.
+impl<const W: usize> Drop for GpuPartitionedSum<W> {
+    fn drop(&mut self) {
+        payload::drain_bin();
     }
 }
 

@@ -511,36 +511,7 @@ mod tests {
         );
     }
 
-    /// `n` distinct terms carrying `X₀` and the identity on qubit 63: all on rank 0 under a row reading `Z₆₃`, and every one anticommutes with `Z₀Z₆₃`, so a `ZZ(0, 63)` layer exports all `n` to rank 1.
-    fn x0_terms_identity_on_q63(n: usize, seed: u64) -> crate::PauliSum<1> {
-        let base = crate::test_support::rand_sum::<1>(n, 64, seed);
-        let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
-        for (x, z, c) in base.iter() {
-            let p = crate::pauli_string::PauliString::<1> {
-                x: [(x[0] | 1) & !(1u64 << 63)],
-                z: [z[0] & !(1u64 << 63)],
-            };
-            acc.add_term(p, crate::phase::Phase::ONE, c);
-        }
-        let out = acc.finalize();
-        assert_eq!(out.len(), n, "fixture: the terms must stay distinct");
-        let zz = crate::pauli_string::PauliString::<1> {
-            x: [0],
-            z: [1 | (1u64 << 63)],
-        };
-        assert!(
-            out.iter().all(|(x, z, _)| {
-                !crate::pauli_string::PauliString::<1> { x: *x, z: *z }.commutes_with(&zz)
-            }),
-            "fixture: every term must anticommute with Z₀Z₆₃ or the layer exports fewer than {n} rows"
-        );
-        out
-    }
-
-    /// Rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every `x0_terms_identity_on_q63` term sits on rank 0.
-    fn rows_reading_z63() -> PartitionRows<1> {
-        PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
-    }
+    use crate::test_support::{rows_reading_z63, x0_terms_identity_on_q63};
 
     /// The device rank is empty, so it ships empty blocks the host receives; the host ships rows the device merges.
     #[test]

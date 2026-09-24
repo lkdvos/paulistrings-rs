@@ -256,6 +256,27 @@ Between agreements a device partition cannot refine, so a remote or off-schedule
 The receive waits for the whole transfer before one upload; a chunked upload overlapping the tail is the cheap next step, a device-direct transport (peer copy or CUDA-aware MPI) the one the numbers ask for.
 The virtual shape is a correctness net and shares the host wire format.
 
+### Device-resident payloads remove the staging
+
+Asked what a remote layer costs when the in-process transport moves device-resident blocks instead of host-staged ones: K10 fills each block's own device columns and fingerprints them on the sender, the `DevicePayload` moves through the `mpsc` channel untouched, and the receiver copies the blocks device-to-device into its pooled `recv_*` columns (`cuMemcpyPeerAsync` across devices), so no row touches the host and the receiver's fingerprint pass is gone.
+Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory throughout, shared box) as a runtime-knob A/B on one binary, `PAULISTRINGS_GPU_EXCHANGE=host` against `device`, abab 5 pairs, `--reps 5`, medians of the per-layer phases, every pair agreeing in sign.
+
+| cell | layer | host ms/layer | device ms/layer | export | exchange | h2d | d2h |
+|:-|:-|-:|-:|-:|-:|-:|-:|
+| `P = 2`, 1e6 | `su4` (1.41e7 terms) | 1784 | **127 (−92%)** | 726 → 35 | 24 → 19 | 1520 → 1.2 | 1396 → 2.1 |
+| `P = 2`, 1e6 | `rotation_remote` | 21.8 | **2.6 (−85%)** | 9.4 → 0.4 | 1.8 → 0.3 | 16.7 → 0.1 | 16.1 → 0.1 |
+| `P = 4`, 1e6 | `su4` | 2194 | **155 (−93%)** | 708 → 55 | 58 → 39 | 3708 → 2.7 | 2313 → 21 |
+| `P = 4`, 1e6 | `rotation_remote` | 21.7 | **2.9 (−86%)** | 7.5 → 0.4 | 2.5 → 0.3 | 35 → 0.4 | 22 → 0.4 |
+
+The remote-layer penalty against `P = 1` on the same device (`--device 0` against `--gpu-partitions 2`, device payloads, 5 pairs at 1e6 and 3 at 2e6, all pairs agreeing in sign): `su4` **67.7 → 125.9 ms (+86%) at 1.41e7 terms** where the host-staged form was 1760 (+2500%), and 136.9 → 251.9 ms (+84%) at 2.83e7 terms; `rotation_zz` 1.85 → 2.03 ms (+10%) against `rotation_remote` at 2.6 ms where the staged form was 20.9; at 4e6 `rotation_remote` is 8.9 ms against `rotation_zz` 6.9.
+What remains of a dense remote layer at `P = 2` is 34 ms of K10 plus fingerprint over 1.05e8 exported rows, 19 ms of device copies and syncs, and two partitions' kernels sharing one device.
+On the device path `h2d_ns`/`d2h_ns` carry only the CSR offsets and `exchange_ns` includes the receiver's copies (`benchmarks/PROFILING.md`).
+The price is device memory: every block of a layer is resident at once on the sender's device, so a partition holds one export volume plus one receive volume on top of its sum, where the staged form kept the export volume in host RAM.
+On one 48 GB card two virtual partitions at 4e6 initial terms (5.65e7 steady, 2.1e8 exported rows per layer) are out of memory under device payloads and run at 6710 ms/layer under host ones (`P = 1`: 274 ms); on a multi-GPU node each device holds one partition's share.
+Device payloads are the default of `GpuPartitionedSum`; the host form stays behind the knob for MPI, for a group with a host member, and for this comparison.
+The receiver adopts with a copy rather than pointing the fused kernel at the payload's memory, so the kernels and the concatenated `recv_*` layout are unchanged and the same call serves one device and several; a zero-copy adoption for the one-partner case is unmeasured.
+Payloads recycle through a process-wide per-device bin, so a two-device group also allocates nothing at steady state; the cross-device branch has not run on a real multi-GPU node.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

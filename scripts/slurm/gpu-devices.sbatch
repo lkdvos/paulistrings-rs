@@ -67,6 +67,7 @@ probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
 
 if [ "$ngpu" -ge 2 ]; then
     echo "== gpu_peer: peer access and copy bandwidth between devices"
+    { nvidia-smi topo -p2p r; nvidia-smi topo -p2p w; nvidia-smi nvlink -s; } | tee "$out/gpu-${SLURM_JOB_ID:-local}-p2p.txt"
     cargo run --offline --release -p paulistrings --features cuda,phase-timing,test-utils --example gpu_peer | tee "$out/gpu-${SLURM_JOB_ID:-local}-peer.txt"
 fi
 

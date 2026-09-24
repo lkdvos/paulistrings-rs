@@ -6,7 +6,6 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=8
-#SBATCH --exclusive
 #SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #

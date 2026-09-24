@@ -146,6 +146,7 @@ The partitioned row keeps the single device's total `m`, so its speedup is stron
 | A100 | `rotation_remote` | 6.00e6 | — | — | 12.86 | 2.14 | — | 0.53 | 9.50 | 2.51 | 2.24e8 |
 
 A layer without remote deltas scales; a layer with them is exchange-bound, at ≈ 27 GB/s aggregate for `su4` (2.35e10 bytes in 884 ms) against the 100 GB/s per direction of four NVLink3 links.
+`gpu_peer` on workergpu064 (job 7101880, NV4 pair): peer access `Enabled` both ways, yet `cuMemcpyPeerAsync` moves 21.8 GB/s one way and 21.2 GB/s aggregate both ways, below the node's 26 GB/s pinned host copies; same-device copies run at 878 GB/s.
 The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
 One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
 

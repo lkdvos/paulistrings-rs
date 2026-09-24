@@ -100,6 +100,17 @@ maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
 pytest python/paulistrings/tests/test_cuda.py                    # skipped unless cuda_available()
 ```
 
+One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets; ranks share a device when there are fewer devices than ranks:
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
+export LIBCLANG_PATH=$(llvm-config --libdir)
+cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
+scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
+cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
+mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
+```
+
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 **Submitting is the user's step, never an agent's** — adjust the template and hand over the `sbatch` line.
 
@@ -132,7 +143,8 @@ Unit tests live in `#[cfg(test)] mod tests` beside the code, cross-module behavi
 - Shared fixtures live in `crates/paulistrings/src/test_support.rs` behind the `test-utils` feature — add helpers there rather than copy-pasting between test files.
 - The partitioned engine's differential nets are `tests/propagate_partitioned.rs` and the per-layer matrices in `engine/partitioned/layer.rs`; every test configuration uses `Placement::Unpinned` so the suite runs on a one-node box.
 - The CUDA backend's differential net is `tests/propagate_gpu.rs` (`required-features = ["cuda", "test-utils"]`) against `propagate`, every device test opening with `test_support::require_cuda!()` so it returns early without a device; the bindings' net is `python/paulistrings/tests/test_cuda.py`, whose device tests skip unless `cuda_available()`.
-- The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank).
+- `PAULISTRINGS_GPU_TEST_DEVICES` (csv of ordinals, default `0`) points `tests/propagate_gpu_partitioned.rs` at real devices: with more than one listed, the `P == devices.len()` configurations place one partition per device and every other `P` stays virtual on the first; `scripts/slurm/gpu-devices.sbatch` runs it at `0,1,2,3`.
+- The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank); built with `cuda` as well, `mpi_ranks` adds the one-GPU-per-rank cases, skipped on every rank unless every rank sees a device.
 - No `#[ignore]`d tests, and benchmarks follow tests rather than the reverse.
 - Commit logical units and check in with the user at feature boundaries.
 
@@ -169,7 +181,7 @@ It records what was measured and rejected, including several ideas that look obv
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits makes `propagate` **panic**; there is no fallback path. `PauliRotation` is exempt, overriding `prepare` at any generator weight.
 - Partitioned mode rejects exact `TopN` at compile time, since a distributed `k`-th selection has no collective form yet; `ApproxTopN` is partition-exact and is the partitioned default.
 - The CUDA backend runs a policy only through its `TruncationPolicy::device_policy` tree: every builtin and every Python policy lowers, while a custom `TruncationPolicy` and exact `TopN` return `GpuError::Unsupported` before the first layer.
-- One CUDA device per process for now: the bindings raise `NotImplementedError` on `device=` with several ordinals or an `"auto"` that sees more than one, and `device=` excludes `partitions=` and `comm=`.
+- The Python bindings drive one CUDA device per process: they raise `NotImplementedError` on `device=` with several ordinals or an `"auto"` that sees more than one, and `device=` excludes `partitions=` and `comm=`. Rust runs several devices (`GpuPartitionedSum` over `Placement::Devices`) and one device per MPI rank (`MpiGpuSum`); `device=[...]` in Python is a later item.
 - Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
 - A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.

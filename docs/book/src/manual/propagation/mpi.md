@@ -114,6 +114,32 @@ Each rank's Rayon pool sizes itself from the CPUs the launcher left in its affin
 On Rusty, `scripts/slurm/mpi-ranks.sbatch` does the arithmetic: it reads the node's domain count, rounds `nodes × domains` down to a power of two, and runs the differential net and then the probe at that rank count.
 See [`scripts/slurm/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md).
 
+## One GPU per rank {#gpu-per-rank}
+
+Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each rank's share on one CUDA device, with the same contract as `MpiSum`: replicated input, collective calls, rank 0 gathers.
+`gpu::local_device_for_rank` picks the device from the launcher's node-local rank (`OMPI_COMM_WORLD_LOCAL_RANK`, `MV2_COMM_WORLD_LOCAL_RANK`, `MPI_LOCALRANKID`, `SLURM_LOCALID`), modulo the visible devices:
+
+<!-- doctest: skip -->
+```rust
+use paulistrings::engine::partitioned::{Collectives, PartitionRowPolicy};
+use paulistrings::gpu::{local_device_for_rank, MpiGpuSum};
+use paulistrings::mpi::{rsmpi, MpiTransport};
+
+let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
+let transport = MpiTransport::from_communicator(&universe.world());
+let device = local_device_for_rank(transport.rank())?;
+let mut split = MpiGpuSum::<2>::scatter(observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
+split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
+if let Some(evolved) = split.gather()? {
+    println!("{} terms", evolved.len());
+}
+```
+
+`gpu::propagate_mpi_gpu` is the one-shot form.
+A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
+Launch with one visible device per task, `srun --gpus-per-task=1 --mpi=pmix`; `scripts/slurm/mpi-gpu-ranks.sbatch` runs the differential net and the probe that way.
+From Python, `device=` and `comm=` remain alternatives.
+
 ## Requirements
 
 **Thread level at least `MPI_THREAD_SERIALIZED`.**

@@ -13,6 +13,12 @@
 #   scripts/mpi-test.sh --release              # the shipping codegen
 #   scripts/mpi-test.sh --python               # also build the extension and run its net
 #   scripts/mpi-test.sh --python --no-rust     # only the Python net
+#   scripts/mpi-test.sh --cuda                 # the Rust net built with `mpi,cuda`: adds the one-GPU-per-rank cases
+#
+# --cuda puts $CUDA_ROOT/lib64 (or $CUDA_HOME/lib64) on LD_LIBRARY_PATH for
+# libnvrtc and forwards it to every rank; ranks share a device when there are
+# fewer devices than ranks, and the device cases skip on every rank unless
+# every rank sees one.
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
@@ -37,6 +43,7 @@ profile=""
 oversubscribe=0
 python_net=0
 rust_net=1
+features="mpi"
 while [ $# -gt 0 ]; do
     case "$1" in
         --ranks) ranks="$2"; shift 2 ;;
@@ -45,7 +52,8 @@ while [ $# -gt 0 ]; do
         --release) profile="--release"; shift ;;
         --python) python_net=1; shift ;;
         --no-rust) rust_net=0; shift ;;
-        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        --cuda) features="mpi,cuda"; shift ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
@@ -72,9 +80,22 @@ EOF
     exit 2
 fi
 
+cuda_x=""
+if [ "$features" = "mpi,cuda" ]; then
+    cuda_root="${CUDA_ROOT:-${CUDA_HOME:-}}"
+    if [ -n "$cuda_root" ] && [ -d "$cuda_root/lib64" ]; then
+        export LD_LIBRARY_PATH="$cuda_root/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+    if ! ldconfig -p 2>/dev/null | grep -q libnvrtc \
+       && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnvrtc'; then
+        echo "warning: no libnvrtc on the loader path (module load cuda/12.8.0, or set CUDA_ROOT); the device cases will skip" >&2
+    fi
+    cuda_x="-x LD_LIBRARY_PATH"
+fi
+
 if [ "$rust_net" -eq 1 ]; then
-    echo "== building the mpi_ranks test binary ${profile:-(debug)}"
-    bin=$(cargo test -p paulistrings --features mpi --test mpi_ranks --no-run \
+    echo "== building the mpi_ranks test binary ${profile:-(debug)}, features $features"
+    bin=$(cargo test -p paulistrings --features "$features" --test mpi_ranks --no-run \
             ${profile:+$profile} --message-format=json 2>/dev/null \
           | python3 -c 'import json, sys
 for line in sys.stdin:
@@ -87,7 +108,7 @@ for line in sys.stdin:
         print(rec["executable"])')
     if [ -z "$bin" ]; then
         echo "could not find the mpi_ranks executable; rebuilding with output:" >&2
-        cargo test -p paulistrings --features mpi --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
+        cargo test -p paulistrings --features "$features" --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
         exit 1
     fi
     echo "   $bin"
@@ -97,7 +118,7 @@ if [ "$python_net" -eq 1 ]; then
     venv="${VIRTUAL_ENV:-$PWD/.venv-mpi}"
     if [ ! -x "$venv/bin/python" ]; then
         echo "no virtualenv at $venv (set VIRTUAL_ENV, or create ./.venv-mpi)" >&2
-        sed -n '18,24p' "$0" >&2
+        sed -n '27,32p' "$0" >&2
         exit 2
     fi
     if ! "$venv/bin/python" -c 'import mpi4py' 2>/dev/null; then
@@ -146,7 +167,7 @@ for n in ${ranks//,/ }; do
                 xflag="-x PAULISTRINGS_EXCHANGE_CHUNKS"
             fi
             echo "== mpirun -n $n $flags (mpi_ranks, chunks=$chunks)"
-            if mpirun -n "$n" $flags $xflag "$bin"; then
+            if mpirun -n "$n" $flags $xflag $cuda_x "$bin"; then
                 echo "== $n ranks, mpi_ranks chunks=$chunks: ok"
             else
                 echo "== $n ranks, mpi_ranks chunks=$chunks: FAILED" >&2

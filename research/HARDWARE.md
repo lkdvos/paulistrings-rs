@@ -125,6 +125,39 @@ Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = 
 ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one, where the fixed per-block cost (0.55–0.76 ns per record at ~1000 records per block) dominates.
 In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-process NVRTC compile is 3.5 s inside the first cell's `upload_ns`, and `download_ns` (`to_host`, pinned D2H plus the host re-sort into `PauliSum`) is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
 
+## `gpu` cluster nodes — one process, several devices
+
+Filled from `scripts/slurm/gpu-devices.sbatch` runs (`scripts/slurm/README.md`, The GPU jobs); empty until then.
+Same conventions as the ccqlin038 tables: `--qubits 128`, truncation `keep` (`heavyhex_step` five steps under `coeff:2^-13`), `--reps 5`, `m` the steady-state term count, ms per layer.
+
+| node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | power under load |
+|---|---|---|---|---|
+| A100-SXM4-80GB | 4 | | | |
+| H100-SXM5 | 4 | | | |
+
+| node | cell | m | 1 device ms/layer | 1 device ns/term | 4 devices ms/layer | 4 devices ns/term | speedup | export ms | exchange ms | bytes exported/layer |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A100 | `rotation_zz` | | | | | | | | | |
+| A100 | `cnot` | | | | | | | | | |
+| A100 | `gu2q` | | | | | | | | | |
+| A100 | `su4` | | | | | | | | | |
+| A100 | `heavyhex_step` | | | | | | | | | |
+| A100 | `rotation_remote` | | — | — | | | — | | | |
+
+## `gpu` cluster nodes — one device per MPI rank
+
+Filled from `scripts/slurm/mpi-gpu-ranks.sbatch` runs; empty until then.
+Replicated input `--n 4e6 × ranks`, one GPU and 8 CPUs per rank, medians over ranks, ms per layer.
+
+| ranks (nodes) | node | layer | m per rank | wall | export | exchange | chunk wait | coset loop | bytes exported/rank | peak RSS/rank |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 4 (1) | A100 | `rotation_zz` | | | | | | | | |
+| 4 (1) | A100 | `rotation_remote` | | | | | | | | |
+| 4 (1) | A100 | `su4` | | | | | | | | |
+| 8 (2) | A100 | `rotation_zz` | | | | | | | | |
+| 8 (2) | A100 | `rotation_remote` | | | | | | | | |
+| 8 (2) | A100 | `su4` | | | | | | | | |
+
 ## `ccq` cluster node types
 
 `scripts/slurm/jcc-portability.sbatch`, one exclusive node each, governor `performance`; family/model read from `/proc/cpuinfo`.

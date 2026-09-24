@@ -1,5 +1,6 @@
 //! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance, and `P = 1` is `GpuPauliSum` bit for bit (ARCHITECTURE.md §Partitioning, §Determinism).
 //! Every case returns early without a device.
+//! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
 use paulistrings::engine::partitioned::{
     count_remote_deltas, PartitionConfig, PartitionRuntime, Placement,
@@ -30,13 +31,37 @@ macro_rules! require_cuda {
     };
 }
 
-/// `P` partitions on device 0.
+/// The ordinals `PAULISTRINGS_GPU_TEST_DEVICES` names, `[0]` when unset.
+fn test_devices() -> Vec<u32> {
+    match std::env::var("PAULISTRINGS_GPU_TEST_DEVICES") {
+        Ok(csv) if !csv.trim().is_empty() => csv
+            .split(',')
+            .map(|d| {
+                d.trim().parse().unwrap_or_else(|_| {
+                    panic!("PAULISTRINGS_GPU_TEST_DEVICES: '{d}' is not a device ordinal")
+                })
+            })
+            .collect(),
+        _ => vec![0],
+    }
+}
+
+/// `P` partitions: one per listed device when there are exactly `P` of them, otherwise `P` virtual ones on the first.
 fn config(partitions: usize) -> PartitionConfig {
-    PartitionConfig {
-        placement: Placement::Devices {
-            devices: vec![0],
+    let devices = test_devices();
+    let placement = if devices.len() > 1 && devices.len() == partitions {
+        Placement::Devices {
+            devices,
+            per_device: 1,
+        }
+    } else {
+        Placement::Devices {
+            devices: vec![devices[0]],
             per_device: partitions,
-        },
+        }
+    };
+    PartitionConfig {
+        placement,
         bind_memory: false,
         partition_row_seed: Some(ROW_SEED),
     }
@@ -253,7 +278,7 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
     let sum = rand_sum::<2>(2_000, 70, 0x9BB2);
     for direction in [Direction::Forward, Direction::Heisenberg] {
         let host = propagate(&circuit, sum.clone(), &ApproxTopN(4_000), direction);
-        let mut dev = GpuPauliSum::from_host(&sum, 0).expect("upload");
+        let mut dev = GpuPauliSum::from_host(&sum, test_devices()[0]).expect("upload");
         dev.propagate(&circuit, &ApproxTopN(4_000), direction)
             .expect("device");
         let want = dev.to_host().expect("download");

@@ -7,6 +7,8 @@ cluster resources is a user check-in point.
 | script | what it runs | when |
 |---|---|---|
 | `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
+| `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
+| `mpi-gpu-ranks.sbatch` | two 4-GPU nodes, one GPU per MPI rank: `tests/mpi_ranks.rs` built with `mpi,cuda`, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
 
 ## Node choice
@@ -95,6 +97,31 @@ nodes), which is why `ab-compare.sh` honours `CARGO_TARGET_DIR` for its worktree
 Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's local scratch
 (`$TMPDIR`), with `cargo --offline` against the shared `~/.cargo` registry cache — so run any
 `cargo fetch`/build once on a login host first if dependencies changed.
+
+## The GPU jobs
+
+Both run on partition `gpu`, whose `scontrol show partition gpu` reads `Exclusive=NO OverSubscribe=NO` (exclusivity is the job's choice, not forced) under QoS `gpu` (at most 24 GPUs and 432 CPUs per user).
+The templates ask for `--exclusive`: a job holding all four GPUs of a node already keeps other GPU jobs off it, and the flag also keeps the host cores quiet for the host-side phases.
+The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, and `--gres=gpu:4` already excludes the two-GPU workergpu062); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
+Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.6 llvm/19.1.7` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
+
+```bash
+# one 4 x A100 node: device nets, then the probe on one GPU and on all four
+env -u SBATCH_RESERVATION sbatch scripts/slurm/gpu-devices.sbatch
+# the same on an H100-SXM5 node
+env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/gpu-devices.sbatch
+# one GPU per rank, 2 nodes x 4 GPUs = 8 ranks
+env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-ranks.sbatch
+env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/mpi-gpu-ranks.sbatch
+# 4 ranks on one node, or the net alone
+env -u SBATCH_RESERVATION sbatch --nodes=1 scripts/slurm/mpi-gpu-ranks.sbatch
+PROBE=0 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-ranks.sbatch
+```
+
+`gpu-devices.sbatch` writes `benchmarks/results/<date>-<node>/gpu-<job>-dev0.jsonl` and `gpu-<job>-dev0123.jsonl`, plus `gpu-<job>-topo.txt` (`nvidia-smi topo -m`) and the clock, power and temperature dumps at start and end.
+`mpi-gpu-ranks.sbatch` writes one sidecar per rank, `benchmarks/results/<date>-mpi-gpu/mpi-gpu-<job>-r<ranks>.jsonl.rank<N>`, each row carrying `rank`, `ranks` and the rank's `device`.
+Render either directory with `scripts/perf-viz.py <dir>/<prefix>` for the phase charts, and read the numbers for `research/HARDWARE.md` straight from the sidecars: per row `n`, `wall_ns / layers`, the device phases (`gather_ns`, `merge_ns`, `compact_ns`, `coset_loop_ns`, `h2d_ns`, `d2h_ns`), and on a multi-device or rank row `export_ns`, `exchange_ns`, `chunk_wait_ns`, `bytes_exported` and `vmhwm_kb` (medians over ranks, as the MPI weak-scaling table does).
+The table skeletons are under the cluster GPU sections of `research/HARDWARE.md`.
 
 ## JCC-erratum padding across node types
 

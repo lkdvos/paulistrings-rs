@@ -38,7 +38,7 @@ pub struct GpuPauliSum<const W: usize> {
 }
 
 /// The checks every device propagation makes before its first layer: the policy lowers, its layer pass agrees with `finalizes_layer`, and every channel prepares.
-fn lower_for_run<const W: usize, T>(
+pub(super) fn lower_for_run<const W: usize, T>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,

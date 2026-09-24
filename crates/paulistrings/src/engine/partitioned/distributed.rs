@@ -56,7 +56,7 @@ pub enum PartitionRowPolicy {
 /// Held across calls — the split, the rows, the pool and the layer scratch all persist — so a Trotter driver scatters once, steps many times, and gathers once.
 /// See the module docs for the input/output contract.
 ///
-/// `B` is where the rank's partition lives; only the default, host memory, is constructible outside the crate.
+/// `B` is where the rank's partition lives: host memory by default, a CUDA device under the `cuda` feature's `gpu::GpuDistributedSum`, which wraps this type.
 ///
 /// # Examples
 ///
@@ -179,6 +179,61 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
     /// Draining leaves tracing enabled with no records.
     pub fn take_trace(&mut self) -> Option<PartitionTrace> {
         self.trace.as_mut().map(std::mem::take)
+    }
+
+    /// A split around a partition another backend already scattered, with `scatter_ns` its scatter time.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn from_backend(
+        local: B,
+        rows: PartitionRows<W>,
+        runtime: Arc<PartitionRuntime>,
+        transport: X,
+        scatter_ns: u64,
+    ) -> Self {
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = scatter_ns;
+        Self {
+            local,
+            rows,
+            runtime,
+            transport,
+            trace: None,
+            #[cfg(feature = "phase-timing")]
+            scatter_ns,
+            #[cfg(feature = "phase-timing")]
+            gather_ns: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "phase-timing")]
+            layers: 0,
+        }
+    }
+
+    /// This rank's partition.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn backend(&self) -> &B {
+        &self.local
+    }
+
+    /// This rank's partition, mutably.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.local
+    }
+
+    /// Drain the driver's own laps: scatter time, gather time and layers driven.
+    #[cfg(all(feature = "cuda", feature = "phase-timing"))]
+    pub(crate) fn take_driver_laps(&mut self) -> (u64, u64, u64) {
+        (
+            std::mem::take(&mut self.scatter_ns),
+            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
+            std::mem::take(&mut self.layers),
+        )
+    }
+
+    /// Add one gather's wall time to the drained laps.
+    #[cfg(feature = "phase-timing")]
+    pub(crate) fn lap_gather(&self, ns: u64) {
+        self.gather_ns
+            .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// [`DistributedSum::propagate_with_options`] on any backend.
@@ -447,36 +502,9 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     pub fn gather(&self) -> Option<PauliSum<W>> {
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
-
-        let lens: Vec<u64> = (0..self.local.sum.num_buckets())
-            .map(|b| self.local.sum.bucket_len(b) as u64)
-            .collect();
-        let (x, z, coeff) = self.local.sum.to_arrays();
-        let parts: Vec<&[u8]> = vec![
-            bytemuck::cast_slice(&lens),
-            bytemuck::cast_slice(x.as_flattened()),
-            bytemuck::cast_slice(z.as_flattened()),
-            bytemuck::cast_slice(&coeff),
-        ];
-        let all = self.transport.gather_to_root(parts);
-        drop((x, z, coeff));
-
-        let out = all.map(|all| {
-            let hash = self.local.sum.hash().clone();
-            let num_qubits = self.local.sum.num_qubits();
-            let parts: Vec<PauliSum<W>> = all
-                .into_iter()
-                .enumerate()
-                .map(|(rank, parts)| decode_rank(&parts, hash.clone(), num_qubits, rank))
-                .collect();
-            PauliSum::merge_partitions(parts)
-        });
-
+        let out = gather_share(&self.local.sum, &self.transport);
         #[cfg(feature = "phase-timing")]
-        self.gather_ns.fetch_add(
-            started.elapsed().as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.lap_gather(started.elapsed().as_nanos() as u64);
         out
     }
 
@@ -549,6 +577,36 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
             self.rank(),
         );
     }
+}
+
+/// [`DistributedSum::gather`]'s body over any rank's host share: `Some(sum)` on rank 0, `None` elsewhere. **Collective.**
+pub(crate) fn gather_share<const W: usize, X: Transport>(
+    local: &PauliSum<W>,
+    transport: &X,
+) -> Option<PauliSum<W>> {
+    let lens: Vec<u64> = (0..local.num_buckets())
+        .map(|b| local.bucket_len(b) as u64)
+        .collect();
+    let (x, z, coeff) = local.to_arrays();
+    let parts: Vec<&[u8]> = vec![
+        bytemuck::cast_slice(&lens),
+        bytemuck::cast_slice(x.as_flattened()),
+        bytemuck::cast_slice(z.as_flattened()),
+        bytemuck::cast_slice(&coeff),
+    ];
+    let all = transport.gather_to_root(parts);
+    drop((x, z, coeff));
+
+    all.map(|all| {
+        let hash = local.hash().clone();
+        let num_qubits = local.num_qubits();
+        let parts: Vec<PauliSum<W>> = all
+            .into_iter()
+            .enumerate()
+            .map(|(rank, parts)| decode_rank(&parts, hash.clone(), num_qubits, rank))
+            .collect();
+        PauliSum::merge_partitions(parts)
+    })
 }
 
 /// A fingerprint of everything the ranks must agree on before the first layer.

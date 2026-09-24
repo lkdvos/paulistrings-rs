@@ -1,6 +1,6 @@
 //! The CUDA backend. See ARCHITECTURE.md §GPU-Readiness.
 //!
-//! `device` is the runtime probe and device table, `module` the NVRTC kernel cache, [`GpuSum`] the device-resident sum over `columns`, and [`GpuPauliSum`]/[`GpuPartitionedSum`] the propagation drivers over `layer`, `export` and `partition`.
+//! `device` is the runtime probe and device table, `module` the NVRTC kernel cache, [`GpuSum`] the device-resident sum over `columns`, [`GpuPauliSum`]/[`GpuPartitionedSum`] the propagation drivers over `layer`, `export` and `partition`, and [`GpuDistributedSum`] one device partition per process (`rank`).
 
 mod columns;
 pub(crate) mod device;
@@ -13,6 +13,7 @@ mod layer;
 mod module;
 mod partition;
 mod prepared;
+mod rank;
 mod scan;
 mod staging;
 mod sum;
@@ -25,4 +26,7 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
+pub use rank::{local_device_for_rank, GpuDistributedSum};
+#[cfg(feature = "mpi")]
+pub use rank::{propagate_mpi_gpu, MpiGpuSum};
 pub use sum::GpuSum;

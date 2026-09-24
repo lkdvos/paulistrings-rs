@@ -83,6 +83,29 @@ for _ in range(steps):
 `GpuPauliSum.propagate` and `propagate_with_stats` take `policy`, `direction`, `target_bucket_len` and `min_buckets` with the meanings above; `len()`, `num_qubits`, `device` and `num_buckets` read the resident sum without a download.
 A device error mid-run leaves the resident sum holding the last completed layer's output, and a later call resumes from it.
 
+## Rust: several devices, and one device per MPI rank {#rust-multi-device}
+
+`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device:
+
+<!-- doctest: skip -->
+```rust
+use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
+use paulistrings::gpu::GpuPartitionedSum;
+
+let config = PartitionConfig {
+    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
+    bind_memory: false,
+    partition_row_seed: None,
+};
+let runtime = PartitionRuntime::new(&config)?;
+let mut split = GpuPartitionedSum::scatter(observable, runtime, &config)?;
+split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
+let evolved = split.gather()?;
+```
+
+The layer's remote rows go device to host, through the in-process exchange, and host to device; `per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU.
+With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
+
 ## What changes on a device
 
 **Results agree to floating-point tolerance, not bit for bit.**
@@ -97,7 +120,7 @@ Compare two results by key, never by position.
 
 ## Limits
 
-- **One device per process.** A list of several ordinals, or `"auto"` with more than one device visible, raises `NotImplementedError`.
+- **One device per process from Python.** A list of several ordinals, or `"auto"` with more than one device visible, raises `NotImplementedError`; the Rust API above runs several.
 - **Exact `topn` is unavailable**, as in a partitioned run: `truncation.topn` raises `NotImplementedError`, and `truncation.approx_topn(n)` retains exactly the set the host would.
 - **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions lower to the device; a custom Rust `TruncationPolicy` without a `device_policy` is refused before the first layer.
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.

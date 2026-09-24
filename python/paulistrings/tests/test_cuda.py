@@ -2,10 +2,12 @@
 
 The Rust side is covered by ``crates/paulistrings/tests/propagate_gpu.rs``,
 the differential net of the device layer against the host engine. This file
-checks the Python boundary: that ``device=0`` and a resident ``GpuPauliSum``
-agree with the host ``propagate`` under every lowerable policy, that the
-placement kwargs are mutually exclusive, that the unsupported requests raise
-the documented exceptions, and that the stats record names the device.
+checks the Python boundary: that ``device=0``, a device list and a resident
+``GpuPauliSum`` agree with the host ``propagate`` under every lowerable policy,
+that the placement kwargs are mutually exclusive, that the unsupported requests
+raise the documented exceptions, and that the stats record names the devices.
+A device list may repeat an ordinal, which is how the multi-device path runs on
+a one-GPU box.
 
 Everything that needs a device is skipped when ``cuda_available()`` is false;
 the two tests at the top run on every build. Build and run with::
@@ -298,11 +300,20 @@ def test_device_conflicts_are_value_errors():
     with pytest.raises(ValueError, match="alternatives"):
         s.propagate(c, device=0, partitions=2)
     with pytest.raises(ValueError, match="alternatives"):
-        s.propagate(c, device=0, comm=object())
+        s.propagate(c, device=[0, 0], partitions=2)
     with pytest.raises(ValueError, match="local"):
         s.propagate(c, device=0, result="local")
+    with pytest.raises(ValueError, match="local"):
+        s.propagate(c, device=[0, 0], result="local")
     with pytest.raises(ValueError, match="partition_row_blocks"):
         s.propagate(c, device=0, partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]])
+
+
+@pytest.mark.skipif(paulistrings.mpi_available(), reason="built with the mpi feature")
+def test_device_with_comm_names_the_missing_feature():
+    s, c = _observable(8, terms=64), _circuit(8)
+    with pytest.raises(RuntimeError, match="mpi feature"):
+        s.propagate(c, device=0, comm=object())
 
 
 @needs_cuda
@@ -322,35 +333,181 @@ def test_device_spellings():
         s.propagate(c, device=1.5)
 
 
-@needs_cuda
-def test_several_devices_are_not_implemented_yet():
+def _auto():
+    """``device="auto"``'s stats on a small run, and the host answer."""
     s, c = _observable(8, terms=64), _circuit(8)
-    with pytest.raises(NotImplementedError, match="multi-device"):
-        s.propagate(c, device=[0, 0])
-
-
-def _auto_or_none(s, c):
-    """``device="auto"``'s result, or ``None`` if it refused several devices."""
-    try:
-        return s.propagate_with_stats(c, device="auto")
-    except NotImplementedError as err:
-        assert "multi-device" in str(err)
-        return None
+    got, stats = s.propagate_with_stats(c, device="auto")
+    _assert_terms_close(got, s.propagate(c))
+    return stats
 
 
 @needs_cuda
 def test_auto_on_one_device_is_device_zero():
-    s, c = _observable(8, terms=64), _circuit(8)
-    result = _auto_or_none(s, c)
-    if result is None:
+    stats = _auto()
+    if len(stats.partition.devices) > 1:
         pytest.skip("more than one CUDA device is visible")
-    got, stats = result
-    _assert_terms_close(got, s.propagate(c))
     assert stats.partition.devices == [0]
+    assert stats.partition.partitions == 1
 
 
 @needs_cuda
-def test_auto_on_several_devices_is_not_implemented_yet():
-    s, c = _observable(8, terms=64), _circuit(8)
-    if _auto_or_none(s, c) is not None:
+def test_auto_on_several_devices_takes_a_power_of_two():
+    stats = _auto()
+    devices = stats.partition.devices
+    if len(devices) == 1:
         pytest.skip("only one CUDA device is visible")
+    k = len(devices)
+    assert k & (k - 1) == 0
+    assert devices == list(range(k))
+    assert stats.partition.partitions == k
+
+
+# --------------------------------------------------------------------------
+# Several device partitions: one per list entry, repeats sharing a device
+
+MULTI = [[0, 0], [0, 0, 0, 0]]
+
+
+def _haar_4(rng):
+    """A Haar-random two-qubit unitary: the QR of a complex Gaussian, phases fixed."""
+    m = rng.normal(size=(4, 4)) + 1j * rng.normal(size=(4, 4))
+    q, r = np.linalg.qr(m)
+    return q * (np.diag(r) / np.abs(np.diag(r)))
+
+
+def _dense_circuit(num_qubits, layers=3, seed=20260923):
+    """Brickwork layers of Haar-random two-qubit gates: every delta is a dense PTM row, so rows cross partitions on most gates."""
+    rng = np.random.default_rng(seed)
+    circuit = Circuit(num_qubits)
+    for layer in range(layers):
+        for q in range(layer % 2, num_qubits - 1, 2):
+            circuit.unitary_2q(q, q + 1, _haar_4(rng))
+    return circuit
+
+
+def _trotter_circuit(num_qubits, steps=3, dt=0.1, j=1.0, h=0.8):
+    """First-order Trotter steps of the transverse-field Ising chain: ``ZZ`` rotations on every bond, then ``X`` on every site."""
+    circuit = Circuit(num_qubits)
+    for _ in range(steps):
+        for q in range(num_qubits - 1):
+            circuit.pauli_rotation("ZZ", [q, q + 1], 2 * j * dt)
+        for q in range(num_qubits):
+            circuit.rx(2 * h * dt, q)
+    return circuit
+
+
+def _real_observable(num_qubits, terms, seed=20260924):
+    s = _observable(num_qubits, terms=terms, seed=seed)
+    return PauliSum.from_arrays(
+        s.x_array(), s.z_array(), s.coefficients_array().real, num_qubits=num_qubits
+    )
+
+
+@needs_cuda
+@pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_device_list_matches_host_on_a_dense_circuit(devices, direction):
+    s, c = _observable(8, terms=1_000), _dense_circuit(8)
+    want = s.propagate(c, direction=direction)
+    got = s.propagate(c, direction=direction, device=devices)
+    assert len(got) > len(s), "the circuit must actually fan out"
+    _assert_terms_close(got, want)
+
+
+@needs_cuda
+@pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direction):
+    """``approx_topn`` all-reduces its histogram over the partitions, so the retained set is the host's exactly."""
+    s, c = _real_observable(68, terms=2_000), _trotter_circuit(68)
+    policy = truncation.approx_topn(3_000)
+    looser = s.propagate(c, truncation.approx_topn(12_000), direction=direction)
+    want = s.propagate(c, policy, direction=direction)
+    got = s.propagate(c, policy, direction=direction, device=devices)
+    assert len(want) < len(looser), "approx_topn must actually truncate"
+    _assert_terms_close(got, want)
+
+
+@needs_cuda
+@pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
+def test_device_list_stats_name_every_partition(devices):
+    s, c = _observable(8, terms=1_000), _dense_circuit(8)
+    want, host_stats = s.propagate_with_stats(c, direction="heisenberg")
+    got, stats = s.propagate_with_stats(c, direction="heisenberg", device=devices)
+    _assert_terms_close(got, want)
+    assert stats.terms_in == host_stats.terms_in
+    assert stats.terms_out == host_stats.terms_out
+    part = stats.partition
+    assert part.partitions == len(devices)
+    assert part.devices == devices
+    assert part.rank is None and part.size is None
+    assert all(len(row) == len(devices) for row in part.terms_in)
+    assert [sum(row) for row in part.terms_in] == stats.terms_in
+    assert sum(part.rows_exported) > 0, "a dense circuit must move rows between partitions"
+    assert f"devices={devices}" in repr(part)
+
+
+@needs_cuda
+def test_device_list_runs_twice_on_the_cached_runtime():
+    s, c = _observable(8, terms=500), _dense_circuit(8, layers=2)
+    want = s.propagate(c, direction="heisenberg")
+    for _ in range(2):
+        _assert_terms_close(s.propagate(c, direction="heisenberg", device=[0, 0]), want)
+
+
+@needs_cuda
+def test_device_list_zero_layer_circuit():
+    s = _observable(8, terms=64)
+    got, stats = s.propagate_with_stats(Circuit(8), device=[0, 0])
+    _assert_terms_close(got, s)
+    assert stats.layers == 0
+    assert stats.partition.partitions == 2
+    assert stats.partition.devices == [0, 0]
+
+
+@needs_cuda
+def test_a_row_seed_moves_rows_but_not_the_answer():
+    s, c = _observable(8, terms=1_000), _dense_circuit(8)
+    want = s.propagate(c)
+    splits = []
+    for seed in (1, 2):
+        got, stats = s.propagate_with_stats(c, device=[0, 0], partition_row_seed=seed)
+        _assert_terms_close(got, want)
+        splits.append(stats.partition.terms_in[0])
+    assert splits[0] != splits[1], "two seeds drew the same partition rows"
+
+
+@needs_cuda
+def test_partition_row_blocks_cut_the_device_partitions():
+    """A cut labels a key by the XOR of the blocks it has odd Z-weight in, so a single ``Z`` on qubit ``q`` lands on the partition whose block holds ``q``; ``rz`` commutes with every term, so the split is visible in the first layer's counts."""
+    terms = {"I" * q + "Z" + "I" * (7 - q): 1.0 + q for q in range(8)}
+    s = PauliSum.from_strings(terms, num_qubits=8)
+    c = Circuit(8)
+    c.rz(0.3, 0)
+    got, stats = s.propagate_with_stats(c, device=[0, 0], partition_row_blocks=[[0], list(range(1, 8))])
+    _assert_terms_close(got, s.propagate(c))
+    assert stats.partition.terms_in[0] == [1, 7]
+
+
+@needs_cuda
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_partition_row_blocks_match_host_on_a_dense_circuit(direction):
+    s, c = _observable(8, terms=1_000), _dense_circuit(8)
+    want = s.propagate(c, direction=direction)
+    got = s.propagate(c, direction=direction, device=[0, 0], partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]])
+    _assert_terms_close(got, want)
+
+
+@needs_cuda
+def test_device_list_errors():
+    s, c = _observable(8, terms=64), _circuit(8)
+    with pytest.raises(ValueError, match="power of two"):
+        s.propagate(c, device=[0, 0, 0])
+    with pytest.raises(ValueError, match="CUDA device"):
+        s.propagate(c, device=[0, 1 << 20])
+    with pytest.raises(ValueError, match="partition_row_blocks"):
+        s.propagate(c, device=[0, 0], partition_row_blocks=[list(range(8))])
+    with pytest.raises(ValueError, match="alternatives"):
+        s.propagate(c, device=[0, 0], partition_row_seed=1, partition_row_blocks=[[0], [1]])
+    with pytest.raises(NotImplementedError, match="approx_topn"):
+        s.propagate(c, truncation.topn(10), device=[0, 0])

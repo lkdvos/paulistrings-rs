@@ -138,7 +138,9 @@ if let Some(evolved) = split.gather()? {
 `gpu::propagate_mpi_gpu` is the one-shot form.
 A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
 Launch with one visible device per task, `srun --gpus-per-task=1 --mpi=pmix`; `scripts/slurm/mpi-gpu-ranks.sbatch` runs the differential net and the probe that way.
-From Python, `device=` and `comm=` remain alternatives.
+
+From Python, `propagate(..., comm=comm, device="auto")` is the same run, in an extension built with `--features cuda,mpi`: `device=` takes this rank's ordinal or `"auto"`, which is `local_device_for_rank`, and `result=`, `partition_row_seed=` and `partition_row_blocks=` keep their host meanings ([CUDA devices](gpu.md#comm-device)).
+`scripts/mpi-test.sh --ranks 2,4 --python --cuda` builds that extension and runs `test_mpi.py`'s device cases, which skip on every rank unless every rank sees a device.
 
 ## Requirements
 

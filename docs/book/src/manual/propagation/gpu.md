@@ -1,6 +1,6 @@
 # CUDA devices
 
-A device run holds the whole sum on one CUDA GPU and applies every layer there, with the same layer loop, truncation rules and trace as a one-partition [partitioned run](partitions.md).
+A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a [partitioned run](partitions.md): one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
 The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §GPU-Readiness; this page is when to reach for it and how.
 
@@ -54,8 +54,8 @@ if paulistrings.cuda_available():
     )
 ```
 
-`device` takes a device ordinal, or `"auto"` for the only visible device.
-`device=` is an alternative to `partitions=` and `comm=`, and passing it with either, or with `result="local"`, is a `ValueError`.
+`device` takes a device ordinal, a list of ordinals, or `"auto"`.
+`device=` is an alternative to `partitions=`, and passing both, or `result="local"` without `comm=`, is a `ValueError`.
 `target_bucket_len` and `min_buckets` still set the host-side bucket schedule the device refines on top of; `engine` is ignored.
 
 `propagate_with_stats(..., device=0)` fills `PropagationStats.partition` as a one-partition run, and `PartitionStats.devices` names the device:
@@ -83,9 +83,42 @@ for _ in range(steps):
 `GpuPauliSum.propagate` and `propagate_with_stats` take `policy`, `direction`, `target_bucket_len` and `min_buckets` with the meanings above; `len()`, `num_qubits`, `device` and `num_buckets` read the resident sum without a download.
 A device error mid-run leaves the resident sum holding the last completed layer's output, and a later call resumes from it.
 
+### Several devices {#multi-device}
+
+A list places one partition on each entry, split by GF(2) partition rows and exchanged between layers as in a [partitioned run](partitions.md):
+
+<!-- doctest: skip -->
+```python
+evolved, stats = observable.propagate_with_stats(
+    circuit, truncation.approx_topn(10_000_000), direction="heisenberg", device=[0, 1, 2, 3]
+)
+print(stats.partition.devices)   # [0, 1, 2, 3]
+```
+
+The list length must be a power of two, since a partition is named by `log2(P)` rows; `device=[0, 1, 2]` is a `ValueError`.
+An ordinal may repeat, `device=[0, 0]` putting two partitions on device 0, which runs the exchange on one GPU.
+`"auto"` takes devices `0..k` for the largest power of two `k` visible, and is the one-device run when only one is.
+`partition_row_seed=` and `partition_row_blocks=` choose the rows as they do for `partitions=`, the block count equal to the list length.
+`stats.partition.partitions` is the list length, `devices` the list, and the per-layer lists carry one entry per partition.
+The call scatters, propagates and gathers every time; a resident multi-device sum is Rust-only (below).
+
+### One device per MPI rank {#comm-device}
+
+With `comm=`, `device=` names this rank's one device: an ordinal, or `"auto"` for the node-local rank modulo the visible devices (see [MPI ranks](mpi.md#gpu-per-rank)):
+
+<!-- doctest: skip -->
+```python
+evolved = observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
+```
+
+Everything else is the host `comm=` contract: replicated input, collective calls, `result="gather"` or `"local"`, and `stats.partition` holding this rank's entry, with `devices` this rank's device.
+It needs the extension built with both features (`maturin develop --release --features cuda,mpi`); a build lacking either raises `RuntimeError` naming it.
+A list of several ordinals under `comm=` is a `ValueError`.
+A rank that cannot use its device fails the call on every rank, the peers raising the same exception type naming it.
+
 ## Rust: several devices, and one device per MPI rank {#rust-multi-device}
 
-`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device:
+`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device, and holds it across calls:
 
 <!-- doctest: skip -->
 ```rust
@@ -116,11 +149,12 @@ No reduction uses a floating-point atomic, so two runs on the same device give t
 The download re-sorts each bucket to the host's lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so `x_array()` of a device result can list the terms in a different order from a host run's.
 Compare two results by key, never by position.
 
-**Device failures are exceptions, not aborts**: an exhausted device raises `MemoryError`, a request the backend does not implement `NotImplementedError`, and every other device failure `RuntimeError`.
+**Device failures are exceptions, not aborts**: an exhausted device raises `MemoryError`, a request the backend does not implement `NotImplementedError`, a device placement that does not resolve `ValueError`, and every other device failure `RuntimeError`.
+Under `comm=`, a failure on one rank's device fails the call on every rank, its peers raising a `RuntimeError` that names the failing partition and layer.
 
 ## Limits
 
-- **One device per process from Python.** A list of several ordinals, or `"auto"` with more than one device visible, raises `NotImplementedError`; the Rust API above runs several.
+- **The resident `GpuPauliSum` is one device.** A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.
 - **Exact `topn` is unavailable**, as in a partitioned run: `truncation.topn` raises `NotImplementedError`, and `truncation.approx_topn(n)` retains exactly the set the host would.
 - **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions lower to the device; a custom Rust `TruncationPolicy` without a `device_policy` is refused before the first layer.
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.

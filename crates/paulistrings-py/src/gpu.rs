@@ -7,8 +7,10 @@ use pyo3::exceptions::{PyNotImplementedError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
 
+#[cfg(all(feature = "cuda", feature = "mpi"))]
+pub(crate) use cuda::resolve_rank_device;
 #[cfg(feature = "cuda")]
-pub(crate) use cuda::{gpu_error, resolve_device, GpuPauliSumImpl};
+pub(crate) use cuda::{gpu_error, resolve_device, resolve_devices, GpuPauliSumImpl};
 #[cfg(not(feature = "cuda"))]
 pub(crate) use no_cuda::{cuda_unavailable_error, GpuPauliSumImpl};
 
@@ -66,61 +68,129 @@ pub(crate) fn parse_device(obj: &Bound<'_, PyAny>) -> PyResult<DeviceRequest> {
 pub(crate) const TOPN_DEVICE_MSG: &str =
     "exact truncation.topn is not available on a CUDA device; use truncation.approx_topn";
 
-/// Why a request naming several devices is refused.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
-pub(crate) const MULTI_DEVICE_MSG: &str =
-    "multi-device propagation is not available yet; pass one device ordinal";
+/// The `RuntimeError` for a `device=` that pairs with `comm=` in a build lacking one of the two features.
+#[cfg(not(all(feature = "cuda", feature = "mpi")))]
+pub(crate) fn device_comm_unavailable_error() -> PyErr {
+    let missing = match (cfg!(feature = "cuda"), cfg!(feature = "mpi")) {
+        (false, false) => "the cuda and mpi features",
+        (false, true) => "the cuda feature",
+        _ => "the mpi feature",
+    };
+    pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "device= with comm= runs one CUDA device per MPI rank, which needs the extension built \
+         with both the cuda and mpi features; this build lacks {missing} \
+         (`maturin develop --release --features cuda,mpi`)"
+    ))
+}
 
 #[cfg(feature = "cuda")]
 mod cuda {
-    use super::{DeviceRequest, MULTI_DEVICE_MSG};
+    use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::{PolicySpec, SpecPolicy};
+    use paulistrings::bucket::P_MAX_BITS;
     use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
     use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError, PyValueError};
     use pyo3::PyErr;
 
-    /// A core [`GpuError`] as a Python exception: `MemoryError` for an exhausted device, `NotImplementedError` for what the backend does not do, `RuntimeError` for the rest.
+    /// The `RuntimeError` text for a peer's [`GpuError::Poisoned`], a plain function so it is testable without linking Python.
+    pub(crate) fn poisoned_message(rank: usize, layer: usize) -> String {
+        format!(
+            "CUDA device partition {rank} (the MPI rank under comm=) failed at layer {layer}, so \
+             every partition abandoned this propagate; the failing partition raises its own error"
+        )
+    }
+
+    /// A core [`GpuError`] as a Python exception: `MemoryError` for an exhausted device, `NotImplementedError` for what the backend does not do, `ValueError` for a placement that does not resolve (`OSError` if a syscall failed), `RuntimeError` for the rest.
     pub(crate) fn gpu_error(err: GpuError) -> PyErr {
         match err {
             GpuError::OutOfMemory { .. } => PyMemoryError::new_err(err.to_string()),
             GpuError::Unsupported(_) => PyNotImplementedError::new_err(err.to_string()),
+            GpuError::Topology(err) => crate::sum::topology_error(err),
+            GpuError::Poisoned { rank, layer } => {
+                PyRuntimeError::new_err(poisoned_message(rank, layer))
+            }
             GpuError::NoDevice
             | GpuError::LibraryMissing(_)
             | GpuError::Driver(_)
-            | GpuError::Compile { .. }
-            | GpuError::Topology(_)
-            | GpuError::Poisoned { .. } => PyRuntimeError::new_err(err.to_string()),
+            | GpuError::Compile { .. } => PyRuntimeError::new_err(err.to_string()),
         }
     }
 
-    /// The one device ordinal `request` names on this machine; `shown` is the kwarg as the caller spelled it.
-    pub(crate) fn resolve_device(request: &DeviceRequest, shown: &str) -> Result<u32, PyErr> {
-        let count = device_count();
-        if count == 0 {
-            return Err(PyRuntimeError::new_err(format!(
+    /// The number of visible devices, or the `RuntimeError` for none.
+    fn visible_devices(shown: &str) -> Result<usize, PyErr> {
+        match device_count() {
+            0 => Err(PyRuntimeError::new_err(format!(
                 "{shown}: no CUDA device is visible to this process \
                  (paulistrings.cuda_available() is False)"
+            ))),
+            count => Ok(count),
+        }
+    }
+
+    /// `device` if this process can see it, else a `ValueError`.
+    fn check_ordinal(device: u32, count: usize, shown: &str) -> Result<u32, PyErr> {
+        if device as usize >= count {
+            return Err(PyValueError::new_err(format!(
+                "{shown} names device {device}, but this process sees {count} CUDA device(s)"
             )));
         }
+        Ok(device)
+    }
+
+    /// The devices `request` places one partition on each, in partition order; `shown` is the kwarg as the caller spelled it.
+    /// `"auto"` takes devices `0..k` for the largest power of two `k` visible, as `partitions="auto"` rounds its node count.
+    pub(crate) fn resolve_devices(request: &DeviceRequest, shown: &str) -> Result<Vec<u32>, PyErr> {
+        let count = visible_devices(shown)?;
+        let max = 1usize << P_MAX_BITS;
+        let devices: Vec<u32> = match request {
+            DeviceRequest::Auto => {
+                let k = 1usize << count.min(max).ilog2();
+                (0..k as u32).collect()
+            }
+            DeviceRequest::Ordinals(list) => list
+                .iter()
+                .map(|&device| check_ordinal(device, count, shown))
+                .collect::<Result<_, _>>()?,
+        };
+        let n = devices.len();
+        if !n.is_power_of_two() {
+            return Err(PyValueError::new_err(format!(
+                "{shown} names {n} devices, which is not a power of two: a multi-device run \
+                 places one partition per listed device and a partition is named by log2(P) \
+                 GF(2) rows, so the list must have 1, 2, 4, 8, ... entries (repeat an ordinal to \
+                 put several partitions on one device)"
+            )));
+        }
+        if n > max {
+            return Err(PyValueError::new_err(format!(
+                "{shown} names {n} devices, but a run has at most {max} partitions"
+            )));
+        }
+        Ok(devices)
+    }
+
+    /// The one device ordinal `request` names on this machine, for `to_device`.
+    pub(crate) fn resolve_device(request: &DeviceRequest, shown: &str) -> Result<u32, PyErr> {
+        Ok(resolve_devices(request, shown)?[0])
+    }
+
+    /// This rank's device under `comm=`: an ordinal it can see, or `local_device_for_rank(rank)` for `"auto"`. Local, so the caller agrees the outcome over the group.
+    #[cfg(feature = "mpi")]
+    pub(crate) fn resolve_rank_device(
+        request: &DeviceRequest,
+        shown: &str,
+        rank: u32,
+    ) -> Result<u32, PyErr> {
+        let count = visible_devices(&format!("{shown} on rank {rank}"))?;
         match request {
-            DeviceRequest::Auto if count > 1 => Err(PyNotImplementedError::new_err(format!(
-                "{shown} sees {count} CUDA devices: {MULTI_DEVICE_MSG}"
-            ))),
-            DeviceRequest::Auto => Ok(0),
-            DeviceRequest::Ordinals(list) if list.len() > 1 => Err(PyNotImplementedError::new_err(
-                format!("{shown}: {MULTI_DEVICE_MSG}"),
-            )),
+            DeviceRequest::Auto => {
+                paulistrings::gpu::local_device_for_rank(rank).map_err(gpu_error)
+            }
             DeviceRequest::Ordinals(list) => {
-                let device = list[0];
-                if device as usize >= count {
-                    return Err(PyValueError::new_err(format!(
-                        "{shown}, but this process sees {count} CUDA device(s)"
-                    )));
-                }
-                Ok(device)
+                check_ordinal(list[0], count, &format!("{shown} on rank {rank}"))
             }
         }
     }
@@ -420,5 +490,15 @@ impl GpuPauliSum {
         }
         let inner = &mut self.inner;
         Ok(py.allow_threads(move || inner.propagate(&circuit.inner, spec, dir, options, traced))?)
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    #[test]
+    fn a_poisoned_peer_names_the_failing_rank_and_layer() {
+        let msg = super::cuda::poisoned_message(3, 7);
+        assert!(msg.contains("partition 3"), "{msg}");
+        assert!(msg.contains("layer 7"), "{msg}");
     }
 }

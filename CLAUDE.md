@@ -107,6 +107,7 @@ module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
 scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
+scripts/mpi-test.sh --ranks 2,4 --python --cuda                           # the bindings' comm= with device= cases
 cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
 mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
 ```
@@ -181,7 +182,7 @@ It records what was measured and rejected, including several ideas that look obv
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits makes `propagate` **panic**; there is no fallback path. `PauliRotation` is exempt, overriding `prepare` at any generator weight.
 - Partitioned mode rejects exact `TopN` at compile time, since a distributed `k`-th selection has no collective form yet; `ApproxTopN` is partition-exact and is the partitioned default.
 - The CUDA backend runs a policy only through its `TruncationPolicy::device_policy` tree: every builtin and every Python policy lowers, while a custom `TruncationPolicy` and exact `TopN` return `GpuError::Unsupported` before the first layer.
-- The Python bindings drive one CUDA device per process: they raise `NotImplementedError` on `device=` with several ordinals or an `"auto"` that sees more than one, and `device=` excludes `partitions=` and `comm=`. Rust runs several devices (`GpuPartitionedSum` over `Placement::Devices`) and one device per MPI rank (`MpiGpuSum`); `device=[...]` in Python is a later item.
+- A multi-device or one-device-per-rank run from Python (`device=[...]`, `comm=` with `device=`) scatters and gathers on every call; only the one-device `GpuPauliSum` stays resident, while Rust holds a `GpuPartitionedSum` or `MpiGpuSum` across calls.
 - Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
 - A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.

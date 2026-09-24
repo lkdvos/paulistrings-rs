@@ -13,7 +13,7 @@
 #   scripts/mpi-test.sh --release              # the shipping codegen
 #   scripts/mpi-test.sh --python               # also build the extension and run its net
 #   scripts/mpi-test.sh --python --no-rust     # only the Python net
-#   scripts/mpi-test.sh --cuda                 # the Rust net built with `mpi,cuda`: adds the one-GPU-per-rank cases
+#   scripts/mpi-test.sh --cuda                 # both nets built with `mpi,cuda`: adds the one-GPU-per-rank cases
 #
 # --cuda puts $CUDA_ROOT/lib64 (or $CUDA_HOME/lib64) on LD_LIBRARY_PATH for
 # libnvrtc and forwards it to every rank; ranks share a device when there are
@@ -24,7 +24,7 @@
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
 # else with exit 2.
 #
-# --python builds `_paulistrings` with `--features mpi` into $VIRTUAL_ENV, or
+# --python builds `_paulistrings` with `--features mpi` (`mpi,cuda` under --cuda) into $VIRTUAL_ENV, or
 # ./.venv-mpi if that is unset, and runs pytest under mpirun. That venv needs
 # maturin, pytest, numpy and an importable mpi4py built against the *same* MPI:
 #
@@ -133,11 +133,11 @@ if [ "$python_net" -eq 1 ]; then
         echo "no maturin in $venv (or on PATH): pip install maturin into it" >&2
         exit 2
     fi
-    echo "== building _paulistrings --features mpi into $venv"
+    echo "== building _paulistrings --features $features into $venv"
     # `maturin develop` installs into the *active* venv, so name it explicitly
     # rather than relying on the caller's shell.
     VIRTUAL_ENV="$venv" "$maturin" develop ${profile:+$profile} \
-        --features mpi -m crates/paulistrings-py/Cargo.toml
+        --features "$features" -m crates/paulistrings-py/Cargo.toml
 fi
 
 # Shared-memory and oversubscription knobs. `vader_single_copy_mechanism=none`
@@ -182,7 +182,7 @@ for n in ${ranks//,/ }; do
         # `-p no:cacheprovider` because every rank would write the same
         # .pytest_cache.
         echo "== mpirun -n $n $flags (test_mpi.py)"
-        if mpirun -n "$n" $flags "$venv/bin/python" -m pytest \
+        if mpirun -n "$n" $flags $cuda_x "$venv/bin/python" -m pytest \
                 python/paulistrings/tests/test_mpi.py -q \
                 -p no:cacheprovider -p no:randomly; then
             echo "== $n ranks, test_mpi.py: ok"

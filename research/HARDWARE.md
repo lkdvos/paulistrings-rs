@@ -134,6 +134,7 @@ The partitioned row keeps the single device's total `m`, so its speedup is stron
 | node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | job |
 |---|---|---|---|---|
 | workergpu068, A100-SXM4-80GB | 2 of 4 | NV4 between the pair | 1410 / 1593 MHz | 7101047, rev 01df3eb |
+| workergpu065, A100-SXM4-80GB | 4 | NV4 between every pair | 1410 / 1593 MHz | 7099959, rev 8234874 |
 | H100-SXM5 | 4 | | | |
 
 | node | cell | m | 1 device ms/layer | 1 device ns/term | 2 devices ms/layer | 2 devices ns/term | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
@@ -145,8 +146,19 @@ The partitioned row keeps the single device's total `m`, so its speedup is stron
 | A100 | `heavyhex_step` | 1.16e6 | 1.731 | 1.50 | 1.308 | 1.13 | 1.32× | 0.05 | 0.26 | 0.04 | 4.86e6 |
 | A100 | `rotation_remote` | 6.00e6 | — | — | 12.86 | 2.14 | — | 0.53 | 9.50 | 2.51 | 2.24e8 |
 
+Four devices, workergpu065 (one device 5.729 / 3.326 / 11.02 / 204.4 / 1.733 ms per layer on the same cells):
+
+| cell | 4 devices ms/layer | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
+|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.782 | 3.21× | 0 | 0 | 0.1 | 0 |
+| `cnot` | 8.148 | 0.41× | 0.5 | 6.0 | 1.4 | 1.68e8 |
+| `gu2q` | 25.64 | 0.43× | 1.1 | 19.1 | 5.4 | 9.41e8 |
+| `su4` | 1542 | 0.13× | 34.0 | 1102 | 363.1 | 3.53e10 |
+| `rotation_remote` | 7.232 | — | 0.3 | 5.0 | 1.1 | 2.24e8 |
+| `heavyhex_step` | 1.023 | 1.69× | 0.1 | 0.3 | 0.1 | 6.85e6 |
+
 A layer without remote deltas scales; a layer with them is exchange-bound, at ≈ 27 GB/s aggregate for `su4` (2.35e10 bytes in 884 ms) against the 100 GB/s per direction of four NVLink3 links.
-`gpu_peer` on workergpu064 (job 7101880, NV4 pair): peer access `Enabled` both ways, yet `cuMemcpyPeerAsync` moves 21.8 GB/s one way and 21.2 GB/s aggregate both ways, below the node's 26 GB/s pinned host copies; same-device copies run at 878 GB/s.
+Every row above predates `cuMemPoolSetAccess` in `enable_peer_access`: cudarc allocates from the stream-ordered pool, which `cuCtxEnablePeerAccess` does not map, so the exchange staged through the host and direct peer loads faulted (`gpu_peer`, jobs 7101880 and 7102281: 21.7 GB/s peer copies against 26 GB/s pinned host copies and 880 GB/s same-device, `CUDA_ERROR_ILLEGAL_ADDRESS` from a kernel reading its peer, `nvidia-smi topo -p2p` OK).
 The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
 One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
 

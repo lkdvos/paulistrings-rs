@@ -224,19 +224,21 @@ fn main() -> Res<()> {
     if n >= 2 {
         // Both directions at once, as a two-partition exchange runs them.
         let (lo, hi) = bufs.split_at_mut(1);
-        streams[1].memcpy_dtod(&lo[0][0], &mut hi[0][1])?;
-        streams[0].memcpy_dtod(&hi[0][0], &mut lo[0][1])?;
-        streams[0].synchronize()?;
-        streams[1].synchronize()?;
-        let t = Instant::now();
-        for _ in 0..REPS {
+        let mut both = || -> Res<f64> {
             streams[1].memcpy_dtod(&lo[0][0], &mut hi[0][1])?;
             streams[0].memcpy_dtod(&hi[0][0], &mut lo[0][1])?;
-        }
-        streams[0].synchronize()?;
-        streams[1].synchronize()?;
-        let bw = gbps(2 * len * 8, t.elapsed().as_secs_f64());
-        println!("0 <-> 1 concurrently: {bw:.1} GB/s aggregate");
+            streams[0].synchronize()?;
+            streams[1].synchronize()?;
+            let t = Instant::now();
+            for _ in 0..REPS {
+                streams[1].memcpy_dtod(&lo[0][0], &mut hi[0][1])?;
+                streams[0].memcpy_dtod(&hi[0][0], &mut lo[0][1])?;
+            }
+            streams[0].synchronize()?;
+            streams[1].synchronize()?;
+            Ok(gbps(2 * len * 8, t.elapsed().as_secs_f64()))
+        };
+        println!("0 <-> 1 concurrently: {} aggregate", show(both()));
     }
     Ok(())
 }

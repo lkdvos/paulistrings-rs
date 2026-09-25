@@ -194,7 +194,7 @@ pub(crate) fn drain_bin() {
 pub enum PeerAccess {
     /// Both ends are the same device.
     SameDevice,
-    /// The destination's context maps the source's memory, so `cuMemcpyPeerAsync` goes over NVLink or PCIe peer-to-peer.
+    /// The destination's context and the source's memory pool both map the source's memory into the destination, so copies go over NVLink or PCIe peer-to-peer.
     Enabled,
     /// The driver reports the pair cannot access each other; copies stage through the host.
     Unsupported,
@@ -248,10 +248,26 @@ fn try_enable_peer_access(
     }
     // SAFETY: `dst` is the bound context and `src`'s handle stays valid while `src` is alive.
     match unsafe { sys::cuCtxEnablePeerAccess(src.cu_ctx(), 0) } {
-        sys::CUresult::CUDA_SUCCESS | sys::CUresult::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {
-            PeerAccess::Enabled
-        }
-        e => failed(e),
+        sys::CUresult::CUDA_SUCCESS | sys::CUresult::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {}
+        e => return failed(e),
+    }
+    // cudarc allocates through `cuMemAllocAsync`, and pool memory is mapped to a peer only by the pool's own access list: without this, peer copies stage through the host and peer loads fault.
+    let mut pool: sys::CUmemoryPool = std::ptr::null_mut();
+    // SAFETY: a driver query on a live ordinal.
+    if let Err(e) = unsafe { sys::cuDeviceGetMemPool(&mut pool, pair.1 as i32) }.result() {
+        return failed(e.0);
+    }
+    let desc = sys::CUmemAccessDesc {
+        location: sys::CUmemLocation {
+            type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+            id: pair.0 as i32,
+        },
+        flags: sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+    };
+    // SAFETY: `pool` is `src`'s current pool and `desc` one valid entry.
+    match unsafe { sys::cuMemPoolSetAccess(pool, &desc, 1) }.result() {
+        Ok(()) => PeerAccess::Enabled,
+        Err(e) => failed(e.0),
     }
 }
 

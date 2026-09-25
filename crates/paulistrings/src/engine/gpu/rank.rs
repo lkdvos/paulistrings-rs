@@ -477,8 +477,6 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
 }
 
 /// Agree the group's exchange mode and, for [`GpuExchange::Nccl`], bootstrap and warm up the communicator. **Collective.**
-///
-/// A communicator that fails anywhere is aborted everywhere; the group then falls back to the host exchange, or under `PAULISTRINGS_GPU_EXCHANGE=nccl` fails the scatter on every rank.
 #[cfg(feature = "nccl")]
 fn start_nccl<const W: usize>(
     coll: &dyn Collectives,
@@ -494,23 +492,62 @@ fn start_nccl<const W: usize>(
     } else {
         None
     };
-    if !nccl::agree_exchange(coll, knob, device.is_some(), device.unwrap_or_default())? {
+    let plan = nccl::agree_exchange(coll, knob, device.is_some(), device.unwrap_or_default())?;
+    if !plan.nccl {
         return Ok(());
     }
-    let started = agree_or_abort(coll, NcclComm::init(coll, &ctx)).and_then(|comm| {
-        let warmed = comm.warm_up(&part.sum().stream).map(|()| comm);
-        agree_or_abort(coll, warmed)
+    let stream = part.sum().stream.clone();
+    let started = bootstrap(
+        coll,
+        plan.strict,
+        || NcclComm::init(coll, &ctx),
+        |comm| comm.warm_up(&stream),
+        NcclComm::abort,
+    )?;
+    if let Some(comm) = started {
+        let export = &mut part.scratch_mut().export;
+        export.mode = GpuExchange::Nccl;
+        export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
+            comm,
+        ))));
+    }
+    Ok(())
+}
+
+/// Start a communicator with `init`, warm it up with `warm`, and agree each step over the group. **Collective**: two `allreduce_sum_u64`.
+/// A communicator whose own warm-up failed or whose peers failed is aborted with `abort` rather than left to finalize against dead peers; on any failure a `strict` group (agreed, never one rank's knob) errs on every rank and any other group returns `None` on every rank.
+#[cfg(feature = "nccl")]
+fn bootstrap<C>(
+    coll: &dyn Collectives,
+    strict: bool,
+    init: impl FnOnce() -> Result<C, GpuError>,
+    warm: impl FnOnce(&C) -> Result<(), GpuError>,
+    abort: impl Fn(&C),
+) -> Result<Option<C>, GpuError> {
+    let agreed = |r: Result<C, GpuError>| -> Result<C, GpuError> {
+        let failure = first_failure(coll, r.is_err().then_some(0));
+        match (r, failure) {
+            (Err(e), _) => Err(e),
+            (Ok(c), None) => Ok(c),
+            (Ok(c), Some((rank, layer))) => {
+                abort(&c);
+                Err(GpuError::Poisoned { rank, layer })
+            }
+        }
+    };
+    let started = agreed(init()).and_then(|c| {
+        let warmed = match warm(&c) {
+            Ok(()) => Ok(c),
+            Err(e) => {
+                abort(&c);
+                Err(e)
+            }
+        };
+        agreed(warmed)
     });
     match started {
-        Ok(comm) => {
-            let export = &mut part.scratch_mut().export;
-            export.mode = GpuExchange::Nccl;
-            export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
-                comm,
-            ))));
-            Ok(())
-        }
-        Err(e) if knob == ExchangeKnob::Nccl => Err(e),
+        Ok(c) => Ok(Some(c)),
+        Err(e) if strict => Err(e),
         Err(e) => {
             log::warn!(
                 target: LOG_TARGET,
@@ -518,24 +555,7 @@ fn start_nccl<const W: usize>(
                 coll.rank(),
                 coll.size()
             );
-            Ok(())
-        }
-    }
-}
-
-/// [`agree`] for a communicator: a rank whose own setup succeeded but a peer's failed aborts its communicator rather than let it finalize against dead peers. **Collective.**
-#[cfg(feature = "nccl")]
-fn agree_or_abort(
-    coll: &dyn Collectives,
-    r: Result<super::nccl::NcclComm, GpuError>,
-) -> Result<super::nccl::NcclComm, GpuError> {
-    let failure = first_failure(coll, r.is_err().then_some(0));
-    match (r, failure) {
-        (Err(e), _) => Err(e),
-        (Ok(comm), None) => Ok(comm),
-        (Ok(comm), Some((rank, layer))) => {
-            comm.abort();
-            Err(GpuError::Poisoned { rank, layer })
+            Ok(None)
         }
     }
 }
@@ -1034,6 +1054,105 @@ mod tests {
                 "the sender's own bucket: {:?}",
                 errs[1]
             );
+        }
+
+        /// Mixed knobs with one rank's init or warm-up failing: every rank reaches the same outcome (an error everywhere when any rank is strict, the host exchange everywhere otherwise), and every communicator that was made is aborted.
+        #[test]
+        fn a_failed_start_is_one_outcome_on_every_rank_whatever_the_knobs() {
+            use super::super::super::nccl::{agree_exchange, ExchangeKnob};
+            use std::sync::atomic::{AtomicU32, Ordering};
+            use ExchangeKnob::{Auto, Nccl};
+            #[derive(Clone, Copy, Debug, PartialEq)]
+            enum Fault {
+                Init,
+                WarmUp,
+            }
+            for size in [2u32, 4] {
+                for strict_rank in [None, Some(0), Some(size - 1)] {
+                    for (fault, culprit) in [
+                        (Fault::Init, 1),
+                        (Fault::WarmUp, 1),
+                        (Fault::Init, 0),
+                        (Fault::WarmUp, size - 1),
+                    ] {
+                        let aborted = AtomicU32::new(0);
+                        let made = AtomicU32::new(0);
+                        let out: Vec<Result<bool, String>> = std::thread::scope(|s| {
+                            let hs: Vec<_> = InProcessTransport::group(size)
+                                .into_iter()
+                                .map(|t| {
+                                    let (aborted, made) = (&aborted, &made);
+                                    s.spawn(move || {
+                                        let me = t.rank();
+                                        let knob =
+                                            if strict_rank == Some(me) { Nccl } else { Auto };
+                                        let plan =
+                                            agree_exchange(&t, knob, true, [u64::from(me) + 1, 0])
+                                                .map_err(|e| e.to_string())?;
+                                        assert!(plan.nccl);
+                                        assert_eq!(
+                                            plan.strict,
+                                            strict_rank.is_some(),
+                                            "strictness is agreed"
+                                        );
+                                        bootstrap(
+                                            &t,
+                                            plan.strict,
+                                            || {
+                                                if fault == Fault::Init && me == culprit {
+                                                    return Err(GpuError::Unsupported(
+                                                        "injected init failure",
+                                                    ));
+                                                }
+                                                made.fetch_add(1, Ordering::Relaxed);
+                                                Ok(me)
+                                            },
+                                            |_| {
+                                                if fault == Fault::WarmUp && me == culprit {
+                                                    return Err(GpuError::Unsupported(
+                                                        "injected warm-up failure",
+                                                    ));
+                                                }
+                                                Ok(())
+                                            },
+                                            |_| {
+                                                aborted.fetch_add(1, Ordering::Relaxed);
+                                            },
+                                        )
+                                        .map(|c| c.is_some())
+                                        .map_err(|e| e.to_string())
+                                    })
+                                })
+                                .collect();
+                            hs.into_iter().map(|h| h.join().unwrap()).collect()
+                        });
+                        let what =
+                            format!("size {size}, strict {strict_rank:?}, {fault:?} on {culprit}");
+                        if strict_rank.is_some() {
+                            assert!(out.iter().all(Result::is_err), "{what}: {out:?}");
+                            let own = if fault == Fault::Init {
+                                "injected init failure"
+                            } else {
+                                "injected warm-up failure"
+                            };
+                            assert!(
+                                out[culprit as usize].as_ref().unwrap_err().contains(own),
+                                "{what}: {out:?}"
+                            );
+                        } else {
+                            assert!(
+                                out.iter().all(|o| o == &Ok(false)),
+                                "{what}: every rank falls back: {out:?}"
+                            );
+                        }
+                        assert_eq!(
+                            aborted.load(Ordering::Relaxed),
+                            made.load(Ordering::Relaxed),
+                            "{what}: every made communicator is aborted"
+                        );
+                    }
+                }
+            }
         }
 
         /// Every transport call a rank issues, in order.

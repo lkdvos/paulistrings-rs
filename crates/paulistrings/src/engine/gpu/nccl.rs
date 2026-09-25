@@ -937,16 +937,21 @@ pub(crate) fn parse_exchange_knob(raw: Option<&str>) -> ExchangeKnob {
     }
 }
 
-/// Whether a device group over a byte transport exchanges over NCCL, the same answer on every rank. **Collective**: one `allreduce_sum_u64` of `3 + 2 × size` words.
-///
-/// `can` is whether this rank can start NCCL, `device` its device's UUID; NCCL runs iff the group has more than one rank, every rank wants it and can, and no two ranks drive one device, which NCCL refuses.
-/// A rank whose knob is `nccl` makes the group's `Host` fallback an error on every rank.
+/// The group's exchange decision: whether to start NCCL, and whether any rank's knob makes a failure to start it an error rather than a host fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExchangePlan {
+    pub(crate) nccl: bool,
+    pub(crate) strict: bool,
+}
+
+/// The group's [`ExchangePlan`], the same on every rank. **Collective**: one `allreduce_sum_u64` of `3 + 2 × size` words.
+/// NCCL starts iff the group has more than one rank, every rank wants it and `can`, and no two `device` UUIDs coincide (NCCL refuses a shared device); a strict group that cannot start it errs on every rank.
 pub(crate) fn agree_exchange(
     coll: &dyn Collectives,
     knob: ExchangeKnob,
     can: bool,
     device: [u64; 2],
-) -> Result<bool, GpuError> {
+) -> Result<ExchangePlan, GpuError> {
     let (rank, size) = (coll.rank() as usize, coll.size() as usize);
     let group = size > 1;
     let wants = group && knob != ExchangeKnob::Host;
@@ -962,7 +967,8 @@ pub(crate) fn agree_exchange(
         .enumerate()
         .all(|(i, a)| ids[i + 1..].iter().all(|b| b != a));
     let nccl = group && buf[0] == size as u64 && distinct;
-    if buf[2] > 0 && !nccl {
+    let strict = buf[2] > 0;
+    if strict && !nccl {
         return Err(GpuError::Unsupported(
             "PAULISTRINGS_GPU_EXCHANGE=nccl, but a rank cannot start NCCL, a rank asks for the host exchange, or two ranks share a device",
         ));
@@ -973,7 +979,7 @@ pub(crate) fn agree_exchange(
             buf[0]
         );
     }
-    Ok(nccl)
+    Ok(ExchangePlan { nccl, strict })
 }
 
 /// A device's UUID as the two words [`agree_exchange`] compares.
@@ -1288,7 +1294,9 @@ mod tests {
                     .map(|t| {
                         let (knob, can, id) = ranks[t.rank() as usize];
                         s.spawn(move || {
-                            agree_exchange(&t, knob, can, id).map_err(|e| e.to_string())
+                            agree_exchange(&t, knob, can, id)
+                                .map(|p| p.nccl)
+                                .map_err(|e| e.to_string())
                         })
                     })
                     .collect();

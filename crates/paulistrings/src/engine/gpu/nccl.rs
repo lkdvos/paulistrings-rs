@@ -19,7 +19,7 @@ use crate::engine::partitioned::transport::{
 };
 
 #[cfg(any(test, feature = "test-utils"))]
-pub use loopback::{LoopbackTally, LoopbackWire};
+pub use loopback::{LoopbackFault, LoopbackTally, LoopbackWire};
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
 pub(crate) const MIN_NCCL_VERSION: i32 = 22200;
@@ -197,7 +197,6 @@ impl NcclComm {
     }
 
     /// Whether the communicator has not been aborted.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_healthy(&self) -> bool {
         !self.lock().aborted
     }
@@ -681,6 +680,10 @@ pub(crate) trait DeviceWire: Send + Sync {
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError>;
     /// Give the wire up for good, without waiting on anything; every later call fails.
     fn abort(&self) {}
+    /// Whether the wire can still carry a group: `false` once it failed, timed out or was aborted.
+    fn is_healthy(&self) -> bool {
+        true
+    }
 }
 
 /// The [`DeviceWire`] over a real NCCL communicator.
@@ -716,6 +719,9 @@ impl DeviceWire for NcclWire {
     }
     fn abort(&self) {
         self.comm.abort();
+    }
+    fn is_healthy(&self) -> bool {
+        self.comm.is_healthy()
     }
 }
 

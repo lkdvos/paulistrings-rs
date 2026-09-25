@@ -32,7 +32,7 @@ pub use layer::{
     DEFAULT_RECORDS_PER_BLOCK,
 };
 #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
-pub use nccl::{LoopbackTally, LoopbackWire};
+pub use nccl::{LoopbackFault, LoopbackTally, LoopbackWire};
 pub use payload::{peer_access, GpuExchange, PeerAccess};
 pub use rank::{local_device_for_rank, GpuDistributedSum};
 #[cfg(feature = "mpi")]

@@ -1,7 +1,7 @@
 //! [`LoopbackWire`], an in-process [`DeviceWire`] for testing the NCCL exchange with every rank in one process.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,17 @@ struct Shared {
     timeout: Duration,
     /// Groups posted by every rank so far.
     posted: AtomicU64,
+    /// The rank that fails and how; with one set, a timeout is an error, as NCCL's bounded wait is, instead of a panic.
+    fault: Option<(u32, LoopbackFault)>,
+}
+
+/// Where a [`LoopbackWire`] group's failing rank fails, returning an error as a failed NCCL call would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopbackFault {
+    /// Its first post fails before any op is visible to a peer.
+    Post,
+    /// Its first post succeeds and its wait fails at once, before its copies and without waiting on its peers.
+    Wait,
 }
 
 /// A [`DeviceWire`] over a group of in-process ranks: each rank's `n`-th group is matched against every other rank's `n`-th, per peer in posting order, and every receive is a device-to-device copy from its send.
@@ -63,6 +74,8 @@ pub struct LoopbackWire {
     shared: Arc<Shared>,
     /// This rank's next generation and the one it posted but has not waited on.
     gen: Mutex<(u64, Option<u64>)>,
+    /// Set once this wire failed or timed out; every later call fails.
+    dead: AtomicBool,
 }
 
 impl LoopbackWire {
@@ -73,6 +86,24 @@ impl LoopbackWire {
 
     /// As [`group`](Self::group), panicking after `timeout` if a peer never posts or never finishes.
     pub fn group_with_timeout(size: u32, timeout: Duration) -> Vec<LoopbackWire> {
+        Self::build(size, timeout, None)
+    }
+
+    /// A group whose rank `rank` fails as `fault` says, every other rank's wait then timing out after `timeout` with [`GpuError::Timeout`].
+    pub fn group_with_fault(
+        size: u32,
+        rank: u32,
+        fault: LoopbackFault,
+        timeout: Duration,
+    ) -> Vec<LoopbackWire> {
+        Self::build(size, timeout, Some((rank, fault)))
+    }
+
+    fn build(
+        size: u32,
+        timeout: Duration,
+        fault: Option<(u32, LoopbackFault)>,
+    ) -> Vec<LoopbackWire> {
         let shared = Arc::new(Shared {
             size,
             state: Mutex::new(State {
@@ -82,12 +113,14 @@ impl LoopbackWire {
             cv: Condvar::new(),
             timeout,
             posted: AtomicU64::new(0),
+            fault,
         });
         (0..size)
             .map(|rank| LoopbackWire {
                 rank,
                 shared: shared.clone(),
                 gen: Mutex::new((0, None)),
+                dead: AtomicBool::new(false),
             })
             .collect()
     }
@@ -119,7 +152,7 @@ impl LoopbackWire {
         g: u64,
         what: &str,
         ready: impl Fn(&Round) -> bool,
-    ) -> MutexGuard<'s, State> {
+    ) -> Result<MutexGuard<'s, State>, GpuError> {
         let start = Instant::now();
         loop {
             if let Some(msg) = &st.poisoned {
@@ -132,10 +165,16 @@ impl LoopbackWire {
                 .get(&g)
                 .expect("a posted round stays until every rank left");
             if ready(round) {
-                return st;
+                return Ok(st);
             }
             let elapsed = start.elapsed();
             if elapsed >= self.shared.timeout {
+                if self.shared.fault.is_some() {
+                    self.dead.store(true, Ordering::Relaxed);
+                    return Err(GpuError::Timeout {
+                        what: "a loopback wire group",
+                    });
+                }
                 let missing: Vec<usize> = round
                     .posted
                     .iter()
@@ -162,6 +201,26 @@ impl LoopbackWire {
     }
 }
 
+impl LoopbackWire {
+    fn alive(&self) -> Result<(), GpuError> {
+        if self.dead.load(Ordering::Relaxed) {
+            return Err(GpuError::Nccl {
+                code: sys_invalid_argument(),
+                what: "a call on a failed loopback wire".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn die(&self, what: &str) -> GpuError {
+        self.dead.store(true, Ordering::Relaxed);
+        GpuError::Nccl {
+            code: cudarc::nccl::sys::ncclResult_t::ncclSystemError as i32,
+            what: what.to_string(),
+        }
+    }
+}
+
 impl DeviceWire for LoopbackWire {
     fn rank(&self) -> u32 {
         self.rank
@@ -171,8 +230,20 @@ impl DeviceWire for LoopbackWire {
         self.shared.size
     }
 
+    fn abort(&self) {
+        self.dead.store(true, Ordering::Relaxed);
+    }
+
+    fn is_healthy(&self) -> bool {
+        !self.dead.load(Ordering::Relaxed)
+    }
+
     fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError> {
         let size = self.shared.size;
+        self.alive()?;
+        if self.shared.fault == Some((self.rank, LoopbackFault::Post)) {
+            return Err(self.die("an injected loopback post failure"));
+        }
         if let Some(op) = ops.iter().find(|op| op.peer() >= size) {
             return Err(GpuError::Nccl {
                 code: sys_invalid_argument(),
@@ -215,6 +286,7 @@ impl DeviceWire for LoopbackWire {
     }
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
+        self.alive()?;
         let pending = self
             .gen
             .lock()
@@ -225,11 +297,14 @@ impl DeviceWire for LoopbackWire {
             stream.synchronize()?;
             return Ok(());
         };
+        if self.shared.fault == Some((self.rank, LoopbackFault::Wait)) {
+            return Err(self.die("an injected loopback wait failure"));
+        }
         let (me, size) = (self.rank as usize, self.shared.size as usize);
         let st = self.lock();
         let st = self.wait_for(st, g, "every rank's group", |r| {
             r.posted.iter().all(Option::is_some)
-        });
+        })?;
         let copies = match check_round(&st.rounds[&g], me, size, stream.cu_stream() as usize) {
             Ok(copies) => copies,
             Err(msg) => self.fail(st, msg),
@@ -261,7 +336,7 @@ impl DeviceWire for LoopbackWire {
         let mut st = self.lock();
         st.rounds.get_mut(&g).expect("the round is live").done += 1;
         self.shared.cv.notify_all();
-        let mut st = self.wait_for(st, g, "every rank's copies", |r| r.done == size as u32);
+        let mut st = self.wait_for(st, g, "every rank's copies", |r| r.done == size as u32)?;
         let round = st.rounds.get_mut(&g).expect("the round is live");
         round.left += 1;
         if round.left == size as u32 {

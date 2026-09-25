@@ -1056,6 +1056,111 @@ mod tests {
             );
         }
 
+        /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails the call within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
+        #[test]
+        fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {
+            crate::require_cuda!();
+            use super::super::super::nccl::LoopbackFault;
+            let dense = random_circuit::<1>(8, 6, 0xD1C, true);
+            let input = rand_sum::<1>(300, 8, 0xD1D);
+            for size in [2u32, 4] {
+                for fault in [LoopbackFault::Post, LoopbackFault::Wait] {
+                    let culprit = size - 1;
+                    let wires = LoopbackWire::group_with_fault(
+                        size,
+                        culprit,
+                        fault,
+                        std::time::Duration::from_secs(2),
+                    );
+                    let tally = wires[0].tally();
+                    let group = InProcessTransport::group_with_timeout(
+                        size,
+                        std::time::Duration::from_secs(120),
+                    )
+                    .into_iter()
+                    .zip(wires)
+                    .map(|(t, w)| (t, Some(w)))
+                    .collect();
+                    let rows = seeded_rows::<1>(8, size);
+                    let start = std::time::Instant::now();
+                    let out = run_split(
+                        group,
+                        &input,
+                        &rows,
+                        &dense,
+                        &KeepAll,
+                        Direction::Forward,
+                        PropagateOptions::default(),
+                        &|_| {},
+                    );
+                    let elapsed = start.elapsed();
+                    let what = format!("size {size} {fault:?}");
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(60),
+                        "{what}: {elapsed:?}"
+                    );
+                    let posted = if fault == LoopbackFault::Post {
+                        size - 1
+                    } else {
+                        size
+                    };
+                    assert_eq!(
+                        tally.groups(),
+                        u64::from(posted),
+                        "{what}: one failed group, then only no votes"
+                    );
+                    for (r, e) in errors(out).iter().enumerate() {
+                        if r == culprit as usize {
+                            assert!(
+                                matches!(e, GpuError::Nccl { what, .. } if what.contains("injected")),
+                                "{what}: {e:?}"
+                            );
+                        } else {
+                            assert!(
+                                matches!(e, GpuError::Timeout { .. }),
+                                "{what}: rank {r}: {e:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A rank whose wire is already dead votes no instead of failing after a yes: nothing is posted, it returns the wire's error and its peers name it.
+        #[test]
+        fn a_dead_wire_votes_no() {
+            crate::require_cuda!();
+            use super::super::super::nccl::DeviceWire;
+            let dense = random_circuit::<1>(8, 6, 0xD1E, true);
+            let input = rand_sum::<1>(300, 8, 0xD1F);
+            let size = 2u32;
+            let (group, tally) = loopback_tallied(size);
+            group[1].1.as_ref().expect("a wire").abort();
+            let rows = seeded_rows::<1>(8, size);
+            let out = run_split(
+                group,
+                &input,
+                &rows,
+                &dense,
+                &KeepAll,
+                Direction::Forward,
+                PropagateOptions::default(),
+                &|_| {},
+            );
+            assert_eq!(tally.groups(), 0, "a no vote posts nothing");
+            let errs = errors(out);
+            assert!(
+                matches!(&errs[1], GpuError::Nccl { what, .. } if what.contains("failed or aborted device wire")),
+                "{:?}",
+                errs[1]
+            );
+            assert!(
+                matches!(errs[0], GpuError::Poisoned { rank: 1, .. }),
+                "{:?}",
+                errs[0]
+            );
+        }
+
         /// Mixed knobs with one rank's init or warm-up failing: every rank reaches the same outcome (an error everywhere when any rank is strict, the host exchange everywhere otherwise), and every communicator that was made is aborted.
         #[test]
         fn a_failed_start_is_one_outcome_on_every_rank_whatever_the_knobs() {

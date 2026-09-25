@@ -560,7 +560,7 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
     let recv = transport.exchange(skeletons, &mut export.skeletons);
     let rows = {
         let blocks = paired_blocks(plan, &recv, |p: &BlockSkeletons<W>, j| p.blocks.get(j));
-        let ready = stage_receive(sum, export, &blocks, xfer_ns);
+        let ready = stage_receive(sum, export, &blocks, xfer_ns).and_then(|()| wire_ready(export));
         if vote(transport, ready.is_ok()) {
             ready.and_then(|()| post_nccl_group(sum, plan, export, &send, &blocks, transport))
         } else {
@@ -652,6 +652,21 @@ fn stage_receive<const W: usize>(
         s.memcpy_htod(&base_host[..], recv_base)?;
         Ok(())
     })
+}
+
+/// Whether this rank's wire can carry the group, so a failure it can predict is a no vote rather than an error after a yes.
+#[cfg(feature = "nccl")]
+fn wire_ready<const W: usize>(export: &DeviceExport<W>) -> Result<(), GpuError> {
+    match &export.wire {
+        None => Err(GpuError::Unsupported(
+            "GpuExchange::Nccl without a device wire",
+        )),
+        Some(wire) if !wire.is_healthy() => Err(GpuError::Nccl {
+            code: cudarc::nccl::sys::ncclResult_t::ncclInvalidUsage as i32,
+            what: "an exchange on a failed or aborted device wire".to_string(),
+        }),
+        Some(_) => Ok(()),
+    }
 }
 
 /// A ready rank's side of a no vote: every received block is empty, as a failed partner's would be on the host path.

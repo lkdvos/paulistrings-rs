@@ -11,6 +11,9 @@ mod finalize;
 mod fingerprint;
 mod layer;
 mod module;
+#[cfg(feature = "nccl")]
+#[cfg_attr(not(test), allow(dead_code))]
+mod nccl;
 mod partition;
 mod payload;
 mod prepared;

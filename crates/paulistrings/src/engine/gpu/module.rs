@@ -100,6 +100,10 @@ pub(crate) struct KernelSet {
     pub(crate) rescale: CudaFunction,
     pub(crate) octave_hist: CudaFunction,
     pub(crate) retain: CudaFunction,
+    pub(crate) radix_hist: CudaFunction,
+    pub(crate) radix_extract: CudaFunction,
+    pub(crate) topn_counts: CudaFunction,
+    pub(crate) retain_topn: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     threads: usize,
@@ -241,6 +245,10 @@ pub(crate) fn kernel_set_with_options(
         rescale: f("k_rescale")?,
         octave_hist: f("k_octave_hist")?,
         retain: f("k_retain")?,
+        radix_hist: f("k_radix_hist")?,
+        radix_extract: f("k_radix_extract")?,
+        topn_counts: f("k_topn_counts")?,
+        retain_topn: f("k_retain_topn")?,
         layer,
         threads,
     });

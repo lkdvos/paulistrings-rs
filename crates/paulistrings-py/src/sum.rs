@@ -1220,7 +1220,10 @@ fn parse_device_mode(
             )));
         }
     }
-    if spec_has_exact_topn(spec) {
+    // A comm= run is always more than one partition (one per rank), which has
+    // no collective n-th-largest; a lone device (resolved below) is exact
+    // TopN's one supported device shape.
+    if comm.is_some() && spec_has_exact_topn(spec) {
         return Err(PyNotImplementedError::new_err(format!(
             "{shown}: {}",
             crate::gpu::TOPN_DEVICE_MSG
@@ -1228,7 +1231,17 @@ fn parse_device_mode(
     }
     #[cfg(not(feature = "cuda"))]
     {
-        let _ = (py, request, row_blocks, num_qubits);
+        let _ = (py, row_blocks, num_qubits);
+        // Without the feature there is no way to learn whether `request`
+        // would resolve to one device, so an exact `topn` is rejected on its
+        // own terms rather than as a availability error.
+        if spec_has_exact_topn(spec) {
+            return Err(PyNotImplementedError::new_err(format!(
+                "{shown}: {}",
+                crate::gpu::TOPN_DEVICE_MSG
+            )));
+        }
+        let _ = request;
         match comm {
             Some(_) => Err(crate::gpu::device_comm_unavailable_error()),
             None => Err(crate::gpu::cuda_unavailable_error()),
@@ -1258,6 +1271,12 @@ fn parse_device_mode(
                 )));
             }
             return Ok(RunMode::Cuda { device: devices[0] });
+        }
+        if spec_has_exact_topn(spec) {
+            return Err(PyNotImplementedError::new_err(format!(
+                "{shown}: {}",
+                crate::gpu::TOPN_DEVICE_MSG
+            )));
         }
         if let Some(blocks) = &row_blocks {
             validate_partition_row_blocks(
@@ -2064,7 +2083,7 @@ impl PauliSum {
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
     /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (the node-local rank modulo the visible devices), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
-    /// `device` is an alternative to `partitions`, ignores `engine`, and raises `NotImplementedError` on `truncation.topn` (use `approx_topn`) and `RuntimeError` without the `cuda` feature. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
+    /// `device` is an alternative to `partitions`, ignores `engine`, and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")

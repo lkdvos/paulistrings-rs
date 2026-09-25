@@ -252,7 +252,7 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
     ///
     /// # Errors
     ///
-    /// [`GpuError::Unsupported`] on every rank before any layer if `policy` or a channel cannot run on device, as [`GpuPauliSum::propagate_with_options`](super::GpuPauliSum::propagate_with_options).
+    /// [`GpuError::Unsupported`] on every rank before any layer if `policy` or a channel cannot run on device (as [`GpuPauliSum::propagate_with_options`](super::GpuPauliSum::propagate_with_options)), or if the policy contains an exact `TopN` — every rank here holds one partition of a distributed sum, and the `n`-th largest of that sum has no collective form.
     /// A device error on any rank is agreed after the loop, the partners having finished the call on empty exchange blocks, and poisons the split on every rank.
     ///
     /// # Panics
@@ -269,7 +269,7 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         T: PartitionedTruncation<W> + ?Sized,
     {
         self.check_poison()?;
-        let lowered = lower_for_run(circuit, policy, direction, self.inner.backend().hash())?;
+        let lowered = lower_for_run(circuit, policy, direction, self.inner.backend().hash(), false)?;
         let part = self.inner.backend_mut();
         let stale = part.take_error();
         debug_assert!(stale.is_ok(), "a device error survived the previous call");

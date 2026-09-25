@@ -288,22 +288,84 @@ where
 }
 
 #[test]
-fn exact_top_n_and_unlowerable_policies_are_rejected_before_the_first_layer() {
+fn unlowerable_policies_are_rejected_before_the_first_layer() {
     require_cuda!();
     use BuiltinTruncation as T;
-    assert_rejected_untouched(&T::TopN(10), "TopN(10)");
-    assert_rejected_untouched(&and(T::Coeff(1e-3), T::TopN(10)), "coeff & topn");
-    assert_rejected_untouched(&or(T::Coeff(1e-3), T::TopN(10)), "coeff | topn");
     let chain = (1..9).fold(T::Coeff(0.0), |acc, k| and(acc, T::Weight(k)));
     assert_rejected_untouched(&chain, "17-node program");
     struct Custom;
     impl<const W: usize> TruncationPolicy<W> for Custom {}
     impl<const W: usize> PartitionedTruncation<W> for Custom {}
     assert_rejected_untouched(&Custom, "custom policy");
-    let input = rand_sum::<1>(100, 8, 0x55);
+}
+
+/// A lone device (`GpuPauliSum`) runs an exact `TopN` — alone, and composed with `And`/`Or` — and matches the host term for term, `len()` included.
+#[test]
+fn exact_top_n_matches_the_host_on_one_device() {
+    require_cuda!();
+    use BuiltinTruncation as T;
+    let input = rand_sum::<1>(3000, 12, 0x7091);
+    let circuit = random_circuit::<1>(12, 20, 0x7092, true);
+    check(&circuit, &input, &T::TopN(1500), "topn alone");
+    check(
+        &circuit,
+        &input,
+        &and(T::Coeff(1e-6), T::TopN(1500)),
+        "coeff & topn",
+    );
+    check(
+        &circuit,
+        &input,
+        &or(T::TopN(1500), T::Weight(0)),
+        "topn | weight",
+    );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    dev.propagate(&circuit, &T::TopN(1500), Direction::Forward)
+        .expect("device propagate");
+    assert!(dev.len() <= 1500 && !dev.is_empty());
+}
+
+/// Ties at the boundary (a group that straddles the cut, one that fits exactly), `n = 0` and `n >= len`, all on the device against the host's exact rule.
+#[test]
+fn exact_top_n_edge_cases_match_the_host() {
+    require_cuda!();
+    use paulistrings::test_support::tie_heavy_sum;
+    use BuiltinTruncation as T;
+    // Four equal-size magnitude groups (ARCHITECTURE.md §Truncation): 200 terms, 50 per group.
+    let sum = tie_heavy_sum::<1>(200, 8, 0xED9E);
+    let circuit = Circuit::<1>::new(8);
+    check(&circuit, &sum, &T::TopN(50), "tie group fits exactly");
+    check(&circuit, &sum, &T::TopN(80), "tie group straddles the cut");
+    let mut dev = GpuPauliSum::from_host(&sum, 0).expect("upload");
+    for n in [0usize, 1, sum.len(), sum.len() + 5] {
+        let want = propagate(&circuit, sum.clone(), &T::TopN(n), Direction::Forward);
+        dev.propagate(&circuit, &T::TopN(n), Direction::Forward)
+            .expect("device propagate");
+        assert_eq!(dev.len(), want.len(), "n={n}");
+        assert_terms_close(&dev.to_host().unwrap(), &want, TOL, &format!("n={n}"));
+        dev = GpuPauliSum::from_host(&sum, 0).expect("re-upload");
+    }
+}
+
+/// A group member (`per_device > 1`) still rejects exact `TopN`, unlike a lone `GpuPauliSum`.
+#[test]
+fn exact_top_n_is_unsupported_above_one_partition() {
+    require_cuda!();
+    use paulistrings::engine::partitioned::{Placement, PartitionConfig, PartitionRuntime};
+    use paulistrings::gpu::GpuPartitionedSum;
+    use BuiltinTruncation as T;
+    let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
-    let r = dev.propagate(&circuit, &T::TopN(10), Direction::Forward);
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![0, 0],
+            per_device: 1,
+        },
+        ..PartitionConfig::default()
+    };
+    let runtime = PartitionRuntime::new(&config).expect("runtime");
+    let mut split = GpuPartitionedSum::scatter(input, runtime, &config).expect("scatter");
+    let r = split.propagate(&circuit, &T::TopN(10), Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),
         "{r:?}"

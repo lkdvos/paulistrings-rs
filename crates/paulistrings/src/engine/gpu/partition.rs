@@ -1,7 +1,7 @@
 //! [`DevicePartition`], one partition of the layer loop held on a CUDA device. See ARCHITECTURE.md §Partitioning.
 
 use super::error::GpuError;
-use super::finalize::approx_top_n_device;
+use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
     apply_layer_device, gpu_desired_bits, prepared_fanout, GpuLayerCounters, GpuLayerOptions,
     LayerScratch,
@@ -227,8 +227,11 @@ where
     }
 
     /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host impl's for the same policy.
+    ///
+    /// Exact `TopN` runs only alone on the device (`group_size == 1`): the `n`-th largest magnitude of a group's sum has no collective form (`PartitionedTruncation`'s docs), so a group member reports `Unsupported` rather than issue a wrong local selection.
     fn finalize_layer(&mut self, _policy: &T, coll: &dyn Collectives) {
         let tree = self.policy.tree.clone();
+        let single = self.group_size == 1;
         layer_pass_leaves(&tree, &mut |leaf| {
             let r = match leaf {
                 BuiltinTruncation::ApproxTopN(n) => {
@@ -238,6 +241,14 @@ where
                         _ => None,
                     };
                     approx_top_n_device(parts, *n, coll)
+                }
+                BuiltinTruncation::TopN(n) if single => {
+                    match (self.sum.as_mut(), self.scratch.as_mut()) {
+                        (Some(sum), Some(scratch)) if self.error.is_none() => {
+                            top_n_device(sum, scratch, *n)
+                        }
+                        _ => Ok(()),
+                    }
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };
@@ -297,6 +308,7 @@ mod tests {
     use super::*;
     use crate::test_support::rand_sum_real;
     use crate::truncation::BuiltinTruncation as T;
+    use crate::TruncationPolicy;
 
     /// A one-partition group that counts its `allreduce_sum_u64` calls.
     #[derive(Default)]
@@ -364,6 +376,71 @@ mod tests {
                 "{tree:?}: terms"
             );
         }
+    }
+
+    /// Exact `TopN` on a lone device partition (`group_size == 1`) issues no collective at all, unlike `ApproxTopN`, and keeps the host's terms exactly — alone and composed with `And`/`Or`.
+    #[test]
+    fn a_lone_partition_runs_exact_topn_with_no_collective() {
+        crate::require_cuda!();
+        use crate::truncation::TopN;
+        let input = rand_sum_real::<1>(4000, 32, 0xC012);
+        let cases = [
+            T::TopN(1000),
+            and(T::Coeff(1e-3), T::TopN(1000)),
+            and(T::TopN(2000), T::Weight(20)),
+            T::Or(Box::new(T::TopN(10)), Box::new(T::Coeff(1e-3))),
+        ];
+        for tree in cases {
+            let device = CountingGroup::default();
+            let mut part = DevicePartition::new(
+                GpuSum::from_host(&input, 0).expect("upload"),
+                GpuLayerOptions::default(),
+            )
+            .expect("partition");
+            part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
+            <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(
+                &mut part, &tree, &device,
+            );
+            part.take_error().expect("device layer pass");
+            assert_eq!(
+                device.0.load(Ordering::Relaxed),
+                0,
+                "{tree:?}: exact TopN has no collective form"
+            );
+            let mut want_sum = input.clone();
+            <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut want_sum);
+            assert_eq!(part.len(), want_sum.len(), "{tree:?}: len");
+            assert_eq!(
+                part.sum().to_host().unwrap().to_arrays(),
+                want_sum.to_arrays(),
+                "{tree:?}: terms"
+            );
+        }
+        // Sanity: `TopN` alone actually truncates against this input.
+        let mut sanity = input.clone();
+        TopN(1000).finalize_layer(&mut sanity);
+        assert_eq!(sanity.len(), 1000);
+    }
+
+    /// A group member (`group_size > 1`) reports `Unsupported` on an exact `TopN` rather than run a wrong local selection.
+    #[test]
+    fn a_group_member_rejects_exact_topn() {
+        crate::require_cuda!();
+        let input = rand_sum_real::<1>(500, 32, 0xC013);
+        let tree = T::TopN(100);
+        let mut part = DevicePartition::new(
+            GpuSum::from_host(&input, 0).expect("upload"),
+            GpuLayerOptions::default(),
+        )
+        .expect("partition");
+        part.group_size = 2;
+        part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
+        let group = CountingGroup::default();
+        <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(&mut part, &tree, &group);
+        assert!(matches!(
+            part.take_error(),
+            Err(GpuError::Unsupported(_))
+        ));
     }
 
     /// How one mixed run is set up: the rows, an optional common bucket count replacing the scatter's, and a failure to inject on the device rank.

@@ -214,7 +214,8 @@ crates/paulistrings/      pure Rust core, no Python deps
                           truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
                           engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
-                          rank,scan,staging,sum,truncation} (CUDA, behind `cuda`),
+                          rank,scan,staging,sum,truncation} (CUDA, behind `cuda`; `nccl`
+                          behind `nccl`),
                           stabilizer, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22

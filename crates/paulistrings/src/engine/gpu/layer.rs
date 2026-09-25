@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use cudarc::driver::sys::CUevent_flags;
-use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg};
+use cudarc::driver::{
+    CudaEvent, CudaFunction, CudaSlice, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg,
+};
 
 use super::columns::DeviceColumns;
 use super::error::GpuError;
@@ -53,6 +55,14 @@ pub struct GpuLayerOptions {
     pub arena_bytes: usize,
     /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`]; `B_MAX_BITS` by default.
     pub max_bits: u8,
+    /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on unless `PAULISTRINGS_GPU_PREMERGE=off`.
+    pub premerge: bool,
+}
+
+/// The default of [`GpuLayerOptions::premerge`]: on unless `PAULISTRINGS_GPU_PREMERGE=off`, read once per process.
+fn premerge_default() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_PREMERGE").as_deref() != Ok("off"))
 }
 
 impl Default for GpuLayerOptions {
@@ -61,6 +71,7 @@ impl Default for GpuLayerOptions {
             bucket_policy: GpuBucketPolicy::default(),
             arena_bytes: DEFAULT_ARENA_BYTES,
             max_bits: B_MAX_BITS,
+            premerge: premerge_default(),
         }
     }
 }
@@ -117,9 +128,9 @@ pub struct GpuLayerCounters {
     pub n_cap: u32,
     /// Arena batches.
     pub batches: u32,
-    /// Blocks that fell back to the `g_hi32` passes.
+    /// Blocks that fell back to the `g_hi32` passes, the sender-side merge's included.
     pub fallback_hi: u32,
-    /// Blocks that fell back to the full-key sort.
+    /// Blocks that fell back to the full-key sort, the sender-side merge's included.
     pub fallback_key: u32,
     /// The layer took the rescale path.
     pub rescaled: bool,
@@ -127,6 +138,8 @@ pub struct GpuLayerCounters {
     pub dense: bool,
     /// Rows received from partners and merged by the fused layer.
     pub rows_received: u64,
+    /// Exported rows the sender-side merge folded away before the exchange.
+    pub rows_premerged: u64,
 }
 
 /// Kernel milliseconds per family, accumulated while [`GpuPauliSum::set_kernel_timing`](super::GpuPauliSum::set_kernel_timing) is on.
@@ -178,7 +191,7 @@ pub(crate) struct LayerScratch<const W: usize> {
     bd: CudaSlice<u32>,
     gm: CudaSlice<u64>,
     rem: CudaSlice<u32>,
-    arena: Option<DeviceColumns<W>>,
+    pub(super) arena: Option<DeviceColumns<W>>,
     seg_host: Vec<u32>,
     bucket_at_host: Vec<u32>,
     /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
@@ -666,36 +679,13 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.counters.records_max = records_max;
     scratch.counters.rows_received = counts.rows_received;
 
-    let threads = layer_threads(W) as usize;
-    let n_cap = (records_max as usize).max(threads).next_power_of_two();
-    let variant = &sum.kernels.layer[(n_cap / threads).trailing_zeros() as usize];
-    debug_assert_eq!(variant.items * threads, n_cap);
-    let func = if table.dense {
-        &variant.segscan
-    } else {
-        &variant.serial
-    };
-    let smem = layer_shared_bytes(n_cap, W);
+    let kernels = sum.kernels.clone();
+    let (func, n_cap, smem) = fused_variant(&kernels, W, records_max as usize, table.dense);
     scratch.counters.n_cap = n_cap as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena.
-    let seg = &scratch.seg_host;
-    let cap_rows = (scratch.options.arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(cap);
-    let mut batches: Vec<(usize, usize)> = Vec::new();
-    let mut p0 = 0usize;
-    while p0 < b {
-        let mut p1 = p0 + 1;
-        while p1 < b && (seg[p1 + 1] - seg[p0]) as usize <= cap_rows {
-            p1 += 1;
-        }
-        batches.push((p0, p1));
-        p0 = p1;
-    }
-    let max_batch_rows = batches
-        .iter()
-        .map(|&(a, c)| (seg[c] - seg[a]) as usize)
-        .max()
-        .unwrap_or(0);
+    let (batches, max_batch_rows) =
+        arena_batches::<W>(&scratch.seg_host, scratch.options.arena_bytes, cap);
     scratch.counters.batches = batches.len() as u32;
 
     let s = sum.stream.clone();
@@ -717,60 +707,45 @@ fn apply_layer_body<const W: usize, X: Transport>(
     out.reserve(out.term_capacity(), b)?;
     grow(&s, &mut scratch.out_len_pos, b, o)?;
     s.memset_zeros(&mut scratch.fallback)?;
-    let e32 = table.entries as u32;
-    let b32 = b as u32;
-
     let mut running = 0u32;
     for &(p0, p1) in &batches {
         let nblk = (p1 - p0) as u32;
         let p0u = p0 as u32;
         let t0 = scratch.event(sum)?;
-        // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds this batch's pre-dedup rows, `out_len_pos` has `b` entries, and the received columns hold `recv_rows` rows.
-        unsafe {
-            s.launch_builder(func)
-                .arg(&sum.cols.x)
-                .arg(&sum.cols.z)
-                .arg(&sum.cols.coeff)
-                .arg(&sum.cols.g)
-                .arg(&sum.cols.start)
-                .arg(&sum.cols.lens)
-                .arg(&scratch.bucket_at)
-                .arg(&scratch.cnt)
-                .arg(&scratch.seg_start)
-                .arg(&table.mode)
-                .arg(&e32)
-                .arg(&table.kq)
-                .arg(&table.q0)
-                .arg(&table.q1)
-                .arg(&table.rot_cos)
-                .arg(&table.rot_sin)
-                .arg(&scratch.amp)
-                .arg(&scratch.mask)
-                .arg(&scratch.nz)
-                .arg(&scratch.bd)
-                .arg(&scratch.gm)
-                .arg(&scratch.rem)
-                .arg(&scratch.export.recv_off)
-                .arg(&scratch.export.recv_base)
-                .arg(&b32)
-                .arg(&scratch.export.recv_x)
-                .arg(&scratch.export.recv_z)
-                .arg(&scratch.export.recv_c)
-                .arg(&scratch.export.recv_g)
-                .arg(keep)
-                .arg(&p0u)
-                .arg(&mut arena.x)
-                .arg(&mut arena.z)
-                .arg(&mut arena.coeff)
-                .arg(&mut arena.g)
-                .arg(&mut scratch.out_len_pos)
-                .arg(&mut scratch.fallback)
-                .launch(LaunchConfig {
-                    grid_dim: (nblk, 1, 1),
-                    block_dim: (threads as u32, 1, 1),
-                    shared_mem_bytes: smem,
-                })?;
-        }
+        let fused = FusedTable {
+            cnt: &scratch.cnt,
+            seg_start: &scratch.seg_start,
+            amp: &scratch.amp,
+            mask: &scratch.mask,
+            nz: &scratch.nz,
+            bd: &scratch.bd,
+            gm: &scratch.gm,
+            rem: &scratch.rem,
+        };
+        let recv = FusedRecv {
+            off: &scratch.export.recv_off,
+            base: &scratch.export.recv_base,
+            x: &scratch.export.recv_x,
+            z: &scratch.export.recv_z,
+            c: &scratch.export.recv_c,
+            g: &scratch.export.recv_g,
+        };
+        let written = FusedOut {
+            arena: &mut arena,
+            out_len_pos: &mut scratch.out_len_pos,
+            fallback: &mut scratch.fallback,
+        };
+        launch_fused(
+            sum,
+            &table,
+            &fused,
+            &recv,
+            &scratch.bucket_at,
+            keep,
+            (func, smem),
+            (p0u, nblk),
+            written,
+        )?;
         scratch.lap(sum, t0, |m| &mut m.layer)?;
         let n = p1 - p0;
         let t1 = scratch.event(sum)?;
@@ -827,8 +802,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
     }
     let fb = s.clone_dtoh(&scratch.fallback)?;
     s.synchronize()?;
-    scratch.counters.fallback_hi = fb[0];
-    scratch.counters.fallback_key = fb[1];
+    scratch.counters.fallback_hi += fb[0];
+    scratch.counters.fallback_key += fb[1];
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);
@@ -836,6 +811,151 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.extent = sum.len();
     sum.debug_check();
     Ok(counts)
+}
+
+/// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, and the largest range's rows.
+pub(super) fn arena_batches<const W: usize>(
+    seg: &[u32],
+    arena_bytes: usize,
+    cap: usize,
+) -> (Vec<(usize, usize)>, usize) {
+    let b = seg.len() - 1;
+    let cap_rows = (arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(cap);
+    let mut batches: Vec<(usize, usize)> = Vec::new();
+    let mut p0 = 0usize;
+    while p0 < b {
+        let mut p1 = p0 + 1;
+        while p1 < b && (seg[p1 + 1] - seg[p0]) as usize <= cap_rows {
+            p1 += 1;
+        }
+        batches.push((p0, p1));
+        p0 = p1;
+    }
+    let max_rows = batches
+        .iter()
+        .map(|&(a, c)| (seg[c] - seg[a]) as usize)
+        .max()
+        .unwrap_or(0);
+    (batches, max_rows)
+}
+
+/// The fused-layer variant for blocks of up to `records_max` records: the kernel, its record capacity and its dynamic shared bytes.
+pub(super) fn fused_variant(
+    k: &KernelSet,
+    w: usize,
+    records_max: usize,
+    dense: bool,
+) -> (&CudaFunction, usize, u32) {
+    let threads = layer_threads(w) as usize;
+    let n_cap = records_max.max(threads).next_power_of_two();
+    let variant = &k.layer[(n_cap / threads).trailing_zeros() as usize];
+    debug_assert_eq!(variant.items * threads, n_cap);
+    let func = if dense {
+        &variant.segscan
+    } else {
+        &variant.serial
+    };
+    (func, n_cap, layer_shared_bytes(n_cap, w))
+}
+
+/// The table-side buffers one fused-layer launch reads, in the uploaded layout of a [`DevicePrepared`].
+pub(super) struct FusedTable<'a> {
+    pub(super) cnt: &'a CudaSlice<u32>,
+    pub(super) seg_start: &'a CudaSlice<u32>,
+    pub(super) amp: &'a CudaSlice<f64>,
+    pub(super) mask: &'a CudaSlice<u64>,
+    pub(super) nz: &'a CudaSlice<u32>,
+    pub(super) bd: &'a CudaSlice<u32>,
+    pub(super) gm: &'a CudaSlice<u64>,
+    pub(super) rem: &'a CudaSlice<u32>,
+}
+
+/// The concatenated received blocks a fused-layer launch reads for its received entries.
+pub(super) struct FusedRecv<'a> {
+    pub(super) off: &'a CudaSlice<u32>,
+    pub(super) base: &'a CudaSlice<u32>,
+    pub(super) x: &'a CudaSlice<u64>,
+    pub(super) z: &'a CudaSlice<u64>,
+    pub(super) c: &'a CudaSlice<f64>,
+    pub(super) g: &'a CudaSlice<u64>,
+}
+
+/// What a fused-layer launch writes: the loose arena, rows per position, and the fallback counters.
+pub(super) struct FusedOut<'a, const W: usize> {
+    pub(super) arena: &'a mut DeviceColumns<W>,
+    pub(super) out_len_pos: &'a mut CudaSlice<u32>,
+    pub(super) fallback: &'a mut CudaSlice<u32>,
+}
+
+/// K3 over positions `p0..p0 + nblk` with `kernel = (function, shared bytes)` from [`fused_variant`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn launch_fused<const W: usize>(
+    sum: &GpuSum<W>,
+    table: &DevicePrepared<W>,
+    t: &FusedTable<'_>,
+    r: &FusedRecv<'_>,
+    bucket_at: &CudaSlice<u32>,
+    keep: &KeepProgram,
+    kernel: (&CudaFunction, u32),
+    (p0, nblk): (u32, u32),
+    out: FusedOut<'_, W>,
+) -> Result<(), GpuError> {
+    let (func, smem) = kernel;
+    let e32 = table.entries as u32;
+    let b32 = sum.hash.num_buckets() as u32;
+    let FusedOut {
+        arena,
+        out_len_pos,
+        fallback,
+    } = out;
+    // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds the batch's pre-dedup rows, `out_len_pos` has `b` entries, `t` is `table`'s upload with `cnt`/`seg_start` sized for it, and the received columns hold every row `t.rem` names.
+    unsafe {
+        sum.stream
+            .launch_builder(func)
+            .arg(&sum.cols.x)
+            .arg(&sum.cols.z)
+            .arg(&sum.cols.coeff)
+            .arg(&sum.cols.g)
+            .arg(&sum.cols.start)
+            .arg(&sum.cols.lens)
+            .arg(bucket_at)
+            .arg(t.cnt)
+            .arg(t.seg_start)
+            .arg(&table.mode)
+            .arg(&e32)
+            .arg(&table.kq)
+            .arg(&table.q0)
+            .arg(&table.q1)
+            .arg(&table.rot_cos)
+            .arg(&table.rot_sin)
+            .arg(t.amp)
+            .arg(t.mask)
+            .arg(t.nz)
+            .arg(t.bd)
+            .arg(t.gm)
+            .arg(t.rem)
+            .arg(r.off)
+            .arg(r.base)
+            .arg(&b32)
+            .arg(r.x)
+            .arg(r.z)
+            .arg(r.c)
+            .arg(r.g)
+            .arg(keep)
+            .arg(&p0)
+            .arg(&mut arena.x)
+            .arg(&mut arena.z)
+            .arg(&mut arena.coeff)
+            .arg(&mut arena.g)
+            .arg(out_len_pos)
+            .arg(fallback)
+            .launch(LaunchConfig {
+                grid_dim: (nblk, 1, 1),
+                block_dim: (layer_threads(W), 1, 1),
+                shared_mem_bytes: smem,
+            })?;
+    }
+    Ok(())
 }
 
 /// K5: the key-preserving fast path, into the spare columns at the input's offsets.

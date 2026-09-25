@@ -92,6 +92,43 @@ impl<const W: usize> DeviceBlock<W> {
         grow(stream, &mut self.g, rows, ordinal)
     }
 
+    /// Room for `need` rows, copying the first `live` rows of every column into any new allocation; grows geometrically.
+    pub(crate) fn reserve_keep(
+        &mut self,
+        stream: &Arc<CudaStream>,
+        live: usize,
+        need: usize,
+        ordinal: u32,
+    ) -> Result<(), GpuError> {
+        let cap = self.g.len();
+        if need <= cap {
+            return Ok(());
+        }
+        if live == 0 {
+            return self.grow(stream, need, ordinal);
+        }
+        let mut next = Self::new(stream)?;
+        next.grow(stream, need.max(2 * cap), ordinal)?;
+        stream.memcpy_dtod(
+            &self.x.slice(0..live * W),
+            &mut next.x.slice_mut(0..live * W),
+        )?;
+        stream.memcpy_dtod(
+            &self.z.slice(0..live * W),
+            &mut next.z.slice_mut(0..live * W),
+        )?;
+        stream.memcpy_dtod(
+            &self.c.slice(0..2 * live),
+            &mut next.c.slice_mut(0..2 * live),
+        )?;
+        stream.memcpy_dtod(&self.g.slice(0..live), &mut next.g.slice_mut(0..live))?;
+        self.x = next.x;
+        self.z = next.z;
+        self.c = next.c;
+        self.g = next.g;
+        Ok(())
+    }
+
     pub(crate) fn rows(&self) -> usize {
         self.header.rows as usize
     }

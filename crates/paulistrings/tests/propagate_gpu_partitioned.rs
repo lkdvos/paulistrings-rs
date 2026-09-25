@@ -727,3 +727,118 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     let want = propagate(&circuit, sum, &ApproxTopN(6_000), Direction::Forward);
     assert_terms_close(&split.gather().expect("gather"), &want, TOL, "cut P=4");
 }
+
+/// Two SU(4) layers on overlapping pairs over `nq` qubits, dense enough that one partner's remote rows collide.
+fn su4_circuit<const W: usize>(nq: usize) -> Circuit<W> {
+    use paulistrings::channel::GeneralUnitary2Q;
+    use paulistrings::test_support::haar_su4_matrix;
+    let mut c = Circuit::<W>::new(nq);
+    c.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+    c.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
+    c.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+    c
+}
+
+/// Rows every partition shipped over a traced propagation, and the gathered result.
+fn traced_rows<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    p: usize,
+    mode: GpuExchange,
+    premerge: bool,
+) -> (u64, Vec<u64>, PauliSum<W>) {
+    let mut split = split_of(sum, p, mode);
+    split.set_layer_options(GpuLayerOptions {
+        premerge,
+        ..GpuLayerOptions::default()
+    });
+    split.enable_trace();
+    split
+        .propagate(circuit, &KeepAll, Direction::Forward)
+        .expect("propagate");
+    let trace = split.take_trace().expect("tracing on");
+    let per_layer: Vec<u64> = trace
+        .layers
+        .iter()
+        .map(|l| l.rows_sent.iter().flatten().sum())
+        .collect();
+    (
+        trace.total_rows_exchanged(),
+        per_layer,
+        split.gather().expect("gather"),
+    )
+}
+
+fn premerge_case<const W: usize>(nq: usize, n: usize, seed: u64) {
+    let sum = rand_sum::<W>(n, nq, seed);
+    let circuit = su4_circuit::<W>(nq);
+    let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    for p in [2usize, 4] {
+        for mode in MODES {
+            let what = format!("W={W} P={p} {mode:?}");
+            let (plain, plain_layers, off) = traced_rows(&circuit, &sum, p, mode, false);
+            let (merged, merged_layers, on) = traced_rows(&circuit, &sum, p, mode, true);
+            for (got, tag) in [(&off, "unmerged"), (&on, "merged")] {
+                assert_eq!(got.len(), want.len(), "{what} {tag}: term count");
+                assert_terms_close(got, &want, TOL, &format!("{what} {tag}"));
+            }
+            assert!(
+                merged < plain,
+                "{what}: {merged} rows merged against {plain}"
+            );
+            for (k, (m, u)) in merged_layers.iter().zip(&plain_layers).enumerate() {
+                assert!(m <= u, "{what} layer {k}: {m} rows merged against {u}");
+            }
+        }
+    }
+}
+
+/// With the sender-side merge on, a dense layer ships strictly fewer rows under both payload forms, and the result agrees with `propagate` either way.
+#[test]
+fn premerge_ships_fewer_rows_on_dense_layers_and_agrees_w1() {
+    require_cuda!();
+    premerge_case::<1>(8, 3_000, 0x9E1);
+}
+
+#[test]
+fn premerge_ships_fewer_rows_on_dense_layers_and_agrees_w2() {
+    require_cuda!();
+    premerge_case::<2>(100, 3_000, 0x9E2);
+}
+
+/// Each term paired with its swap image at the opposite coefficient: `sqrt(SWAP)`'s symmetric half sends both to the same two keys at amplitude 1/2, so those rows cancel exactly wherever they meet, merged on the sender or on the receiver.
+#[test]
+fn premerge_with_exactly_cancelling_rows_agrees() {
+    require_cuda!();
+    use paulistrings::channel::GeneralUnitary2Q;
+    use paulistrings::test_support::sqrt_swap_matrix;
+    let nq = 8;
+    let base = rand_sum_real::<1>(400, nq, 0x9E3);
+    let mut acc = paulistrings::BuildAccumulator::<1>::new(nq);
+    for (x, z, c) in base.iter() {
+        let (x, z) = (x[0], z[0]);
+        let swap = |v: u64| (v & !0b11) | ((v & 1) << 1) | ((v >> 1) & 1);
+        let v = paulistrings::PauliString::<1> { x: [x], z: [z] };
+        let w = paulistrings::PauliString::<1> {
+            x: [swap(x)],
+            z: [swap(z)],
+        };
+        if v == w {
+            continue;
+        }
+        acc.add_term(v, paulistrings::Phase::ONE, c);
+        acc.add_term(w, paulistrings::Phase::ONE, -c);
+    }
+    let sum = acc.finalize();
+    let mut circuit = Circuit::<1>::new(nq);
+    circuit.push(GeneralUnitary2Q::from_matrix(0, 1, sqrt_swap_matrix()));
+    let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    for p in [2usize, 4] {
+        for mode in MODES {
+            let (_, _, got) = traced_rows(&circuit, &sum, p, mode, true);
+            let what = format!("cancelling P={p} {mode:?}");
+            assert_eq!(got.len(), want.len(), "{what}: term count");
+            assert_terms_close(&got, &want, TOL, &what);
+        }
+    }
+}

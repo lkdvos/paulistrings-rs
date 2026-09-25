@@ -152,6 +152,61 @@ impl<const W: usize> DevicePrepared<W> {
         }
     }
 
+    /// The support patterns entry `e` emits into, one bit per pattern; empty for a rotation.
+    fn output_patterns(&self, e: usize) -> u32 {
+        if self.mode != 0 {
+            return 0;
+        }
+        let bit = |v: &[u64; W], q: u32| ((v[(q / 64) as usize] >> (q % 64)) & 1) as usize;
+        let (mx, mz) = &self.masks[e];
+        let mut ld = 0usize;
+        if self.kq > 0 {
+            ld |= bit(mx, self.q0) | bit(mz, self.q0) << 1;
+        }
+        if self.kq > 1 {
+            ld |= bit(mx, self.q1) << 2 | bit(mz, self.q1) << 3;
+        }
+        (0..LOCAL_DIM)
+            .filter(|&s| (self.nz[e] >> s) & 1 != 0)
+            .fold(0, |acc, s| acc | 1 << (s ^ ld))
+    }
+
+    /// Whether two of `entries` can emit one key: they must reach a common output pattern, since `v ⊕ d_a = w ⊕ d_b` puts both rows on one pattern.
+    pub(crate) fn entries_can_collide(&self, entries: &[usize]) -> bool {
+        let out: Vec<u32> = entries.iter().map(|&e| self.output_patterns(e)).collect();
+        out.iter()
+            .enumerate()
+            .any(|(i, a)| out[i + 1..].iter().any(|b| a & b != 0))
+    }
+
+    /// The table restricted to `entries`, renumbered `0..entries.len()` in that order, every entry sourced from a local bucket.
+    pub(crate) fn restrict(&self, entries: &[usize]) -> Self {
+        assert!(self.mode == 0, "only a tabulated channel restricts");
+        let mut t = self.clone();
+        t.entries = entries.len();
+        t.amp.fill(0.0);
+        t.mask.fill(0);
+        t.nz.fill(0);
+        t.bucket_delta.fill(0);
+        t.gm.fill(0);
+        t.rem.fill(NO_REMOTE);
+        t.masks.clear();
+        let a = LOCAL_DIM * 2;
+        for (j, &e) in entries.iter().enumerate() {
+            t.amp[j * a..(j + 1) * a].copy_from_slice(&self.amp[e * a..(e + 1) * a]);
+            t.mask[j * 2 * W..(j + 1) * 2 * W]
+                .copy_from_slice(&self.mask[e * 2 * W..(e + 1) * 2 * W]);
+            t.nz[j] = self.nz[e];
+            t.bucket_delta[j] = self.bucket_delta[e];
+            t.gm[j] = self.gm[e];
+            t.masks.push(self.masks[e]);
+        }
+        t.n_remote = 0;
+        t.fanout = (0..t.entries).filter(|&j| t.nz[j] != 0).count();
+        t.key_preserving = false;
+        t
+    }
+
     /// The distinct bucket deltas of the local entries, ascending, always containing `0`: the input to `Gf2Span::new`, equal to the plan's `local_bucket_deltas`.
     pub(crate) fn bucket_deltas(&self) -> Vec<u32> {
         let mut v: Vec<u32> = (0..self.entries)
@@ -247,6 +302,52 @@ mod tests {
         assert_eq!(t.bucket_deltas(), plan.local_bucket_deltas);
         let local = DevicePrepared::new(&prep, &hash, &fp, &[]);
         assert!(!local.key_preserving && local.n_remote == 0);
+    }
+
+    /// A Clifford maps patterns bijectively, so no two of its entries share an output pattern; a dense SU(4) and `sqrt(SWAP)` do, and a rotation never restricts.
+    #[test]
+    fn collisions_between_entries_follow_the_output_patterns() {
+        let all = |t: &DevicePrepared<1>| (0..t.entries).collect::<Vec<_>>();
+        let cnot = table::<1>(&Clifford2Q::cnot(1, 3), 8);
+        assert!(!cnot.entries_can_collide(&all(&cnot)));
+        let su4 = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()), 8);
+        assert!(su4.entries_can_collide(&all(&su4)));
+        assert!(
+            !su4.entries_can_collide(&[3]),
+            "one entry cannot collide with itself"
+        );
+        let swap = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, sqrt_swap_matrix()), 8);
+        assert!(swap.entries_can_collide(&all(&swap)));
+        let mut gen = PauliString::<2>::x(3);
+        gen.z[1] |= 1 << 2;
+        gen.x[0] |= 1 << 40;
+        let rot = table::<2>(&PauliRotation::new(gen, 0.7), 128);
+        assert_eq!(rot.mode, 1);
+        assert!(!rot.entries_can_collide(&[0, 1]));
+    }
+
+    #[test]
+    fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
+        let su4 = table::<2>(
+            &GeneralUnitary2Q::from_matrix(1, 70, haar_su4_matrix()),
+            128,
+        );
+        let pick = [9usize, 2, 14];
+        let r = su4.restrict(&pick);
+        assert_eq!((r.entries, r.n_remote, r.key_preserving), (3, 0, false));
+        assert_eq!(r.dense, su4.dense);
+        for (j, &e) in pick.iter().enumerate() {
+            let a = LOCAL_DIM * 2;
+            assert_eq!(r.amp[j * a..(j + 1) * a], su4.amp[e * a..(e + 1) * a]);
+            assert_eq!(r.mask[j * 4..(j + 1) * 4], su4.mask[e * 4..(e + 1) * 4]);
+            assert_eq!(
+                (r.nz[j], r.bucket_delta[j], r.gm[j]),
+                (su4.nz[e], su4.bucket_delta[e], su4.gm[e])
+            );
+        }
+        assert!(r.rem.iter().all(|&k| k == NO_REMOTE));
+        assert!(r.nz[3..].iter().all(|&m| m == 0));
+        assert_eq!(r.fanout, 3);
     }
 
     #[test]

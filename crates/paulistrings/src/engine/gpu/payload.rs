@@ -22,19 +22,15 @@ pub enum GpuExchange {
     Device,
 }
 
-/// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for [`GpuPartitionedSum`](super::GpuPartitionedSum) (in-process).
+/// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for an in-process group.
 ///
-/// `nccl` parses but is not yet a distinct mode here: in-process NCCL (`ncclCommInitAll`) would
-/// duplicate what the peer-copy path already does, and WP9b item 1's peer verdict is still
-/// pending (design doc §1.2, §2.5), so it falls back to `Device` with one log line.
-/// [`crate::engine::gpu::GpuDistributedSum`]'s MPI mode agreement reads the raw environment value
-/// itself rather than through this function, since it must tell `device` and `nccl` apart.
+/// `nccl` means `Device` here, since in-process peer copies already go device to device; the MPI driver reads the raw value itself to tell `device` from `nccl`.
 fn parse_gpu_exchange(raw: Option<&str>) -> GpuExchange {
     match raw {
         Some("host") => GpuExchange::Host,
         Some("nccl") => {
             log::info!(
-                "gpu: PAULISTRINGS_GPU_EXCHANGE=nccl has no in-process NCCL path yet; using GpuExchange::Device"
+                "gpu: PAULISTRINGS_GPU_EXCHANGE=nccl applies to MPI groups; an in-process group uses GpuExchange::Device"
             );
             GpuExchange::Device
         }

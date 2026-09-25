@@ -277,6 +277,29 @@ Device payloads are the default of `GpuPartitionedSum`; the host form stays behi
 The receiver adopts with a copy rather than pointing the fused kernel at the payload's memory, so the kernels and the concatenated `recv_*` layout are unchanged and the same call serves one device and several; a zero-copy adoption for the one-partner case is unmeasured.
 Payloads recycle through a process-wide per-device bin, so a two-device group also allocates nothing at steady state; the cross-device branch has not run on a real multi-GPU node.
 
+### Sender-side merge of a partner's exported rows
+
+Asked whether a device sender should sum one partner's exported rows by key before the exchange, since the receiver dedups them anyway: K3 over the partner's sub-table under the keep-everything program, the merged rows split greedily over the partner's blocks so the wire format and receive path are unchanged (ARCHITECTURE.md §Partitioning).
+Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory, shared with another agent's jobs at up to 66% utilization, so indicative), two virtual partitions, `--reps 5`, a runtime-knob A/B on one binary (`PAULISTRINGS_GPU_PREMERGE=off` against on), medians over 3 pairs at 1e6 and 2 at 2e6, one run at 4e6, ms per layer.
+
+| cell | layer (terms) | exchange | off | on | rows exported/layer, both partitions | export | exchange_ns |
+|:-|:-|:-|-:|-:|-:|-:|-:|
+| 1e6 | `su4` (1.41e7) | device | 126.6 | **108.0 (−15%)** | 1.05e8 → 1.41e7 | 34.5 → 50.9 | 19.3 → 3.9 |
+| 1e6 | `su4` | host | 2157 | **405 (−81%)** | 1.05e8 → 1.41e7 | 909 → 198 | 97 → 16 |
+| 1e6 | `gu2q` (3.25e6) | device | 6.70 | 8.17 (+22%) | 4.2e6 → 1.5e6 | 1.5 → 3.7 | 0.85 → 0.36 |
+| 1e6 | `gu2q` | host | 88.0 | **40.9 (−54%)** | 4.2e6 → 1.5e6 | 41.1 → 20.8 | 2.5 → 3.8 |
+| 2e6 | `su4` (2.83e7) | device | 252.4 | **214.6 (−15%)** | 2.1e8 → 2.81e7 | 69.0 → 101.3 | 38.2 → 7.1 |
+| 2e6 | `su4` | host | 3338 | **673 (−80%)** | 2.1e8 → 2.81e7 | 1560 → 317 | 51 → 30 |
+| 2e6 | `gu2q` (6.5e6) | device | 13.2 | 15.5 (+18%) | 8.4e6 → 3.0e6 | 3.0 → 7.1 | 1.6 → 0.7 |
+| 2e6 | `gu2q` | host | 139 | **67 (−52%)** | 8.4e6 → 3.0e6 | 70 → 32 | 8.3 → 4.3 |
+| 4e6 | `su4` (5.65e7) | host | 7722 | **1308 (−83%)** | 4.2e8 → 5.63e7 | 2976 → 582 | 65 → 23 |
+| 4e6 | `su4` | device | out of memory | **428**, peak 24.5 GB | 5.63e7 | 202 | 15 |
+
+`su4` ships 7.5× fewer rows and `gu2q` (`sqrt(SWAP)`) 2.8× fewer; `cnot` and `rotation_remote` have no two remote entries sharing an output pattern, never merge, and show no consistent change (pairs disagree in sign under host staging's variance).
+On one device the exchange is a same-device copy, so the merge's second K3 is paid in full and repaid only through the receiver's smaller K3: a win at `su4`'s merge ratio and a loss at `gu2q`'s; every path that moves bytes (host staging, and by extension a real link or MPI) wins at both.
+Two virtual partitions at 5.65e7 terms now fit a 48 GB card under device payloads, at 428 ms/layer against the 274 ms of `P = 1`, where the unmerged export needed a full export volume resident on each sender.
+The merge stays on for every qualifying partner; a gate on the expected merge ratio for same-device groups is unmeasured.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

@@ -5,6 +5,7 @@
 mod loopback;
 
 use std::ffi::CStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -143,6 +144,7 @@ impl NcclComm {
         let started = unsafe {
             nccl::comm_init_rank_config(&mut comm, size as i32, id, rank as i32, &mut config)
         };
+        LIVE.fetch_add(1, Ordering::Relaxed);
         let this = Self {
             raw: Mutex::new(Raw {
                 comm,
@@ -255,9 +257,17 @@ impl NcclComm {
         let spawned = std::thread::Builder::new()
             .name(format!("nccl-abort-{rank}"))
             .spawn(move || abort_now(comm, rank, &owned));
-        if let Err(e) = spawned {
-            log::warn!("gpu: no thread for the NCCL abort on rank {rank} ({e}); aborting inline");
-            abort_now(comm, rank, ctx);
+        match spawned {
+            Ok(handle) => ABORTS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(handle),
+            Err(e) => {
+                log::warn!(
+                    "gpu: no thread for the NCCL abort on rank {rank} ({e}); aborting inline"
+                );
+                abort_now(comm, rank, ctx);
+            }
         }
     }
 
@@ -409,7 +419,23 @@ impl NcclComm {
 }
 
 impl Drop for NcclComm {
+    /// Shut down, then, as the last communicator of the process (or in any test), join the abort threads within the wait bound.
     fn drop(&mut self) {
+        let bound = self
+            .raw
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .timeout;
+        self.shut_down();
+        let last = LIVE.fetch_sub(1, Ordering::Relaxed) == 1;
+        if last || cfg!(test) {
+            reap_aborts(bound);
+        }
+    }
+}
+
+impl NcclComm {
+    fn shut_down(&mut self) {
         let rank = self.rank;
         let bound = self.ctx.bind_to_thread().is_ok();
         let raw = self.raw.get_mut().unwrap_or_else(PoisonError::into_inner);
@@ -447,6 +473,41 @@ impl Drop for NcclComm {
         if let Err(e) = unsafe { nccl::comm_destroy(comm) } {
             log::warn!("gpu: ncclCommDestroy on rank {rank} returned {:?}", e.0);
         }
+    }
+}
+
+/// Communicators alive in this process.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Abort threads not yet joined.
+static ABORTS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Join every finished abort thread, waiting up to `bound` for the rest; one still running past it stays listed for the next reap.
+fn reap_aborts(bound: Duration) {
+    let start = Instant::now();
+    let mut pending = std::mem::take(&mut *ABORTS.lock().unwrap_or_else(PoisonError::into_inner));
+    loop {
+        let (done, rest): (Vec<_>, Vec<_>) = pending.into_iter().partition(|h| h.is_finished());
+        for h in done {
+            if h.join().is_err() {
+                log::warn!("gpu: an NCCL abort thread panicked");
+            }
+        }
+        pending = rest;
+        if pending.is_empty() || start.elapsed() >= bound {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if !pending.is_empty() {
+        log::warn!(
+            "gpu: {} NCCL abort(s) still running after {bound:?}",
+            pending.len()
+        );
+        ABORTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(pending);
     }
 }
 
@@ -1414,23 +1475,30 @@ mod tests {
         assert!(ops.iter().all(|op| std::ptr::eq(op.stream(), &*stream)));
     }
 
-    /// A one-rank NCCL communicator on device 0 and a stream on it, or `None` where NCCL is absent.
-    fn one_rank() -> Option<(NcclComm, Arc<CudaStream>)> {
+    /// Held by every test that starts a real communicator, so no two initialize or abort at once in the test binary.
+    static REAL_NCCL: Mutex<()> = Mutex::new(());
+
+    type OneRank = (MutexGuard<'static, ()>, NcclComm, Arc<CudaStream>);
+
+    /// A one-rank NCCL communicator on device 0 and a stream on it, holding [`REAL_NCCL`], or `None` where NCCL is absent.
+    fn one_rank() -> Option<OneRank> {
         if !crate::engine::gpu::nccl_available() {
             return None;
         }
+        let guard = REAL_NCCL.lock().unwrap_or_else(PoisonError::into_inner);
         let ctx = super::super::device::context(0).expect("a visible device");
         let t = InProcessTransport::group(1).pop().expect("one rank");
-        let comm = NcclComm::init(&t, &ctx).expect("a one-rank communicator initializes");
+        let comm = NcclComm::init(&t, &ctx)
+            .unwrap_or_else(|e| panic!("a one-rank communicator fails to initialize: {e}"));
         assert_eq!(comm.timeout(), nccl_timeout());
         comm.set_timeout(Duration::from_secs(60));
         let stream = ctx.new_stream().expect("a stream");
-        Some((comm, stream))
+        Some((guard, comm, stream))
     }
 
     #[test]
     fn a_one_rank_communicator_warms_up_and_shuts_down_cleanly() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         assert_eq!((comm.rank(), comm.size()), (0, 1));
@@ -1442,7 +1510,7 @@ mod tests {
 
     #[test]
     fn an_aborted_communicator_refuses_every_later_call() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         comm.abort();
@@ -1451,6 +1519,10 @@ mod tests {
         assert!(matches!(comm.check_async(), Err(GpuError::Nccl { .. })));
         assert!(matches!(comm.warm_up(&stream), Err(GpuError::Nccl { .. })));
         drop(comm);
+        assert!(
+            ABORTS.lock().unwrap().is_empty(),
+            "a test build joins every abort thread at drop"
+        );
     }
 
     /// Message sizes with distinct contents per message, so any receive matched to the wrong send fails on length or content; one is empty.
@@ -1483,7 +1555,7 @@ mod tests {
     /// Self-sends interleaved with their receives, one receive buffer per message: the rank is its own peer and each receive gets the send posted in its position.
     #[test]
     fn interleaved_self_sends_match_in_posting_order() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         let wire = NcclWire::new(Arc::new(comm));
@@ -1518,7 +1590,7 @@ mod tests {
     /// Every send first, then every receive carved from one concatenated column, as the exchange's `recv_*` layout is: matching is per peer in posting order across the whole group.
     #[test]
     fn self_sends_land_in_one_column_in_posting_order() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         let wire = NcclWire::new(Arc::new(comm));
@@ -1552,7 +1624,7 @@ mod tests {
     /// NCCL itself refuses a self-receive with no matching send at group end; the error aborts the communicator.
     #[test]
     fn an_unmatched_self_receive_fails_the_group_and_aborts() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         let wire = NcclWire::new(Arc::new(comm));
@@ -1571,7 +1643,7 @@ mod tests {
     /// The forced timeout: a real self send/recv group whose wait is told its work never completes returns `Timeout` within the bound, aborts the communicator, and nothing hangs.
     #[test]
     fn a_forced_timeout_returns_within_the_bound_and_aborts() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         let bound = Duration::from_millis(300);
@@ -1601,7 +1673,7 @@ mod tests {
 
     #[test]
     fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
-        let Some((comm, stream)) = one_rank() else {
+        let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
         let wire = NcclWire::new(Arc::new(comm));

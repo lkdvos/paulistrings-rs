@@ -60,7 +60,7 @@ struct Shared {
 pub enum LoopbackFault {
     /// Its first post fails before any op is visible to a peer.
     Post,
-    /// Its first post succeeds and its wait fails at once, before its copies and without waiting on its peers.
+    /// Its first post succeeds and its wait fails once its peers have copied from it, with no copies of its own, so its peers' waits time out.
     Wait,
 }
 
@@ -297,10 +297,16 @@ impl DeviceWire for LoopbackWire {
             stream.synchronize()?;
             return Ok(());
         };
+        let (me, size) = (self.rank as usize, self.shared.size as usize);
         if self.shared.fault == Some((self.rank, LoopbackFault::Wait)) {
+            // The peers' copies read this rank's buffers, which its caller recycles as soon as this returns.
+            let st = self.lock();
+            let st = self.wait_for(st, g, "every rank's group", |r| {
+                r.posted.iter().all(Option::is_some)
+            })?;
+            drop(self.wait_for(st, g, "the peers' copies", |r| r.done + 1 >= size as u32)?);
             return Err(self.die("an injected loopback wait failure"));
         }
-        let (me, size) = (self.rank as usize, self.shared.size as usize);
         let st = self.lock();
         let st = self.wait_for(st, g, "every rank's group", |r| {
             r.posted.iter().all(Option::is_some)

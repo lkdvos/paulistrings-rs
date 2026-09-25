@@ -12,7 +12,6 @@ mod fingerprint;
 mod layer;
 mod module;
 #[cfg(feature = "nccl")]
-#[cfg_attr(not(test), allow(dead_code))]
 mod nccl;
 mod partition;
 mod payload;
@@ -32,6 +31,8 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
+#[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
+pub use nccl::{LoopbackTally, LoopbackWire};
 pub use payload::{peer_access, GpuExchange, PeerAccess};
 pub use rank::{local_device_for_rank, GpuDistributedSum};
 #[cfg(feature = "mpi")]

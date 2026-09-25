@@ -559,7 +559,14 @@ impl<const W: usize> GpuPartitionedSum<W> {
     }
 
     /// How exchange blocks travel between the partitions from the next layer on; see [`GpuExchange`].
+    ///
+    /// `Nccl` means `Device` here, since an in-process group's peer copies already go device to device.
     pub fn set_exchange(&mut self, mode: GpuExchange) {
+        #[cfg(feature = "nccl")]
+        let mode = match mode {
+            GpuExchange::Nccl => GpuExchange::Device,
+            other => other,
+        };
         for part in &mut self.parts {
             part.scratch_mut().export.mode = mode;
         }

@@ -396,7 +396,7 @@ impl ChunkWait for AlreadyHere {
 const PARTS_PER_BLOCK: usize = 5;
 
 /// The row index each of `map`'s chunk boundaries falls at, `chunks + 1` ascending entries — the CSR offsets read at the chunks' destination positions.
-fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
+pub(crate) fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
     debug_assert_eq!(
         offsets.len(),
         map.positions() + 1,

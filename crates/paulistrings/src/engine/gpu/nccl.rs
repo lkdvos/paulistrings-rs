@@ -1,5 +1,8 @@
-//! [`NcclComm`], the NCCL communicator of a device group over MPI, and the [`DeviceWire`] seam the device exchange posts its bulk columns through, with [`NcclWire`] its NCCL form.
+//! [`NcclComm`], the NCCL communicator of a device group over MPI, the [`DeviceWire`] seam the device exchange posts its bulk columns through with [`NcclWire`] its NCCL form, and the exchange's host half: [`BlockSkeletons`], [`nccl_schedule`] and the group's mode agreement.
 //! See ARCHITECTURE.md §Partitioning.
+
+#[cfg(any(test, feature = "test-utils"))]
+mod loopback;
 
 use std::ffi::CStr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -10,7 +13,13 @@ use cudarc::nccl::result::{self as nccl, NcclError, NcclStatus};
 use cudarc::nccl::sys;
 
 use super::error::GpuError;
-use crate::engine::partitioned::transport::Collectives;
+use super::payload::DeviceBlock;
+use crate::engine::partitioned::transport::{
+    chunk_rows_of, BlockHeader, ChunkMap, Collectives, Payload,
+};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use loopback::{LoopbackTally, LoopbackWire};
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
 pub(crate) const MIN_NCCL_VERSION: i32 = 22200;
@@ -156,33 +165,39 @@ impl NcclComm {
     }
 
     /// This rank's index in the communicator.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn rank(&self) -> u32 {
         self.rank
     }
 
     /// Ranks in the communicator.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn size(&self) -> u32 {
         self.size
     }
 
     /// The bound on every wait on this communicator.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn timeout(&self) -> Duration {
         self.lock().timeout
     }
 
     /// Replace the wait bound, so a test can force a timeout without waiting out the default.
     #[cfg(any(test, feature = "test-utils"))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_timeout(&self, timeout: Duration) {
         self.lock().timeout = timeout;
     }
 
     /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
     #[cfg(any(test, feature = "test-utils"))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn force_timeout(&self) {
         self.lock().force_timeout = true;
     }
 
     /// Whether the communicator has not been aborted.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_healthy(&self) -> bool {
         !self.lock().aborted
     }
@@ -213,6 +228,7 @@ impl NcclComm {
     }
 
     /// NCCL's asynchronous state: `Ok(true)` while an operation is still in progress, `Ok(false)` when idle, and on an error the communicator aborted and the error returned.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn check_async(&self) -> Result<bool, GpuError> {
         let mut raw = self.lock();
         self.check_async_locked(&mut raw, "ncclCommGetAsyncError")
@@ -525,6 +541,8 @@ pub(crate) struct WireOp<'a> {
     stream: &'a CudaStream,
 }
 
+/// Read by an implementation of [`DeviceWire`] other than NCCL's, which reads the fields.
+#[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
 impl<'a> WireOp<'a> {
     pub(crate) fn kind(&self) -> WireOpKind {
         self.kind
@@ -566,6 +584,7 @@ impl<'a> WireGroup<'a> {
     }
 
     /// Receive `dst.len()` elements' bytes from `peer` into `dst`, ordered on `stream`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn recv<T>(&mut self, dst: CudaViewMut<'a, T>, peer: u32, stream: &'a CudaStream) {
         let bytes = dst.len() * std::mem::size_of::<T>();
         let (ptr, guard) = dst.view_ptr(stream);
@@ -626,6 +645,7 @@ impl<'a> WireGroup<'a> {
     }
 
     /// The ops in posting order.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn ops(&self) -> &[WireOp<'a>] {
         &self.ops
     }
@@ -659,6 +679,8 @@ pub(crate) trait DeviceWire: Send + Sync {
     fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError>;
     /// Block, bounded by the wire's timeout, until all work enqueued on `stream` so far has completed.
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError>;
+    /// Give the wire up for good, without waiting on anything; every later call fails.
+    fn abort(&self) {}
 }
 
 /// The [`DeviceWire`] over a real NCCL communicator.
@@ -673,6 +695,7 @@ impl NcclWire {
     }
 
     /// The communicator, for the health checks and abort of the failure paths.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn comm(&self) -> &Arc<NcclComm> {
         &self.comm
     }
@@ -691,6 +714,276 @@ impl DeviceWire for NcclWire {
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         self.comm.wait(stream)
     }
+    fn abort(&self) {
+        self.comm.abort();
+    }
+}
+
+/// One exchange block without its columns: what a receiver sizes its receives and the fused layer's segments from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Skeleton {
+    pub(crate) header: BlockHeader,
+    pub(crate) offsets: Vec<u32>,
+}
+
+/// One partner's block skeletons in ascending remote-delta index, the host half of an NCCL exchange that `Transport::exchange` carries.
+///
+/// A new payload rather than a column-less `PartnerPayload`, whose `finish_recv` holds a block's header to the columns that arrived with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockSkeletons<const W: usize> {
+    pub(crate) blocks: Vec<Skeleton>,
+}
+
+impl<const W: usize> BlockSkeletons<W> {
+    /// The headers and offsets of `blocks`, reusing this payload's allocations.
+    pub(crate) fn fill_from(&mut self, blocks: &[DeviceBlock<W>]) {
+        self.blocks.truncate(blocks.len());
+        self.blocks.resize_with(blocks.len(), Skeleton::default);
+        for (s, b) in self.blocks.iter_mut().zip(blocks) {
+            s.header = b.header;
+            s.offsets.clear();
+            s.offsets.extend_from_slice(&b.offsets);
+        }
+    }
+
+    /// Append an empty block for remote-delta `entry` over `b` positions.
+    pub(crate) fn push_empty(&mut self, entry: u32, b: usize) {
+        self.blocks.push(Skeleton {
+            header: BlockHeader {
+                num_buckets: b as u32,
+                rows: 0,
+                w: W as u32,
+                entry,
+            },
+            offsets: vec![0; b + 1],
+        });
+    }
+}
+
+impl<const W: usize> Payload for BlockSkeletons<W> {
+    fn byte_parts(&self) -> Vec<&[u8]> {
+        let mut parts = Vec::with_capacity(2 * self.blocks.len());
+        for s in &self.blocks {
+            parts.push(bytemuck::bytes_of(&s.header));
+            parts.push(bytemuck::cast_slice(&s.offsets));
+        }
+        parts
+    }
+
+    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        assert_eq!(
+            lens.len() % 2,
+            0,
+            "block skeletons: {} parts is not a whole number of two-part blocks",
+            lens.len()
+        );
+        let n = lens.len() / 2;
+        self.blocks.truncate(n);
+        self.blocks.resize_with(n, Skeleton::default);
+        let mut parts = Vec::with_capacity(lens.len());
+        for (s, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(2)) {
+            assert_eq!(
+                lens[0],
+                std::mem::size_of::<BlockHeader>(),
+                "block skeletons: a header of {} bytes",
+                lens[0]
+            );
+            assert_eq!(
+                lens[1] % 4,
+                0,
+                "block skeletons: {} offset bytes is not a whole number of u32",
+                lens[1]
+            );
+            s.offsets.clear();
+            s.offsets.resize(lens[1] / 4, 0);
+            let Skeleton { header, offsets } = s;
+            parts.push(bytemuck::bytes_of_mut(header));
+            parts.push(bytemuck::cast_slice_mut(&mut offsets[..]));
+        }
+        parts
+    }
+
+    /// The receive sizes itself from these offsets, so each must be a CSR index that ends at the header's row count.
+    fn finish_recv(&mut self) {
+        for s in &self.blocks {
+            let h = &s.header;
+            assert_eq!(
+                h.w as usize, W,
+                "block skeletons: a block encoded at W={} decoded at W={W}",
+                h.w
+            );
+            assert_eq!(
+                s.offsets.len(),
+                h.num_buckets as usize + 1,
+                "block skeletons: a block of {} buckets arrived with {} offsets",
+                h.num_buckets,
+                s.offsets.len()
+            );
+            assert!(
+                s.offsets[0] == 0 && s.offsets.windows(2).all(|w| w[0] <= w[1]),
+                "block skeletons: offsets that are not a CSR index"
+            );
+            assert_eq!(
+                s.offsets[h.num_buckets as usize], h.rows,
+                "block skeletons: offsets end at {}, the header names {} rows",
+                s.offsets[h.num_buckets as usize], h.rows
+            );
+        }
+    }
+}
+
+/// A column of an exchange block as the wire moves it; the fingerprint column never travels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WireColumn {
+    X,
+    Z,
+    Coeff,
+}
+
+impl WireColumn {
+    pub(crate) const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coeff];
+
+    /// Device elements per row at width `W`: `u64` words for a key column, `f64` halves for the coefficient.
+    pub(crate) fn elems_per_row<const W: usize>(self) -> usize {
+        match self {
+            WireColumn::X | WireColumn::Z => W,
+            WireColumn::Coeff => 2,
+        }
+    }
+}
+
+/// One transfer of an NCCL exchange: rows `rows.0..rows.1` of `column` of the block remote delta `k` carries, in chunk `chunk`, to or from `peer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScheduledOp {
+    pub(crate) kind: WireOpKind,
+    pub(crate) peer: u32,
+    pub(crate) chunk: usize,
+    pub(crate) column: WireColumn,
+    pub(crate) k: usize,
+    pub(crate) rows: (usize, usize),
+}
+
+/// The transfers of one NCCL exchange, from what both ends hold once the skeletons have crossed.
+///
+/// `partners[k]` is remote delta `k`'s partner, `own[k]` the CSR offsets of the block this rank sends for it and `recv[k]` those of the block it receives; every rank's plan lists the same remote entries in the same order, so `k` names one block pair on both ends.
+/// Sends run chunk, partner, column, delta; receives chunk, column, delta, so at one chunk each column's receives tile the concatenated `recv_*` column in plan order.
+/// Per peer both run chunk, column, delta, which is the order a peer's sends and receives match in (`DeviceWire`); a piece of no rows is posted by neither end.
+pub(crate) fn nccl_schedule(
+    partners: &[u32],
+    own: &[&[u32]],
+    recv: &[&[u32]],
+    map: &ChunkMap,
+) -> Vec<ScheduledOp> {
+    assert_eq!(partners.len(), own.len());
+    assert_eq!(partners.len(), recv.len());
+    let own_rows: Vec<Vec<usize>> = own.iter().map(|o| chunk_rows_of(o, map)).collect();
+    let recv_rows: Vec<Vec<usize>> = recv.iter().map(|o| chunk_rows_of(o, map)).collect();
+    let mut peers: Vec<u32> = partners.to_vec();
+    peers.sort_unstable();
+    peers.dedup();
+    let mut ops = Vec::new();
+    for chunk in 0..map.chunks() {
+        for &q in &peers {
+            for column in WireColumn::ALL {
+                for (k, _) in partners.iter().enumerate().filter(|&(_, &p)| p == q) {
+                    let rows = (own_rows[k][chunk], own_rows[k][chunk + 1]);
+                    if rows.1 > rows.0 {
+                        ops.push(ScheduledOp {
+                            kind: WireOpKind::Send,
+                            peer: q,
+                            chunk,
+                            column,
+                            k,
+                            rows,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for chunk in 0..map.chunks() {
+        for column in WireColumn::ALL {
+            for (k, &q) in partners.iter().enumerate() {
+                let rows = (recv_rows[k][chunk], recv_rows[k][chunk + 1]);
+                if rows.1 > rows.0 {
+                    ops.push(ScheduledOp {
+                        kind: WireOpKind::Recv,
+                        peer: q,
+                        chunk,
+                        column,
+                        k,
+                        rows,
+                    });
+                }
+            }
+        }
+    }
+    ops
+}
+
+/// `PAULISTRINGS_GPU_EXCHANGE` as a device group over a byte transport reads it: `host`, `nccl`, or anything else (`device`, unset) for NCCL where the whole group can run it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExchangeKnob {
+    Host,
+    Auto,
+    Nccl,
+}
+
+pub(crate) fn parse_exchange_knob(raw: Option<&str>) -> ExchangeKnob {
+    match raw.map(str::trim) {
+        Some("host") => ExchangeKnob::Host,
+        Some("nccl") => ExchangeKnob::Nccl,
+        _ => ExchangeKnob::Auto,
+    }
+}
+
+/// Whether a device group over a byte transport exchanges over NCCL, the same answer on every rank. **Collective**: one `allreduce_sum_u64` of `3 + 2 × size` words.
+///
+/// `can` is whether this rank can start NCCL, `device` its device's UUID; NCCL runs iff the group has more than one rank, every rank wants it and can, and no two ranks drive one device, which NCCL refuses.
+/// A rank whose knob is `nccl` makes the group's `Host` fallback an error on every rank.
+pub(crate) fn agree_exchange(
+    coll: &dyn Collectives,
+    knob: ExchangeKnob,
+    can: bool,
+    device: [u64; 2],
+) -> Result<bool, GpuError> {
+    let (rank, size) = (coll.rank() as usize, coll.size() as usize);
+    let group = size > 1;
+    let wants = group && knob != ExchangeKnob::Host;
+    let mut buf = vec![0u64; 3 + 2 * size];
+    buf[0] = u64::from(wants && can);
+    buf[1] = u64::from(wants);
+    buf[2] = u64::from(group && knob == ExchangeKnob::Nccl);
+    buf[3 + 2 * rank..5 + 2 * rank].copy_from_slice(&device);
+    coll.allreduce_sum_u64(&mut buf);
+    let ids: Vec<[u64; 2]> = buf[3..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
+    let distinct = ids
+        .iter()
+        .enumerate()
+        .all(|(i, a)| ids[i + 1..].iter().all(|b| b != a));
+    let nccl = group && buf[0] == size as u64 && distinct;
+    if buf[2] > 0 && !nccl {
+        return Err(GpuError::Unsupported(
+            "PAULISTRINGS_GPU_EXCHANGE=nccl, but a rank cannot start NCCL, a rank asks for the host exchange, or two ranks share a device",
+        ));
+    }
+    if wants && !nccl {
+        log::info!(
+            "gpu: rank {rank} of {size} exchanges through the host ({} of {size} ranks can start NCCL, devices distinct: {distinct})",
+            buf[0]
+        );
+    }
+    Ok(nccl)
+}
+
+/// A device's UUID as the two words [`agree_exchange`] compares.
+pub(crate) fn device_uuid(ctx: &CudaContext) -> Result<[u64; 2], GpuError> {
+    let id = ctx.uuid()?;
+    let b: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
+    Ok([
+        u64::from_ne_bytes(b[..8].try_into().expect("eight bytes")),
+        u64::from_ne_bytes(b[8..].try_into().expect("eight bytes")),
+    ])
 }
 
 #[cfg(test)]
@@ -766,6 +1059,307 @@ mod tests {
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
         assert!(got.iter().all(|g| *g == id));
+    }
+
+    fn skeletons_of<const W: usize>(seed: u64, blocks: usize, b: usize) -> BlockSkeletons<W> {
+        let mut out = BlockSkeletons::<W>::default();
+        for j in 0..blocks {
+            let mut offsets = vec![0u32];
+            for p in 0..b as u64 {
+                let n = (seed ^ (j as u64 * 31) ^ (p * 7)).wrapping_mul(0x9E37_79B9) >> 60;
+                offsets.push(offsets.last().unwrap() + n as u32);
+            }
+            let rows = offsets[b];
+            out.blocks.push(Skeleton {
+                header: BlockHeader {
+                    num_buckets: b as u32,
+                    rows,
+                    w: W as u32,
+                    entry: 3 * j as u32 + 1,
+                },
+                offsets,
+            });
+        }
+        out
+    }
+
+    /// The byte form a byte transport moves, decoded into a pooled payload of another shape.
+    fn byte_round_trip<const W: usize>(
+        sent: &BlockSkeletons<W>,
+        pooled: BlockSkeletons<W>,
+    ) -> BlockSkeletons<W> {
+        let parts: Vec<Vec<u8>> = sent.byte_parts().iter().map(|p| p.to_vec()).collect();
+        let lens: Vec<usize> = parts.iter().map(Vec::len).collect();
+        let mut got = pooled;
+        for (dst, src) in got.recv_into(&lens).into_iter().zip(&parts) {
+            dst.copy_from_slice(src);
+        }
+        got.finish_recv();
+        got
+    }
+
+    #[test]
+    fn skeletons_round_trip_through_their_byte_form() {
+        let sent = skeletons_of::<2>(0xA1, 3, 16);
+        assert_eq!(sent.byte_parts().len(), 6);
+        assert_eq!(byte_round_trip(&sent, BlockSkeletons::default()), sent);
+        assert_eq!(byte_round_trip(&sent, skeletons_of::<2>(0xB2, 5, 64)), sent);
+        let empty = BlockSkeletons::<1>::default();
+        assert_eq!(byte_round_trip(&empty, skeletons_of::<1>(1, 2, 4)), empty);
+    }
+
+    #[test]
+    fn skeletons_travel_over_the_in_process_transport() {
+        use crate::engine::partitioned::transport::Transport;
+        let got: Vec<Vec<Option<BlockSkeletons<1>>>> = std::thread::scope(|s| {
+            let hs: Vec<_> = InProcessTransport::group(4)
+                .into_iter()
+                .map(|t| {
+                    s.spawn(move || {
+                        let me = t.rank();
+                        let send = (0..4)
+                            .map(|q| {
+                                (q != me).then(|| skeletons_of::<1>(u64::from(me * 8 + q), 2, 8))
+                            })
+                            .collect();
+                        t.exchange(send, &mut Vec::new())
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (me, recv) in got.iter().enumerate() {
+            for (q, r) in recv.iter().enumerate() {
+                if q == me {
+                    assert!(r.is_none());
+                } else {
+                    let want = skeletons_of::<1>((q * 8 + me) as u64, 2, 8);
+                    assert_eq!(r.as_ref(), Some(&want), "{q} -> {me}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_skeleton_whose_offsets_miss_its_header_is_refused() {
+        let mut bad = skeletons_of::<1>(0xC3, 1, 8);
+        bad.blocks[0].header.rows += 1;
+        let r = std::panic::catch_unwind(|| byte_round_trip(&bad, BlockSkeletons::default()));
+        assert!(r.is_err());
+        let mut wide = skeletons_of::<1>(0xC4, 1, 8);
+        wide.blocks[0].header.w = 2;
+        assert!(
+            std::panic::catch_unwind(|| byte_round_trip(&wide, BlockSkeletons::default())).is_err()
+        );
+        let mut descending = skeletons_of::<1>(0xC5, 1, 2);
+        descending.blocks[0].offsets = vec![0, 5, 3];
+        descending.blocks[0].header.rows = 3;
+        assert!(std::panic::catch_unwind(|| byte_round_trip(
+            &descending,
+            BlockSkeletons::default()
+        ))
+        .is_err());
+    }
+
+    /// The pieces rank `me` sends to `to` as `(chunk, column, k, rows)`, and those `to` receives from `me`.
+    fn sends_to(ops: &[ScheduledOp], to: u32) -> Vec<(usize, WireColumn, usize, (usize, usize))> {
+        ops.iter()
+            .filter(|op| op.kind == WireOpKind::Send && op.peer == to)
+            .map(|op| (op.chunk, op.column, op.k, op.rows))
+            .collect()
+    }
+
+    fn recvs_from(
+        ops: &[ScheduledOp],
+        from: u32,
+    ) -> Vec<(usize, WireColumn, usize, (usize, usize))> {
+        ops.iter()
+            .filter(|op| op.kind == WireOpKind::Recv && op.peer == from)
+            .map(|op| (op.chunk, op.column, op.k, op.rows))
+            .collect()
+    }
+
+    /// Per rank of a group of `size`, the schedule for remote deltas of partition deltas `pds`, where `counts[sender][k][p]` is the rows the sender's block for delta `k` puts at position `p`.
+    fn group_schedules(
+        size: u32,
+        pds: &[u32],
+        counts: &[Vec<Vec<u32>>],
+        map: &ChunkMap,
+    ) -> Vec<Vec<ScheduledOp>> {
+        let csr = |c: &Vec<u32>| -> Vec<u32> {
+            let mut o = vec![0u32];
+            for &n in c {
+                o.push(o.last().unwrap() + n);
+            }
+            o
+        };
+        let offsets: Vec<Vec<Vec<u32>>> = counts
+            .iter()
+            .map(|per_k| per_k.iter().map(csr).collect())
+            .collect();
+        (0..size)
+            .map(|r| {
+                let partners: Vec<u32> = pds.iter().map(|&pd| r ^ pd).collect();
+                let own: Vec<&[u32]> = offsets[r as usize].iter().map(Vec::as_slice).collect();
+                let recv: Vec<&[u32]> = partners
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &q)| offsets[q as usize][k].as_slice())
+                    .collect();
+                nccl_schedule(&partners, &own, &recv, map)
+            })
+            .collect()
+    }
+
+    proptest::proptest! {
+        /// Rank `a`'s sends to `b` are `b`'s receives from `a`, in order and in rows; at one chunk each column's receives tile the concatenated column in plan order.
+        #[test]
+        fn the_schedule_is_symmetric(
+            size_bits in 1u32..=3,
+            pd_seeds in proptest::collection::vec(0u32..1000, 1..=10),
+            bits in 0u8..=4,
+            chunks in proptest::sample::select(vec![1usize, 3, 8]),
+            empty_every in 1usize..5,
+            seed in 0u64..u64::MAX,
+        ) {
+            let size = 1u32 << size_bits;
+            let pds: Vec<u32> = pd_seeds.iter().map(|s| 1 + s % (size - 1)).collect();
+            let b = 1usize << bits;
+            let mut state = seed | 1;
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let counts: Vec<Vec<Vec<u32>>> = (0..size)
+                .map(|r| {
+                    (0..pds.len())
+                        .map(|k| {
+                            (0..b)
+                                .map(|_| {
+                                    if (r as usize + k).is_multiple_of(empty_every) { 0 } else { (next() % 5) as u32 }
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect();
+            let mut map = ChunkMap::default();
+            map.rebuild(&crate::engine::coset::Gf2Span::new(&[], bits), b, chunks);
+            let ops = group_schedules(size, &pds, &counts, &map);
+            for a in 0..size {
+                for bb in 0..size {
+                    let s = sends_to(&ops[a as usize], bb);
+                    let r = recvs_from(&ops[bb as usize], a);
+                    proptest::prop_assert_eq!(&s, &r, "{} -> {}", a, bb);
+                    proptest::prop_assert!(s.iter().all(|x| x.3 .1 > x.3 .0), "an empty piece posted");
+                }
+                let pds = &pds;
+                let rows: u64 = counts.iter().enumerate().flat_map(|(r, per_k)| {
+                    per_k.iter().enumerate().filter(move |&(k, _)| r as u32 ^ pds[k] == a)
+                        .map(|(_, c)| c.iter().map(|&n| u64::from(n)).sum::<u64>())
+                }).sum();
+                let got: u64 = ops[a as usize].iter().filter(|op| op.kind == WireOpKind::Recv && op.column == WireColumn::X)
+                    .map(|op| (op.rows.1 - op.rows.0) as u64).sum();
+                proptest::prop_assert_eq!(got, rows, "rank {} receives every row once", a);
+                if map.chunks() == 1 {
+                    for column in WireColumn::ALL {
+                        let ks: Vec<(usize, (usize, usize))> = ops[a as usize].iter()
+                            .filter(|op| op.kind == WireOpKind::Recv && op.column == column)
+                            .map(|op| (op.k, op.rows)).collect();
+                        proptest::prop_assert!(ks.windows(2).all(|w| w[0].0 < w[1].0));
+                        proptest::prop_assert!(ks.iter().all(|&(_, (lo, _))| lo == 0));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every combination of knob and readiness on two ranks, and a sample on four: one outcome on every rank, the documented one.
+    #[test]
+    fn the_exchange_mode_is_agreed_for_every_knob_and_readiness() {
+        use ExchangeKnob::{Auto, Host, Nccl};
+        let run = |ranks: &[(ExchangeKnob, bool, [u64; 2])]| -> Vec<Result<bool, String>> {
+            let size = ranks.len() as u32;
+            std::thread::scope(|s| {
+                let hs: Vec<_> = InProcessTransport::group(size)
+                    .into_iter()
+                    .map(|t| {
+                        let (knob, can, id) = ranks[t.rank() as usize];
+                        s.spawn(move || {
+                            agree_exchange(&t, knob, can, id).map_err(|e| e.to_string())
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        };
+        let want = |ranks: &[(ExchangeKnob, bool, [u64; 2])]| -> Result<bool, ()> {
+            let group = ranks.len() > 1;
+            let ids: Vec<_> = ranks.iter().map(|r| r.2).collect();
+            let distinct = (0..ids.len()).all(|i| (i + 1..ids.len()).all(|j| ids[i] != ids[j]));
+            let nccl = group && distinct && ranks.iter().all(|&(k, c, _)| k != Host && c);
+            if group && !nccl && ranks.iter().any(|r| r.0 == Nccl) {
+                Err(())
+            } else {
+                Ok(nccl)
+            }
+        };
+        let knobs = [Host, Auto, Nccl];
+        let mut cases: Vec<Vec<(ExchangeKnob, bool, [u64; 2])>> = Vec::new();
+        for &k in &knobs {
+            for can in [false, true] {
+                cases.push(vec![(k, can, [1, 0])]);
+            }
+        }
+        for &k0 in &knobs {
+            for c0 in [false, true] {
+                for &k1 in &knobs {
+                    for c1 in [false, true] {
+                        cases.push(vec![(k0, c0, [1, 0]), (k1, c1, [2, 0])]);
+                    }
+                }
+            }
+        }
+        for shared in [[7, 7], [7, 8]] {
+            for &k in &knobs {
+                cases.push(vec![(k, true, [7, 7]), (k, true, shared)]);
+            }
+        }
+        for mask in 0..64u32 {
+            let ranks: Vec<_> = (0..4)
+                .map(|r| {
+                    let k = knobs[((mask >> r) as usize + r as usize) % 3];
+                    (k, (mask >> (r + 2)) & 1 == 0 || r == 0, [r as u64 + 1, 9])
+                })
+                .collect();
+            cases.push(ranks);
+        }
+        for ranks in &cases {
+            let got = run(ranks);
+            let first = &got[0];
+            assert!(
+                got.iter().all(|g| g == first),
+                "{ranks:?}: ranks disagree: {got:?}"
+            );
+            match (want(ranks), first) {
+                (Ok(w), Ok(g)) => assert_eq!(*g, w, "{ranks:?}"),
+                (Err(()), Err(msg)) => {
+                    assert!(msg.contains("PAULISTRINGS_GPU_EXCHANGE=nccl"), "{msg}")
+                }
+                (w, g) => panic!("{ranks:?}: want {w:?}, got {g:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_exchange_knob_parses() {
+        assert_eq!(parse_exchange_knob(None), ExchangeKnob::Auto);
+        assert_eq!(parse_exchange_knob(Some("device")), ExchangeKnob::Auto);
+        assert_eq!(parse_exchange_knob(Some("host")), ExchangeKnob::Host);
+        assert_eq!(parse_exchange_knob(Some(" nccl ")), ExchangeKnob::Nccl);
+        assert_eq!(parse_exchange_knob(Some("garbage")), ExchangeKnob::Auto);
     }
 
     #[test]

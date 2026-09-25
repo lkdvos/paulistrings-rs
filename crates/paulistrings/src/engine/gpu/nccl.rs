@@ -86,11 +86,8 @@ struct Raw {
 // SAFETY: an NCCL communicator may be driven from any thread provided no two calls on it overlap, which the `Mutex` around every `Raw` enforces.
 unsafe impl Send for Raw {}
 
-/// One rank's NCCL communicator over a device group, non-blocking, with every wait on it bounded by a timeout.
-///
-/// Built collectively over the group's [`Collectives`] and owned by the split for its lifetime (ARCHITECTURE.md §Partitioning).
-/// A failed or timed-out operation aborts the communicator, and every later operation on it returns an error without touching NCCL.
-/// Drop finalizes (bounded) and destroys a healthy communicator and aborts any other; it never panics.
+/// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
+/// Drop finalizes and destroys a healthy one (bounded) and aborts any other, never panicking.
 pub(crate) struct NcclComm {
     raw: Mutex<Raw>,
     ctx: Arc<CudaContext>,
@@ -107,10 +104,8 @@ impl NcclComm {
         Self::init_with_timeout(coll, ctx, nccl_timeout())
     }
 
-    /// This rank's communicator over `coll`'s group on `ctx`'s device.
-    ///
-    /// **Collective**: exactly one `allreduce_sum_u64` on every rank whatever the outcome, carrying rank 0's unique id and every rank's readiness, so a rank without a usable `libnccl` fails the call everywhere before any rank starts NCCL's bootstrap.
-    /// A rank whose communicator setup then fails or times out aborts it and returns the error alone; the caller agrees the outcome over the group before [`warm_up`](Self::warm_up).
+    /// This rank's communicator over `coll`'s group on `ctx`'s device. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
+    /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
     pub(crate) fn init_with_timeout(
         coll: &dyn Collectives,
         ctx: &Arc<CudaContext>,
@@ -622,9 +617,7 @@ impl<'a> WireOp<'a> {
     }
 }
 
-/// The ops of one wire group, holding every buffer borrowed until [`post`](Self::post) has enqueued them.
-///
-/// The borrow is what makes posting safe: a buffer cannot be freed or reused before its op is on its stream, and cudarc's per-buffer events are recorded only after that, so they cover the transfer.
+/// The ops of one wire group, holding every buffer borrowed until [`post`](Self::post) has enqueued them, which is what lets posting be safe: cudarc's per-buffer events are recorded only after the ops are on their streams.
 #[derive(Default)]
 pub(crate) struct WireGroup<'a> {
     ops: Vec<WireOp<'a>>,
@@ -651,12 +644,8 @@ impl<'a> WireGroup<'a> {
         self.push(WireOpKind::Recv, peer, ptr, bytes, stream, guard);
     }
 
-    /// Receive consecutive ranges of `dst` in order, `parts[i] = (len, peer)` being `len` elements from `peer`, all ordered on `stream`.
-    /// One view carved in the group, since a borrowed split of a cudarc view cannot outlive its parent.
-    ///
-    /// # Panics
-    ///
-    /// If the parts are longer than `dst`.
+    /// Receive consecutive ranges of `dst` in order, `parts[i] = (len, peer)` being `len` elements from `peer`, on `stream`; one view carved here, since a borrowed split of a cudarc view cannot outlive its parent.
+    /// Panics if the parts are longer than `dst`.
     pub(crate) fn recv_parts<T>(
         &mut self,
         dst: CudaViewMut<'a, T>,
@@ -793,9 +782,7 @@ pub(crate) struct Skeleton {
     pub(crate) offsets: Vec<u32>,
 }
 
-/// One partner's block skeletons in ascending remote-delta index, the host half of an NCCL exchange that `Transport::exchange` carries.
-///
-/// A new payload rather than a column-less `PartnerPayload`, whose `finish_recv` holds a block's header to the columns that arrived with it.
+/// One partner's block skeletons in ascending remote-delta index, the host half of an NCCL exchange; not a column-less `PartnerPayload`, whose `finish_recv` holds a header to the columns that arrived with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockSkeletons<const W: usize> {
     pub(crate) blocks: Vec<Skeleton>,
@@ -930,11 +917,8 @@ pub(crate) struct ScheduledOp {
     pub(crate) rows: (usize, usize),
 }
 
-/// The transfers of one NCCL exchange, from what both ends hold once the skeletons have crossed.
-///
-/// `partners[k]` is remote delta `k`'s partner, `own[k]` the CSR offsets of the block this rank sends for it and `recv[k]` those of the block it receives; every rank's plan lists the same remote entries in the same order, so `k` names one block pair on both ends.
-/// Sends run chunk, partner, column, delta; receives chunk, column, delta, so at one chunk each column's receives tile the concatenated `recv_*` column in plan order.
-/// Per peer both run chunk, column, delta, which is the order a peer's sends and receives match in (`DeviceWire`); a piece of no rows is posted by neither end.
+/// The transfers of one NCCL exchange: `partners[k]`, `own[k]` and `recv[k]` are remote delta `k`'s partner and the offsets of the blocks sent and received for it, `k` naming one block pair on both ends.
+/// Per peer, sends and receives both run chunk, column, delta, the order a wire matches in; receives are column-major across peers so each column's tile its `recv_*` column, and an empty piece is posted by neither end.
 pub(crate) fn nccl_schedule(
     partners: &[u32],
     own: &[&[u32]],

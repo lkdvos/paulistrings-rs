@@ -972,7 +972,6 @@ mod device {
             modes[match mode {
                 GpuExchange::Host => 0,
                 GpuExchange::Device => 1,
-                #[allow(unreachable_patterns)]
                 _ => 2,
             }] = 1;
             paulistrings::engine::partitioned::Collectives::allreduce_sum_u64(

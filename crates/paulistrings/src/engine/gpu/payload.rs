@@ -14,6 +14,7 @@ use crate::engine::partitioned::transport::{BlockHeader, Payload};
 /// `Device` needs a transport that moves objects (the in-process one) and a group of device partitions only; `PAULISTRINGS_GPU_EXCHANGE=host|device` sets the default a [`GpuPartitionedSum`](super::GpuPartitionedSum) starts with.
 /// A [`GpuDistributedSum`](super::GpuDistributedSum) agrees `Nccl` or `Host` over its group at scatter; a group with a host member always uses `Host`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GpuExchange {
     /// K10 stages every block through the host `PartnerPayload` and the receiver uploads it.
     #[default]

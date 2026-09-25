@@ -1805,11 +1805,11 @@ mod tests {
         channels: &[(&'static str, Box<dyn Channel<W>>)],
         arena_bytes: usize,
         (nvrtc, fp_mask): (&[String], u64),
-    ) -> Vec<(&'static str, u64, u64, u32)> {
+    ) -> Vec<(&'static str, u64, u64, (u32, u32))> {
         let size = rows.num_partitions() as u32;
         let mut totals = Vec::new();
         for (name, ch) in channels {
-            let (mut sent, mut unmerged, mut fallbacks) = (0u64, 0u64, 0u32);
+            let (mut sent, mut unmerged, mut fallbacks) = (0u64, 0u64, (0u32, 0u32));
             for rank in 0..size {
                 let local = input.filter_partition(rows, rank);
                 let prep = ch.prepare(local.hash(), false).expect("prepared");
@@ -1862,6 +1862,7 @@ mod tests {
                     } else {
                         let (g, c) =
                             export_blocks(&dev, &table, &plan, &mut scratch, size).expect("export");
+                        #[cfg(debug_assertions)]
                         crate::engine::partitioned::export::debug_assert_exported_partitions(
                             &g, rows,
                         );
@@ -1907,7 +1908,8 @@ mod tests {
                     if !device {
                         sent += counts.rows_sent.iter().sum::<u64>();
                         unmerged += want_counts.rows_to.iter().sum::<u64>();
-                        fallbacks += scratch.counters.fallback_hi;
+                        fallbacks.0 += scratch.counters.fallback_hi;
+                        fallbacks.1 += scratch.counters.fallback_key;
                     }
                 }
             }
@@ -1940,13 +1942,17 @@ mod tests {
             {
                 check_shrink(name, sent, unmerged, pbits);
                 assert_eq!(
-                    fallbacks, 0,
+                    fallbacks,
+                    (0, 0),
                     "{name}: a 64-bit fingerprint needs no fallback"
                 );
             }
         }
         // Every merge block takes a fallback: the `g_hi32` passes with the low word cleared, the full-key sort with no fingerprint at all.
-        for (opt, mask) in [("-DFP_ZERO_LO", !0xFFFF_FFFFu64), ("-DFP_BITS=0", 0)] {
+        for (opt, mask, full_key) in [
+            ("-DFP_ZERO_LO", !0xFFFF_FFFFu64, false),
+            ("-DFP_BITS=0", 0, true),
+        ] {
             let nvrtc = [opt.to_string()];
             for (name, sent, unmerged, fallbacks) in premerge_matches_host_by_key(
                 &input,
@@ -1957,7 +1963,8 @@ mod tests {
             ) {
                 check_shrink(name, sent, unmerged, pbits);
                 if name == "su4" {
-                    assert!(fallbacks > 0, "{opt}: su4 merged without a fallback");
+                    let taken = if full_key { fallbacks.1 } else { fallbacks.0 };
+                    assert!(taken > 0, "{opt}: su4 merged without the expected fallback");
                 }
             }
         }

@@ -174,7 +174,7 @@ A device run agrees with the host to tolerance and is bitwise reproducible run-t
 - The device axis is measured on the release `phase-timing,cuda` probe with `--device` (`--device <list>` or `--gpu-partitions <n>` for a device group); record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number, since the workstation's clocks are driver-managed and unlocked rather than fixed.
 - A GPU timing is the second application of a gate on the saturated sum; a dense cell's CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1` runs, never `wall/3`.
 - The device roofline denominator comes from `membench --device` / `scripts/bandwidth.sh --device`.
-- `PAULISTRINGS_GPU_EXCHANGE=host|device` and `PAULISTRINGS_GPU_STAGING` are runtime knobs, so a device-exchange A/B is one binary run both ways, as with any other knob A/B above.
+- `PAULISTRINGS_GPU_EXCHANGE=host|device`, `PAULISTRINGS_GPU_STAGING` and `PAULISTRINGS_GPU_PREMERGE=off` are runtime knobs, so a device-exchange A/B is one binary run both ways, as with any other knob A/B above.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
 It records what was measured and rejected, including several ideas that look obviously good.
@@ -192,7 +192,8 @@ It records what was measured and rejected, including several ideas that look obv
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
 - The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
-- Device-resident payloads trade staging time for device memory: a partition holds one export volume and one receive volume on its device during a remote layer, and two virtual partitions at ~5.7e7 terms exceed a 48 GB card where the host-staged path runs; the host form stays behind `PAULISTRINGS_GPU_EXCHANGE=host` for that case, for a group with a host member, and for MPI.
+- Device-resident payloads trade staging time for device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card; the host form stays behind `PAULISTRINGS_GPU_EXCHANGE=host` for a group with a host member and for MPI.
+- The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios: `gu2q` on two virtual partitions of one card is ~20% slower with it on, and no gate on the ratio exists yet.
 - A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
 - The cross-device peer copy (`PAULISTRINGS_GPU_EXCHANGE=device` with more than one physical device) has not run on a real multi-GPU node; today's measurements are virtual partitions on one card.
 

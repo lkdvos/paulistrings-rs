@@ -437,10 +437,7 @@ mod tests {
         part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
         let group = CountingGroup::default();
         <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(&mut part, &tree, &group);
-        assert!(matches!(
-            part.take_error(),
-            Err(GpuError::Unsupported(_))
-        ));
+        assert!(matches!(part.take_error(), Err(GpuError::Unsupported(_))));
     }
 
     /// How one mixed run is set up: the rows, an optional common bucket count replacing the scatter's, and a failure to inject on the device rank.

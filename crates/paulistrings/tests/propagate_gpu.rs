@@ -351,7 +351,7 @@ fn exact_top_n_edge_cases_match_the_host() {
 #[test]
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
-    use paulistrings::engine::partitioned::{Placement, PartitionConfig, PartitionRuntime};
+    use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
     use paulistrings::gpu::GpuPartitionedSum;
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);

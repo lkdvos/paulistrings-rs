@@ -269,7 +269,13 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         T: PartitionedTruncation<W> + ?Sized,
     {
         self.check_poison()?;
-        let lowered = lower_for_run(circuit, policy, direction, self.inner.backend().hash(), false)?;
+        let lowered = lower_for_run(
+            circuit,
+            policy,
+            direction,
+            self.inner.backend().hash(),
+            false,
+        )?;
         let part = self.inner.backend_mut();
         let stale = part.take_error();
         debug_assert!(stale.is_ok(), "a device error survived the previous call");

@@ -446,7 +446,15 @@ mod tests {
         use crate::truncation::TopN;
         for (what, sum) in fixtures::<W>() {
             let len = sum.len();
-            for n in [0usize, 1, len / 3, len / 2, len.saturating_sub(1), len, len + 5] {
+            for n in [
+                0usize,
+                1,
+                len / 3,
+                len / 2,
+                len.saturating_sub(1),
+                len,
+                len + 5,
+            ] {
                 let mut want = sum.clone();
                 TopN(n).finalize_layer(&mut want);
                 let (mut dev, mut scratch) = device(&sum);

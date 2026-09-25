@@ -155,7 +155,7 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 ## Limits
 
 - **The resident `GpuPauliSum` is one device.** A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.
-- **Exact `topn` is unavailable**, as in a partitioned run: `truncation.topn` raises `NotImplementedError`, and `truncation.approx_topn(n)` retains exactly the set the host would.
+- **Exact `topn` runs only on one device.** `truncation.topn` matches the host term for term on a lone `device=<int>`, `to_device`, or a `device=` that resolves to one ordinal; a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError`, since the `n`-th largest of a split sum has no collective form — use `truncation.approx_topn(n)` there instead.
 - **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions lower to the device; a custom Rust `TruncationPolicy` without a `device_policy` is refused before the first layer.
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.
 - **Widths `W ≥ 8` (more than 256 qubits) are correct but untuned.**

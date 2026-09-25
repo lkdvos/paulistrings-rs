@@ -152,7 +152,9 @@ POLICIES = {
     "coeff": lambda n: truncation.coeff(0.05),
     "weight": lambda n: truncation.weight(n * 7 // 10),
     "approx_topn": lambda n: truncation.approx_topn(3_000),
+    "topn": lambda n: truncation.topn(3_000),
     "coeff & approx_topn": lambda n: truncation.coeff(0.01) & truncation.approx_topn(5_000),
+    "coeff & topn": lambda n: truncation.coeff(0.01) & truncation.topn(5_000),
     "weight | coeff": lambda n: truncation.weight(n * 6 // 10) | truncation.coeff(0.5),
 }
 
@@ -232,10 +234,15 @@ def test_resident_width_mismatch_is_the_host_error():
 
 
 @needs_cuda
-def test_resident_exact_topn_is_not_implemented():
-    resident = _observable(8, terms=16).to_device()
-    with pytest.raises(NotImplementedError, match="approx_topn"):
-        resident.propagate(_circuit(8), truncation.topn(10))
+def test_resident_exact_topn_matches_the_host():
+    """A resident sum is always one device, so exact `topn` runs there directly (unlike a device list or `comm=`)."""
+    s, c = _observable(8, terms=500), _circuit(8)
+    policy = truncation.topn(100)
+    want = s.propagate(c, policy, direction="heisenberg")
+    resident = s.to_device()
+    resident.propagate(c, policy, direction="heisenberg")
+    _assert_terms_close(resident.to_host(), want)
+    assert len(resident) == len(want)
 
 
 @needs_cuda

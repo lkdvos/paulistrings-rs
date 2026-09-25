@@ -458,7 +458,7 @@ A segmented sum over each equal-key run (a warp-shuffle block scan on dense tabl
 A device with less opt-in shared memory loads fewer block variants and runs under a lower cap.
 Rows land in a loose arena sized by the exact pre-dedup counts, batched over contiguous position ranges so the arena stays under `arena_bytes`, then compact into the output columns at running offsets; input and output columns ping-pong between layers.
 The block width is a per-`W` constant (`THREADS`): 1024 threads at `W ≤ 2`, 512 at `W = 4`, 256 above, register-bound.
-The kernels are named K1 count table `cnt[β][e]`, K2 segment sizes and scan, K3 the fused layer, K4 compaction, K5 the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`), K6 refine, K7 the octave histogram of `ApproxTopN`, and K11 the device invariant check.
+The kernels are named K1 count table `cnt[β][e]`, K2 segment sizes and scan, K3 the fused layer, K4 compaction, K5 the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`), K6 refine, K7 the octave histogram of `ApproxTopN`, K8 exact `TopN`'s radix-select over the bit pattern of `|c|²` (one device only; `DevicePartition::finalize_layer` reports `Unsupported` above one partition, since the `n`-th largest of a split sum has no collective form), and K11 the device invariant check.
 
 **Bucket policy on device.**
 The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ 4096 × 2^b`, where `fanout` is the number of table entries with any nonzero amplitude, never below the current count, and capped at `B_MAX_BITS`.

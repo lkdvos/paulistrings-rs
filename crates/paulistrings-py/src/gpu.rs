@@ -2,8 +2,8 @@
 //! `GpuPauliSum` exists in every build so the Python name is stable; without the `cuda` feature its storage enum is uninhabited, so nothing can construct one.
 
 use crate::sum::{check_num_qubits, parse_direction, parse_engine, PauliSum, PropagationStats};
-use crate::truncation_spec::{spec_has_exact_topn, PolicySpec, PyTruncation};
-use pyo3::exceptions::{PyNotImplementedError, PyTypeError, PyValueError};
+use crate::truncation_spec::{PolicySpec, PyTruncation};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
 
@@ -64,9 +64,10 @@ pub(crate) fn parse_device(obj: &Bound<'_, PyAny>) -> PyResult<DeviceRequest> {
     ))
 }
 
-/// Why a spec containing an exact `topn` cannot run on a device, prefixed by the caller with the kwarg or method that asked for one.
+/// Why a spec containing an exact `topn` cannot run on more than one CUDA device (or one device per rank under `comm=`), prefixed by the caller with the kwarg or method that asked for one.
+/// A lone device (`device=<int>`, `to_device`, or `device=` resolving to one ordinal) supports it directly.
 pub(crate) const TOPN_DEVICE_MSG: &str =
-    "exact truncation.topn is not available on a CUDA device; use truncation.approx_topn";
+    "exact truncation.topn has no collective form above one CUDA device; use truncation.approx_topn, or a single device= ordinal";
 
 /// The `RuntimeError` for a `device=` that pairs with `comm=` in a build lacking one of the two features.
 #[cfg(not(all(feature = "cuda", feature = "mpi")))]
@@ -365,7 +366,7 @@ impl GpuPauliSum {
     /// Propagate the resident sum through `circuit`, in place.
     ///
     /// Arguments are `PauliSum.propagate`'s of the same name; `target_bucket_len` and `min_buckets` drive the host-side bucket schedule the device refines on top of.
-    /// Exact `truncation.topn` raises `NotImplementedError` (use `approx_topn`), as does a channel on more than two qubits other than a Pauli rotation.
+    /// A `GpuPauliSum` is always one device, so exact `truncation.topn` runs here (unlike `device=[...]` or `comm=` with `device=`, which raise `NotImplementedError`); a channel on more than two qubits other than a Pauli rotation still raises `NotImplementedError`.
     /// A device error mid-run leaves the sum holding the last completed layer's output, and a later call resumes from it; an exhausted device raises `MemoryError`.
     /// The GIL is released for the duration.
     #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
@@ -483,11 +484,6 @@ impl GpuPauliSum {
         check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
         let no_op = PolicySpec::NoOp;
         let spec = policy.map_or(&no_op, |p| &p.spec);
-        if spec_has_exact_topn(spec) {
-            return Err(PyNotImplementedError::new_err(format!(
-                "GpuPauliSum.propagate: {TOPN_DEVICE_MSG}"
-            )));
-        }
         let inner = &mut self.inner;
         Ok(py.allow_threads(move || inner.propagate(&circuit.inner, spec, dir, options, traced))?)
     }

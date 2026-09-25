@@ -11,6 +11,9 @@ mod finalize;
 mod fingerprint;
 mod layer;
 mod module;
+#[cfg(feature = "nccl")]
+#[cfg_attr(not(test), allow(dead_code))]
+mod nccl;
 mod partition;
 mod payload;
 mod prepared;
@@ -20,6 +23,8 @@ mod staging;
 mod sum;
 mod truncation;
 
+#[cfg(feature = "nccl")]
+pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
 pub use driver::{propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuPauliSum};
 pub use error::GpuError;

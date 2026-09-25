@@ -36,6 +36,20 @@ pub enum GpuError {
         /// The layer index within that call, in application order.
         layer: usize,
     },
+    /// An NCCL call reported a non-success result.
+    #[cfg(feature = "nccl")]
+    Nccl {
+        /// The `ncclResult_t` value, as an `i32`.
+        code: i32,
+        /// What was being attempted.
+        what: String,
+    },
+    /// A bounded wait on a device or communicator operation exceeded its deadline; see `PAULISTRINGS_NCCL_TIMEOUT_S`.
+    #[cfg(feature = "nccl")]
+    Timeout {
+        /// What was being waited on.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for GpuError {
@@ -54,6 +68,10 @@ impl fmt::Display for GpuError {
                 f,
                 "device partition {rank} failed at layer {layer} of an earlier propagate; scatter again"
             ),
+            #[cfg(feature = "nccl")]
+            GpuError::Nccl { code, what } => write!(f, "NCCL error {code} during {what}"),
+            #[cfg(feature = "nccl")]
+            GpuError::Timeout { what } => write!(f, "timed out waiting on {what}"),
         }
     }
 }

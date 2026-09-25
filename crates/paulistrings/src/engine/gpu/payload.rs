@@ -22,15 +22,28 @@ pub enum GpuExchange {
     Device,
 }
 
+/// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for an in-process group.
+///
+/// `nccl` means `Device` here, since in-process peer copies already go device to device; the MPI driver reads the raw value itself to tell `device` from `nccl`.
+fn parse_gpu_exchange(raw: Option<&str>) -> GpuExchange {
+    match raw {
+        Some("host") => GpuExchange::Host,
+        Some("nccl") => {
+            log::info!(
+                "gpu: PAULISTRINGS_GPU_EXCHANGE=nccl applies to MPI groups; an in-process group uses GpuExchange::Device"
+            );
+            GpuExchange::Device
+        }
+        _ => GpuExchange::Device,
+    }
+}
+
 /// The default for a [`GpuPartitionedSum`](super::GpuPartitionedSum): `Device` unless `PAULISTRINGS_GPU_EXCHANGE=host`, read once per process.
 pub(crate) fn gpu_exchange_default() -> GpuExchange {
     static MODE: std::sync::OnceLock<GpuExchange> = std::sync::OnceLock::new();
-    *MODE.get_or_init(
-        || match std::env::var("PAULISTRINGS_GPU_EXCHANGE").as_deref() {
-            Ok("host") => GpuExchange::Host,
-            _ => GpuExchange::Device,
-        },
-    )
+    *MODE.get_or_init(|| {
+        parse_gpu_exchange(std::env::var("PAULISTRINGS_GPU_EXCHANGE").ok().as_deref())
+    })
 }
 
 /// One exchange block with its columns on a device: the header and CSR offsets on the host, `x`/`z`/`coeff`/`g` on the device the sender ran on.
@@ -318,6 +331,15 @@ pub fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_gpu_exchange_reads_the_knob() {
+        assert_eq!(parse_gpu_exchange(None), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("host")), GpuExchange::Host);
+        assert_eq!(parse_gpu_exchange(Some("device")), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("nccl")), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("garbage")), GpuExchange::Device);
+    }
 
     #[test]
     fn peer_access_is_reported_for_every_pair() {

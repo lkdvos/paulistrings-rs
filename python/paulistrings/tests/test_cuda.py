@@ -293,12 +293,13 @@ def test_zero_layer_circuit_on_device():
 
 
 @needs_cuda
-def test_exact_topn_is_not_implemented():
+def test_exact_topn_runs_on_one_device_and_is_not_implemented_across_several():
     s, c = _observable(8, terms=64), _circuit(8)
-    with pytest.raises(NotImplementedError, match="device=0"):
-        s.propagate(c, truncation.topn(10), device=0)
+    _assert_terms_close(s.propagate(c, truncation.topn(10), device=0), s.propagate(c, truncation.topn(10)))
     with pytest.raises(NotImplementedError, match="topn"):
-        s.propagate(c, truncation.coeff(0.1) | truncation.topn(10), device=0)
+        s.propagate(c, truncation.topn(10), device=[0, 0])
+    with pytest.raises(NotImplementedError, match="topn"):
+        s.propagate(c, truncation.coeff(0.1) | truncation.topn(10), device=[0, 0])
 
 
 @needs_cuda

@@ -2085,6 +2085,83 @@ mod tests {
         );
     }
 
+    /// A source bucket longer than [`MAX_BUCKET_LEN`] forces `premerge_groups` to clear every group (export.rs's tag-overflow guard), so the sender falls back to the unmerged, bitwise-`export_layer`-matching export.
+    /// A single bucket (`bits = 0`) with enough rows still exceeds the limit after `filter_partition` halves it.
+    #[test]
+    fn oversize_source_bucket_falls_back_to_unmerged_export() {
+        crate::require_cuda!();
+        let nq = 12;
+        let seed = 0xB16u64;
+        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 0, seed);
+        let input = rand_sum::<1>(12_000, nq, seed).with_hash(hash);
+        assert_eq!(input.num_buckets(), 1);
+        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
+        let size = rows.num_partitions() as u32;
+        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+        let mut remote_layers = 0;
+        for rank in 0..size {
+            let local = input.filter_partition(&rows, rank);
+            assert!(
+                local.bucket(0).2.len() > MAX_BUCKET_LEN,
+                "fixture: the single bucket must exceed the tag's offset field"
+            );
+            let prep = ch.prepare(local.hash(), false).expect("prepared");
+            let plan = PartitionPlan::new(&prep, &rows, rank);
+            if !plan.has_remote() {
+                continue;
+            }
+            remote_layers += 1;
+            let nb = local.num_buckets();
+            let mut map = ChunkMap::default();
+            map.rebuild(
+                &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
+                nb,
+                1,
+            );
+            let (want, want_counts) = export_layer(
+                &local,
+                &prep,
+                &plan,
+                size,
+                &map,
+                &mut ExportScratch::default(),
+            );
+            let dev = GpuSum::from_host(&local, 0).expect("upload");
+            let mut scratch = scratch_with(&dev, true);
+            let fp = FingerprintRows::<1>::new(dev.hash().seed());
+            let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
+            scratch.upload_table(&dev, &table).expect("table");
+            scratch.count_local(&dev, &table).expect("count");
+            let (got, got_counts) =
+                export_blocks(&dev, &table, &plan, &mut scratch, size).expect("export");
+            dev.stream.synchronize().expect("sync");
+            let what = format!("rank {rank}");
+            assert_eq!(
+                got_counts.rows_sent, want_counts.rows_to,
+                "{what}: the oversize bucket must skip the merge, not shrink it"
+            );
+            assert_eq!(
+                scratch.counters.rows_premerged, 0,
+                "{what}: no rows were premerged"
+            );
+            for (q, (g, w)) in got.iter().zip(&want).enumerate() {
+                match (g, w) {
+                    (None, None) => {}
+                    (Some(g), Some(w)) => {
+                        assert_eq!(g.blocks.len(), w.blocks.len(), "{what}: blocks to {q}");
+                        for (j, (gb, wb)) in g.blocks.iter().zip(&w.blocks).enumerate() {
+                            assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
+                            assert_eq!(gb.offsets, wb.offsets, "{what}: offsets {j} to {q}");
+                            assert_eq!(gb.cols(), wb.cols(), "{what}: columns {j} to {q}");
+                        }
+                    }
+                    _ => panic!("{what}: payload presence to {q} differs"),
+                }
+            }
+        }
+        assert!(remote_layers > 0, "the fixture must export something");
+    }
+
     /// A recycled payload comes back for its own device and keeps its blocks; another device's does not.
     #[test]
     fn the_payload_bin_is_keyed_by_device() {

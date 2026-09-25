@@ -41,6 +41,15 @@ mpi = ["dep:mpi"]
 # and runs on a box with no GPU, and every device-touching test returns early
 # through `gpu::cuda_available()`.
 cuda = ["dep:cudarc"]
+# Compile the NCCL device-direct exchange for the distributed CUDA backend
+# (`gpu::nccl_available`, `GpuError::{Nccl, Timeout}`). Off by default, like
+# `cuda` and `mpi`; needs both, since NCCL carries the bulk exchange and MPI
+# still carries every collective and the skeleton metadata (design doc §1).
+# `cudarc/nccl-02022`, never the bare `nccl` feature: cudarc's `nccl` binds
+# 2.30's larger `ncclConfig_t`, while `nccl-02022`'s struct is field-for-field
+# the module's 2.23.4 one. NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so
+# this needs no build-script support and no toolkit to compile.
+nccl = ["cuda", "mpi", "cudarc/nccl-02022"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }

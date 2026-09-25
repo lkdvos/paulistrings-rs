@@ -71,6 +71,12 @@ jobs:
       - run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features mpi
       - run: cargo clippy -p paulistrings-py --features mpi -- -D warnings
+      # `nccl` implies `cuda` and `mpi`; NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so this
+      # compiles with no NCCL installation and no GPU on the runner, same as the `cuda` job below.
+      - run: cargo clippy -p paulistrings --all-targets --features nccl -- -D warnings
+      - run: cargo test -p paulistrings --features nccl
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features nccl
+      - run: cargo clippy -p paulistrings-py --features nccl -- -D warnings
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

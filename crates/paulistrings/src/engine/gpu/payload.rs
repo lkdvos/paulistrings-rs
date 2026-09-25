@@ -22,15 +22,32 @@ pub enum GpuExchange {
     Device,
 }
 
+/// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for [`GpuPartitionedSum`](super::GpuPartitionedSum) (in-process).
+///
+/// `nccl` parses but is not yet a distinct mode here: in-process NCCL (`ncclCommInitAll`) would
+/// duplicate what the peer-copy path already does, and WP9b item 1's peer verdict is still
+/// pending (design doc §1.2, §2.5), so it falls back to `Device` with one log line.
+/// [`crate::engine::gpu::GpuDistributedSum`]'s MPI mode agreement reads the raw environment value
+/// itself rather than through this function, since it must tell `device` and `nccl` apart.
+fn parse_gpu_exchange(raw: Option<&str>) -> GpuExchange {
+    match raw {
+        Some("host") => GpuExchange::Host,
+        Some("nccl") => {
+            log::info!(
+                "gpu: PAULISTRINGS_GPU_EXCHANGE=nccl has no in-process NCCL path yet; using GpuExchange::Device"
+            );
+            GpuExchange::Device
+        }
+        _ => GpuExchange::Device,
+    }
+}
+
 /// The default for a [`GpuPartitionedSum`](super::GpuPartitionedSum): `Device` unless `PAULISTRINGS_GPU_EXCHANGE=host`, read once per process.
 pub(crate) fn gpu_exchange_default() -> GpuExchange {
     static MODE: std::sync::OnceLock<GpuExchange> = std::sync::OnceLock::new();
-    *MODE.get_or_init(
-        || match std::env::var("PAULISTRINGS_GPU_EXCHANGE").as_deref() {
-            Ok("host") => GpuExchange::Host,
-            _ => GpuExchange::Device,
-        },
-    )
+    *MODE.get_or_init(|| {
+        parse_gpu_exchange(std::env::var("PAULISTRINGS_GPU_EXCHANGE").ok().as_deref())
+    })
 }
 
 /// One exchange block with its columns on a device: the header and CSR offsets on the host, `x`/`z`/`coeff`/`g` on the device the sender ran on.
@@ -281,6 +298,15 @@ pub fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_gpu_exchange_reads_the_knob() {
+        assert_eq!(parse_gpu_exchange(None), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("host")), GpuExchange::Host);
+        assert_eq!(parse_gpu_exchange(Some("device")), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("nccl")), GpuExchange::Device);
+        assert_eq!(parse_gpu_exchange(Some("garbage")), GpuExchange::Device);
+    }
 
     #[test]
     fn peer_access_is_reported_for_every_pair() {

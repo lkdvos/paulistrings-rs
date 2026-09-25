@@ -116,6 +116,10 @@ mod cuda {
             | GpuError::LibraryMissing(_)
             | GpuError::Driver(_)
             | GpuError::Compile { .. } => PyRuntimeError::new_err(err.to_string()),
+            #[cfg(feature = "nccl")]
+            GpuError::Nccl { .. } | GpuError::Timeout { .. } => {
+                PyRuntimeError::new_err(err.to_string())
+            }
         }
     }
 

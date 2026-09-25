@@ -25,6 +25,19 @@ pub fn cuda_available() -> bool {
     device_count() > 0
 }
 
+/// Whether `libnccl` can be loaded and a CUDA device is visible, per [`cuda_available`].
+///
+/// Checks `is_culib_present()` before anything reaches `culib()`, which panics when `libnccl` is
+/// absent, so this is safe to call on a box with no NCCL installation at all.
+#[cfg(feature = "nccl")]
+pub fn nccl_available() -> bool {
+    if !cuda_available() {
+        return false;
+    }
+    // SAFETY: `is_culib_present` only probes `dlopen`-style candidates; it never touches a device.
+    unsafe { cudarc::nccl::sys::is_culib_present() }
+}
+
 /// Number of CUDA devices visible to this process, `0` when CUDA is unavailable.
 pub fn device_count() -> usize {
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
@@ -115,6 +128,39 @@ mod tests {
     #[test]
     fn cuda_available_never_panics() {
         let _ = cuda_available();
+    }
+
+    #[cfg(feature = "nccl")]
+    #[test]
+    fn nccl_available_never_panics() {
+        let _ = nccl_available();
+    }
+
+    /// A real `libnccl.so*` sitting in one of `LD_LIBRARY_PATH`'s directories is this
+    /// workstation's signal that the module is loaded; anywhere else this returns early, so the
+    /// test is never `#[ignore]`d. A directory-name substring match on "nccl" is not enough: this
+    /// crate's own private `CARGO_TARGET_DIR` (`target-nccl`) lands on `LD_LIBRARY_PATH` too, via
+    /// the `mpi` build script's `OUT_DIR`.
+    #[cfg(feature = "nccl")]
+    #[test]
+    fn nccl_available_true_with_module_on_path() {
+        let module_on_path = std::env::var("LD_LIBRARY_PATH")
+            .unwrap_or_default()
+            .split(':')
+            .any(|dir| {
+                std::fs::read_dir(dir)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .any(|e| e.file_name().to_string_lossy().starts_with("libnccl.so"))
+                    })
+                    .unwrap_or(false)
+            });
+        if !module_on_path {
+            return;
+        }
+        crate::require_cuda!();
+        assert!(nccl_available());
     }
 
     #[test]

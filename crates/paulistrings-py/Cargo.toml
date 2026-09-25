@@ -25,6 +25,10 @@ mpi = ["paulistrings/mpi"]
 # live `paulistrings.cuda_available()`. Off by default, like `mpi`; it needs no
 # toolkit to build. Build it with `maturin develop --release --features cuda`.
 cuda = ["paulistrings/cuda"]
+# Compile the NCCL surface of the bindings, matching the core's `nccl`
+# feature. Off by default, like `cuda` and `mpi`. Build it with
+# `maturin develop --release --features nccl`.
+nccl = ["paulistrings/nccl", "cuda", "mpi"]
 
 [dependencies]
 paulistrings = { workspace = true }

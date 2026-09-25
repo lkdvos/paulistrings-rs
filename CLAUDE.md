@@ -112,6 +112,15 @@ cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
 mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
 ```
 
+The `nccl` feature (device-direct exchange for `gpu::MpiGpuSum`, ARCHITECTURE.md §Partitioning) needs both `cuda` and `mpi`, so both module sets plus the NCCL library, and needs no build-script support of its own: NCCL is `dlopen`ed exactly like `libcuda`/`libnvrtc`, so building it needs no toolkit either.
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+cargo test -p paulistrings --features nccl,test-utils --lib gpu::   # nccl_available() etc.; pass without the module
+cargo clippy -p paulistrings-py --features nccl -- -D warnings
+```
+
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 **Submitting is the user's step, never an agent's** — adjust the template and hand over the `sbatch` line.
 

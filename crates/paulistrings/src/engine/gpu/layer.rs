@@ -171,6 +171,10 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(super) dst_off: CudaSlice<u32>,
     /// K7's `[len, bins…]`.
     pub(super) hist: CudaSlice<u64>,
+    /// K8's 256-bin radix digit histogram, reused across passes.
+    pub(super) radix_hist: CudaSlice<u64>,
+    /// K8's small scalar outputs: the extracted singleton bits, or `[above, equal]` counts.
+    pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
     pub(super) amp: CudaSlice<f64>,
     pub(super) mask: CudaSlice<u64>,
@@ -283,6 +287,8 @@ impl<const W: usize> LayerScratch<W> {
             out_len_pos: s.alloc_zeros(1)?,
             dst_off: s.alloc_zeros(2)?,
             hist: s.alloc_zeros(1 + APPROX_BINS)?,
+            radix_hist: s.alloc_zeros(256)?,
+            radix_out: s.alloc_zeros(2)?,
             fallback: s.alloc_zeros(2)?,
             amp: s.alloc_zeros(512)?,
             mask: s.alloc_zeros(32 * W)?,

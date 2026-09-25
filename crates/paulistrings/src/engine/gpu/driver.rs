@@ -28,8 +28,8 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 ///
 /// Built by [`Self::from_host`], stepped by [`Self::propagate`], read back by [`Self::to_host`].
 /// The layer loop is the partitioned engine's at `P = 1`, so the bucket-count schedule, trace and log lines are those of [`PartitionedSum`](crate::engine::partitioned::PartitionedSum).
-/// A policy runs here through its [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) tree from [`TruncationPolicy::device_policy`](crate::TruncationPolicy::device_policy): per-term filters inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host.
-/// `propagate` fails with [`GpuError::Unsupported`] before touching the device if the policy has no tree, if the tree contains an exact `TopN` (not implemented on device), or if its per-term part lowers to more than 15 nodes.
+/// A policy runs here through its [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) tree from [`TruncationPolicy::device_policy`](crate::TruncationPolicy::device_policy): per-term filters inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, exact `TopN` as a local radix-select (K8, no collective needed at one partition), `And`/`Or` as on the host.
+/// `propagate` fails with [`GpuError::Unsupported`] before touching the device if the policy has no tree or if its per-term part lowers to more than 15 nodes; unlike [`GpuPartitionedSum`] and `gpu::MpiGpuSum`, an exact `TopN` runs here, since this sum is always one partition.
 ///
 /// A device error mid-run leaves the sum in the state of the last completed layer and is returned from `propagate`.
 pub struct GpuPauliSum<const W: usize> {
@@ -39,11 +39,14 @@ pub struct GpuPauliSum<const W: usize> {
 }
 
 /// The checks every device propagation makes before its first layer: the policy lowers, its layer pass agrees with `finalizes_layer`, and every channel prepares.
+///
+/// `single_partition` gates an exact `TopN` in the tree: `true` for [`GpuPauliSum`] alone, `false` for [`GpuPartitionedSum`] and `gpu::MpiGpuSum`, whose partitions have no collective `n`-th-largest.
 pub(super) fn lower_for_run<const W: usize, T>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
     hash: &Gf2Hash<W>,
+    single_partition: bool,
 ) -> Result<DevicePolicy, GpuError>
 where
     T: PartitionedTruncation<W> + ?Sized,
@@ -51,7 +54,7 @@ where
     let tree = policy.device_policy().ok_or(GpuError::Unsupported(
         "truncation policy without a device form",
     ))?;
-    if tree.contains_exact_top_n() {
+    if tree.contains_exact_top_n() && !single_partition {
         return Err(GpuError::Unsupported("exact TopN on device"));
     }
     // The driver runs the layer pass iff `policy` says so, so a tree that disagrees would be skipped or run wrongly.
@@ -129,7 +132,7 @@ impl<const W: usize> GpuPauliSum<W> {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        let lowered = lower_for_run(circuit, policy, direction, self.part.hash())?;
+        let lowered = lower_for_run(circuit, policy, direction, self.part.hash(), true)?;
         self.part.take_error()?;
         self.part.policy = lowered;
         let n = circuit.channels.len();
@@ -390,7 +393,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
     ///
     /// # Errors
     ///
-    /// As [`GpuPauliSum::propagate_with_options`] before the first layer.
+    /// As [`GpuPauliSum::propagate_with_options`] before the first layer, except that an exact `TopN` anywhere in the tree is always [`GpuError::Unsupported`] here: every partition holds a disjoint slice, and the `n`-th largest of the whole split sum has no collective form.
     /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry; a device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
     /// The split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
     pub fn propagate_with_options<T>(
@@ -404,7 +407,7 @@ impl<const W: usize> GpuPartitionedSum<W> {
         T: PartitionedTruncation<W> + ?Sized,
     {
         self.check_poison()?;
-        let lowered = lower_for_run(circuit, policy, direction, self.parts[0].hash())?;
+        let lowered = lower_for_run(circuit, policy, direction, self.parts[0].hash(), false)?;
         for part in &mut self.parts {
             part.take_error()?;
             part.policy = lowered.clone();

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-57fd608e.js";
+            window.path_to_searchindex_js = "searchindex-5daa0c5f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b86f2ee9.js"></script>
@@ -205,6 +205,13 @@ pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" 
 </code></pre>
 <p>At runtime it needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, or <code>pip install nvidia-cuda-nvrtc-cu12</code> with its <code>lib</code> directory on <code>LD_LIBRARY_PATH</code> elsewhere.
 Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works as in the default build.</p>
+<h3 id="gpu-and-mpi-features"><a class="header" href="#gpu-and-mpi-features">GPU and MPI features</a></h3>
+<p>The <code>nccl</code> feature adds the device-direct exchange for one GPU per MPI rank (<a href="manual/propagation/mpi.html#gpu-per-rank">MPI ranks</a>) and needs both <code>cuda</code> and <code>mpi</code>, so both module sets plus the NCCL library; NCCL is <code>dlopen</code>ed like <code>libcuda</code>/<code>libnvrtc</code>, so it needs no toolkit to build either.</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features nccl"
+</code></pre>
 <p>Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates <code>./.venv</code> and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-57fd608e.js";
+            window.path_to_searchindex_js = "../searchindex-5daa0c5f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-b86f2ee9.js"></script>
@@ -261,7 +261,7 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 Several devices split the sum like <code>partitions=</code>: <code>partition_row_seed</code> and <code>partition_row_blocks</code> pick the rows, the block count equal to the list length.
 <code>device=</code> is an alternative to <code>partitions=</code>; passing both, or <code>result="local"</code> without <code>comm=</code>, or <code>partition_row_blocks=</code> with a single device, is a <code>ValueError</code>.
 <code>engine</code> is ignored, <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
-<p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (the launcher’s node-local rank modulo the visible devices), and a list of several ordinals is a <code>ValueError</code>.
+<p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (a device near the rank’s CPUs, <code>gpu::local_device_for_comm</code>), and a list of several ordinals is a <code>ValueError</code>.
 <code>result=</code> and the row kwargs mean what they mean on the host <code>comm=</code> path, and a rank that cannot use its device fails the call on every rank.
 The pair needs the extension built with both the <code>cuda</code> and <code>mpi</code> features, and raises <code>RuntimeError</code> naming the missing one otherwise.
 See <a href="../manual/propagation/gpu.html">CUDA devices</a>.</p>

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-57fd608e.js";
+            window.path_to_searchindex_js = "../../searchindex-5daa0c5f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-b86f2ee9.js"></script>
@@ -274,17 +274,18 @@ Each rank’s Rayon pool sizes itself from the CPUs the launcher left in its aff
 See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md"><code>scripts/slurm/README.md</code></a>.</p>
 <h2 id="gpu-per-rank"><a class="header" href="#gpu-per-rank">One GPU per rank</a></h2>
 <p>Built with both <code>mpi</code> and <code>cuda</code>, the Rust driver <code>gpu::MpiGpuSum</code> holds each rank’s share on one CUDA device, with the same contract as <code>MpiSum</code>: replicated input, collective calls, rank 0 gathers.
-<code>gpu::local_device_for_rank</code> picks the device from the launcher’s node-local rank (<code>OMPI_COMM_WORLD_LOCAL_RANK</code>, <code>MV2_COMM_WORLD_LOCAL_RANK</code>, <code>MPI_LOCALRANKID</code>, <code>SLURM_LOCALID</code>), modulo the visible devices:</p>
+<code>gpu::local_device_for_comm</code> picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to <code>gpu::local_device_for_rank</code>, the launcher’s node-local rank (<code>OMPI_COMM_WORLD_LOCAL_RANK</code>, <code>MV2_COMM_WORLD_LOCAL_RANK</code>, <code>MPI_LOCALRANKID</code>, <code>SLURM_LOCALID</code>) modulo the visible devices:</p>
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use paulistrings::engine::partitioned::{Collectives, PartitionRowPolicy};
-use paulistrings::gpu::{local_device_for_rank, MpiGpuSum};
+use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
 let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
-let transport = MpiTransport::from_communicator(&amp;universe.world());
-let device = local_device_for_rank(transport.rank())?;
+let world = universe.world();
+let device = local_device_for_comm(&amp;world)?;
+let transport = MpiTransport::from_communicator(&amp;world);
 let mut split = MpiGpuSum::&lt;2&gt;::scatter(observable, transport, device, &amp;PartitionRowPolicy::Seeded(None))?;
 split.propagate(&amp;circuit, &amp;ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
@@ -293,8 +294,11 @@ if let Some(evolved) = split.gather()? {
 <span class="boring">}</span></code></pre>
 <p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
 A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
-Launch with one visible device per task, <code>srun --gpus-per-task=1 --mpi=pmix</code>; <code>scripts/slurm/mpi-gpu-ranks.sbatch</code> runs the differential net and the probe that way.</p>
-<p>From Python, <code>propagate(..., comm=comm, device="auto")</code> is the same run, in an extension built with <code>--features cuda,mpi</code>: <code>device=</code> takes this rank’s ordinal or <code>"auto"</code>, which is <code>local_device_for_rank</code>, and <code>result=</code>, <code>partition_row_seed=</code> and <code>partition_row_blocks=</code> keep their host meanings (<a href="gpu.html#comm-device">CUDA devices</a>).
+Launch with one visible device per task (<code>srun --gpus-per-task=1 --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu-ranks.sbatch</code> does) or with every node GPU visible to every task (<code>--gpus-per-node</code>, as <code>scripts/slurm/mpi-gpu-nccl.sbatch</code> does, which the NCCL exchange needs), where the locality pick matters.</p>
+<p>Built with the <code>nccl</code> feature (<a href="../../installation.html#gpu-and-mpi-features">Installation</a>) on top of <code>cuda,mpi</code>, a remote layer’s columns move device to device over NCCL instead of the host wire format (<a href="gpu.html#exchange">CUDA devices</a>).
+The mode is agreed once, collectively, at the scatter that builds the split: NCCL only when the group has more than one rank, every rank can start a communicator, and no two ranks share a device — otherwise the host format, silently unless <code>PAULISTRINGS_GPU_EXCHANGE=nccl</code> asks for it, which then errs on every rank instead.
+<code>--gpus-per-node</code> (rather than <code>--gpus-per-task=1</code>) is what lets NCCL find every rank’s device and use NVLink between them; <code>scripts/slurm/mpi-gpu-nccl.sbatch</code> launches that way and its preamble, <code>scripts/slurm/check-gpu-links.sh</code>, stops the job unless every visible GPU pair is NVLink-joined.</p>
+<p>From Python, <code>propagate(..., comm=comm, device="auto")</code> is the same run, in an extension built with <code>--features cuda,mpi</code>: <code>device=</code> takes this rank’s ordinal or <code>"auto"</code>, which is <code>local_device_for_comm</code>, and <code>result=</code>, <code>partition_row_seed=</code> and <code>partition_row_blocks=</code> keep their host meanings (<a href="gpu.html#comm-device">CUDA devices</a>).
 <code>scripts/mpi-test.sh --ranks 2,4 --python --cuda</code> builds that extension and runs <code>test_mpi.py</code>’s device cases, which skip on every rank unless every rank sees a device.</p>
 <h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
 <p><strong>Thread level at least <code>MPI_THREAD_SERIALIZED</code>.</strong>

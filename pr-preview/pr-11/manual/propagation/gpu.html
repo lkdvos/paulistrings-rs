@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-57fd608e.js";
+            window.path_to_searchindex_js = "../../searchindex-5daa0c5f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-b86f2ee9.js"></script>
@@ -255,7 +255,7 @@ An ordinal may repeat, <code>device=[0, 0]</code> putting two partitions on devi
 <code>stats.partition.partitions</code> is the list length, <code>devices</code> the list, and the per-layer lists carry one entry per partition.
 The call scatters, propagates and gathers every time; a resident multi-device sum is Rust-only (below).</p>
 <h3 id="comm-device"><a class="header" href="#comm-device">One device per MPI rank</a></h3>
-<p>With <code>comm=</code>, <code>device=</code> names this rank’s one device: an ordinal, or <code>"auto"</code> for the node-local rank modulo the visible devices (see <a href="mpi.html#gpu-per-rank">MPI ranks</a>):</p>
+<p>With <code>comm=</code>, <code>device=</code> names this rank’s one device: an ordinal, or <code>"auto"</code> for a device near the rank’s CPUs, distinct per rank on a node while there are enough (see <a href="mpi.html#gpu-per-rank">MPI ranks</a>):</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">evolved = observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
 </code></pre>
@@ -281,8 +281,37 @@ let mut split = GpuPartitionedSum::scatter(observable, runtime, &amp;config)?;
 split.propagate(&amp;circuit, &amp;ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 <span class="boring">}</span></code></pre>
-<p>The layer’s remote rows go device to host, through the in-process exchange, and host to device; <code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU.
+<p>An in-process group exchanges device-resident payloads: the columns move device to device (or, without peer access, staged through the host) rather than through the host wire format.
+<code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
 With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code> is the <a href="mpi.html#gpu-per-rank">MPI ranks</a> driver with each rank’s share on its own device.</p>
+<h2 id="exchange"><a class="header" href="#exchange">Exchange mode, merge and chunking</a></h2>
+<p><code>PAULISTRINGS_GPU_EXCHANGE</code> picks how a remote layer’s rows travel, read once per process by an in-process group and at every scatter by an MPI group:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>value</th><th>in-process group (<code>GpuPartitionedSum</code>)</th><th>MPI group (<code>gpu::MpiGpuSum</code>)</th></tr>
+</thead>
+<tbody>
+<tr><td>unset</td><td>device-to-device (or peer) copy</td><td>NCCL if built with <code>nccl</code> and every rank can start it on a distinct device, else host</td></tr>
+<tr><td><code>host</code></td><td>staged through host <code>PartnerPayload</code> columns</td><td>staged through host <code>PartnerPayload</code> columns</td></tr>
+<tr><td><code>device</code></td><td>device-to-device (or peer) copy</td><td>same as unset (an MPI group reads <code>device</code> and <code>nccl</code> apart)</td></tr>
+<tr><td><code>nccl</code></td><td>same as unset (in-process peer copies are already device to device)</td><td>NCCL required — every rank errs if any rank cannot start it</td></tr>
+</tbody>
+</table>
+</div>
+<p>The MPI mode is agreed <strong>once, collectively, at scatter</strong>, never per layer: with the <code>nccl</code> feature, more than one rank, and every rank seeing a distinct CUDA device it can start a communicator on, the group moves columns straight into the receiver’s device memory over NCCL; a group with a host member, or ranks sharing a device, always uses the host format.
+<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the communicator; a timeout or an NCCL error aborts it and the split, surfacing as <code>GpuError::Timeout</code> / <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
+Building and running it needs the <code>nccl</code> feature and the <code>nccl/2.23.4-1</code> module — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
+<p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>, <code>PAULISTRINGS_GPU_PREMERGE=off</code>), so two remote deltas that land on the same receiver key ship as one row.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
+<p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
+The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>
+<h2 id="peer-access"><a class="header" href="#peer-access">Peer access and NVLink</a></h2>
+<p><code>gpu::peer_access(dst, src)</code> lets device <code>dst</code> reach device <code>src</code>’s memory directly, so a copy from <code>src</code> into <code>dst</code> goes over NVLink or PCIe peer-to-peer, and reports the outcome (<code>PeerAccess::Enabled</code>, <code>Unsupported</code>, <code>Failed</code>, or <code>SameDevice</code>), granting both the driver’s peer-context access and the source’s memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+A device exchange calls it before its first cross-device copy; without it, or on a pair the driver reports as unsupported, the copy stages through the host instead of faulting.
+<code>examples/gpu_peer.rs</code> times the same-device, peer and host-staged paths and reports the driver’s P2P attributes.
+<code>scripts/slurm/check-gpu-links.sh</code> fails a multi-GPU job unless every visible pair is joined by NVLink, so a measurement never silently falls back to PCIe.</p>
 <h2 id="what-changes-on-a-device"><a class="header" href="#what-changes-on-a-device">What changes on a device</a></h2>
 <p><strong>Results agree to floating-point tolerance, not bit for bit.</strong>
 The device sums equal keys in a different order from the host, as a different bucket count does (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Determinism).
@@ -301,7 +330,9 @@ Under <code>comm=</code>, a failure on one rank’s device fails the call on eve
 <li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>
 <li><strong>A multi-device or MPI group trades staging time for device memory.</strong> Exchanging device-resident payloads keeps one export volume and one receive volume resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count the host-staged path (or a single device) still fits.</li>
 <li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
-<li><strong>The cross-device peer copy is untested on a real multi-GPU node.</strong> Today’s multi-device numbers come from virtual partitions sharing one card; a physical multi-GPU run is expected to use the same path but has not been measured.</li>
+<li><strong>The sender-side merge (<code>premerge</code>) does not pay on a same-device exchange at low merge ratios.</strong> Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.</li>
+<li><strong>The cross-device peer copy is untested on a real multi-GPU node.</strong> <code>gpu::peer_access</code> grants both peer-context access and the source device’s memory-pool access a peer copy needs to land directly rather than stage through the host, and today’s multi-device numbers come from virtual partitions sharing one card.</li>
+<li><strong>The chunked NCCL receive has run only over the in-process loopback test wire</strong>, not a real communicator, and one chunk’s transfer does not overlap the fused layer of the chunk before it.</li>
 </ul>
 <h2 id="see-it-in-use"><a class="header" href="#see-it-in-use">See it in use</a></h2>
 <p><code>python/paulistrings/tests/test_cuda.py</code> runs every policy against the host engine at three widths, and <code>crates/paulistrings/tests/propagate_gpu.rs</code> is the Rust differential net under the same channels.</p>

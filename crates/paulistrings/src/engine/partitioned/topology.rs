@@ -183,7 +183,7 @@ pub fn numa_nodes() -> Vec<(usize, CpuSet)> {
 }
 
 #[cfg(target_os = "linux")]
-fn sysfs_numa_nodes(allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
+pub(crate) fn sysfs_numa_nodes(allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
     const ROOT: &str = "/sys/devices/system/node";
     let Ok(entries) = std::fs::read_dir(ROOT) else {
         return Vec::new();
@@ -212,7 +212,7 @@ fn sysfs_numa_nodes(allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn sysfs_numa_nodes(_allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
+pub(crate) fn sysfs_numa_nodes(_allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
     Vec::new()
 }
 

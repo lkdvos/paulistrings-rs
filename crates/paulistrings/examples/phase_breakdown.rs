@@ -2334,7 +2334,7 @@ where
     P: PartitionedTruncation<W>,
 {
     use paulistrings::engine::partitioned::Collectives;
-    use paulistrings::gpu::{local_device_for_rank, MpiGpuSum};
+    use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
@@ -2359,7 +2359,9 @@ where
     };
     let device = match spec {
         DeviceSpec::Ordinals(v) => v[0],
-        DeviceSpec::Auto => local_device_for_rank(rank).unwrap_or_else(|e| fail("device pick", e)),
+        DeviceSpec::Auto => {
+            local_device_for_comm(&world).unwrap_or_else(|e| fail("device pick", e))
+        }
     };
 
     let base = build_base_sum::<W>(layer, cfg);

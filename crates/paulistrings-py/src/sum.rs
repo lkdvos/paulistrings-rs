@@ -1328,7 +1328,9 @@ fn parse_distributed_device_mode(
         };
         let transport = crate::mpi::transport_from_comm(py, comm)?;
         let rank = paulistrings::engine::partitioned::Collectives::rank(&transport);
-        let local = crate::gpu::resolve_rank_device(request, shown, rank);
+        // Collective on every rank whatever each asked for, so an `"auto"` rank never waits on one that named an ordinal.
+        let auto = paulistrings::gpu::local_device_for_comm(transport.communicator());
+        let local = crate::gpu::resolve_rank_device(request, shown, rank, auto);
         let device = crate::mpi::agree_device(py, &transport, local, shown)?;
         Ok(RunMode::DistributedDevice(crate::mpi::MpiGpuRun::new(
             transport, rows, gather, device,

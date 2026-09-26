@@ -182,18 +182,17 @@ mod cuda {
         Ok(resolve_devices(request, shown)?[0])
     }
 
-    /// This rank's device under `comm=`: an ordinal it can see, or `local_device_for_rank(rank)` for `"auto"`. Local, so the caller agrees the outcome over the group.
+    /// This rank's device under `comm=`: an ordinal it can see, or `auto` (the group's `local_device_for_comm` pick) for `"auto"`. Local, so the caller agrees the outcome over the group.
     #[cfg(feature = "mpi")]
     pub(crate) fn resolve_rank_device(
         request: &DeviceRequest,
         shown: &str,
         rank: u32,
+        auto: Result<u32, paulistrings::gpu::GpuError>,
     ) -> Result<u32, PyErr> {
         let count = visible_devices(&format!("{shown} on rank {rank}"))?;
         match request {
-            DeviceRequest::Auto => {
-                paulistrings::gpu::local_device_for_rank(rank).map_err(gpu_error)
-            }
+            DeviceRequest::Auto => auto.map_err(gpu_error),
             DeviceRequest::Ordinals(list) => {
                 check_ordinal(list[0], count, &format!("{shown} on rank {rank}"))
             }

@@ -30,6 +30,11 @@ use crate::engine::partitioned::mpi::{rsmpi::topology::Communicator, MpiTranspor
 
 const LOG_TARGET: &str = "paulistrings::propagate";
 
+#[cfg(feature = "mpi")]
+mod affinity;
+#[cfg(feature = "mpi")]
+pub use affinity::local_device_for_comm;
+
 /// Environment variables naming a process's rank among the processes on its node, read in this order.
 ///
 /// `SLURM_LOCALID` comes last because a non-Slurm launcher inside an allocation (`mpirun` in a batch script) leaves every rank the batch step's stale value.
@@ -43,6 +48,7 @@ const LOCAL_RANK_VARS: [&str; 4] = [
 /// The CUDA device this process should drive: its node-local rank from the launcher's environment, or `rank` when no launcher variable is set, modulo the visible device count.
 ///
 /// Under `srun --gpus-per-task=1` each process sees one device, so the answer is `0` on every rank; under `mpirun` on a node of `k` devices, local rank `i` gets device `i % k`.
+/// With a communicator at hand, the collective [`local_device_for_comm`] picks by CPU locality instead, and is what `propagate_mpi_gpu` uses.
 ///
 /// # Errors
 ///
@@ -601,7 +607,7 @@ where
     let transport = MpiTransport::from_communicator(comm);
     let picked = match device {
         Some(d) => Ok(d),
-        None => local_device_for_rank(transport.rank()),
+        None => local_device_for_comm(comm),
     };
     let device = agree(&transport, picked, 0)?;
     let mut split =

@@ -258,6 +258,11 @@ impl MpiTransport {
         })
     }
 
+    /// The communicator this transport owns, for a collective the caller runs over the same group.
+    pub fn communicator(&self) -> &SimpleCommunicator {
+        &self.comm
+    }
+
     /// Override the largest message the transport sends, in bytes.
     ///
     /// The chunking path is otherwise unreachable in a test (a part would have to exceed 1 GiB), so the multi-chunk net sets this to a few kilobytes.

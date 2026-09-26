@@ -104,7 +104,7 @@ The call scatters, propagates and gathers every time; a resident multi-device su
 
 ### One device per MPI rank {#comm-device}
 
-With `comm=`, `device=` names this rank's one device: an ordinal, or `"auto"` for the node-local rank modulo the visible devices (see [MPI ranks](mpi.md#gpu-per-rank)):
+With `comm=`, `device=` names this rank's one device: an ordinal, or `"auto"` for a device near the rank's CPUs, distinct per rank on a node while there are enough (see [MPI ranks](mpi.md#gpu-per-rank)):
 
 <!-- doctest: skip -->
 ```python

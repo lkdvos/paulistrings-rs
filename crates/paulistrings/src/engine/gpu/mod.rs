@@ -34,7 +34,7 @@ pub use layer::{
 #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
 pub use nccl::{LoopbackFault, LoopbackTally, LoopbackWire};
 pub use payload::{peer_access, GpuExchange, PeerAccess};
-pub use rank::{local_device_for_rank, GpuDistributedSum};
 #[cfg(feature = "mpi")]
-pub use rank::{propagate_mpi_gpu, MpiGpuSum};
+pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
+pub use rank::{local_device_for_rank, GpuDistributedSum};
 pub use sum::GpuSum;

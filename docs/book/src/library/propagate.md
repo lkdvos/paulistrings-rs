@@ -72,7 +72,7 @@ Several devices split the sum like `partitions=`: `partition_row_seed` and `part
 `device=` is an alternative to `partitions=`; passing both, or `result="local"` without `comm=`, or `partition_row_blocks=` with a single device, is a `ValueError`.
 `engine` is ignored, `truncation.topn` raises `NotImplementedError` (use `approx_topn`), an exhausted device raises `MemoryError`, and without the `cuda` feature or a visible device `device=` raises `RuntimeError`.
 
-With `comm=`, `device=` is this rank's one device: an `int` or `"auto"` (the launcher's node-local rank modulo the visible devices), and a list of several ordinals is a `ValueError`.
+With `comm=`, `device=` is this rank's one device: an `int` or `"auto"` (a device near the rank's CPUs, `gpu::local_device_for_comm`), and a list of several ordinals is a `ValueError`.
 `result=` and the row kwargs mean what they mean on the host `comm=` path, and a rank that cannot use its device fails the call on every rank.
 The pair needs the extension built with both the `cuda` and `mpi` features, and raises `RuntimeError` naming the missing one otherwise.
 See [CUDA devices](../manual/propagation/gpu.md).

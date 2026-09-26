@@ -720,8 +720,10 @@ impl<'a> WireGroup<'a> {
 /// Every wait is bounded; a timed-out or failed wire is dead, and every later call on it returns an error.
 pub(crate) trait DeviceWire: Send + Sync {
     /// This rank's index in the group.
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
     fn rank(&self) -> u32;
     /// Ranks in the group.
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
     fn size(&self) -> u32;
     /// Post `ops` as one group: when it returns `Ok`, every op is enqueued on its stream, so later work on that stream runs after it.
     /// Every rank a posted op names must post its matching group, or the transfers never complete and [`wait`](Self::wait) times out.

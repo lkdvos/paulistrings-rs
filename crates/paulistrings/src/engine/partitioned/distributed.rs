@@ -27,6 +27,7 @@ use super::transport::Transport;
 use super::truncation::PartitionedTruncation;
 use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
+use crate::echo::RotationAxis;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::{PauliSum, ProductState};
 
@@ -48,7 +49,31 @@ pub enum PartitionRowPolicy {
     /// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None` — the default, and what [`PartitionConfig::partition_row_seed`] already selects.
     Seeded(Option<u64>),
     /// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order.
+    /// Cut rows are z-only, so they never read an x-coordinate.
     Cut(Vec<Vec<u32>>),
+    /// [`PartitionRows::from_seed_excluding`]: a seeded draw, as [`Seeded`](Self::Seeded), whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z` (qubit indices).
+    /// Excluding the z-bits of an echo's sites (x-bits for an `X` axis) keeps [`DistributedSum::rotated_overlap`] gather-free.
+    SeededExcluding {
+        /// As in [`Seeded`](Self::Seeded).
+        seed: Option<u64>,
+        /// Qubits whose x-bit no row reads.
+        exclude_x: Vec<u32>,
+        /// Qubits whose z-bit no row reads.
+        exclude_z: Vec<u32>,
+    },
+}
+
+/// The bit mask of `qubits`, for [`PartitionRowPolicy::SeededExcluding`].
+fn qubit_mask<const W: usize>(qubits: &[u32], num_qubits: usize) -> [u64; W] {
+    let mut mask = [0u64; W];
+    for &q in qubits {
+        assert!(
+            (q as usize) < num_qubits,
+            "PartitionRowPolicy: excluded qubit {q} is outside 0..{num_qubits}",
+        );
+        mask[q as usize / 64] |= 1u64 << (q % 64);
+    }
+    mask
 }
 
 impl PartitionRowPolicy {
@@ -70,6 +95,20 @@ impl PartitionRowPolicy {
                 seed.unwrap_or_else(|| sum.hash().seed()),
             ),
             PartitionRowPolicy::Cut(blocks) => PartitionRows::<W>::cut(sum.num_qubits(), blocks),
+            PartitionRowPolicy::SeededExcluding {
+                seed,
+                exclude_x,
+                exclude_z,
+            } => {
+                let n = sum.num_qubits();
+                PartitionRows::<W>::from_seed_excluding(
+                    n,
+                    ranks.trailing_zeros() as u8,
+                    seed.unwrap_or_else(|| sum.hash().seed()),
+                    &qubit_mask::<W>(exclude_x, n),
+                    &qubit_mask::<W>(exclude_z, n),
+                )
+            }
         }
     }
 }
@@ -538,6 +577,40 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// Sum the ranks' answers with [`allreduce_sum_f64`](super::Collectives::allreduce_sum_f64) on [`transport`](Self::transport), or however the application reduces its own scalars.
     pub fn local_expectation_product_state(&self, state: ProductState) -> Complex64 {
         self.local.sum.expectation_product_state(state)
+    }
+
+    /// [`PauliSum::anticommute_histogram`] of the whole sum. **Collective** — one `f64` all-reduce, same answer on every rank.
+    pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
+        let local = &self.local.sum;
+        let mut hist = self
+            .runtime
+            .install(move || local.anticommute_histogram(sites, axis));
+        self.transport.allreduce_sum_f64(&mut hist);
+        hist
+    }
+
+    /// [`PauliSum::rotated_overlap`] of the whole sum without a gather. **Collective** — one `f64` all-reduce, same answer on every rank.
+    ///
+    /// Each rank sums its own classes, which is the whole answer only if no class spans ranks: the rows must avoid [`RotationAxis::flip_mask`] of `sites`.
+    /// Scatter with [`PartitionRowPolicy::SeededExcluding`] (or [`Cut`](PartitionRowPolicy::Cut) rows for an `X` axis) to get such rows.
+    ///
+    /// # Panics
+    ///
+    /// On every rank alike, before communicating, if the rows read a coordinate `V` flips, or as [`PauliSum::rotated_overlap`] on a bad site list.
+    pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
+        let (mask_x, mask_z) = axis.flip_mask::<W>(sites);
+        assert!(
+            self.rows.avoids(&mask_x, &mask_z),
+            "DistributedSum::rotated_overlap: the partition rows read coordinates the rotation \
+             flips, so its classes span ranks; scatter with PartitionRowPolicy::SeededExcluding \
+             over {axis:?}-axis sites {sites:?}",
+        );
+        let local = &self.local.sum;
+        let mut value = [self
+            .runtime
+            .install(move || local.rotated_overlap(sites, delta, axis))];
+        self.transport.allreduce_sum_f64(&mut value);
+        value[0]
     }
 
     /// Drain and return this rank's phase counters, in the same shape the in-process driver reports: `per_partition` has one entry.

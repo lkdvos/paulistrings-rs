@@ -864,6 +864,40 @@ fn run_host_cases(r: &mut Runner) {
         },
     );
 
+    // ---- echo read-outs --------------------------------------------------
+    r.case("echo read-outs over excluded rows match the oracle", |r| {
+        use paulistrings::test_support::rand_sum_on;
+        use paulistrings::RotationAxis;
+
+        let circuit = cnot_ring::<1>(10);
+        let sum = rand_sum_on::<1>(400, 10, &[0, 2, 3, 5, 6, 9], 0xA060);
+        let oracle = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
+        let sites = [2usize, 3, 6];
+        for axis in [RotationAxis::Z, RotationAxis::X] {
+            let policy = PartitionRowPolicy::SeededExcluding {
+                seed: Some(SEED),
+                exclude_x: vec![2, 3, 6],
+                exclude_z: vec![2, 3, 6],
+            };
+            let transport = MpiTransport::from_communicator(r.world);
+            let mut split = DistributedSum::scatter_with_policy(
+                sum.clone(),
+                transport,
+                &r.config(SEED),
+                &policy,
+            )
+            .expect("topology resolves");
+            split.propagate(&circuit, &KeepAll, Direction::Heisenberg);
+            let got = split.rotated_overlap(&sites, 0.3, axis);
+            let want = oracle.rotated_overlap(&sites, 0.3, axis);
+            assert!((got - want).abs() < 1e-10, "{axis:?}: {got} vs {want}");
+            let hist = split.anticommute_histogram(&sites, axis);
+            for (h, w) in hist.iter().zip(oracle.anticommute_histogram(&sites, axis)) {
+                assert!((h - w).abs() < 1e-10, "{axis:?}: histogram");
+            }
+        }
+    });
+
     // ---- expectation values, read out without a gather --------------------
     r.case("local expectations sum to the whole sum's", |r| {
         use paulistrings::ProductState;

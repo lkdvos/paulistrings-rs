@@ -24,6 +24,7 @@ use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKE
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
+use crate::echo::RotationAxis;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::{PhaseStats, Stamp};
 use crate::engine::{Direction, PropagateOptions};
@@ -512,6 +513,35 @@ impl<const W: usize> PartitionedSum<W> {
             .iter()
             .map(|part| part.sum.expectation_product_state(state))
             .sum()
+    }
+
+    /// [`PauliSum::anticommute_histogram`] of the whole sum, the partitions' histograms added in rank order.
+    pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
+        let mut hist = vec![0.0f64; sites.len() + 1];
+        for part in &self.parts {
+            for (h, v) in hist
+                .iter_mut()
+                .zip(part.sum.anticommute_histogram(sites, axis))
+            {
+                *h += v;
+            }
+        }
+        hist
+    }
+
+    /// [`PauliSum::rotated_overlap`] of the whole sum.
+    ///
+    /// When the rows avoid [`RotationAxis::flip_mask`] of `sites` (see [`PartitionRows::from_seed_excluding`]) every class lies in one partition and the partitions' values are added in rank order; otherwise the partitions are gathered first.
+    pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
+        let (mask_x, mask_z) = axis.flip_mask::<W>(sites);
+        if self.rows.avoids(&mask_x, &mask_z) {
+            self.parts
+                .iter()
+                .map(|part| part.sum.rotated_overlap(sites, delta, axis))
+                .sum()
+        } else {
+            self.gather().rotated_overlap(sites, delta, axis)
+        }
     }
 
     /// Drain and return the per-phase timing counters: one [`PhaseStats`] per partition, plus the driver's own scatter/gather time and layer count.

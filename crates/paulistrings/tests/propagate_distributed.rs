@@ -18,7 +18,7 @@ use paulistrings::engine::partitioned::{
     DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy,
 };
 use paulistrings::test_support::{
-    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
+    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{
@@ -26,7 +26,7 @@ use paulistrings::truncation::{
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
-    Phase,
+    Phase, RotationAxis,
 };
 
 const TOL: f64 = 1e-11;
@@ -628,4 +628,135 @@ fn collapse_sample_distributed_picks_by_weight() {
         }
         assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
     }
+}
+
+// ---- echo read-outs -----------------------------------------------------------
+
+/// Every rank's `(rotated_overlap, anticommute_histogram, len_local)` after a Heisenberg run on `size` ranks scattered by `policy`.
+fn distributed_echo<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &PartitionRowPolicy,
+    size: u32,
+    sites: &[usize],
+    axis: RotationAxis,
+) -> Vec<(f64, Vec<f64>, usize)> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = InProcessTransport::group(size)
+            .into_iter()
+            .map(|transport| {
+                scope.spawn(move || {
+                    let mut split = DistributedSum::scatter_with_policy(
+                        sum.clone(),
+                        transport,
+                        &config(),
+                        policy,
+                    )
+                    .expect("topology resolves");
+                    split.propagate(circuit, &KeepAll, Direction::Heisenberg);
+                    (
+                        split.rotated_overlap(sites, 0.3, axis),
+                        split.anticommute_histogram(sites, axis),
+                        split.len_local(),
+                    )
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread panicked"))
+            .collect()
+    })
+}
+
+/// With rows excluding the coordinates `V` flips, the gather-free echo equals the single-process one on every rank, for both axes and both widths.
+fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[u32], sites: &[usize]) {
+    let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for pair in window.windows(2) {
+        circuit.push(Clifford2Q::cnot(pair[0], pair[1]));
+    }
+    circuit.push(GeneralUnitary2Q::from_matrix(
+        window[0],
+        window[1],
+        haar_su4_matrix(),
+    ));
+    circuit.push(zz_rotation::<W>(window[1], window[3], 0.31));
+    let evolved = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
+    let flipped: Vec<u32> = sites.iter().map(|&q| q as u32).collect();
+
+    for axis in [RotationAxis::Z, RotationAxis::X] {
+        let want = evolved.rotated_overlap(sites, 0.3, axis);
+        let want_hist = evolved.anticommute_histogram(sites, axis);
+        let (exclude_x, exclude_z) = match axis {
+            RotationAxis::Z => (vec![], flipped.clone()),
+            RotationAxis::X => (flipped.clone(), vec![]),
+        };
+        let policy = PartitionRowPolicy::SeededExcluding {
+            seed: Some(0x5EED_0E40),
+            exclude_x,
+            exclude_z,
+        };
+        for size in [2u32, 4] {
+            let ranks = distributed_echo(&circuit, &sum, &policy, size, sites, axis);
+            assert!(
+                ranks.iter().filter(|r| r.2 > 0).count() > 1,
+                "W={W} {axis:?} ranks={size}: the split must be nontrivial",
+            );
+            for (rank, (got, hist, _)) in ranks.iter().enumerate() {
+                let what = format!("W={W} {axis:?} ranks={size} rank {rank}");
+                assert!((got - want).abs() < 1e-10, "{what}: {got} vs {want}");
+                assert_eq!(got.to_bits(), ranks[0].0.to_bits(), "{what}: ranks agree");
+                for (h, w) in hist.iter().zip(&want_hist) {
+                    assert!((h - w).abs() < 1e-10, "{what}: {hist:?} vs {want_hist:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn distributed_echo_read_outs_match_the_single_process_ones_w1() {
+    check_distributed_echo::<1>(10, &[0, 2, 3, 5, 6, 9], &[2, 3, 6]);
+}
+
+#[test]
+fn distributed_echo_read_outs_match_the_single_process_ones_w2() {
+    check_distributed_echo::<2>(70, &[61, 62, 63, 64, 65, 68], &[62, 63, 64]);
+}
+
+/// Rows that read a flipped coordinate would split a class across ranks, so every rank refuses before communicating.
+#[test]
+fn distributed_rotated_overlap_rejects_rows_that_split_classes() {
+    let sum = rand_sum_on::<1>(200, 10, &[0, 2, 3, 5, 6, 9], 0xEC41);
+    let sites = [2usize, 3, 6];
+    let policy = PartitionRowPolicy::Seeded(Some(0x5EED_0E40));
+    let results: Vec<_> = std::thread::scope(|scope| {
+        let (sum, policy) = (&sum, &policy);
+        let handles: Vec<_> = InProcessTransport::group(2)
+            .into_iter()
+            .map(|transport| {
+                scope.spawn(move || {
+                    let split = DistributedSum::scatter_with_policy(
+                        sum.clone(),
+                        transport,
+                        &config(),
+                        policy,
+                    )
+                    .expect("topology resolves");
+                    let (mx, mz) = RotationAxis::Z.flip_mask::<1>(&sites);
+                    assert!(
+                        !split.rows().avoids(&mx, &mz),
+                        "the fixture rows must read a flip"
+                    );
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        split.rotated_overlap(&sites, 0.3, RotationAxis::Z)
+                    }))
+                    .is_err()
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(results, vec![true, true], "every rank must refuse");
 }

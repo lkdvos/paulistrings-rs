@@ -842,3 +842,118 @@ fn premerge_with_exactly_cancelling_rows_agrees() {
         }
     }
 }
+
+/// Device bytes of `rows` received rows at width `W`, the unit of `GpuLayerOptions::exchange_bytes`.
+fn recv_bytes<const W: usize>(rows: usize) -> usize {
+    rows * (2 * W + 3) * 8
+}
+
+/// A split under a receive cap of `exchange_bytes` and many small buckets, so a remote layer has positions to cut.
+fn capped_split<const W: usize>(
+    sum: &PauliSum<W>,
+    p: usize,
+    mode: GpuExchange,
+    exchange_bytes: usize,
+) -> GpuPartitionedSum<W> {
+    let mut split = split_of(sum, p, mode);
+    split.set_layer_options(GpuLayerOptions {
+        bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
+        exchange_bytes,
+        ..GpuLayerOptions::default()
+    });
+    split
+}
+
+/// Under no receive cap, a cap of 128 rows and one of 8, four SU(4) layers run one call each agree with `propagate`, the uncapped receive moving in one chunk and a capped one in several; under a cap the whole circuit agrees in both directions.
+fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
+    let sum = rand_sum::<W>(n, nq, seed);
+    let circuit = su4_circuit::<W>(nq);
+    let layers: Vec<Circuit<W>> = [(0u32, 1u32), (1, 2), (0, 1), (2, 3)]
+        .iter()
+        .map(|&(a, b)| {
+            let mut c = Circuit::<W>::new(nq);
+            c.push(paulistrings::channel::GeneralUnitary2Q::from_matrix(
+                a,
+                b,
+                paulistrings::test_support::haar_su4_matrix(),
+            ));
+            c
+        })
+        .collect();
+    let mut want = sum.clone();
+    for c in &layers {
+        want = propagate(c, want, &KeepAll, Direction::Forward);
+    }
+    for p in [2usize, 4] {
+        for cap in [usize::MAX, recv_bytes::<W>(128), recv_bytes::<W>(8)] {
+            let what = format!("W={W} P={p} cap={cap}");
+            let mut split = capped_split(&sum, p, GpuExchange::Device, cap);
+            let mut widest = 0u32;
+            for (k, c) in layers.iter().enumerate() {
+                split
+                    .propagate(c, &KeepAll, Direction::Forward)
+                    .expect("propagate");
+                for r in 0..p {
+                    let counters = split.last_layer_counters(r);
+                    if cap == usize::MAX && counters.rows_received > 0 {
+                        assert_eq!(counters.recv_chunks, 1, "{what} layer {k} rank {r}");
+                    }
+                    widest = widest.max(counters.recv_chunks);
+                }
+            }
+            let got = split.gather().expect("gather");
+            assert_terms_close(&got, &want, TOL, &format!("{what} by layer"));
+            if cap == usize::MAX {
+                continue;
+            }
+            assert!(
+                widest >= 3,
+                "{what}: the widest receive moved in {widest} chunks"
+            );
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                let whole = propagate(&circuit, sum.clone(), &KeepAll, direction);
+                let mut split = capped_split(&sum, p, GpuExchange::Device, cap);
+                split
+                    .propagate(&circuit, &KeepAll, direction)
+                    .expect("propagate");
+                let got = split.gather().expect("gather");
+                assert_eq!(got.len(), whole.len(), "{what} {direction:?}: term count");
+                assert_terms_close(&got, &whole, TOL, &format!("{what} {direction:?}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_capped_device_receive_moves_in_chunks_and_agrees_w1() {
+    require_cuda!();
+    chunked_receive_case::<1>(10, 1_500, 0xC4A1);
+}
+
+#[test]
+fn a_capped_device_receive_moves_in_chunks_and_agrees_w2() {
+    require_cuda!();
+    chunked_receive_case::<2>(90, 1_500, 0xC4A2);
+}
+
+/// A partition failing mid-receive, after its first chunk moved, returns the error, its partners finish, and the split refuses every later call.
+#[test]
+fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
+    require_cuda!();
+    let sum = rand_sum::<1>(2_000, 10, 0xC4A3);
+    let circuit = su4_circuit::<1>(10);
+    for p in [2usize, 4] {
+        let mut split = capped_split(&sum, p, GpuExchange::Device, 1);
+        split.inject_chunk_oom(1, 0);
+        let r = split.propagate(&circuit, &KeepAll, Direction::Forward);
+        assert!(
+            matches!(r, Err(GpuError::OutOfMemory { device: 0, .. })),
+            "P={p}: {r:?}"
+        );
+        let again = split.propagate(&circuit, &KeepAll, Direction::Forward);
+        assert!(
+            matches!(again, Err(GpuError::Poisoned { rank: 1, .. })),
+            "P={p}: {again:?}"
+        );
+    }
+}

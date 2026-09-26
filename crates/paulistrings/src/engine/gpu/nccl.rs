@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// Rank `a`'s sends to `b` are `b`'s receives from `a`, in order and in rows; at one chunk each column's receives tile the concatenated column in plan order.
+        /// Rank `a`'s sends to `b` are `b`'s receives from `a`, in order and in rows, chunk-major; within a chunk each column's receives tile the chunk's buffer in plan order.
         #[test]
         fn the_schedule_is_symmetric(
             size_bits in 1u32..=3,
@@ -1320,14 +1320,20 @@ mod tests {
                 let got: u64 = ops[a as usize].iter().filter(|op| op.kind == WireOpKind::Recv && op.column == WireColumn::X)
                     .map(|op| (op.rows.1 - op.rows.0) as u64).sum();
                 proptest::prop_assert_eq!(got, rows, "rank {} receives every row once", a);
-                if map.chunks() == 1 {
+                for chunk in 0..map.chunks() {
                     for column in WireColumn::ALL {
                         let ks: Vec<(usize, (usize, usize))> = ops[a as usize].iter()
-                            .filter(|op| op.kind == WireOpKind::Recv && op.column == column)
+                            .filter(|op| op.kind == WireOpKind::Recv && op.column == column && op.chunk == chunk)
                             .map(|op| (op.k, op.rows)).collect();
                         proptest::prop_assert!(ks.windows(2).all(|w| w[0].0 < w[1].0));
-                        proptest::prop_assert!(ks.iter().all(|&(_, (lo, _))| lo == 0));
+                        if chunk == 0 {
+                            proptest::prop_assert!(ks.iter().all(|&(_, (lo, _))| lo == 0));
+                        }
                     }
+                }
+                for kind in [WireOpKind::Send, WireOpKind::Recv] {
+                    let chunk_of: Vec<usize> = ops[a as usize].iter().filter(|op| op.kind == kind).map(|op| op.chunk).collect();
+                    proptest::prop_assert!(chunk_of.windows(2).all(|w| w[0] <= w[1]), "{:?}s are chunk-major", kind);
                 }
             }
         }

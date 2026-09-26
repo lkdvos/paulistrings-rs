@@ -488,6 +488,116 @@ def test_a_device_list_under_comm_is_a_value_error(observable, circuit):
 
 
 # --------------------------------------------------------------------------
+# Echo read-outs over a split, partition_row_exclude and collapse_sample
+
+# Qubits the circuit touches plus some it does not, over both words.
+ECHO_SITES = [0, 2, 3, 5, 64, 67]
+# Enough sites that a seeded draw reading none of their x-bits is a 2**-24 chance per row.
+WIDE_SITES = list(range(24))
+
+
+@pytest.mark.parametrize("axis", ["x", "z"])
+def test_echo_read_outs_of_excluding_local_shares_are_the_serial_ones(observable, circuit, reference, axis):
+    local = observable.propagate(
+        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: ECHO_SITES}
+    )
+    hist = local.anticommute_histogram(ECHO_SITES, axis=axis, comm=COMM)
+    overlap = local.rotated_overlap(ECHO_SITES, 0.3, axis=axis, comm=COMM)
+    np.testing.assert_allclose(hist, reference.anticommute_histogram(ECHO_SITES, axis=axis), rtol=1e-9)
+    assert overlap == pytest.approx(reference.rotated_overlap(ECHO_SITES, 0.3, axis=axis), rel=1e-9)
+    # The core all-reduce hands every rank the same bits.
+    assert COMM.allgather(overlap) == [overlap] * SIZE
+    assert COMM.allgather(hist) == [hist] * SIZE
+
+
+def test_the_histogram_of_any_local_share_adds_up(observable, circuit, reference):
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    np.testing.assert_allclose(
+        local.anticommute_histogram(ECHO_SITES, comm=COMM),
+        reference.anticommute_histogram(ECHO_SITES),
+        rtol=1e-9,
+    )
+
+
+def test_cut_rows_read_no_x_bit_so_they_serve_an_x_axis_overlap(observable, circuit, reference):
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local", partition_row_blocks=_cut_blocks())
+    assert local.rotated_overlap(WIDE_SITES, 0.3, comm=COMM) == pytest.approx(
+        reference.rotated_overlap(WIDE_SITES, 0.3), rel=1e-9
+    )
+
+
+def test_a_gathered_result_serves_either_axis(observable, circuit, reference):
+    whole = observable.propagate(circuit, POLICY, comm=COMM)
+    for axis in ("x", "z"):
+        assert whole.rotated_overlap(WIDE_SITES, 0.3, axis=axis, comm=COMM) == pytest.approx(
+            reference.rotated_overlap(WIDE_SITES, 0.3, axis=axis), rel=1e-9
+        )
+
+
+def test_rows_reading_a_flipped_coordinate_are_refused(observable, circuit):
+    """Rows excluding the z-bits say nothing about the x-bits an ``axis="x"`` rotation flips, so every rank refuses alike; one rank has no rows at all."""
+    local = observable.propagate(
+        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"z": WIDE_SITES}
+    )
+    if SIZE > 1:
+        with pytest.raises(ValueError, match="partition_row_exclude"):
+            local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
+    else:
+        local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
+
+
+def test_a_sum_outside_a_split_is_refused_under_comm(observable, circuit):
+    with pytest.raises(ValueError, match="not a propagate"):
+        observable.anticommute_histogram(ECHO_SITES, comm=COMM)
+    local = observable.propagate(
+        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"x": ECHO_SITES}
+    )
+    with pytest.raises(ValueError, match="not a propagate"):
+        (local + local).rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
+    base = local.rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
+    assert (local * 2.0).rotated_overlap(ECHO_SITES, 0.3, comm=COMM) == pytest.approx(4 * base, rel=1e-12)
+
+
+def test_distributed_partition_row_exclude_is_validated_first(observable, circuit):
+    with pytest.raises(ValueError, match="out of range"):
+        observable.propagate(circuit, POLICY, comm=COMM, partition_row_exclude={"x": [NUM_QUBITS]})
+    with pytest.raises(ValueError, match="alternatives"):
+        observable.propagate(
+            circuit, POLICY, comm=COMM, partition_row_blocks=_cut_blocks(), partition_row_exclude={"x": [0]}
+        )
+
+
+def test_collapse_sample_with_a_large_cache_is_the_serial_run(observable, circuit, reference):
+    got, stats = observable.propagate_with_stats(circuit, truncation.collapse_sample(10**9, 0) & POLICY, comm=COMM)
+    assert stats.collapses == 0
+    if RANK == 0:
+        _assert_terms_close(got, reference)
+
+
+def test_collapse_sample_collapses_the_whole_group_and_every_rank_counts_it(observable, circuit):
+    cache = NUM_TERMS // 2
+    local, stats = observable.propagate_with_stats(
+        circuit, truncation.collapse_sample(cache, 5), comm=COMM, result="local"
+    )
+    total = COMM.allreduce(len(local))
+    counts = COMM.allgather(stats.collapses)
+    assert counts == [counts[0]] * SIZE
+    assert counts[0] >= 1
+    assert total <= cache
+    if SIZE == 1:
+        serial, serial_stats = observable.propagate_with_stats(circuit, truncation.collapse_sample(cache, 5))
+        assert serial_stats.collapses == counts[0]
+        _assert_terms_close(local, serial)
+
+
+@needs_cuda_everywhere
+def test_collapse_sample_under_a_device_group_is_not_implemented(observable, circuit):
+    """A collapse is a layer pass no device backend runs; the check is argument-only, so every rank raises alike before adopting the communicator."""
+    with pytest.raises(NotImplementedError, match="collapse_sample"):
+        observable.propagate(circuit, truncation.collapse_sample(10, 0), comm=COMM, device="auto")
+
+
+# --------------------------------------------------------------------------
 # Errors — every one of them raised before any collective, on every rank alike
 
 

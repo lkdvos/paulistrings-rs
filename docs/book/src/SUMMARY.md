@@ -25,6 +25,7 @@
     - [B5 — Hybrid depth reduction](examples/showcases/b5-operator-backpropagation.md)
     - [B6 — Resource probes](examples/showcases/b6-resource-probes.md)
     - [B7 — Stabilizer-state preparation](examples/showcases/b7-stabilizer-prep.md)
+    - [B8 — Operator Loschmidt echo](examples/showcases/b8-operator-loschmidt-echo.md)
   - [Benchmarks](examples/benchmarks/index.md)
     - [A — Clifford point](examples/benchmarks/a-clifford.md)
     - [B — Kick-angle sweep](examples/benchmarks/b-theta-sweep.md)

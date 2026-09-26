@@ -81,6 +81,9 @@ pub(crate) struct DeviceExport<const W: usize> {
     /// The device wire of [`GpuExchange::Nccl`], `Some` whenever that is the mode.
     #[cfg(feature = "nccl")]
     pub(crate) wire: Option<Arc<dyn DeviceWire>>,
+    /// Send payloads of a group that failed after the vote: a peer may still be reading them, so they never return to the shared bin and are freed with the split, after `wire`.
+    #[cfg(feature = "nccl")]
+    quarantine: Vec<DevicePayload<W>>,
     /// Skeleton payloads not in flight.
     #[cfg(feature = "nccl")]
     skeletons: Vec<BlockSkeletons<W>>,
@@ -164,6 +167,8 @@ impl<const W: usize> DeviceExport<W> {
             stream: s.clone(),
             #[cfg(feature = "nccl")]
             wire: None,
+            #[cfg(feature = "nccl")]
+            quarantine: Vec::new(),
             #[cfg(feature = "nccl")]
             skeletons: Vec::new(),
             #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
@@ -558,17 +563,23 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
         })
         .collect();
     let recv = transport.exchange(skeletons, &mut export.skeletons);
+    let mut posted = false;
     let rows = {
         let blocks = paired_blocks(plan, &recv, |p: &BlockSkeletons<W>, j| p.blocks.get(j));
         let ready = stage_receive(sum, export, &blocks, xfer_ns).and_then(|()| wire_ready(export));
         if vote(transport, ready.is_ok()) {
+            posted = ready.is_ok();
             ready.and_then(|()| post_nccl_group(sum, plan, export, &send, &blocks, transport))
         } else {
             ready.and_then(|()| discard_received(export))
         }
     };
     export.skeletons.extend(recv.into_iter().flatten());
-    send.into_iter().flatten().for_each(payload::recycle);
+    if posted && rows.is_err() {
+        export.quarantine.extend(send.into_iter().flatten());
+    } else {
+        send.into_iter().flatten().for_each(payload::recycle);
+    }
     #[cfg(feature = "phase-timing")]
     {
         scratch.laps.exchange_ns += t_exchange.elapsed().as_nanos() as u64;
@@ -652,6 +663,19 @@ fn stage_receive<const W: usize>(
         s.memcpy_htod(&base_host[..], recv_base)?;
         Ok(())
     })
+}
+
+#[cfg(all(feature = "nccl", test))]
+impl<const W: usize> DeviceExport<W> {
+    /// Device addresses of every quarantined block's key column (test hook).
+    pub(crate) fn quarantined_ptrs(&self) -> Vec<u64> {
+        use cudarc::driver::DevicePtr;
+        self.quarantine
+            .iter()
+            .flat_map(|p| &p.blocks)
+            .map(|b| b.x.device_ptr(&self.stream).0)
+            .collect()
+    }
 }
 
 /// Whether this rank's wire can carry the group, so a failure it can predict is a no vote rather than an error after a yes.

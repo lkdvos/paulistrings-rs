@@ -238,6 +238,18 @@ pub(crate) fn recycle<const W: usize>(payload: DevicePayload<W>) {
     }
 }
 
+/// Whether any pooled payload holds a block whose key column starts at device address `ptr` (test hook).
+#[cfg(all(feature = "nccl", test))]
+pub(crate) fn bin_holds<const W: usize>(ptr: u64) -> bool {
+    use cudarc::driver::DevicePtr;
+    BIN.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|(_, p)| p.downcast_ref::<DevicePayload<W>>())
+        .flat_map(|p| &p.blocks)
+        .any(|b| b.x.device_ptr(b.x.stream()).0 == ptr)
+}
+
 /// Free every pooled payload.
 pub(crate) fn drain_bin() {
     BIN.lock().unwrap_or_else(PoisonError::into_inner).clear();

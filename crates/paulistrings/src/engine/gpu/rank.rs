@@ -351,6 +351,12 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         export.wire = Some(std::sync::Arc::new(wire));
     }
 
+    /// Device addresses of the send blocks this rank holds back from the shared pool after a failed wire group (test hook).
+    #[cfg(all(test, feature = "nccl"))]
+    pub(crate) fn quarantined_ptrs(&self) -> Vec<u64> {
+        self.inner.backend().scratch().export.quarantined_ptrs()
+    }
+
     /// How this rank's exchange blocks travel, as agreed over the group at scatter.
     pub fn exchange(&self) -> GpuExchange {
         self.inner.backend().scratch().export.mode
@@ -1124,6 +1130,64 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// After a wait fault the failing rank's send payloads stay out of the shared bin, where they would outlive a peer's read only by luck, until the split drops.
+        #[test]
+        fn a_failed_groups_send_payloads_never_reach_the_bin() {
+            crate::require_cuda!();
+            use super::super::super::nccl::LoopbackFault;
+            use super::super::super::payload::bin_holds;
+            let dense = random_circuit::<1>(8, 6, 0xD20, true);
+            let input = rand_sum::<1>(300, 8, 0xD21);
+            let (size, culprit) = (2u32, 1u32);
+            let rows = seeded_rows::<1>(8, size);
+            let wires = LoopbackWire::group_with_fault(
+                size,
+                culprit,
+                LoopbackFault::Wait,
+                std::time::Duration::from_secs(2),
+            );
+            let group =
+                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120));
+            let held: Vec<Vec<u64>> = std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .zip(wires)
+                    .map(|(t, w)| {
+                        let (input, rows, dense) = (&input, &rows, &dense);
+                        s.spawn(move || {
+                            let mut split = GpuDistributedSum::scatter_with_rows(
+                                input.clone(),
+                                t,
+                                0,
+                                rows.clone(),
+                            )
+                            .expect("scatter");
+                            split.use_loopback_wire(w);
+                            assert!(split
+                                .propagate(dense, &KeepAll, Direction::Forward)
+                                .is_err());
+                            let held = split.quarantined_ptrs();
+                            assert!(
+                                held.iter().all(|&p| !bin_holds::<1>(p)),
+                                "rank {}: a quarantined block is in the bin",
+                                split.rank()
+                            );
+                            held
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(
+                !held[culprit as usize].is_empty(),
+                "the failing rank holds its send blocks"
+            );
+            assert!(
+                !held[0].is_empty(),
+                "a peer whose own wait timed out holds its send blocks too"
+            );
         }
 
         /// A rank whose wire is already dead votes no instead of failing after a yes: nothing is posted, it returns the wire's error and its peers name it.

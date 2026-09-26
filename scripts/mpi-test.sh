@@ -14,11 +14,18 @@
 #   scripts/mpi-test.sh --python               # also build the extension and run its net
 #   scripts/mpi-test.sh --python --no-rust     # only the Python net
 #   scripts/mpi-test.sh --cuda                 # both nets built with `mpi,cuda`: adds the one-GPU-per-rank cases
+#   scripts/mpi-test.sh --nccl                 # both nets built with `mpi,cuda,nccl`: adds the NCCL device-exchange cases
 #
 # --cuda puts $CUDA_ROOT/lib64 (or $CUDA_HOME/lib64) on LD_LIBRARY_PATH for
 # libnvrtc and forwards it to every rank; ranks share a device when there are
 # fewer devices than ranks, and the device cases skip on every rank unless
 # every rank sees one.
+#
+# --nccl implies --cuda's LD_LIBRARY_PATH setup and additionally needs
+# libnccl on it (module load nccl/2.23.4-1); NCCL refuses two ranks of one
+# communicator on one GPU, so this workstation-only invocation only exercises
+# the size == 1 world (Host, no NCCL call) — the real multi-rank net is
+# `scripts/slurm/mpi-gpu-nccl.sbatch`, which the user submits.
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
@@ -53,7 +60,8 @@ while [ $# -gt 0 ]; do
         --python) python_net=1; shift ;;
         --no-rust) rust_net=0; shift ;;
         --cuda) features="mpi,cuda"; shift ;;
-        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+        --nccl) features="mpi,cuda,nccl"; shift ;;
+        -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
@@ -81,17 +89,29 @@ EOF
 fi
 
 cuda_x=""
-if [ "$features" = "mpi,cuda" ]; then
-    cuda_root="${CUDA_ROOT:-${CUDA_HOME:-}}"
-    if [ -n "$cuda_root" ] && [ -d "$cuda_root/lib64" ]; then
-        export LD_LIBRARY_PATH="$cuda_root/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    fi
-    if ! ldconfig -p 2>/dev/null | grep -q libnvrtc \
-       && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnvrtc'; then
-        echo "warning: no libnvrtc on the loader path (module load cuda/12.8.0, or set CUDA_ROOT); the device cases will skip" >&2
-    fi
-    cuda_x="-x LD_LIBRARY_PATH"
-fi
+case "$features" in
+    mpi,cuda|mpi,cuda,nccl)
+        cuda_root="${CUDA_ROOT:-${CUDA_HOME:-}}"
+        if [ -n "$cuda_root" ] && [ -d "$cuda_root/lib64" ]; then
+            export LD_LIBRARY_PATH="$cuda_root/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        fi
+        if ! ldconfig -p 2>/dev/null | grep -q libnvrtc \
+           && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnvrtc'; then
+            echo "warning: no libnvrtc on the loader path (module load cuda/12.8.0, or set CUDA_ROOT); the device cases will skip" >&2
+        fi
+        if [ "$features" = "mpi,cuda,nccl" ]; then
+            nccl_lib="${NCCL_LIB:-}"
+            if [ -n "$nccl_lib" ] && [ -d "$nccl_lib" ]; then
+                export LD_LIBRARY_PATH="$nccl_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            if ! ldconfig -p 2>/dev/null | grep -q libnccl \
+               && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnccl'; then
+                echo "warning: no libnccl on the loader path (module load nccl/2.23.4-1, or set NCCL_LIB to its lib dir); NCCL init will fail" >&2
+            fi
+        fi
+        cuda_x="-x LD_LIBRARY_PATH"
+        ;;
+esac
 
 if [ "$rust_net" -eq 1 ]; then
     echo "== building the mpi_ranks test binary ${profile:-(debug)}, features $features"

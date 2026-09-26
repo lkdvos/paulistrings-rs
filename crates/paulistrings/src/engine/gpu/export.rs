@@ -2678,21 +2678,25 @@ mod tests {
     }
 
     /// A recycled payload comes back for its own device and keeps its blocks; another device's does not.
+    /// `W = 3` is a width no other test pools, and [`payload::BIN_TEST`] keeps concurrent drops from draining the pool mid-test.
     #[test]
     fn the_payload_bin_is_keyed_by_device() {
         crate::require_cuda!();
         let sum = rand_sum::<1>(10, 8, 0xB1);
         let dev = GpuSum::from_host(&sum, 0).expect("upload");
-        payload::drain_bin();
-        let mut p = payload::reclaim::<1>(0);
+        let _quiet = payload::BIN_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        payload::drain_bin_held();
+        let mut p = payload::reclaim::<3>(0);
         p.block_mut(1, &dev.stream).expect("blocks");
         payload::recycle(p);
-        assert!(payload::reclaim::<1>(7).blocks.is_empty());
-        assert!(payload::reclaim::<2>(0).blocks.is_empty());
-        let p = payload::reclaim::<1>(0);
+        assert!(payload::reclaim::<3>(7).blocks.is_empty());
+        assert!(payload::reclaim::<5>(0).blocks.is_empty());
+        let p = payload::reclaim::<3>(0);
         assert_eq!((p.device, p.blocks.len()), (Some(0), 2));
         payload::recycle(p);
-        payload::drain_bin();
-        assert!(payload::reclaim::<1>(0).blocks.is_empty());
+        payload::drain_bin_held();
+        assert!(payload::reclaim::<3>(0).blocks.is_empty());
     }
 }

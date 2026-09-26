@@ -252,7 +252,23 @@ pub(crate) fn bin_holds<const W: usize>(ptr: u64) -> bool {
 
 /// Free every pooled payload.
 pub(crate) fn drain_bin() {
+    #[cfg(test)]
+    let _quiet = BIN_TEST.lock().unwrap_or_else(PoisonError::into_inner);
+    clear_bin();
+}
+
+fn clear_bin() {
     BIN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+}
+
+/// Held by a test that inspects the pool, so no dropped split in a concurrent test drains it mid-test.
+#[cfg(test)]
+pub(crate) static BIN_TEST: Mutex<()> = Mutex::new(());
+
+/// [`drain_bin`] for a test already holding [`BIN_TEST`].
+#[cfg(test)]
+pub(crate) fn drain_bin_held() {
+    clear_bin();
 }
 
 /// Whether a device-to-device copy between two devices goes direct or through the host.

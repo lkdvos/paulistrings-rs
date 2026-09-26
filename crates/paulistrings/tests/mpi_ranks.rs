@@ -19,6 +19,8 @@
 //! [`assert_terms_close`], plus exact `len()` equality (the truncation policies
 //! are partition-exact, so the term count is not a tolerance question).
 //!
+//! Built with `--features cuda` as well, the matrix repeats its layer shapes with one CUDA device per rank (`MpiGpuSum`), ranks sharing a device when there are fewer devices than ranks; those cases are skipped on every rank unless every rank sees a device.
+//!
 //! Threading is [`Threading::Serialized`], not `Funneled`: the layer loop runs
 //! inside a Rayon pool, so MPI calls come off a pool worker rather than the
 //! process's main thread. Only ever one at a time, which is what `SERIALIZED`
@@ -280,6 +282,8 @@ fn main() {
         cases: 0,
     };
     run_matrix(&mut r);
+    #[cfg(feature = "cuda")]
+    device::run_device_matrix(&mut r);
 
     let (cases, failures) = (r.cases, r.failures);
     if rank == 0 {
@@ -711,4 +715,427 @@ fn run_matrix(r: &mut Runner) {
         assert_eq!(split.len(), oracle.len(), "rank {}: collective len", r.rank);
         assert!(split.len_local() <= split.len());
     });
+}
+
+/// The device half of the matrix: the same shapes through `MpiGpuSum`, each rank on [`local_device_for_rank`].
+#[cfg(feature = "cuda")]
+mod device {
+    use super::*;
+    use paulistrings::gpu::{
+        cuda_available, local_device_for_rank, propagate_mpi_gpu, GpuExchange, MpiGpuSum,
+    };
+
+    impl Runner<'_> {
+        /// Scatter onto this rank's device, propagate, gather on rank 0 and compare against the single-process oracle.
+        #[allow(clippy::too_many_arguments)]
+        fn device_differential<const W: usize, T>(
+            &self,
+            circuit: &Circuit<W>,
+            sum: &PauliSum<W>,
+            policy: &T,
+            direction: Direction,
+            seed: u64,
+            chunk_bytes: Option<usize>,
+            what: &str,
+        ) where
+            T: PartitionedTruncation<W> + ?Sized,
+        {
+            let mut transport = MpiTransport::from_communicator(self.world);
+            if let Some(bytes) = chunk_bytes {
+                transport = transport.with_chunk_bytes(bytes);
+            }
+            let device = local_device_for_rank(self.rank).expect("a device on every rank");
+            let mut split = MpiGpuSum::scatter(
+                sum.clone(),
+                transport,
+                device,
+                &PartitionRowPolicy::Seeded(Some(seed)),
+            )
+            .expect("device scatter");
+            assert_eq!(split.device(), device);
+            split
+                .propagate(circuit, policy, direction)
+                .expect("device propagate");
+            let got = split.gather().expect("device gather");
+            self.compare(circuit, sum, policy, direction, got, what);
+        }
+
+        /// Rank 0's gathered result against [`propagate`]; every other rank must hold `None`.
+        fn compare<const W: usize, T>(
+            &self,
+            circuit: &Circuit<W>,
+            sum: &PauliSum<W>,
+            policy: &T,
+            direction: Direction,
+            got: Option<PauliSum<W>>,
+            what: &str,
+        ) where
+            T: PartitionedTruncation<W> + ?Sized,
+        {
+            match (self.rank, got) {
+                (0, Some(got)) => {
+                    let want = propagate(circuit, sum.clone(), policy, direction);
+                    let what = format!("{what} ranks={} {direction:?}", self.size);
+                    assert_terms_close(&got, &want, TOL, &what);
+                    assert_eq!(got.len(), want.len(), "{what}: term count");
+                }
+                (0, None) => panic!("{what}: rank 0 did not gather"),
+                (r, Some(_)) => panic!("{what}: rank {r} gathered but is not the root"),
+                (_, None) => {}
+            }
+        }
+
+        fn device_both_directions<const W: usize, T>(
+            &self,
+            circuit: &Circuit<W>,
+            sum: &PauliSum<W>,
+            policy: &T,
+            seed: u64,
+            what: &str,
+        ) where
+            T: PartitionedTruncation<W> + ?Sized,
+        {
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                self.device_differential(circuit, sum, policy, direction, seed, None, what);
+            }
+        }
+    }
+
+    pub(super) fn run_device_matrix(r: &mut Runner) {
+        // Every rank must take the same branch, or the cases below are collectives some ranks never enter.
+        let send = [u64::from(!cuda_available())];
+        let mut without = [0u64];
+        r.world
+            .all_reduce_into(&send[..], &mut without[..], SystemOperation::sum());
+        if without[0] > 0 {
+            if r.rank == 0 {
+                println!(
+                    "skipped  device cases ({} of {} ranks see no CUDA device)",
+                    without[0], r.size
+                );
+            }
+            return;
+        }
+
+        r.case("device w1 single zz rotation", |r| {
+            let circuit = single_rotation::<1>(16);
+            let sum = rand_sum_real::<1>(400, 16, 0xB001);
+            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 rotation");
+        });
+
+        r.case("device w1 cnot ring", |r| {
+            let circuit = cnot_ring::<1>(12);
+            let sum = rand_sum::<1>(400, 12, 0xB002);
+            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 cnot");
+        });
+
+        r.case("device w1 haar su(4)", |r| {
+            let circuit = haar_su4::<1>(8);
+            let sum = rand_sum::<1>(300, 8, 0xB003);
+            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 su4");
+        });
+
+        r.case("device w1 trotter, 32 layers", |r| {
+            let circuit = trotter_circuit::<1>(16, THETA);
+            let sum = rand_sum_real::<1>(800, 16, 0xB004);
+            r.device_both_directions(
+                &circuit,
+                &sum,
+                &ApproxTopN(1_500),
+                SEED,
+                "device w1 trotter",
+            );
+        });
+
+        r.case("device w2 haar su(4)", |r| {
+            let circuit = haar_su4::<2>(8);
+            let sum = rand_sum::<2>(300, 8, 0xB005);
+            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w2 su4");
+        });
+
+        r.case("device w2 trotter, 32 layers", |r| {
+            let circuit = trotter_circuit::<2>(16, THETA);
+            let sum = rand_sum_real::<2>(600, 16, 0xB006);
+            r.device_both_directions(
+                &circuit,
+                &sum,
+                &ApproxTopN(1_200),
+                SEED,
+                "device w2 trotter",
+            );
+        });
+
+        r.case("device approx-topn firing every layer", |r| {
+            const TIGHT: usize = 200;
+            let circuit = trotter_circuit::<1>(14, THETA);
+            let sum = rand_sum_real::<1>(600, 14, 0xB008);
+            let want = propagate(
+                &circuit,
+                sum.clone(),
+                &ApproxTopN(TIGHT),
+                Direction::Forward,
+            );
+            assert!(
+                want.len() <= 4 * TIGHT,
+                "the budget must actually bind: {} terms out",
+                want.len(),
+            );
+            r.device_both_directions(
+                &circuit,
+                &sum,
+                &ApproxTopN(TIGHT),
+                SEED,
+                "device approx tight",
+            );
+        });
+
+        r.case("device all-remote rotation", |r| {
+            let nq = 12;
+            let sum = rand_sum_real::<1>(400, nq, 0xB020);
+            let circuit = single_rotation::<1>(nq);
+            if r.size == 1 {
+                r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device all-remote (P=1)");
+                return;
+            }
+            let pbits = r.size.trailing_zeros() as u8;
+            let seed = (0u64..4096)
+                .find(|&s| {
+                    let rows = PartitionRows::<1>::from_seed(nq, pbits, SEED ^ s);
+                    count_remote_deltas(&circuit, sum.hash(), &rows, false)
+                        .iter()
+                        .all(|&(_, remote)| remote > 0)
+                })
+                .map(|s| SEED ^ s)
+                .expect("some row draw sends the generator across");
+            r.device_both_directions(&circuit, &sum, &KeepAll, seed, "device all-remote");
+        });
+
+        r.case("device multi-chunk parts at 1 KiB", |r| {
+            let circuit = haar_su4::<1>(8);
+            let sum = rand_sum::<1>(1_200, 8, 0xB030);
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                r.device_differential(
+                    &circuit,
+                    &sum,
+                    &KeepAll,
+                    direction,
+                    SEED,
+                    Some(1024),
+                    "device chunked",
+                );
+            }
+        });
+
+        r.case(
+            "propagate_mpi_gpu is the persistent device driver in one call",
+            |r| {
+                let circuit = cnot_ring::<1>(10);
+                let sum = rand_sum::<1>(300, 10, 0xB015);
+                let got = propagate_mpi_gpu(
+                    &circuit,
+                    sum.clone(),
+                    &KeepAll,
+                    Direction::Forward,
+                    PropagateOptions::default(),
+                    r.world,
+                    None,
+                )
+                .expect("device run");
+                r.compare(
+                    &circuit,
+                    &sum,
+                    &KeepAll,
+                    Direction::Forward,
+                    got,
+                    "propagate_mpi_gpu",
+                );
+            },
+        );
+
+        // Representative NCCL-knob subset: the same shapes as above, under
+        // `PAULISTRINGS_GPU_EXCHANGE=nccl`. At `size == 1` this still agrees `Host` (`start_nccl`'s
+        // `wants` requires more than one rank), so the differential holds either way; the point is
+        // that requesting the knob does not change what a remote layer computes.
+        #[cfg(feature = "nccl")]
+        {
+            r.case("device w1 haar su(4) (nccl knob)", |r| {
+                std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", "nccl");
+                let circuit = haar_su4::<1>(8);
+                let sum = rand_sum::<1>(300, 8, 0xB003);
+                r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 su4 nccl-knob");
+                std::env::remove_var("PAULISTRINGS_GPU_EXCHANGE");
+            });
+
+            r.case("device all-remote rotation (nccl knob)", |r| {
+                std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", "nccl");
+                let nq = 12;
+                let sum = rand_sum_real::<1>(400, nq, 0xB020);
+                let circuit = single_rotation::<1>(nq);
+                if r.size == 1 {
+                    r.device_both_directions(
+                        &circuit,
+                        &sum,
+                        &KeepAll,
+                        SEED,
+                        "device all-remote (P=1) nccl-knob",
+                    );
+                } else {
+                    let pbits = r.size.trailing_zeros() as u8;
+                    let seed = (0u64..4096)
+                        .find(|&s| {
+                            let rows = PartitionRows::<1>::from_seed(nq, pbits, SEED ^ s);
+                            count_remote_deltas(&circuit, sum.hash(), &rows, false)
+                                .iter()
+                                .all(|&(_, remote)| remote > 0)
+                        })
+                        .map(|s| SEED ^ s)
+                        .expect("some row draw sends the generator across");
+                    r.device_both_directions(
+                        &circuit,
+                        &sum,
+                        &KeepAll,
+                        seed,
+                        "device all-remote nccl-knob",
+                    );
+                }
+                std::env::remove_var("PAULISTRINGS_GPU_EXCHANGE");
+            });
+
+            r.case("device multi-chunk parts at 1 KiB (nccl knob)", |r| {
+                std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", "nccl");
+                let circuit = haar_su4::<1>(8);
+                let sum = rand_sum::<1>(1_200, 8, 0xB030);
+                for direction in [Direction::Forward, Direction::Heisenberg] {
+                    r.device_differential(
+                        &circuit,
+                        &sum,
+                        &KeepAll,
+                        direction,
+                        SEED,
+                        Some(1024),
+                        "device chunked nccl-knob",
+                    );
+                }
+                std::env::remove_var("PAULISTRINGS_GPU_EXCHANGE");
+            });
+
+            // Several partners, each carrying several blocks of distinct sizes: a haar su(4) at
+            // P >= 2 sends every remote delta's own block, so a rank with more than one partner
+            // (P >= 4) or more than one remote generator already produces the shape `nccl_schedule`
+            // must preserve in order; at P < 4 the case still holds
+            // (fewer, but still size-distinct, blocks) so it runs at any rank count.
+            r.case(
+                "device several distinct-size blocks per partner (nccl knob)",
+                |r| {
+                    std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", "nccl");
+                    let nq = 12;
+                    let circuit = {
+                        let mut c = Circuit::<1>::new(nq);
+                        // Four disjoint dense two-qubit deltas of the same generic SU(4): every rank
+                        // holding several of them sends its partners several blocks whose row counts
+                        // differ across layers, so an out-of-order per-partner match would not
+                        // silently agree.
+                        for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
+                            c.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
+                        }
+                        c
+                    };
+                    let sum = rand_sum::<1>(2_000, nq, 0xB031);
+                    r.device_both_directions(
+                        &circuit,
+                        &sum,
+                        &KeepAll,
+                        SEED,
+                        "device distinct-size blocks nccl-knob",
+                    );
+                    std::env::remove_var("PAULISTRINGS_GPU_EXCHANGE");
+                },
+            );
+        }
+
+        r.case("the device exchange mode is one mode on every rank", |r| {
+            let transport = MpiTransport::from_communicator(r.world);
+            let device = local_device_for_rank(r.rank).expect("a device on every rank");
+            let sum = rand_sum::<1>(200, 10, 0xB016);
+            let split = MpiGpuSum::scatter(
+                sum,
+                transport,
+                device,
+                &PartitionRowPolicy::Seeded(Some(SEED)),
+            )
+            .expect("device scatter");
+            let mode = split.exchange();
+            // A one-rank world has nothing to exchange, so it never reaches for NCCL.
+            if r.size == 1 {
+                assert_eq!(mode, GpuExchange::Host, "a singleton world");
+            }
+            let mut modes = vec![0u64; 3];
+            modes[match mode {
+                GpuExchange::Host => 0,
+                GpuExchange::Device => 1,
+                _ => 2,
+            }] = 1;
+            paulistrings::engine::partitioned::Collectives::allreduce_sum_u64(
+                split.transport(),
+                &mut modes,
+            );
+            assert!(
+                modes.contains(&u64::from(r.size)),
+                "ranks disagree on the mode: {modes:?}"
+            );
+            assert_eq!(modes[1], 0, "an MPI group never moves device payloads");
+        });
+
+        // The mode rule (ARCHITECTURE.md §Partitioning): `Nccl` iff every rank both
+        // wants it (more than one rank, no `PAULISTRINGS_GPU_EXCHANGE=host`) and can start it
+        // (feature `nccl`, `nccl_available()`), else every rank agrees `Host`. `size == 1` above
+        // already pins the "never at a singleton" half; this pins the general rule.
+        #[cfg(feature = "nccl")]
+        r.case(
+            "device exchange mode reaches nccl exactly when every rank can",
+            |r| {
+                let transport = MpiTransport::from_communicator(r.world);
+                let device = local_device_for_rank(r.rank).expect("a device on every rank");
+                // Every rank's device ordinal, +1 so 0 is not mistaken for "no entry".
+                let mut devices = vec![0u64; r.size as usize];
+                devices[r.rank as usize] = u64::from(device) + 1;
+                paulistrings::engine::partitioned::Collectives::allreduce_sum_u64(
+                    &transport,
+                    &mut devices,
+                );
+                let mut distinct = devices.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                let every_rank_distinct = distinct.len() == devices.len();
+                let can_nccl = paulistrings::gpu::nccl_available();
+
+                let sum = rand_sum::<1>(200, 10, 0xB018);
+                let split = MpiGpuSum::scatter(
+                    sum,
+                    transport,
+                    device,
+                    &PartitionRowPolicy::Seeded(Some(SEED)),
+                )
+                .expect("device scatter");
+                let mode = split.exchange();
+                if r.size > 1 && every_rank_distinct && can_nccl {
+                    assert_eq!(
+                        mode,
+                        GpuExchange::Nccl,
+                        "every rank ({}) holds a distinct device and NCCL is available",
+                        r.size,
+                    );
+                } else {
+                    assert_eq!(
+                        mode,
+                        GpuExchange::Host,
+                        "rank {}: size={}, every_rank_distinct={every_rank_distinct}, \
+                     can_nccl={can_nccl}",
+                        r.rank,
+                        r.size,
+                    );
+                }
+            },
+        );
+    }
 }

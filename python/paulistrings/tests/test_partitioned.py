@@ -347,6 +347,7 @@ def test_partition_stats_are_self_consistent():
     part = stats.partition
 
     assert part.partitions == 2
+    assert part.devices is None
     for field in (
         part.local,
         part.rows_exported,

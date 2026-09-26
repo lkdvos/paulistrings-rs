@@ -15,6 +15,7 @@ mod macros;
 mod channel_spec;
 mod circuit;
 mod gates;
+mod gpu;
 #[cfg(feature = "mpi")]
 mod mpi;
 mod noise;
@@ -67,6 +68,25 @@ fn mpi_available() -> bool {
     cfg!(feature = "mpi")
 }
 
+/// Whether this build of the extension can run `PauliSum.propagate(device=...)`.
+///
+/// `True` only if compiled with the `cuda` cargo feature (`maturin develop --release --features cuda`)
+/// *and* a CUDA device is visible to this process; the default wheel lacks the feature.
+#[cfg(feature = "cuda")]
+#[pyfunction]
+fn cuda_available() -> bool {
+    paulistrings::gpu::cuda_available()
+}
+
+/// Whether this build of the extension can run `PauliSum.propagate(device=...)`.
+///
+/// Always `False`: this build lacks the `cuda` cargo feature.
+#[cfg(not(feature = "cuda"))]
+#[pyfunction]
+fn cuda_available() -> bool {
+    false
+}
+
 /// Shorthand for `PauliString.from_label(label)`, for writing one down by hand.
 ///
 /// ```python
@@ -87,6 +107,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(reset_log_cache, m)?)?;
     m.add_function(wrap_pyfunction!(numa_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(p, m)?)?;
 
     // Re-exported from the core so the Python default cannot drift from the Rust one.
@@ -99,6 +120,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sum::PauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;
     m.add_class::<sum::PartitionStats>()?;
+    m.add_class::<gpu::GpuPauliSum>()?;
     m.add_class::<circuit::Circuit>()?;
     m.add_class::<channel_spec::PyChannel>()?;
     m.add_class::<truncation_spec::PyTruncation>()?;

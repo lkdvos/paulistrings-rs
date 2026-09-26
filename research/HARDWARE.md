@@ -72,6 +72,115 @@ Phase shares (share of summed worker busy time, gather/sort/merge):
 Parallel efficiency (busy / (coset-loop wall × threads)) is 0.99 for `su4` at 16t.
 Thread guidance on this host: 16 threads for dense-PTM-heavy circuits, 32 for sparse-rotation circuits.
 
+## ccqlin038 — GPU
+
+NVIDIA RTX A6000 (GA102, sm_86, 48 GB GDDR6, 768 GB/s spec), driver-managed clocks: 210 / 405 MHz idle, 1800 MHz SM / 7601 MHz memory under load, 44–66 °C, 175–183 W during the cells below.
+Shared box; load average 2–5 during the device cells, 6–11 during the host cells.
+
+### Device memory bandwidth ceilings
+
+`crates/membench --device 0` (feature `cuda`) via `scripts/bandwidth.sh --device 0`; STREAM-convention nominal bytes, grid-stride f64 kernels, best of 5 reps.
+
+| arrays | read | write | copy | triad |
+|---|---:|---:|---:|---:|
+| 512 MiB | 703.7 | 706.6 | 674.4 | 676.2 |
+| 2 GiB | 709.7 | 711.4 | 658.8 | 673.0 |
+
+GB/s; read and write reach 92% of the 768 GB/s spec.
+
+### Device layer vs host, first table
+
+`phase_breakdown --device 0` against `phase_breakdown --threads 16,32` (`scripts/jcc-rustflags.sh` sourced), `--qubits 128` (`W = 2`), truncation `keep`, `--reps 5`: one untimed application drives the sum to its steady state, the timed call applies the layer five more times, both sides identically.
+`m` is the steady-state term count; ns per term is wall per layer over `m`; the ratio is host over device.
+
+| cell | m | device ms/layer | device ns/term | host 16t ns/term | host 32t ns/term | ratio vs 16t | ratio vs 32t |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.50e6 | 1.845 | 1.23 | 2.48 | 2.59 | 2.0× | 2.1× |
+| `rotation_zz` | 6.00e6 | 6.920 | 1.15 | 2.63 | 2.80 | 2.3× | 2.4× |
+| `rotation_zz` | 2.40e7 | 26.84 | 1.12 | 4.17 | 3.34 | 3.7× | 3.0× |
+| `cnot` | 1.00e6 | 1.109 | 1.11 | 3.37 | 3.61 | 3.0× | 3.3× |
+| `cnot` | 4.00e6 | 3.948 | 0.99 | 4.66 | 3.91 | 4.7× | 4.0× |
+| `cnot` | 1.60e7 | 15.35 | 0.96 | 3.76 | 3.74 | 3.9× | 3.9× |
+| `gu2q` | 3.25e6 | 3.528 | 1.09 | 3.07 | 3.05 | 2.8× | 2.8× |
+| `gu2q` | 1.30e7 | 13.58 | 1.04 | 3.88 | 3.25 | 3.7× | 3.1× |
+| `gu2q` | 5.20e7 | 52.25 | 1.00 | 3.90 | 3.04 | 3.9× | 3.0× |
+| `su4` | 1.41e7 | 65.65 | 4.65 | 51.3 | 61.4 | 11.0× | 13.2× |
+| `su4` | 5.65e7 | 263.3 | 4.66 | 74.3 | 69.8 | 15.9× | 15.0× |
+| `heavyhex_step` (5 steps, `coeff:2^-13`, 1355 layers, final m) | 1.16e6 | 2.122 | 1.84 | 3.53 | 3.52 | 1.9× | 1.9× |
+| `trotter` (64 layers, 100 → 6.7e4 terms) | 6.7e4 | 9.316 | 139.5 | 130.8 | 121.7 | 0.94× | 0.87× |
+
+`su4` at `--n 16000000` (2.3e8 steady terms) does not fit the 48 GB device and was not run.
+The host `su4` row at 5.65e7 (74.3 ns/term at 16t) is above the 49–58 ns/term of earlier quiet measurements; the box carried a load average of 6–11 during it.
+
+Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = `merge_ns`, K4 = `compact_ns`, `coset_loop_ns` the driving thread's wall):
+
+| cell | m | K1+K2 | K3 | K4 | coset loop | records/layer | ns per record (K3) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.50e6 | 0.126 | 1.370 | 0.283 | 1.840 | 2.50e6 | 0.55 |
+| `cnot` | 1.00e6 | 0.085 | 0.760 | 0.200 | 1.103 | 1.00e6 | 0.76 |
+| `gu2q` | 3.25e6 | 0.208 | 2.900 | 0.349 | 3.521 | 8.65e6 | 0.34 |
+| `su4` | 1.41e7 | 1.044 | 61.98 | 2.440 | 65.64 | 2.11e8 | 0.29 |
+| `su4` | 5.65e7 | 4.035 | 248.7 | 9.838 | 263.3 | 8.44e8 | 0.29 |
+
+ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one, where the fixed per-block cost (0.55–0.76 ns per record at ~1000 records per block) dominates.
+In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-process NVRTC compile is 3.5 s inside the first cell's `upload_ns`, and `download_ns` (`to_host`, pinned D2H plus the host re-sort into `PauliSum`) is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
+
+## `gpu` cluster nodes — one process, several devices
+
+From `scripts/slurm/gpu-devices.sbatch` runs (`scripts/slurm/README.md`, The GPU jobs).
+Same conventions as the ccqlin038 tables: `--qubits 128`, truncation `keep` (`heavyhex_step` five steps under `coeff:2^-13`, 1355 layers), `--reps 5`, `m` the steady-state term count, ms per layer, device exchange (`PAULISTRINGS_GPU_EXCHANGE` unset).
+The partitioned row keeps the single device's total `m`, so its speedup is strong scaling.
+
+| node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | job |
+|---|---|---|---|---|
+| workergpu068, A100-SXM4-80GB | 2 of 4 | NV4 between the pair | 1410 / 1593 MHz | 7101047, rev 01df3eb |
+| workergpu065, A100-SXM4-80GB | 4 | NV4 between every pair | 1410 / 1593 MHz | 7099959, rev 8234874 |
+| H100-SXM5 | 4 | | | |
+
+| node | cell | m | 1 device ms/layer | 1 device ns/term | 2 devices ms/layer | 2 devices ns/term | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A100 | `rotation_zz` | 6.00e6 | 5.743 | 0.96 | 3.105 | 0.52 | 1.85× | 0 | 0 | 0.03 | 0 |
+| A100 | `cnot` | 4.00e6 | 3.329 | 0.83 | 8.319 | 2.08 | 0.40× | 0.48 | 5.19 | 1.26 | 1.12e8 |
+| A100 | `gu2q` | 1.30e7 | 10.66 | 0.82 | 51.27 | 3.94 | 0.21× | 1.83 | 38.27 | 11.97 | 9.41e8 |
+| A100 | `su4` | 5.65e7 | 204.1 | 3.61 | 1249 | 22.11 | 0.16× | 42.78 | 884.0 | 308.0 | 2.35e10 |
+| A100 | `heavyhex_step` | 1.16e6 | 1.731 | 1.50 | 1.308 | 1.13 | 1.32× | 0.05 | 0.26 | 0.04 | 4.86e6 |
+| A100 | `rotation_remote` | 6.00e6 | — | — | 12.86 | 2.14 | — | 0.53 | 9.50 | 2.51 | 2.24e8 |
+
+Four devices, workergpu065 (one device 5.729 / 3.326 / 11.02 / 204.4 / 1.733 ms per layer on the same cells):
+
+| cell | 4 devices ms/layer | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
+|---|---:|---:|---:|---:|---:|---:|
+| `rotation_zz` | 1.782 | 3.21× | 0 | 0 | 0.1 | 0 |
+| `cnot` | 8.148 | 0.41× | 0.5 | 6.0 | 1.4 | 1.68e8 |
+| `gu2q` | 25.64 | 0.43× | 1.1 | 19.1 | 5.4 | 9.41e8 |
+| `su4` | 1542 | 0.13× | 34.0 | 1102 | 363.1 | 3.53e10 |
+| `rotation_remote` | 7.232 | — | 0.3 | 5.0 | 1.1 | 2.24e8 |
+| `heavyhex_step` | 1.023 | 1.69× | 0.1 | 0.3 | 0.1 | 6.85e6 |
+
+A layer without remote deltas scales; a layer with them is exchange-bound, at ≈ 27 GB/s aggregate for `su4` (2.35e10 bytes in 884 ms) against the 100 GB/s per direction of four NVLink3 links.
+Every row above predates `cuMemPoolSetAccess` in `enable_peer_access`: cudarc allocates from the stream-ordered pool, which `cuCtxEnablePeerAccess` does not map, so the exchange staged through the host and direct peer loads faulted (`gpu_peer`, jobs 7101880 and 7102281: 21.7 GB/s peer copies against 26 GB/s pinned host copies and 880 GB/s same-device, `CUDA_ERROR_ILLEGAL_ADDRESS` from a kernel reading its peer, `nvidia-smi topo -p2p` OK).
+The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
+One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
+
+## `gpu` cluster nodes — one device per MPI rank
+
+From `scripts/slurm/mpi-gpu-ranks.sbatch` runs.
+Replicated input, so `m` per rank equals the single-device `m` above (`heavyhex_step` excepted: its sum is split, 5.8e5 per rank); one GPU and 8 CPUs per rank, rank 0 shown (rank 1 within 4%), ms per layer.
+Exchange goes through host memory (`h2d` + `d2h` is 55–57% of a remote layer's wall).
+
+| ranks (nodes) | node | layer | m per rank | wall | export | exchange | chunk wait | coset loop | h2d + d2h | bytes exported/rank | peak RSS/rank |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 (1) | A100, job 7101048 | `rotation_zz` | 6.00e6 | 5.75 | 0 | 0 | 0 | 5.72 | 0.05 | 0 | 2.1 GB |
+| 2 (1) | A100 | `cnot` | 4.00e6 | 45.66 | 17.00 | 0.20 | 14.53 | 28.40 | 26.16 | 9.61e7 | 2.2 GB |
+| 2 (1) | A100 | `gu2q` | 1.30e7 | 296.4 | 89.92 | 7.40 | 105.3 | 197.9 | 165.5 | 8.07e8 | 4.9 GB |
+| 2 (1) | A100 | `su4` | 5.65e7 | 7357 | 2253 | 172.7 | 2669 | 4871 | 4145 | 2.02e10 | 58.7 GB |
+| 2 (1) | A100 | `rotation_remote` | 6.00e6 | 72.83 | 22.01 | 0.08 | 26.04 | 50.70 | 39.98 | 1.92e8 | 58.7 GB |
+| 2 (1) | A100 | `heavyhex_step` | 5.77e5 | 1.95 | 0.47 | 0.04 | 0.29 | 1.42 | 0.65 | 2.08e6 | 0.6 GB |
+| 4 (1) | A100 | | | | | | | | | | |
+| 8 (2) | A100 | | | | | | | | | | |
+
+`rotation_zz` weak-scales flat (5.75 vs 5.74 ms on one device); the peak RSS is the probe's replicated input, carried from `su4` into the later cells.
+
 ## `ccq` cluster node types
 
 `scripts/slurm/jcc-portability.sbatch`, one exclusive node each, governor `performance`; family/model read from `/proc/cpuinfo`.

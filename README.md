@@ -21,6 +21,7 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 - **Operator-basis Pauli propagation at scale** — evolve the observable, not the wavefunction, in either the Schroedinger or Heisenberg picture.
 - **GF(2)-bucketed, write-disjoint parallel engine** — layers are partitioned by a GF(2)-linear hash, so output buckets are statically predictable and never collide across threads.
 - **Partitioned across NUMA domains and MPI ranks** — Support for scaling to arbitrary amount of nodes.
+- **CUDA backend** — one GPU runs a saturated dense two-qubit layer about 10× faster than a 16-thread host, scaling to several devices in one process or one GPU per MPI rank, behind the off-by-default `cuda` feature (`device=` from Python).
 - **Open extension traits for research** — plug in a custom `Channel` (gate or noise model) or `TruncationPolicy` without touching the engine.
 - **Rust core, Python front-end** — Low-overhead efficient engine with a convenient interface.
 

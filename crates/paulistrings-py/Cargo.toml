@@ -20,6 +20,15 @@ crate-type = ["cdylib"]
 # the default cdylib must stay unchanged. Build it with
 # `maturin develop --release --features mpi`.
 mpi = ["paulistrings/mpi"]
+# Compile the CUDA surface of the bindings: `device=` on the two propagate
+# entry points, a constructible `GpuPauliSum` via `PauliSum.to_device`, and a
+# live `paulistrings.cuda_available()`. Off by default, like `mpi`; it needs no
+# toolkit to build. Build it with `maturin develop --release --features cuda`.
+cuda = ["paulistrings/cuda"]
+# Compile the NCCL surface of the bindings, matching the core's `nccl`
+# feature. Off by default, like `cuda` and `mpi`. Build it with
+# `maturin develop --release --features nccl`.
+nccl = ["paulistrings/nccl", "cuda", "mpi"]
 
 [dependencies]
 paulistrings = { workspace = true }

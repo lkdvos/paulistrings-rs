@@ -16,6 +16,9 @@
 //! Cross-check against `perf stat -a -e uncore_imc/cas_count_*` if the raw
 //! CAS traffic is wanted.
 
+#[cfg(feature = "cuda")]
+mod gpu;
+
 use rayon::prelude::*;
 use std::hint::black_box;
 use std::time::Instant;
@@ -28,6 +31,8 @@ struct Args {
     mib: usize,
     reps: usize,
     kernels: Vec<String>,
+    /// `--device N` (feature `cuda`): measure the device's memory instead of the host's; `threads=gpu<N>` in the output.
+    device: Option<u32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -39,6 +44,7 @@ fn parse_args() -> Result<Args, String> {
             .into_iter()
             .map(String::from)
             .collect(),
+        device: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -52,12 +58,19 @@ fn parse_args() -> Result<Args, String> {
             "--kernels" => {
                 args.kernels = value("--kernels")?.split(',').map(String::from).collect()
             }
+            "--device" => {
+                if cfg!(not(feature = "cuda")) {
+                    return Err("--device needs the `cuda` cargo feature".into());
+                }
+                args.device = Some(value("--device")?.parse().map_err(|e| format!("{e}"))?)
+            }
             "--help" | "-h" => {
                 println!(
                     "usage: membench [--threads N] [--mib SIZE] [--reps N] \
-                     [--kernels read,write,copy,triad]\n\
+                     [--kernels read,write,copy,triad] [--device N]\n\
                      Prints one `kernel=... threads=... best_gbps=...` line per kernel.\n\
-                     Placement is external: run under numactl/taskset."
+                     Placement is external: run under numactl/taskset.\n\
+                     --device N (feature cuda) measures CUDA device N instead, threads=gpu<N>."
                 );
                 std::process::exit(0);
             }
@@ -125,6 +138,20 @@ fn main() {
             std::process::exit(2);
         }
     };
+    #[cfg(feature = "cuda")]
+    if let Some(device) = args.device {
+        let rows = gpu::run(device, args.mib, args.reps, &args.kernels).unwrap_or_else(|e| {
+            eprintln!("membench: {e}");
+            std::process::exit(2);
+        });
+        for (kernel, best, avg) in rows {
+            println!(
+                "kernel={kernel} threads=gpu{device} mib={} reps={} best_gbps={best:.2} avg_gbps={avg:.2}",
+                args.mib, args.reps
+            );
+        }
+        return;
+    }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(args.threads)
         .build()

@@ -12,14 +12,14 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::layer::{apply_layer_partitioned_with_plan, PartitionState};
+use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
 use super::plan::PartitionPlan;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
 use super::transport::{Collectives, Transport};
 use super::truncation::PartitionedTruncation;
-use crate::bucket::hash::PartitionRows;
+use crate::bucket::hash::{Gf2Hash, PartitionRows};
 use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
@@ -86,31 +86,23 @@ impl Collectives for CountingCollectives<'_> {
 
 /// One partition's payload, moved into its thread for the duration of a call
 /// and handed back.
-pub(super) struct PartitionWork<const W: usize> {
-    /// This partition's share of the sum.
-    pub(super) local: PauliSum<W>,
-    /// Its layer and export scratch, retained across calls.
-    pub(super) state: PartitionState<W>,
+pub(crate) struct PartitionWork<B> {
+    /// This partition's share of the sum and its retained scratch.
+    pub(crate) local: B,
     /// One row per layer, empty unless tracing is on. Written on this
     /// partition's driving thread only, and transposed into the shared
     /// [`PartitionTrace`] after the join.
-    pub(super) rows: Vec<PartitionLayerRow>,
+    pub(crate) rows: Vec<PartitionLayerRow>,
 }
 
-impl<const W: usize> PartitionWork<W> {
-    /// Move one partition's sum and scratch out of the driver for the duration of a call, leaving an empty sum under the same hash behind.
-    ///
-    /// The placeholder is what keeps the driver self-consistent — same rows, same hash, same bucket count on every partition — if the partition panics and the work is never handed back.
-    pub(super) fn take(
-        local: &mut PauliSum<W>,
-        state: &mut PartitionState<W>,
-        layers: usize,
-        tracing: bool,
-    ) -> Self {
-        let placeholder = PauliSum::empty_with_hash(local.num_qubits(), local.hash().clone());
+impl<B> PartitionWork<B> {
+    /// Move one partition out of the driver for the duration of a call through [`PartitionStorage::detach`], which leaves a valid empty partition behind.
+    pub(crate) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
+    where
+        B: PartitionStorage<W>,
+    {
         Self {
-            local: std::mem::replace(local, placeholder),
-            state: std::mem::take(state),
+            local: local.detach(),
             rows: Vec::with_capacity(if tracing { layers } else { 0 }),
         }
     }
@@ -165,14 +157,12 @@ impl<const W: usize> PartitionWork<W> {
 /// assert_eq!(split.gather().get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
 /// ```
 pub struct PartitionedSum<const W: usize> {
-    /// One sum per partition, in rank order.
-    locals: Vec<PauliSum<W>>,
+    /// One sum and its layer/export scratch per partition, in rank order.
+    parts: Vec<HostPartition<W>>,
     /// The rows that decide which partition a key belongs to.
     rows: PartitionRows<W>,
     /// The placement and pools this sum runs on.
     runtime: Arc<PartitionRuntime>,
-    /// Per-partition layer/export scratch, retained across calls.
-    states: Vec<PartitionState<W>>,
     /// The opt-in per-layer trace, `None` unless
     /// [`enable_trace`](Self::enable_trace) was called.
     trace: Option<PartitionTrace>,
@@ -264,12 +254,10 @@ impl<const W: usize> PartitionedSum<W> {
             started.elapsed().as_secs_f64(),
         );
 
-        let states = (0..size).map(|_| PartitionState::default()).collect();
         Self {
-            locals,
+            parts: locals.into_iter().map(HostPartition::new).collect(),
             rows,
             runtime,
-            states,
             trace: None,
             #[cfg(feature = "phase-timing")]
             scatter_ns: started.elapsed().as_nanos() as u64,
@@ -329,10 +317,10 @@ impl<const W: usize> PartitionedSum<W> {
             // Hoisted out of every partition's layer loop: nothing inside one
             // can turn tracing on or off.
             let tracing = self.trace.is_some();
-            let items: Vec<PartitionWork<W>> = (0..size)
-                .map(|rank| {
-                    PartitionWork::take(&mut self.locals[rank], &mut self.states[rank], n, tracing)
-                })
+            let items: Vec<PartitionWork<HostPartition<W>>> = self
+                .parts
+                .iter_mut()
+                .map(|part| PartitionWork::take(part, n, tracing))
                 .collect();
 
             let runtime = Arc::clone(&self.runtime);
@@ -351,8 +339,7 @@ impl<const W: usize> PartitionedSum<W> {
             });
             let mut traced = Vec::with_capacity(if tracing { size } else { 0 });
             for (rank, work) in done.into_iter().enumerate() {
-                self.locals[rank] = work.local;
-                self.states[rank] = work.state;
+                self.parts[rank] = work.local;
                 if tracing {
                     traced.push(work.rows);
                 }
@@ -381,7 +368,7 @@ impl<const W: usize> PartitionedSum<W> {
     pub fn gather(&self) -> PauliSum<W> {
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
-        let out = PauliSum::merge_partitions(self.locals.clone());
+        let out = PauliSum::merge_partitions(self.parts.iter().map(|p| p.sum.clone()).collect());
         #[cfg(feature = "phase-timing")]
         self.gather_ns.fetch_add(
             started.elapsed().as_nanos() as u64,
@@ -392,33 +379,33 @@ impl<const W: usize> PartitionedSum<W> {
 
     /// [`gather`](Self::gather) by value — no clone of the parts.
     pub fn into_gathered(self) -> PauliSum<W> {
-        PauliSum::merge_partitions(self.locals)
+        PauliSum::merge_partitions(self.parts.into_iter().map(|p| p.sum).collect())
     }
 
     /// Terms in the whole sum, summed over partitions.
     pub fn len(&self) -> usize {
-        self.locals.iter().map(PauliSum::len).sum()
+        self.parts.iter().map(|p| p.sum.len()).sum()
     }
 
     /// Whether every partition is empty.
     pub fn is_empty(&self) -> bool {
-        self.locals.iter().all(PauliSum::is_empty)
+        self.parts.iter().all(|p| p.sum.is_empty())
     }
 
     /// Partitions this sum is split across.
     pub fn num_partitions(&self) -> usize {
-        self.locals.len()
+        self.parts.len()
     }
 
     /// The bucket bits every partition currently holds (they are equal by
     /// construction).
     pub fn bits(&self) -> u8 {
-        self.locals[0].hash().bits()
+        self.parts[0].sum.hash().bits()
     }
 
     /// Qubits the sum is over.
     pub fn num_qubits(&self) -> usize {
-        self.locals[0].num_qubits()
+        self.parts[0].sum.num_qubits()
     }
 
     /// Partition `r`'s share of the sum.
@@ -427,7 +414,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// If `r` is not a partition of this sum.
     pub fn partition(&self, r: usize) -> &PauliSum<W> {
-        &self.locals[r]
+        &self.parts[r].sum
     }
 
     /// The rows deciding which partition a key belongs to.
@@ -446,9 +433,9 @@ impl<const W: usize> PartitionedSum<W> {
     /// Partitions are combined in rank order.
     /// As with [`PauliSum::expectation_product_state`], floating-point addition is not associative, so this need not agree bit for bit with the gathered sum's answer.
     pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
-        self.locals
+        self.parts
             .iter()
-            .map(|local| local.expectation_product_state(state))
+            .map(|part| part.sum.expectation_product_state(state))
             .sum()
     }
 
@@ -475,9 +462,9 @@ impl<const W: usize> PartitionedSum<W> {
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         PartitionPhaseStats {
             per_partition: self
-                .states
+                .parts
                 .iter_mut()
-                .map(|state| state.layer.take_stats())
+                .map(|part| part.state.layer.take_stats())
                 .collect(),
             scatter_ns: std::mem::take(&mut self.scatter_ns),
             gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
@@ -501,12 +488,12 @@ impl<const W: usize> PartitionedSum<W> {
     /// the bucket count or the qubit count.
     pub fn assert_invariants(&self) {
         assert_eq!(
-            self.locals.len(),
+            self.parts.len(),
             self.rows.num_partitions(),
             "partition count disagrees with the rows",
         );
-        let head = &self.locals[0];
-        for (rank, local) in self.locals.iter().enumerate() {
+        let head = &self.parts[0].sum;
+        for (rank, local) in self.parts.iter().map(|p| &p.sum).enumerate() {
             // `PauliSum::assert_invariants` itself exists only in test and
             // debug builds; the cross-partition checks below are always
             // compiled, so this method's signature does not change with the
@@ -559,7 +546,7 @@ pub struct PartitionPhaseStats {
 ///
 /// Runs on the partition's own pool (the caller is inside `install`), so every column is first-touched in the domain that will read it.
 /// One collective: the per-partition [`desired_bits`] maximum, which is what makes the group agree on a count before the first layer.
-pub(super) fn scatter_local<const W: usize>(
+pub(crate) fn scatter_local<const W: usize>(
     sum: &PauliSum<W>,
     rows: &PartitionRows<W>,
     rank: u32,
@@ -584,16 +571,16 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 /// What a partition knows about itself while it walks the layers: which keys are its own, where it sits in the group, and whether it is recording.
 ///
 /// The two drivers fill this differently — `rank` and `size` come from `map_partitions` in one and from the transport in the other — and nothing in the loop below cares which.
-pub(super) struct PartitionCtx<'a, const W: usize> {
+pub(crate) struct PartitionCtx<'a, const W: usize> {
     /// The rows deciding which partition a key belongs to.
-    pub(super) rows: &'a PartitionRows<W>,
+    pub(crate) rows: &'a PartitionRows<W>,
     /// This partition's index, for the per-layer log line.
-    pub(super) rank: usize,
+    pub(crate) rank: usize,
     /// Partitions in the group, likewise.
-    pub(super) size: usize,
+    pub(crate) size: usize,
     /// Whether to append a [`PartitionLayerRow`] per layer. Hoisted out of the
     /// loop: nothing inside one can turn tracing on or off.
-    pub(super) tracing: bool,
+    pub(crate) tracing: bool,
 }
 
 /// [`Channel::prepare`] or the engine's one hard error.
@@ -601,12 +588,12 @@ pub(super) struct PartitionCtx<'a, const W: usize> {
 /// Called twice on a layer that refines (the bucket count is settled between the two), so the panic — which is the unpartitioned engine's, with the partition and layer named — lives here rather than inline.
 fn prepare_or_panic<const W: usize>(
     ch: &dyn Channel<W>,
-    local: &PauliSum<W>,
+    hash: &Gf2Hash<W>,
     adjoint: bool,
     rank: usize,
     idx: usize,
 ) -> crate::channel::prepared::Prepared<W> {
-    ch.prepare(local.hash(), adjoint).unwrap_or_else(|| {
+    ch.prepare(hash, adjoint).unwrap_or_else(|| {
         // Same hard error as the unpartitioned engine: no whole-sum fallback
         // exists to absorb a channel the engine cannot tabulate.
         let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
@@ -624,17 +611,19 @@ fn prepare_or_panic<const W: usize>(
 ///
 /// Runs on the partition's driving thread inside its own pool, in lock-step with its peers: the same channels in the same order, the same collectives per layer.
 /// The two drivers differ only in *what a partition is* — a NUMA domain and an in-process endpoint, or a whole process and an MPI rank — which is entirely the transport's business, so the body below is generic over it and there is exactly one copy of the per-layer sequence.
-pub(super) fn run_layers<const W: usize, T, X>(
+/// Every touch of the partition's storage goes through [`PartitionStorage`] and [`PartitionBackend`], so the loop is generic over where the partition lives as well.
+pub(crate) fn run_layers<const W: usize, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
     ctx: PartitionCtx<'_, W>,
-    work: &mut PartitionWork<W>,
+    work: &mut PartitionWork<B>,
     transport: &X,
 ) where
     T: PartitionedTruncation<W> + ?Sized,
     X: Transport,
+    B: PartitionBackend<W, T>,
 {
     let PartitionCtx {
         rows,
@@ -667,16 +656,17 @@ pub(super) fn run_layers<const W: usize, T, X>(
         let mut st = Stamp::now();
         #[cfg(feature = "phase-timing")]
         {
-            work.state.layer.stats.layers += 1;
-            work.state.layer.stats.terms_in += terms_before as u64;
+            let stats = local.stats();
+            stats.layers += 1;
+            stats.terms_in += terms_before as u64;
         }
 
         // Prepared *before* the bucket count is settled, because the plan is what says whether this layer needs a collective at all: a delta's remoteness is a property of its mask and the partition rows, neither of which the bucket count touches.
         // Only `bucket_delta` depends on it, so the prepared form is re-derived below on the rare layer that actually refines.
-        let mut prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+        let mut prep = prepare_or_panic(ch, local.hash(), adjoint, rank, idx);
         let mut plan = PartitionPlan::new(&prep, rows, rank as u32);
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut work.state.layer.stats.prepare_ns);
+        st.lap(&mut local.stats().prepare_ns);
 
         // The bucket count, on the BITS_AGREE_EVERY schedule: on any layer that exchanges (both sides index the blocks by it), and otherwise every `BITS_AGREE_EVERY`-th.
         // At `P = 1` there is no group, so the local answer is the agreed one and the loop rebuckets every layer exactly as `propagate` does.
@@ -684,39 +674,30 @@ pub(super) fn run_layers<const W: usize, T, X>(
         let solo = size32 == 1;
         if solo || plan.has_remote() || agrees_bucket_bits(k) {
             let mut want =
-                desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
-                    .max(local.hash().bits());
+                local.proposed_bits(&prep, options.target_bucket_len, options.min_buckets);
             if !solo {
                 want = transport.allreduce_max_u8(want);
                 collectives += 1;
             }
             #[cfg(feature = "phase-timing")]
-            st.lap(&mut work.state.layer.stats.collective_ns);
+            st.lap(&mut local.stats().collective_ns);
             if want > local.hash().bits() {
                 while local.hash().bits() < want {
                     local.refine();
                 }
                 #[cfg(feature = "phase-timing")]
-                st.lap(&mut work.state.layer.stats.rebucket_ns);
+                st.lap(&mut local.stats().rebucket_ns);
                 // The hash moved, so every `bucket_delta` in the prepared form did too.
                 // Rare — the count is grow-only and settles — and this is the only reason a layer prepares twice.
-                prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+                prep = prepare_or_panic(ch, local.hash(), adjoint, rank, idx);
                 plan = PartitionPlan::new(&prep, rows, rank as u32);
                 #[cfg(feature = "phase-timing")]
-                st.lap(&mut work.state.layer.stats.prepare_ns);
+                st.lap(&mut local.stats().prepare_ns);
             }
         }
 
         // The layer times its own export, exchange and coset loop into the same `LayerScratch`.
-        let counts = apply_layer_partitioned_with_plan(
-            local,
-            &prep,
-            &plan,
-            rows,
-            policy,
-            &mut work.state,
-            transport,
-        );
+        let counts = local.apply_layer(&prep, &plan, rows, policy, transport);
         #[cfg(feature = "phase-timing")]
         st.rearm();
 
@@ -728,13 +709,14 @@ pub(super) fn run_layers<const W: usize, T, X>(
                 inner: transport,
                 calls: &policy_calls,
             };
-            policy.finalize_layer_partitioned(local, &counting);
+            local.finalize_layer(policy, &counting);
             collectives += policy_calls.load(Ordering::Relaxed);
         }
         #[cfg(feature = "phase-timing")]
         {
-            st.lap(&mut work.state.layer.stats.finalize_ns);
-            work.state.layer.stats.terms_out += local.len() as u64;
+            st.lap(&mut local.stats().finalize_ns);
+            let terms_out = local.len() as u64;
+            local.stats().terms_out += terms_out;
         }
 
         // Opt-in trace, behind a hoisted flag and a `#[cold]` callee for the same reason as the unpartitioned engine's term trace: this loop inlines the bucketed layer, whose merge kernels are sensitive to code motion (CLAUDE.md §Performance discipline).

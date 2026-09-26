@@ -114,6 +114,39 @@ Each rank's Rayon pool sizes itself from the CPUs the launcher left in its affin
 On Rusty, `scripts/slurm/mpi-ranks.sbatch` does the arithmetic: it reads the node's domain count, rounds `nodes × domains` down to a power of two, and runs the differential net and then the probe at that rank count.
 See [`scripts/slurm/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md).
 
+## One GPU per rank {#gpu-per-rank}
+
+Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each rank's share on one CUDA device, with the same contract as `MpiSum`: replicated input, collective calls, rank 0 gathers.
+`gpu::local_device_for_comm` picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to `gpu::local_device_for_rank`, the launcher's node-local rank (`OMPI_COMM_WORLD_LOCAL_RANK`, `MV2_COMM_WORLD_LOCAL_RANK`, `MPI_LOCALRANKID`, `SLURM_LOCALID`) modulo the visible devices:
+
+<!-- doctest: skip -->
+```rust
+use paulistrings::engine::partitioned::{Collectives, PartitionRowPolicy};
+use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+use paulistrings::mpi::{rsmpi, MpiTransport};
+
+let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
+let world = universe.world();
+let device = local_device_for_comm(&world)?;
+let transport = MpiTransport::from_communicator(&world);
+let mut split = MpiGpuSum::<2>::scatter(observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
+split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
+if let Some(evolved) = split.gather()? {
+    println!("{} terms", evolved.len());
+}
+```
+
+`gpu::propagate_mpi_gpu` is the one-shot form.
+A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
+Launch with one visible device per task (`srun --gpus-per-task=1 --mpi=pmix`, as `scripts/slurm/mpi-gpu-ranks.sbatch` does) or with every node GPU visible to every task (`--gpus-per-node`, as `scripts/slurm/mpi-gpu-nccl.sbatch` does, which the NCCL exchange needs), where the locality pick matters.
+
+Built with the `nccl` feature ([Installation](../../installation.md#gpu-and-mpi-features)) on top of `cuda,mpi`, a remote layer's columns move device to device over NCCL instead of the host wire format ([CUDA devices](gpu.md#exchange)).
+The mode is agreed once, collectively, at the scatter that builds the split: NCCL only when the group has more than one rank, every rank can start a communicator, and no two ranks share a device — otherwise the host format, silently unless `PAULISTRINGS_GPU_EXCHANGE=nccl` asks for it, which then errs on every rank instead.
+`--gpus-per-node` (rather than `--gpus-per-task=1`) is what lets NCCL find every rank's device and use NVLink between them; `scripts/slurm/mpi-gpu-nccl.sbatch` launches that way and its preamble, `scripts/slurm/check-gpu-links.sh`, stops the job unless every visible GPU pair is NVLink-joined.
+
+From Python, `propagate(..., comm=comm, device="auto")` is the same run, in an extension built with `--features cuda,mpi`: `device=` takes this rank's ordinal or `"auto"`, which is `local_device_for_comm`, and `result=`, `partition_row_seed=` and `partition_row_blocks=` keep their host meanings ([CUDA devices](gpu.md#comm-device)).
+`scripts/mpi-test.sh --ranks 2,4 --python --cuda` builds that extension and runs `test_mpi.py`'s device cases, which skip on every rank unless every rank sees a device.
+
 ## Requirements
 
 **Thread level at least `MPI_THREAD_SERIALIZED`.**

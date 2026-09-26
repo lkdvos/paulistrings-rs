@@ -65,6 +65,9 @@ pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
+// The CUDA backend, behind the `cuda` feature.
+#[cfg(feature = "cuda")]
+pub use engine::gpu;
 // The MPI transport and its distributed driver, behind the `mpi` feature.
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;

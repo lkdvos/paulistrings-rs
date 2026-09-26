@@ -24,7 +24,7 @@ use paulistrings::engine::partitioned::{
 };
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
-use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
+use paulistrings::truncation::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN};
 use paulistrings::{
     propagate_with_scratch_and_options, BuildAccumulator, Circuit, Direction, Gf2Hash,
     LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
@@ -484,6 +484,15 @@ struct Config {
     /// when the `mpi` feature is on.
     #[cfg_attr(not(feature = "mpi"), allow(dead_code))]
     mpi: bool,
+    /// `--device <csv|auto>`: run each cell on CUDA devices. Only settable when the `cuda` feature is on.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    device: Option<DeviceSpec>,
+    /// `--gpu-partitions`: virtual device partitions of a `--device` cell.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    gpu_partitions: usize,
+    /// `--gpu-exchange`: `None` leaves the mode to `PAULISTRINGS_GPU_EXCHANGE` / the engine's default.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    gpu_exchange: Option<GpuExchangeSpec>,
     /// Placement spec for the partitioned cells. See `--partition-cpus`.
     partition_cpus: PartitionCpus,
     /// Whether each partition binds its allocations to its NUMA node.
@@ -501,6 +510,109 @@ struct Config {
     format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     json_out: Option<String>,
+}
+
+/// `--device`: explicit ordinals, or every visible device (`auto`; under `--mpi`, the rank's local device).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+enum DeviceSpec {
+    Ordinals(Vec<u32>),
+    Auto,
+}
+
+impl DeviceSpec {
+    fn parse(s: &str) -> Result<Self, String> {
+        if s.trim() == "auto" {
+            return Ok(Self::Auto);
+        }
+        let ordinals = s
+            .split(',')
+            .map(|v| {
+                v.trim()
+                    .parse::<u32>()
+                    .map_err(|_| format!("--device expects ordinals or 'auto', got '{s}'"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if ordinals.is_empty() {
+            return Err("--device must list at least one ordinal".to_string());
+        }
+        Ok(Self::Ordinals(ordinals))
+    }
+}
+
+/// `--gpu-exchange host|device|nccl`: the knob a `--device` cell agrees, mirroring
+/// `PAULISTRINGS_GPU_EXCHANGE` (ARCHITECTURE.md §Partitioning).
+/// `Nccl` only ever reaches an `--mpi --device` cell — an in-process cell downgrades it to
+/// `Device`, as [`GpuPartitionedSum::set_exchange`](paulistrings::gpu::GpuPartitionedSum::set_exchange) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+enum GpuExchangeSpec {
+    Host,
+    Device,
+    Nccl,
+}
+
+impl GpuExchangeSpec {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "host" => Ok(Self::Host),
+            "device" => Ok(Self::Device),
+            "nccl" => Ok(Self::Nccl),
+            other => Err(format!(
+                "--gpu-exchange expects host|device|nccl, got '{other}'"
+            )),
+        }
+    }
+
+    /// The value that drives the same choice through `PAULISTRINGS_GPU_EXCHANGE`.
+    #[cfg_attr(not(all(feature = "cuda", feature = "mpi")), allow(dead_code))]
+    fn env_value(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Device => "device",
+            Self::Nccl => "nccl",
+        }
+    }
+}
+
+/// [`GpuExchangeSpec`] to the engine's [`GpuExchange`](paulistrings::gpu::GpuExchange), for the
+/// in-process (`GpuPartitionedSum::set_exchange`) path; the MPI path drives the same choice
+/// through `PAULISTRINGS_GPU_EXCHANGE` instead, since `MpiGpuSum` agrees its mode at scatter and
+/// has no setter.
+#[cfg(feature = "cuda")]
+fn to_gpu_exchange(spec: GpuExchangeSpec) -> paulistrings::gpu::GpuExchange {
+    use paulistrings::gpu::GpuExchange;
+    match spec {
+        GpuExchangeSpec::Host => GpuExchange::Host,
+        GpuExchangeSpec::Device => GpuExchange::Device,
+        GpuExchangeSpec::Nccl => {
+            #[cfg(feature = "nccl")]
+            {
+                GpuExchange::Nccl
+            }
+            #[cfg(not(feature = "nccl"))]
+            {
+                unreachable!(
+                    "parse_args rejects --gpu-exchange nccl without the nccl cargo feature"
+                )
+            }
+        }
+    }
+}
+
+/// [`GpuExchange`](paulistrings::gpu::GpuExchange) to its sidecar label; the enum is
+/// `#[non_exhaustive]`, so this crate's own match still needs a wildcard arm.
+#[cfg(feature = "cuda")]
+fn gpu_exchange_label(mode: paulistrings::gpu::GpuExchange) -> &'static str {
+    use paulistrings::gpu::GpuExchange;
+    match mode {
+        GpuExchange::Host => "host",
+        GpuExchange::Device => "device",
+        #[cfg(feature = "nccl")]
+        GpuExchange::Nccl => "nccl",
+        #[allow(unreachable_patterns)]
+        _ => "unknown",
+    }
 }
 
 fn parse_usize(s: &str, flag: &str) -> Result<usize, String> {
@@ -568,6 +680,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut partition_rows = PartitionRowSpec::Random;
     let mut initial: Option<Initial> = None;
     let mut mpi = false;
+    let mut device: Option<DeviceSpec> = None;
+    let mut gpu_partitions: usize = 1;
+    let mut gpu_exchange: Option<GpuExchangeSpec> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -621,6 +736,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--partition-seed" => partition_seed = Some(parse_seed(value)?),
             "--partition-rows" => partition_rows = PartitionRowSpec::parse(value)?,
             "--initial" => initial = Some(Initial::parse(value)?),
+            "--device" => {
+                if cfg!(not(feature = "cuda")) {
+                    return Err(
+                        "--device needs the `cuda` cargo feature (cargo run --release --features \
+                         phase-timing,cuda --example phase_breakdown)"
+                            .to_string(),
+                    );
+                }
+                device = Some(DeviceSpec::parse(value)?);
+            }
+            "--gpu-partitions" => gpu_partitions = parse_usize(value, "--gpu-partitions")?,
+            "--gpu-exchange" => gpu_exchange = Some(GpuExchangeSpec::parse(value)?),
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -748,6 +875,76 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
+    // The device axis: one process, `--gpu-partitions` virtual partitions on one device, no exact selection.
+    if gpu_partitions == 0 || !gpu_partitions.is_power_of_two() {
+        return Err(format!(
+            "--gpu-partitions {gpu_partitions} must be a power of two"
+        ));
+    }
+    if gpu_partitions > 1 && device.is_none() {
+        return Err("--gpu-partitions needs --device".to_string());
+    }
+    if let Some(spec) = &device {
+        if partitions != vec![1] {
+            return Err(
+                "--device places partitions with --gpu-partitions, so --partitions must stay at 1"
+                    .to_string(),
+            );
+        }
+        if mpi {
+            if matches!(spec, DeviceSpec::Ordinals(v) if v.len() > 1) {
+                return Err(
+                    "--mpi --device takes one ordinal or 'auto': a rank drives one device"
+                        .to_string(),
+                );
+            }
+            if gpu_partitions > 1 {
+                return Err(
+                    "--mpi --device runs one device partition per rank, so --gpu-partitions must \
+                     stay at 1"
+                        .to_string(),
+                );
+            }
+        } else if let DeviceSpec::Ordinals(v) = spec {
+            let total = v.len() * gpu_partitions;
+            if !total.is_power_of_two() {
+                return Err(format!(
+                    "--device lists {} device(s) x --gpu-partitions {gpu_partitions} = {total} \
+                     partitions, which is not a power of two",
+                    v.len()
+                ));
+            }
+            if layers.contains(&LayerKind::RotationRemote) && total == 1 {
+                return Err(
+                    "--layers rotation_remote needs a remote delta, which only exists with more \
+                     than one device partition (several --device ordinals or --gpu-partitions > 1)"
+                        .to_string(),
+                );
+            }
+        }
+        if let TruncSpec::TopN(topn) = truncation {
+            return Err(format!(
+                "--truncation topn:{topn} has no device form (exact TopN is not implemented on \
+                 device); use --truncation atopn:{topn}"
+            ));
+        }
+        if occupancy_at.is_some() {
+            return Err("--occupancy-at is not supported for a device cell".to_string());
+        }
+    }
+    if let Some(spec) = gpu_exchange {
+        if device.is_none() {
+            return Err("--gpu-exchange needs --device".to_string());
+        }
+        if spec == GpuExchangeSpec::Nccl && cfg!(not(feature = "nccl")) {
+            return Err(
+                "--gpu-exchange nccl needs the `nccl` cargo feature (cargo run --release \
+                 --features phase-timing,mpi,cuda,nccl --example phase_breakdown)"
+                    .to_string(),
+            );
+        }
+    }
+
     Ok(Config {
         n,
         qubits,
@@ -759,6 +956,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         threads,
         partitions,
         mpi,
+        device,
+        gpu_partitions,
+        gpu_exchange,
         partition_cpus,
         bind_memory,
         partition_seed,
@@ -949,6 +1149,9 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
     fn finalizes_layer(&self) -> bool {
         false
     }
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::Keep)
+    }
 }
 impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
 
@@ -1044,6 +1247,22 @@ struct CellResult {
     mpi: Option<(u32, u32)>,
     /// Bucket occupancy sampled at `--occupancy-at`, `None` unless the flag was passed.
     occupancy: Option<Occupancy>,
+    /// The CUDA device a `--device` cell ran on, with the untimed initial upload and final download it paid outside `wall_ns`.
+    device: Option<DeviceCellStats>,
+}
+
+/// The device-axis numbers of one cell.
+#[derive(Clone)]
+struct DeviceCellStats {
+    /// The ordinals the cell's partitions ran on, one entry per device (the rank's own under `--mpi`).
+    devices: Vec<u32>,
+    /// `GpuPauliSum::from_host` of the cell's input, including the first-use kernel compile.
+    upload_ns: u64,
+    /// `GpuPauliSum::to_host` of the timed call's output.
+    download_ns: u64,
+    /// The exchange mode this cell actually ran under (`"none"` for a lone, unpartitioned
+    /// device with no exchange to agree); see [`GpuExchangeSpec`].
+    exchange: &'static str,
 }
 
 /// A bucket-occupancy snapshot: how term counts spread across buckets at one rep.
@@ -1318,6 +1537,225 @@ where
         partitioned: None,
         mpi: None,
         occupancy,
+        device: None,
+    }
+}
+
+/// One device cell: upload (untimed, reported), warm up, drain, time one `propagate` of the resident sum, download (untimed, reported).
+/// Mirrors [`run_cell_partitioned`] at `P = 1`, so `wall_ns` means the same thing on a device row as on a host row.
+#[cfg(feature = "cuda")]
+fn run_cell_gpu<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    device: u32,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    use paulistrings::gpu::GpuPauliSum;
+
+    let base = build_base_sum::<W>(layer, cfg);
+    let gen_qubits = (0u32, 1u32);
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+    let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
+        eprintln!(
+            "phase_breakdown: {} on device {device}: {what}: {e}",
+            layer.name()
+        );
+        std::process::exit(2);
+    };
+
+    let started = Instant::now();
+    let mut dev = GpuPauliSum::from_host(&base, device).unwrap_or_else(|e| fail("upload", e));
+    let upload_ns = started.elapsed().as_nanos() as u64;
+
+    // Untimed warm-up, counters discarded — the same contract as the host cells.
+    dev.propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("warm-up", e));
+    let _ = dev.take_stats();
+    let _ = dev.take_kernel_ms();
+
+    let steady_n = dev.len();
+    let started = Instant::now();
+    dev.propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("timed call", e));
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let stats = dev.take_stats();
+
+    let started = Instant::now();
+    let output = dev.to_host().unwrap_or_else(|e| fail("download", e));
+    let download_ns = started.elapsed().as_nanos() as u64;
+    std::hint::black_box(&output);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: cfg.hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions: 1,
+        partition_cpus: cfg.partition_cpus.label(),
+        pin_memory: cfg.bind_memory,
+        gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
+        partition_rows: cfg.partition_rows.label(),
+        row_stats: RowChoiceStats::default(),
+        partitioned: None,
+        mpi: None,
+        occupancy: None,
+        device: Some(DeviceCellStats {
+            devices: vec![device],
+            upload_ns,
+            download_ns,
+            // A lone device has no partition boundary to exchange rows across.
+            exchange: "none",
+        }),
+    }
+}
+
+/// One cell of `--gpu-partitions` virtual partitions on each of `devices`: [`run_cell_partitioned`] with `GpuPartitionedSum`.
+/// `upload_ns` is the scatter (filter and upload), `download_ns` the gather, both outside `wall_ns`.
+#[cfg(feature = "cuda")]
+fn run_cell_gpu_partitioned<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    devices: &[u32],
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    use paulistrings::gpu::GpuPartitionedSum;
+
+    let partitions = devices.len() * cfg.gpu_partitions;
+    let device = devices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let base = build_base_sum::<W>(layer, cfg);
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: devices.to_vec(),
+            per_device: cfg.gpu_partitions,
+        },
+        bind_memory: false,
+        partition_row_seed: cfg.partition_seed,
+    };
+    let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
+        eprintln!("phase_breakdown: cannot resolve the device placement: {err}");
+        std::process::exit(2);
+    });
+    let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
+        eprintln!(
+            "phase_breakdown: {} on devices {device} x{}: {what}: {e}",
+            layer.name(),
+            cfg.gpu_partitions,
+        );
+        std::process::exit(2);
+    };
+    let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
+    let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+    let split_hash_seed = base.hash().seed();
+
+    let started = Instant::now();
+    let mut split = GpuPartitionedSum::scatter_with_rows(base, rows, runtime)
+        .unwrap_or_else(|e| fail("scatter", e));
+    let upload_ns = started.elapsed().as_nanos() as u64;
+    if let Some(spec) = cfg.gpu_exchange {
+        split.set_exchange(to_gpu_exchange(spec));
+    }
+    let exchange = gpu_exchange_label(split.exchange());
+    split.enable_trace();
+
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("warm-up", e));
+    let _ = split.take_trace();
+    let _ = split.take_stats();
+
+    let steady_n = split.len();
+    let started = Instant::now();
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("timed call", e));
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let trace = split.take_trace().expect("tracing was enabled");
+    let per_partition = split.take_stats();
+
+    let started = Instant::now();
+    let output = split.gather().unwrap_or_else(|e| fail("gather", e));
+    let download_ns = started.elapsed().as_nanos() as u64;
+    std::hint::black_box(&output);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+    let stats = fold_partition_stats(&per_partition);
+    let summary = summarize_partitions(partitions, &trace, &per_partition, &stats);
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: split_hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions,
+        partition_cpus: "gpu".to_string(),
+        pin_memory: false,
+        gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
+        partition_rows: cfg.partition_rows.label(),
+        row_stats,
+        partitioned: Some(summary),
+        mpi: None,
+        occupancy: None,
+        device: Some(DeviceCellStats {
+            devices: devices.to_vec(),
+            upload_ns,
+            download_ns,
+            exchange,
+        }),
     }
 }
 
@@ -1726,6 +2164,7 @@ where
         mpi: None,
         // Occupancy sampling is unimplemented for the partitioned path; scoped to P = 1 for now.
         occupancy: None,
+        device: None,
     }
 }
 
@@ -1848,6 +2287,176 @@ where
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
         occupancy: None,
+        device: None,
+    }
+}
+
+/// The ordinals a single-process `--device` run places partitions on: the list, or every visible device for `auto`, checked against `--gpu-partitions` and the layers.
+#[cfg(feature = "cuda")]
+fn resolve_devices(spec: &DeviceSpec, cfg: &Config) -> Vec<u32> {
+    let devices = match spec {
+        DeviceSpec::Ordinals(v) => v.clone(),
+        DeviceSpec::Auto => (0..paulistrings::gpu::device_count() as u32).collect(),
+    };
+    let fail = |msg: String| -> ! {
+        eprintln!("phase_breakdown: {msg}");
+        std::process::exit(2);
+    };
+    if devices.is_empty() {
+        fail("--device auto: no CUDA device is visible".to_string());
+    }
+    let total = devices.len() * cfg.gpu_partitions;
+    if !total.is_power_of_two() {
+        fail(format!(
+            "--device auto found {} device(s), x --gpu-partitions {} = {total} partitions, which is \
+             not a power of two; list the ordinals explicitly",
+            devices.len(),
+            cfg.gpu_partitions,
+        ));
+    }
+    if total == 1 && cfg.layers.contains(&LayerKind::RotationRemote) {
+        fail("--layers rotation_remote needs more than one device partition".to_string());
+    }
+    devices
+}
+
+/// One `--mpi --device` cell: [`run_cell_mpi`] with this rank's partition on one CUDA device (`MpiGpuSum`).
+/// `upload_ns` is the scatter (filter and upload), `download_ns` the collective gather, both outside `wall_ns`.
+#[cfg(all(feature = "cuda", feature = "mpi"))]
+fn run_cell_mpi_gpu<const W: usize, P>(
+    layer: LayerKind,
+    threads: usize,
+    spec: &DeviceSpec,
+    cfg: &Config,
+    policy: &P,
+) -> CellResult
+where
+    P: PartitionedTruncation<W>,
+{
+    use paulistrings::engine::partitioned::Collectives;
+    use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+    use paulistrings::mpi::{rsmpi, MpiTransport};
+    use rsmpi::topology::{Communicator, SimpleCommunicator};
+
+    let world = SimpleCommunicator::world();
+    let rank = world.rank() as u32;
+    let ranks = world.size() as u32;
+    if !ranks.is_power_of_two() {
+        if rank == 0 {
+            eprintln!(
+                "phase_breakdown: --mpi needs a power-of-two rank count (a partition is named by \
+                 log2(P) GF(2) rows), got {ranks}",
+            );
+        }
+        std::process::exit(2);
+    }
+    let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
+        eprintln!(
+            "phase_breakdown: rank {rank}: {} on its device: {what}: {e}",
+            layer.name()
+        );
+        std::process::exit(2);
+    };
+    let device = match spec {
+        DeviceSpec::Ordinals(v) => v[0],
+        DeviceSpec::Auto => {
+            local_device_for_comm(&world).unwrap_or_else(|e| fail("device pick", e))
+        }
+    };
+
+    let base = build_base_sum::<W>(layer, cfg);
+    let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, ranks as usize);
+    let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
+    if layer.picks_generator() && rank == 0 {
+        eprintln!(
+            "phase_breakdown: note: {} on {ranks} ranks acts on ({}, {}).",
+            layer.name(),
+            gen_qubits.0,
+            gen_qubits.1,
+        );
+    }
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
+    let options = PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    };
+
+    // `MpiGpuSum` has no exchange setter: it agrees `Nccl` or `Host` over the group at scatter,
+    // reading `PAULISTRINGS_GPU_EXCHANGE` fresh each call, so `--gpu-exchange` drives the same
+    // knob rather than needing a new API (`gpu/rank.rs::start_nccl`).
+    if let Some(spec) = cfg.gpu_exchange {
+        std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", spec.env_value());
+    }
+    let transport = MpiTransport::from_communicator(&world);
+    let split_hash_seed = base.hash().seed();
+    let started = Instant::now();
+    let mut split = MpiGpuSum::scatter_with_rows(base, transport, device, rows)
+        .unwrap_or_else(|e| fail("scatter", e));
+    let upload_ns = started.elapsed().as_nanos() as u64;
+    let exchange = gpu_exchange_label(split.exchange());
+    split.enable_trace();
+
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("warm-up", e));
+    let _ = split.take_trace();
+    let _ = split.take_stats();
+    split.transport().barrier();
+
+    let steady_n = split.len_local();
+    let started = Instant::now();
+    split
+        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .unwrap_or_else(|e| fail("timed call", e));
+    let wall_ns = started.elapsed().as_nanos() as u64;
+    let trace = split.take_trace().expect("tracing was enabled");
+    let per_partition = split.take_stats();
+
+    let started = Instant::now();
+    let output = split.gather().unwrap_or_else(|e| fail("gather", e));
+    let download_ns = started.elapsed().as_nanos() as u64;
+    std::hint::black_box(&output);
+
+    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+    let stats = fold_partition_stats(&per_partition);
+    let summary = summarize_partitions(1, &trace, &per_partition, &stats);
+
+    CellResult {
+        layer: layer.name(),
+        truncation: cfg.truncation.label(),
+        threads,
+        n: steady_n,
+        reps: cfg.reps,
+        qubits: cfg.qubits,
+        seed: cfg.seed,
+        hash_seed: split_hash_seed,
+        bucket_bits: cfg.bucket_bits,
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        wall_ns,
+        stats,
+        vmrss_kb,
+        vmhwm_kb,
+        partitions: 1,
+        partition_cpus: "gpu".to_string(),
+        pin_memory: false,
+        gen_qubits,
+        initial: cfg
+            .initial
+            .unwrap_or_else(|| Initial::default_for(layer))
+            .label(),
+        partition_rows: cfg.partition_rows.label(),
+        row_stats,
+        partitioned: Some(summary),
+        mpi: Some((rank, ranks)),
+        occupancy: None,
+        device: Some(DeviceCellStats {
+            devices: vec![device],
+            upload_ns,
+            download_ns,
+            exchange,
+        }),
     }
 }
 
@@ -1888,6 +2497,9 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.recv_rows += s.recv_rows;
         out.append_ns += s.append_ns;
         out.chunk_wait_ns += s.chunk_wait_ns;
+        out.compact_ns += s.compact_ns;
+        out.h2d_ns += s.h2d_ns;
+        out.d2h_ns += s.d2h_ns;
     }
     out.layers = stats.layers;
     out
@@ -1950,8 +2562,12 @@ fn print_cell_line(cell: &CellResult) {
         Some((rank, ranks)) => format!(" rank={rank}/{ranks} vmhwm_kb={}", cell.vmhwm_kb),
         None => String::new(),
     };
+    let device = match &cell.device {
+        Some(d) => format!(" device={}", device_csv(d)),
+        None => String::new(),
+    };
     println!(
-        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}{mpi}",
+        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}{mpi}{device}",
         cell.layer,
         cell.threads,
         cell.n,
@@ -1976,13 +2592,14 @@ const WALL_PHASES: [(&str, PhaseGetter); 9] = [
     ("finalize", |s| s.finalize_ns),
 ];
 
-const BUSY_PHASES: [(&str, PhaseGetter); 6] = [
+const BUSY_PHASES: [(&str, PhaseGetter); 7] = [
     ("gather", |s| s.gather_ns),
     ("sort", |s| s.sort_ns),
     ("merge", |s| s.merge_ns),
     ("swap", |s| s.swap_ns),
     ("size", |s| s.size_ns),
     ("clear", |s| s.clear_ns),
+    ("compact", |s| s.compact_ns),
 ];
 
 fn print_table(cell: &CellResult) {
@@ -2067,6 +2684,19 @@ fn print_table(cell: &CellResult) {
         cell.target_bucket_len, cell.min_buckets
     );
     print_partition_block(cell);
+    if let Some(d) = &cell.device {
+        println!(
+            "  device             = {}   upload = {:.3} ms   download = {:.3} ms   [outside wall]",
+            device_csv(d),
+            d.upload_ns as f64 / 1e6,
+            d.download_ns as f64 / 1e6,
+        );
+        println!(
+            "    in-layer copies: h2d = {:.3} ms   d2h = {:.3} ms   [inside coset_loop / rescale]",
+            s.h2d_ns as f64 / 1e6,
+            s.d2h_ns as f64 / 1e6,
+        );
+    }
     println!();
 }
 
@@ -2236,7 +2866,8 @@ fn json_line(cell: &CellResult) -> String {
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
-         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{}",
+         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{},\
+         \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2274,9 +2905,23 @@ fn json_line(cell: &CellResult) -> String {
         cell.vmhwm_kb,
         cell.target_bucket_len,
         cell.min_buckets,
+        s.compact_ns,
+        s.h2d_ns,
+        s.d2h_ns,
     );
     let mpi_fields = match cell.mpi {
         Some((rank, ranks)) => format!(",\"rank\":{rank},\"ranks\":{ranks}"),
+        None => String::new(),
+    };
+    // Absent on a host row, like `rank`.
+    let device_fields = match &cell.device {
+        Some(d) => format!(
+            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{},\"gpu_exchange\":\"{}\"",
+            device_csv(d),
+            d.upload_ns,
+            d.download_ns,
+            d.exchange,
+        ),
         None => String::new(),
     };
     // Absent (not null) when --occupancy-at wasn't passed, so existing consumers see no new keys.
@@ -2288,7 +2933,16 @@ fn json_line(cell: &CellResult) -> String {
         ),
         None => String::new(),
     };
-    format!("{core}{partition_fields}{mpi_fields}{occupancy_fields}}}")
+    format!("{core}{partition_fields}{mpi_fields}{device_fields}{occupancy_fields}}}")
+}
+
+/// A device row's ordinals, comma-joined.
+fn device_csv(d: &DeviceCellStats) -> String {
+    d.devices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 const TSV_HEADER: &str =
@@ -2300,7 +2954,8 @@ partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\tcollectives
 rows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
-partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight";
+partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight\t\
+compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns\tgpu_exchange";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2311,7 +2966,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2372,6 +3027,16 @@ fn print_tsv_row(cell: &CellResult) {
         tsv_array(p.map_or(&[][..], |p| &p.terms_by_layer)),
         cell.row_stats.remote_gens,
         cell.row_stats.remote_weight,
+        s.compact_ns,
+        s.h2d_ns,
+        s.d2h_ns,
+        // A TSV column cannot be absent: -1 is the host.
+        cell.device
+            .as_ref()
+            .map_or_else(|| "-1".to_string(), device_csv),
+        cell.device.as_ref().map_or(0, |d| d.upload_ns),
+        cell.device.as_ref().map_or(0, |d| d.download_ns),
+        cell.device.as_ref().map_or("none", |d| d.exchange),
     );
 }
 
@@ -2414,6 +3079,31 @@ where
             })
     });
 
+    // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.
+    #[cfg(feature = "cuda")]
+    if let Some(spec) = &cfg.device {
+        let policy = partitioned_policy
+            .expect("a device cell without a partitioned policy — parse_args rejects topn");
+        #[cfg(feature = "mpi")]
+        if cfg.mpi {
+            for &layer in &cfg.layers {
+                let cell = run_cell_mpi_gpu::<W, PP>(layer, cfg.threads[0], spec, cfg, policy);
+                emit_cell(cfg, &cell, sidecar.as_mut());
+            }
+            return;
+        }
+        let devices = resolve_devices(spec, cfg);
+        for &layer in &cfg.layers {
+            let cell = if devices.len() == 1 && cfg.gpu_partitions == 1 {
+                run_cell_gpu::<W, PP>(layer, cfg.threads[0], devices[0], cfg, policy)
+            } else {
+                run_cell_gpu_partitioned::<W, PP>(layer, cfg.threads[0], &devices, cfg, policy)
+            };
+            emit_cell(cfg, &cell, sidecar.as_mut());
+        }
+        return;
+    }
+
     for &layer in &cfg.layers {
         for &partitions in &cfg.partitions {
             for &threads in &cfg.threads {
@@ -2444,21 +3134,26 @@ where
                     run_cell::<W, P>(layer, threads, cfg, policy)
                 };
 
-                print_cell_line(&cell);
-                match cfg.format {
-                    Format::Table => print_table(&cell),
-                    Format::Json => print_json(&cell),
-                    Format::Tsv => print_tsv_row(&cell),
-                }
-                if let Some(f) = sidecar.as_mut() {
-                    use std::io::Write;
-                    writeln!(f, "{}", json_line(&cell)).unwrap_or_else(|e| {
-                        eprintln!("phase_breakdown: writing --json-out failed: {e}");
-                        std::process::exit(2);
-                    });
-                }
+                emit_cell(cfg, &cell, sidecar.as_mut());
             }
         }
+    }
+}
+
+/// The cell line, the chosen format, and the sidecar line.
+fn emit_cell(cfg: &Config, cell: &CellResult, sidecar: Option<&mut std::fs::File>) {
+    print_cell_line(cell);
+    match cfg.format {
+        Format::Table => print_table(cell),
+        Format::Json => print_json(cell),
+        Format::Tsv => print_tsv_row(cell),
+    }
+    if let Some(f) = sidecar {
+        use std::io::Write;
+        writeln!(f, "{}", json_line(cell)).unwrap_or_else(|e| {
+            eprintln!("phase_breakdown: writing --json-out failed: {e}");
+            std::process::exit(2);
+        });
     }
 }
 
@@ -2494,12 +3189,52 @@ const MPI_USAGE: &str = "\
                               mpirun -n 4 --map-by ppr:1:numa --bind-to numa \\
                                 target/release/examples/phase_breakdown --mpi";
 
+/// The extra `--help` lines the `cuda` feature adds.
+#[cfg(feature = "cuda")]
+const DEVICE_USAGE: &str = "\
+  --device <csv|auto>      Run each cell on CUDA devices. One ordinal: GpuPauliSum
+                            on that device. Several (e.g. 0,1,2,3), or auto for
+                            every visible device: GpuPartitionedSum with
+                            --gpu-partitions partitions on each, the row's
+                            `device` listing them. With --mpi: one device per
+                            rank (MpiGpuSum), one ordinal or auto (the rank's
+                            local device). On one device (GpuPauliSum): the
+                            input is uploaded untimed, a warm-up call then the
+                            timed call run on the resident sum, and the output
+                            is downloaded untimed; `upload_ns`/`download_ns`
+                            report those two, `wall_ns` the timed call, so it
+                            means the same as on a host row. --threads is not
+                            swept: one cell per layer, --threads[0] echoed.
+                            --partitions must stay at 1 and topn:<N> is
+                            refused; --occupancy-at is unsupported. Phases:
+                            gather = K1+K2, merge = the fused K3 (sort
+                            included, sort_ns = 0), compact = K4, rescale = K5,
+                            rebucket = device refines, coset_loop = the driving
+                            thread's wall of the fused path; h2d_ns/d2h_ns are
+                            the copies inside a layer.
+  --gpu-partitions <n>     With --device: split the sum into <n> virtual device
+                            partitions on each device (devices x n a power of
+                            two, default 1)
+                            and run them through GpuPartitionedSum, so remote
+                            layers export, exchange and merge received rows;
+                            rotation_remote needs n > 1. The row carries
+                            partitions=<n>, partition_cpus=gpu, upload_ns the
+                            scatter and download_ns the gather.
+  --gpu-exchange <mode>    host|device|nccl: the exchange mode a --device cell
+                            agrees, mirroring PAULISTRINGS_GPU_EXCHANGE
+                            (needs --device; nccl needs the nccl cargo
+                            feature). Unset leaves it to the engine's default.
+                            The row's gpu_exchange field is the mode actually
+                            agreed, \"none\" on a lone unpartitioned device.";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         #[cfg(feature = "mpi")]
         println!("{MPI_USAGE}");
+        #[cfg(feature = "cuda")]
+        println!("{DEVICE_USAGE}");
         return;
     }
 

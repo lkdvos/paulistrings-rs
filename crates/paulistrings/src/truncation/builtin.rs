@@ -1,6 +1,6 @@
 //! Built-in truncation policies and combinators. See ARCHITECTURE.md §Truncation.
 
-use super::TruncationPolicy;
+use super::{BuiltinTruncation, TruncationPolicy};
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -44,6 +44,10 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn finalizes_layer(&self) -> bool {
         false
     }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::Coeff(self.0))
+    }
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -70,6 +74,10 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     /// Per-term only — no layer pass.
     fn finalizes_layer(&self) -> bool {
         false
+    }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::Weight(self.0))
     }
 }
 
@@ -188,6 +196,10 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             cols.coeff.truncate(write);
         });
         sum.recount();
+    }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::TopN(self.0))
     }
 }
 
@@ -345,6 +357,10 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
             debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
         }
     }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::ApproxTopN(self.0))
+    }
 }
 
 /// Logical AND of two policies — both must accept.
@@ -383,6 +399,13 @@ where
     fn finalizes_layer(&self) -> bool {
         self.0.finalizes_layer() || self.1.finalizes_layer()
     }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::And(
+            Box::new(self.0.device_policy()?),
+            Box::new(self.1.device_policy()?),
+        ))
+    }
 }
 
 /// Logical OR of two policies — either accepting is enough.
@@ -420,6 +443,13 @@ where
     /// docs), so it has no layer pass regardless of what its children answer.
     fn finalizes_layer(&self) -> bool {
         false
+    }
+
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        Some(BuiltinTruncation::Or(
+            Box::new(self.0.device_policy()?),
+            Box::new(self.1.device_policy()?),
+        ))
     }
 }
 

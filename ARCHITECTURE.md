@@ -90,7 +90,7 @@ This is what makes a *persistent* partition viable while `n` swings by orders of
 
 ## Hash
 
-`Gf2Hash<W>` stores `b_max` rows as `(rows_x, rows_z)` word masks, an active prefix length `b`, and the seed that generated the rows (a xorshift64 construction, reproducible with no added dependency).
+`Gf2Hash<W>` stores `b_max` rows as `(rows_x, rows_z)` word masks, an active prefix length `b`, and the seed that generated the rows; each row word is splitmix64 of `(seed, row, word, x-or-z)`, so the rows are reproducible with no added dependency and the same at every `W`.
 `bucket_of(x, z)` sets result bit `i` to `parity(x & rows_x[i]) ^ parity(z & rows_z[i])`; `row_parity` evaluates a single row for the refinement pass, making refine `O(n)` rather than `O(n·b)`.
 Columns beyond `2·num_qubits` are masked to zero at construction.
 The hash is stored with the sum; two sums combine only if they share it.
@@ -99,6 +99,7 @@ The hash is stored with the sum; two sums combine only if they share it.
 **The rows must be dense and random.**
 A coordinate projection is also GF(2)-linear, but weight-based truncation keeps sums low-weight, so chosen coordinates are almost always zero and load balance collapses exactly on the workloads that matter.
 A dense random `H` is a universal hash family on the key space: maximum bucket load is `m/B + O(√(m log B / B))` with high probability *independent of input structure*, and `rank(H|_D) = dim D` holds with probability `≥ 1 − 2^{dim D − b}`.
+Random must also mean free of GF(2)-linear relations between row words: consecutive outputs of a GF(2)-linear generator such as xorshift satisfy `rows_z = M·rows_x`, which puts a fixed family of weight-≈6 keys in the kernel of `H` under every seed.
 The `b × 2W` popcount cost per term is paid only at ingestion and rehash, never in the layer loop.
 Known wart: `h(0) = 0`, so the identity string always sits in bucket 0.
 
@@ -315,6 +316,34 @@ The engine's *partition* is not a thread and not a process: it is whatever a `Tr
 `PartitionedSum` holds `P` partitions inside one process and fans out to them per call; `DistributedSum` *is* one partition, and its peers are other processes (`MpiTransport`, behind the off-by-default `mpi` feature — or the in-process transport, which is how the distributed shape is tested with no MPI in the picture).
 They differ in the transport group's lifetime (per call, against one endpoint for the process's whole life, because an `MPI_Comm` is not something to duplicate per layer), in scatter and gather (one sum split locally and merged back bitwise, against a replicated input and a byte-framed gather to rank 0), and in the consistency check (one process cannot hand its own partitions different circuits, so only the distributed driver pays for it).
 
+**Backend composition.**
+Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
+Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
+The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
+`HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
+`DevicePartition` (the `cuda` feature) is the device backend and a full peer: its K10 export lays out the same CSR blocks in the receiver's position order, its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`, and a host partition and a device partition interoperate in one group.
+An in-process device group exchanges device-resident payloads — the transport moves the block through the channel without reading its bytes, and the receiver adopts it with a device-to-device or peer copy into its own pooled columns — while the host wire format above stays in force for an MPI rank and for a group mixing host and device partitions.
+**A device receive moves in chunks of destination positions.**
+The receiver keeps every received row's CSR offsets on the device but only one chunk's rows: chunk `c` of `2^j` equal position ranges is copied (in-process) or received (NCCL) into the receive columns just before the fused layer's first batch in it, batches never straddle a chunk, and the fused layer finds a row at `base[k] + off[k][p]` with `base[k]` rebased per chunk in wrapping `u32` arithmetic.
+`GpuLayerOptions::exchange_bytes` (`PAULISTRINGS_GPU_EXCHANGE_BYTES`) picks the fewest power-of-two chunks whose rows fit it, unbounded and so one chunk by default; a power of two because such a cut refines every coarser one, which is what lets an NCCL group agree on the largest count any rank asked for without growing anyone's chunk.
+The send side is not chunked: its export volume stays resident until the last chunk moved.
+A device group over a byte transport (`GpuDistributedSum`, feature `nccl`) agrees one exchange mode for the whole group at scatter, NCCL only when every rank can start it on a device of its own, and otherwise the host wire format, so the mode is group-uniform and such a group never contains a host partition.
+Under NCCL a remote layer sends only the block headers and CSR offsets through `Transport::exchange`, then one `allreduce_sum_u64` vote on going ahead and on the chunk count, then, on a unanimous yes, one NCCL group per chunk, chunk-major, that moves the chunk's `x`/`z`/`coeff` columns straight into the receiver's receive columns, where the receiver computes the fingerprints; this vote is the one call beyond the host layer's, legal only because the mode is group-uniform.
+After a yes every rank posts every chunk's group even if its own layer fails mid-way, discarding what arrives, so a local failure never strands a peer's receive; only a failed group itself stops the posting, and its peers' bounded waits then fail too.
+A rank that cannot receive (a received segment past the tag, a failed allocation) or has already failed votes no, nobody posts, the ready ranks take every block as empty, and the after-loop agreement names the rank that voted no.
+**A device sender merges one partner's rows by key before the exchange.**
+Two remote deltas to one partner can emit one key only into one receiver position, so the merge is position-local: K3 runs over the partner's sub-table under the keep-everything program, which sums equal keys and drops an exact-zero sum but truncates nothing, since the receiver alone sees a key's complete sum.
+The merged rows of a position are split over the partner's blocks greedily in entry order, never more than a block's unmerged count there, so the wire format, `ExtraRows` and the receive path are untouched and no received segment outgrows the tag.
+It runs for a partner whose remote entries share an output support pattern (a Clifford's never do, a rotation has one remote entry), both payload forms and the MPI rank alike; `GpuLayerOptions::premerge` and `PAULISTRINGS_GPU_PREMERGE=off` switch it off.
+The memory consequence is that a partition holds one export volume and one receive chunk on its device on top of its sum during a remote layer, where a host partition's equivalent volumes sit in system RAM.
+A backend proposes the bucket count through `PartitionStorage::proposed_bits`, the host formula by default; the device raises it to its records-per-block target, with a factor of two of headroom in a group, because nobody refines off-schedule: a group member runs every layer at exactly the agreed count and reports `Unsupported` rather than refine when a block or a received segment exceeds the fused kernel's cap.
+A partition whose layer fails before its exchange still makes the call, with one empty block per remote delta the plan names under the real chunk map, so its partners finish the run and the error surfaces after the loop; the device driver then refuses every later call on that split until it is scattered again.
+**A cross-device copy needs peer access, granted per ordered pair the first time it is asked for.**
+`gpu::peer_access` enables the destination context's driver-level access to the source and, since `cudarc` allocates from a stream-ordered pool that `cuCtxEnablePeerAccess` alone does not map, the source pool's access list too (`cuMemPoolSetAccess`); without the second grant a peer copy silently stages through the host and a peer load faults instead of erring.
+An in-process device group calls it before its first cross-device copy; a group over one physical device or over NCCL never needs it.
+**One GPU per rank picks its device by CPU locality, not by rank order.**
+`gpu::local_device_for_comm` is collective over the ranks sharing a node (one `MPI_Comm_split_type` and one all-gather of each rank's CPU NUMA mask and each visible device's NUMA node from sysfs): distinct devices go to distinct ranks, preferring a device on a rank's own NUMA node, and falls back to the node-local rank modulo the device count when the ranks see different devices or the NUMA facts are unreadable.
+
 **In-process: a moved payload, shared-memory collectives.**
 `InProcessTransport` moves its payload through a `P × P` matrix of `mpsc` channels — there is nothing to encode and nothing to overlap — but the **collectives are shared atomics with a spin wait**: each rank numbers its own transport calls and publishes `(generation, kind)` plus its contribution into its own cache-line-padded slot, and a waiter spins, then yields, then sleeps briefly, with a dropped endpoint as the fail-fast signal.
 The partition threads are pinned and dedicated for the whole call, so a spin wait rather than a futex is what makes an unconditional per-layer collective affordable.
@@ -432,6 +461,28 @@ Everything those methods do is spec-rewriting outside any hot loop — no core c
 
 The design decisions a GPU backend needs are already in place: `PauliString` is `Pod` with a defined layout; bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
 The extension to distributed memory is no longer forward-looking: §Partitioning is that exchange, and MPI is the same exchange over ranks.
+
+**The device sum.**
+`engine::gpu::GpuSum` holds the flat SoA columns `x`, `z`, `coeff` and a CSR `start`/`lens` per bucket under the same `Gf2Hash` as the host, plus a 64-bit GF(2)-linear fingerprint `g(v) = G·v` per term with `G` drawn from a salted seed, so `g(v ⊕ d) = g(v) ⊕ g(d)` is one XOR per delta.
+Within a bucket the device keeps unique keys in no particular order; `to_host` re-sorts each bucket to the host's lexicographic order.
+
+**The fused layer.**
+One block per output position `p`, the coset-contiguous renumbering `Gf2Span::perm_index` of a bucket `β`.
+For every entry `e` of the prepared table and every row `r` of source bucket `β ⊕ δ_e` that the entry emits (`amp_e[s] ≠ 0` on the table entry, never on the product), the block builds a record `(g_lo32, tag)` in shared memory with `tag = e:4 | r:12`.
+A 16-bit index array is radix-sorted by `g_lo32`; adjacent equal-`g_lo32` records with different keys trigger eight more passes over `g_hi32`, and a pair still colliding a full lex-key sort, so equal keys always end adjacent.
+A segmented sum over each equal-key run (a warp-shuffle block scan on dense tables, a head-serial walk on sparse ones) gives the coefficient; a row survives if the sum is not exactly zero and `keep_term` accepts it, and its key and coefficient are recomputed from the input at write time.
+`CAP = 8192` records per block and the 12-bit offset caps a source bucket at 4096 rows; both are checked from the count table before the launch, and a violation refines the bucket count by one bit and recounts, up to `max_bits`, on a lone partition; a device partition of a group runs at the agreed count and reports `Unsupported` instead (§Partitioning).
+A device with less opt-in shared memory loads fewer block variants and runs under a lower cap.
+Rows land in a loose arena sized by the exact pre-dedup counts, batched over contiguous position ranges so the arena stays under `arena_bytes`, then compact into the output columns at running offsets; input and output columns ping-pong between layers.
+The block width is a per-`W` constant (`THREADS`): 1024 threads at `W ≤ 2`, 512 at `W = 4`, 256 above, register-bound.
+The kernels are named K1 count table `cnt[β][e]`, K2 segment sizes and scan, K3 the fused layer, K4 compaction, K5 the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`), K6 refine, K7 the octave histogram of `ApproxTopN`, K8 exact `TopN`'s radix-select over the bit pattern of `|c|²` (one device only; `DevicePartition::finalize_layer` reports `Unsupported` above one partition, since the `n`-th largest of a split sum has no collective form), and K11 the device invariant check.
+
+**Bucket policy on device.**
+The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ 4096 × 2^b`, where `fanout` is the number of table entries with any nonzero amplitude, never below the current count, and capped at `B_MAX_BITS`.
+
+**Errors.**
+Every device operation returns `GpuError`; the layer loop's seam is infallible, so `DevicePartition` records the first error, skips every later layer, and the driver returns it after the loop with the sum holding the last completed layer's output.
+`DevicePartition::refine` advances only a host mirror of the hash; the layer refines the device to the mirror and the bucket policy in one pass, and the mirror is re-synced to the device whenever the driver reads the error.
 
 ## Performance-Model
 

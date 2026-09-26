@@ -14,7 +14,7 @@ categories = ["science", "simulation"]
 # Not `all-features = true`: the `mpi` feature builds `rsmpi`, whose build
 # script probes an `mpicc` and runs `bindgen` against the site's MPI headers.
 # Neither exists on docs.rs, so the whole build would fail there.
-features = ["phase-timing", "test-utils"]
+features = ["phase-timing", "test-utils", "cuda"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -33,6 +33,17 @@ test-utils = []
 # for `rsmpi`'s bindgen (`module load openmpi/5.0.6 llvm/19.1.7`,
 # `LIBCLANG_PATH=$(llvm-config --libdir)`).
 mpi = ["dep:mpi"]
+# Compile the CUDA backend (`engine::gpu`), one device today, multi-device
+# later over the existing partitioned exchange. Off by default, like `mpi`:
+# the default build must stay byte-identical, and `cudarc` loads
+# `libcuda`/`libnvrtc` at runtime (`fallback-dynamic-loading`), so there is no
+# build-time toolkit requirement at all — `cargo build --features cuda` links
+# and runs on a box with no GPU, and every device-touching test returns early
+# through `gpu::cuda_available()`.
+cuda = ["dep:cudarc"]
+# The NCCL device-direct exchange for the distributed CUDA backend; MPI still carries the collectives.
+# `cudarc/nccl-02022`, never the bare `nccl`, which binds 2.30's larger `ncclConfig_t` than the 2.23 library's.
+nccl = ["cuda", "mpi", "cudarc/nccl-02022"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -51,6 +62,16 @@ log = "0.4"
 # `default-features = false` drops the `user-operations` feature (libffi), which
 # nothing here needs — the two reductions are `MPI_MAX`/`MPI_SUM`.
 mpi = { version = "0.8.2", optional = true, default-features = false }
+# CUDA driver + NVRTC bindings for the `cuda` feature. `default-features =
+# false` is load-bearing: the crate's defaults dlopen cublas/curand/the CUDA
+# runtime, none of which the hand-written NVRTC kernels touch.
+cudarc = { version = "0.19.9", optional = true, default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "cuda-12080",
+    "fallback-dynamic-loading",
+] }
 
 # NUMA topology and thread/memory pinning (engine::partitioned::topology). Linux
 # only; on other targets the topology module reports one node and pins nothing.
@@ -75,6 +96,10 @@ harness = false
 name = "phase_breakdown"
 required-features = ["phase-timing"]
 
+[[example]]
+name = "gpu_peer"
+required-features = ["cuda"]
+
 # The multi-rank differential net. `harness = false`: the cases are collective,
 # so they must run in the same order on every rank, one at a time — none of
 # which the libtest harness (which may run cases in parallel, in an unspecified
@@ -85,3 +110,12 @@ required-features = ["phase-timing"]
 name = "mpi_ranks"
 harness = false
 required-features = ["mpi", "test-utils"]
+
+# The CUDA backend's differential net; every case returns early without a device.
+[[test]]
+name = "propagate_gpu"
+required-features = ["cuda", "test-utils"]
+
+[[test]]
+name = "propagate_gpu_partitioned"
+required-features = ["cuda", "test-utils"]

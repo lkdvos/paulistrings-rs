@@ -90,6 +90,37 @@ python3 -m venv --system-site-packages .venv-mpi   # gitignored
 
 Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:rustc-link-arg` is not inherited from a dependency, so without the py crate's copy the cdylib cannot find `libmpi.so.40` at import time.
 
+The `cuda` feature needs no build-script support and no toolkit to compile: `cudarc` loads `libcuda` and `libnvrtc` at runtime and NVRTC compiles the kernels on first use, so only running needs the module (or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` on `LD_LIBRARY_PATH`):
+
+```bash
+module load cuda/12.8.0                                          # libnvrtc at runtime
+cargo test -p paulistrings --features cuda                       # unit nets + tests/propagate_gpu.rs; pass without a device
+cargo clippy -p paulistrings-py --features cuda -- -D warnings
+maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+pytest python/paulistrings/tests/test_cuda.py                    # skipped unless cuda_available()
+```
+
+One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets; ranks share a device when there are fewer devices than ranks:
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
+export LIBCLANG_PATH=$(llvm-config --libdir)
+cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
+scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
+scripts/mpi-test.sh --ranks 2,4 --python --cuda                           # the bindings' comm= with device= cases
+cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
+mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
+```
+
+The `nccl` feature (device-direct exchange for `gpu::MpiGpuSum`, ARCHITECTURE.md §Partitioning) needs both `cuda` and `mpi`, so both module sets plus the NCCL library, and needs no build-script support of its own: NCCL is `dlopen`ed exactly like `libcuda`/`libnvrtc`, so building it needs no toolkit either.
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+cargo test -p paulistrings --features nccl,test-utils --lib gpu::   # nccl_available() etc.; pass without the module
+cargo clippy -p paulistrings-py --features nccl -- -D warnings
+```
+
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 **Submitting is the user's step, never an agent's** — adjust the template and hand over the `sbatch` line.
 
@@ -121,7 +152,9 @@ Unit tests live in `#[cfg(test)] mod tests` beside the code, cross-module behavi
 - The differential oracle for engine work is `test_support::naive_apply_layer`, a direct `Channel::apply` loop independent of the bucketed path.
 - Shared fixtures live in `crates/paulistrings/src/test_support.rs` behind the `test-utils` feature — add helpers there rather than copy-pasting between test files.
 - The partitioned engine's differential nets are `tests/propagate_partitioned.rs` and the per-layer matrices in `engine/partitioned/layer.rs`; every test configuration uses `Placement::Unpinned` so the suite runs on a one-node box.
-- The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank).
+- The CUDA backend's differential net is `tests/propagate_gpu.rs` (`required-features = ["cuda", "test-utils"]`) against `propagate`, every device test opening with `test_support::require_cuda!()` so it returns early without a device; the bindings' net is `python/paulistrings/tests/test_cuda.py`, whose device tests skip unless `cuda_available()`.
+- `PAULISTRINGS_GPU_TEST_DEVICES` (csv of ordinals, default `0`) points `tests/propagate_gpu_partitioned.rs` at real devices: with more than one listed, the `P == devices.len()` configurations place one partition per device and every other `P` stays virtual on the first; `scripts/slurm/gpu-devices.sbatch` runs it at `0,1,2,3`.
+- The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank); built with `cuda` as well, `mpi_ranks` adds the one-GPU-per-rank cases, skipped on every rank unless every rank sees a device.
 - No `#[ignore]`d tests, and benchmarks follow tests rather than the reverse.
 - Commit logical units and check in with the user at feature boundaries.
 
@@ -132,6 +165,7 @@ The correctness bar is agreement to floating-point tolerance (`test_support::ass
 Tests that pin exact output bits are convenience tripwires for *unintended* perturbation: when one trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit, with a one-line note.
 Never design, constrain, or reject an optimization to keep output bits stable.
 `propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance.
+A device run agrees with the host to tolerance and is bitwise reproducible run-to-run on one device, since no reduction uses a float atomic.
 
 ## Performance discipline
 
@@ -146,6 +180,10 @@ Never design, constrain, or reject an optimization to keep output bits stable.
 - The probe's JSON sidecar carries the partition fields on every row, and the sub-phases (`append_ns`, `chunk_wait_ns`) are *contained in* the phase above rather than additional to it — never sum them into a total. Contract (a) in `benchmarks/PROFILING.md` lists the fields and is what to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
 - The JCC erratum (SKX102) costs this engine 9–13% wall on Cascade Lake, but the padding flag is a ~1% tax on every part without the erratum, so it is **not** in `.cargo/config.toml`. Every measurement script sources `scripts/jcc-rustflags.sh`, which detects the erratum from `/proc/cpuinfo` and appends the flag — **anything else that benchmarks must do the same**, and note that an exported `RUSTFLAGS` replaces the config's list wholesale.
 - Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh` against the ceilings in `research/HARDWARE.md`.
+- The device axis is measured on the release `phase-timing,cuda` probe with `--device` (`--device <list>` or `--gpu-partitions <n>` for a device group); record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number, since the workstation's clocks are driver-managed and unlocked rather than fixed.
+- A GPU timing is the second application of a gate on the saturated sum; a dense cell's CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1` runs, never `wall/3`.
+- The device roofline denominator comes from `membench --device` / `scripts/bandwidth.sh --device`.
+- `PAULISTRINGS_GPU_EXCHANGE=host|device`, `PAULISTRINGS_GPU_STAGING`, `PAULISTRINGS_GPU_PREMERGE=off` and `PAULISTRINGS_GPU_EXCHANGE_BYTES` are runtime knobs, so a device-exchange A/B is one binary run both ways, as with any other knob A/B above.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
 It records what was measured and rejected, including several ideas that look obviously good.
@@ -156,11 +194,21 @@ It records what was measured and rejected, including several ideas that look obv
 - `PauliSum::from_strings` is `pub(crate)` + `#[cfg(test)]`, so Rust tests build sums through it or `BuildAccumulator`.
 - A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits makes `propagate` **panic**; there is no fallback path. `PauliRotation` is exempt, overriding `prepare` at any generator weight.
 - Partitioned mode rejects exact `TopN` at compile time, since a distributed `k`-th selection has no collective form yet; `ApproxTopN` is partition-exact and is the partitioned default.
+- The CUDA backend runs a policy only through its `TruncationPolicy::device_policy` tree: every builtin and every Python policy lowers, while a custom `TruncationPolicy` returns `GpuError::Unsupported` before the first layer. Exact `TopN` runs on a lone device (`GpuPauliSum`, K8 radix-select); above one partition (`GpuPartitionedSum`, `gpu::MpiGpuSum`) it stays `Unsupported`, since the `n`-th largest of a split sum has no collective form.
+- A multi-device or one-device-per-rank run from Python (`device=[...]`, `comm=` with `device=`) scatters and gathers on every call; only the one-device `GpuPauliSum` stays resident, while Rust holds a `GpuPartitionedSum` or `MpiGpuSum` across calls.
 - Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
 - A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
 - The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
+- Device-resident payloads trade staging time for device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card; the host form stays behind `PAULISTRINGS_GPU_EXCHANGE=host` for a group with a host member, and for MPI without the `nccl` feature or an agreed NCCL mode.
+- `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (device and NCCL exchanges; a host exchange and the default stay one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
+- The chunked NCCL receive has run only over `LoopbackWire`, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
+- The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios: `gu2q` on two virtual partitions of one card is ~20% slower with it on.
+- The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
+- A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
+- `gpu::peer_access` grants the destination context peer access to the source device and grants the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/payload.rs`.
+- The cross-device peer copy is untested on a real multi-GPU node; today's measurements are virtual partitions on one card.
 
 ## Repo layout
 
@@ -169,7 +217,11 @@ crates/paulistrings/      pure Rust core, no Python deps
   src/                    pauli_string, phase, pauli_sum, bucket/{hash,sum}, accumulator, circuit,
                           channel/{clifford,rotation,unitary,noise,identity,prepared},
                           truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
-                          engine/partitioned/*, stabilizer, test_support
+                          engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
+                          finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
+                          rank,scan,staging,sum,truncation} (CUDA, behind `cuda`; `nccl`
+                          behind `nccl`),
+                          stabilizer, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

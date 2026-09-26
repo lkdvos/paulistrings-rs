@@ -46,7 +46,15 @@ pub struct PartitionRuntime {
     pools: Vec<rayon::ThreadPool>,
     /// Whether driving threads and pool workers bind their allocations to the slot's NUMA node.
     bind_memory: bool,
+    /// How long a partition waits for a partner's collective before declaring it dead.
+    wait_timeout: std::time::Duration,
 }
+
+/// The in-process transport's default wait for a partner's collective.
+pub const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The wait for a group of device partitions, which share a device and its queue.
+pub const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl PartitionRuntime {
     /// Resolves `config` against the machine and builds one pinned pool per partition.
@@ -87,10 +95,16 @@ impl PartitionRuntime {
                 &format!("ps-part{rank}"),
             )?);
         }
+        let wait_timeout = if slots.iter().any(|s| s.device.is_some()) {
+            DEVICE_WAIT_TIMEOUT
+        } else {
+            DEFAULT_WAIT_TIMEOUT
+        };
         Ok(Arc::new(Self {
             slots,
             pools,
             bind_memory: config.bind_memory,
+            wait_timeout,
         }))
     }
 
@@ -102,6 +116,11 @@ impl PartitionRuntime {
     /// The resolved slots, in rank order.
     pub fn slots(&self) -> &[PartitionSlot] {
         &self.slots
+    }
+
+    /// How long a partition waits for a partner's collective before declaring it dead: [`DEFAULT_WAIT_TIMEOUT`], or [`DEVICE_WAIT_TIMEOUT`] when a slot names a device.
+    pub fn wait_timeout(&self) -> std::time::Duration {
+        self.wait_timeout
     }
 
     /// `log2` of the partition count: the number of GF(2) rows a
@@ -118,9 +137,10 @@ impl PartitionRuntime {
             if rank > 0 {
                 s.push_str(", ");
             }
-            match &slot.cpus {
-                Some(cpus) => s.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
-                None => s.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
+            match (&slot.cpus, slot.device) {
+                (_, Some(d)) => s.push_str(&format!("{rank}:gpu{d} x{}", slot.threads)),
+                (Some(cpus), None) => s.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
+                (None, None) => s.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
             }
         }
         s
@@ -156,7 +176,7 @@ impl PartitionRuntime {
         assert_eq!(items.len(), size, "map_partitions: one item per partition");
         // A fresh group per call, rather than one held in the runtime: each partition *owns* its endpoint for the duration, which is what turns a partner's panic into a panic (dropped senders) instead of a hang.
         // It also means an aborted call cannot leave the group's collective counter out of step for the next one.
-        let transports = InProcessTransport::group(size as u32);
+        let transports = InProcessTransport::group_with_timeout(size as u32, self.wait_timeout);
         let f = &f;
 
         let mut items = items.into_iter();
@@ -197,6 +217,10 @@ impl PartitionRuntime {
 
 /// Pins a partition's driving thread to its slot, warning (not failing) when the platform declines — the same degradation policy `build_pool` applies to pool workers.
 fn place_current_thread(slot: &PartitionSlot, bind_memory: bool) {
+    #[cfg(feature = "cuda")]
+    if let Some(device) = slot.device {
+        super::topology::bind_device_context(device);
+    }
     if let Some(cpus) = &slot.cpus {
         if let Err(err) = pin_current_thread(cpus) {
             log::warn!(target: LOG_TARGET, "failed to pin partition driver to {cpus}: {err}");

@@ -13,12 +13,25 @@
 #   scripts/mpi-test.sh --release              # the shipping codegen
 #   scripts/mpi-test.sh --python               # also build the extension and run its net
 #   scripts/mpi-test.sh --python --no-rust     # only the Python net
+#   scripts/mpi-test.sh --cuda                 # both nets built with `mpi,cuda`: adds the one-GPU-per-rank cases
+#   scripts/mpi-test.sh --nccl                 # both nets built with `mpi,cuda,nccl`: adds the NCCL device-exchange cases
+#
+# --cuda puts $CUDA_ROOT/lib64 (or $CUDA_HOME/lib64) on LD_LIBRARY_PATH for
+# libnvrtc and forwards it to every rank; ranks share a device when there are
+# fewer devices than ranks, and the device cases skip on every rank unless
+# every rank sees one.
+#
+# --nccl implies --cuda's LD_LIBRARY_PATH setup and additionally needs
+# libnccl on it (module load nccl/2.23.4-1); NCCL refuses two ranks of one
+# communicator on one GPU, so this workstation-only invocation only exercises
+# the size == 1 world (Host, no NCCL call) — the real multi-rank net is
+# `scripts/slurm/mpi-gpu-nccl.sbatch`, which the user submits.
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
 # else with exit 2.
 #
-# --python builds `_paulistrings` with `--features mpi` into $VIRTUAL_ENV, or
+# --python builds `_paulistrings` with `--features mpi` (`mpi,cuda` under --cuda) into $VIRTUAL_ENV, or
 # ./.venv-mpi if that is unset, and runs pytest under mpirun. That venv needs
 # maturin, pytest, numpy and an importable mpi4py built against the *same* MPI:
 #
@@ -37,6 +50,7 @@ profile=""
 oversubscribe=0
 python_net=0
 rust_net=1
+features="mpi"
 while [ $# -gt 0 ]; do
     case "$1" in
         --ranks) ranks="$2"; shift 2 ;;
@@ -45,7 +59,9 @@ while [ $# -gt 0 ]; do
         --release) profile="--release"; shift ;;
         --python) python_net=1; shift ;;
         --no-rust) rust_net=0; shift ;;
-        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        --cuda) features="mpi,cuda"; shift ;;
+        --nccl) features="mpi,cuda,nccl"; shift ;;
+        -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
@@ -72,9 +88,34 @@ EOF
     exit 2
 fi
 
+cuda_x=""
+case "$features" in
+    mpi,cuda|mpi,cuda,nccl)
+        cuda_root="${CUDA_ROOT:-${CUDA_HOME:-}}"
+        if [ -n "$cuda_root" ] && [ -d "$cuda_root/lib64" ]; then
+            export LD_LIBRARY_PATH="$cuda_root/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        fi
+        if ! ldconfig -p 2>/dev/null | grep -q libnvrtc \
+           && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnvrtc'; then
+            echo "warning: no libnvrtc on the loader path (module load cuda/12.8.0, or set CUDA_ROOT); the device cases will skip" >&2
+        fi
+        if [ "$features" = "mpi,cuda,nccl" ]; then
+            nccl_lib="${NCCL_LIB:-}"
+            if [ -n "$nccl_lib" ] && [ -d "$nccl_lib" ]; then
+                export LD_LIBRARY_PATH="$nccl_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            if ! ldconfig -p 2>/dev/null | grep -q libnccl \
+               && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnccl'; then
+                echo "warning: no libnccl on the loader path (module load nccl/2.23.4-1, or set NCCL_LIB to its lib dir); NCCL init will fail" >&2
+            fi
+        fi
+        cuda_x="-x LD_LIBRARY_PATH"
+        ;;
+esac
+
 if [ "$rust_net" -eq 1 ]; then
-    echo "== building the mpi_ranks test binary ${profile:-(debug)}"
-    bin=$(cargo test -p paulistrings --features mpi --test mpi_ranks --no-run \
+    echo "== building the mpi_ranks test binary ${profile:-(debug)}, features $features"
+    bin=$(cargo test -p paulistrings --features "$features" --test mpi_ranks --no-run \
             ${profile:+$profile} --message-format=json 2>/dev/null \
           | python3 -c 'import json, sys
 for line in sys.stdin:
@@ -87,7 +128,7 @@ for line in sys.stdin:
         print(rec["executable"])')
     if [ -z "$bin" ]; then
         echo "could not find the mpi_ranks executable; rebuilding with output:" >&2
-        cargo test -p paulistrings --features mpi --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
+        cargo test -p paulistrings --features "$features" --test mpi_ranks --no-run ${profile:+$profile} >&2 || true
         exit 1
     fi
     echo "   $bin"
@@ -97,7 +138,7 @@ if [ "$python_net" -eq 1 ]; then
     venv="${VIRTUAL_ENV:-$PWD/.venv-mpi}"
     if [ ! -x "$venv/bin/python" ]; then
         echo "no virtualenv at $venv (set VIRTUAL_ENV, or create ./.venv-mpi)" >&2
-        sed -n '18,24p' "$0" >&2
+        sed -n '27,32p' "$0" >&2
         exit 2
     fi
     if ! "$venv/bin/python" -c 'import mpi4py' 2>/dev/null; then
@@ -112,11 +153,11 @@ if [ "$python_net" -eq 1 ]; then
         echo "no maturin in $venv (or on PATH): pip install maturin into it" >&2
         exit 2
     fi
-    echo "== building _paulistrings --features mpi into $venv"
+    echo "== building _paulistrings --features $features into $venv"
     # `maturin develop` installs into the *active* venv, so name it explicitly
     # rather than relying on the caller's shell.
     VIRTUAL_ENV="$venv" "$maturin" develop ${profile:+$profile} \
-        --features mpi -m crates/paulistrings-py/Cargo.toml
+        --features "$features" -m crates/paulistrings-py/Cargo.toml
 fi
 
 # Shared-memory and oversubscription knobs. `vader_single_copy_mechanism=none`
@@ -146,7 +187,7 @@ for n in ${ranks//,/ }; do
                 xflag="-x PAULISTRINGS_EXCHANGE_CHUNKS"
             fi
             echo "== mpirun -n $n $flags (mpi_ranks, chunks=$chunks)"
-            if mpirun -n "$n" $flags $xflag "$bin"; then
+            if mpirun -n "$n" $flags $xflag $cuda_x "$bin"; then
                 echo "== $n ranks, mpi_ranks chunks=$chunks: ok"
             else
                 echo "== $n ranks, mpi_ranks chunks=$chunks: FAILED" >&2
@@ -161,7 +202,7 @@ for n in ${ranks//,/ }; do
         # `-p no:cacheprovider` because every rank would write the same
         # .pytest_cache.
         echo "== mpirun -n $n $flags (test_mpi.py)"
-        if mpirun -n "$n" $flags "$venv/bin/python" -m pytest \
+        if mpirun -n "$n" $flags $cuda_x "$venv/bin/python" -m pytest \
                 python/paulistrings/tests/test_mpi.py -q \
                 -p no:cacheprovider -p no:randomly; then
             echo "== $n ranks, test_mpi.py: ok"

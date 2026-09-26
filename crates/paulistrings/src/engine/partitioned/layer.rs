@@ -181,7 +181,7 @@ pub(crate) struct LayerExchangeCounts {
 
 impl LayerExchangeCounts {
     /// The counts of a layer that exchanged nothing.
-    fn none(size: u32) -> Self {
+    pub(crate) fn none(size: u32) -> Self {
         Self {
             remote_deltas: 0,
             rows_sent: vec![0; size as usize],

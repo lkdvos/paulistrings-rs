@@ -4,12 +4,14 @@
 sum.propagate(circuit, policy=None, direction=None, engine=None,
                small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, comm=None, result="gather") -> PauliSum
+               partition_row_blocks=None, comm=None, result="gather",
+               device=None) -> PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
                           small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                           partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, comm=None, result="gather")
+                          partition_row_blocks=None, comm=None, result="gather",
+                          device=None)
     -> (PauliSum, PropagationStats)
 ```
 
@@ -33,6 +35,7 @@ The GIL is released for the duration of both calls.
 | `partition_row_blocks` | `list[list[int]] \| None` | `None` | explicit disjoint qubit blocks, one per partition, instead of a seeded draw |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
 | `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share |
+| `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.
 
@@ -47,13 +50,55 @@ The GIL is released for the duration of both calls.
 
 In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
 
-`partition_row_seed` and `partition_row_blocks` are mutually exclusive; either needs `partitions=` or `comm=`.
+`partition_row_seed` and `partition_row_blocks` are mutually exclusive; either needs `partitions=`, `comm=` or a list of several devices.
 Under `comm=`, the block count in `partition_row_blocks` must equal the MPI group size, and the blocks must be identical on every rank.
 
 `comm=` requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 `comm=` and `partitions=` are alternatives — place via the launcher (e.g. `mpirun --map-by ppr:1:numa --bind-to numa`) rather than both. Without the `mpi` feature, `comm=` raises `RuntimeError`.
 
 See [NUMA partitions](../manual/propagation/partitions.md) and [MPI ranks](../manual/propagation/mpi.md) for recipes.
+
+## `device`
+
+| Value | Placement |
+|---|---|
+| `None` | the host engine |
+| an `int` | the whole sum on that CUDA device ordinal; `ValueError` if this process cannot see it |
+| `list[int]` | one partition per entry, in partition order; a one-element list is that device |
+| `"auto"` | devices `0..k` for the largest power of two `k` visible, so device 0 alone on a one-GPU box |
+
+A list's length must be a power of two, at most 64, or it is a `ValueError`; an ordinal may repeat, putting several partitions on one device.
+Several devices split the sum like `partitions=`: `partition_row_seed` and `partition_row_blocks` pick the rows, the block count equal to the list length.
+`device=` is an alternative to `partitions=`; passing both, or `result="local"` without `comm=`, or `partition_row_blocks=` with a single device, is a `ValueError`.
+`engine` is ignored, `truncation.topn` raises `NotImplementedError` (use `approx_topn`), an exhausted device raises `MemoryError`, and without the `cuda` feature or a visible device `device=` raises `RuntimeError`.
+
+With `comm=`, `device=` is this rank's one device: an `int` or `"auto"` (a device near the rank's CPUs, `gpu::local_device_for_comm`), and a list of several ordinals is a `ValueError`.
+`result=` and the row kwargs mean what they mean on the host `comm=` path, and a rank that cannot use its device fails the call on every rank.
+The pair needs the extension built with both the `cuda` and `mpi` features, and raises `RuntimeError` naming the missing one otherwise.
+See [CUDA devices](../manual/propagation/gpu.md).
+
+## `GpuPauliSum`
+
+```text
+sum.to_device(device=0) -> GpuPauliSum
+
+resident.propagate(circuit, policy=None, direction=None,
+                   target_bucket_len=None, min_buckets=None) -> None
+resident.propagate_with_stats(circuit, policy=None, direction=None,
+                              target_bucket_len=None, min_buckets=None) -> PropagationStats
+resident.to_host() -> PauliSum
+```
+
+A sum resident on one CUDA device: `propagate` steps it **in place**, `to_host` copies it back and leaves it resident.
+The arguments mean what they mean on `PauliSum.propagate`, with the same errors.
+A device error mid-run leaves the sum holding the last completed layer's output.
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `len(resident)` | `int` | terms on the device |
+| `.num_qubits` | `int` | the sum's qubit count |
+| `.device` | `int` | the CUDA device ordinal |
+| `.num_buckets` | `int` | the device partition's current bucket count, grow-only |
 
 ## `PropagationStats`
 
@@ -73,7 +118,7 @@ A broadcast call such as `circuit.depolarize(p, [0, 1])` contributes two layers,
 | `.application_index` | `list[int]` | this layer's position in the propagation loop, `0..layers` regardless of `direction` |
 | `.gate_name` | `list[str]` | the applied channel's debug name per layer |
 | `.nanos` | `list[int]` | elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks |
-| `.partition` | `PartitionStats \| None` | per-partition detail for a `partitions=`/`comm=` call, else `None` |
+| `.partition` | `PartitionStats \| None` | per-partition detail for a `partitions=`/`comm=`/`device=` call, else `None` |
 
 ## `PartitionStats`
 
@@ -84,6 +129,7 @@ Per-layer, per-partition detail (`PropagationStats.partition`), one entry per la
 | `.partitions` | `int` | partition count (power of two); the MPI group size under `comm=` |
 | `.rank` | `int \| None` | this process's rank under `comm=`, else `None` |
 | `.size` | `int \| None` | the `comm=` group size, else `None` |
+| `.devices` | `list[int] \| None` | the CUDA device of each partition for a `device=` run (this rank's one device under `comm=`), else `None` |
 | `.local` | `list[bool]` | whether each layer moved no row across a partition boundary (`rows_exported[k] == 0`) |
 | `.rows_exported` | `list[int]` | rows sent across partition boundaries per layer, summed over sender/receiver pairs |
 | `.bytes_exported` | `list[int]` | wire bytes behind `rows_exported`, including per-block headers |

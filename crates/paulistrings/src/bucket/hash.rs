@@ -2,9 +2,9 @@
 
 use crate::pauli_string::PauliString;
 
-/// Maximum number of bucket bits, i.e. `B ≤ 2^20 = 1_048_576` buckets.
+/// Maximum number of bucket bits, i.e. `B ≤ 2^22 = 4_194_304` buckets.
 /// Rows for all `B_MAX_BITS` bits are generated up front so that [`Gf2Hash::refine`] is free: the active hash is always a prefix of the same fixed matrix, so refinement is a single parity pass rather than a re-hash.
-pub const B_MAX_BITS: u8 = 20;
+pub const B_MAX_BITS: u8 = 22;
 
 /// Maximum number of partition bits, i.e. `P ≤ 2^6 = 64` partitions.
 /// Partitions are the coarse split of a sum across independent workers (see [`PartitionRows`]); the bucket bits of [`Gf2Hash`] refine within one partition. The cap is deliberately small: `P` tracks hardware parallelism (NUMA domains in-process, nodes under a distributed run), not term count.
@@ -23,23 +23,16 @@ fn mix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Xorshift64 — deterministic row generation without pulling in an RNG crate, reproducible from `(num_qubits, seed)` alone on any machine.
-struct Xs64(u64);
+/// splitmix64's increment, the odd constant `⌊2^64/φ⌋`.
+const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
-impl Xs64 {
-    fn new(seed: u64) -> Self {
-        // Avoid the degenerate all-zero state.
-        Self(seed | 1)
-    }
-    #[inline]
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
+/// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`: splitmix64's output at the stream position encoding that tuple.
+/// Row words must not be successive outputs of a GF(2)-linear generator such as xorshift (ARCHITECTURE.md §Hash).
+#[inline]
+fn row_word(seed: u64, row: usize, attempt: u32, word: usize, half: u64) -> u64 {
+    debug_assert!(row < 1 << 16 && word < 1 << 15);
+    let position = ((attempt as u64) << 32) | ((row as u64) << 16) | ((word as u64) << 1) | half;
+    mix64(seed.wrapping_add(SPLITMIX_GAMMA.wrapping_mul(position.wrapping_add(1))))
 }
 
 /// Mask of the live qubit bits in word `word`, given `num_qubits` total.
@@ -54,6 +47,39 @@ fn word_mask(num_qubits: usize, word: usize) -> u64 {
     } else {
         (1u64 << (num_qubits - lo)) - 1
     }
+}
+
+/// `n_rows` rows of `(x-mask, z-mask)` drawn from `seed` and masked to the live qubit columns.
+/// A row that masks to all-zero would waste a bit; at `num_qubits = 1` the chance is 1/4 per row, so it is redrawn, except at `num_qubits == 0` where every row is legitimately zero.
+fn draw_rows<const W: usize>(
+    num_qubits: usize,
+    n_rows: usize,
+    seed: u64,
+) -> (Vec<[u64; W]>, Vec<[u64; W]>) {
+    let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(n_rows);
+    let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(n_rows);
+    let has_live_columns = num_qubits > 0;
+    for row in 0..n_rows {
+        let mut attempt = 0u32;
+        let (rx, rz) = loop {
+            let mut rx = [0u64; W];
+            let mut rz = [0u64; W];
+            let mut any = false;
+            for w in 0..W {
+                let mask = word_mask(num_qubits, w);
+                rx[w] = row_word(seed, row, attempt, w, 0) & mask;
+                rz[w] = row_word(seed, row, attempt, w, 1) & mask;
+                any |= (rx[w] | rz[w]) != 0;
+            }
+            if any || !has_live_columns {
+                break (rx, rz);
+            }
+            attempt += 1;
+        };
+        rows_x.push(rx);
+        rows_z.push(rz);
+    }
+    (rows_x, rows_z)
 }
 
 /// A GF(2)-linear hash from Pauli keys to bucket indices.
@@ -97,7 +123,7 @@ pub struct Gf2Hash<const W: usize> {
 
 impl<const W: usize> Gf2Hash<W> {
     /// Build a hash over `num_qubits` qubits with `bits` active bucket bits.
-    /// Rows are generated deterministically from `seed`, so two `Gf2Hash` values with the same `(num_qubits, seed)` are identical and their sums are combinable.
+    /// Rows are generated deterministically from `seed`, so two `Gf2Hash` values with the same `(num_qubits, seed)` are identical and their sums are combinable; the rows do not depend on `W`.
     ///
     /// # Panics
     ///
@@ -109,33 +135,7 @@ impl<const W: usize> Gf2Hash<W> {
         );
         debug_assert!(num_qubits <= 64 * W);
 
-        let mut rng = Xs64::new(seed);
-        let n_rows = B_MAX_BITS as usize;
-        let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(n_rows);
-        let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(n_rows);
-
-        // `num_qubits == 0` has a single key (the identity), so every row is legitimately zero and the retry below must not spin.
-        let has_live_columns = num_qubits > 0;
-
-        for _ in 0..n_rows {
-            // A row that masks to all-zero would waste a bucket bit; vanishingly unlikely in general, but at `num_qubits = 1` the chance is 1/4 per row, so retry rather than silently degrade.
-            let (rx, rz) = loop {
-                let mut rx = [0u64; W];
-                let mut rz = [0u64; W];
-                let mut any = false;
-                for w in 0..W {
-                    let mask = word_mask(num_qubits, w);
-                    rx[w] = rng.next_u64() & mask;
-                    rz[w] = rng.next_u64() & mask;
-                    any |= (rx[w] | rz[w]) != 0;
-                }
-                if any || !has_live_columns {
-                    break (rx, rz);
-                }
-            };
-            rows_x.push(rx);
-            rows_z.push(rz);
-        }
+        let (rows_x, rows_z) = draw_rows::<W>(num_qubits, B_MAX_BITS as usize, seed);
 
         Self {
             rows_x,
@@ -300,31 +300,8 @@ impl<const W: usize> PartitionRows<W> {
         );
         debug_assert!(num_qubits <= 64 * W);
 
-        let mut rng = Xs64::new(mix64(seed) ^ PARTITION_ROW_SALT);
-        let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
-        let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(bits as usize);
-
-        // As in `Gf2Hash::new`: `num_qubits == 0` has a single key, so every row is legitimately zero and the retry must not spin.
-        let has_live_columns = num_qubits > 0;
-
-        for _ in 0..bits {
-            let (rx, rz) = loop {
-                let mut rx = [0u64; W];
-                let mut rz = [0u64; W];
-                let mut any = false;
-                for w in 0..W {
-                    let mask = word_mask(num_qubits, w);
-                    rx[w] = rng.next_u64() & mask;
-                    rz[w] = rng.next_u64() & mask;
-                    any |= (rx[w] | rz[w]) != 0;
-                }
-                if any || !has_live_columns {
-                    break (rx, rz);
-                }
-            };
-            rows_x.push(rx);
-            rows_z.push(rz);
-        }
+        let (rows_x, rows_z) =
+            draw_rows::<W>(num_qubits, bits as usize, mix64(seed) ^ PARTITION_ROW_SALT);
 
         Self {
             rows_x,
@@ -582,6 +559,7 @@ fn leading_column<const W: usize>(row: &KeyRow<W>) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::Xs64;
 
     /// XOR two Pauli keys — the group operation on the key space.
     fn xor<const W: usize>(a: &PauliString<W>, b: &PauliString<W>) -> PauliString<W> {
@@ -907,6 +885,126 @@ mod tests {
         assert_eq!(h.bucket_of(&[0], &[0]), 0);
     }
 
+    // ---- row generation: no GF(2)-linear relation between row words ----
+
+    /// One step of xorshift64 (13, 7, 17), a GF(2)-linear map `M` on `u64`.
+    fn xorshift64_step(mut x: u64) -> u64 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    }
+
+    /// Row `j` of `M` as a mask: bit `j` of `M·v` is the parity of `xorshift64_row(j) & v`.
+    fn xorshift64_row(j: u32) -> u64 {
+        (0..64).fold(0u64, |row, k| {
+            row | (((xorshift64_step(1u64 << k) >> j) & 1) << k)
+        })
+    }
+
+    /// Consecutive outputs of a linear generator satisfy `rows_z = M·rows_x` word for word under every seed.
+    #[test]
+    fn row_words_are_not_one_xorshift_step_apart() {
+        for seed in [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED] {
+            let h = Gf2Hash::<2>::new(128, B_MAX_BITS, seed);
+            let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
+            let (px, pz) = p.rows();
+            let linked = h
+                .rows_x
+                .iter()
+                .zip(&h.rows_z)
+                .chain(px.iter().zip(pz))
+                .flat_map(|(rx, rz)| (0..2).map(move |w| xorshift64_step(rx[w]) == rz[w]))
+                .filter(|&linked| linked)
+                .count();
+            assert_eq!(linked, 0, "seed {seed:#x}: {linked} row words are M·x");
+        }
+    }
+
+    /// `rows_z = M·rows_x` puts `d_j = (x = row_j(M), z = e_j)`, Pauli weight ≈ 6, in the kernel of every row, so `u` and `u ⊕ d_j` always share a bucket.
+    /// A dense random `H` sends each to 0 with probability `2^-20` at 20 bits.
+    #[test]
+    fn xorshift_kernel_deltas_do_not_share_bucket_zero() {
+        fn zeros<const W: usize>(seed: u64) -> usize {
+            let h = Gf2Hash::<W>::new(64 * W, 20, seed);
+            let mut n = 0;
+            for w in 0..W {
+                for j in 0..64u32 {
+                    let mut x = [0u64; W];
+                    let mut z = [0u64; W];
+                    x[w] = xorshift64_row(j);
+                    z[w] = 1u64 << j;
+                    n += (h.bucket_of(&x, &z) == 0) as usize;
+                }
+            }
+            n
+        }
+        let seeds = [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED];
+        let w1: usize = seeds.iter().map(|&s| zeros::<1>(s)).sum();
+        let w2: usize = seeds.iter().map(|&s| zeros::<2>(s)).sum();
+        assert!(w1 <= 1, "{w1}/192 kernel deltas hash to 0 at W=1");
+        assert!(w2 <= 1, "{w2}/384 kernel deltas hash to 0 at W=2");
+    }
+
+    /// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
+    #[test]
+    fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
+        let (rx, rz) = draw_rows::<1>(64, 64, crate::bucket::sum::DEFAULT_HASH_SEED);
+        let image = |x: u64, z: u64| {
+            (0..64).fold(0u64, |acc, i| {
+                acc | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
+            })
+        };
+        // (x, z) bits of X, Z and Y on one qubit.
+        let paulis = [(1u64, 0u64), (0, 1), (1, 1)];
+        let mut keys = vec![(0u64, 0u64)];
+        for q in 0..64 {
+            for (a, b) in paulis {
+                keys.push((a << q, b << q));
+            }
+        }
+        for q in 0..64 {
+            for r in (q + 1)..64 {
+                for (a, b) in paulis {
+                    for (c, d) in paulis {
+                        keys.push(((a << q) | (c << r), (b << q) | (d << r)));
+                    }
+                }
+            }
+        }
+        assert_eq!(keys.len(), 1 + 64 * 3 + 2016 * 9);
+        let images: std::collections::HashSet<u64> =
+            keys.iter().map(|&(x, z)| image(x, z)).collect();
+        assert_eq!(images.len(), keys.len(), "fingerprint collisions");
+    }
+
+    /// Row word `w` depends on `(seed, row, w, x-or-z)` alone, so the same `(num_qubits, seed)` gives the same rows at every width.
+    #[test]
+    fn rows_do_not_depend_on_the_width() {
+        let seed = crate::bucket::sum::DEFAULT_HASH_SEED;
+        for n in [1usize, 5, 64] {
+            let h1 = Gf2Hash::<1>::new(n, 8, seed);
+            let h2 = Gf2Hash::<2>::new(n, 8, seed);
+            for i in 0..B_MAX_BITS as usize {
+                let (x1, z1) = h1.row(i);
+                assert_eq!(h2.row(i), ([x1[0], 0], [z1[0], 0]), "n={n} row {i}");
+            }
+            let p1 = PartitionRows::<1>::from_seed(n, P_MAX_BITS, seed);
+            let p2 = PartitionRows::<2>::from_seed(n, P_MAX_BITS, seed);
+            let widened = |rows: &[[u64; 1]]| rows.iter().map(|r| [r[0], 0]).collect::<Vec<_>>();
+            assert_eq!(p2.rows().0, widened(p1.rows().0), "n={n} partition x-rows");
+            assert_eq!(p2.rows().1, widened(p1.rows().1), "n={n} partition z-rows");
+        }
+        let h2 = Gf2Hash::<2>::new(128, 8, seed);
+        let h4 = Gf2Hash::<4>::new(128, 8, seed);
+        for i in 0..B_MAX_BITS as usize {
+            let (x2, z2) = h2.row(i);
+            let (x4, z4) = h4.row(i);
+            assert_eq!(x4, [x2[0], x2[1], 0, 0], "row {i}");
+            assert_eq!(z4, [z2[0], z2[1], 0, 0], "row {i}");
+        }
+    }
+
     // ---- occupancy: what guards the choice of a dense random H ----
 
     /// Bucket occupancy on low-weight keys, the physically relevant regime.
@@ -939,7 +1037,7 @@ mod tests {
     // ---- rank of `h` on a channel's delta space ----
     //
     // A channel supported on qubits `{i, j}` has a 4-dimensional key-delta space `span{X_i, Z_i, X_j, Z_j}`; the engine's coset dimension is `r = rank(h(D))` (`engine::coset::Gf2Span::r`), and the per-run sort's comparison count collapses to its floor exactly when `r` is full (4).
-    // `r` is not a property of the channel alone: it depends on which rows `H` happens to have, so it moves with the hash seed and — because `Gf2Hash::new` draws `2W` words per row — with `W`. See `research/FINDINGS.md`.
+    // `r` is not a property of the channel alone: it depends on which rows `H` happens to have, so it moves with the hash seed and the support, but not with `W`. See `research/FINDINGS.md`.
 
     /// Occupancy balance is not the whole story: a dense random `H` can still fail to separate a two-qubit channel's four delta generators, so two distinct local deltas share one bucket delta.
     #[test]
@@ -956,7 +1054,7 @@ mod tests {
                 }
             }
         }
-        // ~10% of placements at the default bucket-count floor (B = 128). The bound is loose on purpose: it pins the order of magnitude, the load-bearing fact, not the exact draw.
+        // About one placement in six at the default seed and bucket-count floor (B = 128), 11% in expectation over seeds. The bound is loose on purpose: it pins the order of magnitude, the load-bearing fact, not the exact draw.
         assert_eq!(total, 8128);
         assert!(
             (200..2000).contains(&deficient),
@@ -982,39 +1080,32 @@ mod tests {
         }
     }
 
-    /// `Gf2Hash::new` draws `2W` words per row, so `W = 1` and `W = 2` get unrelated row bit patterns in word 0 and their delta-span ranks are independent draws — not an artifact of the near-empty second word.
-    /// At the default seed, the su4 probe's support `(0, 1)` happens to be rank-deficient at `W = 1` and full-rank at `W = 2`, for every bucket count the engine's own policy reaches.
+    /// Rows do not depend on `W` (`rows_do_not_depend_on_the_width`), so neither does a support's delta-span rank.
+    /// At the default seed the su4 probe's support `(0, 1)` is full-rank at every bucket count the engine's own policy reaches, and `(0, 7)` is one rank short at the floor, at both widths.
+    /// Regenerated literals: the splitmix64 row draw replaced a pinned `(0, 1)` rank of 3 at `W = 1`.
     #[test]
-    fn support_delta_rank_differs_across_the_word_boundary_at_the_default_seed() {
+    fn support_delta_rank_is_width_independent_at_the_default_seed() {
+        use crate::test_support::support_delta_rank as rank;
         let seed = crate::bucket::sum::DEFAULT_HASH_SEED;
         for bits in 7..=9u8 {
             let w1 = Gf2Hash::<1>::new(64, bits, seed);
             let w2 = Gf2Hash::<2>::new(65, bits, seed);
-            assert_eq!(
-                crate::test_support::support_delta_rank(&w1, &[0, 1]),
-                3,
-                "W=1/q=64 at {bits} bits: expected the deficient rank the fact sheet measured"
-            );
-            assert_eq!(
-                crate::test_support::support_delta_rank(&w2, &[0, 1]),
-                4,
-                "W=2/q=65 at {bits} bits: expected full rank"
-            );
+            let w2_wide = Gf2Hash::<2>::new(128, bits, seed);
+            assert_eq!(rank(&w1, &[0, 1]), 4, "W=1/q=64 at {bits} bits");
+            assert_eq!(rank(&w2, &[0, 1]), 4, "W=2/q=65 at {bits} bits");
+            assert_eq!(rank(&w2_wide, &[0, 1]), 4, "W=2/q=128 at {bits} bits");
         }
-        // The masking is not what does it: at `W = 2` only 130 of 256 columns are live at q = 65, and the rank is full anyway.
-        let w2_wide = Gf2Hash::<2>::new(128, 7, seed);
-        assert_eq!(
-            crate::test_support::support_delta_rank(&w2_wide, &[0, 1]),
-            4
-        );
+        assert_eq!(rank(&Gf2Hash::<1>::new(64, 7, seed), &[0, 7]), 3);
+        assert_eq!(rank(&Gf2Hash::<2>::new(128, 7, seed), &[0, 7]), 3);
     }
 
     /// The mechanism: a support delta cannot reorder a bucket's key column exactly when `h` separates the support's delta space.
     /// The engine's per-run "rest" stream concatenates blocks `{v ⊕ d : v ∈ bucket}`, one per non-identity delta `d`. At full delta rank each bucket holds at most one of the `2^(2k)` local variants of any off-support pattern, so XOR-by-`d` preserves the column's order and every block arrives already ascending. One rank short and each bucket holds two such variants, adjacent in key order, and half the deltas invert every such pair, shattering the block into runs of ~2.
     #[test]
     fn support_delta_preserves_bucket_order_iff_the_delta_span_is_full_rank() {
+        // Regenerated for the splitmix64 row draw: the deficient support at the default seed is now `(0, 7)`, not `(0, 1)`.
         assert!(!order_broken_by_some_delta::<2>(128, 7, &[0, 1]));
-        assert!(order_broken_by_some_delta::<1>(64, 7, &[0, 1]));
+        assert!(order_broken_by_some_delta::<1>(64, 7, &[0, 7]));
     }
 
     /// Partition a closed key set under `h`, then check every non-identity support delta against every bucket's ascending key column; returns `true` if any delta reorders any bucket.

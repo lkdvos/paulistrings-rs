@@ -9,6 +9,8 @@
 pub mod bucketed;
 pub(crate) mod coset;
 pub(crate) mod direct;
+#[cfg(feature = "cuda")]
+pub mod gpu;
 pub(crate) mod merge;
 pub mod partitioned;
 #[cfg(feature = "phase-timing")]

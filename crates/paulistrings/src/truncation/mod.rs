@@ -20,8 +20,10 @@
 //! ```
 
 pub mod builtin;
+mod tree;
 
 pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
+pub use tree::BuiltinTruncation;
 
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
@@ -79,5 +81,13 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// ```
     fn finalizes_layer(&self) -> bool {
         true
+    }
+
+    /// This policy as a [`BuiltinTruncation`] tree, the form the CUDA backend lowers, or `None` if it has none.
+    ///
+    /// The default is `None`, so a custom policy is rejected by the GPU engine rather than silently ignored.
+    /// Every builtin returns `Some`, [`And`] and [`Or`] composing their children's trees; the answer must truncate exactly as `self` does.
+    fn device_policy(&self) -> Option<BuiltinTruncation> {
+        None
     }
 }

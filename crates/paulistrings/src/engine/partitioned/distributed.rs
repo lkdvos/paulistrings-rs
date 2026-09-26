@@ -534,8 +534,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
     /// `⟨ψ|O|ψ⟩` in a uniform single-qubit product state, over the whole sum.
     ///
-    /// Not collective — it cannot be, [`Collectives`](super::Collectives) reducing only integers — so it is this rank's contribution alone.
-    /// Sum the ranks' answers however the application reduces its own scalars (`MPI_Allreduce` on two `f64`s, through the communicator the transport was built from).
+    /// Not collective: this rank's contribution alone.
+    /// Sum the ranks' answers with [`allreduce_sum_f64`](super::Collectives::allreduce_sum_f64) on [`transport`](Self::transport), or however the application reduces its own scalars.
     pub fn local_expectation_product_state(&self, state: ProductState) -> Complex64 {
         self.local.sum.expectation_product_state(state)
     }

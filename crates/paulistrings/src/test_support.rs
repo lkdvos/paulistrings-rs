@@ -107,6 +107,10 @@ impl crate::engine::partitioned::Collectives for LoggingTransport {
         self.log.push("allreduce_sum_u64");
         self.inner.allreduce_sum_u64(buf);
     }
+    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+        self.log.push("allreduce_sum_f64");
+        self.inner.allreduce_sum_f64(buf);
+    }
     fn barrier(&self) {
         self.log.push("barrier");
         self.inner.barrier();

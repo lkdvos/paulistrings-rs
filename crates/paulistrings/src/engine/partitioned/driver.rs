@@ -78,6 +78,10 @@ impl Collectives for CountingCollectives<'_> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.inner.allreduce_sum_u64(buf)
     }
+    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.allreduce_sum_f64(buf)
+    }
     fn barrier(&self) {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.inner.barrier()

@@ -7,6 +7,7 @@ use super::driver::lower_for_run;
 use super::error::GpuError;
 use super::layer::{GpuKernelMs, GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
+use super::payload::GpuExchange;
 use super::sum::GpuSum;
 use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
@@ -86,6 +87,7 @@ fn agree<T>(coll: &dyn Collectives, r: Result<T, GpuError>, layer: usize) -> Res
 /// One process's partition of a sum split across a [`Transport`]'s group, held on one CUDA device: [`DistributedSum`] with the device backend of [`GpuPartitionedSum`](super::GpuPartitionedSum).
 ///
 /// The contract is [`DistributedSum`]'s — replicated input, `D = 1`, rank 0 gathers, a per-rank trace — and every method named as collective there is collective here.
+/// The exchange mode is agreed over the group at scatter ([`Self::exchange`]): built with `nccl`, a group of more than one rank on distinct devices that can all start NCCL moves its exchange columns device to device over NCCL unless `PAULISTRINGS_GPU_EXCHANGE=host`, and `PAULISTRINGS_GPU_EXCHANGE=nccl` on any rank makes the host fallback an error on every rank.
 /// Device failures are agreed over the group: a scatter, propagate or gather that fails on any rank fails on every rank, with that rank's own error on the failing one and [`GpuError::Poisoned`] naming it on its peers, so the group never falls out of step.
 /// After a failed `propagate` the split is poisoned, as a [`GpuPartitionedSum`](super::GpuPartitionedSum) is, until the caller scatters again.
 ///
@@ -220,6 +222,12 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
             })
         };
         let part = agree(&transport, part, 0)?;
+        #[cfg(feature = "nccl")]
+        let part = {
+            let mut part = part;
+            start_nccl(&transport, &mut part)?;
+            part
+        };
         log::info!(
             target: LOG_TARGET,
             "scatter_gpu: rank {rank}/{size} on device {device}, {} terms in, {} kept locally, {} bucket bits, {:.3} s",
@@ -291,6 +299,11 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         match first_failure(self.inner.transport(), failed) {
             None => Ok(()),
             Some((rank, layer)) => {
+                // A poisoned split is never used again, so its wire goes now rather than waiting on a finalize at drop.
+                #[cfg(feature = "nccl")]
+                if let Some(wire) = &self.inner.backend().scratch().export.wire {
+                    wire.abort();
+                }
                 self.poison = Some((rank, layer));
                 own.and(Err(GpuError::Poisoned { rank, layer }))
             }
@@ -308,6 +321,45 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn inject_failure(&mut self, layer: usize) {
         self.inner.backend_mut().fail_at_layer = Some(layer);
+    }
+
+    /// Make the next NCCL exchange's receive growth on this rank fail as out of memory, after the skeletons and before the vote (test hook).
+    #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
+    pub fn inject_recv_oom(&mut self) {
+        self.inner
+            .backend_mut()
+            .scratch_mut()
+            .export
+            .fail_recv_growth = true;
+    }
+
+    /// Exchange over NCCL's protocol with `wire` standing in for the communicator, from the next layer on (test hook); every rank of the group must switch together, each with its own rank's wire.
+    ///
+    /// # Panics
+    ///
+    /// If `wire` is not for this rank of a group of this size.
+    #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
+    pub fn use_loopback_wire(&mut self, wire: super::nccl::LoopbackWire) {
+        use super::nccl::DeviceWire;
+        assert_eq!(
+            (wire.rank(), wire.size()),
+            (self.rank(), self.size()),
+            "a loopback wire for another rank"
+        );
+        let export = &mut self.inner.backend_mut().scratch_mut().export;
+        export.mode = GpuExchange::Nccl;
+        export.wire = Some(std::sync::Arc::new(wire));
+    }
+
+    /// Device addresses of the send blocks this rank holds back from the shared pool after a failed wire group (test hook).
+    #[cfg(all(test, feature = "nccl"))]
+    pub(crate) fn quarantined_ptrs(&self) -> Vec<u64> {
+        self.inner.backend().scratch().export.quarantined_ptrs()
+    }
+
+    /// How this rank's exchange blocks travel, as agreed over the group at scatter.
+    pub fn exchange(&self) -> GpuExchange {
+        self.inner.backend().scratch().export.mode
     }
 
     /// Download every rank's share and collect the whole sum on rank 0: `Ok(Some(sum))` there, `Ok(None)` elsewhere. **Collective.**
@@ -426,6 +478,90 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
             scatter_ns,
             gather_ns,
             layers,
+        }
+    }
+}
+
+/// Agree the group's exchange mode and, for [`GpuExchange::Nccl`], bootstrap and warm up the communicator. **Collective.**
+#[cfg(feature = "nccl")]
+fn start_nccl<const W: usize>(
+    coll: &dyn Collectives,
+    part: &mut DevicePartition<W>,
+) -> Result<(), GpuError> {
+    use super::nccl::{self, ExchangeKnob, NcclComm, NcclWire};
+    let knob =
+        nccl::parse_exchange_knob(std::env::var("PAULISTRINGS_GPU_EXCHANGE").ok().as_deref());
+    let ctx = part.sum().ctx.clone();
+    let wants = coll.size() > 1 && knob != ExchangeKnob::Host;
+    let device = if wants && super::device::nccl_available() {
+        nccl::device_uuid(&ctx).ok()
+    } else {
+        None
+    };
+    let plan = nccl::agree_exchange(coll, knob, device.is_some(), device.unwrap_or_default())?;
+    if !plan.nccl {
+        return Ok(());
+    }
+    let stream = part.sum().stream.clone();
+    let started = bootstrap(
+        coll,
+        plan.strict,
+        || NcclComm::init(coll, &ctx),
+        |comm| comm.warm_up(&stream),
+        NcclComm::abort,
+    )?;
+    if let Some(comm) = started {
+        let export = &mut part.scratch_mut().export;
+        export.mode = GpuExchange::Nccl;
+        export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
+            comm,
+        ))));
+    }
+    Ok(())
+}
+
+/// Start a communicator with `init`, warm it up with `warm`, and agree each step over the group. **Collective**: two `allreduce_sum_u64`.
+/// A communicator whose own warm-up failed or whose peers failed is aborted with `abort` rather than left to finalize against dead peers; on any failure a `strict` group (agreed, never one rank's knob) errs on every rank and any other group returns `None` on every rank.
+#[cfg(feature = "nccl")]
+fn bootstrap<C>(
+    coll: &dyn Collectives,
+    strict: bool,
+    init: impl FnOnce() -> Result<C, GpuError>,
+    warm: impl FnOnce(&C) -> Result<(), GpuError>,
+    abort: impl Fn(&C),
+) -> Result<Option<C>, GpuError> {
+    let agreed = |r: Result<C, GpuError>| -> Result<C, GpuError> {
+        let failure = first_failure(coll, r.is_err().then_some(0));
+        match (r, failure) {
+            (Err(e), _) => Err(e),
+            (Ok(c), None) => Ok(c),
+            (Ok(c), Some((rank, layer))) => {
+                abort(&c);
+                Err(GpuError::Poisoned { rank, layer })
+            }
+        }
+    };
+    let started = agreed(init()).and_then(|c| {
+        let warmed = match warm(&c) {
+            Ok(()) => Ok(c),
+            Err(e) => {
+                abort(&c);
+                Err(e)
+            }
+        };
+        agreed(warmed)
+    });
+    match started {
+        Ok(c) => Ok(Some(c)),
+        Err(e) if strict => Err(e),
+        Err(e) => {
+            log::warn!(
+                target: LOG_TARGET,
+                "scatter_gpu: rank {} of {}: NCCL did not start ({e}); exchanging through the host",
+                coll.rank(),
+                coll.size()
+            );
+            Ok(None)
         }
     }
 }
@@ -588,5 +724,800 @@ mod tests {
             "rank 1: {:?}",
             out[1].as_ref().map(|s| s.as_ref().map(PauliSum::len))
         );
+    }
+
+    #[cfg(feature = "nccl")]
+    mod nccl {
+        use std::sync::{Arc, Mutex};
+
+        use super::super::super::nccl::{LoopbackTally, LoopbackWire};
+        use super::*;
+        use crate::engine::partitioned::transport::{ChunkMap, ChunkWait, Payload};
+        use crate::engine::partitioned::{PartitionRuntime, TopologyError};
+        use crate::test_support::{
+            rows_reading_z63, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation,
+        };
+
+        type Outcome<const W: usize> = Result<Option<PauliSum<W>>, GpuError>;
+
+        /// Each `(transport, wire)` rank scatters `input` under `rows` onto device 0, switches to the NCCL protocol over its loopback wire if it has one, runs `setup`, propagates under `options` and gathers.
+        #[allow(clippy::too_many_arguments)]
+        fn run_split<const W: usize, T, X>(
+            group: Vec<(X, Option<LoopbackWire>)>,
+            input: &PauliSum<W>,
+            rows: &PartitionRows<W>,
+            circuit: &Circuit<W>,
+            policy: &T,
+            direction: Direction,
+            options: PropagateOptions,
+            setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
+        ) -> Vec<Outcome<W>>
+        where
+            T: PartitionedTruncation<W> + Sync,
+            X: Transport + 'static,
+        {
+            std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .map(|(transport, wire)| {
+                        s.spawn(move || {
+                            let mut split = GpuDistributedSum::scatter_with_rows(
+                                input.clone(),
+                                transport,
+                                0,
+                                rows.clone(),
+                            )?;
+                            assert_eq!(
+                                split.exchange(),
+                                GpuExchange::Host,
+                                "one device agrees Host"
+                            );
+                            if let Some(wire) = wire {
+                                split.use_loopback_wire(wire);
+                                assert_eq!(split.exchange(), GpuExchange::Nccl);
+                            }
+                            setup(&mut split);
+                            let ran =
+                                split.propagate_with_options(circuit, policy, direction, options);
+                            let gathered = split.gather();
+                            ran?;
+                            gathered
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        }
+
+        fn loopback_group(size: u32) -> Vec<(InProcessTransport, Option<LoopbackWire>)> {
+            loopback_tallied(size).0
+        }
+
+        /// As [`loopback_group`], with the tally of the groups its wires post.
+        fn loopback_tallied(
+            size: u32,
+        ) -> (
+            Vec<(InProcessTransport, Option<LoopbackWire>)>,
+            LoopbackTally,
+        ) {
+            let wires = LoopbackWire::group(size);
+            let tally = wires[0].tally();
+            let group =
+                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120))
+                    .into_iter()
+                    .zip(wires)
+                    .map(|(t, w)| (t, Some(w)))
+                    .collect();
+            (group, tally)
+        }
+
+        fn seeded_rows<const W: usize>(nq: usize, size: u32) -> PartitionRows<W> {
+            PartitionRows::<W>::from_seed(nq, size.trailing_zeros() as u8, 0x5EED)
+        }
+
+        fn nccl_differential<const W: usize, T>(
+            circuit: &Circuit<W>,
+            input: &PauliSum<W>,
+            policy: &T,
+            what: &str,
+        ) where
+            T: PartitionedTruncation<W> + Sync,
+        {
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                let want = crate::propagate(circuit, input.clone(), policy, direction);
+                for size in [2u32, 4] {
+                    let rows = seeded_rows::<W>(input.num_qubits(), size);
+                    let mut out = run_split(
+                        loopback_group(size),
+                        input,
+                        &rows,
+                        circuit,
+                        policy,
+                        direction,
+                        PropagateOptions::default(),
+                        &|_| {},
+                    );
+                    let rest: Vec<_> = out.drain(1..).collect();
+                    let got = out.pop().unwrap().expect("rank 0").expect("rank 0 gathers");
+                    for r in rest {
+                        assert!(r.expect("peer rank").is_none(), "only rank 0 gathers");
+                    }
+                    let what = format!("{what} nccl ranks={size} {direction:?}");
+                    assert_eq!(got.len(), want.len(), "{what}: term count");
+                    assert_terms_close(&got, &want, 1e-11, &what);
+                }
+            }
+        }
+
+        /// The NCCL protocol over the loopback wire against `propagate`, the sender-side merge on and off.
+        #[test]
+        fn nccl_ranks_match_propagate() {
+            crate::require_cuda!();
+            let dense = random_circuit::<1>(8, 12, 0xD15, true);
+            nccl_differential(&dense, &rand_sum::<1>(400, 8, 0xD16), &KeepAll, "w1 dense");
+            let trotter = trotter_circuit::<2>(24, 0.1);
+            nccl_differential(
+                &trotter,
+                &rand_sum_real::<2>(900, 24, 0xD17),
+                &ApproxTopN(1_200),
+                "w2 trotter",
+            );
+            let input = rand_sum::<1>(400, 8, 0xD18);
+            let rows = seeded_rows::<1>(8, 2);
+            let unmerged = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                split.set_layer_options(GpuLayerOptions {
+                    premerge: false,
+                    ..GpuLayerOptions::default()
+                });
+            };
+            let want = crate::propagate(&dense, input.clone(), &KeepAll, Direction::Forward);
+            let out = run_split(
+                loopback_group(2),
+                &input,
+                &rows,
+                &dense,
+                &KeepAll,
+                Direction::Forward,
+                PropagateOptions::default(),
+                &unmerged,
+            );
+            let got = out
+                .into_iter()
+                .next()
+                .unwrap()
+                .expect("rank 0")
+                .expect("gathers");
+            assert_terms_close(&got, &want, 1e-11, "w1 dense nccl, merge off");
+        }
+
+        /// `(rank, error)` per rank, for the failure nets.
+        fn errors<const W: usize>(out: Vec<Outcome<W>>) -> Vec<GpuError> {
+            out.into_iter()
+                .enumerate()
+                .map(|(r, o)| match o {
+                    Err(e) => e,
+                    Ok(s) => panic!("rank {r} succeeded with {:?} terms", s.map(|s| s.len())),
+                })
+                .collect()
+        }
+
+        /// A failure before the exchange takes the NCCL arm of the empty pairing: every rank fails, the culprit with its own error and every peer naming it.
+        #[test]
+        fn an_nccl_failure_before_the_exchange_is_agreed_over_the_group() {
+            crate::require_cuda!();
+            let dense = random_circuit::<1>(8, 6, 0xD18, true);
+            let input = rand_sum::<1>(300, 8, 0xD19);
+            for size in [2u32, 4] {
+                let rows = seeded_rows::<1>(8, size);
+                let fail = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    if split.rank() == 1 {
+                        split.inject_failure(2);
+                    }
+                };
+                let out = run_split(
+                    loopback_group(size),
+                    &input,
+                    &rows,
+                    &dense,
+                    &KeepAll,
+                    Direction::Forward,
+                    PropagateOptions::default(),
+                    &fail,
+                );
+                for (r, e) in errors(out).iter().enumerate() {
+                    if r == 1 {
+                        assert!(
+                            matches!(e, GpuError::Unsupported("injected before the exchange")),
+                            "{e:?}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(e, GpuError::Poisoned { rank: 1, layer: 2 }),
+                            "rank {r}: {e:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A rank whose receive growth fails votes no: nobody moves a row, it returns the out-of-memory error, and every peer names it at the same layer.
+        #[test]
+        fn a_receive_oom_votes_no_and_is_agreed_over_the_group() {
+            crate::require_cuda!();
+            let dense = random_circuit::<1>(8, 6, 0xD1A, true);
+            let input = rand_sum::<1>(300, 8, 0xD1B);
+            for size in [2u32, 4] {
+                let rows = seeded_rows::<1>(8, size);
+                let culprit = size - 1;
+                let oom = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    if split.rank() == culprit {
+                        split.inject_recv_oom();
+                    }
+                };
+                let (group, tally) = loopback_tallied(size);
+                let out = run_split(
+                    group,
+                    &input,
+                    &rows,
+                    &dense,
+                    &KeepAll,
+                    Direction::Forward,
+                    PropagateOptions::default(),
+                    &oom,
+                );
+                assert_eq!(
+                    tally.groups(),
+                    0,
+                    "a no vote posts nothing, and the culprit votes no from then on"
+                );
+                let errs = errors(out);
+                let GpuError::Poisoned { rank, layer } = errs[0] else {
+                    panic!("rank 0: {:?}", errs[0]);
+                };
+                assert_eq!(rank, culprit as usize);
+                for (r, e) in errs.iter().enumerate() {
+                    if r == culprit as usize {
+                        assert!(
+                            matches!(e, GpuError::OutOfMemory { device: 0, .. }),
+                            "{e:?}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(e, GpuError::Poisoned { rank: q, layer: l } if *q == rank && *l == layer),
+                            "rank {r}: {e:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// One source bucket of `n` rows crossing from rank 1 to rank 0 at one bucket: `MAX_BUCKET_LEN` rows fit, one more makes the receiver vote no.
+        /// A device sender's own over-long bucket fails it after the exchange, so the receiver is rank 0, the culprit the agreement names first.
+        fn one_segment(n: usize) -> (Vec<Outcome<1>>, u64) {
+            let mut c = Circuit::<1>::new(64);
+            c.push(zz_rotation::<1>(0, 63, 0.3));
+            let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
+            for (x, z, coeff) in x0_terms_identity_on_q63(n, 0xF1 + n as u64).iter() {
+                let p = crate::pauli_string::PauliString::<1> {
+                    x: *x,
+                    z: [z[0] | 1 << 63],
+                };
+                acc.add_term(p, crate::phase::Phase::ONE, coeff);
+            }
+            let input = acc
+                .finalize()
+                .with_hash(crate::bucket::hash::Gf2Hash::new(64, 0, 0xF0));
+            let options = PropagateOptions {
+                target_bucket_len: 1 << 20,
+                min_buckets: 1,
+                ..PropagateOptions::default()
+            };
+            let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                split.set_layer_options(GpuLayerOptions {
+                    bucket_policy: super::super::super::layer::GpuBucketPolicy::TermsPerBucket(
+                        1 << 20,
+                    ),
+                    ..GpuLayerOptions::default()
+                });
+            };
+            let (group, tally) = loopback_tallied(2);
+            let out = run_split(
+                group,
+                &input,
+                &rows_reading_z63(),
+                &c,
+                &KeepAll,
+                Direction::Forward,
+                options,
+                &wide,
+            );
+            (out, tally.groups())
+        }
+
+        #[test]
+        fn an_oversize_received_segment_votes_no_and_names_the_receiver() {
+            crate::require_cuda!();
+            use super::super::super::module::MAX_BUCKET_LEN;
+            let (fits, groups) = one_segment(MAX_BUCKET_LEN);
+            assert_eq!(groups, 2, "one group per rank");
+            let got = fits
+                .into_iter()
+                .next()
+                .unwrap()
+                .expect("rank 0")
+                .expect("gathers");
+            assert_eq!(got.len(), 2 * MAX_BUCKET_LEN, "every term splits into two");
+            let (over, groups) = one_segment(MAX_BUCKET_LEN + 1);
+            assert_eq!(groups, 0, "the receiver voted no before any row moved");
+            let errs = errors(over);
+            assert!(
+                matches!(errs[0], GpuError::Unsupported(m) if m.contains("received segment")),
+                "{:?}",
+                errs[0]
+            );
+            assert!(
+                matches!(errs[1], GpuError::Unsupported(_)),
+                "the sender's own bucket: {:?}",
+                errs[1]
+            );
+        }
+
+        /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails the call within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
+        #[test]
+        fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {
+            crate::require_cuda!();
+            use super::super::super::nccl::LoopbackFault;
+            let dense = random_circuit::<1>(8, 6, 0xD1C, true);
+            let input = rand_sum::<1>(300, 8, 0xD1D);
+            for size in [2u32, 4] {
+                for fault in [LoopbackFault::Post, LoopbackFault::Wait] {
+                    let culprit = size - 1;
+                    let wires = LoopbackWire::group_with_fault(
+                        size,
+                        culprit,
+                        fault,
+                        std::time::Duration::from_secs(2),
+                    );
+                    let tally = wires[0].tally();
+                    let group = InProcessTransport::group_with_timeout(
+                        size,
+                        std::time::Duration::from_secs(120),
+                    )
+                    .into_iter()
+                    .zip(wires)
+                    .map(|(t, w)| (t, Some(w)))
+                    .collect();
+                    let rows = seeded_rows::<1>(8, size);
+                    let start = std::time::Instant::now();
+                    let out = run_split(
+                        group,
+                        &input,
+                        &rows,
+                        &dense,
+                        &KeepAll,
+                        Direction::Forward,
+                        PropagateOptions::default(),
+                        &|_| {},
+                    );
+                    let elapsed = start.elapsed();
+                    let what = format!("size {size} {fault:?}");
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(60),
+                        "{what}: {elapsed:?}"
+                    );
+                    let posted = if fault == LoopbackFault::Post {
+                        size - 1
+                    } else {
+                        size
+                    };
+                    assert_eq!(
+                        tally.groups(),
+                        u64::from(posted),
+                        "{what}: one failed group, then only no votes"
+                    );
+                    for (r, e) in errors(out).iter().enumerate() {
+                        if r == culprit as usize {
+                            assert!(
+                                matches!(e, GpuError::Nccl { what, .. } if what.contains("injected")),
+                                "{what}: {e:?}"
+                            );
+                        } else {
+                            assert!(
+                                matches!(e, GpuError::Timeout { .. }),
+                                "{what}: rank {r}: {e:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// After a wait fault the failing rank's send payloads stay out of the shared bin, where they would outlive a peer's read only by luck, until the split drops.
+        #[test]
+        fn a_failed_groups_send_payloads_never_reach_the_bin() {
+            crate::require_cuda!();
+            use super::super::super::nccl::LoopbackFault;
+            use super::super::super::payload::bin_holds;
+            let dense = random_circuit::<1>(8, 6, 0xD20, true);
+            let input = rand_sum::<1>(300, 8, 0xD21);
+            let (size, culprit) = (2u32, 1u32);
+            let rows = seeded_rows::<1>(8, size);
+            let wires = LoopbackWire::group_with_fault(
+                size,
+                culprit,
+                LoopbackFault::Wait,
+                std::time::Duration::from_secs(2),
+            );
+            let group =
+                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120));
+            let held: Vec<Vec<u64>> = std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .zip(wires)
+                    .map(|(t, w)| {
+                        let (input, rows, dense) = (&input, &rows, &dense);
+                        s.spawn(move || {
+                            let mut split = GpuDistributedSum::scatter_with_rows(
+                                input.clone(),
+                                t,
+                                0,
+                                rows.clone(),
+                            )
+                            .expect("scatter");
+                            split.use_loopback_wire(w);
+                            assert!(split
+                                .propagate(dense, &KeepAll, Direction::Forward)
+                                .is_err());
+                            let held = split.quarantined_ptrs();
+                            assert!(
+                                held.iter().all(|&p| !bin_holds::<1>(p)),
+                                "rank {}: a quarantined block is in the bin",
+                                split.rank()
+                            );
+                            held
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(
+                !held[culprit as usize].is_empty(),
+                "the failing rank holds its send blocks"
+            );
+            assert!(
+                !held[0].is_empty(),
+                "a peer whose own wait timed out holds its send blocks too"
+            );
+        }
+
+        /// A rank whose wire is already dead votes no instead of failing after a yes: nothing is posted, it returns the wire's error and its peers name it.
+        #[test]
+        fn a_dead_wire_votes_no() {
+            crate::require_cuda!();
+            use super::super::super::nccl::DeviceWire;
+            let dense = random_circuit::<1>(8, 6, 0xD1E, true);
+            let input = rand_sum::<1>(300, 8, 0xD1F);
+            let size = 2u32;
+            let (group, tally) = loopback_tallied(size);
+            group[1].1.as_ref().expect("a wire").abort();
+            let rows = seeded_rows::<1>(8, size);
+            let out = run_split(
+                group,
+                &input,
+                &rows,
+                &dense,
+                &KeepAll,
+                Direction::Forward,
+                PropagateOptions::default(),
+                &|_| {},
+            );
+            assert_eq!(tally.groups(), 0, "a no vote posts nothing");
+            let errs = errors(out);
+            assert!(
+                matches!(&errs[1], GpuError::Nccl { what, .. } if what.contains("failed or aborted device wire")),
+                "{:?}",
+                errs[1]
+            );
+            assert!(
+                matches!(errs[0], GpuError::Poisoned { rank: 1, .. }),
+                "{:?}",
+                errs[0]
+            );
+        }
+
+        /// Mixed knobs with one rank's init or warm-up failing: every rank reaches the same outcome (an error everywhere when any rank is strict, the host exchange everywhere otherwise), and every communicator that was made is aborted.
+        #[test]
+        fn a_failed_start_is_one_outcome_on_every_rank_whatever_the_knobs() {
+            use super::super::super::nccl::{agree_exchange, ExchangeKnob};
+            use std::sync::atomic::{AtomicU32, Ordering};
+            use ExchangeKnob::{Auto, Nccl};
+            #[derive(Clone, Copy, Debug, PartialEq)]
+            enum Fault {
+                Init,
+                WarmUp,
+            }
+            for size in [2u32, 4] {
+                for strict_rank in [None, Some(0), Some(size - 1)] {
+                    for (fault, culprit) in [
+                        (Fault::Init, 1),
+                        (Fault::WarmUp, 1),
+                        (Fault::Init, 0),
+                        (Fault::WarmUp, size - 1),
+                    ] {
+                        let aborted = AtomicU32::new(0);
+                        let made = AtomicU32::new(0);
+                        let out: Vec<Result<bool, String>> = std::thread::scope(|s| {
+                            let hs: Vec<_> = InProcessTransport::group(size)
+                                .into_iter()
+                                .map(|t| {
+                                    let (aborted, made) = (&aborted, &made);
+                                    s.spawn(move || {
+                                        let me = t.rank();
+                                        let knob =
+                                            if strict_rank == Some(me) { Nccl } else { Auto };
+                                        let plan =
+                                            agree_exchange(&t, knob, true, [u64::from(me) + 1, 0])
+                                                .map_err(|e| e.to_string())?;
+                                        assert!(plan.nccl);
+                                        assert_eq!(
+                                            plan.strict,
+                                            strict_rank.is_some(),
+                                            "strictness is agreed"
+                                        );
+                                        bootstrap(
+                                            &t,
+                                            plan.strict,
+                                            || {
+                                                if fault == Fault::Init && me == culprit {
+                                                    return Err(GpuError::Unsupported(
+                                                        "injected init failure",
+                                                    ));
+                                                }
+                                                made.fetch_add(1, Ordering::Relaxed);
+                                                Ok(me)
+                                            },
+                                            |_| {
+                                                if fault == Fault::WarmUp && me == culprit {
+                                                    return Err(GpuError::Unsupported(
+                                                        "injected warm-up failure",
+                                                    ));
+                                                }
+                                                Ok(())
+                                            },
+                                            |_| {
+                                                aborted.fetch_add(1, Ordering::Relaxed);
+                                            },
+                                        )
+                                        .map(|c| c.is_some())
+                                        .map_err(|e| e.to_string())
+                                    })
+                                })
+                                .collect();
+                            hs.into_iter().map(|h| h.join().unwrap()).collect()
+                        });
+                        let what =
+                            format!("size {size}, strict {strict_rank:?}, {fault:?} on {culprit}");
+                        if strict_rank.is_some() {
+                            assert!(out.iter().all(Result::is_err), "{what}: {out:?}");
+                            let own = if fault == Fault::Init {
+                                "injected init failure"
+                            } else {
+                                "injected warm-up failure"
+                            };
+                            assert!(
+                                out[culprit as usize].as_ref().unwrap_err().contains(own),
+                                "{what}: {out:?}"
+                            );
+                        } else {
+                            assert!(
+                                out.iter().all(|o| o == &Ok(false)),
+                                "{what}: every rank falls back: {out:?}"
+                            );
+                        }
+                        assert_eq!(
+                            aborted.load(Ordering::Relaxed),
+                            made.load(Ordering::Relaxed),
+                            "{what}: every made communicator is aborted"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Every transport call a rank issues, in order.
+        #[derive(Clone, Default)]
+        struct Log(Arc<Mutex<Vec<&'static str>>>);
+
+        impl Log {
+            fn push(&self, call: &'static str) {
+                self.0.lock().unwrap().push(call);
+            }
+            fn take(&self) -> Vec<&'static str> {
+                std::mem::take(&mut *self.0.lock().unwrap())
+            }
+        }
+
+        struct Counting {
+            inner: InProcessTransport,
+            log: Log,
+        }
+
+        impl Collectives for Counting {
+            fn rank(&self) -> u32 {
+                self.inner.rank()
+            }
+            fn size(&self) -> u32 {
+                self.inner.size()
+            }
+            fn allreduce_max_u8(&self, v: u8) -> u8 {
+                self.log.push("allreduce_max_u8");
+                self.inner.allreduce_max_u8(v)
+            }
+            fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+                self.log.push("allreduce_sum_u64");
+                self.inner.allreduce_sum_u64(buf);
+            }
+            fn barrier(&self) {
+                self.log.push("barrier");
+                self.inner.barrier();
+            }
+        }
+
+        impl Transport for Counting {
+            fn exchange_layer<P, F, R>(
+                &self,
+                send: Vec<Option<P>>,
+                spare: &mut Vec<P>,
+                map: &ChunkMap,
+                body: F,
+            ) -> (Vec<Option<P>>, R)
+            where
+                P: Payload,
+                F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+            {
+                self.log.push("exchange_layer");
+                self.inner.exchange_layer(send, spare, map, body)
+            }
+            fn exchange<P: Payload>(
+                &self,
+                send: Vec<Option<P>>,
+                spare: &mut Vec<P>,
+            ) -> Vec<Option<P>> {
+                self.log.push("exchange");
+                self.inner.exchange(send, spare)
+            }
+        }
+
+        fn counting_group(size: u32) -> (Vec<Counting>, Vec<Log>) {
+            let logs: Vec<Log> = (0..size).map(|_| Log::default()).collect();
+            let group =
+                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120))
+                    .into_iter()
+                    .zip(&logs)
+                    .map(|(inner, log)| Counting {
+                        inner,
+                        log: log.clone(),
+                    })
+                    .collect();
+            (group, logs)
+        }
+
+        /// The host `DistributedSum`'s propagate-time calls per rank.
+        fn host_calls(
+            size: u32,
+            input: &PauliSum<1>,
+            rows: &PartitionRows<1>,
+            circuit: &Circuit<1>,
+        ) -> Vec<Vec<&'static str>> {
+            let (group, logs) = counting_group(size);
+            std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .zip(&logs)
+                    .map(|(t, log)| {
+                        s.spawn(move || -> Result<Vec<&'static str>, TopologyError> {
+                            let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2, 0))?;
+                            let mut split = DistributedSum::scatter_with_rows(
+                                input.clone(),
+                                t,
+                                runtime,
+                                rows.clone(),
+                            );
+                            log.take();
+                            split.propagate_with_options(
+                                circuit,
+                                &ApproxTopN(900),
+                                Direction::Forward,
+                                PropagateOptions::default(),
+                            );
+                            Ok(log.take())
+                        })
+                    })
+                    .collect();
+                hs.into_iter()
+                    .map(|h| h.join().unwrap().expect("topology"))
+                    .collect()
+            })
+        }
+
+        /// The device split's propagate-time calls per rank, over the NCCL protocol when `nccl`.
+        fn device_calls(
+            size: u32,
+            input: &PauliSum<1>,
+            rows: &PartitionRows<1>,
+            circuit: &Circuit<1>,
+            nccl: bool,
+        ) -> Vec<Vec<&'static str>> {
+            let (group, logs) = counting_group(size);
+            let wires: Vec<Option<LoopbackWire>> = if nccl {
+                LoopbackWire::group(size).into_iter().map(Some).collect()
+            } else {
+                (0..size).map(|_| None).collect()
+            };
+            let clear = |split: &mut GpuDistributedSum<1, Counting>| {
+                logs[split.rank() as usize].take();
+            };
+            let out = run_split(
+                group.into_iter().zip(wires).collect(),
+                input,
+                rows,
+                circuit,
+                &ApproxTopN(900),
+                Direction::Forward,
+                PropagateOptions::default(),
+                &clear,
+            );
+            for o in out {
+                o.expect("device rank");
+            }
+            logs.iter()
+                .map(|l| {
+                    let mut calls = l.take();
+                    let gather = calls
+                        .iter()
+                        .rposition(|&c| c == "allreduce_sum_u64")
+                        .expect("the gather agrees its download");
+                    calls.truncate(gather);
+                    calls
+                })
+                .collect()
+        }
+
+        /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer; the host exchange issues the host's calls unchanged.
+        /// Both device runs end on the propagate's own failure agreement, which the host driver has no counterpart of.
+        #[test]
+        fn every_remote_layer_adds_one_vote_and_a_local_layer_nothing() {
+            crate::require_cuda!();
+            let circuit = trotter_circuit::<1>(24, 0.1);
+            let input = rand_sum_real::<1>(700, 24, 0xC0C0);
+            for size in [2u32, 4] {
+                let rows = seeded_rows::<1>(24, size);
+                let host = host_calls(size, &input, &rows, &circuit);
+                let staged = device_calls(size, &input, &rows, &circuit, false);
+                let nccl = device_calls(size, &input, &rows, &circuit, true);
+                for r in 0..size as usize {
+                    let remote = host[r].iter().filter(|&&c| c == "exchange_layer").count();
+                    assert!(
+                        remote > 0 && remote < circuit.channels.len(),
+                        "rank {r}: {remote} remote layers"
+                    );
+                    let mut want_staged = host[r].clone();
+                    want_staged.push("allreduce_sum_u64");
+                    assert_eq!(
+                        staged[r], want_staged,
+                        "rank {r} of {size}: the host exchange"
+                    );
+                    let mut want_nccl: Vec<&'static str> = host[r]
+                        .iter()
+                        .flat_map(|&c| match c {
+                            "exchange_layer" => vec!["exchange", "allreduce_sum_u64"],
+                            other => vec![other],
+                        })
+                        .collect();
+                    want_nccl.push("allreduce_sum_u64");
+                    assert_eq!(nccl[r], want_nccl, "rank {r} of {size}: the NCCL exchange");
+                }
+            }
+        }
     }
 }

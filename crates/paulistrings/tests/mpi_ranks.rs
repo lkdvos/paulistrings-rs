@@ -721,7 +721,9 @@ fn run_matrix(r: &mut Runner) {
 #[cfg(feature = "cuda")]
 mod device {
     use super::*;
-    use paulistrings::gpu::{cuda_available, local_device_for_rank, propagate_mpi_gpu, MpiGpuSum};
+    use paulistrings::gpu::{
+        cuda_available, local_device_for_rank, propagate_mpi_gpu, GpuExchange, MpiGpuSum,
+    };
 
     impl Runner<'_> {
         /// Scatter onto this rank's device, propagate, gather on rank 0 and compare against the single-process oracle.
@@ -949,5 +951,38 @@ mod device {
                 );
             },
         );
+
+        r.case("the device exchange mode is one mode on every rank", |r| {
+            let transport = MpiTransport::from_communicator(r.world);
+            let device = local_device_for_rank(r.rank).expect("a device on every rank");
+            let sum = rand_sum::<1>(200, 10, 0xB016);
+            let split = MpiGpuSum::scatter(
+                sum,
+                transport,
+                device,
+                &PartitionRowPolicy::Seeded(Some(SEED)),
+            )
+            .expect("device scatter");
+            let mode = split.exchange();
+            // A one-rank world has nothing to exchange, so it never reaches for NCCL.
+            if r.size == 1 {
+                assert_eq!(mode, GpuExchange::Host, "a singleton world");
+            }
+            let mut modes = vec![0u64; 3];
+            modes[match mode {
+                GpuExchange::Host => 0,
+                GpuExchange::Device => 1,
+                _ => 2,
+            }] = 1;
+            paulistrings::engine::partitioned::Collectives::allreduce_sum_u64(
+                split.transport(),
+                &mut modes,
+            );
+            assert!(
+                modes.contains(&u64::from(r.size)),
+                "ranks disagree on the mode: {modes:?}"
+            );
+            assert_eq!(modes[1], 0, "an MPI group never moves device payloads");
+        });
     }
 }

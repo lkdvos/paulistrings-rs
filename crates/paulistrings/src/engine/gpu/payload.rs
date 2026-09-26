@@ -9,17 +9,21 @@ use super::error::GpuError;
 use super::layer::grow;
 use crate::engine::partitioned::transport::{BlockHeader, Payload};
 
-/// How a device group's exchange blocks travel: through the host `PartnerPayload` columns, or as device payloads whose columns never leave device memory.
+/// How a device group's exchange blocks travel: through the host `PartnerPayload` columns, as device payloads whose columns never leave device memory, or (feature `nccl`) as host skeletons plus NCCL transfers of the device columns.
 ///
 /// `Device` needs a transport that moves objects (the in-process one) and a group of device partitions only; `PAULISTRINGS_GPU_EXCHANGE=host|device` sets the default a [`GpuPartitionedSum`](super::GpuPartitionedSum) starts with.
-/// An MPI group and a group with a host member always use `Host`.
+/// A [`GpuDistributedSum`](super::GpuDistributedSum) agrees `Nccl` or `Host` over its group at scatter; a group with a host member always uses `Host`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GpuExchange {
     /// K10 stages every block through the host `PartnerPayload` and the receiver uploads it.
     #[default]
     Host,
     /// K10 fills device columns the receiver copies device-to-device, fingerprints included.
     Device,
+    /// K10 fills device columns, the headers and offsets cross over the transport, and NCCL moves the columns straight into the receiver's; the receiver fingerprints them.
+    #[cfg(feature = "nccl")]
+    Nccl,
 }
 
 /// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for an in-process group.
@@ -232,6 +236,18 @@ pub(crate) fn recycle<const W: usize>(payload: DevicePayload<W>) {
             .unwrap_or_else(PoisonError::into_inner)
             .push((device, Box::new(payload)));
     }
+}
+
+/// Whether any pooled payload holds a block whose key column starts at device address `ptr` (test hook).
+#[cfg(all(feature = "nccl", test))]
+pub(crate) fn bin_holds<const W: usize>(ptr: u64) -> bool {
+    use cudarc::driver::DevicePtr;
+    BIN.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|(_, p)| p.downcast_ref::<DevicePayload<W>>())
+        .flat_map(|p| &p.blocks)
+        .any(|b| b.x.device_ptr(b.x.stream()).0 == ptr)
 }
 
 /// Free every pooled payload.

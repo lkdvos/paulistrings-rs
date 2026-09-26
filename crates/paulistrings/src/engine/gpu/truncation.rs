@@ -17,7 +17,7 @@ const OP_OR: u32 = 4;
 /// The per-term half of a tree as a postfix program, passed to K3 and K5 by value as `KeepProg`.
 ///
 /// Node `i` is `op[i]` with operand `arg[i]`: `Coeff` carries `eps.to_bits()`, `Weight` carries `k`, `Keep`/`And`/`Or` none.
-/// `TopN`/`ApproxTopN` leaves are `Keep` here, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.
+/// `TopN`/`ApproxTopN`/`CollapseSample` leaves are `Keep` here, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct KeepProgram {
@@ -33,7 +33,7 @@ unsafe impl DeviceRepr for KeepProgram {}
 fn per_term(t: &BuiltinTruncation) -> BuiltinTruncation {
     use BuiltinTruncation as T;
     match t {
-        T::Keep | T::TopN(_) | T::ApproxTopN(_) => T::Keep,
+        T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => T::Keep,
         T::Coeff(eps) => T::Coeff(*eps),
         T::Weight(k) => T::Weight(*k),
         T::And(a, b) => match (per_term(a), per_term(b)) {
@@ -64,7 +64,7 @@ fn emit(t: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
                 0,
             ));
         }
-        T::Keep | T::TopN(_) | T::ApproxTopN(_) => out.push((OP_KEEP, 0)),
+        T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => out.push((OP_KEEP, 0)),
     }
 }
 
@@ -105,7 +105,7 @@ pub(crate) fn layer_pass_leaves(
 ) {
     use BuiltinTruncation as T;
     match tree {
-        T::TopN(_) | T::ApproxTopN(_) => visit(tree),
+        T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => visit(tree),
         T::And(a, b) => {
             layer_pass_leaves(a, visit);
             layer_pass_leaves(b, visit);
@@ -298,5 +298,11 @@ mod tests {
         );
         assert!(leaves(&or(T::ApproxTopN(3), T::Coeff(0.1))).is_empty());
         assert!(leaves(&T::Coeff(0.1)).is_empty());
+        let collapse = T::from(crate::truncation::CollapseSample::new(4, 1));
+        assert_eq!(
+            leaves(&and(T::Coeff(0.1), collapse.clone())),
+            vec![collapse.clone()]
+        );
+        assert_eq!(KeepProgram::lower(&collapse).unwrap(), KeepProgram::KEEP);
     }
 }

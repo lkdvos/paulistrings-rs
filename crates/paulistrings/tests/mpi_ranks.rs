@@ -812,6 +812,58 @@ fn run_host_cases(r: &mut Runner) {
         );
     });
 
+    // ---- sampling truncation ------------------------------------------------
+    r.case(
+        "collapse sample keeps one bounded unit-norm trajectory",
+        |r| {
+            use paulistrings::truncation::CollapseSample;
+            const CACHE: usize = 6;
+            let mut circuit = Circuit::<1>::new(8);
+            for _ in 0..3 {
+                for q in 0..8u32 {
+                    circuit.push(zz_rotation::<1>(q, (q + 1) % 8, 0.6));
+                }
+                for q in 0..8u32 {
+                    circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.6));
+                }
+            }
+            let mut acc = BuildAccumulator::<1>::new(8);
+            acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+            let input = acc.finalize();
+
+            for seed in 0..4u64 {
+                // One policy per process, as a launcher gives each rank its own.
+                let policy = CollapseSample::new(CACHE, seed);
+                let transport = MpiTransport::from_communicator(r.world);
+                let mut split = DistributedSum::scatter(input.clone(), transport, &r.config(SEED))
+                    .expect("topology resolves");
+                split.propagate(&circuit, &policy, Direction::Heisenberg);
+                assert!(split.len() <= CACHE, "seed {seed}: {} terms", split.len());
+                let got = split.gather();
+                if r.rank == 0 {
+                    assert!(
+                        policy.collapses() >= 1,
+                        "seed {seed}: rank 0 counts collapses"
+                    );
+                    let got = got.expect("rank 0 gathers");
+                    let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+                    assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: {norm}");
+                    if r.size == 1 {
+                        let want = propagate(
+                            &circuit,
+                            input.clone(),
+                            &CollapseSample::new(CACHE, seed),
+                            Direction::Heisenberg,
+                        );
+                        assert_terms_close(&got, &want, 1e-12, "one rank is propagate");
+                    }
+                } else {
+                    assert_eq!(policy.collapses(), 0, "only rank 0 counts");
+                }
+            }
+        },
+    );
+
     // ---- expectation values, read out without a gather --------------------
     r.case("local expectations sum to the whole sum's", |r| {
         use paulistrings::ProductState;

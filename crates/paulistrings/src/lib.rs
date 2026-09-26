@@ -54,6 +54,7 @@ pub mod examples;
 pub mod pauli_string;
 pub mod pauli_sum;
 pub mod phase;
+pub(crate) mod rng;
 pub mod stabilizer;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]

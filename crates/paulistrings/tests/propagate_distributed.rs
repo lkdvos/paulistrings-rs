@@ -21,7 +21,9 @@ use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::truncation::{
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff,
+};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
     Phase,
@@ -498,4 +500,132 @@ fn local_expectations_sum_to_the_whole_sums() {
 
     let got: Complex64 = parts.iter().sum();
     assert!((got - want).norm() < TOL, "{got} vs {want}");
+}
+
+// ---- CollapseSample ---------------------------------------------------------
+
+/// Three TFIM Trotter steps on eight qubits at a large angle, enough to grow `Z0` past a small cache several times.
+fn collapsing_circuit() -> Circuit<1> {
+    let mut circuit = Circuit::<1>::new(8);
+    for _ in 0..3 {
+        for q in 0..8u32 {
+            circuit.push(zz_rotation::<1>(q, (q + 1) % 8, 0.6));
+        }
+        for q in 0..8u32 {
+            circuit.push(paulistrings::channel::PauliRotation::new(
+                PauliString::<1>::x(q),
+                0.6,
+            ));
+        }
+    }
+    circuit
+}
+
+fn z0_sum() -> PauliSum<1> {
+    let mut acc = BuildAccumulator::<1>::new(8);
+    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.finalize()
+}
+
+/// One rank is the unpartitioned trajectory; more ranks collapse the same way in kind: a bounded, unit-norm sum and a nonzero collapse count on the shared policy.
+#[test]
+fn collapse_sample_trajectories_over_ranks() {
+    const CACHE: usize = 6;
+    let circuit = collapsing_circuit();
+    let input = z0_sum();
+    for seed in 0..5u64 {
+        let want = propagate(
+            &circuit,
+            input.clone(),
+            &CollapseSample::new(CACHE, seed),
+            Direction::Heisenberg,
+        );
+        let one = distributed(
+            &circuit,
+            &input,
+            &CollapseSample::new(CACHE, seed),
+            Direction::Heisenberg,
+            1,
+        );
+        assert_terms_close(&one, &want, 1e-12, &format!("seed {seed} one rank"));
+
+        for size in [2u32, 4] {
+            let policy = CollapseSample::new(CACHE, seed);
+            let got = distributed(&circuit, &input, &policy, Direction::Heisenberg, size);
+            assert!(policy.collapses() >= 1, "seed {seed} ranks={size}");
+            assert!(
+                got.len() <= CACHE,
+                "seed {seed} ranks={size}: {} terms",
+                got.len()
+            );
+            let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+            assert!(
+                (norm - 1.0).abs() < 1e-12,
+                "seed {seed} ranks={size}: {norm}"
+            );
+        }
+    }
+}
+
+/// Over `InProcessTransport` ranks, one collapse keeps exactly one string in the whole group, drawn with probability `|c|² / Σ|c|²`.
+#[test]
+fn collapse_sample_distributed_picks_by_weight() {
+    use paulistrings::engine::partitioned::PartitionRuntime;
+    use paulistrings::test_support::{
+        assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
+        FOUR_TERM_WEIGHTS,
+    };
+    const ROW_SEED: u64 = 0x5EED_C0FF_EE00_4321;
+
+    let keys = four_term_keys::<1>();
+    let input = weighted_four_term_sum::<1>(8);
+    let mut circuit = Circuit::<1>::new(8);
+    circuit.push(Depolarizing {
+        support: [0],
+        p: 0.0,
+    });
+
+    for size in [2u32, 4] {
+        let rows =
+            paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
+        let owners: std::collections::HashSet<u32> =
+            keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
+        assert!(
+            owners.len() > 1,
+            "ranks={size}: the fixture must span ranks"
+        );
+
+        let runtimes: Vec<_> = (0..size)
+            .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1, ROW_SEED)).unwrap())
+            .collect();
+        let mut counts = [0usize; 4];
+        for seed in 0..2000u64 {
+            let policy = CollapseSample::new(3, seed);
+            let (circuit, input, policy, rows) = (&circuit, &input, &policy, &rows);
+            let gathered: Vec<Option<PauliSum<1>>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = InProcessTransport::group(size)
+                    .into_iter()
+                    .zip(&runtimes)
+                    .map(|(transport, runtime)| {
+                        scope.spawn(move || {
+                            let mut split = DistributedSum::scatter_with_rows(
+                                input.clone(),
+                                transport,
+                                runtime.clone(),
+                                rows.clone(),
+                            );
+                            split.propagate(circuit, policy, Direction::Forward);
+                            assert!(split.len_local() <= 1);
+                            split.gather()
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let got = gathered.into_iter().next().unwrap().unwrap();
+            counts[collapsed_index(&got, &keys)] += 1;
+            assert_eq!(policy.collapses(), 1);
+        }
+        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
+    }
 }

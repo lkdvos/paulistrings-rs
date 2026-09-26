@@ -493,6 +493,70 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
+/// The keys of [`weighted_four_term_sum`], in order: `X0`, `Z3 X5`, `Y2 Y7`, `X1 Z6`.
+pub fn four_term_keys<const W: usize>() -> [PauliString<W>; 4] {
+    let key = |x: u64, z: u64| {
+        let mut p = PauliString::<W> {
+            x: [0u64; W],
+            z: [0u64; W],
+        };
+        p.x[0] = x;
+        p.z[0] = z;
+        p
+    };
+    [
+        key(1, 0),
+        key(1 << 5, 1 << 3),
+        key((1 << 2) | (1 << 7), (1 << 2) | (1 << 7)),
+        key(1 << 1, 1 << 6),
+    ]
+}
+
+/// Squared magnitudes of [`weighted_four_term_sum`]'s terms, which sum to one: each term's probability under a draw by weight.
+pub const FOUR_TERM_WEIGHTS: [f64; 4] = [0.1, 0.2, 0.3, 0.4];
+
+/// [`four_term_keys`] on `num_qubits >= 8` qubits with `|c|² =` [`FOUR_TERM_WEIGHTS`] and four different phases.
+pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
+    assert!(num_qubits >= 8, "the fixture's keys reach qubit 7");
+    let phases = [0.0f64, 1.0, 2.5, -2.0];
+    let mut acc = BuildAccumulator::<W>::new(num_qubits);
+    for ((p, w), phi) in four_term_keys::<W>()
+        .into_iter()
+        .zip(FOUR_TERM_WEIGHTS)
+        .zip(phases)
+    {
+        acc.add_term(p, Phase::ONE, Complex64::from_polar(w.sqrt(), phi));
+    }
+    acc.finalize()
+}
+
+/// Which of `keys` a collapsed sum holds, asserting it is one string with coefficient exactly `1`.
+pub fn collapsed_index<const W: usize>(sum: &PauliSum<W>, keys: &[PauliString<W>]) -> usize {
+    assert_eq!(sum.len(), 1, "a collapse leaves exactly one string");
+    let (x, z, c) = sum.iter().next().unwrap();
+    assert_eq!(
+        c,
+        Complex64::new(1.0, 0.0),
+        "the survivor's coefficient is 1"
+    );
+    keys.iter()
+        .position(|p| &p.x == x && &p.z == z)
+        .expect("the survivor is one of the input strings")
+}
+
+/// Assert each empirical frequency `counts[i] / trials` lies within 4σ of `probs[i]`, `σ² = p(1 − p) / trials`.
+pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
+    let trials: usize = counts.iter().sum();
+    for (i, (&k, &p)) in counts.iter().zip(probs).enumerate() {
+        let f = k as f64 / trials as f64;
+        let sigma = (p * (1.0 - p) / trials as f64).sqrt();
+        assert!(
+            (f - p).abs() < 4.0 * sigma,
+            "{what}: slot {i} drawn {k}/{trials} = {f:.4}, expected {p} ± {sigma:.4}",
+        );
+    }
+}
+
 /// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
 /// The canonical sparse-but-wide two-qubit fixture: its delta set spans more than one bucket bit, yet its PTM is far from dense (steady-state fanout 3.65 vs. a dense PTM's 14.94), exercising multi-delta behaviour without [`haar_su4_matrix`]'s all-sixteen-entries cost.
 pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {

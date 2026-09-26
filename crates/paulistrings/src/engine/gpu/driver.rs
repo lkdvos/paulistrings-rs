@@ -39,7 +39,7 @@ pub type GpuPauliSum<const W: usize> = GpuPartitionedSum<W>;
 
 /// The checks every device propagation makes before its first layer: the policy lowers and every channel prepares.
 ///
-/// `single_partition` gates an exact `TopN`, which only a lone partition can run.
+/// `single_partition` gates an exact `TopN`, which only a lone partition can run; a `CollapseSample` has no device form at all.
 pub(super) fn lower_for_run<const W: usize>(
     circuit: &Circuit<W>,
     policy: &BuiltinTruncation,
@@ -49,6 +49,9 @@ pub(super) fn lower_for_run<const W: usize>(
 ) -> Result<KeepProgram, GpuError> {
     if policy.contains_exact_top_n() && !single_partition {
         return Err(GpuError::Unsupported("exact TopN on device"));
+    }
+    if policy.contains_collapse_sample() {
+        return Err(GpuError::Unsupported("CollapseSample on device"));
     }
     let keep = KeepProgram::lower(policy)?;
     let adjoint = matches!(direction, Direction::Heisenberg);

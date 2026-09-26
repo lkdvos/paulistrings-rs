@@ -434,3 +434,46 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
     assert_eq!(out.bucket(0).1[1], y.z);
     assert!(approx_eq(out.bucket(0).2[1], Complex64::new(3.0, 0.0), TOL));
 }
+
+/// `CollapseSample` inside a real run: three TFIM Trotter steps grow `Z0` past the cache several times, each collapse restarts from one unit-weight string, and unitary layers keep `Σ|c|²` at one from then on.
+/// The trajectory is a function of the seed.
+#[test]
+fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
+    use paulistrings::test_support::zz_rotation;
+    use paulistrings::truncation::CollapseSample;
+
+    const CACHE: usize = 6;
+    let mut circuit = Circuit::<1>::new(8);
+    for _ in 0..3 {
+        for q in 0..8u32 {
+            circuit.push(zz_rotation::<1>(q, (q + 1) % 8, 0.6));
+        }
+        for q in 0..8u32 {
+            circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.6));
+        }
+    }
+    let input = sum1(8, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
+    let run = |seed: u64| {
+        let policy = CollapseSample::new(CACHE, seed);
+        let out = propagate(&circuit, input.clone(), &policy, Direction::Heisenberg);
+        (out, policy.collapses())
+    };
+
+    let mut finals = std::collections::HashSet::new();
+    for seed in 0..10u64 {
+        let (out, collapses) = run(seed);
+        assert!(collapses >= 1, "seed {seed}: the cache must be hit");
+        assert!(out.len() <= CACHE, "seed {seed}: {} terms", out.len());
+        let norm: f64 = out.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+        assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: Σ|c|² = {norm}");
+
+        let (again, again_collapses) = run(seed);
+        assert_eq!(out.to_arrays(), again.to_arrays(), "seed {seed} repeats");
+        assert_eq!(collapses, again_collapses);
+        finals.insert(format!("{:?}", out.to_arrays()));
+    }
+    assert!(
+        finals.len() > 1,
+        "different seeds give different trajectories"
+    );
+}

@@ -142,11 +142,11 @@ With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-p
 
 ## Exchange mode, merge and chunking {#exchange}
 
-`PAULISTRINGS_GPU_EXCHANGE` picks how a remote layer's rows travel, read once per process:
+`PAULISTRINGS_GPU_EXCHANGE` picks how a remote layer's rows travel, read once per process by an in-process group and at every scatter by an MPI group:
 
 | value | in-process group (`GpuPartitionedSum`) | MPI group (`gpu::MpiGpuSum`) |
 |---|---|---|
-| unset | device-to-device (or peer) copy | NCCL if every rank can start it on a distinct device, else host |
+| unset | device-to-device (or peer) copy | NCCL if built with `nccl` and every rank can start it on a distinct device, else host |
 | `host` | staged through host `PartnerPayload` columns | staged through host `PartnerPayload` columns |
 | `device` | device-to-device (or peer) copy | same as unset (an MPI group reads `device` and `nccl` apart) |
 | `nccl` | same as unset (in-process peer copies are already device to device) | NCCL required — every rank errs if any rank cannot start it |
@@ -164,7 +164,7 @@ The send side is never chunked: its export volume stays resident until the layer
 
 ## Peer access and NVLink {#peer-access}
 
-`gpu::peer_access(dst, src)` enables direct copies from device `dst`'s context into device `src`'s memory and reports the outcome (`PeerAccess::Enabled`, `Unsupported`, `Failed`, or `SameDevice`), granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+`gpu::peer_access(dst, src)` lets device `dst` reach device `src`'s memory directly, so a copy from `src` into `dst` goes over NVLink or PCIe peer-to-peer, and reports the outcome (`PeerAccess::Enabled`, `Unsupported`, `Failed`, or `SameDevice`), granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.
 A device exchange calls it before its first cross-device copy; without it, or on a pair the driver reports as unsupported, the copy stages through the host instead of faulting.
 `examples/gpu_peer.rs` times the same-device, peer and host-staged paths and reports the driver's P2P attributes.
 `scripts/slurm/check-gpu-links.sh` fails a multi-GPU job unless every visible pair is joined by NVLink, so a measurement never silently falls back to PCIe.

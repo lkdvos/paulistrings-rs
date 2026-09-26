@@ -799,6 +799,52 @@ mod tests {
             })
         }
 
+        /// As [`run_split`], but every rank also returns its last layer's counters, whether or not the call succeeded, since a mid-layer failure still leaves them set.
+        #[allow(clippy::too_many_arguments)]
+        fn run_split_with_counters<const W: usize, T, X>(
+            group: Vec<(X, Option<LoopbackWire>)>,
+            input: &PauliSum<W>,
+            rows: &PartitionRows<W>,
+            circuit: &Circuit<W>,
+            policy: &T,
+            direction: Direction,
+            options: PropagateOptions,
+            setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
+        ) -> Vec<(Outcome<W>, GpuLayerCounters)>
+        where
+            T: PartitionedTruncation<W> + Sync,
+            X: Transport + 'static,
+        {
+            std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .map(|(transport, wire)| {
+                        s.spawn(move || {
+                            let mut split = match GpuDistributedSum::scatter_with_rows(
+                                input.clone(),
+                                transport,
+                                0,
+                                rows.clone(),
+                            ) {
+                                Ok(split) => split,
+                                Err(e) => return (Err(e), GpuLayerCounters::default()),
+                            };
+                            if let Some(wire) = wire {
+                                split.use_loopback_wire(wire);
+                            }
+                            setup(&mut split);
+                            let ran =
+                                split.propagate_with_options(circuit, policy, direction, options);
+                            let counters = split.last_layer_counters();
+                            let gathered = ran.and_then(|()| split.gather());
+                            (gathered, counters)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        }
+
         fn loopback_group(size: u32) -> Vec<(InProcessTransport, Option<LoopbackWire>)> {
             loopback_tallied(size).0
         }
@@ -984,7 +1030,72 @@ mod tests {
             chunked_nccl_case::<2>(90, 1_500, 0xC4B2);
         }
 
-        /// A rank failing after its first chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
+        /// Ranks that disagree on their own receive cap still agree on the chunk count: the group takes the largest any rank asked for, so a loose rank's `recv_chunks` matches a tight peer's, even though a finer cut never grows anyone's chunk.
+        #[test]
+        fn a_capped_nccl_receive_agrees_the_largest_of_different_per_rank_caps() {
+            crate::require_cuda!();
+            let nq = 10;
+            let circuit = su4_layers::<1>(nq);
+            let input = rand_sum::<1>(1_500, nq, 0xC4B5);
+            let want = crate::propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
+            for size in [2u32, 4] {
+                let rows = seeded_rows::<1>(nq, size);
+                let caps: Vec<usize> = match size {
+                    2 => vec![usize::MAX, 8],
+                    4 => vec![usize::MAX, 128, 32, 8],
+                    _ => unreachable!(),
+                };
+                let caps_for_setup = caps.clone();
+                let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    split.set_layer_options(capped::<1>(caps_for_setup[split.rank() as usize]));
+                };
+                let (group, tally) = loopback_tallied(size);
+                let out = run_split_with_counters(
+                    group,
+                    &input,
+                    &rows,
+                    &circuit,
+                    &KeepAll,
+                    Direction::Forward,
+                    PropagateOptions::default(),
+                    &setup,
+                );
+                let what = format!("ranks={size} differing caps={caps:?}");
+                let mut chunk_counts = Vec::new();
+                let mut got = None;
+                for (r, (outcome, counters)) in out.into_iter().enumerate() {
+                    let sum = outcome.unwrap_or_else(|e| panic!("{what} rank {r}: {e:?}"));
+                    chunk_counts.push(counters.recv_chunks);
+                    if r == 0 {
+                        got = Some(sum.expect("rank 0 gathers"));
+                    } else {
+                        assert!(sum.is_none(), "{what}: only rank 0 gathers");
+                    }
+                }
+                let got = got.unwrap();
+                assert_eq!(got.len(), want.len(), "{what}: term count");
+                assert_terms_close(&got, &want, 1e-11, &what);
+                let agreed = chunk_counts[0];
+                assert!(
+                    agreed > 1,
+                    "{what}: the tightest cap must force more than one chunk, got {chunk_counts:?}"
+                );
+                assert!(
+                    chunk_counts.iter().all(|&c| c == agreed),
+                    "{what}: every rank's recv_chunks must equal the agreed maximum, got {chunk_counts:?}"
+                );
+                let groups = tally.groups();
+                assert_eq!(
+                    groups % u64::from(size),
+                    0,
+                    "{what}: every rank posts every group"
+                );
+                assert!(groups > 0, "{what}: the circuit must cross");
+            }
+        }
+
+        /// A rank failing after its second chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
+        /// The cap of 8 rows forces at least 8 chunks on the crossing layer, and the culprit's own `recv_chunks` (set before the chunk loop runs) proves the failure landed on a layer with more than one, not a degenerate single-chunk one.
         #[test]
         fn a_mid_receive_failure_drains_its_groups_and_is_agreed_over_the_group() {
             crate::require_cuda!();
@@ -997,11 +1108,11 @@ mod tests {
                 let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                     split.set_layer_options(options);
                     if split.rank() == culprit {
-                        split.inject_chunk_oom(0);
+                        split.inject_chunk_oom(1);
                     }
                 };
                 let start = std::time::Instant::now();
-                let out = run_split(
+                let out = run_split_with_counters(
                     loopback_group(size),
                     &input,
                     &rows,
@@ -1012,7 +1123,13 @@ mod tests {
                     &setup,
                 );
                 assert!(start.elapsed() < std::time::Duration::from_secs(60));
-                for (r, e) in errors(out).iter().enumerate() {
+                let (outcomes, counters): (Vec<_>, Vec<_>) = out.into_iter().unzip();
+                assert!(
+                    counters[culprit as usize].recv_chunks > 1,
+                    "ranks={size}: the failing layer must have had more than one chunk, got {:?}",
+                    counters[culprit as usize]
+                );
+                for (r, e) in errors(outcomes).iter().enumerate() {
                     if r == culprit as usize {
                         assert!(
                             matches!(e, GpuError::OutOfMemory { device: 0, .. }),

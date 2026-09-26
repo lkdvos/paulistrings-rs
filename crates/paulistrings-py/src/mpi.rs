@@ -4,12 +4,14 @@
 //! The adoption is collective (happens with the GIL held, before `allow_threads`, after every check that could raise), and the duplicate must not outlive `MPI_Finalize` — [`MpiRun`] drops both the transport and the `DistributedSum` before returning.
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
+use crate::truncation_spec::collapse_count;
+use paulistrings::engine::partitioned::Collectives;
 #[cfg(feature = "cuda")]
 use paulistrings::gpu::first_failure;
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::truncation::BuiltinTruncation;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionTrace,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionTrace,
     PauliSum as CorePauliSum, PropagateOptions, TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
@@ -123,6 +125,22 @@ pub struct MpiRun {
     gather: bool,
 }
 
+/// This rank's side of a distributed propagate.
+pub struct MpiOutcome<const W: usize> {
+    /// The gathered sum on rank 0 (empty elsewhere), or this rank's own partition.
+    pub sum: CorePauliSum<W>,
+    /// The rows `sum` is split by across the group: the scatter's for a local share, [`PartitionRows::none`] for a gathered one, which rank 0 holds whole.
+    pub rows: PartitionRows<W>,
+    pub rank: u32,
+    pub size: u32,
+    /// This rank's [`PartitionTrace`], when asked for.
+    pub trace: Option<PartitionTrace>,
+    /// The call's collapses as rank 0 counted them, all-reduced so every rank reports the same number; `None` without a sampler.
+    pub collapses: Option<u64>,
+    /// This rank's CUDA device, when it ran on one.
+    pub device: Option<u32>,
+}
+
 impl MpiRun {
     pub fn new(transport: MpiTransport, rows: PartitionRowPolicy, gather: bool) -> Self {
         Self {
@@ -132,8 +150,7 @@ impl MpiRun {
         }
     }
 
-    /// Scatter, propagate, and take this rank's answer, plus this rank's `(trace, rank, size)` when `traced`. **Collective.**
-    #[allow(clippy::type_complexity)]
+    /// Scatter, propagate, and take this rank's answer. **Collective**, and so is the `collapses` reduction, which every rank enters alike since the policy is replicated.
     pub fn propagate<const W: usize>(
         self,
         circuit: &CoreCircuit<W>,
@@ -142,7 +159,7 @@ impl MpiRun {
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<(CorePauliSum<W>, Option<(PartitionTrace, u32, u32)>), TopologyError> {
+    ) -> Result<MpiOutcome<W>, TopologyError> {
         let Self {
             transport,
             rows,
@@ -153,31 +170,51 @@ impl MpiRun {
         if traced {
             split.enable_trace();
         }
+        let before = collapse_count(policy);
         split.propagate_with_options(circuit, policy, direction, options);
+        let collapses = agreed_collapses(policy, before, split.transport());
+        let (rank, size) = (split.rank(), split.size());
         // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
-        let trace = traced.then(|| {
-            (
-                split.take_trace().unwrap_or_default(),
-                split.rank(),
-                split.size(),
-            )
-        });
-        let out = harvest(&split, gather);
+        let trace = traced.then(|| split.take_trace().unwrap_or_default());
+        let (out, rows) = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
-        Ok((out, trace))
+        Ok(MpiOutcome {
+            sum: out,
+            rows,
+            rank,
+            size,
+            trace,
+            collapses,
+            device: None,
+        })
     }
 }
 
-/// What this rank returns: the gathered sum on rank 0 (an empty sum elsewhere), or its own partition.
-fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
+/// The call's collapses as rank 0 counted them, all-reduced so every rank reports the same number; `None` without a sampler, and then no collective either.
+fn agreed_collapses(
+    policy: &BuiltinTruncation,
+    before: Option<u64>,
+    coll: &dyn Collectives,
+) -> Option<u64> {
+    // Only rank 0's samplers count, so the sum over ranks is rank 0's delta.
+    collapse_count(policy).zip(before).map(|(after, before)| {
+        let mut delta = [after - before];
+        coll.allreduce_sum_u64(&mut delta);
+        delta[0]
+    })
+}
+
+/// What this rank returns, with the rows it is split by: the gathered sum on rank 0 (an empty sum elsewhere) under [`PartitionRows::none`], or its own partition under the scatter's rows.
+fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> (CorePauliSum<W>, PartitionRows<W>) {
     if gather {
         // Collective; `Some` on rank 0 only.
-        split
+        let whole = split
             .gather()
-            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
+        (whole, PartitionRows::<W>::none(split.num_qubits()))
     } else {
-        split.local().clone()
+        (split.local().clone(), split.rows().clone())
     }
 }
 
@@ -244,8 +281,7 @@ impl MpiGpuRun {
         }
     }
 
-    /// Scatter, propagate and take this rank's answer, plus this rank's `(trace, rank, size, device)` when `traced`. **Collective**; every error is agreed over the group.
-    #[allow(clippy::type_complexity)]
+    /// Scatter, propagate and take this rank's answer. **Collective**; every error is agreed over the group, and so is the `collapses` reduction.
     pub fn propagate<const W: usize>(
         self,
         circuit: &CoreCircuit<W>,
@@ -254,7 +290,7 @@ impl MpiGpuRun {
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<(CorePauliSum<W>, Option<(PartitionTrace, u32, u32, u32)>), MpiGpuFailure> {
+    ) -> Result<MpiOutcome<W>, MpiGpuFailure> {
         use paulistrings::gpu::MpiGpuSum;
         let Self {
             transport,
@@ -267,16 +303,19 @@ impl MpiGpuRun {
         if traced {
             split.enable_trace();
         }
+        let before = collapse_count(policy);
         split
             .propagate_with_options(circuit, policy, direction, options)
             .map_err(MpiGpuFailure::Gpu)?;
+        let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
-        let trace = traced.then(|| (split.take_trace().unwrap_or_default(), rank, size, device));
-        let out = if gather {
-            split
+        let trace = traced.then(|| split.take_trace().unwrap_or_default());
+        let (out, rows) = if gather {
+            let whole = split
                 .gather()
                 .map_err(MpiGpuFailure::Gpu)?
-                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
+            (whole, PartitionRows::<W>::none(split.num_qubits()))
         } else {
             // A local download: agreed here so a rank whose download fails does not leave its peers a call ahead.
             let share = split.local_to_host();
@@ -284,11 +323,19 @@ impl MpiGpuRun {
             match (share, failed) {
                 (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
                 (Ok(_), Some((rank, _))) => return Err(MpiGpuFailure::PeerDownload(rank)),
-                (Ok(share), None) => share,
+                (Ok(share), None) => (share, split.rows().clone()),
             }
         };
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
-        Ok((out, trace))
+        Ok(MpiOutcome {
+            sum: out,
+            rows,
+            rank,
+            size,
+            trace,
+            collapses,
+            device: Some(device),
+        })
     }
 }

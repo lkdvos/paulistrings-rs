@@ -9,7 +9,7 @@ use cudarc::driver::{
 
 use super::columns::DeviceColumns;
 use super::error::GpuError;
-use super::export::{exchange_rows, DeviceExport, MAX_RECV_SEGMENT};
+use super::export::{exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECV_SEGMENT};
 use super::fingerprint::FingerprintRows;
 use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
@@ -57,12 +57,48 @@ pub struct GpuLayerOptions {
     pub max_bits: u8,
     /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on unless `PAULISTRINGS_GPU_PREMERGE=off`.
     pub premerge: bool,
+    /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 3) × 8` per row.
+    ///
+    /// Under a device or NCCL exchange the receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
+    /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary); a host exchange always moves one chunk.
+    pub exchange_bytes: usize,
 }
 
 /// The default of [`GpuLayerOptions::premerge`]: on unless `PAULISTRINGS_GPU_PREMERGE=off`, read once per process.
 fn premerge_default() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_PREMERGE").as_deref() != Ok("off"))
+}
+
+/// The default of [`GpuLayerOptions::exchange_bytes`], read once per process.
+fn exchange_bytes_default() -> usize {
+    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BYTES.get_or_init(|| {
+        parse_bytes(
+            std::env::var("PAULISTRINGS_GPU_EXCHANGE_BYTES")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// A positive byte count with an optional binary `K`/`M`/`G` suffix; anything else is unbounded.
+fn parse_bytes(raw: Option<&str>) -> usize {
+    let Some(raw) = raw.map(str::trim) else {
+        return usize::MAX;
+    };
+    let (digits, shift) = match raw.as_bytes().last() {
+        Some(b'K' | b'k') => (&raw[..raw.len() - 1], 10),
+        Some(b'M' | b'm') => (&raw[..raw.len() - 1], 20),
+        Some(b'G' | b'g') => (&raw[..raw.len() - 1], 30),
+        _ => (raw, 0),
+    };
+    digits
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n > 0)
+        .and_then(|n| n.checked_mul(1usize << shift))
+        .unwrap_or(usize::MAX)
 }
 
 impl Default for GpuLayerOptions {
@@ -72,6 +108,7 @@ impl Default for GpuLayerOptions {
             arena_bytes: DEFAULT_ARENA_BYTES,
             max_bits: B_MAX_BITS,
             premerge: premerge_default(),
+            exchange_bytes: exchange_bytes_default(),
         }
     }
 }
@@ -140,6 +177,8 @@ pub struct GpuLayerCounters {
     pub rows_received: u64,
     /// Exported rows the sender-side merge folded away before the exchange.
     pub rows_premerged: u64,
+    /// Chunks the received rows moved in ([`GpuLayerOptions::exchange_bytes`]); zero on a local layer and under a host exchange.
+    pub recv_chunks: u32,
 }
 
 /// Kernel milliseconds per family, accumulated while [`GpuPauliSum::set_kernel_timing`](super::GpuPauliSum::set_kernel_timing) is on.
@@ -545,8 +584,10 @@ pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
     let r = apply_layer_body(sum, prep, plan, rows, keep, scratch, target_bits, transport);
+    // A failed layer still completes its pending receive, so every peer's chunked receive completes too.
+    let finished = finish_receive(sum, scratch);
     let resolved = scratch.resolve(sum);
-    r.and_then(|c| resolved.map(|()| c))
+    r.and_then(|c| finished.and(resolved).map(|()| c))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,6 +614,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     };
     scratch.export.recv_rows = 0;
     scratch.export.recv_max_segment = 0;
+    debug_assert!(scratch.export.pending.is_none());
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
             let t = scratch.event(sum)?;
@@ -689,10 +731,20 @@ fn apply_layer_body<const W: usize, X: Transport>(
     let (func, n_cap, smem) = fused_variant(&kernels, W, records_max as usize, table.dense);
     scratch.counters.n_cap = n_cap as u32;
 
-    // Batches: contiguous position ranges whose pre-dedup rows fit the arena.
-    let (batches, max_batch_rows) =
-        arena_batches::<W>(&scratch.seg_host, scratch.options.arena_bytes, cap);
+    // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
+    let chunk_starts: Vec<usize> = scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
+        (0..p.map.chunks())
+            .map(|c| p.map.bound(c) as usize)
+            .collect()
+    });
+    let (batches, max_batch_rows) = arena_batches::<W>(
+        &scratch.seg_host,
+        scratch.options.arena_bytes,
+        cap,
+        &chunk_starts,
+    );
     scratch.counters.batches = batches.len() as u32;
+    scratch.counters.recv_chunks = chunk_starts.len() as u32;
 
     let s = sum.stream.clone();
     let k: Arc<KernelSet> = sum.kernels.clone();
@@ -714,7 +766,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
     grow(&s, &mut scratch.out_len_pos, b, o)?;
     s.memset_zeros(&mut scratch.fallback)?;
     let mut running = 0u32;
+    let mut next_chunk = 0usize;
     for &(p0, p1) in &batches {
+        if chunk_starts.get(next_chunk) == Some(&p0) {
+            receive_chunk(sum, scratch, next_chunk)?;
+            next_chunk += 1;
+        }
         let nblk = (p1 - p0) as u32;
         let p0u = p0 as u32;
         let t0 = scratch.event(sum)?;
@@ -806,6 +863,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         scratch.lap(sum, t1, |m| &mut m.compact)?;
         running += batch_out;
     }
+    debug_assert_eq!(next_chunk, chunk_starts.len());
     let fb = s.clone_dtoh(&scratch.fallback)?;
     s.synchronize()?;
     scratch.counters.fallback_hi += fb[0];
@@ -819,19 +877,23 @@ fn apply_layer_body<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, and the largest range's rows.
+/// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, each starting a new range at every position of the ascending `starts`, and the largest range's rows.
 pub(super) fn arena_batches<const W: usize>(
     seg: &[u32],
     arena_bytes: usize,
     cap: usize,
+    starts: &[usize],
 ) -> (Vec<(usize, usize)>, usize) {
     let b = seg.len() - 1;
     let cap_rows = (arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(cap);
     let mut batches: Vec<(usize, usize)> = Vec::new();
+    let mut starts = starts.iter().copied().peekable();
     let mut p0 = 0usize;
     while p0 < b {
+        while starts.next_if(|&c| c <= p0).is_some() {}
+        let end = starts.peek().copied().unwrap_or(b).min(b);
         let mut p1 = p0 + 1;
-        while p1 < b && (seg[p1 + 1] - seg[p0]) as usize <= cap_rows {
+        while p1 < end && (seg[p1 + 1] - seg[p0]) as usize <= cap_rows {
             p1 += 1;
         }
         batches.push((p0, p1));
@@ -1149,6 +1211,37 @@ mod tests {
             single_bucket_layer(cap / 15 + 1, true, &su4, capped),
             Err(GpuError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn the_exchange_cap_parses_bytes_with_binary_suffixes() {
+        assert_eq!(parse_bytes(None), usize::MAX);
+        assert_eq!(parse_bytes(Some("4096")), 4096);
+        assert_eq!(parse_bytes(Some(" 3K ")), 3 << 10);
+        assert_eq!(parse_bytes(Some("2m")), 2 << 20);
+        assert_eq!(parse_bytes(Some("1G")), 1 << 30);
+        for bad in ["", "0", "-1", "G", "1.5G", "lots"] {
+            assert_eq!(parse_bytes(Some(bad)), usize::MAX, "{bad:?}");
+        }
+    }
+
+    /// Eight positions of ten rows under an arena of thirty: batches of three, and a new batch at every chunk start.
+    #[test]
+    fn arena_batches_start_anew_at_every_chunk_start() {
+        let seg: Vec<u32> = (0..=8).map(|p| 10 * p).collect();
+        let bytes = 30 * DeviceColumns::<1>::BYTES_PER_TERM;
+        assert_eq!(
+            arena_batches::<1>(&seg, bytes, 1, &[]),
+            (vec![(0, 3), (3, 6), (6, 8)], 30)
+        );
+        assert_eq!(
+            arena_batches::<1>(&seg, bytes, 1, &[0, 4, 6]),
+            (vec![(0, 3), (3, 4), (4, 6), (6, 8)], 30)
+        );
+        assert_eq!(
+            arena_batches::<1>(&seg, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
+            ((0..8).map(|p| (p, p + 1)).collect(), 10)
+        );
     }
 
     #[test]

@@ -488,6 +488,12 @@ impl<const W: usize> GpuPartitionedSum<W> {
         self.parts[rank].fail_at_layer = Some(layer);
     }
 
+    /// Make partition `rank`'s next chunked receive fail as out of memory once chunk `chunk` has moved, mid-layer (test hook).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_chunk_oom(&mut self, rank: usize, chunk: usize) {
+        self.parts[rank].scratch_mut().export.fail_after_chunk = Some(chunk);
+    }
+
     /// Download every partition and merge them back into one sum.
     ///
     /// # Errors

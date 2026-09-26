@@ -28,7 +28,8 @@ use crate::engine::partitioned::transport::{
 
 #[cfg(feature = "nccl")]
 use super::nccl::{
-    nccl_schedule, BlockSkeletons, DeviceWire, Skeleton, WireColumn, WireGroup, WireOpKind,
+    nccl_schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton, WireColumn, WireGroup,
+    WireOpKind,
 };
 
 /// How an exported block's columns come back to the host: a direct copy into the pooled `Vec`s, or through a pinned pool and one `memcpy`.
@@ -90,6 +91,36 @@ pub(crate) struct DeviceExport<const W: usize> {
     /// Test hook: the next NCCL layer's receive growth fails as out of memory.
     #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
     pub(crate) fail_recv_growth: bool,
+    /// The current layer's received rows still to move into `recv_*`.
+    pub(crate) pending: Option<PendingRecv<W>>,
+    /// Test hook: the next chunked receive fails as out of memory after moving this chunk.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fail_after_chunk: Option<usize>,
+}
+
+/// A remote layer's received rows not yet in `recv_*`: chunk `c`, positions `map.bound(c)..map.bound(c + 1)`, moves just before the fused layer reaches it, so `recv_*` holds one chunk at a time (ARCHITECTURE.md §Partitioning).
+pub(crate) struct PendingRecv<const W: usize> {
+    pub(crate) map: ChunkMap,
+    /// The first chunk not yet moved.
+    next: usize,
+    source: RecvSource<W>,
+}
+
+enum RecvSource<const W: usize> {
+    /// The partners' device payloads, remote delta `k`'s block at `at[k] = (partner, index)`.
+    Device {
+        recv: Vec<Option<DevicePayload<W>>>,
+        at: Vec<(usize, usize)>,
+    },
+    /// This rank's send payloads, its block for remote delta `k` at `own[k]`, and the layer's schedule; `failed` once one of its groups failed to post or complete, after which none posts.
+    #[cfg(feature = "nccl")]
+    Nccl {
+        send: Vec<Option<DevicePayload<W>>>,
+        own: Vec<(usize, usize)>,
+        ops: Vec<ScheduledOp>,
+        posted: bool,
+        failed: bool,
+    },
 }
 
 /// Grow-only buffers of the sender-side merge: one partner's sub-table, its counts and CSR, and the split of its merged rows over the partner's blocks.
@@ -173,6 +204,9 @@ impl<const W: usize> DeviceExport<W> {
             skeletons: Vec::new(),
             #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
             fail_recv_growth: false,
+            pending: None,
+            #[cfg(any(test, feature = "test-utils"))]
+            fail_after_chunk: None,
         })
     }
 }
@@ -253,18 +287,22 @@ pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
             }
             let recv = transport.exchange(send, &mut export.skeletons);
             export.skeletons.extend(recv.into_iter().flatten());
-            vote(transport, false);
+            vote(transport, None);
         }
     }
 }
 
-/// The NCCL exchange's go/no-go: `true` when every rank of the group is `ready`. **Collective**: one `allreduce_sum_u64` of `size` words, rank `r`'s slot set when it is not ready.
+/// The NCCL exchange's go/no-go and chunk count: `ready` is `Some(log2 chunks)` when this rank can receive in that many, and the result the largest such count when every rank of the group can, which fits every rank's buffers since a finer power-of-two cut never grows a chunk.
+/// **Collective**: one `allreduce_sum_u64` of `2 × size` words, rank `r`'s slot `r` set when it is not ready and slot `size + r` its count.
 #[cfg(feature = "nccl")]
-fn vote<X: Transport>(transport: &X, ready: bool) -> bool {
-    let mut votes = vec![0u64; transport.size() as usize];
-    votes[transport.rank() as usize] = u64::from(!ready);
+fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
+    let (rank, size) = (transport.rank() as usize, transport.size() as usize);
+    let mut votes = vec![0u64; 2 * size];
+    votes[rank] = u64::from(ready.is_none());
+    votes[size + rank] = u64::from(ready.unwrap_or(0));
     transport.allreduce_sum_u64(&mut votes);
-    votes.iter().all(|&v| v == 0)
+    let chunks = votes[size..].iter().copied().max().unwrap_or(0) as u8;
+    votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
 /// Export → exchange → adoption of the received rows with their fingerprints, by the export's [`GpuExchange`] mode.
@@ -442,7 +480,7 @@ fn exchange_rows_host<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// The device-payload exchange: K10 fills device columns and fingerprints them, the payload moves, the receiver copies device-to-device.
+/// The device-payload exchange: K10 fills device columns and fingerprints them, the payload moves, and the receiver keeps the partners' payloads as its pending receive, copied device-to-device one chunk at a time by [`receive_chunk`].
 fn exchange_rows_device<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -466,6 +504,7 @@ fn exchange_rows_device<const W: usize, X: Transport>(
         scratch.laps.rows_exported += counts.rows_sent.iter().sum::<u64>();
     }
     let b = sum.hash.num_buckets();
+    let cap_rows = recv_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
     let xfer_ns = &mut scratch.xfer_ns;
     #[cfg(feature = "phase-timing")]
@@ -489,16 +528,37 @@ fn exchange_rows_device<const W: usize, X: Transport>(
             laps.chunk_wait_ns += t_body.elapsed().as_nanos() as u64;
         }
         let blocks = paired_blocks(plan, recv, |p: &DevicePayload<W>, j| p.blocks.get(j));
-        adopt_blocks(sum, export, &blocks, xfer_ns)
+        lay_out(
+            export,
+            b,
+            blocks
+                .iter()
+                .map(|bl| (bl.header.num_buckets, &bl.offsets[..], bl.rows())),
+        );
+        let (log2, most) = recv_chunks(&export.off_host, b, cap_rows);
+        size_receive(sum, export, most, xfer_ns).map(|()| log2)
     });
     export.chunks = map;
-    // The move plus the device copies: there is no host body to subtract.
     #[cfg(feature = "phase-timing")]
     {
         laps.exchange_ns += t_exchange.elapsed().as_nanos() as u64;
     }
-    recv.into_iter().flatten().for_each(payload::recycle);
-    let rows_received = body?;
+    let log2 = match body {
+        Ok(log2) => log2,
+        Err(e) => {
+            recv.into_iter().flatten().for_each(payload::recycle);
+            return Err(e);
+        }
+    };
+    export.pending = Some(PendingRecv {
+        map: position_chunks(sum.hash.bits(), b, log2),
+        next: 0,
+        source: RecvSource::Device {
+            recv,
+            at: paired_at(plan),
+        },
+    });
+    let rows_received = export.recv_rows as u64;
     #[cfg(feature = "phase-timing")]
     {
         laps.recv_rows += rows_received;
@@ -508,7 +568,7 @@ fn exchange_rows_device<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// The NCCL exchange (ARCHITECTURE.md §Partitioning): K10 fills device blocks, their skeletons cross over `transport`, the group votes, and on a unanimous yes one wire group moves every column straight into the concatenated `recv_*` columns, which the receiver then fingerprints.
+/// The NCCL exchange (ARCHITECTURE.md §Partitioning): K10 fills device blocks, their skeletons cross over `transport`, and the group votes on going ahead and on a chunk count; on a unanimous yes the send payloads become the pending receive, whose [`receive_chunk`] posts one wire group per chunk straight into `recv_*` and fingerprints what arrived.
 /// A rank that cannot receive votes no and returns its error; on any no nobody posts, and a ready rank takes every received block as empty and fails nothing of its own.
 #[cfg(feature = "nccl")]
 fn exchange_rows_nccl<const W: usize, X: Transport>(
@@ -543,13 +603,9 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
         scratch.laps.rows_exported += counts.rows_sent.iter().sum::<u64>();
     }
     let b = sum.hash.num_buckets();
+    let cap_rows = recv_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
     let xfer_ns = &mut scratch.xfer_ns;
-    export.chunks.rebuild(
-        &Gf2Span::new(&plan.local_bucket_deltas, sum.hash.bits()),
-        b,
-        1,
-    );
     #[cfg(feature = "phase-timing")]
     let t_exchange = std::time::Instant::now();
     let skeletons: Vec<Option<BlockSkeletons<W>>> = send
@@ -563,22 +619,49 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
         })
         .collect();
     let recv = transport.exchange(skeletons, &mut export.skeletons);
-    let mut posted = false;
-    let rows = {
+    let (rows, ops) = {
         let blocks = paired_blocks(plan, &recv, |p: &BlockSkeletons<W>, j| p.blocks.get(j));
-        let ready = stage_receive(sum, export, &blocks, xfer_ns).and_then(|()| wire_ready(export));
-        if vote(transport, ready.is_ok()) {
-            posted = ready.is_ok();
-            ready.and_then(|()| post_nccl_group(sum, plan, export, &send, &blocks, transport))
-        } else {
-            ready.and_then(|()| discard_received(export))
+        let ready = stage_receive(sum, export, &blocks, cap_rows, xfer_ns)
+            .and_then(|log2| wire_ready(export).map(|()| log2));
+        match vote(transport, ready.as_ref().ok().copied()) {
+            Some(log2) => {
+                let map = position_chunks(sum.hash.bits(), b, log2);
+                let own = own_at(plan);
+                let partners: Vec<u32> = plan.remote.iter().map(|r| r.partner).collect();
+                let own_off: Vec<&[u32]> = own
+                    .iter()
+                    .map(|&(q, j)| {
+                        send[q]
+                            .as_ref()
+                            .expect("a payload for every partner")
+                            .blocks[j]
+                            .offsets
+                            .as_slice()
+                    })
+                    .collect();
+                let recv_off: Vec<&[u32]> = blocks.iter().map(|b| b.offsets.as_slice()).collect();
+                let ops = nccl_schedule(&partners, &own_off, &recv_off, &map);
+                (Ok(export.recv_rows as u64), Some((map, own, ops)))
+            }
+            None => (ready.and_then(|_| discard_received(export)), None),
         }
     };
     export.skeletons.extend(recv.into_iter().flatten());
-    if posted && rows.is_err() {
-        export.quarantine.extend(send.into_iter().flatten());
-    } else {
-        send.into_iter().flatten().for_each(payload::recycle);
+    match ops {
+        Some((map, own, ops)) => {
+            export.pending = Some(PendingRecv {
+                map,
+                next: 0,
+                source: RecvSource::Nccl {
+                    send,
+                    own,
+                    ops,
+                    posted: false,
+                    failed: false,
+                },
+            });
+        }
+        None => send.into_iter().flatten().for_each(payload::recycle),
     }
     #[cfg(feature = "phase-timing")]
     {
@@ -594,41 +677,28 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// The receive layout from the skeletons in plan order, as `adopt_blocks` lays it out, checked against the segment cap before any row moves; grows `recv_*` and uploads the offsets and bases.
+/// The receive layout from the skeletons in plan order, checked against the segment cap before any row moves; sizes `recv_*` for this rank's own chunk count, which it returns as `log2`.
 #[cfg(feature = "nccl")]
 fn stage_receive<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
     blocks: &[&Skeleton],
+    cap_rows: usize,
     xfer_ns: &mut XferNs,
-) -> Result<(), GpuError> {
+) -> Result<u8, GpuError> {
     let b = sum.hash.num_buckets();
-    let s = &sum.stream;
-    let o = sum.device();
-    let mut total = 0usize;
-    let mut max_seg = 0usize;
-    export.off_host.clear();
-    export.base_host.clear();
-    export.base_host.resize(16, 0);
-    for (k, block) in blocks.iter().enumerate() {
-        assert_eq!(
-            block.header.num_buckets as usize, b,
-            "a partner sent a block indexed by {} buckets where this partition has {b}",
-            block.header.num_buckets
-        );
-        export.base_host[k] = total as u32;
-        export.off_host.extend_from_slice(&block.offsets[..b + 1]);
-        max_seg = block.offsets[..b + 1]
-            .windows(2)
-            .map(|w| (w[1] - w[0]) as usize)
-            .max()
-            .unwrap_or(0)
-            .max(max_seg);
-        total += block.header.rows as usize;
-    }
-    export.recv_max_segment = max_seg;
-    export.recv_rows = total;
-    if max_seg > MAX_RECV_SEGMENT {
+    lay_out(
+        export,
+        b,
+        blocks.iter().map(|bl| {
+            (
+                bl.header.num_buckets,
+                &bl.offsets[..],
+                bl.header.rows as usize,
+            )
+        }),
+    );
+    if export.recv_max_segment > MAX_RECV_SEGMENT {
         return Err(GpuError::Unsupported(
             "a fused-layer block or a received segment exceeds the record cap at the agreed bucket count",
         ));
@@ -636,33 +706,13 @@ fn stage_receive<const W: usize>(
     #[cfg(any(test, feature = "test-utils"))]
     if std::mem::take(&mut export.fail_recv_growth) {
         return Err(GpuError::OutOfMemory {
-            device: o,
-            bytes: (total * (2 * W + 3) * std::mem::size_of::<u64>()) as u64,
+            device: sum.device(),
+            bytes: (export.recv_rows * recv_row_bytes::<W>()) as u64,
         });
     }
-    let DeviceExport {
-        recv_off,
-        recv_base,
-        recv_x,
-        recv_z,
-        recv_c,
-        recv_g,
-        off_host,
-        base_host,
-        ..
-    } = export;
-    grow(s, recv_off, off_host.len().max(2), o)?;
-    grow(s, recv_x, total.max(1) * W, o)?;
-    grow(s, recv_z, total.max(1) * W, o)?;
-    grow(s, recv_c, 2 * total.max(1), o)?;
-    grow(s, recv_g, total.max(1), o)?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    xfer(xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&off_host[..], &mut recv_off.slice_mut(0..off_host.len()))?;
-        s.memcpy_htod(&base_host[..], recv_base)?;
-        Ok(())
-    })
+    let (log2, most) = recv_chunks(&export.off_host, b, cap_rows);
+    size_receive(sum, export, most, xfer_ns)?;
+    Ok(log2)
 }
 
 #[cfg(all(feature = "nccl", test))]
@@ -705,82 +755,287 @@ fn discard_received<const W: usize>(export: &mut DeviceExport<W>) -> Result<u64,
     Ok(0)
 }
 
-/// One wire group of [`nccl_schedule`]'s transfers, completed, then the received rows' fingerprints; returns the rows received.
-#[cfg(feature = "nccl")]
-fn post_nccl_group<const W: usize, X: Transport>(
-    sum: &GpuSum<W>,
-    plan: &PartitionPlan,
+/// Device bytes one received row holds in `recv_*`: both key columns, the coefficient and the fingerprint.
+pub(crate) const fn recv_row_bytes<const W: usize>() -> usize {
+    (2 * W + 3) * std::mem::size_of::<u64>()
+}
+
+/// Received rows a chunk may hold under a cap of `bytes`.
+fn recv_cap_rows<const W: usize>(bytes: usize) -> usize {
+    (bytes / recv_row_bytes::<W>()).max(1)
+}
+
+/// `off_host`, `recv_max_segment` and `recv_rows` from received blocks in plan order, each `(positions, CSR offsets, rows)`.
+fn lay_out<'a, const W: usize>(
     export: &mut DeviceExport<W>,
-    send: &[Option<DevicePayload<W>>],
-    recv: &[&Skeleton],
-    transport: &X,
-) -> Result<u64, GpuError> {
-    let wire = export.wire.clone().ok_or(GpuError::Unsupported(
-        "GpuExchange::Nccl without a device wire",
-    ))?;
-    assert_eq!(
-        (wire.rank(), wire.size()),
-        (transport.rank(), transport.size()),
-        "the device wire's ranks are not the transport's"
-    );
-    assert_eq!(
-        export.chunks.chunks(),
-        1,
-        "the NCCL exchange receives whole blocks into the concatenated columns"
-    );
-    let mut used = vec![0usize; send.len()];
-    let own: Vec<&DeviceBlock<W>> = plan
-        .remote
-        .iter()
-        .map(|r| {
-            let q = r.partner as usize;
-            let j = used[q];
-            used[q] += 1;
-            &send[q]
-                .as_ref()
-                .expect("a payload for every partner")
-                .blocks[j]
-        })
-        .collect();
-    let partners: Vec<u32> = plan.remote.iter().map(|r| r.partner).collect();
-    let own_off: Vec<&[u32]> = own.iter().map(|b| b.offsets.as_slice()).collect();
-    let recv_off: Vec<&[u32]> = recv.iter().map(|b| b.offsets.as_slice()).collect();
-    let ops = nccl_schedule(&partners, &own_off, &recv_off, &export.chunks);
-    let s: &CudaStream = &sum.stream;
-    let total = export.recv_rows;
-    let mut group = WireGroup::new();
-    for op in ops.iter().filter(|op| op.kind == WireOpKind::Send) {
-        let block = own[op.k];
-        let (lo, hi) = op.rows;
-        let e = op.column.elems_per_row::<W>();
-        match op.column {
-            WireColumn::X => group.send(block.x.slice(lo * e..hi * e), op.peer, s),
-            WireColumn::Z => group.send(block.z.slice(lo * e..hi * e), op.peer, s),
-            WireColumn::Coeff => group.send(block.c.slice(lo * e..hi * e), op.peer, s),
-        }
+    b: usize,
+    blocks: impl Iterator<Item = (u32, &'a [u32], usize)>,
+) {
+    let mut total = 0usize;
+    let mut max_seg = 0usize;
+    export.off_host.clear();
+    for (num_buckets, offsets, rows) in blocks {
+        assert_eq!(
+            num_buckets as usize, b,
+            "a partner sent a block indexed by {num_buckets} buckets where this partition has {b}"
+        );
+        export.off_host.extend_from_slice(&offsets[..b + 1]);
+        max_seg = offsets[..b + 1]
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as usize)
+            .max()
+            .unwrap_or(0)
+            .max(max_seg);
+        total += rows;
     }
-    let parts = |column: WireColumn| -> Vec<(usize, u32)> {
-        let e = column.elems_per_row::<W>();
-        ops.iter()
-            .filter(|op| op.kind == WireOpKind::Recv && op.column == column)
-            .map(|op| ((op.rows.1 - op.rows.0) * e, op.peer))
-            .collect()
-    };
+    export.recv_max_segment = max_seg;
+    export.recv_rows = total;
+}
+
+/// Received rows over every block in positions `lo..hi` of the concatenated `K × (b + 1)` offsets.
+fn rows_between(off: &[u32], b: usize, lo: usize, hi: usize) -> usize {
+    off.chunks_exact(b + 1)
+        .map(|o| (o[hi] - o[lo]) as usize)
+        .sum()
+}
+
+/// The largest chunk's received rows when `b` positions are cut into `2^log2` equal chunks.
+fn chunk_max(off: &[u32], b: usize, log2: u8) -> usize {
+    let step = b >> log2;
+    (0..1usize << log2)
+        .map(|c| rows_between(off, b, c * step, (c + 1) * step))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The fewest chunks, a power of two up to one per position, whose received rows each fit `cap_rows`, as `(log2 chunks, rows of the largest)`.
+/// A power of two because such a cut refines every coarser one, so a group agreeing on the largest count its members asked for never grows anyone's chunk.
+fn recv_chunks(off: &[u32], b: usize, cap_rows: usize) -> (u8, usize) {
+    let mut log2 = 0u8;
+    loop {
+        let most = chunk_max(off, b, log2);
+        if most <= cap_rows || 1usize << log2 >= b {
+            return (log2, most);
+        }
+        log2 += 1;
+    }
+}
+
+/// `2^log2` equal chunks of `b` positions in the fused layer's position order.
+fn position_chunks(bits: u8, b: usize, log2: u8) -> ChunkMap {
+    let mut map = ChunkMap::default();
+    map.rebuild(&Gf2Span::new(&[0], bits), b, 1 << log2);
+    debug_assert_eq!(map.chunks(), 1 << log2);
+    map
+}
+
+/// Room for `rows` received rows in `recv_*`, and the offsets in `recv_off`.
+fn size_receive<const W: usize>(
+    sum: &GpuSum<W>,
+    export: &mut DeviceExport<W>,
+    rows: usize,
+    xfer_ns: &mut XferNs,
+) -> Result<(), GpuError> {
+    let s = &sum.stream;
+    let o = sum.device();
     let DeviceExport {
+        recv_off,
         recv_x,
         recv_z,
         recv_c,
         recv_g,
+        off_host,
         ..
     } = export;
-    group.recv_parts(recv_x.slice_mut(0..total * W), &parts(WireColumn::X), s);
-    group.recv_parts(recv_z.slice_mut(0..total * W), &parts(WireColumn::Z), s);
-    group.recv_parts(recv_c.slice_mut(0..2 * total), &parts(WireColumn::Coeff), s);
-    group.post(&*wire)?;
-    wire.wait(s)?;
-    if total > 0 {
-        let n32 = total as u32;
-        // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; `recv_g` holds `total` entries.
+    grow(s, recv_off, off_host.len().max(2), o)?;
+    grow(s, recv_x, rows.max(1) * W, o)?;
+    grow(s, recv_z, rows.max(1) * W, o)?;
+    grow(s, recv_c, 2 * rows.max(1), o)?;
+    grow(s, recv_g, rows.max(1), o)?;
+    #[cfg(feature = "phase-timing")]
+    s.synchronize()?;
+    xfer(xfer_ns, Xfer::H2d, || {
+        s.memcpy_htod(&off_host[..], &mut recv_off.slice_mut(0..off_host.len()))?;
+        Ok(())
+    })
+}
+
+/// Positions `lo..hi` of every received block laid end to end from row 0 of `recv_*` in plan order: per block its `(first row in the block, rows, first row in recv_*)`, and in `base` the value that makes the fused layer's `base[k] + off[k][p]` land there.
+/// That base is `start - off[k][lo]` in wrapping `u32` arithmetic, which the kernel's own `u32` sum undoes for every `p` in the chunk.
+fn chunk_layout(
+    off: &[u32],
+    b: usize,
+    lo: usize,
+    hi: usize,
+    base: &mut Vec<u32>,
+) -> (Vec<(usize, usize, usize)>, usize) {
+    base.clear();
+    base.resize(16, 0);
+    let mut at = 0usize;
+    let parts = off
+        .chunks_exact(b + 1)
+        .enumerate()
+        .map(|(k, o)| {
+            let (r0, r1) = (o[lo] as usize, o[hi] as usize);
+            base[k] = (at as u32).wrapping_sub(o[lo]);
+            let part = (r0, r1 - r0, at);
+            at += r1 - r0;
+            part
+        })
+        .collect();
+    (parts, at)
+}
+
+/// Move chunk `c` of the pending receive into `recv_*`, fingerprinted, with its bases in `recv_base`; returns its rows.
+/// Called in chunk order before the fused layer's first batch in the chunk.
+pub(crate) fn receive_chunk<const W: usize>(
+    sum: &GpuSum<W>,
+    scratch: &mut LayerScratch<W>,
+    c: usize,
+) -> Result<usize, GpuError> {
+    #[cfg(feature = "phase-timing")]
+    let t = std::time::Instant::now();
+    let export = &mut scratch.export;
+    let mut pending = export.pending.take().expect("a pending receive");
+    debug_assert_eq!(pending.next, c);
+    let r = move_chunk(sum, export, &mut pending, c, true, &mut scratch.xfer_ns);
+    export.pending = Some(pending);
+    #[cfg(feature = "phase-timing")]
+    {
+        scratch.laps.exchange_ns += t.elapsed().as_nanos() as u64;
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    if r.is_ok() && scratch.export.fail_after_chunk == Some(c) {
+        scratch.export.fail_after_chunk = None;
+        return Err(GpuError::OutOfMemory {
+            device: sum.device(),
+            bytes: 0,
+        });
+    }
+    r
+}
+
+/// Chunk `c` of `pending` into `recv_*`; with `keep` its rows are fingerprinted and its bases uploaded, without it the transfer only completes, as a failed layer's must.
+fn move_chunk<const W: usize>(
+    sum: &GpuSum<W>,
+    export: &mut DeviceExport<W>,
+    pending: &mut PendingRecv<W>,
+    c: usize,
+    keep: bool,
+    xfer_ns: &mut XferNs,
+) -> Result<usize, GpuError> {
+    let b = sum.hash.num_buckets();
+    let s = &sum.stream;
+    let (lo, hi) = (
+        pending.map.bound(c) as usize,
+        pending.map.bound(c + 1) as usize,
+    );
+    let (parts, n) = chunk_layout(&export.off_host, b, lo, hi, &mut export.base_host);
+    #[cfg(feature = "nccl")]
+    let wire = export.wire.clone();
+    let DeviceExport {
+        recv_base,
+        recv_x,
+        recv_z,
+        recv_c,
+        recv_g,
+        base_host,
+        ..
+    } = export;
+    let fingerprint = match &mut pending.source {
+        RecvSource::Device { recv, at } => {
+            for (k, &(r0, rows, dst)) in parts.iter().enumerate() {
+                if rows == 0 || !keep {
+                    continue;
+                }
+                let (q, j) = at[k];
+                let block = &recv[q]
+                    .as_ref()
+                    .expect("a payload for every partner")
+                    .blocks[j];
+                if block.x.context().ordinal() != sum.ctx.ordinal() {
+                    let _ = payload::enable_peer_access(&sum.ctx, block.x.context());
+                }
+                s.memcpy_dtod(
+                    &block.x.slice(r0 * W..(r0 + rows) * W),
+                    &mut recv_x.slice_mut(dst * W..(dst + rows) * W),
+                )?;
+                s.memcpy_dtod(
+                    &block.z.slice(r0 * W..(r0 + rows) * W),
+                    &mut recv_z.slice_mut(dst * W..(dst + rows) * W),
+                )?;
+                s.memcpy_dtod(
+                    &block.c.slice(2 * r0..2 * (r0 + rows)),
+                    &mut recv_c.slice_mut(2 * dst..2 * (dst + rows)),
+                )?;
+                s.memcpy_dtod(
+                    &block.g.slice(r0..r0 + rows),
+                    &mut recv_g.slice_mut(dst..dst + rows),
+                )?;
+            }
+            pending.next = c + 1;
+            false
+        }
+        #[cfg(feature = "nccl")]
+        RecvSource::Nccl {
+            send,
+            own,
+            ops,
+            posted,
+            failed,
+        } => {
+            let wire = wire.ok_or(GpuError::Unsupported(
+                "GpuExchange::Nccl without a device wire",
+            ))?;
+            let mut group = WireGroup::new();
+            for op in ops
+                .iter()
+                .filter(|op| op.chunk == c && op.kind == WireOpKind::Send)
+            {
+                let (q, j) = own[op.k];
+                let block = &send[q]
+                    .as_ref()
+                    .expect("a payload for every partner")
+                    .blocks[j];
+                let (r0, r1) = op.rows;
+                let e = op.column.elems_per_row::<W>();
+                match op.column {
+                    WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, s),
+                    WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, s),
+                    WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, s),
+                }
+            }
+            let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
+                let e = column.elems_per_row::<W>();
+                ops.iter()
+                    .filter(|op| {
+                        op.chunk == c && op.kind == WireOpKind::Recv && op.column == column
+                    })
+                    .map(|op| ((op.rows.1 - op.rows.0) * e, op.peer))
+                    .collect()
+            };
+            group.recv_parts(recv_x.slice_mut(0..n * W), &recv_parts(WireColumn::X), s);
+            group.recv_parts(recv_z.slice_mut(0..n * W), &recv_parts(WireColumn::Z), s);
+            group.recv_parts(
+                recv_c.slice_mut(0..2 * n),
+                &recv_parts(WireColumn::Coeff),
+                s,
+            );
+            *posted = true;
+            if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(s)) {
+                *failed = true;
+                return Err(e);
+            }
+            pending.next = c + 1;
+            true
+        }
+    };
+    if !keep {
+        return Ok(n);
+    }
+    if fingerprint && n > 0 {
+        let n32 = n as u32;
+        // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; `recv_g` holds the chunk's `n` rows.
         unsafe {
             s.launch_builder(&sum.kernels.fingerprint)
                 .arg(&*recv_x)
@@ -788,104 +1043,60 @@ fn post_nccl_group<const W: usize, X: Transport>(
                 .arg(&n32)
                 .arg(&sum.fp_rows)
                 .arg(&mut *recv_g)
-                .launch(thread_per(total, 256))?;
+                .launch(thread_per(n, 256))?;
         }
     }
-    Ok(total as u64)
-}
-
-/// Received device blocks into the concatenated `recv_*` columns, one device-to-device copy per column; returns the rows adopted.
-/// Every copy has completed on return, so the blocks may go back to their pool.
-pub(crate) fn adopt_blocks<const W: usize>(
-    sum: &GpuSum<W>,
-    export: &mut DeviceExport<W>,
-    blocks: &[&DeviceBlock<W>],
-    xfer_ns: &mut XferNs,
-) -> Result<u64, GpuError> {
-    let b = sum.hash.num_buckets();
-    let s = &sum.stream;
-    let o = sum.device();
-    let DeviceExport {
-        recv_off,
-        recv_base,
-        recv_x,
-        recv_z,
-        recv_c,
-        recv_g,
-        off_host,
-        base_host,
-        recv_max_segment,
-        recv_rows,
-        ..
-    } = export;
-    let mut total = 0usize;
-    let mut max_seg = 0usize;
-    off_host.clear();
-    base_host.clear();
-    base_host.resize(16, 0);
-    for (k, block) in blocks.iter().enumerate() {
-        assert_eq!(
-            block.header.num_buckets as usize, b,
-            "a partner sent a block indexed by {} buckets where this partition has {b}",
-            block.header.num_buckets
-        );
-        base_host[k] = total as u32;
-        off_host.extend_from_slice(&block.offsets[..b + 1]);
-        max_seg = block.offsets[..b + 1]
-            .windows(2)
-            .map(|w| (w[1] - w[0]) as usize)
-            .max()
-            .unwrap_or(0)
-            .max(max_seg);
-        total += block.rows();
-    }
-    *recv_max_segment = max_seg;
-    *recv_rows = total;
-    grow(s, recv_off, off_host.len().max(2), o)?;
-    grow(s, recv_x, total.max(1) * W, o)?;
-    grow(s, recv_z, total.max(1) * W, o)?;
-    grow(s, recv_c, 2 * total.max(1), o)?;
-    grow(s, recv_g, total.max(1), o)?;
     #[cfg(feature = "phase-timing")]
     s.synchronize()?;
     xfer(xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&off_host[..], &mut recv_off.slice_mut(0..off_host.len()))?;
         s.memcpy_htod(&base_host[..], recv_base)?;
         Ok(())
     })?;
-    for (k, block) in blocks.iter().enumerate() {
-        let n = block.rows();
-        if n == 0 {
-            continue;
-        }
-        if block.x.context().ordinal() != sum.ctx.ordinal() {
-            let _ = payload::enable_peer_access(&sum.ctx, block.x.context());
-        }
-        let base = base_host[k] as usize;
-        s.memcpy_dtod(
-            &block.x.slice(0..n * W),
-            &mut recv_x.slice_mut(base * W..(base + n) * W),
-        )?;
-        s.memcpy_dtod(
-            &block.z.slice(0..n * W),
-            &mut recv_z.slice_mut(base * W..(base + n) * W),
-        )?;
-        s.memcpy_dtod(
-            &block.c.slice(0..2 * n),
-            &mut recv_c.slice_mut(2 * base..2 * (base + n)),
-        )?;
-        s.memcpy_dtod(&block.g.slice(0..n), &mut recv_g.slice_mut(base..base + n))?;
-    }
-    s.synchronize()?;
-    Ok(total as u64)
+    Ok(n)
 }
 
-/// The received block per remote delta in plan order: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`, as `RecvRows::new`.
-fn paired_blocks<'a, P, B>(
-    plan: &PartitionPlan,
-    recv: &'a [Option<P>],
-    block: impl Fn(&'a P, usize) -> Option<&'a B>,
-) -> Vec<&'a B> {
+/// End the current layer's pending receive, if any: chunks a failure left unmoved still complete their transfers, rows discarded, so every peer's receive completes, unless a group already failed; then the payloads return to the bin, or a failed group's sends to quarantine, where a peer may still be reading them.
+pub(crate) fn finish_receive<const W: usize>(
+    sum: &GpuSum<W>,
+    scratch: &mut LayerScratch<W>,
+) -> Result<(), GpuError> {
+    let export = &mut scratch.export;
+    let Some(mut pending) = export.pending.take() else {
+        return Ok(());
+    };
+    let mut drained = Ok(());
+    for c in pending.next..pending.map.chunks() {
+        #[cfg(feature = "nccl")]
+        if matches!(pending.source, RecvSource::Nccl { failed: true, .. }) {
+            break;
+        }
+        if let Err(e) = move_chunk(sum, export, &mut pending, c, false, &mut scratch.xfer_ns) {
+            drained = Err(e);
+            break;
+        }
+    }
+    let synced = sum.stream.synchronize().map_err(GpuError::from);
+    match pending.source {
+        RecvSource::Device { recv, .. } => recv.into_iter().flatten().for_each(payload::recycle),
+        #[cfg(feature = "nccl")]
+        RecvSource::Nccl {
+            send,
+            posted,
+            failed,
+            ..
+        } => {
+            if posted && failed {
+                export.quarantine.extend(send.into_iter().flatten());
+            } else {
+                send.into_iter().flatten().for_each(payload::recycle);
+            }
+        }
+    }
+    drained.and(synced)
+}
+
+/// Remote delta `k`'s `(partner, index)` among the partner's received blocks, in plan order: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`, as `RecvRows::new`.
+fn paired_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
     plan.remote
         .iter()
         .map(|r| {
@@ -893,15 +1104,38 @@ fn paired_blocks<'a, P, B>(
                 .remote_for_partner(r.partner)
                 .position(|other| other.entry == r.entry)
                 .expect("a remote delta is in its own partner's list");
-            recv[r.partner as usize]
+            (r.partner as usize, j)
+        })
+        .collect()
+}
+
+/// Remote delta `k`'s `(partner, index)` among this rank's send blocks, which the export fills in plan order per partner.
+#[cfg(feature = "nccl")]
+fn own_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
+    let mut used = std::collections::HashMap::<u32, usize>::new();
+    plan.remote
+        .iter()
+        .map(|r| {
+            let j = used.entry(r.partner).or_default();
+            *j += 1;
+            (r.partner as usize, *j - 1)
+        })
+        .collect()
+}
+
+/// The received block per remote delta in plan order, by [`paired_at`].
+fn paired_blocks<'a, P, B>(
+    plan: &PartitionPlan,
+    recv: &'a [Option<P>],
+    block: impl Fn(&'a P, usize) -> Option<&'a B>,
+) -> Vec<&'a B> {
+    paired_at(plan)
+        .into_iter()
+        .map(|(q, j)| {
+            recv[q]
                 .as_ref()
                 .and_then(|payload| block(payload, j))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "partition {} sent no block for remote delta {j} (entry {})",
-                        r.partner, r.entry
-                    )
-                })
+                .unwrap_or_else(|| panic!("partition {q} sent no block {j} for a remote delta"))
         })
         .collect()
 }
@@ -1384,6 +1618,7 @@ fn premerge_partner<const W: usize>(
         &scratch.export.premerge.start_host,
         scratch.options.arena_bytes,
         cap,
+        &[],
     );
     let mut arena = match scratch.arena.take() {
         Some(a) => a,
@@ -1862,7 +2097,7 @@ mod tests {
         (x, z, c, g)
     }
 
-    /// The device payloads equal the host blocks bitwise, their `g` is the host fingerprint, and adopting every block lands the concatenation in `recv_*` with the offsets and bases the host path would compute.
+    /// The device payloads equal the host blocks bitwise, their `g` is the host fingerprint, and a receive under no cap, a third of the rows and one row lands every chunk's rows in `recv_*` in plan order, at bases that address them from the full offsets.
     fn device_export_matches_host_and_adopts<const W: usize>(
         num_qubits: usize,
         n: usize,
@@ -1954,25 +2189,100 @@ mod tests {
                         _ => panic!("{what}: payload presence to {q} differs"),
                     }
                 }
-                let total = adopt_blocks(&dev, &mut scratch.export, &blocks, &mut scratch.xfer_ns)
-                    .expect("adopt") as usize;
-                assert_eq!(total, all_g.len(), "{what}: rows adopted");
-                assert_eq!(scratch.export.recv_rows, total);
-                let s = &dev.stream;
-                let e = &scratch.export;
-                let off = s.clone_dtoh(&e.recv_off.slice(0..all_off.len())).unwrap();
-                let base = s.clone_dtoh(&e.recv_base.slice(0..bases.len())).unwrap();
-                let x = s.clone_dtoh(&e.recv_x.slice(0..total * W)).unwrap();
-                let z = s.clone_dtoh(&e.recv_z.slice(0..total * W)).unwrap();
-                let c = s.clone_dtoh(&e.recv_c.slice(0..2 * total)).unwrap();
-                let g = s.clone_dtoh(&e.recv_g.slice(0..total)).unwrap();
-                s.synchronize().unwrap();
-                assert_eq!(off, all_off, "{what}: adopted offsets");
-                assert_eq!(base, bases, "{what}: adopted bases");
-                assert_eq!((x, z), (all_x, all_z), "{what}: adopted keys");
-                assert_eq!(c, all_c, "{what}: adopted coefficients");
-                assert_eq!(g, all_g, "{what}: adopted fingerprints");
-                adopted_blocks += blocks.len();
+                let at: Vec<(usize, usize)> = got
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(q, g)| {
+                        let n = g.as_ref().map_or(0, |g| g.blocks.len());
+                        (0..n).map(move |j| (q, j))
+                    })
+                    .collect();
+                let nblocks = blocks.len();
+                let total = all_g.len();
+                let mut recv = got;
+                for cap in [usize::MAX, total.div_ceil(3).max(1), 1] {
+                    let e = &mut scratch.export;
+                    let blocks: Vec<&DeviceBlock<W>> = at
+                        .iter()
+                        .map(|&(q, j)| &recv[q].as_ref().unwrap().blocks[j])
+                        .collect();
+                    lay_out(
+                        e,
+                        nb,
+                        blocks
+                            .iter()
+                            .map(|bl| (bl.header.num_buckets, &bl.offsets[..], bl.rows())),
+                    );
+                    assert_eq!(e.recv_rows, total, "{what}: rows laid out");
+                    assert_eq!(e.off_host, all_off, "{what}: offsets laid out");
+                    let (log2, most) = recv_chunks(&e.off_host, nb, cap);
+                    size_receive(&dev, e, most, &mut scratch.xfer_ns).expect("size");
+                    let map = position_chunks(dev.hash().bits(), nb, log2);
+                    let chunks = map.chunks();
+                    match cap {
+                        usize::MAX => assert_eq!(chunks, 1, "{what}: no cap, one chunk"),
+                        1 => assert!(most <= 1 || chunks == nb, "{what}: one row per chunk"),
+                        _ => assert!(
+                            chunks >= 3 || chunks == nb,
+                            "{what}: a third of the rows needs three chunks"
+                        ),
+                    }
+                    scratch.export.pending = Some(PendingRecv {
+                        map: map.clone(),
+                        next: 0,
+                        source: RecvSource::Device {
+                            recv: std::mem::take(&mut recv),
+                            at: at.clone(),
+                        },
+                    });
+                    let mut moved = 0usize;
+                    for c in 0..chunks {
+                        let (lo, hi) = (map.bound(c) as usize, map.bound(c + 1) as usize);
+                        let n = receive_chunk(&dev, &mut scratch, c).expect("chunk");
+                        assert!(
+                            n <= most,
+                            "{what}: chunk {c} of {chunks} exceeds its buffer"
+                        );
+                        let s = &dev.stream;
+                        let e = &scratch.export;
+                        let base = s.clone_dtoh(&e.recv_base.slice(0..nblocks)).unwrap();
+                        let x = s.clone_dtoh(&e.recv_x.slice(0..n * W)).unwrap();
+                        let z = s.clone_dtoh(&e.recv_z.slice(0..n * W)).unwrap();
+                        let cf = s.clone_dtoh(&e.recv_c.slice(0..2 * n)).unwrap();
+                        let g = s.clone_dtoh(&e.recv_g.slice(0..n)).unwrap();
+                        s.synchronize().unwrap();
+                        let (mut wx, mut wz, mut wc, mut wg) = (vec![], vec![], vec![], vec![]);
+                        for k in 0..nblocks {
+                            let off = &all_off[k * (nb + 1)..(k + 1) * (nb + 1)];
+                            let first = bases[k] as usize + off[lo] as usize;
+                            let last = bases[k] as usize + off[hi] as usize;
+                            assert_eq!(
+                                base[k].wrapping_add(off[lo]) as usize,
+                                wg.len(),
+                                "{what}: chunk {c} base of block {k}"
+                            );
+                            wx.extend_from_slice(&all_x[first * W..last * W]);
+                            wz.extend_from_slice(&all_z[first * W..last * W]);
+                            wc.extend_from_slice(&all_c[2 * first..2 * last]);
+                            wg.extend_from_slice(&all_g[first..last]);
+                        }
+                        assert_eq!((x, z), (wx, wz), "{what}: chunk {c} of {chunks} keys");
+                        assert_eq!(cf, wc, "{what}: chunk {c} of {chunks} coefficients");
+                        assert_eq!(g, wg, "{what}: chunk {c} of {chunks} fingerprints");
+                        moved += n;
+                    }
+                    assert_eq!(moved, total, "{what}: every row moves once");
+                    let Some(PendingRecv {
+                        source: RecvSource::Device { recv: back, .. },
+                        ..
+                    }) = scratch.export.pending.take()
+                    else {
+                        panic!("{what}: the pending receive is the device one");
+                    };
+                    recv = back;
+                }
+                adopted_blocks += nblocks;
+                let got = recv;
                 got.into_iter().flatten().for_each(payload::recycle);
             }
         }
@@ -1981,6 +2291,57 @@ mod tests {
             multi_block_payloads > 0,
             "the SU(4) layer must ship several remote deltas to one partner"
         );
+    }
+
+    /// Two blocks over eight positions receiving `[1, 0, 2, 4, 0, 3, 1, 1]` rows: each cap takes the fewest power-of-two chunks that fit it, and one position alone may exceed it.
+    #[test]
+    fn the_receive_takes_the_fewest_power_of_two_chunks_under_its_cap() {
+        let off: Vec<u32> = [[0u32, 1, 1, 3, 3, 3, 6, 7, 8], [0, 0, 0, 0, 4, 4, 4, 4, 4]].concat();
+        let b = 8;
+        assert_eq!(rows_between(&off, b, 0, 8), 12);
+        assert_eq!(rows_between(&off, b, 3, 4), 4);
+        assert_eq!(
+            (0..=3).map(|j| chunk_max(&off, b, j)).collect::<Vec<_>>(),
+            vec![12, 7, 6, 4],
+            "a finer power-of-two cut never grows the largest chunk"
+        );
+        assert_eq!(recv_chunks(&off, b, usize::MAX), (0, 12));
+        assert_eq!(recv_chunks(&off, b, 12), (0, 12));
+        assert_eq!(recv_chunks(&off, b, 7), (1, 7));
+        assert_eq!(recv_chunks(&off, b, 6), (2, 6));
+        assert_eq!(recv_chunks(&off, b, 3), (3, 4));
+        assert_eq!(
+            recv_chunks(&[0, 5], 1, 1),
+            (0, 5),
+            "one position is one chunk"
+        );
+        let mut base = Vec::new();
+        let (parts, n) = chunk_layout(&off, b, 2, 4, &mut base);
+        assert_eq!(parts, vec![(1, 2, 0), (0, 4, 2)]);
+        assert_eq!(n, 6);
+        assert_eq!(base[0].wrapping_add(off[2]), 0);
+        assert_eq!(base[1].wrapping_add(off[9 + 3]), 2);
+        assert_eq!(base[1].wrapping_add(off[9 + 4]), 6);
+    }
+
+    /// Every rank learns one verdict and the largest chunk count any ready rank asked for; one rank not ready is a no everywhere.
+    #[cfg(feature = "nccl")]
+    #[test]
+    fn the_vote_agrees_the_largest_chunk_count() {
+        use crate::engine::partitioned::transport::{Collectives, InProcessTransport};
+        let run = |asks: [Option<u8>; 4]| -> Vec<Option<u8>> {
+            let group = InProcessTransport::group(4);
+            std::thread::scope(|s| {
+                let hs: Vec<_> = group
+                    .into_iter()
+                    .map(|t| s.spawn(move || vote(&t, asks[t.rank() as usize])))
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        };
+        assert_eq!(run([Some(1), Some(3), Some(0), Some(2)]), vec![Some(3); 4]);
+        assert_eq!(run([Some(0); 4]), vec![Some(0); 4]);
+        assert_eq!(run([Some(2), None, Some(0), Some(5)]), vec![None; 4]);
     }
 
     /// A partition with no terms still ships one empty block per remote delta, bitwise the host's.

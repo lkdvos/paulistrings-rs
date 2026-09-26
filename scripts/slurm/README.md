@@ -149,3 +149,28 @@ genoa (Zen4) and icelake (Ice Lake-SP), **13 of 13 direction-consistent phase re
 show the padded build slower** (+0.6..+3.8%). So the flag is **not** in `.cargo/config.toml` — the
 shipped default is portable, and hosts with the erratum opt in via `scripts/jcc-rustflags.sh`,
 which every measurement script sources. Cluster jobs therefore get the right build automatically.
+
+## The operator Loschmidt echo jobs (`examples/b8_ole`)
+
+| script | what it runs |
+|---|---|
+| `ole-ppmc-disbatch.sbatch` | independent PP-MC trajectories as disBatch tasks inside one allocation, `--ntasks` concurrent tasks of `--cpus-per-task` threads |
+| `ole-mpi.sbatch` | one trajectory or deterministic run at a time with the sum distributed one partition per NUMA domain (`--mpi`), seeds sequential |
+
+Both run the Python driver from a virtualenv whose extension was built from the commit under test: `./.venv` (`maturin develop --release`) for disBatch, and `./.venv-mpi` built with `--features mpi` (CLAUDE.md, Commands) for MPI.
+Budget about 3 × 32 B × cache per trajectory, counting the transient growth of a rotation before collapse; a ccq rome or icelake node has 1 TB and a genoa node 1.5 TB.
+
+```bash
+# paper replication: 6 alphas x 800 trajectories at cache 5e8, 10 seeds per task, 8 x 16-thread tasks per rome node
+python examples/b8_ole/make_tasks.py --seeds 0:800 --block 10 --threads 16 --out benchmarks/results/ole/ppmc -- --policy ppmc --cache 5e8 > benchmarks/results/ole-tasks.txt
+env -u SBATCH_RESERVATION TASKS=benchmarks/results/ole-tasks.txt sbatch scripts/slurm/ole-ppmc-disbatch.sbatch
+env -u SBATCH_RESERVATION TASKS=benchmarks/results/ole-tasks.txt sbatch --nodes=4 --ntasks=32 scripts/slurm/ole-ppmc-disbatch.sbatch
+
+# beyond one node: cache 3e10 over 8 genoa nodes (16 ranks), 4 trajectories per alpha
+env -u SBATCH_RESERVATION CACHE=3e10 ALPHAS=0.05,0.1,0.15 SEEDS=0:4 sbatch --nodes=8 scripts/slurm/ole-mpi.sbatch
+
+# deterministic baseline at a huge budget, with the exact overlap
+env -u SBATCH_RESERVATION POLICY=approx_topn CACHE=2e10 SEEDS=0:1 EXACT=1 ALPHAS=0.05 sbatch --nodes=8 scripts/slurm/ole-mpi.sbatch
+```
+
+`examples/b8_ole/aggregate.py benchmarks/results/ole --plot ...` summarizes every run.

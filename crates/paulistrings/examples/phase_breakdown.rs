@@ -490,6 +490,9 @@ struct Config {
     /// `--gpu-partitions`: virtual device partitions of a `--device` cell.
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     gpu_partitions: usize,
+    /// `--gpu-exchange`: `None` leaves the mode to `PAULISTRINGS_GPU_EXCHANGE` / the engine's default.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    gpu_exchange: Option<GpuExchangeSpec>,
     /// Placement spec for the partitioned cells. See `--partition-cpus`.
     partition_cpus: PartitionCpus,
     /// Whether each partition binds its allocations to its NUMA node.
@@ -534,6 +537,81 @@ impl DeviceSpec {
             return Err("--device must list at least one ordinal".to_string());
         }
         Ok(Self::Ordinals(ordinals))
+    }
+}
+
+/// `--gpu-exchange host|device|nccl`: the knob a `--device` cell agrees, mirroring
+/// `PAULISTRINGS_GPU_EXCHANGE` (ARCHITECTURE.md §Partitioning).
+/// `Nccl` only ever reaches an `--mpi --device` cell — an in-process cell downgrades it to
+/// `Device`, as [`GpuPartitionedSum::set_exchange`](paulistrings::gpu::GpuPartitionedSum::set_exchange) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+enum GpuExchangeSpec {
+    Host,
+    Device,
+    Nccl,
+}
+
+impl GpuExchangeSpec {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "host" => Ok(Self::Host),
+            "device" => Ok(Self::Device),
+            "nccl" => Ok(Self::Nccl),
+            other => Err(format!(
+                "--gpu-exchange expects host|device|nccl, got '{other}'"
+            )),
+        }
+    }
+
+    /// The value that drives the same choice through `PAULISTRINGS_GPU_EXCHANGE`.
+    #[cfg_attr(not(all(feature = "cuda", feature = "mpi")), allow(dead_code))]
+    fn env_value(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Device => "device",
+            Self::Nccl => "nccl",
+        }
+    }
+}
+
+/// [`GpuExchangeSpec`] to the engine's [`GpuExchange`](paulistrings::gpu::GpuExchange), for the
+/// in-process (`GpuPartitionedSum::set_exchange`) path; the MPI path drives the same choice
+/// through `PAULISTRINGS_GPU_EXCHANGE` instead, since `MpiGpuSum` agrees its mode at scatter and
+/// has no setter.
+#[cfg(feature = "cuda")]
+fn to_gpu_exchange(spec: GpuExchangeSpec) -> paulistrings::gpu::GpuExchange {
+    use paulistrings::gpu::GpuExchange;
+    match spec {
+        GpuExchangeSpec::Host => GpuExchange::Host,
+        GpuExchangeSpec::Device => GpuExchange::Device,
+        GpuExchangeSpec::Nccl => {
+            #[cfg(feature = "nccl")]
+            {
+                GpuExchange::Nccl
+            }
+            #[cfg(not(feature = "nccl"))]
+            {
+                unreachable!(
+                    "parse_args rejects --gpu-exchange nccl without the nccl cargo feature"
+                )
+            }
+        }
+    }
+}
+
+/// [`GpuExchange`](paulistrings::gpu::GpuExchange) to its sidecar label; the enum is
+/// `#[non_exhaustive]`, so this crate's own match still needs a wildcard arm.
+#[cfg(feature = "cuda")]
+fn gpu_exchange_label(mode: paulistrings::gpu::GpuExchange) -> &'static str {
+    use paulistrings::gpu::GpuExchange;
+    match mode {
+        GpuExchange::Host => "host",
+        GpuExchange::Device => "device",
+        #[cfg(feature = "nccl")]
+        GpuExchange::Nccl => "nccl",
+        #[allow(unreachable_patterns)]
+        _ => "unknown",
     }
 }
 
@@ -604,6 +682,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut mpi = false;
     let mut device: Option<DeviceSpec> = None;
     let mut gpu_partitions: usize = 1;
+    let mut gpu_exchange: Option<GpuExchangeSpec> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -668,6 +747,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 device = Some(DeviceSpec::parse(value)?);
             }
             "--gpu-partitions" => gpu_partitions = parse_usize(value, "--gpu-partitions")?,
+            "--gpu-exchange" => gpu_exchange = Some(GpuExchangeSpec::parse(value)?),
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
             other => return Err(format!("unknown flag '{other}' (see --help)")),
@@ -852,6 +932,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             return Err("--occupancy-at is not supported for a device cell".to_string());
         }
     }
+    if let Some(spec) = gpu_exchange {
+        if device.is_none() {
+            return Err("--gpu-exchange needs --device".to_string());
+        }
+        if spec == GpuExchangeSpec::Nccl && cfg!(not(feature = "nccl")) {
+            return Err(
+                "--gpu-exchange nccl needs the `nccl` cargo feature (cargo run --release \
+                 --features phase-timing,mpi,cuda,nccl --example phase_breakdown)"
+                    .to_string(),
+            );
+        }
+    }
 
     Ok(Config {
         n,
@@ -866,6 +958,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         mpi,
         device,
         gpu_partitions,
+        gpu_exchange,
         partition_cpus,
         bind_memory,
         partition_seed,
@@ -1167,6 +1260,9 @@ struct DeviceCellStats {
     upload_ns: u64,
     /// `GpuPauliSum::to_host` of the timed call's output.
     download_ns: u64,
+    /// The exchange mode this cell actually ran under (`"none"` for a lone, unpartitioned
+    /// device with no exchange to agree); see [`GpuExchangeSpec`].
+    exchange: &'static str,
 }
 
 /// A bucket-occupancy snapshot: how term counts spread across buckets at one rep.
@@ -1533,6 +1629,8 @@ where
             devices: vec![device],
             upload_ns,
             download_ns,
+            // A lone device has no partition boundary to exchange rows across.
+            exchange: "none",
         }),
     }
 }
@@ -1593,6 +1691,10 @@ where
     let mut split = GpuPartitionedSum::scatter_with_rows(base, rows, runtime)
         .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
+    if let Some(spec) = cfg.gpu_exchange {
+        split.set_exchange(to_gpu_exchange(spec));
+    }
+    let exchange = gpu_exchange_label(split.exchange());
     split.enable_trace();
 
     split
@@ -1652,6 +1754,7 @@ where
             devices: devices.to_vec(),
             upload_ns,
             download_ns,
+            exchange,
         }),
     }
 }
@@ -2277,12 +2380,19 @@ where
         ..PropagateOptions::default()
     };
 
+    // `MpiGpuSum` has no exchange setter: it agrees `Nccl` or `Host` over the group at scatter,
+    // reading `PAULISTRINGS_GPU_EXCHANGE` fresh each call, so `--gpu-exchange` drives the same
+    // knob rather than needing a new API (`gpu/rank.rs::start_nccl`).
+    if let Some(spec) = cfg.gpu_exchange {
+        std::env::set_var("PAULISTRINGS_GPU_EXCHANGE", spec.env_value());
+    }
     let transport = MpiTransport::from_communicator(&world);
     let split_hash_seed = base.hash().seed();
     let started = Instant::now();
     let mut split = MpiGpuSum::scatter_with_rows(base, transport, device, rows)
         .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
+    let exchange = gpu_exchange_label(split.exchange());
     split.enable_trace();
 
     split
@@ -2343,6 +2453,7 @@ where
             devices: vec![device],
             upload_ns,
             download_ns,
+            exchange,
         }),
     }
 }
@@ -2803,10 +2914,11 @@ fn json_line(cell: &CellResult) -> String {
     // Absent on a host row, like `rank`.
     let device_fields = match &cell.device {
         Some(d) => format!(
-            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{}",
+            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{},\"gpu_exchange\":\"{}\"",
             device_csv(d),
             d.upload_ns,
-            d.download_ns
+            d.download_ns,
+            d.exchange,
         ),
         None => String::new(),
     };
@@ -2841,7 +2953,7 @@ rows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
 partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight\t\
-compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns";
+compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns\tgpu_exchange";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2852,7 +2964,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2922,6 +3034,7 @@ fn print_tsv_row(cell: &CellResult) {
             .map_or_else(|| "-1".to_string(), device_csv),
         cell.device.as_ref().map_or(0, |d| d.upload_ns),
         cell.device.as_ref().map_or(0, |d| d.download_ns),
+        cell.device.as_ref().map_or("none", |d| d.exchange),
     );
 }
 
@@ -3104,7 +3217,13 @@ const DEVICE_USAGE: &str = "\
                             layers export, exchange and merge received rows;
                             rotation_remote needs n > 1. The row carries
                             partitions=<n>, partition_cpus=gpu, upload_ns the
-                            scatter and download_ns the gather.";
+                            scatter and download_ns the gather.
+  --gpu-exchange <mode>    host|device|nccl: the exchange mode a --device cell
+                            agrees, mirroring PAULISTRINGS_GPU_EXCHANGE
+                            (needs --device; nccl needs the nccl cargo
+                            feature). Unset leaves it to the engine's default.
+                            The row's gpu_exchange field is the mode actually
+                            agreed, \"none\" on a lone unpartitioned device.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

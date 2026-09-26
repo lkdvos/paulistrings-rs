@@ -157,7 +157,9 @@ which every measurement script sources. Cluster jobs therefore get the right bui
 | `ole-ppmc-disbatch.sbatch` | independent PP-MC trajectories as disBatch tasks inside one allocation, `--ntasks` concurrent tasks of `--cpus-per-task` threads |
 | `ole-mpi.sbatch` | one trajectory or deterministic run at a time with the sum distributed one partition per NUMA domain (`--mpi`), seeds sequential |
 
-Both run the Python driver from a virtualenv whose extension was built from the commit under test: `./.venv` (`maturin develop --release`) for disBatch, and `./.venv-mpi` built with `--features mpi` (CLAUDE.md, Commands) for MPI.
+Both run the Python driver from `./.venv-mpi` in the checkout the job is submitted from, built with `--features mpi` as in CLAUDE.md (Commands); the MPI build also serves the non-MPI disBatch runs.
+`pip install` there is non-editable, so the venv pins the commit it was built from; rebuild it after changing Rust code.
+A git worktree does not share the main checkout's venvs, so build one per worktree.
 Budget about 3 × 32 B × cache per trajectory, counting the transient growth of a rotation before collapse; a ccq rome or icelake node has 1 TB and a genoa node 1.5 TB.
 
 ```bash

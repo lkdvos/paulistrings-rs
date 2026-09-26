@@ -14,13 +14,13 @@
 # Size `--ntasks` so that ntasks x ~3 x 32 B x cache fits in node memory (cache 5e8: ~48 GB per task).
 #
 # TASKS   task file from examples/b8_ole/make_tasks.py (required)
-# VENV    virtualenv with the paulistrings extension built from the commit under test (default ./.venv)
+# VENV    virtualenv with the paulistrings extension built from the commit under test (default ./.venv-mpi, which also serves non-MPI runs)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 
 module purge
-module load modules/2.4-20250724 python/3.11.11 disBatch
-source "${VENV:-.venv}/bin/activate"
+module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9 disBatch
+source "${VENV:-.venv-mpi}/bin/activate"
 unset RUST_LOG
 
 TASKS=${TASKS:?set TASKS to a make_tasks.py task file}

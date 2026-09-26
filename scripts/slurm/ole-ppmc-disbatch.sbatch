@@ -14,6 +14,7 @@
 # Size `--ntasks` so that ntasks x ~3 x 32 B x cache fits in node memory (cache 5e8: ~48 GB per task).
 #
 # TASKS   task file from examples/b8_ole/make_tasks.py (required)
+# RESUME  a previous job's disBatch status file; its completed tasks are skipped and failed ones retried
 # VENV    virtualenv with the paulistrings extension built from the commit under test (default ./.venv-mpi, which also serves non-MPI runs)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
@@ -29,4 +30,6 @@ echo "== paulistrings rev $(git rev-parse HEAD), $(wc -l < "$TASKS") tasks from 
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
 free -g | head -2
 
-disBatch -e --prefix "benchmarks/results/disbatch-${SLURM_JOB_ID:-local}-" "$TASKS"
+resume=()
+[ -n "${RESUME:-}" ] && resume=(-r "$RESUME" -R)
+disBatch -e "${resume[@]}" --prefix "benchmarks/results/disbatch-${SLURM_JOB_ID:-local}-" "$TASKS"

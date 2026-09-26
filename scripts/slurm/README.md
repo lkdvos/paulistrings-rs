@@ -175,4 +175,5 @@ env -u SBATCH_RESERVATION CACHE=3e10 ALPHAS=0.05,0.1,0.15 SEEDS=0:4 sbatch --nod
 env -u SBATCH_RESERVATION POLICY=approx_topn CACHE=2e10 SEEDS=0:1 EXACT=1 ALPHAS=0.05 sbatch --nodes=8 scripts/slurm/ole-mpi.sbatch
 ```
 
+A sweep that outruns its time limit continues with `RESUME=benchmarks/results/disbatch-<jobid>-_status.txt` on the same `TASKS`.
 `examples/b8_ole/aggregate.py benchmarks/results/ole --plot ...` summarizes every run.

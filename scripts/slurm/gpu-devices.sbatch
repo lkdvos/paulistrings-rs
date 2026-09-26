@@ -2,6 +2,7 @@
 #SBATCH --job-name=ps-gpu
 #SBATCH --partition=gpu
 #SBATCH --constraint=a100-80gb&rocky9
+#SBATCH --exclude=workergpu062
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=32
@@ -53,6 +54,7 @@ echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
 nvidia-smi -L
 nvidia-smi topo -m | tee "$out/gpu-${SLURM_JOB_ID:-local}-topo.txt"
+scripts/slurm/check-gpu-links.sh ${GPU_LINKS_WARN:+--warn}
 nvidia-smi -q -d CLOCK,POWER,TEMPERATURE,PERFORMANCE > "$out/gpu-${SLURM_JOB_ID:-local}-clocks-start.txt"
 
 ngpu=$(nvidia-smi -L | wc -l)

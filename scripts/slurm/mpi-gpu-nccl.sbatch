@@ -2,6 +2,7 @@
 #SBATCH --job-name=ps-mpi-gpu-nccl
 #SBATCH --partition=gpu
 #SBATCH --constraint=a100-80gb&rocky9
+#SBATCH --exclude=workergpu062
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=4
@@ -68,6 +69,7 @@ srun --ntasks-per-node=1 bash -c '
     echo "-- $(hostname -s)"
     nvidia-smi -L
     nvidia-smi topo -m
+    scripts/slurm/check-gpu-links.sh ${GPU_LINKS_WARN:+--warn} || exit 4
     ibv_devinfo -l 2>&1 || echo "(no ibv_devinfo)"
     lsmod | grep -E "nvidia_peermem|nv_peer_mem" || echo "(no nvidia_peermem / nv_peer_mem module)"
     ip -br addr

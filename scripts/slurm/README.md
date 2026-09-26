@@ -103,7 +103,8 @@ Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's
 
 Both run on partition `gpu`, whose `scontrol show partition gpu` reads `Exclusive=NO OverSubscribe=NO` (exclusivity is the job's choice, not forced) under QoS `gpu` (at most 24 GPUs and 432 CPUs per user).
 The templates do not ask for `--exclusive`, so they schedule sooner; a job holding all four GPUs of a node already keeps other GPU jobs off it, and for a quiet-host timing campaign add `--exclusive` on the `sbatch` line.
-The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, and `--gres=gpu:4` already excludes the two-GPU workergpu062); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
+The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
+The device-to-device templates exclude workergpu062, the one A100 node with two GPUs, whose link a `--gres=gpu:2` request could otherwise land on, and run `check-gpu-links.sh` after `nvidia-smi topo -m`: it stops the job unless every pair of visible GPUs is `NV#`, and `GPU_LINKS_WARN=1` downgrades that to a warning.
 Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.6 llvm/19.1.7` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
 
 ```bash

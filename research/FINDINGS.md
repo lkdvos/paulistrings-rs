@@ -300,6 +300,22 @@ On one device the exchange is a same-device copy, so the merge's second K3 is pa
 Two virtual partitions at 5.65e7 terms now fit a 48 GB card under device payloads, at 428 ms/layer against the 274 ms of `P = 1`, where the unmerged export needed a full export volume resident on each sender.
 The merge stays on for every qualifying partner; a gate on the expected merge ratio for same-device groups is unmeasured.
 
+### Chunked device receive
+
+Asked whether capping the received rows a remote layer holds on the device lowers peak memory without costing wall: `GpuLayerOptions::exchange_bytes` cuts the receive into power-of-two chunks of destination positions, each moved (peer copy in-process, one wire group per chunk under NCCL) just before the fused layer reaches it (ARCHITECTURE.md §Partitioning).
+Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory for most samples, no other process on the card), `su4` at `--n 4000000` on two virtual partitions (`--device 0 --gpu-partitions 2`, 5.65e7 terms, device payloads, sender-side merge on, 5.63e7 exported rows per layer), `--reps 5`, three abc rounds of the pre-change binary, the new binary uncapped and the new binary under `PAULISTRINGS_GPU_EXCHANGE_BYTES=450M` (about 1.6 GB received per partition per layer, so four chunks), peak device memory as the maximum of `nvidia-smi` `memory.used` sampled every 100 ms.
+
+| binary | cap | ms/layer (3 runs) | peak device MiB (3 runs) |
+|:-|:-|-:|-:|
+| pre-change | — | 429, 426, 428 | 26854, 28102, 29126 |
+| chunked | unbounded (one chunk) | 429, 430, 428 | 27974, 28006, 28038 |
+| chunked | 450M (four chunks) | 432, 430, 427 | **23334, 22502, 22502** |
+
+The cap takes about 5.5 GB (−20%) off the peak at unchanged wall; the uncapped build is the pre-change one within the sampling noise.
+`exchange_ns` rises and `merge_ns` falls by about as much in both chunked rows, since the receive now runs after the partition's count and overlaps its partner's fused kernels on the shared card; their sum and the wall are flat.
+The send side is not chunked: after the merge its export volume is the receive volume's size (1.6 GB per partition here), the in-process path's received payload *is* the sender's export, so chunking it would need a per-chunk hand-off between partitions inside the exchange, and at this cell the two 4 GB loose arenas and the sum's two column sets outweigh it.
+The cap stays unbounded by default; a group whose peak is the receive sets it, and the NCCL form is covered by the loopback nets only, not by a two-rank measurement.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

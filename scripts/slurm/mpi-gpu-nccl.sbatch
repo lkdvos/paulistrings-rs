@@ -10,15 +10,11 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# The NCCL device-exchange path (`gpu::MpiGpuSum`, feature `nccl`, ARCHITECTURE.md §Partitioning
-# design doc `.claude/orchestration/wp9b-nccl-design.md`). `--gpus-per-node` with
-# `--ntasks-per-node` (not `--gpus-per-task=1`) exposes every node GPU to every task: under the
-# device cgroup a task with `--gpus-per-task=1` can only open its own GPU, and NCCL then silently
-# falls back from P2P/NVLink to its SHM transport through host memory (wp9b-nccl-design.md §3,
-# risk table). `local_device_for_rank` picks `SLURM_LOCALID % 4` regardless.
+# The NCCL device exchange for `gpu::MpiGpuSum` (feature `nccl`, ARCHITECTURE.md §Partitioning), then a host-vs-nccl A/B on one binary.
+# `--gpus-per-node` rather than `--gpus-per-task=1`: with only its own GPU visible a task's NCCL falls back from NVLink to shared memory.
 #
 # Node shapes (rank count must be a power of two):
-#   1 node x 2 ranks   : env -u SBATCH_RESERVATION sbatch --ntasks-per-node=2 scripts/slurm/mpi-gpu-nccl.sbatch
+#   1 node x 2 ranks   : env -u SBATCH_RESERVATION sbatch --ntasks-per-node=2 --gpus-per-node=2 scripts/slurm/mpi-gpu-nccl.sbatch
 #   1 node x 4 ranks   : env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-nccl.sbatch
 #   2 nodes x 8 ranks  : env -u SBATCH_RESERVATION sbatch --nodes=2 --ntasks-per-node=4 scripts/slurm/mpi-gpu-nccl.sbatch
 #   H100-SXM5, 1 x 4   : env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/mpi-gpu-nccl.sbatch

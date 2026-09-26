@@ -1022,7 +1022,7 @@ mod device {
             // Several partners, each carrying several blocks of distinct sizes: a haar su(4) at
             // P >= 2 sends every remote delta's own block, so a rank with more than one partner
             // (P >= 4) or more than one remote generator already produces the shape `nccl_schedule`
-            // (wp9b-nccl-design.md §2.2) must preserve in order; at P < 4 the case still holds
+            // must preserve in order; at P < 4 the case still holds
             // (fewer, but still size-distinct, blocks) so it runs at any rank count.
             r.case(
                 "device several distinct-size blocks per partner (nccl knob)",
@@ -1034,7 +1034,7 @@ mod device {
                         // Four disjoint dense two-qubit deltas of the same generic SU(4): every rank
                         // holding several of them sends its partners several blocks whose row counts
                         // differ across layers, so an out-of-order per-partner match would not
-                        // silently agree (wp9b-nccl-design.md §2.2).
+                        // silently agree.
                         for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
                             c.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
                         }
@@ -1086,7 +1086,7 @@ mod device {
             assert_eq!(modes[1], 0, "an MPI group never moves device payloads");
         });
 
-        // The design's precise claim (wp9b-nccl-design.md §1.4): `Nccl` iff every rank both
+        // The mode rule (ARCHITECTURE.md §Partitioning): `Nccl` iff every rank both
         // wants it (more than one rank, no `PAULISTRINGS_GPU_EXCHANGE=host`) and can start it
         // (feature `nccl`, `nccl_available()`), else every rank agrees `Host`. `size == 1` above
         // already pins the "never at a singleton" half; this pins the general rule.

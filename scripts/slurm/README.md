@@ -127,12 +127,12 @@ The table skeletons are under the cluster GPU sections of `research/HARDWARE.md`
 
 ## The NCCL job
 
-`mpi-gpu-nccl.sbatch` is the cluster net for the NCCL device-exchange path (`gpu::MpiGpuSum`, feature `nccl`; design doc `.claude/orchestration/wp9b-nccl-design.md`).
+`mpi-gpu-nccl.sbatch` is the cluster net for the NCCL device-exchange path (`gpu::MpiGpuSum`, feature `nccl`, ARCHITECTURE.md §Partitioning).
 `--gpus-per-node`/`--ntasks-per-node` (not `--gpus-per-task=1`) exposes every node GPU to every task, which the design's risk table calls out: the per-task device cgroup otherwise makes NCCL fall back to SHM through host memory instead of P2P/NVLink.
 
 ```bash
 # 1 node x 2 ranks
-env -u SBATCH_RESERVATION sbatch --ntasks-per-node=2 scripts/slurm/mpi-gpu-nccl.sbatch
+env -u SBATCH_RESERVATION sbatch --ntasks-per-node=2 --gpus-per-node=2 scripts/slurm/mpi-gpu-nccl.sbatch
 # 1 node x 4 ranks
 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-nccl.sbatch
 # 2 nodes x 8 ranks

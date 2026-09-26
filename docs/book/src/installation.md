@@ -35,6 +35,17 @@ pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" 
 At runtime it needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.8.0` on a Flatiron host, or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` directory on `LD_LIBRARY_PATH` elsewhere.
 Without them `paulistrings.cuda_available()` is `False` and everything else works as in the default build.
 
+### GPU and MPI features {#gpu-and-mpi-features}
+
+The `nccl` feature adds the device-direct exchange for one GPU per MPI rank ([MPI ranks](manual/propagation/mpi.md#gpu-per-rank)) and needs both `cuda` and `mpi`, so both module sets plus the NCCL library; NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so it needs no toolkit to build either.
+
+```bash
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features nccl"
+```
+
 Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates `./.venv` and builds the extension into it:
 
 ```bash

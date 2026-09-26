@@ -136,8 +136,38 @@ split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```
 
-The layer's remote rows go device to host, through the in-process exchange, and host to device; `per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU.
+An in-process group exchanges device-resident payloads: the columns move device to device (or, without peer access, staged through the host) rather than through the host wire format.
+`per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
+
+## Exchange mode, merge and chunking {#exchange}
+
+`PAULISTRINGS_GPU_EXCHANGE` picks how a remote layer's rows travel, read once per process:
+
+| value | in-process group (`GpuPartitionedSum`) | MPI group (`gpu::MpiGpuSum`) |
+|---|---|---|
+| unset | device-to-device (or peer) copy | NCCL if every rank can start it on a distinct device, else host |
+| `host` | staged through host `PartnerPayload` columns | staged through host `PartnerPayload` columns |
+| `device` | device-to-device (or peer) copy | same as unset (an MPI group reads `device` and `nccl` apart) |
+| `nccl` | same as unset (in-process peer copies are already device to device) | NCCL required — every rank errs if any rank cannot start it |
+
+The MPI mode is agreed **once, collectively, at scatter**, never per layer: with the `nccl` feature, more than one rank, and every rank seeing a distinct CUDA device it can start a communicator on, the group moves columns straight into the receiver's device memory over NCCL; a group with a host member, or ranks sharing a device, always uses the host format.
+`PAULISTRINGS_NCCL_TIMEOUT_S` (default 300) bounds every wait on the communicator; a timeout or an NCCL error aborts it and the split, surfacing as `GpuError::Timeout` / `GpuError::Nccl` (`RuntimeError` from Python).
+Building and running it needs the `nccl` feature and the `nccl/2.23.4-1` module — see [Installation](../../installation.md#gpu-and-mpi-features) and [MPI ranks](mpi.md#gpu-per-rank).
+
+**A device sender merges one partner's rows by key before the exchange** (`GpuLayerOptions::premerge`, `PAULISTRINGS_GPU_PREMERGE=off`), so two remote deltas that land on the same receiver key ship as one row.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.
+
+**A device receive moves in chunks of destination positions** rather than all at once (`GpuLayerOptions::exchange_bytes`, `PAULISTRINGS_GPU_EXCHANGE_BYTES`, `K`/`M`/`G` suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
+The send side is never chunked: its export volume stays resident until the layer's last chunk moved.
+
+## Peer access and NVLink {#peer-access}
+
+`gpu::peer_access(dst, src)` enables direct copies from device `dst`'s context into device `src`'s memory and reports the outcome (`PeerAccess::Enabled`, `Unsupported`, `Failed`, or `SameDevice`), granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+A device exchange calls it before its first cross-device copy; without it, or on a pair the driver reports as unsupported, the copy stages through the host instead of faulting.
+`examples/gpu_peer.rs` times the same-device, peer and host-staged paths and reports the driver's P2P attributes.
+`scripts/slurm/check-gpu-links.sh` fails a multi-GPU job unless every visible pair is joined by NVLink, so a measurement never silently falls back to PCIe.
 
 ## What changes on a device
 
@@ -161,7 +191,9 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 - **Widths `W ≥ 8` (more than 256 qubits) are correct but untuned.**
 - **A multi-device or MPI group trades staging time for device memory.** Exchanging device-resident payloads keeps one export volume and one receive volume resident on a partition's device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count the host-staged path (or a single device) still fits.
 - **A device partition in a group cannot refine mid-run.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap.
-- **The cross-device peer copy is untested on a real multi-GPU node.** Today's multi-device numbers come from virtual partitions sharing one card; a physical multi-GPU run is expected to use the same path but has not been measured.
+- **The sender-side merge (`premerge`) does not pay on a same-device exchange at low merge ratios.** Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.
+- **The cross-device peer copy is untested on a real multi-GPU node.** `gpu::peer_access` grants both peer-context access and the source device's memory-pool access a peer copy needs to land directly rather than stage through the host, and today's multi-device numbers come from virtual partitions sharing one card.
+- **The chunked NCCL receive has run only over the in-process loopback test wire**, not a real communicator, and one chunk's transfer does not overlap the fused layer of the chunk before it.
 
 ## See it in use
 

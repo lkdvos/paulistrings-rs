@@ -333,6 +333,16 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
             .fail_recv_growth = true;
     }
 
+    /// Make this rank's next chunked receive fail as out of memory once chunk `chunk` has moved, after the vote and mid-layer (test hook).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_chunk_oom(&mut self, chunk: usize) {
+        self.inner
+            .backend_mut()
+            .scratch_mut()
+            .export
+            .fail_after_chunk = Some(chunk);
+    }
+
     /// Exchange over NCCL's protocol with `wire` standing in for the communicator, from the next layer on (test hook); every rank of the group must switch together, each with its own rank's wire.
     ///
     /// # Panics
@@ -888,6 +898,134 @@ mod tests {
                 .expect("rank 0")
                 .expect("gathers");
             assert_terms_close(&got, &want, 1e-11, "w1 dense nccl, merge off");
+        }
+
+        /// Three SU(4) layers on overlapping pairs, dense enough to cross at every partition count.
+        fn su4_layers<const W: usize>(nq: usize) -> Circuit<W> {
+            use crate::channel::GeneralUnitary2Q;
+            use crate::test_support::haar_su4_matrix;
+            let mut c = Circuit::<W>::new(nq);
+            for (a, b) in [(0, 1), (1, 2), (0, 1)] {
+                c.push(GeneralUnitary2Q::from_matrix(a, b, haar_su4_matrix()));
+            }
+            c
+        }
+
+        /// Options every rank of a chunked net sets: many small buckets, so a remote layer has positions to cut, and a receive cap of `rows` rows.
+        fn capped<const W: usize>(rows: usize) -> GpuLayerOptions {
+            GpuLayerOptions {
+                bucket_policy: super::super::super::layer::GpuBucketPolicy::TermsPerBucket(8),
+                exchange_bytes: rows
+                    .saturating_mul(super::super::super::export::recv_row_bytes::<W>()),
+                ..GpuLayerOptions::default()
+            }
+        }
+
+        /// The NCCL protocol with the receive cut into chunks, over the loopback wire against `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
+        fn chunked_nccl_case<const W: usize>(nq: usize, n: usize, seed: u64) {
+            let input = rand_sum::<W>(n, nq, seed);
+            let circuit = su4_layers::<W>(nq);
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                let want = crate::propagate(&circuit, input.clone(), &KeepAll, direction);
+                for size in [2u32, 4] {
+                    let rows = seeded_rows::<W>(nq, size);
+                    let mut plain = 0u64;
+                    for (cap, least) in [(usize::MAX, 1u64), (128, 3), (8, 8)] {
+                        let what = format!("W={W} ranks={size} {direction:?} cap={cap}");
+                        let (group, tally) = loopback_tallied(size);
+                        let options = capped::<W>(cap);
+                        let out = run_split(
+                            group,
+                            &input,
+                            &rows,
+                            &circuit,
+                            &KeepAll,
+                            direction,
+                            PropagateOptions::default(),
+                            &|split| split.set_layer_options(options),
+                        );
+                        let got = out
+                            .into_iter()
+                            .next()
+                            .unwrap()
+                            .expect("rank 0")
+                            .expect("gathers");
+                        assert_eq!(got.len(), want.len(), "{what}: term count");
+                        assert_terms_close(&got, &want, 1e-11, &what);
+                        let groups = tally.groups();
+                        assert_eq!(
+                            groups % u64::from(size),
+                            0,
+                            "{what}: every rank posts every group"
+                        );
+                        if cap == usize::MAX {
+                            plain = groups;
+                            assert!(plain > 0, "{what}: the circuit must cross");
+                        } else {
+                            assert!(
+                                groups >= plain + (least - 1) * u64::from(size),
+                                "{what}: {groups} groups against {plain} uncapped"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn a_capped_nccl_receive_moves_in_chunk_groups_and_agrees_w1() {
+            crate::require_cuda!();
+            chunked_nccl_case::<1>(10, 1_500, 0xC4B1);
+        }
+
+        #[test]
+        fn a_capped_nccl_receive_moves_in_chunk_groups_and_agrees_w2() {
+            crate::require_cuda!();
+            chunked_nccl_case::<2>(90, 1_500, 0xC4B2);
+        }
+
+        /// A rank failing after its first chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
+        #[test]
+        fn a_mid_receive_failure_drains_its_groups_and_is_agreed_over_the_group() {
+            crate::require_cuda!();
+            let input = rand_sum::<1>(1_500, 10, 0xC4B3);
+            let circuit = su4_layers::<1>(10);
+            for size in [2u32, 4] {
+                let rows = seeded_rows::<1>(10, size);
+                let culprit = size - 1;
+                let options = capped::<1>(8);
+                let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    split.set_layer_options(options);
+                    if split.rank() == culprit {
+                        split.inject_chunk_oom(0);
+                    }
+                };
+                let start = std::time::Instant::now();
+                let out = run_split(
+                    loopback_group(size),
+                    &input,
+                    &rows,
+                    &circuit,
+                    &KeepAll,
+                    Direction::Forward,
+                    PropagateOptions::default(),
+                    &setup,
+                );
+                assert!(start.elapsed() < std::time::Duration::from_secs(60));
+                for (r, e) in errors(out).iter().enumerate() {
+                    if r == culprit as usize {
+                        assert!(
+                            matches!(e, GpuError::OutOfMemory { device: 0, .. }),
+                            "{e:?}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(e, GpuError::Poisoned { rank, .. } if *rank == culprit as usize),
+                            "rank {r}: {e:?}"
+                        );
+                    }
+                }
+            }
         }
 
         /// `(rank, error)` per rank, for the failure nets.

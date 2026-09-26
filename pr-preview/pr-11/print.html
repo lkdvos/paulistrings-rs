@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d3019648.js";
+            window.path_to_searchindex_js = "searchindex-57fd608e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b86f2ee9.js"></script>
@@ -1628,7 +1628,7 @@ Under <code>comm=</code>, a failure on one rank’s device fails the call on eve
 <h2 id="limits-2"><a class="header" href="#limits-2">Limits</a></h2>
 <ul>
 <li><strong>The resident <code>GpuPauliSum</code> is one device.</strong> A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.</li>
-<li><strong>Exact <code>topn</code> is unavailable</strong>, as in a partitioned run: <code>truncation.topn</code> raises <code>NotImplementedError</code>, and <code>truncation.approx_topn(n)</code> retains exactly the set the host would.</li>
+<li><strong>Exact <code>topn</code> runs only on one device.</strong> <code>truncation.topn</code> matches the host term for term on a lone <code>device=&lt;int&gt;</code>, <code>to_device</code>, or a <code>device=</code> that resolves to one ordinal; a device list of more than one entry or <code>comm=</code> with <code>device=</code> raises <code>NotImplementedError</code>, since the <code>n</code>-th largest of a split sum has no collective form — use <code>truncation.approx_topn(n)</code> there instead.</li>
 <li><strong>Only the built-in policies run on a device.</strong> Every <code>truncation</code> factory and its <code>&amp;</code>/<code>|</code> compositions lower to the device; a custom Rust <code>TruncationPolicy</code> without a <code>device_policy</code> is refused before the first layer.</li>
 <li><strong>Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits</strong>, since a layer holds its input, its output and a staging arena at once.</li>
 <li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>

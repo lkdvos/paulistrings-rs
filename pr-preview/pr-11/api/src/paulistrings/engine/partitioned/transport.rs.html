@@ -396,7 +396,7 @@
 <a href=#396 id=396 data-nosnippet>396</a></span><span class="kw">const </span>PARTS_PER_BLOCK: usize = <span class="number">5</span>;
 <a href=#397 id=397 data-nosnippet>397</a>
 <a href=#398 id=398 data-nosnippet>398</a><span class="doccomment">/// The row index each of `map`'s chunk boundaries falls at, `chunks + 1` ascending entries — the CSR offsets read at the chunks' destination positions.
-<a href=#399 id=399 data-nosnippet>399</a></span><span class="kw">fn </span>chunk_rows_of(offsets: <span class="kw-2">&amp;</span>[u32], map: <span class="kw-2">&amp;</span>ChunkMap) -&gt; Vec&lt;usize&gt; {
+<a href=#399 id=399 data-nosnippet>399</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>chunk_rows_of(offsets: <span class="kw-2">&amp;</span>[u32], map: <span class="kw-2">&amp;</span>ChunkMap) -&gt; Vec&lt;usize&gt; {
 <a href=#400 id=400 data-nosnippet>400</a>    <span class="macro">debug_assert_eq!</span>(
 <a href=#401 id=401 data-nosnippet>401</a>        offsets.len(),
 <a href=#402 id=402 data-nosnippet>402</a>        map.positions() + <span class="number">1</span>,

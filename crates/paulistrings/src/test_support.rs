@@ -349,6 +349,38 @@ pub fn low_weight_sum<const W: usize>(
     acc.finalize()
 }
 
+/// `n` random terms whose support lies inside `qubits`, each of those an independent uniform `I/X/Y/Z`, with complex coefficients.
+/// A small window forces many keys to share everything but a few bits, which is what class-structured estimators need to be exercised.
+pub fn rand_sum_on<const W: usize>(
+    n: usize,
+    num_qubits: usize,
+    qubits: &[u32],
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for _ in 0..n {
+        let mut p = PauliString::<W> {
+            x: [0u64; W],
+            z: [0u64; W],
+        };
+        for &q in qubits {
+            let r = rng.next_u64();
+            let (word, bit) = (q as usize / 64, 1u64 << (q % 64));
+            if r & 1 == 1 {
+                p.x[word] |= bit;
+            }
+            if r & 2 == 2 {
+                p.z[word] |= bit;
+            }
+        }
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+    }
+    acc.finalize()
+}
+
 /// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any cut through the sum lands inside a tie group spanning a quarter of it.
 /// Not contrived: lattice-symmetric Hamiltonians produce exactly-equal-coefficient terms this way, which is why `TopN` has a tie rule at all (ARCHITECTURE.md §Truncation).
 pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {

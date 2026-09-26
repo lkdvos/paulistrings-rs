@@ -936,19 +936,25 @@ fn a_capped_device_receive_moves_in_chunks_and_agrees_w2() {
     chunked_receive_case::<2>(90, 1_500, 0xC4A2);
 }
 
-/// A partition failing mid-receive, after its first chunk moved, returns the error, its partners finish, and the split refuses every later call.
+/// A partition failing mid-receive, after its second chunk moved, returns the error, its partners finish, and the split refuses every later call.
+/// The cap forces at least 3 chunks and the failing rank's own layer proves it: `recv_chunks` is the planned count, set before the chunk loop runs, so it stands even though the loop broke partway through.
 #[test]
 fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     require_cuda!();
     let sum = rand_sum::<1>(2_000, 10, 0xC4A3);
     let circuit = su4_circuit::<1>(10);
     for p in [2usize, 4] {
-        let mut split = capped_split(&sum, p, GpuExchange::Device, 1);
-        split.inject_chunk_oom(1, 0);
+        let mut split = capped_split(&sum, p, GpuExchange::Device, recv_bytes::<1>(128));
+        split.inject_chunk_oom(1, 1);
         let r = split.propagate(&circuit, &KeepAll, Direction::Forward);
         assert!(
             matches!(r, Err(GpuError::OutOfMemory { device: 0, .. })),
             "P={p}: {r:?}"
+        );
+        assert!(
+            split.last_layer_counters(1).recv_chunks > 1,
+            "P={p}: the failing layer must have had more than one chunk, got {:?}",
+            split.last_layer_counters(1)
         );
         let again = split.propagate(&circuit, &KeepAll, Direction::Forward);
         assert!(

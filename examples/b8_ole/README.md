@@ -28,7 +28,7 @@ The paper runs 800 trajectories at cache 5e8 (Table VI).
 
 ```bash
 python examples/b8_ole/run_b8.py --alpha 0.15 --L 6 --policy ppmc --cache 5e8 --seeds 0:20 --out results/ppmc
-python examples/b8_ole/run_b8.py --alpha 0.15 --L 3 --policy coeff --eps 1e-7 --exact-overlap --out results/det
+python examples/b8_ole/run_b8.py --alpha 0.15 --L 3 --policy approx_topn --cache 1e9 --exact-overlap --out results/det
 python examples/b8_ole/aggregate.py results/ppmc results/det --csv summary.csv --plot ole_vs_eta.svg
 ```
 
@@ -37,7 +37,8 @@ python examples/b8_ole/aggregate.py results/ppmc results/det --csv summary.csv -
 
 Split runs (`--mpi`, `--partitions`) draw partition rows on x-bits only, because CZ and `rz` never change a string's x-bits and so only `rx` gates exchange.
 At 4 ranks and cache 2e7 this used 2.3× less memory per rank and ran 1.6–2× faster than the default rows.
-`--policy approx_topn --cache M` and `--policy coeff --eps ε` are the deterministic, unsampled baselines.
+`--policy approx_topn --cache M` is the deterministic, unsampled baseline; report its retained norm next to its value.
+Coefficient thresholds suit the echo badly: the forward half spreads the coefficients thin before the backward half refocuses them, so `--policy coeff` either keeps nothing or keeps everything.
 `--exact-overlap` adds the exact `S_δ` next to the diagonal one.
 
 ## References

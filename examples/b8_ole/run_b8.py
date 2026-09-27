@@ -176,6 +176,8 @@ def main(argv=None) -> int:
                 + f" collapses={record['collapses']} terms={record['final_terms']} {t_prop:.1f}s",
                 flush=True,
             )
+        # The result keeps its peak bucket capacity; drop it before the next seed propagates.
+        del result, stats
     return 0
 
 

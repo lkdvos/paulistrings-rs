@@ -35,6 +35,8 @@ python examples/b8_ole/aggregate.py results/ppmc results/det --csv summary.csv -
 - Cluster sweeps: `make_tasks.py` writes a disBatch task file for `scripts/slurm/ole-ppmc-disbatch.sbatch`.
 - Caches beyond one node: `scripts/slurm/ole-mpi.sbatch` runs `--mpi` with one partition per NUMA domain.
 
+Split runs (`--mpi`, `--partitions`) draw partition rows on x-bits only, because CZ and `rz` never change a string's x-bits and so only `rx` gates exchange.
+At 4 ranks and cache 2e7 this used 2.3× less memory per rank and ran 1.6–2× faster than the default rows.
 `--policy approx_topn --cache M` and `--policy coeff --eps ε` are the deterministic, unsampled baselines.
 `--exact-overlap` adds the exact `S_δ` next to the diagonal one.
 

@@ -108,15 +108,17 @@ def main(argv=None) -> int:
     if rank == 0:
         outdir.mkdir(parents=True, exist_ok=True)
 
+    # Partition rows on x-bits only: CZ and rz never change a string's x-bits, so only rx exchanges.
+    # The exact overlap additionally needs the probe sites' x-bits unread.
+    exclude = {"z": list(range(obs.num_qubits))}
+    if args.exact_overlap:
+        exclude["x"] = sites
     kwargs = {}
     if comm is not None:
-        kwargs.update(comm=comm, result="local")
-        if args.exact_overlap:
-            kwargs["partition_row_exclude"] = {"x": sites}
+        kwargs.update(comm=comm, result="local", partition_row_exclude=exclude)
     elif args.partitions is not None:
         kwargs["partitions"] = args.partitions if args.partitions == "auto" else int(args.partitions)
-        if args.exact_overlap:
-            kwargs["partition_row_exclude"] = {"x": sites}
+        kwargs["partition_row_exclude"] = exclude
 
     for seed in _seeds(args.seeds):
         t0 = time.perf_counter()

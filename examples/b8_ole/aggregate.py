@@ -20,7 +20,7 @@ sys.path.insert(0, str(HERE))
 
 import ole  # noqa: E402
 
-KEY = ("L", "eta", "delta", "policy", "cache", "eps", "max_weight", "mpi_ranks")
+KEY = ("L", "eta", "delta", "policy", "cache", "eps", "max_weight", "mpi_ranks", "snap_cliffords")
 
 
 def load(roots) -> dict[tuple, list[dict]]:
@@ -29,6 +29,7 @@ def load(roots) -> dict[tuple, list[dict]]:
         for path in sorted(Path(root).rglob("seed_*.json")):
             rec = json.loads(path.read_text())
             cfg = rec["config"]
+            cfg.setdefault("snap_cliffords", False)
             groups[tuple(round(cfg[k], 6) if isinstance(cfg[k], float) else cfg[k] for k in KEY)].append(rec)
     return groups
 
@@ -70,15 +71,24 @@ def plot(rows, path: Path) -> None:
         ax.errorbar(
             [r["eta"] for r in rs],
             [r["S_diag_mean"] for r in rs],
-            yerr=[0.0 if math.isnan(r.get("S_diag_std", math.nan)) else r["S_diag_std"] for r in rs],
+            yerr=[0.0 if math.isnan(r.get("S_diag_stderr", math.nan)) else r["S_diag_stderr"] for r in rs],
             marker="o",
             capsize=3,
             label=label,
         )
+    fig21 = ole.spec()["references"]["fig21"]
+    for key, label, style in [
+        ("experiment_ibm_boston_96ns", "experiment (Fig. 21)", dict(color="k", marker="s")),
+        ("ppmc_cache_5e8", "paper PP-MC 5e8 (Fig. 21)", dict(color="grey", marker="^", ls="--")),
+        ("single_path_mc", "paper single-path (Fig. 21)", dict(color="grey", marker="v", ls=":")),
+    ]:
+        pts = fig21[key]
+        ax.errorbar([ole._angle(e.replace("pi", "*pi")) if e != "0" else 0.0 for e, _, _ in pts],
+                    [v for _, v, _ in pts], yerr=[e for _, _, e in pts], capsize=2, ms=4, label=label, **style)
     ref = ole.spec()["references"]["table_I"]
     eta_ref = ole.eta_of_alpha(0.15)
     for row in ref["rows"]:
-        if row[1] is not None:
+        if row[1] is not None and row[0] != 6:
             ax.errorbar([eta_ref], [row[1][0]], yerr=[row[1][1]], marker="s", color="k", ms=4, capsize=2)
             ax.annotate(f"exp L={row[0]}", (eta_ref, row[1][0]), textcoords="offset points", xytext=(5, 0), fontsize=7)
     ax.axhline(ole.spec()["references"]["full_scrambling"]["value"], ls=":", color="grey", label="full scrambling")
@@ -100,7 +110,7 @@ def main(argv=None) -> int:
         s = f"S_diag={r['S_diag_mean']:.4f}±{r.get('S_diag_stderr', math.nan):.4f} (std {r.get('S_diag_std', math.nan):.4f})"
         if "S_exact_mean" in r:
             s += f" S_exact={r['S_exact_mean']:.4f}"
-        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} eps={r['eps']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
+        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} snap={r['snap_cliffords']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
     if args.csv:
         fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in KEY, k))
         with args.csv.open("w", newline="") as fh:

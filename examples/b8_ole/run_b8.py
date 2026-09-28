@@ -72,6 +72,7 @@ def parse_args(argv=None):
     ap.add_argument("--max-weight", type=int, default=None)
     ap.add_argument("--seeds", default="0", help="'lo:hi' or comma list; one trajectory per seed")
     ap.add_argument("--exact-overlap", action="store_true", help="also compute the exact rotated_overlap S_delta")
+    ap.add_argument("--no-snap-cliffords", action="store_true", help="import rz(k pi/2) as branching rotations, as before the fix")
     ap.add_argument("--mpi", action="store_true", help="one partition per MPI rank (needs the `mpi` build and mpi4py)")
     ap.add_argument("--partitions", default=None, help="in-process NUMA partitions: an int or 'auto'")
     ap.add_argument("--out", type=Path, required=True)
@@ -95,7 +96,8 @@ def main(argv=None) -> int:
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
 
-    circuit = ole.to_circuit(ole.echo_half(args.L, eta))
+    snap = not args.no_snap_cliffords
+    circuit = ole.to_circuit(ole.echo_half(args.L, eta), snap_cliffords=snap)
     obs = ole.observable()
     sites = ole.perturbation_sites()
 
@@ -103,6 +105,7 @@ def main(argv=None) -> int:
         f"L{args.L}_eta{eta:.4f}_d{delta:g}_{args.policy}"
         + (f"_M{args.cache:.0e}" if args.policy in ("ppmc", "approx_topn") else "")
         + (f"_eps{args.eps:.0e}" if args.eps is not None else "")
+        + ("_snap" if snap else "")
     )
     outdir = args.out / tag
     if rank == 0:
@@ -140,6 +143,7 @@ def main(argv=None) -> int:
                 "seed": seed,
                 "mpi_ranks": comm.Get_size() if comm is not None else 1,
                 "partitions": args.partitions,
+                "snap_cliffords": snap,
             },
             "S_diag": ole.diagonal_echo(hist, delta),
             "norm": float(sum(hist)),

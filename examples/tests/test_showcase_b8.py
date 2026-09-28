@@ -158,3 +158,16 @@ def test_ppmc_with_a_large_cache_is_exact_and_a_small_one_collapses():
     ]
     assert runs[0] == runs[1]
     assert all(0.0 <= r <= 1.0 + 1e-12 for r in runs)
+
+
+def test_snapped_cliffords_match_the_rotations_without_branching():
+    ps, qubits, ops, obs_q, probe_q, obs, circuit, sites = _engine_patch(2, ole.eta_of_alpha(0.15))
+    index = {q: i for i, q in enumerate(qubits)}
+    raw = ole.to_circuit(ops, index=index, snap_cliffords=False)
+    snapped = obs.propagate(circuit, direction="heisenberg")
+    branched = obs.propagate(raw, direction="heisenberg")
+    assert snapped.rotated_overlap(sites, 0.3, axis="x") == pytest.approx(branched.rotated_overlap(sites, 0.3, axis="x"), abs=1e-12)
+    one = ps.PauliSum.from_strings({"X": 1.0}, num_qubits=1)
+    for name, angle in [("rz", math.pi / 2), ("rz", -math.pi / 2), ("rx", math.pi / 2), ("rz", math.pi), ("rx", math.pi)]:
+        c = ole.to_circuit([(name, angle, (0,))], index={0: 0})
+        assert len(one.propagate(c, direction="heisenberg")) == 1

@@ -66,7 +66,7 @@ echo "== running $ranks ranks ($per_node per node, D=1), from $total available d
 # Build first with stderr visible (a failure here used to vanish into /dev/null), then query the path.
 cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run
 bin=$(cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run \
-      --message-format=json 2>/dev/null \
+      --message-format=json \
       | python3 -c 'import json,sys
 for l in sys.stdin:
     try: r=json.loads(l)

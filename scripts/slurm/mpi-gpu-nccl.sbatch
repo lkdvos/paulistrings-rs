@@ -76,7 +76,7 @@ srun --ntasks-per-node=1 bash -c '
 '
 
 bin=$(cargo test --offline --release --features nccl,test-utils -p paulistrings --test mpi_ranks --no-run \
-      --message-format=json 2>/dev/null \
+      --message-format=json \
       | python3 -c 'import json,sys
 for l in sys.stdin:
     try: r=json.loads(l)

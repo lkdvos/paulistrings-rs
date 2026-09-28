@@ -91,6 +91,7 @@ python3 -m venv --system-site-packages .venv-mpi   # gitignored
 Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:rustc-link-arg` is not inherited from a dependency, so without the py crate's copy the cdylib cannot find `libmpi.so.40` at import time.
 
 The `cuda` feature needs no build-script support and no toolkit to compile: `cudarc` loads `libcuda` and `libnvrtc` at runtime and NVRTC compiles the kernels on first use, so only running needs the module (or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` on `LD_LIBRARY_PATH`):
+NVRTC's PTX output is cached on disk (`$PAULISTRINGS_KERNEL_CACHE`, default `~/.cache/paulistrings/kernels`, `off` to disable) so only the first process to compile a given `(source, options, NVRTC version, crate version)` pays the several-second compile.
 
 ```bash
 module load cuda/12.8.0                                          # libnvrtc at runtime

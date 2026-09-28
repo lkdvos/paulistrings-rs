@@ -9,6 +9,7 @@ mod error;
 mod export;
 mod finalize;
 mod fingerprint;
+mod kernel_cache;
 mod layer;
 mod module;
 #[cfg(feature = "nccl")]

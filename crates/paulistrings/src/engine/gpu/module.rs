@@ -11,6 +11,7 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
 use super::device;
 use super::error::GpuError;
+use super::kernel_cache;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
 const PROBE: &str = include_str!("kernels/probe.cu");
@@ -121,7 +122,14 @@ impl KernelSet {
     }
 }
 
+/// Test hook: counts actual NVRTC compilations, so a cache-hit test can assert one without a second.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) static NVRTC_COMPILE_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook). Needs only NVRTC, no device.
+///
+/// A hit on the on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`, `research/FINDINGS.md` "GPU single-device profile") skips NVRTC entirely; a miss compiles and writes back, best-effort.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
@@ -133,19 +141,23 @@ pub(crate) fn compile_ptx(
     let src = KERNEL_SOURCES.concat();
     let mut options = vec![format!("-DW={w}"), "--std=c++17".to_string()];
     options.extend_from_slice(extra_options);
-    compile_ptx_with_opts(
-        src,
-        CompileOptions {
-            arch: Some(arch_static(arch)),
-            fmad: Some(false),
-            options,
-            ..Default::default()
-        },
-    )
-    .map_err(|e| GpuError::Compile {
+    let opts = CompileOptions {
+        arch: Some(arch_static(arch)),
+        fmad: Some(false),
+        options,
+        ..Default::default()
+    };
+    if let Some(ptx) = kernel_cache::lookup(&src, &opts) {
+        return Ok(ptx);
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    NVRTC_COMPILE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ptx = compile_ptx_with_opts(src.clone(), opts.clone()).map_err(|e| GpuError::Compile {
         w,
         log: e.to_string(),
-    })
+    })?;
+    kernel_cache::store(&src, &opts, &ptx.to_src());
+    Ok(ptx)
 }
 
 /// `CompileOptions::arch` wants `&'static str`; the arch set is small and fixed, so leaking an unlisted one is bounded.

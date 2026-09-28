@@ -34,7 +34,7 @@ export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m
 ```
 
 A missing library makes `cuda_available()` return `False` rather than fail at import.
-The first propagation at each width compiles its kernels, which takes a few seconds; later calls in the process reuse them.
+The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`, default `~/.cache/paulistrings/kernels`, `off` to disable) makes the first call in a later process reuse them too.
 
 ## Python
 

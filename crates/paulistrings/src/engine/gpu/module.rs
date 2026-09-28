@@ -122,10 +122,11 @@ impl KernelSet {
     }
 }
 
-/// Test hook: counts actual NVRTC compilations, so a cache-hit test can assert one without a second.
 #[cfg(any(test, feature = "test-utils"))]
-pub(crate) static NVRTC_COMPILE_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// Test hook: NVRTC compilations on this thread, so a cache-hit test is not perturbed by compiles in concurrent tests.
+    pub(crate) static NVRTC_COMPILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook). Needs only NVRTC, no device.
 ///
@@ -151,7 +152,7 @@ pub(crate) fn compile_ptx(
         return Ok(ptx);
     }
     #[cfg(any(test, feature = "test-utils"))]
-    NVRTC_COMPILE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    NVRTC_COMPILES.with(|c| c.set(c.get() + 1));
     let ptx = compile_ptx_with_opts(src.clone(), opts.clone()).map_err(|e| GpuError::Compile {
         w,
         log: e.to_string(),

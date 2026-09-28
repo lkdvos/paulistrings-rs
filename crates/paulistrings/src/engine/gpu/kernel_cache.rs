@@ -246,22 +246,27 @@ mod tests {
             return;
         }
         use super::super::module;
-        use std::sync::atomic::Ordering;
 
+        // An option no other test passes, so a concurrent compile cannot write this key into the directory first.
+        let own = ["-DPAULISTRINGS_CACHE_E2E=1".to_string()];
         let dir = TempDir::new("e2e-hit");
         with_cache_dir(dir.path(), || {
-            let before = module::NVRTC_COMPILE_COUNT.load(Ordering::Relaxed);
-            module::compile_ptx(2, "compute_80", &[]).expect("first compile");
-            let after_first = module::NVRTC_COMPILE_COUNT.load(Ordering::Relaxed);
+            let before = module::NVRTC_COMPILES.with(std::cell::Cell::get);
+            module::compile_ptx(2, "compute_80", &own).expect("first compile");
+            let after_first = module::NVRTC_COMPILES.with(std::cell::Cell::get);
             assert_eq!(after_first, before + 1, "first call always compiles");
 
-            module::compile_ptx(2, "compute_80", &[]).expect("second compile");
-            let after_second = module::NVRTC_COMPILE_COUNT.load(Ordering::Relaxed);
+            module::compile_ptx(2, "compute_80", &own).expect("second compile");
+            let after_second = module::NVRTC_COMPILES.with(std::cell::Cell::get);
             assert_eq!(after_second, after_first, "second call hits the cache");
 
-            module::compile_ptx(2, "compute_80", &["-DFP_BITS=8".to_string()])
-                .expect("third compile, different options");
-            let after_third = module::NVRTC_COMPILE_COUNT.load(Ordering::Relaxed);
+            module::compile_ptx(
+                2,
+                "compute_80",
+                &[own[0].clone(), "-DFP_BITS=8".to_string()],
+            )
+            .expect("third compile, different options");
+            let after_third = module::NVRTC_COMPILES.with(std::cell::Cell::get);
             assert_eq!(after_third, after_second + 1, "different options miss");
         });
     }

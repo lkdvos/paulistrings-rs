@@ -123,6 +123,7 @@ Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = 
 | `su4` | 5.65e7 | 4.035 | 248.7 | 9.838 | 263.3 | 8.44e8 | 0.29 |
 
 ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one, where the fixed per-block cost (0.55–0.76 ns per record at ~1000 records per block) dominates.
+Both tables' `cnot` rows are the fused layer; on the permutation path (K12–K14, research/FINDINGS.md) the same cell is 0.386 ms per layer at 1.00e6 (K12 + K13 0.125, K14 0.221) and 5.07 ms at 1.60e7, at 1800 / 8001 MHz.
 In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-process NVRTC compile is 3.5 s inside the first cell's `upload_ns`, and `download_ns` (`to_host`, pinned D2H plus the host re-sort into `PauliSum`) is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
 
 ## `gpu` cluster nodes — one process, several devices

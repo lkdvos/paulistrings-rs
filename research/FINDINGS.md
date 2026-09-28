@@ -378,6 +378,30 @@ Disabling cudarc's event tracking on the context (a throwaway environment knob, 
 | 8 | K3 shared-memory bank conflicts in the radix scatter and `scnt` layout | 49–53% of shared wavefronts are conflicts | secondary to rank 1–2; unmeasured, likely ≤ 10% of K3 | medium | occupancy was rejected as a lever; conflicts were not examined |
 | 9 | Untraced per-layer `cuMemAllocAsync`/`cuMemFreeAsync` pairs | 8 + 8 per steady layer, ~15 µs of API | ≤ 10% at 1e4 | small | no |
 
+### GPU Clifford permutation path
+
+Rank 1 of the table above, shipped as K12–K14 (`kernels/permute.cu`, ARCHITECTURE.md §GPU-Readiness).
+The gate is a property of the prepared table, not of the channel type: at most one emitting entry per support pattern, no two entries reaching one output pattern (`entries_can_collide`), and no received entry (`DevicePrepared::permutation`); every Clifford passes, a fanout-2 `T`, `sqrt(SWAP)`, a Haar SU(4) and a rotation do not, and a key-preserving table goes to K5 first.
+K12 counts the survivors per (source bucket, entry) under the same product and keep test as the fused layer's `survives`, K13 sizes a tight CSR in bucket order, and K14 scatters each row to `β ⊕ bd[e]` with `g ⊕ gm[e]`, one block per source bucket at a width set by the average bucket, ranks from a warp match and a per-entry prefix over the warps, no atomics.
+It refines only to the agreed bucket count, since it has no record cap and no source-bucket length limit, and issues no K3, K4 or arena.
+Nothing downstream reads a bucket's device order: `to_host` re-sorts, K11 checks uniqueness, refine, the truncation kernels, K10 and the receive path are order-free, and a Clifford has one product per output key, so the two paths agree bit for bit (`clifford_layers_take_the_permutation_path_*`).
+A layer with received entries keeps the fused path, whose receive merges by position; under random rows about half of a two-qubit Clifford's layers cross at `P = 2`, so the partitioned gain is a property of the row choice.
+
+Runtime-knob A/B on one release binary (`scripts/jcc-rustflags.sh` sourced), `PAULISTRINGS_GPU_CLIFFORD=off` as side A, five alternating pairs per cell, `--threads 1 --qubits 128`, ccqlin038 with no other process on the card, `nvidia-smi` 1800 MHz SM and 8001 MHz memory in 36 of 40 samples under load and 7601 MHz memory in the rest:
+
+| cell | n | layers per run | fused ms/layer | scatter ms/layer | median Δ% | pairs |
+|:-|-:|-:|-:|-:|-:|:-|
+| `cnot` | 1e5 | 20 | 0.263 | 0.097 | −62.7 | 5/5 lower |
+| `cnot` | 1e6 | 20 | 1.120 | 0.386 | −65.6 | 5/5 lower |
+| `cnot` | 1.6e7 | 10 | 15.3 | 5.07 | −66.9 | 5/5 lower |
+| `heavyhex_step` (5 steps, `coeff:2^-13`, 1355 layers) | 1.16e6 | 1355 | 2.138 | 2.145 | +0.3 | 2/5 lower, no consistent change |
+
+`heavyhex_step` holds only rotations, so its flat cell is the control that the gate never fires off a permutation table.
+Kernel time per layer (`phase-timing` events) at 1e6: K12 + K13 0.125 ms and K14 0.221 ms of a 0.382 ms layer, against K1 + K2 0.087 ms and K3 0.761 ms of the fused 1.118 ms; at 1.6e7, 1.52 + 3.51 of 5.07 ms against 1.12 + 11.14 of 15.1 ms.
+K14 moves 112 MB per 1e6 rows in 0.221 ms (510 GB/s), so the scatter is near the 0.17 ms floor the estimate assumed; the gain is 3× rather than 3–4× because K12 counts survivors rather than emitters, which means the count pass reads the coefficient column too and evaluates the product and the keep program per row.
+
+Open: a Clifford layer with received entries, and whether an emitter count plus a gapless write can replace K12's survivor pass without reintroducing compaction.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

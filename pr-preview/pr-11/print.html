@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5daa0c5f.js";
+            window.path_to_searchindex_js = "searchindex-d941a522.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b86f2ee9.js"></script>
@@ -1549,7 +1549,7 @@ On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; els
 export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m.__path__)[0])')/lib:$LD_LIBRARY_PATH"
 </code></pre>
 <p>A missing library makes <code>cuda_available()</code> return <code>False</code> rather than fail at import.
-The first propagation at each width compiles its kernels, which takes a few seconds; later calls in the process reuse them.</p>
+The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (<code>$PAULISTRINGS_KERNEL_CACHE</code>, default <code>~/.cache/paulistrings/kernels</code>, <code>off</code> to disable) makes the first call in a later process reuse them too.</p>
 <h2 id="python-2"><a class="header" href="#python-2">Python</a></h2>
 <p>The snippets on this page are skipped by the doc checker because they need a CUDA device.</p>
 <!-- doctest: skip -->
@@ -1651,6 +1651,9 @@ It runs for a dense two-qubit unitary, whose remote entries share an output supp
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
 <p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
 The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>
+<p><strong>A Clifford layer whose deltas stay inside the partition skips the sort.</strong>
+A Clifford maps every key to exactly one key, so nothing can collide; the device counts and scatters such a layer directly (<code>GpuLayerOptions::clifford</code>, <code>PAULISTRINGS_GPU_CLIFFORD=off</code> returns it to the fused layer).
+A Clifford layer that crosses a partition boundary keeps the fused layer, which merges the received rows.</p>
 <h2 id="peer-access"><a class="header" href="#peer-access">Peer access and NVLink</a></h2>
 <p><code>gpu::peer_access(dst, src)</code> lets device <code>dst</code> reach device <code>src</code>’s memory directly, so a copy from <code>src</code> into <code>dst</code> goes over NVLink or PCIe peer-to-peer, and reports the outcome (<code>PeerAccess::Enabled</code>, <code>Unsupported</code>, <code>Failed</code>, or <code>SameDevice</code>), granting both the driver’s peer-context access and the source’s memory-pool access list a pooled allocation needs to be reachable from a peer at all.
 A device exchange calls it before its first cross-device copy; without it, or on a pair the driver reports as unsupported, the copy stages through the host instead of faulting.

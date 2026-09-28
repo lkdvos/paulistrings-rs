@@ -33,7 +33,7 @@ pub use layer::{
     DEFAULT_RECORDS_PER_BLOCK,
 };
 #[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
-pub use nccl::{LoopbackFault, LoopbackTally, LoopbackWire};
+pub use nccl::{pending_aborts, LoopbackFault, LoopbackTally, LoopbackWire, NcclComm, WarmUpShape};
 pub use payload::{peer_access, GpuExchange, PeerAccess};
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};

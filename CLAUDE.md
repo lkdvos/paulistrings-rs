@@ -120,6 +120,7 @@ module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features nccl,test-utils --lib gpu::   # nccl_available() etc.; pass without the module
 cargo clippy -p paulistrings-py --features nccl -- -D warnings
+cargo build --features nccl,test-utils --example nccl_probe          # the bring-up probe behind scripts/slurm/nccl-probe.sbatch
 ```
 
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.

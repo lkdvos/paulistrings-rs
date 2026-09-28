@@ -154,6 +154,18 @@ The differential nets of `mpi-gpu-nccl.sbatch` run under `PAULISTRINGS_NCCL_TIME
 A failed net is reported and the job goes on to the host baseline; the A/B is skipped and the job exits non-zero.
 `tests/mpi_ranks.rs` itself arms a watchdog before `MPI_Abort` and aborts the process 15 s later if the launcher has not ended it.
 
+## The NCCL probe job
+
+`nccl-probe.sbatch` runs `crates/paulistrings/examples/nccl_probe.rs` (`--features nccl,test-utils`): the communicator init and warm-up the device exchange performs at scatter, one variant per `srun` step, each bounded, one line per rank and variant, with `NCCL_DEBUG=INFO` line-buffered into the job log.
+The variants separate the hypotheses for a warm-up that never completes: the engine's own shape (non-blocking init, one group to every peer, device by local rank), then every GPU pair at two ranks (a bad device or link fails the pairs it is in), the NCCL knobs `NCCL_P2P_DISABLE=1` (shared-memory transport), `NCCL_CUMEM_ENABLE=0` (legacy IPC handles), `NCCL_PROTO=Simple` (no LL push) and `NCCL_RUNTIME_CONNECT=0` (connections at init), a blocking communicator, one group per peer in XOR order, a ring, and the CPU-locality device pick.
+Each rank prints its `init`, `warmup` and `teardown` outcomes with durations, its CPU mask and the NCCL variables set; `teardown=stuck` marks the variant that would have held the allocation, and `gpu_peer` runs first as the CUDA-level check of every link in both directions.
+Knobs: `STEP_BOUND` (seconds per variant, default 120), `NCCL_TIMEOUT_S` (the probe's wait bound, default 40), `PAIRS=0` to skip the pair matrix, `EXTRA_ENV="NCCL_X=1 NCCL_Y=0"` for one more variant of the engine's shape, `PS_REV` as elsewhere.
+
+```bash
+env -u SBATCH_RESERVATION sbatch scripts/slurm/nccl-probe.sbatch
+env -u SBATCH_RESERVATION sbatch --nodelist=workergpu047 scripts/slurm/nccl-probe.sbatch   # the node a run failed on
+```
+
 ## JCC-erratum padding across node types
 
 `-Cllvm-args=-x86-branches-within-32B-boundaries` is worth −9..−13% wall on the reference

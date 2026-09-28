@@ -88,7 +88,8 @@ unsafe impl Send for Raw {}
 
 /// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
 /// Drop finalizes and destroys a healthy one (bounded) and aborts any other, never panicking.
-pub(crate) struct NcclComm {
+/// Public only through `gpu` under `test-utils`, for the `nccl_probe` example.
+pub struct NcclComm {
     raw: Mutex<Raw>,
     ctx: Arc<CudaContext>,
     rank: u32,
@@ -98,18 +99,41 @@ pub(crate) struct NcclComm {
 /// The warm-up's per-peer byte count.
 const WARM_UP_BYTES: usize = 8;
 
+/// Which peers a [`NcclComm::warm_up_shape`] round reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+pub enum WarmUpShape {
+    /// One group with a send to and a receive from every peer: the engine's warm-up.
+    AllPeers,
+    /// One group per peer, round `k` pairing `rank` with `rank ^ k`, so every round is a matching.
+    PerPeer,
+    /// One group with a send to `rank + 1` and a receive from `rank - 1`.
+    Ring,
+}
+
 impl NcclComm {
     /// [`init_with_timeout`](Self::init_with_timeout) with [`nccl_timeout`].
-    pub(crate) fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
+    pub fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
         Self::init_with_timeout(coll, ctx, nccl_timeout())
+    }
+
+    /// [`init_with`](Self::init_with) for a non-blocking communicator.
+    pub fn init_with_timeout(
+        coll: &dyn Collectives,
+        ctx: &Arc<CudaContext>,
+        timeout: Duration,
+    ) -> Result<Self, GpuError> {
+        Self::init_with(coll, ctx, timeout, false)
     }
 
     /// This rank's communicator over `coll`'s group on `ctx`'s device. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
     /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
-    pub(crate) fn init_with_timeout(
+    /// A `blocking` communicator is NCCL's default kind: its init and group ends return only once complete, so `timeout` bounds nothing inside them; it exists for the probe, not the engine.
+    pub fn init_with(
         coll: &dyn Collectives,
         ctx: &Arc<CudaContext>,
         timeout: Duration,
+        blocking: bool,
     ) -> Result<Self, GpuError> {
         let (rank, size) = (coll.rank(), coll.size());
         let local = local_readiness();
@@ -133,7 +157,7 @@ impl NcclComm {
         let id = unpack_id(&buf[..ID_WORDS]);
         ctx.bind_to_thread()?;
         let mut config = default_config();
-        config.blocking = 0;
+        config.blocking = i32::from(blocking);
         let mut comm: sys::ncclComm_t = std::ptr::null_mut();
         // SAFETY: `comm` and `config` are live locals, and `config` is initialized as `NCCL_CONFIG_INITIALIZER` does.
         let started = unsafe {
@@ -162,27 +186,26 @@ impl NcclComm {
     }
 
     /// This rank's index in the communicator.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn rank(&self) -> u32 {
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+    pub fn rank(&self) -> u32 {
         self.rank
     }
 
     /// Ranks in the communicator.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn size(&self) -> u32 {
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+    pub fn size(&self) -> u32 {
         self.size
     }
 
     /// The bound on every wait on this communicator.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn timeout(&self) -> Duration {
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+    pub fn timeout(&self) -> Duration {
         self.lock().timeout
     }
 
     /// Replace the wait bound, so a test can force a timeout without waiting out the default.
     #[cfg(any(test, feature = "test-utils"))]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_timeout(&self, timeout: Duration) {
+    pub fn set_timeout(&self, timeout: Duration) {
         self.lock().timeout = timeout;
     }
 
@@ -194,44 +217,73 @@ impl NcclComm {
     }
 
     /// Whether the communicator has not been aborted.
-    pub(crate) fn is_healthy(&self) -> bool {
+    pub fn is_healthy(&self) -> bool {
         !self.lock().aborted
     }
 
     /// Pay NCCL's lazy connection setup now: one byte-sized send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**: every rank calls it, after the group has agreed that every [`init`](Self::init) succeeded.
-    pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
-        let peers: Vec<u32> = if self.size == 1 {
-            vec![0]
-        } else {
-            (0..self.size).filter(|&q| q != self.rank).collect()
+    pub fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
+        self.warm_up_shape(stream, WarmUpShape::AllPeers)
+    }
+
+    /// [`warm_up`](Self::warm_up) reaching the peers as `shape` says, one bounded group per round; a one-rank world is its own peer whatever the shape.
+    pub fn warm_up_shape(
+        &self,
+        stream: &Arc<CudaStream>,
+        shape: WarmUpShape,
+    ) -> Result<(), GpuError> {
+        let (me, n) = (self.rank, self.size);
+        let rounds: Vec<(Vec<u32>, Vec<u32>)> = match shape {
+            _ if n == 1 => vec![(vec![0], vec![0])],
+            WarmUpShape::AllPeers => {
+                let peers: Vec<u32> = (0..n).filter(|&q| q != me).collect();
+                vec![(peers.clone(), peers)]
+            }
+            WarmUpShape::PerPeer => (1..n.next_power_of_two())
+                .map(|k| me ^ k)
+                .filter(|&q| q < n)
+                .map(|q| (vec![q], vec![q]))
+                .collect(),
+            WarmUpShape::Ring => vec![(vec![(me + 1) % n], vec![(me + n - 1) % n])],
         };
-        let n = peers.len() * WARM_UP_BYTES;
-        let out = stream.alloc_zeros::<u8>(n)?;
-        let mut back = stream.alloc_zeros::<u8>(n)?;
+        for (sends, recvs) in rounds {
+            self.warm_up_round(stream, &sends, &recvs)?;
+        }
+        Ok(())
+    }
+
+    fn warm_up_round(
+        &self,
+        stream: &Arc<CudaStream>,
+        sends: &[u32],
+        recvs: &[u32],
+    ) -> Result<(), GpuError> {
+        let out = stream.alloc_zeros::<u8>(sends.len() * WARM_UP_BYTES)?;
+        let mut back = stream.alloc_zeros::<u8>(recvs.len() * WARM_UP_BYTES)?;
         let mut group = WireGroup::new();
-        for (i, &q) in peers.iter().enumerate() {
+        for (i, &q) in sends.iter().enumerate() {
             group.send(
                 out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES),
                 q,
                 stream,
             );
         }
-        let parts: Vec<(usize, u32)> = peers.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
+        let parts: Vec<(usize, u32)> = recvs.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
         group.recv_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)
     }
 
     /// NCCL's asynchronous state: `Ok(true)` while an operation is still in progress, `Ok(false)` when idle, and on an error the communicator aborted and the error returned.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn check_async(&self) -> Result<bool, GpuError> {
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+    pub fn check_async(&self) -> Result<bool, GpuError> {
         let mut raw = self.lock();
         self.check_async_locked(&mut raw, "ncclCommGetAsyncError")
     }
 
     /// Abort the communicator if it is still live; idempotent, and returns at once (see `abort_locked`).
-    pub(crate) fn abort(&self) {
+    pub fn abort(&self) {
         let mut raw = self.lock();
         Self::abort_locked(&mut raw, self.rank, &self.ctx);
     }
@@ -476,6 +528,17 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Abort threads not yet joined.
 static ABORTS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Abort threads a drop left running past its bound: an `ncclCommAbort` that has not returned.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn pending_aborts() -> usize {
+    ABORTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|h| !h.is_finished())
+        .count()
+}
 
 /// Join every finished abort thread, waiting up to `bound` for the rest; one still running past it stays listed for the next reap.
 fn reap_aborts(bound: Duration) {
@@ -1495,9 +1558,33 @@ mod tests {
         };
         assert_eq!((comm.rank(), comm.size()), (0, 1));
         comm.warm_up(&stream).expect("the warm-up completes");
+        for shape in [
+            WarmUpShape::AllPeers,
+            WarmUpShape::PerPeer,
+            WarmUpShape::Ring,
+        ] {
+            comm.warm_up_shape(&stream, shape)
+                .unwrap_or_else(|e| panic!("the {shape:?} warm-up completes: {e}"));
+        }
         assert!(comm.is_healthy());
         assert!(!comm.check_async().expect("no async error"));
         drop(comm);
+        assert_eq!(pending_aborts(), 0);
+    }
+
+    #[test]
+    fn a_blocking_one_rank_communicator_warms_up_too() {
+        if !crate::engine::gpu::nccl_available() {
+            return;
+        }
+        let _nccl = REAL_NCCL.lock().unwrap_or_else(PoisonError::into_inner);
+        let ctx = super::super::device::context(0).expect("a visible device");
+        let t = InProcessTransport::group(1).pop().expect("one rank");
+        let comm = NcclComm::init_with(&t, &ctx, Duration::from_secs(60), true)
+            .unwrap_or_else(|e| panic!("a blocking one-rank communicator initializes: {e}"));
+        let stream = ctx.new_stream().expect("a stream");
+        comm.warm_up(&stream).expect("the warm-up completes");
+        assert!(comm.is_healthy());
     }
 
     #[test]

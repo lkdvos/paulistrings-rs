@@ -316,6 +316,68 @@ The cap takes about 5.5 GB (−20%) off the peak at unchanged wall; the uncapped
 The send side is not chunked: after the merge its export volume is the receive volume's size (1.6 GB per partition here), the in-process path's received payload *is* the sender's export, so chunking it would need a per-chunk hand-off between partitions inside the exchange, and at this cell the two 4 GB loose arenas and the sum's two column sets outweigh it.
 The cap stays unbounded by default; a group whose peak is the receive sets it, and the NCCL form is covered by the loopback nets only, not by a two-rank measurement.
 
+### GPU single-device profile
+
+Asked what one A6000 leaves on the table for Pauli rotations and Clifford gates, from 1e4 to 2.4e7 terms, with `su4` as a reference point only.
+Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory in every `nvidia-smi` sample under load, brief 1875–1890 MHz boosts, no other process on the card), release build with `scripts/jcc-rustflags.sh` sourced, `W = 2`, 128 qubits, truncation keep unless stated.
+Timelines are Nsight Systems 2024.6.2 (`-t cuda,osrt`) over a driver without `phase-timing`, so the probe's extra synchronizations are absent; a layer is the second application on the saturated sum.
+Kernel counters are Nsight Compute 2025.1.0 on the 13th fused launch, which runs at ncu's base clock control, so its durations read about 18% above the timeline's (886 against 750 µs for `cnot`).
+
+Wall per layer without a profiler, medians of 3 runs of 20 layers (10 for the sweep):
+
+| layer | 1e4 | 1e5 | 1e6 | 4e6 | 1.6e7 |
+|:-|-:|-:|-:|-:|-:|
+| `cnot` | 0.149 | 0.240 | 1.10 | 4.60 | 15.3 |
+| `h`, `cz`, `swap` | 0.15–0.27 | 0.24–0.27 | 1.11 | 3.94 | 15.1–15.3 |
+| `rotation_zz` (m = 1.5 × n) | 0.156 | 0.333 | 1.83 | 6.90 | 26.4 |
+| weight-8 `PauliRotation` (m = 1.5 × n) | 0.158 | 0.296 | 1.61 | 5.99 | 23.1 |
+| `Depolarizing` (key-preserving, K5) | 0.033 | 0.076 | 0.240 | 0.945 | 3.67 |
+
+ms; columns are the initial `n`, the steady term count `m` equal to it except where stated; `su4` at 1.41e7 terms is 67 ms per layer with K3 at 94% of it.
+
+The steady local layer is 13 launches (K1, K2, three three-kernel scans, K3, K4), 6 pageable H2D table copies, 5 blocking D2H reads, 1 memset and 3 `cuStreamSynchronize`, plus 97 `cuEventRecord` and 139 `cuStreamWaitEvent` that cudarc's per-buffer event tracking issues on the one stream.
+At 1e6 terms the card is busy 80% (`cnot`) and 88% (`rotation_zz`) of the layer's window, of which K3 is 0.750 of 1.020 ms and 1.360 of 1.754 ms, K4 0.173 and 0.256 ms, K1 0.057 and 0.098 ms, and every scan kernel 4–11 µs.
+At 1e4 `cnot` the kernels are 0.066 ms of a 0.149 ms layer, so about 0.08 ms per layer is host issue and round trips.
+There is no H2D or D2H of rows inside a local layer: the copies are 5.5–13 KB of table, CSR offsets and scalars.
+
+The fused kernel on the sparse layers at 1e6 (`k_layer_serial_2`, one 1024-thread block per SM, 64 registers, 28.5 KB shared, achieved occupancy 65% of a 66.7% theoretical):
+
+| counter | `cnot` (1024 blocks, 1e6 records) | `rotation_zz` (2048 blocks, 2.5e6 records) |
+|:-|-:|-:|
+| DRAM throughput | 26% (190 GB/s, 168 MB) | 22% (162 GB/s, 266 MB) |
+| L2 throughput | 31% | 18% |
+| SM throughput | 18% | 23% |
+| FP64 pipe | 5.2% | 12.1% |
+| cycles between issues | 50.6 | 42.8 |
+| barrier stall share | 53.6% | 49.3% |
+| short / long scoreboard | 10.2% / 9.0% | 13.5% / 5.2% |
+| shared bank-conflict wavefronts | 8.2e6 of 15.5e6 (53%) | 17.2e6 of 35.3e6 (49%) |
+
+Neither memory nor compute is the limit: the kernel waits at `__syncthreads`, about 40 of them in the eight radix passes of 4 bits over a block that holds one or two records per thread, with half of its shared-memory wavefronts replayed by bank conflicts.
+A Clifford layer emits exactly one record per input row and no two rows of a block share a key, and a rotation emits at most two, the duplicates only ever pairing an entry-0 row with an entry-1 row, so the sort does no work the output needs beyond finding those pairs.
+A two-stream merge of sorted runs does not apply as it stands, since the entry-1 rows arrive with `g ^ gm[e]` and an XOR by a constant does not preserve their order.
+
+The heavy-hex kicked-Ising circuit (`heavyhex_step`, 5 steps under `coeff:2^-13`, 1355 rotation layers at 4.1–11.6e5 terms) runs 2.12 ms per layer; under the profiler the GPU is busy 83% of the timed call, K3 1964 of 2615 ms of kernels.
+The `trotter` cell's timed call is not a small sum: it grows from 6.7e4 to 1.42e7 terms over its 64 layers, the GPU is busy 172 of 557 ms (31%), and the last layers each spend about 34 ms in `cuStreamSynchronize` against 12 ms of kernels with 8 `cuMemAllocAsync` per layer, which points at growing the arena and output columns every layer rather than at launch overhead (the attribution is inferred, not traced).
+
+Outside the layer loop: the first `from_host` per process takes 4.6–8.1 s, of which `cuModuleLoadData` is 12 ms (the driver's JIT cache in `~/.nv/ComputeCache` hits), so the whole first-use cost is NVRTC generating PTX on the host every process.
+`to_host` at 2.4e7 terms is 979 ms on the first call and 200 ms on the second, and 604 against 137 ms for `cnot` at 1.6e7, the difference being the whole-sum `cuMemHostAlloc` (275 ms at 1.42e7 terms) and first touch; `from_host` of an already-compiled set is 402 ms at 2.4e7 through pageable copies.
+Each steady layer also issues 8 `cuMemAllocAsync` and 8 `cuMemFreeAsync` (about 15 µs of API) whose source is untraced.
+
+Disabling cudarc's event tracking on the context (a throwaway environment knob, 3 runs each way, 20 layers) moves wall per layer by −15 to −18% at 1e4 (`cnot` 0.155 → 0.129 ms, `rotation_zz` 0.161 → 0.138 ms), −3 to −9% at 1e5, −1.5% at 1e6 (`rotation_zz` 2 of 3 runs) and −1.7% on `heavyhex_step`, all other pairs agreeing in sign; whether the multi-stream paths (peer copies, NCCL) rely on the tracking is unaudited.
+
+| rank | opportunity | evidence | estimated gain | effort | in FINDINGS already |
+|-:|:-|:-|:-|:-|:-|
+| 1 | Clifford layers as a pure permutation: K1 count, scatter each row to `β ^ bd[e]` with `g ^ gm[e]` and its sign, no sort, no arena, no K4 | K3 + K4 are 0.92 of 1.02 ms busy at 1e6; one read and one write of 56 B per term is 112 MB, 0.17 ms at 650 GB/s | 3–4× on every Clifford layer at ≥ 1e6 (`cnot` 1.1 → ~0.3 ms at 1e6, 15.3 → ~4 ms at 1.6e7); overhead-bound below 1e5 | medium; relies on nothing reading the device's in-bucket order, which `assert_invariants_device` already leaves free | no; the loose-CSR rejection keeps K4 for dedup, which a permutation does not need |
+| 2 | Rotation dedup as a shared-memory hash join of entry-1 rows against entry-0 rows instead of eight radix passes | barrier stall 49%, DRAM 22%, SM 23%; 266 MB per layer is 0.41 ms at 650 GB/s against K3's 1.36 ms | K3 −50–65%, rotation layer −35–45% at ≥ 1e6, `heavyhex_step` −30% (K3 is 75% of its kernel time) | medium–high; the collision fallback needs a hash-table form | the open lever "a shorter sort for short runs" names the symptom; this form is untried |
+| 3 | Cache NVRTC output on disk (PTX, or a cubin from `nvrtcGetCUBIN` at `sm_86`) keyed by source hash, options and NVRTC version | `cuModuleLoadData` 12 ms of a 4.6–8.1 s first upload | ~4.7 s per process, every process | small | no |
+| 4 | Fewer host round trips per layer, then a captured graph for the remainder | 5 blocking D2H + 3 syncs, 13 launches, 0.08 ms of host per 0.15 ms layer at 1e4; `heavyhex_step` idle ~0.19 ms per 2.12 ms layer | up to ~2× at 1e4, 5–10% on `heavyhex_step`, ≤ 3% at 1e6; a graph alone recovers only launch cost (~40 µs of `cuLaunchKernel` per layer), since the variant and batches are chosen from the downloaded offsets | medium–high | "crossover below 1e4" measured the overhead, never reduced it |
+| 5 | Disable cudarc event tracking for the single-stream sum | measured above | −15–18% at 1e4, −3–9% at 1e5, −1.7% `heavyhex_step` | trivial, after an audit of the multi-stream paths | no |
+| 6 | Geometric over-reservation of the arena and output columns on growth | `trotter`: 31% busy, ~34 ms sync against 12 ms kernels in its last layers, 8 allocations per layer | `trotter` timed call 596 → ~250 ms if the attribution holds (unmeasured) | small | no; "no allocation in steady state" covers the saturated sum only |
+| 7 | Chunked pinned download overlapping the host re-sort, instead of a whole-sum `cuMemHostAlloc` on first `to_host`; pinned or chunked upload | first `to_host` 979 against 200 ms at 2.4e7; `from_host` 402 ms at 2.4e7 pageable | ~0.6–0.8 s on the first download at 1.6–2.4e7, ~2–3× on upload (unmeasured) | small–medium | pinned staging and its pooling are shipped; the first-call cost is not addressed |
+| 8 | K3 shared-memory bank conflicts in the radix scatter and `scnt` layout | 49–53% of shared wavefronts are conflicts | secondary to rank 1–2; unmeasured, likely ≤ 10% of K3 | medium | occupancy was rejected as a lever; conflicts were not examined |
+| 9 | Untraced per-layer `cuMemAllocAsync`/`cuMemFreeAsync` pairs | 8 + 8 per steady layer, ~15 µs of API | ≤ 10% at 1e4 | small | no |
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

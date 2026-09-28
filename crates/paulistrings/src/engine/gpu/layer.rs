@@ -62,12 +62,20 @@ pub struct GpuLayerOptions {
     /// Under a device or NCCL exchange the receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
     /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary); a host exchange always moves one chunk.
     pub exchange_bytes: usize,
+    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path, K12–K14, instead of the fused layer; on unless `PAULISTRINGS_GPU_CLIFFORD=off`.
+    pub clifford: bool,
 }
 
 /// The default of [`GpuLayerOptions::premerge`]: on unless `PAULISTRINGS_GPU_PREMERGE=off`, read once per process.
 fn premerge_default() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_PREMERGE").as_deref() != Ok("off"))
+}
+
+/// The default of [`GpuLayerOptions::clifford`]: on unless `PAULISTRINGS_GPU_CLIFFORD=off`, read once per process.
+fn clifford_default() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_CLIFFORD").as_deref() != Ok("off"))
 }
 
 /// The default of [`GpuLayerOptions::exchange_bytes`], read once per process.
@@ -109,6 +117,7 @@ impl Default for GpuLayerOptions {
             max_bits: B_MAX_BITS,
             premerge: premerge_default(),
             exchange_bytes: exchange_bytes_default(),
+            clifford: clifford_default(),
         }
     }
 }
@@ -171,6 +180,8 @@ pub struct GpuLayerCounters {
     pub fallback_key: u32,
     /// The layer took the rescale path.
     pub rescaled: bool,
+    /// The layer took the permutation path, K12–K14, with `records` its input rows.
+    pub permuted: bool,
     /// The layer reduced by the segmented scan rather than the head-serial walk.
     pub dense: bool,
     /// Rows received from partners and merged by the fused layer.
@@ -194,6 +205,8 @@ pub struct GpuKernelMs {
     pub compact: f64,
     /// K5, the key-preserving rescale.
     pub rescale: f64,
+    /// K14, the permutation scatter; its K12 count and K13 sizes land in `count` and `sizes`.
+    pub permute: f64,
     /// K6, refines the layer issued.
     pub refine: f64,
     /// K7, the `ApproxTopN` histogram and retain.
@@ -234,6 +247,7 @@ pub(crate) struct LayerScratch<const W: usize> {
     bd: CudaSlice<u32>,
     gm: CudaSlice<u64>,
     rem: CudaSlice<u32>,
+    entry_of: CudaSlice<u32>,
     pub(super) arena: Option<DeviceColumns<W>>,
     seg_host: Vec<u32>,
     bucket_at_host: Vec<u32>,
@@ -348,6 +362,7 @@ impl<const W: usize> LayerScratch<W> {
             bd: s.alloc_zeros(16)?,
             gm: s.alloc_zeros(16)?,
             rem: s.alloc_zeros(16)?,
+            entry_of: s.alloc_zeros(16)?,
             arena: None,
             seg_host: Vec::new(),
             bucket_at_host: Vec::new(),
@@ -630,6 +645,15 @@ fn apply_layer_body<const W: usize, X: Transport>(
             refine(sum, scratch, target_bits)?;
         }
         rescale_device(sum, &table, keep, scratch)?;
+        return Ok(LayerExchangeCounts::none(size));
+    }
+    if table.permutation && scratch.options.clifford {
+        debug_assert!(!has_remote);
+        if target_bits > sum.hash.bits() {
+            refine(sum, scratch, target_bits)?;
+            table.rehash(&sum.hash);
+        }
+        permute_device(sum, &table, keep, scratch)?;
         return Ok(LayerExchangeCounts::none(size));
     }
     let solo = size == 1;
@@ -1104,6 +1128,153 @@ fn rescale_device<const W: usize>(
     Ok(())
 }
 
+/// K12's and K14's block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
+pub(super) fn perm_threads(len: usize, buckets: usize, w: usize) -> u32 {
+    let avg = len.div_ceil(buckets.max(1));
+    (avg.max(64).next_power_of_two() as u32).min(layer_threads(w))
+}
+
+/// K12–K14: the permutation path, into the spare columns as a tight CSR in bucket order.
+fn permute_device<const W: usize>(
+    sum: &mut GpuSum<W>,
+    table: &DevicePrepared<W>,
+    keep: &KeepProgram,
+    scratch: &mut LayerScratch<W>,
+) -> Result<(), GpuError> {
+    let s = sum.stream.clone();
+    let k = sum.kernels.clone();
+    let o = sum.device();
+    let b = sum.hash.num_buckets();
+    let n_in = sum.len();
+    let (b32, e32) = (b as u32, table.entries as u32);
+    grow(&s, &mut scratch.cnt, b * table.entries, o)?;
+    let mut out = match sum.spare.take() {
+        Some(spare) => spare,
+        None => DeviceColumns::<W>::with_capacity(&s, o, n_in, b)?,
+    };
+    out.len = 0;
+    out.buckets = 0;
+    out.reserve(n_in, b)?;
+    #[cfg(feature = "phase-timing")]
+    s.synchronize()?;
+    let (amp, mask, bd, gm, entry_of) = (
+        &mut scratch.amp,
+        &mut scratch.mask,
+        &mut scratch.bd,
+        &mut scratch.gm,
+        &mut scratch.entry_of,
+    );
+    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
+        s.memcpy_htod(&table.amp, amp)?;
+        s.memcpy_htod(&table.mask, mask)?;
+        s.memcpy_htod(&table.bucket_delta, bd)?;
+        s.memcpy_htod(&table.gm, gm)?;
+        s.memcpy_htod(&table.entry_of, entry_of)?;
+        Ok(())
+    })?;
+    let block_per_bucket = LaunchConfig {
+        grid_dim: (b32, 1, 1),
+        block_dim: (perm_threads(n_in, b, W), 1, 1),
+        shared_mem_bytes: 0,
+    };
+    let t0 = scratch.event(sum)?;
+    // SAFETY: arguments match `k_perm_count` in permute.cu; `cnt` holds `b * e` entries.
+    unsafe {
+        s.launch_builder(&k.perm_count)
+            .arg(&sum.cols.x)
+            .arg(&sum.cols.z)
+            .arg(&sum.cols.coeff)
+            .arg(&sum.cols.start)
+            .arg(&sum.cols.lens)
+            .arg(&table.mode)
+            .arg(&e32)
+            .arg(&table.kq)
+            .arg(&table.q0)
+            .arg(&table.q1)
+            .arg(&table.rot_cos)
+            .arg(&table.rot_sin)
+            .arg(&scratch.amp)
+            .arg(&scratch.mask)
+            .arg(&scratch.nz)
+            .arg(&scratch.entry_of)
+            .arg(keep)
+            .arg(&mut scratch.cnt)
+            .launch(block_per_bucket)?;
+    }
+    scratch.lap(sum, t0, |m| &mut m.count)?;
+    let t1 = scratch.event(sum)?;
+    // SAFETY: arguments match `k_perm_lens`; `out.lens` holds `b` entries.
+    unsafe {
+        s.launch_builder(&k.perm_lens)
+            .arg(&scratch.cnt)
+            .arg(&scratch.bd)
+            .arg(&b32)
+            .arg(&e32)
+            .arg(&mut out.lens)
+            .launch(thread_per(b, 256))?;
+    }
+    exclusive_scan_with_max_into(
+        &s,
+        &k,
+        &out.lens.slice(0..b),
+        &mut out.start.slice_mut(0..b + 1),
+        b,
+        &mut scratch.scan,
+        &mut scratch.tot_a,
+    )?;
+    scratch.lap(sum, t1, |m| &mut m.sizes)?;
+    let t2 = scratch.event(sum)?;
+    // SAFETY: arguments match `k_perm_scatter`; `out` has room for every input row, the scan's total at most.
+    unsafe {
+        s.launch_builder(&k.perm_scatter)
+            .arg(&sum.cols.x)
+            .arg(&sum.cols.z)
+            .arg(&sum.cols.coeff)
+            .arg(&sum.cols.g)
+            .arg(&sum.cols.start)
+            .arg(&sum.cols.lens)
+            .arg(&table.mode)
+            .arg(&e32)
+            .arg(&table.kq)
+            .arg(&table.q0)
+            .arg(&table.q1)
+            .arg(&table.rot_cos)
+            .arg(&table.rot_sin)
+            .arg(&scratch.amp)
+            .arg(&scratch.mask)
+            .arg(&scratch.nz)
+            .arg(&scratch.entry_of)
+            .arg(&scratch.bd)
+            .arg(&scratch.gm)
+            .arg(&scratch.cnt)
+            .arg(&out.start)
+            .arg(keep)
+            .arg(&mut out.x)
+            .arg(&mut out.z)
+            .arg(&mut out.coeff)
+            .arg(&mut out.g)
+            .launch(block_per_bucket)?;
+    }
+    scratch.lap(sum, t2, |m| &mut m.permute)?;
+    #[cfg(feature = "phase-timing")]
+    s.synchronize()?;
+    let tot = &scratch.tot_a;
+    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+        let v = s.clone_dtoh(tot)?;
+        s.synchronize()?;
+        Ok(v[0])
+    })?;
+    out.len = total as usize;
+    out.buckets = b;
+    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    scratch.extent = sum.len();
+    scratch.counters.bits = sum.hash.bits();
+    scratch.counters.records = n_in as u64;
+    scratch.counters.permuted = true;
+    sum.debug_check();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,8 +1344,10 @@ mod tests {
     #[test]
     fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
         crate::require_cuda!();
+        // The limits under test are the fused layer's, which a permutation table only reaches with the scatter path off.
         let opts = GpuLayerOptions {
             bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+            clifford: false,
             ..GpuLayerOptions::default()
         };
         let perm = sixteen_delta_permutation();
@@ -1211,6 +1384,16 @@ mod tests {
             single_bucket_layer(cap / 15 + 1, true, &su4, capped),
             Err(GpuError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
+        assert_eq!(perm_threads(1_000_000, 256, 2), 1024);
+        assert_eq!(perm_threads(1_000_000, 4096, 2), 256);
+        assert_eq!(perm_threads(10_000, 1024, 1), 64);
+        assert_eq!(perm_threads(0, 1, 1), 64);
+        assert_eq!(perm_threads(1_000_000, 256, 8), 256);
+        assert_eq!(perm_threads(1_000_000, 256, 4), 512);
     }
 
     #[test]

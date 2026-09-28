@@ -10,6 +10,9 @@ use crate::engine::partitioned::plan::RemoteDelta;
 /// `rem[e]` of an entry sourced from a local bucket; matches `NO_REMOTE` in `kernels/prelude.cuh`.
 pub(crate) const NO_REMOTE: u32 = u32::MAX;
 
+/// `entry_of[s]` of a support pattern no entry emits for; matches `NO_ENTRY` in `kernels/prelude.cuh`.
+pub(crate) const NO_ENTRY: u32 = u32::MAX;
+
 /// Entries with any nonzero amplitude per pattern, averaged over the active patterns, at or above which a table counts as dense.
 /// Dense tables reduce by the block-wide segmented scan, sparse ones by the head-serial walk.
 pub(crate) const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
@@ -45,6 +48,11 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) dense: bool,
     /// One identity entry and no received entry: the K5 rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
     pub(crate) key_preserving: bool,
+    /// Every support pattern has at most one emitting entry, no two entries reach one output pattern, and no entry is received: the scatter path (`kernels/permute.cu`), since no two input keys can emit one output key.
+    /// A key-preserving table is one too; K5 takes precedence.
+    pub(crate) permutation: bool,
+    /// Per support pattern, the one entry that emits for it or [`NO_ENTRY`]; meaningful only when `permutation`.
+    pub(crate) entry_of: Vec<u32>,
     masks: Vec<([u64; W], [u64; W])>,
 }
 
@@ -59,11 +67,14 @@ impl<const W: usize> DevicePrepared<W> {
         let mut amp = vec![0f64; 16 * LOCAL_DIM * 2];
         let mut nz = vec![0u32; 16];
         let mut masks: Vec<([u64; W], [u64; W])> = Vec::new();
+        let mut entry_of = vec![NO_ENTRY; LOCAL_DIM];
+        let mut one_entry_per_pattern = false;
         let (mode, kq, q0, q1, rot_cos, rot_sin, dense, key_preserving);
         match prep {
             Prepared::Local(ptm) => {
                 let dim = 1usize << (2 * ptm.k());
                 let mut rows = 0usize;
+                one_entry_per_pattern = true;
                 for (e, d) in ptm.deltas().iter().enumerate() {
                     for s in 0..LOCAL_DIM {
                         amp[(e * LOCAL_DIM + s) * 2] = d.amp[s].re;
@@ -72,6 +83,10 @@ impl<const W: usize> DevicePrepared<W> {
                             nz[e] |= 1 << s;
                             if s < dim {
                                 rows += 1;
+                                if entry_of[s] != NO_ENTRY {
+                                    one_entry_per_pattern = false;
+                                }
+                                entry_of[s] = e as u32;
                             }
                         }
                     }
@@ -139,8 +154,15 @@ impl<const W: usize> DevicePrepared<W> {
             fanout,
             dense,
             key_preserving: key_preserving && remote.is_empty(),
+            permutation: false,
+            entry_of,
             masks,
         };
+        let all: Vec<usize> = (0..entries).collect();
+        out.permutation = mode == 0
+            && one_entry_per_pattern
+            && remote.is_empty()
+            && !out.entries_can_collide(&all);
         out.rehash(hash);
         out
     }
@@ -204,6 +226,8 @@ impl<const W: usize> DevicePrepared<W> {
         t.n_remote = 0;
         t.fanout = (0..t.entries).filter(|&j| t.nz[j] != 0).count();
         t.key_preserving = false;
+        t.permutation = false;
+        t.entry_of.fill(NO_ENTRY);
         t
     }
 
@@ -324,6 +348,73 @@ mod tests {
         let rot = table::<2>(&PauliRotation::new(gen, 0.7), 128);
         assert_eq!(rot.mode, 1);
         assert!(!rot.entries_can_collide(&[0, 1]));
+    }
+
+    /// A Clifford maps every support pattern to exactly one entry and no two entries onto one output pattern; a fanout-2 `T`, a dense SU(4), a rotation and a table with a received entry are not permutations.
+    #[test]
+    fn the_permutation_gate_holds_for_cliffords_alone() {
+        use crate::channel::clifford::Clifford1Q;
+        use crate::channel::GeneralUnitary1Q;
+        let cliffords: Vec<(&str, Box<dyn Channel<1>>)> = vec![
+            ("h", Box::new(Clifford1Q::h(3))),
+            ("s", Box::new(Clifford1Q::s(3))),
+            ("cnot", Box::new(Clifford2Q::cnot(1, 3))),
+            ("cz", Box::new(Clifford2Q::cz(1, 3))),
+            ("swap", Box::new(Clifford2Q::swap(1, 3))),
+        ];
+        for (name, ch) in &cliffords {
+            let t = table::<1>(ch.as_ref(), 8);
+            assert!(t.permutation && !t.key_preserving, "{name}");
+            let dim = 1usize << (2 * t.kq);
+            for s in 0..LOCAL_DIM {
+                let emitting: Vec<usize> = (0..t.entries)
+                    .filter(|&e| (t.nz[e] >> s) & 1 != 0)
+                    .collect();
+                if s < dim {
+                    assert_eq!(emitting, vec![t.entry_of[s] as usize], "{name} pattern {s}");
+                } else {
+                    assert!(emitting.is_empty() && t.entry_of[s] == NO_ENTRY, "{name}");
+                }
+            }
+        }
+        // `X` is a Pauli gate: key-preserving, so K5 takes it before the permutation path.
+        let x = table::<1>(&Clifford1Q::x(3), 8);
+        assert!(x.key_preserving && x.permutation);
+        let t = table::<1>(
+            &GeneralUnitary1Q::from_matrix(
+                3,
+                [
+                    [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                    [
+                        Complex64::new(0.0, 0.0),
+                        Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
+                    ],
+                ],
+            ),
+            8,
+        );
+        assert!(!t.permutation, "T emits two rows for X and for Y");
+        let su4 = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()), 8);
+        assert!(!su4.permutation);
+        let rot = table::<1>(&zz_rotation::<1>(1, 3, 0.3), 8);
+        assert!(!rot.permutation);
+        let restricted = table::<1>(&Clifford2Q::cnot(1, 3), 8).restrict(&[0, 1]);
+        assert!(!restricted.permutation);
+    }
+
+    #[test]
+    fn a_received_entry_disables_the_permutation_path() {
+        use crate::bucket::hash::PartitionRows;
+        use crate::engine::partitioned::plan::PartitionPlan;
+        let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
+        let fp = FingerprintRows::new(hash.seed());
+        let ch = crate::channel::clifford::Clifford1Q::h(1);
+        let prep = ch.prepare(&hash, false).unwrap();
+        let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
+        let plan = PartitionPlan::new(&prep, &rows, 0);
+        assert!(!plan.remote.is_empty());
+        assert!(!DevicePrepared::new(&prep, &hash, &fp, &plan.remote).permutation);
+        assert!(DevicePrepared::new(&prep, &hash, &fp, &[]).permutation);
     }
 
     #[test]

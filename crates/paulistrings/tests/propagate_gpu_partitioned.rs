@@ -963,3 +963,62 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
         );
     }
 }
+
+/// A Clifford-only circuit across virtual partitions agrees with the host; a layer whose delta stays inside every partition takes the permutation path on every rank, one whose delta crosses keeps the fused layer.
+#[test]
+fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
+    require_cuda!();
+    use paulistrings::channel::Clifford1Q;
+    use paulistrings::test_support::random_clifford_circuit;
+    let nq = 12;
+    let sum = rand_sum::<1>(2000, nq, 0xC11F);
+    let circuit = random_clifford_circuit::<1>(nq, 30, 0xC1FF);
+    check(&circuit, &sum, &KeepAll, "clifford keep", &[2, 4]);
+    check(
+        &circuit,
+        &sum,
+        &And(CoefficientThreshold(0.3), WeightCutoff(9)),
+        "clifford and",
+        &[2, 4],
+    );
+    for p in [2usize, 4] {
+        let mut split = split_of(&sum, p, GpuExchange::Device);
+        // `H` on `q` has the one delta `X_q Z_q`; local when the partition rows read it as zero.
+        let delta_local = |q: u32| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
+        let local = (0..nq as u32).find(|&q| delta_local(q)).expect("a local H");
+        let remote = (0..nq as u32)
+            .find(|&q| !delta_local(q))
+            .expect("a crossing H");
+        let mut c = Circuit::<1>::new(nq);
+        c.push(Clifford1Q::h(local));
+        split
+            .propagate(&c, &KeepAll, Direction::Forward)
+            .expect("local H");
+        for rank in 0..p {
+            let counters = split.last_layer_counters(rank);
+            assert!(counters.permuted, "P={p} rank {rank}: {counters:?}");
+        }
+        let mut c = Circuit::<1>::new(nq);
+        c.push(Clifford1Q::h(remote));
+        split
+            .propagate(&c, &KeepAll, Direction::Forward)
+            .expect("crossing H");
+        for rank in 0..p {
+            let counters = split.last_layer_counters(rank);
+            assert!(
+                !counters.permuted && counters.rows_received > 0,
+                "P={p} rank {rank}: {counters:?}"
+            );
+        }
+        let mut both = Circuit::<1>::new(nq);
+        both.push(Clifford1Q::h(local));
+        both.push(Clifford1Q::h(remote));
+        let want = propagate(&both, sum.clone(), &KeepAll, Direction::Forward);
+        assert_terms_close(
+            &split.gather().unwrap(),
+            &want,
+            TOL,
+            &format!("P={p} two H"),
+        );
+    }
+}

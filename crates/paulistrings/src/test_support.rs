@@ -717,6 +717,52 @@ pub fn random_circuit<const W: usize>(
     circuit
 }
 
+/// A seeded circuit of Cliffords alone: `H`, `S`, `Y`, `CNOT`, `CZ` and `SWAP` on random qubits, so every layer is a permutation of keys (`Y` a key-preserving one).
+pub fn random_clifford_circuit<const W: usize>(
+    num_qubits: usize,
+    layers: usize,
+    seed: u64,
+) -> crate::Circuit<W> {
+    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
+    let mut rng = Xs64::new(seed);
+    let mut circuit = crate::Circuit::<W>::new(num_qubits);
+    let n = num_qubits as u64;
+    for _ in 0..layers {
+        let q0 = (rng.next_u64() % n) as u32;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
+        match rng.next_u64() % 6 {
+            0 => circuit.push(Clifford1Q::h(q0)),
+            1 => circuit.push(Clifford1Q::s(q0)),
+            2 => circuit.push(Clifford1Q::y(q0)),
+            3 => circuit.push(Clifford2Q::cnot(q0, q1)),
+            4 => circuit.push(Clifford2Q::cz(q0, q1)),
+            _ => circuit.push(Clifford2Q::swap(q0, q1)),
+        }
+    }
+    circuit
+}
+
+/// `sum` with every `every`-th term's coefficient replaced by an exact `0 + 0i`, which no accumulator would keep: the input a layer must drop rather than carry.
+#[cfg(feature = "cuda")]
+pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -> PauliSum<W> {
+    let mut i = 0usize;
+    let buckets = (0..sum.num_buckets())
+        .map(|b| {
+            let (x, z, c) = sum.bucket(b);
+            let mut cols = crate::bucket::sum::BucketCols::<W>::default();
+            cols.x.extend_from_slice(x);
+            cols.z.extend_from_slice(z);
+            for &c in c {
+                cols.coeff
+                    .push(if i.is_multiple_of(every) { ZERO } else { c });
+                i += 1;
+            }
+            cols
+        })
+        .collect();
+    PauliSum::from_buckets(buckets, sum.hash().clone(), sum.num_qubits())
+}
+
 /// A sum on which `cancellation_channel` produces an exact `±0` coefficient: `-0.5·I + 1.0·Z₀` under amplitude damping at `γ = 0.5` sums `-0.5 + 0.5·1.0` onto the identity key.
 /// The other terms keep the layer from being trivial.
 pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {

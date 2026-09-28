@@ -183,7 +183,7 @@ A device run agrees with the host to tolerance and is bitwise reproducible run-t
 - The device axis is measured on the release `phase-timing,cuda` probe with `--device` (`--device <list>` or `--gpu-partitions <n>` for a device group); record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number, since the workstation's clocks are driver-managed and unlocked rather than fixed.
 - A GPU timing is the second application of a gate on the saturated sum; a dense cell's CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1` runs, never `wall/3`.
 - The device roofline denominator comes from `membench --device` / `scripts/bandwidth.sh --device`.
-- `PAULISTRINGS_GPU_EXCHANGE=host|device`, `PAULISTRINGS_GPU_STAGING`, `PAULISTRINGS_GPU_PREMERGE=off` and `PAULISTRINGS_GPU_EXCHANGE_BYTES` are runtime knobs, so a device-exchange A/B is one binary run both ways, as with any other knob A/B above.
+- `PAULISTRINGS_GPU_EXCHANGE=host|device`, `PAULISTRINGS_GPU_STAGING`, `PAULISTRINGS_GPU_PREMERGE=off`, `PAULISTRINGS_GPU_EXCHANGE_BYTES` and `PAULISTRINGS_GPU_CLIFFORD=off` (a Clifford layer back on the fused path instead of the K12–K14 scatter) are runtime knobs, so a device-exchange or Clifford-path A/B is one binary run both ways, as with any other knob A/B above.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
 It records what was measured and rejected, including several ideas that look obviously good.

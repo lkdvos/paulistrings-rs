@@ -162,6 +162,10 @@ It costs a second fused pass on the sender that a same-device exchange (two virt
 **A device receive moves in chunks of destination positions** rather than all at once (`GpuLayerOptions::exchange_bytes`, `PAULISTRINGS_GPU_EXCHANGE_BYTES`, `K`/`M`/`G` suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
 The send side is never chunked: its export volume stays resident until the layer's last chunk moved.
 
+**A Clifford layer whose deltas stay inside the partition skips the sort.**
+A Clifford maps every key to exactly one key, so nothing can collide; the device counts and scatters such a layer directly (`GpuLayerOptions::clifford`, `PAULISTRINGS_GPU_CLIFFORD=off` returns it to the fused layer).
+A Clifford layer that crosses a partition boundary keeps the fused layer, which merges the received rows.
+
 ## Peer access and NVLink {#peer-access}
 
 `gpu::peer_access(dst, src)` lets device `dst` reach device `src`'s memory directly, so a copy from `src` into `dst` goes over NVLink or PCIe peer-to-peer, and reports the outcome (`PeerAccess::Enabled`, `Unsupported`, `Failed`, or `SameDevice`), granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.

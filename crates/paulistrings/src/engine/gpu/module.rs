@@ -24,6 +24,7 @@ const LAYER: &str = include_str!("kernels/layer.cu");
 const EXPORT: &str = include_str!("kernels/export.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
+const PERMUTE: &str = include_str!("kernels/permute.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
@@ -40,6 +41,7 @@ const KERNEL_SOURCES: &[&str] = &[
     LAYER,
     COMPACT,
     RESCALE,
+    PERMUTE,
     TRUNCATE,
 ];
 
@@ -98,6 +100,9 @@ pub(crate) struct KernelSet {
     pub(crate) premerge_copy: CudaFunction,
     pub(crate) compact: CudaFunction,
     pub(crate) rescale: CudaFunction,
+    pub(crate) perm_count: CudaFunction,
+    pub(crate) perm_lens: CudaFunction,
+    pub(crate) perm_scatter: CudaFunction,
     pub(crate) octave_hist: CudaFunction,
     pub(crate) retain: CudaFunction,
     pub(crate) radix_hist: CudaFunction,
@@ -243,6 +248,9 @@ pub(crate) fn kernel_set_with_options(
         premerge_copy: f("k_premerge_copy")?,
         compact: f("k_compact")?,
         rescale: f("k_rescale")?,
+        perm_count: f("k_perm_count")?,
+        perm_lens: f("k_perm_lens")?,
+        perm_scatter: f("k_perm_scatter")?,
         octave_hist: f("k_octave_hist")?,
         retain: f("k_retain")?,
         radix_hist: f("k_radix_hist")?,

@@ -286,13 +286,18 @@ fn fold_layer_stats<const W: usize>(
     stats.coset_loop_ns +=
         wall_ns.saturating_sub(refine + rescale + laps.export_ns + laps.exchange_ns);
     stats.gather_ns += ns(after.count - before.count) + ns(after.sizes - before.sizes);
-    stats.merge_ns += ns(after.layer - before.layer);
+    stats.merge_ns += ns(after.layer - before.layer) + ns(after.permute - before.permute);
     stats.compact_ns += ns(after.compact - before.compact);
     let [h2d, d2h] = std::mem::take(&mut scratch.xfer_ns);
     stats.h2d_ns += h2d;
     stats.d2h_ns += d2h;
     let c = scratch.counters;
-    if !c.rescaled {
+    if c.permuted {
+        // One scatter over every input row, nothing sorted.
+        stats.cosets += 1;
+        stats.runs += 1u64 << c.bits;
+        stats.rows_gathered += c.records;
+    } else if !c.rescaled {
         // Every pre-dedup record is gathered and sorted on the device; nothing takes the identity stream's shortcut.
         stats.cosets += u64::from(c.batches);
         stats.runs += 1u64 << c.bits;

@@ -38,6 +38,8 @@ typedef unsigned char u8;
 #define LOCAL_DIM 16
 // `rem[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Partitioning).
 #define NO_REMOTE 0xFFFFFFFFu
+// `entry_of[s]` for a support pattern no entry of a permutation table emits for (permute.cu).
+#define NO_ENTRY 0xFFFFFFFFu
 
 // Prepared-table kinds: a `LocalPtm` and a wide `RotationPrep` (ARCHITECTURE.md §Prepared-Channels).
 #define MODE_LOCAL 0

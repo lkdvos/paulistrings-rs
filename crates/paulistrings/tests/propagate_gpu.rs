@@ -701,3 +701,211 @@ fn propagate_gpu_front_door_and_options() {
     assert_eq!(trace.layers.len(), circuit.channels.len());
     assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "traced");
 }
+
+/// One device run: the downloaded sum and the last layer's counters.
+fn device_run<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    options: Option<GpuLayerOptions>,
+    extra: &[String],
+) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
+where
+    T: PartitionedTruncation<W> + ?Sized,
+{
+    let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
+    if let Some(o) = options {
+        dev.set_layer_options(o);
+    }
+    dev.propagate(circuit, policy, direction)
+        .expect("device propagate");
+    let got = dev.to_host().expect("download");
+    assert_eq!(dev.len(), got.len());
+    (got, dev.last_layer_counters())
+}
+
+/// Both directions against the host, asserting whether the last layer took the permutation path.
+fn check_permuted<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    name: &str,
+    options: Option<GpuLayerOptions>,
+    extra: &[String],
+    permuted: bool,
+) where
+    T: PartitionedTruncation<W> + ?Sized,
+{
+    for &direction in &[Direction::Forward, Direction::Heisenberg] {
+        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (got, c) = device_run(circuit, sum, policy, direction, options, extra);
+        let what = format!("{name} {direction:?}");
+        assert_eq!(c.permuted, permuted, "{what}: {c:?}");
+        assert_eq!(got.len(), want.len(), "{what}: term count");
+        assert_terms_close(&got, &want, TOL, &what);
+    }
+}
+
+/// Every Clifford runs on the permutation path (K12–K14) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
+fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
+    use paulistrings::test_support::{random_clifford_circuit, with_zero_coefficients};
+    let input = with_zero_coefficients(&rand_sum::<W>(3000, nq, 0xC11F), 7);
+    assert!(input
+        .iter()
+        .any(|(_, _, c)| c == num_complex::Complex64::new(0.0, 0.0)));
+    let gates: Vec<(&str, Box<dyn Channel<W>>)> = vec![
+        ("h", Box::new(Clifford1Q::h(q0))),
+        ("s", Box::new(Clifford1Q::s(q1))),
+        ("cnot", Box::new(Clifford2Q::cnot(q0, q1))),
+        ("cz", Box::new(Clifford2Q::cz(q0, q1))),
+        ("swap", Box::new(Clifford2Q::swap(q0, q1))),
+    ];
+    let policies: Vec<(&str, BuiltinTruncation)> = vec![
+        ("keep", BuiltinTruncation::Keep),
+        ("coeff", BuiltinTruncation::Coeff(0.5)),
+        ("weight", BuiltinTruncation::Weight(weight as u32)),
+        (
+            "and",
+            and(
+                BuiltinTruncation::Coeff(0.3),
+                BuiltinTruncation::Weight(weight as u32),
+            ),
+        ),
+    ];
+    for (name, ch) in gates {
+        let circuit = one_layer(nq, ch);
+        for (pname, policy) in &policies {
+            check_permuted(
+                &circuit,
+                &input,
+                policy,
+                &format!("{name} {pname}"),
+                None,
+                &[],
+                true,
+            );
+        }
+    }
+    let circuit = random_clifford_circuit::<W>(nq, 24, 0x5EED);
+    let last_permutes = !matches!(
+        circuit.channels.last().unwrap().prepare(input.hash(), false),
+        Some(paulistrings::channel::prepared::Prepared::Local(p)) if p.is_key_preserving()
+    );
+    for (pname, policy) in &policies {
+        check_permuted(
+            &circuit,
+            &input,
+            policy,
+            &format!("random clifford {pname}"),
+            None,
+            &[],
+            last_permutes,
+        );
+    }
+    let off = GpuLayerOptions {
+        clifford: false,
+        ..GpuLayerOptions::default()
+    };
+    let cnot = one_layer(
+        nq,
+        Box::new(Clifford2Q::cnot(q0, q1)) as Box<dyn Channel<W>>,
+    );
+    check_permuted(&cnot, &input, &KeepAll, "knob off", Some(off), &[], false);
+    let (on, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, None, &[]);
+    let (fused, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, Some(off), &[]);
+    assert_eq!(
+        on.to_arrays(),
+        fused.to_arrays(),
+        "one product per key: the two paths agree bit for bit"
+    );
+    for hook in ["-DFP_BITS=8", "-DFP_ZERO_LO"] {
+        check_permuted(
+            &circuit,
+            &input,
+            &KeepAll,
+            hook,
+            None,
+            &[hook.to_string()],
+            last_permutes,
+        );
+    }
+    let rot = one_layer(
+        nq,
+        Box::new(zz_rotation::<W>(q0, q1, 0.4)) as Box<dyn Channel<W>>,
+    );
+    check_permuted(&rot, &input, &KeepAll, "rotation", None, &[], false);
+    let su4 = one_layer(
+        nq,
+        Box::new(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())) as Box<dyn Channel<W>>,
+    );
+    check_permuted(&su4, &input, &KeepAll, "su4", None, &[], false);
+    let dep = one_layer(
+        nq,
+        Box::new(Depolarizing {
+            support: [q0],
+            p: 0.1,
+        }) as Box<dyn Channel<W>>,
+    );
+    let (_, c) = device_run(&dep, &input, &KeepAll, Direction::Forward, None, &[]);
+    assert!(c.rescaled && !c.permuted, "{c:?}");
+}
+
+#[test]
+fn clifford_layers_take_the_permutation_path_w1() {
+    require_cuda!();
+    clifford_layers::<1>(8, 3, 5, 6);
+}
+
+#[test]
+fn clifford_layers_take_the_permutation_path_w2() {
+    require_cuda!();
+    clifford_layers::<2>(128, 70, 100, 96);
+}
+
+/// A Clifford on a sum whose source buckets exceed the fused layer's tag limit and whose blocks exceed its record cap: the scatter path has neither limit and never refines for them.
+#[test]
+fn the_permutation_path_has_no_bucket_length_cap() {
+    require_cuda!();
+    let input = rand_sum::<2>(20_000, 128, 0xB16).with_hash(Gf2Hash::new(
+        128,
+        0,
+        rand_sum::<2>(1, 128, 0).hash().seed(),
+    ));
+    assert_eq!(input.num_buckets(), 1);
+    let opts = GpuLayerOptions {
+        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        ..GpuLayerOptions::default()
+    };
+    let circuit = one_layer(
+        128,
+        Box::new(Clifford2Q::cnot(3, 90)) as Box<dyn Channel<2>>,
+    );
+    let want = propagate_with_options(
+        &circuit,
+        input.clone(),
+        &KeepAll,
+        Direction::Forward,
+        PropagateOptions {
+            target_bucket_len: 1 << 20,
+            min_buckets: 1,
+            ..PropagateOptions::default()
+        },
+    );
+    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    dev.set_layer_options(opts);
+    dev.propagate_with_options(
+        &circuit,
+        &KeepAll,
+        Direction::Forward,
+        PropagateOptions {
+            target_bucket_len: 1 << 20,
+            min_buckets: 1,
+            ..PropagateOptions::default()
+        },
+    )
+    .expect("device propagate");
+    let c = dev.last_layer_counters();
+    assert!(c.permuted && c.bits == 0 && c.refine_passes == 0, "{c:?}");
+    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "one bucket of 20000");
+}

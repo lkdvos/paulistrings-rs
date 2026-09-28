@@ -146,6 +146,14 @@ The preamble logs `nvidia-smi topo -m`, `ibv_devinfo -l`, the `nvidia_peermem`/`
 `tests/mpi_ranks.rs` then runs once under `PAULISTRINGS_GPU_EXCHANGE=nccl` (with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET`, so the transport NCCL picked is in the job log) and once under `host`, and the probe A/B (`PAIRS`, default 5, alternating `host`/`nccl`) writes per-rank sidecars to `benchmarks/results/<date>-mpi-gpu-nccl/mpi-gpu-nccl-<job>-r<ranks>-<mode>-p<i>.jsonl.rank<N>`.
 `LAYERS`, `N`, `REPS` and `PAIRS` are environment knobs, `PROBE=0` skips the A/B and runs the differential net alone.
 
+## Bounded steps
+
+Every `srun` in the GPU templates runs through `bounded <secs> srun ...` from `scripts/slurm/bounded.sh`: `timeout` sends TERM at the bound and KILL 30 s later, the step's status is reported, and a failed step lists the compute processes left on the node's GPUs (`leftover_gpu_processes`, an `--overlap` step so it runs beside whatever is stuck).
+A hung rank (a device wait that never ends, an `MPI_Abort` that never returns) therefore costs one step's bound, not the allocation's time limit; `NET_BOUND`, `AB_BOUND` and `PROBE_BOUND` set the bounds in seconds.
+The differential nets of `mpi-gpu-nccl.sbatch` run under `PAULISTRINGS_NCCL_TIMEOUT_S=60` (`NCCL_TIMEOUT_S` overrides), since their exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
+A failed net is reported and the job goes on to the host baseline; the A/B is skipped and the job exits non-zero.
+`tests/mpi_ranks.rs` itself arms a watchdog before `MPI_Abort` and aborts the process 15 s later if the launcher has not ended it.
+
 ## JCC-erratum padding across node types
 
 `-Cllvm-args=-x86-branches-within-32B-boundaries` is worth −9..−13% wall on the reference

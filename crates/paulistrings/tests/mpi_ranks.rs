@@ -175,10 +175,31 @@ impl Runner<'_> {
             if self.rank == 0 {
                 println!("aborting: a failed collective case leaves the group out of step");
             }
-            self.world.abort(1);
+            abort_world(self.world);
         }
     }
+}
 
+/// How long `MPI_Abort` gets to end the process before the watchdog does.
+const ABORT_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `MPI_Abort`, with a watchdog that ends the process itself if the launcher has not: an abort that blocks in the runtime, or a teardown stuck behind a hung device, would otherwise hold the whole allocation.
+fn abort_world(world: &SimpleCommunicator) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    let rank = world.rank();
+    std::thread::spawn(move || {
+        std::thread::sleep(ABORT_GRACE);
+        eprintln!(
+            "mpi_ranks: rank {rank}: MPI_Abort did not end the process within {ABORT_GRACE:?}; aborting it"
+        );
+        std::process::abort();
+    });
+    world.abort(1)
+}
+
+impl Runner<'_> {
     /// Scatter `sum` over the group, propagate, gather on rank 0, and compare
     /// against the single-process oracle.
     // Seven knobs, and every one of them varies across the matrix; bundling

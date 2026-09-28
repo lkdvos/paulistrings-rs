@@ -23,8 +23,10 @@
 #   REPS     --reps (default 5)
 #   PROBE=0  run the differential net alone
 #   PS_REV   commit to build (default: HEAD when the job starts), in a private git worktree
+#   NET_BOUND, PROBE_BOUND   seconds the differential net / one probe step may take (default 1200 / 1500)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
+. scripts/slurm/bounded.sh
 
 module purge
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
@@ -59,7 +61,7 @@ if [ $(( ranks & (ranks - 1) )) -ne 0 ]; then
     echo "the rank count $ranks is not a power of two (a partition is named by log2(P) GF(2) rows)" >&2
     exit 2
 fi
-srun --ntasks-per-node=1 bash -c 'echo "-- $(hostname -s)"; nvidia-smi -L; nvidia-smi topo -m'
+bounded 300 srun --ntasks-per-node=1 bash -c 'echo "-- $(hostname -s)"; nvidia-smi -L; nvidia-smi topo -m'
 
 cargo test --offline --release --features mpi,cuda -p paulistrings --test mpi_ranks --no-run
 bin=$(cargo test --offline --release --features mpi,cuda -p paulistrings --test mpi_ranks --no-run \
@@ -71,9 +73,11 @@ for l in sys.stdin:
     if r.get("reason")=="compiler-artifact" and r["target"]["name"]=="mpi_ranks" and r.get("executable"): print(r["executable"])')
 [ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
 echo "== mpi_ranks: $bin"
-srun --mpi=pmix --cpu-bind=cores "$bin"
+failed=0
+bounded "${NET_BOUND:-1200}" srun --mpi=pmix --cpu-bind=cores "$bin" \
+    || { failed=$?; echo "== mpi_ranks FAILED (exit $failed)"; leftover_gpu_processes; }
 
-if [ "${PROBE:-1}" = "1" ]; then
+if [ "$failed" = 0 ] && [ "${PROBE:-1}" = "1" ]; then
     cargo build --offline --release --features phase-timing,mpi,cuda -p paulistrings \
         --example phase_breakdown
     probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
@@ -82,11 +86,14 @@ if [ "${PROBE:-1}" = "1" ]; then
     n=$(( ${N:-4000000} * ranks ))
     sidecar="$out/mpi-gpu-${SLURM_JOB_ID:-local}-r$ranks.jsonl"
     echo "== probe: $ranks ranks, --n $n (replicated), --device auto -> $sidecar.rank*"
-    srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
+    bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
         --layers "${LAYERS:-rotation_zz,cnot,gu2q,su4,rotation_remote}" --n "$n" \
-        --reps "${REPS:-5}" --format json --json-out "$sidecar"
+        --reps "${REPS:-5}" --format json --json-out "$sidecar" \
+        || { failed=$?; echo "== probe FAILED (exit $failed)"; leftover_gpu_processes; }
     echo "== probe: heavyhex_step, five steps under coeff:2^-13"
-    srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
+    bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
         --layers heavyhex_step --reps 5 --truncation coeff:0.0001220703125 --format json \
-        --json-out "$sidecar"
+        --json-out "$sidecar" \
+        || { failed=$?; echo "== probe heavyhex_step FAILED (exit $failed)"; leftover_gpu_processes; }
 fi
+exit "$failed"

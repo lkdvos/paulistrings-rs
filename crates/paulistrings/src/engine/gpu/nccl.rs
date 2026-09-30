@@ -1,4 +1,4 @@
-//! [`NcclComm`], the NCCL communicator of a device group over MPI, the [`DeviceWire`] seam the device exchange posts its bulk columns through with [`NcclWire`] its NCCL form, and the exchange's host half: [`BlockSkeletons`], [`nccl_schedule`] and the group's mode agreement.
+//! [`NcclComm`], the NCCL communicator of a device group over MPI, the [`DeviceWire`] seam the device exchange posts its bulk columns through with [`NcclWire`] its NCCL form, and the exchange's host half: [`BlockSkeletons`], [`nccl_schedule`] and the group's start agreement.
 //! See ARCHITECTURE.md §Partitioning.
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -79,7 +79,7 @@ struct Raw {
     aborted: bool,
     timeout: Duration,
     /// Test hook: the next completion wait sees its work as never finishing.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     force_timeout: bool,
 }
 
@@ -88,8 +88,7 @@ unsafe impl Send for Raw {}
 
 /// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
 /// Drop finalizes and destroys a healthy one (bounded) and aborts any other, never panicking.
-/// Public only through `gpu` under `test-utils`, for the `nccl_probe` example.
-pub struct NcclComm {
+pub(crate) struct NcclComm {
     raw: Mutex<Raw>,
     ctx: Arc<CudaContext>,
     rank: u32,
@@ -99,42 +98,11 @@ pub struct NcclComm {
 /// The warm-up's per-peer byte count.
 const WARM_UP_BYTES: usize = 8;
 
-/// Which peers a [`NcclComm::warm_up_shape`] round reaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
-pub enum WarmUpShape {
-    /// One group with a send to and a receive from every peer: the engine's warm-up.
-    AllPeers,
-    /// One group per peer, round `k` pairing `rank` with `rank ^ k`, so every round is a matching.
-    PerPeer,
-    /// One group with a send to `rank + 1` and a receive from `rank - 1`.
-    Ring,
-}
-
 impl NcclComm {
-    /// [`init_with_timeout`](Self::init_with_timeout) with [`nccl_timeout`].
-    pub fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
-        Self::init_with_timeout(coll, ctx, nccl_timeout())
-    }
-
-    /// [`init_with`](Self::init_with) for a non-blocking communicator.
-    pub fn init_with_timeout(
-        coll: &dyn Collectives,
-        ctx: &Arc<CudaContext>,
-        timeout: Duration,
-    ) -> Result<Self, GpuError> {
-        Self::init_with(coll, ctx, timeout, false)
-    }
-
-    /// This rank's communicator over `coll`'s group on `ctx`'s device. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
+    /// This rank's non-blocking communicator over `coll`'s group on `ctx`'s device, every wait bounded by [`nccl_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
     /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
-    /// A `blocking` communicator is NCCL's default kind: its init and group ends return only once complete, so `timeout` bounds nothing inside them; it exists for the probe, not the engine.
-    pub fn init_with(
-        coll: &dyn Collectives,
-        ctx: &Arc<CudaContext>,
-        timeout: Duration,
-        blocking: bool,
-    ) -> Result<Self, GpuError> {
+    pub(crate) fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
+        let timeout = nccl_timeout();
         let (rank, size) = (coll.rank(), coll.size());
         let local = local_readiness();
         let id = match (&local, rank) {
@@ -157,7 +125,7 @@ impl NcclComm {
         let id = unpack_id(&buf[..ID_WORDS]);
         ctx.bind_to_thread()?;
         let mut config = default_config();
-        config.blocking = i32::from(blocking);
+        config.blocking = 0;
         let mut comm: sys::ncclComm_t = std::ptr::null_mut();
         // SAFETY: `comm` and `config` are live locals, and `config` is initialized as `NCCL_CONFIG_INITIALIZER` does.
         let started = unsafe {
@@ -169,7 +137,7 @@ impl NcclComm {
                 comm,
                 aborted: comm.is_null(),
                 timeout,
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(test)]
                 force_timeout: false,
             }),
             ctx: ctx.clone(),
@@ -185,72 +153,33 @@ impl NcclComm {
         Ok(this)
     }
 
-    /// This rank's index in the communicator.
-    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
-    pub fn rank(&self) -> u32 {
-        self.rank
-    }
-
-    /// Ranks in the communicator.
-    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
-    pub fn size(&self) -> u32 {
-        self.size
-    }
-
-    /// The bound on every wait on this communicator.
-    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
-    pub fn timeout(&self) -> Duration {
-        self.lock().timeout
-    }
-
     /// Replace the wait bound, so a test can force a timeout without waiting out the default.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn set_timeout(&self, timeout: Duration) {
+    #[cfg(test)]
+    pub(crate) fn set_timeout(&self, timeout: Duration) {
         self.lock().timeout = timeout;
     }
 
     /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
-    #[cfg(any(test, feature = "test-utils"))]
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn force_timeout(&self) {
         self.lock().force_timeout = true;
     }
 
     /// Whether the communicator has not been aborted.
-    pub fn is_healthy(&self) -> bool {
+    pub(crate) fn is_healthy(&self) -> bool {
         !self.lock().aborted
     }
 
     /// Pay NCCL's lazy connection setup now: one byte-sized send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**: every rank calls it, after the group has agreed that every [`init`](Self::init) succeeded.
-    pub fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
-        self.warm_up_shape(stream, WarmUpShape::AllPeers)
-    }
-
-    /// [`warm_up`](Self::warm_up) reaching the peers as `shape` says, one bounded group per round; a one-rank world is its own peer whatever the shape.
-    pub fn warm_up_shape(
-        &self,
-        stream: &Arc<CudaStream>,
-        shape: WarmUpShape,
-    ) -> Result<(), GpuError> {
+    pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
         let (me, n) = (self.rank, self.size);
-        let rounds: Vec<(Vec<u32>, Vec<u32>)> = match shape {
-            _ if n == 1 => vec![(vec![0], vec![0])],
-            WarmUpShape::AllPeers => {
-                let peers: Vec<u32> = (0..n).filter(|&q| q != me).collect();
-                vec![(peers.clone(), peers)]
-            }
-            WarmUpShape::PerPeer => (1..n.next_power_of_two())
-                .map(|k| me ^ k)
-                .filter(|&q| q < n)
-                .map(|q| (vec![q], vec![q]))
-                .collect(),
-            WarmUpShape::Ring => vec![(vec![(me + 1) % n], vec![(me + n - 1) % n])],
+        let peers: Vec<u32> = if n == 1 {
+            vec![0]
+        } else {
+            (0..n).filter(|&q| q != me).collect()
         };
-        for (sends, recvs) in rounds {
-            self.warm_up_round(stream, &sends, &recvs)?;
-        }
-        Ok(())
+        self.warm_up_round(stream, &peers, &peers)
     }
 
     fn warm_up_round(
@@ -275,15 +204,8 @@ impl NcclComm {
         self.wait(stream)
     }
 
-    /// NCCL's asynchronous state: `Ok(true)` while an operation is still in progress, `Ok(false)` when idle, and on an error the communicator aborted and the error returned.
-    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
-    pub fn check_async(&self) -> Result<bool, GpuError> {
-        let mut raw = self.lock();
-        self.check_async_locked(&mut raw, "ncclCommGetAsyncError")
-    }
-
     /// Abort the communicator if it is still live; idempotent, and returns at once (see `abort_locked`).
-    pub fn abort(&self) {
+    pub(crate) fn abort(&self) {
         let mut raw = self.lock();
         Self::abort_locked(&mut raw, self.rank, &self.ctx);
     }
@@ -447,9 +369,9 @@ impl NcclComm {
         done.record(stream)?;
         let mut raw = self.lock();
         let timeout = raw.timeout;
-        #[cfg(any(test, feature = "test-utils"))]
+        #[cfg(test)]
         let forced = std::mem::take(&mut raw.force_timeout);
-        #[cfg(not(any(test, feature = "test-utils")))]
+        #[cfg(not(test))]
         let forced = false;
         let ready = poll_until(timeout, || {
             self.check_async_locked(&mut raw, "an NCCL group")?;
@@ -528,17 +450,6 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Abort threads not yet joined.
 static ABORTS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
-
-/// Abort threads a drop left running past its bound: an `ncclCommAbort` that has not returned.
-#[cfg(any(test, feature = "test-utils"))]
-pub fn pending_aborts() -> usize {
-    ABORTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .filter(|h| !h.is_finished())
-        .count()
-}
 
 /// Join every finished abort thread, waiting up to `bound` for the rest; one still running past it stays listed for the next reap.
 fn reap_aborts(bound: Duration) {
@@ -1037,68 +948,33 @@ pub(crate) fn nccl_schedule(
     ops
 }
 
-/// `PAULISTRINGS_GPU_EXCHANGE` as a device group over a byte transport reads it: `host`, `nccl`, or anything else (`device`, unset) for NCCL where the whole group can run it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExchangeKnob {
-    Host,
-    Auto,
-    Nccl,
-}
-
-pub(crate) fn parse_exchange_knob(raw: Option<&str>) -> ExchangeKnob {
-    match raw.map(str::trim) {
-        Some("host") => ExchangeKnob::Host,
-        Some("nccl") => ExchangeKnob::Nccl,
-        _ => ExchangeKnob::Auto,
-    }
-}
-
-/// The group's exchange decision: whether to start NCCL, and whether any rank's knob makes a failure to start it an error rather than a host fallback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ExchangePlan {
-    pub(crate) nccl: bool,
-    pub(crate) strict: bool,
-}
-
-/// The group's [`ExchangePlan`], the same on every rank. **Collective**: one `allreduce_sum_u64` of `3 + 2 × size` words.
-/// NCCL starts iff the group has more than one rank, every rank wants it and `can`, and no two `device` UUIDs coincide (NCCL refuses a shared device); a strict group that cannot start it errs on every rank.
-pub(crate) fn agree_exchange(
+/// Whether the group can start NCCL, the same verdict on every rank. **Collective**: one `allreduce_sum_u64` of `1 + 2 × size` words.
+/// Every rank must `can` (libnccl 2.22+ loads) and no two `device` UUIDs may coincide, since NCCL refuses two ranks on one device.
+pub(crate) fn agree_start(
     coll: &dyn Collectives,
-    knob: ExchangeKnob,
     can: bool,
     device: [u64; 2],
-) -> Result<ExchangePlan, GpuError> {
+) -> Result<(), GpuError> {
     let (rank, size) = (coll.rank() as usize, coll.size() as usize);
-    let group = size > 1;
-    let wants = group && knob != ExchangeKnob::Host;
-    let mut buf = vec![0u64; 3 + 2 * size];
-    buf[0] = u64::from(wants && can);
-    buf[1] = u64::from(wants);
-    buf[2] = u64::from(group && knob == ExchangeKnob::Nccl);
-    buf[3 + 2 * rank..5 + 2 * rank].copy_from_slice(&device);
+    let mut buf = vec![0u64; 1 + 2 * size];
+    buf[0] = u64::from(!can);
+    buf[1 + 2 * rank..3 + 2 * rank].copy_from_slice(&device);
     coll.allreduce_sum_u64(&mut buf);
-    let ids: Vec<[u64; 2]> = buf[3..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
-    let distinct = ids
-        .iter()
-        .enumerate()
-        .all(|(i, a)| ids[i + 1..].iter().all(|b| b != a));
-    let nccl = group && buf[0] == size as u64 && distinct;
-    let strict = buf[2] > 0;
-    if strict && !nccl {
+    if buf[0] > 0 {
         return Err(GpuError::Unsupported(
-            "PAULISTRINGS_GPU_EXCHANGE=nccl, but a rank cannot start NCCL, a rank asks for the host exchange, or two ranks share a device",
+            "an MPI device group exchanges over NCCL, and a rank cannot load libnccl 2.22 or newer",
         ));
     }
-    if wants && !nccl {
-        log::info!(
-            "gpu: rank {rank} of {size} exchanges through the host ({} of {size} ranks can start NCCL, devices distinct: {distinct})",
-            buf[0]
-        );
+    let ids: Vec<[u64; 2]> = buf[1..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
+    if (0..size).any(|i| ids[i + 1..].contains(&ids[i])) {
+        return Err(GpuError::Unsupported(
+            "two ranks of an MPI device group share a device, which NCCL refuses; give every rank its own GPU",
+        ));
     }
-    Ok(ExchangePlan { nccl, strict })
+    Ok(())
 }
 
-/// A device's UUID as the two words [`agree_exchange`] compares.
+/// A device's UUID as the two words [`agree_start`] compares.
 pub(crate) fn device_uuid(ctx: &CudaContext) -> Result<[u64; 2], GpuError> {
     let id = ctx.uuid()?;
     let b: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
@@ -1404,92 +1280,59 @@ mod tests {
         }
     }
 
-    /// Every combination of knob and readiness on two ranks, and a sample on four: one outcome on every rank, the documented one.
+    /// Every readiness and device pattern on two ranks, and a sample on four: one outcome on every rank, an error unless every rank can and no device repeats.
     #[test]
-    fn the_exchange_mode_is_agreed_for_every_knob_and_readiness() {
-        use ExchangeKnob::{Auto, Host, Nccl};
-        let run = |ranks: &[(ExchangeKnob, bool, [u64; 2])]| -> Vec<Result<bool, String>> {
+    fn the_start_is_agreed_for_every_readiness_and_device() {
+        let run = |ranks: &[(bool, [u64; 2])]| -> Vec<Result<(), String>> {
             let size = ranks.len() as u32;
             std::thread::scope(|s| {
                 let hs: Vec<_> = InProcessTransport::group(size)
                     .into_iter()
                     .map(|t| {
-                        let (knob, can, id) = ranks[t.rank() as usize];
-                        s.spawn(move || {
-                            agree_exchange(&t, knob, can, id)
-                                .map(|p| p.nccl)
-                                .map_err(|e| e.to_string())
-                        })
+                        let (can, id) = ranks[t.rank() as usize];
+                        s.spawn(move || agree_start(&t, can, id).map_err(|e| e.to_string()))
                     })
                     .collect();
                 hs.into_iter().map(|h| h.join().unwrap()).collect()
             })
         };
-        let want = |ranks: &[(ExchangeKnob, bool, [u64; 2])]| -> Result<bool, ()> {
-            let group = ranks.len() > 1;
-            let ids: Vec<_> = ranks.iter().map(|r| r.2).collect();
-            let distinct = (0..ids.len()).all(|i| (i + 1..ids.len()).all(|j| ids[i] != ids[j]));
-            let nccl = group && distinct && ranks.iter().all(|&(k, c, _)| k != Host && c);
-            if group && !nccl && ranks.iter().any(|r| r.0 == Nccl) {
-                Err(())
-            } else {
-                Ok(nccl)
-            }
-        };
-        let knobs = [Host, Auto, Nccl];
-        let mut cases: Vec<Vec<(ExchangeKnob, bool, [u64; 2])>> = Vec::new();
-        for &k in &knobs {
-            for can in [false, true] {
-                cases.push(vec![(k, can, [1, 0])]);
-            }
-        }
-        for &k0 in &knobs {
-            for c0 in [false, true] {
-                for &k1 in &knobs {
-                    for c1 in [false, true] {
-                        cases.push(vec![(k0, c0, [1, 0]), (k1, c1, [2, 0])]);
-                    }
+        let mut cases: Vec<Vec<(bool, [u64; 2])>> = Vec::new();
+        for c0 in [false, true] {
+            for c1 in [false, true] {
+                for id1 in [[1, 0], [2, 0]] {
+                    cases.push(vec![(c0, [1, 0]), (c1, id1)]);
                 }
             }
         }
-        for shared in [[7, 7], [7, 8]] {
-            for &k in &knobs {
-                cases.push(vec![(k, true, [7, 7]), (k, true, shared)]);
-            }
-        }
-        for mask in 0..64u32 {
-            let ranks: Vec<_> = (0..4)
-                .map(|r| {
-                    let k = knobs[((mask >> r) as usize + r as usize) % 3];
-                    (k, (mask >> (r + 2)) & 1 == 0 || r == 0, [r as u64 + 1, 9])
-                })
-                .collect();
-            cases.push(ranks);
+        for mask in 0..32u32 {
+            cases.push(
+                (0..4)
+                    .map(|r| {
+                        let id = if mask & 16 != 0 && r == 3 {
+                            1
+                        } else {
+                            r as u64 + 1
+                        };
+                        ((mask >> r) & 1 == 0, [id, 9])
+                    })
+                    .collect(),
+            );
         }
         for ranks in &cases {
             let got = run(ranks);
-            let first = &got[0];
             assert!(
-                got.iter().all(|g| g == first),
+                got.iter().all(|g| g == &got[0]),
                 "{ranks:?}: ranks disagree: {got:?}"
             );
-            match (want(ranks), first) {
-                (Ok(w), Ok(g)) => assert_eq!(*g, w, "{ranks:?}"),
-                (Err(()), Err(msg)) => {
-                    assert!(msg.contains("PAULISTRINGS_GPU_EXCHANGE=nccl"), "{msg}")
-                }
-                (w, g) => panic!("{ranks:?}: want {w:?}, got {g:?}"),
+            let ids: Vec<_> = ranks.iter().map(|r| r.1).collect();
+            let shared = (0..ids.len()).any(|i| ids[i + 1..].contains(&ids[i]));
+            let can = ranks.iter().all(|r| r.0);
+            match &got[0] {
+                Ok(()) => assert!(can && !shared, "{ranks:?}"),
+                Err(msg) if !can => assert!(msg.contains("libnccl"), "{msg}"),
+                Err(msg) => assert!(shared && msg.contains("share a device"), "{msg}"),
             }
         }
-    }
-
-    #[test]
-    fn the_exchange_knob_parses() {
-        assert_eq!(parse_exchange_knob(None), ExchangeKnob::Auto);
-        assert_eq!(parse_exchange_knob(Some("device")), ExchangeKnob::Auto);
-        assert_eq!(parse_exchange_knob(Some("host")), ExchangeKnob::Host);
-        assert_eq!(parse_exchange_knob(Some(" nccl ")), ExchangeKnob::Nccl);
-        assert_eq!(parse_exchange_knob(Some("garbage")), ExchangeKnob::Auto);
     }
 
     #[test]
@@ -1545,7 +1388,6 @@ mod tests {
         let t = InProcessTransport::group(1).pop().expect("one rank");
         let comm = NcclComm::init(&t, &ctx)
             .unwrap_or_else(|e| panic!("a one-rank communicator fails to initialize: {e}"));
-        assert_eq!(comm.timeout(), nccl_timeout());
         comm.set_timeout(Duration::from_secs(60));
         let stream = ctx.new_stream().expect("a stream");
         Some((guard, comm, stream))
@@ -1556,35 +1398,14 @@ mod tests {
         let Some((_nccl, comm, stream)) = one_rank() else {
             return;
         };
-        assert_eq!((comm.rank(), comm.size()), (0, 1));
+        assert_eq!((comm.rank, comm.size), (0, 1));
         comm.warm_up(&stream).expect("the warm-up completes");
-        for shape in [
-            WarmUpShape::AllPeers,
-            WarmUpShape::PerPeer,
-            WarmUpShape::Ring,
-        ] {
-            comm.warm_up_shape(&stream, shape)
-                .unwrap_or_else(|e| panic!("the {shape:?} warm-up completes: {e}"));
-        }
         assert!(comm.is_healthy());
-        assert!(!comm.check_async().expect("no async error"));
         drop(comm);
-        assert_eq!(pending_aborts(), 0);
-    }
-
-    #[test]
-    fn a_blocking_one_rank_communicator_warms_up_too() {
-        if !crate::engine::gpu::nccl_available() {
-            return;
-        }
-        let _nccl = REAL_NCCL.lock().unwrap_or_else(PoisonError::into_inner);
-        let ctx = super::super::device::context(0).expect("a visible device");
-        let t = InProcessTransport::group(1).pop().expect("one rank");
-        let comm = NcclComm::init_with(&t, &ctx, Duration::from_secs(60), true)
-            .unwrap_or_else(|e| panic!("a blocking one-rank communicator initializes: {e}"));
-        let stream = ctx.new_stream().expect("a stream");
-        comm.warm_up(&stream).expect("the warm-up completes");
-        assert!(comm.is_healthy());
+        assert!(
+            ABORTS.lock().unwrap().is_empty(),
+            "a healthy communicator shuts down without an abort"
+        );
     }
 
     #[test]
@@ -1595,7 +1416,6 @@ mod tests {
         comm.abort();
         comm.abort();
         assert!(!comm.is_healthy());
-        assert!(matches!(comm.check_async(), Err(GpuError::Nccl { .. })));
         assert!(matches!(comm.warm_up(&stream), Err(GpuError::Nccl { .. })));
         drop(comm);
         assert!(

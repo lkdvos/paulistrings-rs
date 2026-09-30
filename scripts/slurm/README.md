@@ -8,8 +8,8 @@ cluster resources is a user check-in point.
 |---|---|---|
 | `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
 | `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
-| `mpi-gpu-ranks.sbatch` | two 4-GPU nodes, one GPU per MPI rank: `tests/mpi_ranks.rs` built with `mpi,cuda`, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
-| `mpi-gpu-nccl.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` under NCCL then host, then a `--gpu-exchange host` vs `nccl` A/B on `phase_breakdown --mpi --device auto` | device-direct MPI exchange (needs `mpi`, `cuda` and `nccl`) |
+| `mpi-gpu-ranks.sbatch` | two 4-GPU nodes, one GPU per MPI rank over NCCL: `tests/mpi_ranks.rs` built with `mpi,cuda`, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
+| `mpi-gpu-nccl.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` with `NCCL_DEBUG` on, then `phase_breakdown --mpi --device auto` | the NCCL exchange within a node (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
 
 ## Node choice
@@ -104,7 +104,7 @@ Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's
 Both run on partition `gpu`, whose `scontrol show partition gpu` reads `Exclusive=NO OverSubscribe=NO` (exclusivity is the job's choice, not forced) under QoS `gpu` (at most 24 GPUs and 432 CPUs per user).
 The templates do not ask for `--exclusive`, so they schedule sooner; a job holding all four GPUs of a node already keeps other GPU jobs off it, and for a quiet-host timing campaign add `--exclusive` on the `sbatch` line.
 The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
-The device-to-device templates exclude workergpu062, the one A100 node with two GPUs, whose link a `--gres=gpu:2` request could otherwise land on, and run `check-gpu-links.sh` after `nvidia-smi topo -m`: it stops the job unless every pair of visible GPUs is `NV#`, and `GPU_LINKS_WARN=1` downgrades that to a warning.
+The device-to-device templates exclude workergpu062, the one A100 node with two GPUs, whose link a `--gres=gpu:2` request could otherwise land on.
 Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.6 llvm/19.1.7` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
 
 ```bash
@@ -120,15 +120,15 @@ env -u SBATCH_RESERVATION sbatch --nodes=1 scripts/slurm/mpi-gpu-ranks.sbatch
 PROBE=0 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu-ranks.sbatch
 ```
 
-`gpu-devices.sbatch` writes `benchmarks/results/<date>-<node>/gpu-<job>-dev0.jsonl` and `gpu-<job>-dev0123.jsonl`, plus `gpu-<job>-topo.txt` (`nvidia-smi topo -m`), `gpu-<job>-peer.txt` (the `gpu_peer` example: peer access and copy bandwidth per device pair, on two or more GPUs) and the clock, power and temperature dumps at start and end.
+`gpu-devices.sbatch` writes `benchmarks/results/<date>-<node>/gpu-<job>-dev0.jsonl` and `gpu-<job>-dev0123.jsonl`, plus `gpu-<job>-topo.txt` (`nvidia-smi topo -m`), `gpu-<job>-p2p.txt` (`nvidia-smi topo -p2p` and `nvlink -s`, on two or more GPUs) and the clock, power and temperature dumps at start and end.
 `mpi-gpu-ranks.sbatch` writes one sidecar per rank, `benchmarks/results/<date>-mpi-gpu/mpi-gpu-<job>-r<ranks>.jsonl.rank<N>`, each row carrying `rank`, `ranks` and the rank's `device`.
-It asks for 16 GB per CPU (128 GB per rank): the probe replicates its input and stages the exchange through host memory, so `su4` peaks near 70 GB per rank, above the partition's default of about 250 GB per four-rank node.
+It asks for 16 GB per CPU (128 GB per rank): the probe replicates its input in host memory on every rank, above the partition's default of about 250 GB per four-rank node.
 Render either directory with `scripts/perf-viz.py <dir>/<prefix>` for the phase charts, and read the numbers for `research/HARDWARE.md` straight from the sidecars: per row `n`, `wall_ns / layers`, the device phases (`gather_ns`, `merge_ns`, `compact_ns`, `coset_loop_ns`, `h2d_ns`, `d2h_ns`), and on a multi-device or rank row `export_ns`, `exchange_ns`, `chunk_wait_ns`, `bytes_exported` and `vmhwm_kb` (medians over ranks, as the MPI weak-scaling table does).
 The table skeletons are under the cluster GPU sections of `research/HARDWARE.md`.
 
 ## The NCCL job
 
-`mpi-gpu-nccl.sbatch` is the cluster net for the NCCL device-exchange path (`gpu::MpiGpuSum`, feature `nccl`, ARCHITECTURE.md §Partitioning).
+`mpi-gpu-nccl.sbatch` is the cluster net for the NCCL exchange of `gpu::MpiGpuSum` within a node (features `mpi,cuda`, ARCHITECTURE.md §Partitioning).
 `--gpus-per-node`/`--ntasks-per-node` (not `--gpus-per-task=1`) exposes every node GPU to every task, which the design's risk table calls out: the per-task device cgroup otherwise makes NCCL fall back to SHM through host memory instead of P2P/NVLink.
 
 ```bash
@@ -143,28 +143,16 @@ env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/mpi-gpu-nc
 ```
 
 The preamble logs `nvidia-smi topo -m`, `ibv_devinfo -l`, the `nvidia_peermem`/`nv_peer_mem` module state and `ip -br addr`, so the decision gate's G2 (P2P intra-node, NET/IB inter-node, GDRDMA or its absence) has evidence on record.
-`tests/mpi_ranks.rs` then runs once under `PAULISTRINGS_GPU_EXCHANGE=nccl` (with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET`, so the transport NCCL picked is in the job log) and once under `host`, and the probe A/B (`PAIRS`, default 5, alternating `host`/`nccl`) writes per-rank sidecars to `benchmarks/results/<date>-mpi-gpu-nccl/mpi-gpu-nccl-<job>-r<ranks>-<mode>-p<i>.jsonl.rank<N>`.
-`LAYERS`, `N`, `REPS` and `PAIRS` are environment knobs, `PROBE=0` skips the A/B and runs the differential net alone.
+`tests/mpi_ranks.rs` then runs with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET`, so the transport NCCL picked is in the job log, and the probe writes per-rank sidecars to `benchmarks/results/<date>-mpi-gpu-nccl/mpi-gpu-nccl-<job>-r<ranks>.jsonl.rank<N>`.
+`LAYERS`, `N` and `REPS` are environment knobs, `PROBE=0` skips the probe and runs the differential net alone.
 
 ## Bounded steps
 
 Every `srun` in the GPU templates runs through `bounded <secs> srun ...` from `scripts/slurm/bounded.sh`: `timeout` sends TERM at the bound and KILL 30 s later, the step's status is reported, and a failed step lists the compute processes left on the node's GPUs (`leftover_gpu_processes`, an `--overlap` step so it runs beside whatever is stuck).
-A hung rank (a device wait that never ends, an `MPI_Abort` that never returns) therefore costs one step's bound, not the allocation's time limit; `NET_BOUND`, `AB_BOUND` and `PROBE_BOUND` set the bounds in seconds.
-The differential nets of `mpi-gpu-nccl.sbatch` run under `PAULISTRINGS_NCCL_TIMEOUT_S=60` (`NCCL_TIMEOUT_S` overrides), since their exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
-A failed net is reported and the job goes on to the host baseline; the A/B is skipped and the job exits non-zero.
+A hung rank (a device wait that never ends, an `MPI_Abort` that never returns) therefore costs one step's bound, not the allocation's time limit; `NET_BOUND` and `PROBE_BOUND` set the bounds in seconds.
+The differential net of `mpi-gpu-nccl.sbatch` runs under `PAULISTRINGS_NCCL_TIMEOUT_S=60` (`NCCL_TIMEOUT_S` overrides), since its exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
+A failed net is reported, the probe is skipped and the job exits non-zero.
 `tests/mpi_ranks.rs` itself arms a watchdog before `MPI_Abort` and aborts the process 15 s later if the launcher has not ended it.
-
-## The NCCL probe job
-
-`nccl-probe.sbatch` runs `crates/paulistrings/examples/nccl_probe.rs` (`--features nccl,test-utils`): the communicator init and warm-up the device exchange performs at scatter, one variant per `srun` step, each bounded, one line per rank and variant, with `NCCL_DEBUG=INFO` line-buffered into the job log.
-The variants separate the hypotheses for a warm-up that never completes: the engine's own shape (non-blocking init, one group to every peer, device by local rank), then every GPU pair at two ranks (a bad device or link fails the pairs it is in), the NCCL knobs `NCCL_P2P_DISABLE=1` (shared-memory transport), `NCCL_CUMEM_ENABLE=0` (legacy IPC handles), `NCCL_PROTO=Simple` (no LL push) and `NCCL_RUNTIME_CONNECT=0` (connections at init), a blocking communicator, one group per peer in XOR order, a ring, and the CPU-locality device pick.
-Each rank prints its `init`, `warmup` and `teardown` outcomes with durations, its CPU mask and the NCCL variables set; `teardown=stuck` marks the variant that would have held the allocation, and `gpu_peer` runs first as the CUDA-level check of every link in both directions.
-Knobs: `STEP_BOUND` (seconds per variant, default 120), `NCCL_TIMEOUT_S` (the probe's wait bound, default 40), `PAIRS=0` to skip the pair matrix, `EXTRA_ENV="NCCL_X=1 NCCL_Y=0"` for one more variant of the engine's shape, `PS_REV` as elsewhere.
-
-```bash
-env -u SBATCH_RESERVATION sbatch scripts/slurm/nccl-probe.sbatch
-env -u SBATCH_RESERVATION sbatch --nodelist=workergpu047 scripts/slurm/nccl-probe.sbatch   # the node a run failed on
-```
 
 ## JCC-erratum padding across node types
 

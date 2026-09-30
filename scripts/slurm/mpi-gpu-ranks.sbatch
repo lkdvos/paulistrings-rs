@@ -10,7 +10,7 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# One CUDA device per MPI rank (`gpu::MpiGpuSum`, features `mpi,cuda`) across two 4-GPU nodes:
+# One CUDA device per MPI rank (`gpu::MpiGpuSum`, features `mpi,cuda`, exchanging over NCCL) across two 4-GPU nodes:
 # the multi-rank differential net (`tests/mpi_ranks.rs`, whose device cases run when every rank
 # sees a device), then `phase_breakdown --mpi --device auto` at replicated input `--n N x ranks`.
 # `--gpus-per-task=1` gives each task one visible device, so `auto` resolves to ordinal 0 on
@@ -29,7 +29,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
 
 module purge
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"
 SHARED_RUST=${SHARED_RUST:-$HOME/.local/rust-shared}
 export RUSTUP_HOME="$SHARED_RUST/rustup" CARGO_HOME="$SHARED_RUST/cargo"

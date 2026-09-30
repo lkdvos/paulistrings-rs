@@ -12,7 +12,7 @@ mod fingerprint;
 mod kernel_cache;
 mod layer;
 mod module;
-#[cfg(feature = "nccl")]
+#[cfg(feature = "mpi")]
 mod nccl;
 mod partition;
 mod payload;
@@ -23,7 +23,7 @@ mod staging;
 mod sum;
 mod truncation;
 
-#[cfg(feature = "nccl")]
+#[cfg(feature = "mpi")]
 pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
 pub use driver::{propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuPauliSum};
@@ -32,9 +32,8 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
-#[cfg(all(feature = "nccl", any(test, feature = "test-utils")))]
-pub use nccl::{pending_aborts, LoopbackFault, LoopbackTally, LoopbackWire, NcclComm, WarmUpShape};
-pub use payload::{peer_access, GpuExchange, PeerAccess};
+#[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
+pub use nccl::{LoopbackFault, LoopbackTally, LoopbackWire};
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
 pub use rank::{local_device_for_rank, GpuDistributedSum};

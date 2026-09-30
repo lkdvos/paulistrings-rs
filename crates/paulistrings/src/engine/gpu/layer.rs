@@ -16,7 +16,7 @@ use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan_with_max_into, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
-use crate::bucket::hash::{PartitionRows, B_MAX_BITS};
+use crate::bucket::hash::B_MAX_BITS;
 use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::Gf2Span;
@@ -55,27 +55,15 @@ pub struct GpuLayerOptions {
     pub arena_bytes: usize,
     /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`]; `B_MAX_BITS` by default.
     pub max_bits: u8,
-    /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on unless `PAULISTRINGS_GPU_PREMERGE=off`.
+    /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on by default.
     pub premerge: bool,
     /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 3) × 8` per row.
     ///
-    /// Under a device or NCCL exchange the receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
-    /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary); a host exchange always moves one chunk.
+    /// The receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
+    /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary).
     pub exchange_bytes: usize,
-    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path, K12–K14, instead of the fused layer; on unless `PAULISTRINGS_GPU_CLIFFORD=off`.
+    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path, K12–K14, instead of the fused layer; on by default.
     pub clifford: bool,
-}
-
-/// The default of [`GpuLayerOptions::premerge`]: on unless `PAULISTRINGS_GPU_PREMERGE=off`, read once per process.
-fn premerge_default() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_PREMERGE").as_deref() != Ok("off"))
-}
-
-/// The default of [`GpuLayerOptions::clifford`]: on unless `PAULISTRINGS_GPU_CLIFFORD=off`, read once per process.
-fn clifford_default() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PAULISTRINGS_GPU_CLIFFORD").as_deref() != Ok("off"))
 }
 
 /// The default of [`GpuLayerOptions::exchange_bytes`], read once per process.
@@ -115,9 +103,9 @@ impl Default for GpuLayerOptions {
             bucket_policy: GpuBucketPolicy::default(),
             arena_bytes: DEFAULT_ARENA_BYTES,
             max_bits: B_MAX_BITS,
-            premerge: premerge_default(),
+            premerge: true,
             exchange_bytes: exchange_bytes_default(),
-            clifford: clifford_default(),
+            clifford: true,
         }
     }
 }
@@ -188,7 +176,7 @@ pub struct GpuLayerCounters {
     pub rows_received: u64,
     /// Exported rows the sender-side merge folded away before the exchange.
     pub rows_premerged: u64,
-    /// Chunks the received rows moved in ([`GpuLayerOptions::exchange_bytes`]); zero on a local layer and under a host exchange.
+    /// Chunks the received rows moved in ([`GpuLayerOptions::exchange_bytes`]); zero on a local layer.
     pub recv_chunks: u32,
 }
 
@@ -592,13 +580,12 @@ pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
     plan: &PartitionPlan,
-    rows: &PartitionRows<W>,
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
     target_bits: u8,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
-    let r = apply_layer_body(sum, prep, plan, rows, keep, scratch, target_bits, transport);
+    let r = apply_layer_body(sum, prep, plan, keep, scratch, target_bits, transport);
     // A failed layer still completes its pending receive, so every peer's chunked receive completes too.
     let finished = finish_receive(sum, scratch);
     let resolved = scratch.resolve(sum);
@@ -610,7 +597,6 @@ fn apply_layer_body<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
     prep: &Prepared<W>,
     plan: &PartitionPlan,
-    rows: &PartitionRows<W>,
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
     target_bits: u8,
@@ -705,7 +691,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             pair(scratch, sum.hash.bits());
             return Err(e);
         }
-        counts = exchange_rows(sum, &table, plan, rows, scratch, transport)?;
+        counts = exchange_rows(sum, &table, plan, scratch, transport)?;
         let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
         if max_seg as usize > cap
             || max_len as usize > MAX_BUCKET_LEN
@@ -1323,14 +1309,13 @@ mod tests {
         let mut sum = GpuSum::from_host(&input, 0)?;
         let mut scratch = LayerScratch::new(&sum, opts)?;
         let prep = ch.prepare(sum.hash(), false).expect("prepared");
-        let rows = PartitionRows::<2>::none(128);
+        let rows = crate::bucket::hash::PartitionRows::<2>::none(128);
         let plan = PartitionPlan::new(&prep, &rows, 0);
         let solo = InProcessTransport::group(1);
         apply_layer_device(
             &mut sum,
             &prep,
             &plan,
-            &rows,
             &KeepProgram::KEEP,
             &mut scratch,
             0,

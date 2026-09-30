@@ -9,45 +9,15 @@ use super::error::GpuError;
 use super::layer::grow;
 use crate::engine::partitioned::transport::{BlockHeader, Payload};
 
-/// How a device group's exchange blocks travel: through the host `PartnerPayload` columns, as device payloads whose columns never leave device memory, or (feature `nccl`) as host skeletons plus NCCL transfers of the device columns.
-///
-/// `Device` needs a transport that moves objects (the in-process one) and a group of device partitions only; `PAULISTRINGS_GPU_EXCHANGE=host|device` sets the default a [`GpuPartitionedSum`](super::GpuPartitionedSum) starts with.
-/// A [`GpuDistributedSum`](super::GpuDistributedSum) agrees `Nccl` or `Host` over its group at scatter; a group with a host member always uses `Host`.
+/// How a device group's exchange blocks travel: as device payloads the receiver copies device to device (an in-process group), or (feature `mpi`) as host skeletons plus NCCL transfers of the device columns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum GpuExchange {
-    /// K10 stages every block through the host `PartnerPayload` and the receiver uploads it.
-    #[default]
-    Host,
+pub(crate) enum GpuExchange {
     /// K10 fills device columns the receiver copies device-to-device, fingerprints included.
+    #[default]
     Device,
     /// K10 fills device columns, the headers and offsets cross over the transport, and NCCL moves the columns straight into the receiver's; the receiver fingerprints them.
-    #[cfg(feature = "nccl")]
+    #[cfg(feature = "mpi")]
     Nccl,
-}
-
-/// `PAULISTRINGS_GPU_EXCHANGE`'s value to a [`GpuExchange`] for an in-process group.
-///
-/// `nccl` means `Device` here, since in-process peer copies already go device to device; the MPI driver reads the raw value itself to tell `device` from `nccl`.
-fn parse_gpu_exchange(raw: Option<&str>) -> GpuExchange {
-    match raw {
-        Some("host") => GpuExchange::Host,
-        Some("nccl") => {
-            log::info!(
-                "gpu: PAULISTRINGS_GPU_EXCHANGE=nccl applies to MPI groups; an in-process group uses GpuExchange::Device"
-            );
-            GpuExchange::Device
-        }
-        _ => GpuExchange::Device,
-    }
-}
-
-/// The default for a [`GpuPartitionedSum`](super::GpuPartitionedSum): `Device` unless `PAULISTRINGS_GPU_EXCHANGE=host`, read once per process.
-pub(crate) fn gpu_exchange_default() -> GpuExchange {
-    static MODE: std::sync::OnceLock<GpuExchange> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| {
-        parse_gpu_exchange(std::env::var("PAULISTRINGS_GPU_EXCHANGE").ok().as_deref())
-    })
 }
 
 /// One exchange block with its columns on a device: the header and CSR offsets on the host, `x`/`z`/`coeff`/`g` on the device the sender ran on.
@@ -162,7 +132,6 @@ impl<const W: usize> DeviceBlock<W> {
 ///
 /// It implements [`Payload`] only to satisfy the transport bound: it has no byte form, so [`Payload::byte_parts`] and [`Payload::recv_into`] panic.
 /// Only a transport that moves the typed value (`InProcessTransport`) may carry it, and `GpuPartitionedSum` is the one driver that sends it.
-/// A group with a host member or an MPI transport uses `PartnerPayload`.
 pub(crate) struct DevicePayload<const W: usize> {
     /// The ordinal every block's columns live on; `None` only for the `Default` shell.
     pub(crate) device: Option<u32>,
@@ -195,7 +164,7 @@ impl<const W: usize> DevicePayload<W> {
     }
 }
 
-const NO_BYTE_FORM: &str = "DevicePayload has no byte form: it travels only through a transport that moves objects (InProcessTransport); an MPI group or a mixed host+device group must use GpuExchange::Host";
+const NO_BYTE_FORM: &str = "DevicePayload has no byte form: it travels only through a transport that moves objects (InProcessTransport); an MPI group exchanges over NCCL";
 
 impl<const W: usize> Payload for DevicePayload<W> {
     fn byte_parts(&self) -> Vec<&[u8]> {
@@ -239,7 +208,7 @@ pub(crate) fn recycle<const W: usize>(payload: DevicePayload<W>) {
 }
 
 /// Whether any pooled payload holds a block whose key column starts at device address `ptr` (test hook).
-#[cfg(all(feature = "nccl", test))]
+#[cfg(all(feature = "mpi", test))]
 pub(crate) fn bin_holds<const W: usize>(ptr: u64) -> bool {
     use cudarc::driver::DevicePtr;
     BIN.lock()
@@ -273,7 +242,7 @@ pub(crate) fn drain_bin_held() {
 
 /// Whether a device-to-device copy between two devices goes direct or through the host.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PeerAccess {
+pub(crate) enum PeerAccess {
     /// Both ends are the same device.
     SameDevice,
     /// The destination's context and the source's memory pool both map the source's memory into the destination, so copies go over NVLink or PCIe peer-to-peer.
@@ -354,7 +323,8 @@ fn try_enable_peer_access(
 }
 
 /// Enable direct access from device `dst` to device `src`'s memory, as the device exchange does before its first copy, and report whether it took.
-pub fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
+#[cfg(test)]
+fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
     let dst = super::device::context(dst)?;
     let src = super::device::context(src)?;
     Ok(enable_peer_access(&dst, &src))
@@ -363,15 +333,6 @@ pub fn peer_access(dst: u32, src: u32) -> Result<PeerAccess, GpuError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_gpu_exchange_reads_the_knob() {
-        assert_eq!(parse_gpu_exchange(None), GpuExchange::Device);
-        assert_eq!(parse_gpu_exchange(Some("host")), GpuExchange::Host);
-        assert_eq!(parse_gpu_exchange(Some("device")), GpuExchange::Device);
-        assert_eq!(parse_gpu_exchange(Some("nccl")), GpuExchange::Device);
-        assert_eq!(parse_gpu_exchange(Some("garbage")), GpuExchange::Device);
-    }
 
     #[test]
     fn peer_access_is_reported_for_every_pair() {

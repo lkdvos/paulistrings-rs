@@ -243,7 +243,7 @@ Pinned D2H runs at **12.9 GB/s (61 ms)** against 2.7 GB/s pageable including the
 Asked how an exported block's columns should reach the pooled `PartnerPayload` `Vec`s: a D2H copy straight into pageable memory, or a page-locked pool allocated once plus one `memcpy`.
 `cuMemHostRegister` of the pool was not tried: the pooled `Vec`s circulate through the partners and reallocate on growth, so a registration has no owner to unregister it.
 Two virtual partitions on one RTX A6000, medians of 5 runs, 1e6 initial terms, 3 layers: `su4` (1.05e8 exported rows, 4.8 GB per layer) runs **1689 ms/layer pinned against 2189 ms pageable (−23%)**, D2H at 4.0 GB/s against 2.6 GB/s per partition; `rotation_remote` (1e6 rows, 48 MB per layer) 21.9 against 26.6 ms (−18%).
-Pinned is the default; `PAULISTRINGS_GPU_STAGING=pageable` keeps the alternative measurable.
+Pinned won; the host-staged exchange itself was later removed (NCCL verdict below).
 
 ### A dense remote layer on device partitions is staging-bound
 
@@ -273,7 +273,7 @@ What remains of a dense remote layer at `P = 2` is 34 ms of K10 plus fingerprint
 On the device path `h2d_ns`/`d2h_ns` carry only the CSR offsets and `exchange_ns` includes the receiver's copies (`benchmarks/PROFILING.md`).
 The price is device memory: every block of a layer is resident at once on the sender's device, so a partition holds one export volume plus one receive volume on top of its sum, where the staged form kept the export volume in host RAM.
 On one 48 GB card two virtual partitions at 4e6 initial terms (5.65e7 steady, 2.1e8 exported rows per layer) are out of memory under device payloads and run at 6710 ms/layer under host ones (`P = 1`: 274 ms); on a multi-GPU node each device holds one partition's share.
-Device payloads are the default of `GpuPartitionedSum`; the host form stays behind the knob for MPI, for a group with a host member, and for this comparison.
+Device payloads became the only form of `GpuPartitionedSum`; the host form was later removed.
 The receiver adopts with a copy rather than pointing the fused kernel at the payload's memory, so the kernels and the concatenated `recv_*` layout are unchanged and the same call serves one device and several; a zero-copy adoption for the one-partner case is unmeasured.
 Payloads recycle through a process-wide per-device bin, so a two-device group also allocates nothing at steady state; the cross-device branch has not run on a real multi-GPU node.
 
@@ -408,7 +408,7 @@ Asked whether `GpuExchange::Nccl` should be `gpu::MpiGpuSum`'s default over host
 Measured on one A100-SXM4-80GB node (workergpu070, job 7125331, rev 466b4a4) at two ranks as a runtime-knob A/B on one binary, five alternating pairs, every pair agreeing in sign (`research/HARDWARE.md` § `gpu` cluster nodes — NCCL exchange between MPI ranks): `su4` at 5.65e7 terms per rank 1250 → 357 ms per layer (3.5×), `cnot` 43.6 → 6.9 (6.3×), `rotation_remote` 72.4 → 10.7 (6.8×), and `rotation_zz`, which exchanges nothing, flat.
 NCCL chose `P2P/CUMEM/read` between the ranks, which is why the template makes every node GPU visible to every task.
 The `su4` exchange phase moves 2.72e9 bytes per rank in 57.5 ms, a lower bound on the link rate since the phase also holds the skeleton exchange, the vote and the receiver's fingerprints.
-**Verdict: NCCL is the default whenever every rank can start it on a distinct device; host staging stays behind `PAULISTRINGS_GPU_EXCHANGE=host`.**
+**Verdict: NCCL is the exchange of every MPI device group; the host-staged exchange was removed, so a group that cannot start NCCL fails its scatter.**
 
 A four-rank run on workergpu047 (job 7125332) timed out in the scatter's warm-up group on one rank while its three peers completed, with the peers' writes into that rank's GPU never becoming visible to it, and `ncclCommAbort` then never returned on any rank.
 The same four-rank bring-up on workergpu063 (job 7127220) passed every variant of `scripts/slurm/nccl-probe.sbatch`, including the engine's own communicator, warm-up and CPU placement, all six device pairs and the P2P, CUMEM, protocol, blocking and warm-up-shape variants, so the failure is attributed to that node; the probe pinned to workergpu047 is what confirms it.

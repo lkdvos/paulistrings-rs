@@ -32,7 +32,8 @@ test-utils = []
 # byte-identical, and the feature needs an MPI installation plus `libclang`
 # for `rsmpi`'s bindgen (`module load openmpi/5.0.6 llvm/19.1.7`,
 # `LIBCLANG_PATH=$(llvm-config --libdir)`).
-mpi = ["dep:mpi"]
+# With `cuda` as well it also compiles the NCCL device exchange of `gpu::MpiGpuSum`; NCCL is `dlopen`ed like `libcuda`, and `nccl-02022`, never the bare `nccl`, which binds 2.30's larger `ncclConfig_t` than the 2.23 library's.
+mpi = ["dep:mpi", "cudarc?/nccl-02022"]
 # Compile the CUDA backend (`engine::gpu`), one device today, multi-device
 # later over the existing partitioned exchange. Off by default, like `mpi`:
 # the default build must stay byte-identical, and `cudarc` loads
@@ -41,9 +42,6 @@ mpi = ["dep:mpi"]
 # and runs on a box with no GPU, and every device-touching test returns early
 # through `gpu::cuda_available()`.
 cuda = ["dep:cudarc"]
-# The NCCL device-direct exchange for the distributed CUDA backend; MPI still carries the collectives.
-# `cudarc/nccl-02022`, never the bare `nccl`, which binds 2.30's larger `ncclConfig_t` than the 2.23 library's.
-nccl = ["cuda", "mpi", "cudarc/nccl-02022"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -95,15 +93,6 @@ harness = false
 [[example]]
 name = "phase_breakdown"
 required-features = ["phase-timing"]
-
-[[example]]
-name = "gpu_peer"
-required-features = ["cuda"]
-
-# The NCCL bring-up probe behind `scripts/slurm/nccl-probe.sbatch`; `test-utils` exposes the communicator.
-[[example]]
-name = "nccl_probe"
-required-features = ["nccl", "test-utils"]
 
 # The multi-rank differential net. `harness = false`: the cases are collective,
 # so they must run in the same order on every rank, one at a time — none of

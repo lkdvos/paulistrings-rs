@@ -29,7 +29,7 @@ pub fn cuda_available() -> bool {
 ///
 /// Checks `is_culib_present()` before anything reaches `culib()`, which panics when `libnccl` is
 /// absent, so this is safe to call on a box with no NCCL installation at all.
-#[cfg(feature = "nccl")]
+#[cfg(feature = "mpi")]
 pub fn nccl_available() -> bool {
     if !cuda_available() {
         return false;
@@ -130,7 +130,7 @@ mod tests {
         let _ = cuda_available();
     }
 
-    #[cfg(feature = "nccl")]
+    #[cfg(feature = "mpi")]
     #[test]
     fn nccl_available_never_panics() {
         let _ = nccl_available();
@@ -141,7 +141,7 @@ mod tests {
     /// test is never `#[ignore]`d. A directory-name substring match on "nccl" is not enough: this
     /// crate's own private `CARGO_TARGET_DIR` (`target-nccl`) lands on `LD_LIBRARY_PATH` too, via
     /// the `mpi` build script's `OUT_DIR`.
-    #[cfg(feature = "nccl")]
+    #[cfg(feature = "mpi")]
     #[test]
     fn nccl_available_true_with_module_on_path() {
         let module_on_path = std::env::var("LD_LIBRARY_PATH")

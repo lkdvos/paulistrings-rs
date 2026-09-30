@@ -11,7 +11,7 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# The NCCL device exchange for `gpu::MpiGpuSum` (feature `nccl`, ARCHITECTURE.md §Partitioning), then a host-vs-nccl A/B on one binary.
+# The NCCL device exchange for `gpu::MpiGpuSum` (features `cuda,mpi`, ARCHITECTURE.md §Partitioning): the differential net, then the probe's cells.
 # `--gpus-per-node` rather than `--gpus-per-task=1`: with only its own GPU visible a task's NCCL falls back from NVLink to shared memory.
 #
 # Node shapes (rank count must be a power of two):
@@ -21,13 +21,12 @@
 #   H100-SXM5, 1 x 4   : env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/mpi-gpu-nccl.sbatch
 #
 # Environment knobs (all optional):
-#   LAYERS   probe layers for the A/B (default su4,cnot,rotation_remote,rotation_zz)
+#   LAYERS   probe layers (default su4,cnot,rotation_remote,rotation_zz)
 #   N        terms per rank (default 4000000); the probe's --n is N x ranks
 #   REPS     --reps (default 5)
-#   PAIRS    alternating host/nccl pairs, >= 5 for direction-consistency (default 5)
-#   PROBE=0  run the differential net alone, skip the A/B
+#   PROBE=0  run the differential net alone, skip the probe
 #   PS_REV   commit to build (default: HEAD when the job starts), in a private git worktree
-#   NET_BOUND, AB_BOUND   seconds one differential-net step / one A/B cell may take (default 1200 / 900)
+#   NET_BOUND, PROBE_BOUND   seconds the differential net / the probe may take (default 1200 / 900)
 #   NCCL_TIMEOUT_S        PAULISTRINGS_NCCL_TIMEOUT_S for the differential nets (default 60)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
@@ -72,13 +71,12 @@ bounded 300 srun --ntasks-per-node=1 bash -c '
     echo "-- $(hostname -s)"
     nvidia-smi -L
     nvidia-smi topo -m
-    scripts/slurm/check-gpu-links.sh ${GPU_LINKS_WARN:+--warn} || exit 4
     ibv_devinfo -l 2>&1 || echo "(no ibv_devinfo)"
     lsmod | grep -E "nvidia_peermem|nv_peer_mem" || echo "(no nvidia_peermem / nv_peer_mem module)"
     ip -br addr
 '
 
-bin=$(cargo test --offline --release --features nccl,test-utils -p paulistrings --test mpi_ranks --no-run \
+bin=$(cargo test --offline --release --features cuda,mpi,test-utils -p paulistrings --test mpi_ranks --no-run \
       --message-format=json \
       | python3 -c 'import json,sys
 for l in sys.stdin:
@@ -88,42 +86,30 @@ for l in sys.stdin:
 [ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
 echo "== mpi_ranks: $bin"
 
-# The nets run under a short NCCL wait bound and a hard step bound; a failed net is reported and the job goes on, so the host baseline and the A/B still run, and the job exits non-zero at the end.
+# The net runs under a short NCCL wait bound and a hard step bound; a failed net skips the probe and the job exits non-zero.
 export PAULISTRINGS_NCCL_TIMEOUT_S=${NCCL_TIMEOUT_S:-60}
 failed=0
 echo "== mpi_ranks under NCCL (NCCL_DEBUG on, so the chosen transport is on record; PAULISTRINGS_NCCL_TIMEOUT_S=$PAULISTRINGS_NCCL_TIMEOUT_S)"
-bounded "${NET_BOUND:-1200}" env PAULISTRINGS_GPU_EXCHANGE=nccl NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET \
+bounded "${NET_BOUND:-1200}" env NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET \
     srun --mpi=pmix --cpu-bind=cores --export=ALL \
     stdbuf -oL -eL "$bin" || { failed=$?; echo "== mpi_ranks under NCCL FAILED (exit $failed)"; leftover_gpu_processes; }
-
-echo "== mpi_ranks under host staging (the pre-NCCL baseline)"
-bounded "${NET_BOUND:-1200}" env PAULISTRINGS_GPU_EXCHANGE=host \
-    srun --mpi=pmix --cpu-bind=cores --export=ALL "$bin" \
-    || { failed=$?; echo "== mpi_ranks under host staging FAILED (exit $failed)"; }
 unset PAULISTRINGS_NCCL_TIMEOUT_S
 
 if [ "$failed" != 0 ] && [ "${PROBE:-1}" = "1" ]; then
-    echo "== a differential net failed; skipping the A/B"
+    echo "== the differential net failed; skipping the probe"
 fi
 if [ "$failed" = 0 ] && [ "${PROBE:-1}" = "1" ]; then
-    cargo build --offline --release --features phase-timing,mpi,cuda,nccl -p paulistrings \
+    cargo build --offline --release --features phase-timing,mpi,cuda -p paulistrings \
         --example phase_breakdown
     probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
     out="$repo/benchmarks/results/$(date +%Y-%m-%d)-mpi-gpu-nccl"
     mkdir -p "$out"
     n=$(( ${N:-4000000} * ranks ))
     layers=${LAYERS:-su4,cnot,rotation_remote,rotation_zz}
-    pairs=${PAIRS:-5}
-    echo "== A/B: --gpu-exchange host vs nccl, $pairs alternating (abab) pair(s), $ranks ranks, --n $n, layers $layers"
-    for ((i = 1; i <= pairs; i++)); do
-        for mode in host nccl; do
-            sidecar="$out/mpi-gpu-nccl-${SLURM_JOB_ID:-local}-r$ranks-$mode-p$i.jsonl"
-            echo "== pair $i/$pairs, --gpu-exchange $mode -> $sidecar.rank*"
-            bounded "${AB_BOUND:-900}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
-                --gpu-exchange "$mode" --layers "$layers" --n "$n" --reps "${REPS:-5}" \
-                --format json --json-out "$sidecar" \
-                || { failed=$?; echo "== pair $i/$pairs, $mode FAILED (exit $failed)"; leftover_gpu_processes; break 2; }
-        done
-    done
+    sidecar="$out/mpi-gpu-nccl-${SLURM_JOB_ID:-local}-r$ranks.jsonl"
+    echo "== probe: $ranks ranks, --n $n, layers $layers -> $sidecar.rank*"
+    bounded "${PROBE_BOUND:-900}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
+        --layers "$layers" --n "$n" --reps "${REPS:-5}" --format json --json-out "$sidecar" \
+        || { failed=$?; echo "== probe FAILED (exit $failed)"; leftover_gpu_processes; }
 fi
 exit "$failed"

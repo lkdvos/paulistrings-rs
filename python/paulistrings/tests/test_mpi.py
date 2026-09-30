@@ -89,6 +89,25 @@ needs_cuda_everywhere = pytest.mark.skipif(
     "rebuild with `maturin develop --release --features cuda,mpi`",
 )
 
+
+def _nccl_start_error():
+    """The error a device group's scatter raises on this world, or None; above one rank the group needs NCCL on a device per rank."""
+    if _SKIP is not None or not CUDA_EVERYWHERE or SIZE == 1:
+        return None
+    probe = PauliSum.from_strings({"Z" + "I" * 7: 1.0}, num_qubits=8)
+    try:
+        probe.propagate(Circuit(8), comm=COMM, device="auto")
+    except NotImplementedError as e:
+        return str(e)
+    return None
+
+
+NCCL_START_ERROR = _nccl_start_error()
+needs_a_device_group = pytest.mark.skipif(
+    not CUDA_EVERYWHERE or NCCL_START_ERROR is not None,
+    reason=f"the ranks cannot start NCCL: {NCCL_START_ERROR}",
+)
+
 # W = 2: two words per key, so the multi-word paths run on the wire too.
 NUM_QUBITS = 68
 NUM_TERMS = 20_000
@@ -402,7 +421,7 @@ def test_distributed_blocks_reject_an_out_of_range_qubit(observable, circuit):
 # One CUDA device per rank (comm= with device=)
 
 
-@needs_cuda_everywhere
+@needs_a_device_group
 def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, reference):
     got, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM, device="auto")
     part = stats.partition
@@ -416,7 +435,7 @@ def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, refe
         assert len(got) == 0
 
 
-@needs_cuda_everywhere
+@needs_a_device_group
 def test_one_device_per_rank_respects_a_truncating_policy_and_direction(observable, circuit):
     want = observable.propagate(circuit, TIGHT_POLICY, direction="heisenberg")
     got = observable.propagate(
@@ -427,14 +446,14 @@ def test_one_device_per_rank_respects_a_truncating_policy_and_direction(observab
         _assert_terms_close(got, want)
 
 
-@needs_cuda_everywhere
+@needs_a_device_group
 def test_one_device_per_rank_local_shares_tile_the_answer(observable, circuit, reference):
     local = observable.propagate(circuit, POLICY, comm=COMM, device=0, result="local")
     assert COMM.allreduce(len(local)) == len(reference)
     assert COMM.allreduce(_key_checksum(local), op=MPI.BXOR) == _key_checksum(reference)
 
 
-@needs_cuda_everywhere
+@needs_a_device_group
 def test_one_device_per_rank_honours_a_locality_cut():
     blocks = _cut_blocks(NUM_QUBITS, SIZE)
     terms = {"I" * q + "Z" + "I" * (NUM_QUBITS - q - 1): 1.0 + q for q in range(NUM_QUBITS)}
@@ -455,6 +474,12 @@ def test_a_rank_that_cannot_use_its_device_fails_every_rank(observable, circuit)
     device = (1 << 20) if RANK == bad else 0
     with pytest.raises(ValueError, match=f"rank {bad}"):
         observable.propagate(circuit, POLICY, comm=COMM, device=device)
+
+
+@pytest.mark.skipif(NCCL_START_ERROR is None, reason="the ranks can start NCCL")
+def test_a_group_that_cannot_start_nccl_fails_every_rank(observable, circuit):
+    with pytest.raises(NotImplementedError, match="share a device|libnccl"):
+        observable.propagate(circuit, POLICY, comm=COMM, device="auto")
 
 
 def test_a_device_list_under_comm_is_a_value_error(observable, circuit):

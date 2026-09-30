@@ -101,26 +101,17 @@ maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
 pytest python/paulistrings/tests/test_cuda.py                    # skipped unless cuda_available()
 ```
 
-One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets; ranks share a device when there are fewer devices than ranks:
-
-```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0
-export LIBCLANG_PATH=$(llvm-config --libdir)
-cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
-scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
-scripts/mpi-test.sh --ranks 2,4 --python --cuda                           # the bindings' comm= with device= cases
-cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
-mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
-```
-
-The `nccl` feature (device-direct exchange for `gpu::MpiGpuSum`, ARCHITECTURE.md §Partitioning) needs both `cuda` and `mpi`, so both module sets plus the NCCL library, and needs no build-script support of its own: NCCL is `dlopen`ed exactly like `libcuda`/`libnvrtc`, so building it needs no toolkit either.
+One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets plus the NCCL library its exchange runs over (ARCHITECTURE.md §Partitioning); NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so building needs no toolkit, and every rank above one needs a device of its own:
 
 ```bash
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
 export LIBCLANG_PATH=$(llvm-config --libdir)
-cargo test -p paulistrings --features nccl,test-utils --lib gpu::   # nccl_available() etc.; pass without the module
-cargo clippy -p paulistrings-py --features nccl -- -D warnings
-cargo build --features nccl,test-utils --example nccl_probe          # the bring-up probe behind scripts/slurm/nccl-probe.sbatch
+cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
+scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
+scripts/mpi-test.sh --ranks 2,4 --python --cuda                           # the bindings' comm= with device= cases
+cargo clippy -p paulistrings-py --features cuda,mpi -- -D warnings
+cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
+mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
 ```
 
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
@@ -185,7 +176,7 @@ A device run agrees with the host to tolerance and is bitwise reproducible run-t
 - The device axis is measured on the release `phase-timing,cuda` probe with `--device` (`--device <list>` or `--gpu-partitions <n>` for a device group); record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number, since the workstation's clocks are driver-managed and unlocked rather than fixed.
 - A GPU timing is the second application of a gate on the saturated sum; a dense cell's CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1` runs, never `wall/3`.
 - The device roofline denominator comes from `membench --device` / `scripts/bandwidth.sh --device`.
-- `PAULISTRINGS_GPU_EXCHANGE=host|device`, `PAULISTRINGS_GPU_STAGING`, `PAULISTRINGS_GPU_PREMERGE=off`, `PAULISTRINGS_GPU_EXCHANGE_BYTES` and `PAULISTRINGS_GPU_CLIFFORD=off` (a Clifford layer back on the fused path instead of the K12–K14 scatter) are runtime knobs, so a device-exchange or Clifford-path A/B is one binary run both ways, as with any other knob A/B above.
+- `PAULISTRINGS_GPU_EXCHANGE_BYTES` (the receive cap of `GpuLayerOptions::exchange_bytes`) is the device layer's one runtime knob; the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
 It records what was measured and rejected, including several ideas that look obviously good.
@@ -203,14 +194,15 @@ It records what was measured and rejected, including several ideas that look obv
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
 - The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
-- Device-resident payloads trade staging time for device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card; the host form stays behind `PAULISTRINGS_GPU_EXCHANGE=host` for a group with a host member, and for MPI without the `nccl` feature or an agreed NCCL mode.
-- `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (device and NCCL exchanges; a host exchange and the default stay one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
+- Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card.
+- An MPI device group of more than one rank exchanges only over NCCL: a rank that cannot load libnccl 2.22+, or two ranks on one device, fail the scatter on every rank.
+- `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (the default stays one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
 - The chunked NCCL receive has run only over `LoopbackWire`, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
 - The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios: `gu2q` on two virtual partitions of one card is ~20% slower with it on.
 - The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
 - A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
-- `gpu::peer_access` grants the destination context peer access to the source device and grants the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/payload.rs`.
-- A four-rank NCCL run has passed its bring-up probe but not yet the full `mpi_ranks` net or an A/B, and no NCCL run has crossed nodes.
+- Peer access grants the destination context access to the source device and the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/payload.rs`.
+- No NCCL run has crossed nodes.
 
 ## Repo layout
 
@@ -222,7 +214,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
                           rank,scan,staging,sum,truncation} (CUDA, behind `cuda`; `nccl`
-                          behind `nccl`),
+                          behind `cuda` and `mpi`),
                           stabilizer, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22

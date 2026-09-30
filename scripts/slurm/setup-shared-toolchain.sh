@@ -33,10 +33,8 @@ CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --of
 if command -v mpicc >/dev/null 2>&1 && [ -n "${LIBCLANG_PATH:-}" ]; then
   echo "== offline check, mpi feature (rsmpi + bindgen build-time crates)"
   CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing,mpi --example phase_breakdown --tests
-  echo "== offline check, mpi + cuda features (one GPU per rank)"
+  echo "== offline check, mpi + cuda features (one GPU per rank over NCCL)"
   CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing,mpi,cuda --example phase_breakdown --tests
-  echo "== offline check, nccl feature (the device-direct MPI exchange)"
-  CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing,nccl,test-utils --example phase_breakdown --tests
 else
   echo "note: mpicc/LIBCLANG_PATH not set — load openmpi + llvm modules and re-run to verify the mpi feature builds offline" >&2
 fi

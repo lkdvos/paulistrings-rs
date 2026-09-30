@@ -1921,46 +1921,25 @@ mod tests {
     /// Every rank must return the same bits, namely the rank-order fold `((0 + 1e16) + 1) + 1) - 1e16 = 0`, and a one-rank slot comes back exactly.
     #[test]
     fn f64_sums_are_bitwise_identical_on_every_rank() {
-        let size = 4u32;
-        let group = InProcessTransport::group(size);
-        let results: Vec<Vec<f64>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = group
-                .into_iter()
-                .map(|transport| {
-                    scope.spawn(move || {
-                        let rank = transport.rank() as usize;
-                        let mut out = Vec::new();
-                        for _ in 0..50 {
-                            let mut buf = [0.0f64; 5];
-                            buf[0] = [1e16, 1.0, 1.0, -1e16][rank];
-                            buf[1] = rank as f64 + 0.25;
-                            buf[2 + rank.min(2)] = if rank <= 2 {
-                                0.1 * (rank + 1) as f64
-                            } else {
-                                0.0
-                            };
-                            transport.allreduce_sum_f64(&mut buf);
-                            out.extend_from_slice(&buf);
-                        }
-                        out
-                    })
+        let inputs = [
+            [1e16, 0.25, 0.1, 0.0, 0.0],
+            [1.0, 1.25, 0.0, 0.2, 0.0],
+            [1.0, 2.25, 0.0, 0.0, 0.3],
+            [-1e16, 3.25, 0.0, 0.0, 0.0],
+        ];
+        let results = on_every_rank(4, |transport| {
+            (0..50)
+                .map(|_| {
+                    let mut buf = inputs[transport.rank() as usize];
+                    transport.allreduce_sum_f64(&mut buf);
+                    buf
                 })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().expect("rank thread panicked"))
-                .collect()
+                .collect::<Vec<_>>()
         });
-        for (rank, got) in results.iter().enumerate() {
-            let want_round = [0.0, 7.0, 0.1, 0.2, 0.30000000000000004];
-            for round in got.chunks(5) {
-                assert_eq!(round, want_round, "rank {rank}");
+        for (rank, rounds) in results.iter().enumerate() {
+            for round in rounds {
+                assert_eq!(round, &[0.0, 7.0, 0.1, 0.2, 0.3], "rank {rank}");
             }
-            assert_eq!(
-                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                results[0].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                "rank {rank} disagrees with rank 0",
-            );
         }
     }
 

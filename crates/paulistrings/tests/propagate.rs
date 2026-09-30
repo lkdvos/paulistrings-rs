@@ -439,20 +439,11 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
 /// The trajectory is a function of the seed.
 #[test]
 fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
-    use paulistrings::test_support::zz_rotation;
+    use paulistrings::test_support::{collapsing_circuit, z0_sum};
     use paulistrings::truncation::CollapseSample;
 
     const CACHE: usize = 6;
-    let mut circuit = Circuit::<1>::new(8);
-    for _ in 0..3 {
-        for q in 0..8u32 {
-            circuit.push(zz_rotation::<1>(q, (q + 1) % 8, 0.6));
-        }
-        for q in 0..8u32 {
-            circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.6));
-        }
-    }
-    let input = sum1(8, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
+    let (circuit, input) = (collapsing_circuit(), z0_sum());
     let run = |seed: u64| {
         let policy = CollapseSample::new(CACHE, seed);
         let out = propagate(&circuit, input.clone(), &policy, Direction::Heisenberg);

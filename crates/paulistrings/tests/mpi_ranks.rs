@@ -816,20 +816,10 @@ fn run_host_cases(r: &mut Runner) {
     r.case(
         "collapse sample keeps one bounded unit-norm trajectory",
         |r| {
+            use paulistrings::test_support::{collapsing_circuit, z0_sum};
             use paulistrings::truncation::CollapseSample;
             const CACHE: usize = 6;
-            let mut circuit = Circuit::<1>::new(8);
-            for _ in 0..3 {
-                for q in 0..8u32 {
-                    circuit.push(zz_rotation::<1>(q, (q + 1) % 8, 0.6));
-                }
-                for q in 0..8u32 {
-                    circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.6));
-                }
-            }
-            let mut acc = BuildAccumulator::<1>::new(8);
-            acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-            let input = acc.finalize();
+            let (circuit, input) = (collapsing_circuit(), z0_sum());
 
             for seed in 0..4u64 {
                 // One policy per process, as a launcher gives each rank its own.

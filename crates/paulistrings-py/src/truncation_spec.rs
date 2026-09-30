@@ -114,9 +114,9 @@ mod tests {
         assert_eq!(collapse_count(&BuiltinTruncation::Keep), None);
         assert_eq!(collapse_count(&BuiltinTruncation::ApproxTopN(3)), None);
         let (a, b) = (sampler(0), sampler(1));
-        <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(&a, &mut x_sum(40));
-        <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(&b, &mut x_sum(40));
-        <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(&b, &mut x_sum(40));
+        for tree in [&a, &b, &b] {
+            <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(tree, &mut x_sum(40));
+        }
         let both = BuiltinTruncation::Or(Box::new(a.clone()), Box::new(b.clone()));
         assert_eq!(collapse_count(&both), Some(3));
         let twice = BuiltinTruncation::And(Box::new(a.clone()), Box::new(a));

@@ -360,10 +360,7 @@ pub fn rand_sum_on<const W: usize>(
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W>::identity();
         for &q in qubits {
             let r = rng.next_u64();
             let (word, bit) = (q as usize / 64, 1u64 << (q % 64));
@@ -528,10 +525,7 @@ pub fn assert_terms_close<const W: usize>(
 /// The keys of [`weighted_four_term_sum`], in order: `X0`, `Z3 X5`, `Y2 Y7`, `X1 Z6`.
 pub fn four_term_keys<const W: usize>() -> [PauliString<W>; 4] {
     let key = |x: u64, z: u64| {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W>::identity();
         p.x[0] = x;
         p.z[0] = z;
         p
@@ -1094,18 +1088,41 @@ pub fn zz_rotation<const W: usize>(
 /// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that many transverse-field `X` rotations, all at angle `2 · theta`.
 /// `2 · num_qubits` layers, enough that the term count grows across the run.
 pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::Circuit<W> {
+    trotter_steps(num_qubits, theta, 1)
+}
+
+/// `steps` repetitions of [`trotter_circuit`].
+pub fn trotter_steps<const W: usize>(
+    num_qubits: usize,
+    theta: f64,
+    steps: usize,
+) -> crate::Circuit<W> {
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
-    for q in 0..num_qubits {
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        circuit.push(crate::channel::rotation::PauliRotation::new(
-            PauliString::<W>::x(q as u32),
-            2.0 * theta,
-        ));
+    for _ in 0..steps {
+        for q in 0..num_qubits {
+            let q1 = ((q + 1) % num_qubits) as u32;
+            circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+        }
+        for q in 0..num_qubits {
+            circuit.push(crate::channel::rotation::PauliRotation::new(
+                PauliString::<W>::x(q as u32),
+                2.0 * theta,
+            ));
+        }
     }
     circuit
+}
+
+/// Three [`trotter_steps`] on eight qubits at a large angle, enough to grow [`z0_sum`] past a cache of 6 several times.
+pub fn collapsing_circuit() -> crate::Circuit<1> {
+    trotter_steps(8, 0.3, 3)
+}
+
+/// `Z0` on eight qubits with coefficient 1.
+pub fn z0_sum() -> PauliSum<1> {
+    let mut acc = BuildAccumulator::<1>::new(8);
+    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.finalize()
 }
 
 /// A partitioned placement with no placement: `partitions` unpinned pools of `threads` workers each, drawing partition rows from `row_seed`.

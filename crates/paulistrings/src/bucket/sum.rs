@@ -80,7 +80,7 @@ impl<const W: usize> BucketCols<W> {
     }
 
     #[inline]
-    fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+    pub(crate) fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.x.push(x);
         self.z.push(z);
         self.coeff.push(c);

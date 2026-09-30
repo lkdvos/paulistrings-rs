@@ -1,6 +1,8 @@
 //! The GF(2)-linear bucket function `h(v) = H·v`. See ARCHITECTURE.md §Hash.
 
+use crate::echo::RotationAxis;
 use crate::pauli_string::PauliString;
+use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Maximum number of bucket bits, i.e. `B ≤ 2^22 = 4_194_304` buckets.
 /// Rows for all `B_MAX_BITS` bits are generated up front so that [`Gf2Hash::refine`] is free: the active hash is always a prefix of the same fixed matrix, so refinement is a single parity pass rather than a re-hash.
@@ -14,17 +16,6 @@ pub const P_MAX_BITS: u8 = 6;
 /// Without it, `PartitionRows::from_seed(n, p, s)` and `Gf2Hash::new(n, b, s)` would draw from the same stream and the partition rows would be the hash's first `p` rows — dependent by construction, and the global bucket `(part(v), loc(v))` would only have `max(p, b)` bits of entropy instead of `p + b`.
 /// The seed is mixed through a splitmix64 finalizer before the salt so no particular seed value can cancel it (see `research/FINDINGS.md`).
 const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
-
-/// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
-#[inline]
-pub(crate) fn mix64(mut z: u64) -> u64 {
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-/// splitmix64's increment, the odd constant `⌊2^64/φ⌋`.
-pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`: splitmix64's output at the stream position encoding that tuple.
 /// Row words must not be successive outputs of a GF(2)-linear generator such as xorshift (ARCHITECTURE.md §Hash).
@@ -554,6 +545,12 @@ impl<const W: usize> PartitionRows<W> {
             .iter()
             .zip(&self.rows_z)
             .all(|(rx, rz)| (0..W).all(|w| rx[w] & mask_x[w] == 0 && rz[w] & mask_z[w] == 0))
+    }
+
+    /// `true` if no row reads a coordinate [`RotationAxis::flip_mask`] of `sites` names, so every [`PauliSum::rotated_overlap`](crate::PauliSum::rotated_overlap) class lies in one partition.
+    pub fn keeps_flip_classes(&self, sites: &[usize], axis: RotationAxis) -> bool {
+        let (mask_x, mask_z) = axis.flip_mask(sites);
+        self.avoids(&mask_x, &mask_z)
     }
 
     /// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent over the `2·num_qubits` key columns.

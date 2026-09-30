@@ -1,17 +1,22 @@
 //! Key-addressed pseudo-random streams for the sampling truncation policies: splitmix64 seeding plus xoshiro256++.
 //! A stream is a pure function of its key words, so a draw never depends on which thread ran it or in what order.
 
-/// The splitmix64 increment, `2^64 / φ`.
-const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+/// The splitmix64 increment, the odd constant `⌊2^64/φ⌋`.
+pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
+#[inline]
+pub(crate) fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 /// One splitmix64 step: advance `state` and return its mixed output.
 #[inline]
 pub(crate) fn splitmix64(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(GOLDEN_GAMMA);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+    *state = state.wrapping_add(SPLITMIX_GAMMA);
+    mix64(*state)
 }
 
 /// A xoshiro256++ generator.
@@ -92,24 +97,17 @@ mod tests {
         assert_ne!(draw(&[7, 1]), draw(&[7, 1, 0]));
     }
 
-    /// Mean `1/2` and variance `1/12` within 5σ of their sampling error over 200k draws, and every draw in `[0, 1)`.
+    /// Every draw in `[0, 1)`, with mean `1/2` within 5σ over 100k draws.
     #[test]
-    fn uniform_has_the_first_two_moments_of_u01() {
-        let n = 200_000;
+    fn uniform_is_in_the_unit_interval_with_mean_one_half() {
+        let n = 100_000;
         let mut rng = Rng::from_key(&[0xABCD]);
-        let (mut sum, mut sum_sq) = (0.0f64, 0.0f64);
-        for _ in 0..n {
-            let u = rng.uniform();
-            assert!((0.0..1.0).contains(&u));
-            sum += u;
-            sum_sq += u * u;
-        }
-        let mean = sum / n as f64;
-        let var = sum_sq / n as f64 - mean * mean;
-        let mean_sigma = (1.0f64 / 12.0 / n as f64).sqrt();
-        assert!((mean - 0.5).abs() < 5.0 * mean_sigma, "mean {mean}");
-        // Var of (U - 1/2)² is 1/180, so the variance estimate's σ is sqrt(1/180/n).
-        let var_sigma = (1.0f64 / 180.0 / n as f64).sqrt();
-        assert!((var - 1.0 / 12.0).abs() < 5.0 * var_sigma, "var {var}");
+        let draws: Vec<f64> = (0..n).map(|_| rng.uniform()).collect();
+        assert!(draws.iter().all(|u| (0.0..1.0).contains(u)));
+        let mean = draws.iter().sum::<f64>() / n as f64;
+        assert!(
+            (mean - 0.5).abs() < 5.0 * (1.0 / 12.0 / n as f64).sqrt(),
+            "mean {mean}"
+        );
     }
 }

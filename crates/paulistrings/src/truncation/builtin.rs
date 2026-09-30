@@ -480,17 +480,9 @@ pub(crate) fn collapse_to_target<const W: usize>(
         .expect("collapse_to_target: no bucket has positive weight");
     let (pos, _) = pick_slot(sum.bucket(b).2.iter().map(|c| c.norm_sqr()), rest)
         .expect("collapse_to_target: a positive bucket has a positive term");
-    for (i, cols) in sum.buckets_mut().iter_mut().enumerate() {
-        if i == b {
-            let (x, z) = (cols.x[pos], cols.z[pos]);
-            cols.clear();
-            cols.x.push(x);
-            cols.z.push(z);
-            cols.coeff.push(Complex64::new(1.0, 0.0));
-        } else {
-            cols.clear();
-        }
-    }
+    let (x, z) = (sum.bucket(b).0[pos], sum.bucket(b).1[pos]);
+    sum.clear();
+    sum.buckets_mut()[b].push(x, z, Complex64::new(1.0, 0.0));
     sum.recount();
 }
 

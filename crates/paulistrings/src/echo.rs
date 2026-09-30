@@ -66,22 +66,30 @@ pub fn diagonal_echo(hist: &[f64], delta: f64) -> f64 {
     num / hist.iter().sum::<f64>()
 }
 
-/// The bit mask of `sites`.
-///
-/// # Panics
-///
-/// If a site is repeated or is not below `num_qubits`.
-fn site_mask<const W: usize>(sites: &[usize], num_qubits: usize) -> [u64; W] {
+/// The bit mask of `qubits`, each asserted below `num_qubits`.
+pub(crate) fn qubit_mask<const W: usize>(
+    qubits: impl IntoIterator<Item = usize>,
+    num_qubits: usize,
+) -> [u64; W] {
     let mut mask = [0u64; W];
-    for &q in sites {
+    for q in qubits {
         assert!(
             q < num_qubits,
-            "echo: site {q} is outside the {num_qubits}-qubit register"
+            "qubit {q} is outside the {num_qubits}-qubit register"
         );
-        let bit = 1u64 << (q % 64);
-        assert!(mask[q / 64] & bit == 0, "echo: site {q} is listed twice");
-        mask[q / 64] |= bit;
+        mask[q / 64] |= 1u64 << (q % 64);
     }
+    mask
+}
+
+/// [`qubit_mask`] of `sites`, which must also be distinct.
+fn site_mask<const W: usize>(sites: &[usize], num_qubits: usize) -> [u64; W] {
+    let mask = qubit_mask(sites.iter().copied(), num_qubits);
+    assert_eq!(
+        popcount(&mask),
+        sites.len(),
+        "echo: a site is listed twice in {sites:?}"
+    );
     mask
 }
 
@@ -129,15 +137,16 @@ impl<const W: usize> PauliSum<W> {
         let bins = sites.len() + 1;
         (0..self.num_buckets())
             .into_par_iter()
-            .map(|b| {
-                let (xs, zs, cs) = self.bucket(b);
-                let mut hist = vec![0.0f64; bins];
-                for ((x, z), c) in xs.iter().zip(zs).zip(cs) {
-                    let (sel, _) = axis.split(x, z);
-                    hist[popcount(&and(sel, &mask))] += c.norm_sqr();
-                }
-                hist
-            })
+            .fold(
+                || vec![0.0f64; bins],
+                |mut hist, b| {
+                    let (xs, zs, cs) = self.bucket(b);
+                    for ((x, z), c) in xs.iter().zip(zs).zip(cs) {
+                        hist[popcount(&and(axis.split(x, z).0, &mask))] += c.norm_sqr();
+                    }
+                    hist
+                },
+            )
             .reduce(
                 || vec![0.0f64; bins],
                 |mut a, b| {
@@ -191,57 +200,37 @@ impl<const W: usize> PauliSum<W> {
         let sin_pow: Vec<f64> = (0..=sites.len()).map(|k| s.powi(k as i32)).collect();
 
         // A string commuting with every generator is its own class, and V leaves it alone.
-        let fixed: f64 = (0..self.num_buckets())
+        let (fixed, members): (Vec<f64>, Vec<Vec<Member<W>>>) = (0..self.num_buckets())
             .into_par_iter()
-            .map(|b| {
-                let (xs, zs, cs) = self.bucket(b);
-                xs.iter()
-                    .zip(zs)
-                    .zip(cs)
-                    .filter(|((x, z), _)| popcount(&and(axis.split(x, z).0, &mask)) == 0)
-                    .map(|(_, c)| c.norm_sqr())
-                    .sum::<f64>()
-            })
-            .sum();
-
-        let mut members: Vec<Member<W>> = (0..self.num_buckets())
-            .into_par_iter()
-            .flat_map_iter(|b| {
-                let (xs, zs, cs) = self.bucket(b);
-                xs.iter()
-                    .zip(zs)
-                    .zip(cs)
-                    .filter_map(move |((x, z), &coeff)| {
+            .fold(
+                || (0.0, Vec::new()),
+                |(mut fixed, mut members), b| {
+                    let (xs, zs, cs) = self.bucket(b);
+                    for ((x, z), &coeff) in xs.iter().zip(zs).zip(cs) {
                         let (sel, flip) = axis.split(x, z);
                         let k = and(sel, &mask);
                         if popcount(&k) == 0 {
-                            return None;
+                            fixed += coeff.norm_sqr();
+                            continue;
                         }
-                        let flip_k = and(flip, &k);
                         let cleared: [u64; W] = std::array::from_fn(|w| flip[w] & !k[w]);
                         let class = match axis {
                             RotationAxis::Z => (*x, cleared),
                             RotationAxis::X => (cleared, *z),
                         };
-                        Some(Member {
-                            class,
-                            flip: flip_k,
-                            coeff,
-                        })
-                    })
-            })
-            .collect();
+                        let flip = and(flip, &k);
+                        members.push(Member { class, flip, coeff });
+                    }
+                    (fixed, members)
+                },
+            )
+            .unzip();
+        let mut members: Vec<Member<W>> = members.into_iter().flatten().collect();
         members.par_sort_unstable_by(|a, b| a.class.cmp(&b.class));
 
-        let mut bounds: Vec<usize> = (0..members.len())
-            .filter(|&i| i == 0 || members[i].class != members[i - 1].class)
-            .collect();
-        bounds.push(members.len());
-
-        let mixed: Complex64 = bounds
-            .par_windows(2)
-            .map(|w| {
-                let class = &members[w[0]..w[1]];
+        let mixed: Complex64 = members
+            .par_chunk_by(|a, b| a.class == b.class)
+            .map(|class| {
                 let (x, z) = &class[0].class;
                 let sites_k = popcount(&and(axis.split(x, z).0, &mask));
                 let mut acc = Complex64::new(0.0, 0.0);
@@ -261,9 +250,9 @@ impl<const W: usize> PauliSum<W> {
                 }
                 acc
             })
-            .reduce(|| Complex64::new(0.0, 0.0), |a, b| a + b);
+            .sum();
 
-        mixed + fixed
+        mixed + fixed.iter().sum::<f64>()
     }
 }
 
@@ -310,56 +299,47 @@ mod tests {
     #[test]
     fn single_qubit_hand_values() {
         let c = (2.0 * DELTA).cos();
-        for (label, axis, want) in [
-            ("X", RotationAxis::Z, c),
-            ("Y", RotationAxis::Z, c),
-            ("Z", RotationAxis::Z, 1.0),
-            ("Z", RotationAxis::X, c),
-            ("Y", RotationAxis::X, c),
-            ("X", RotationAxis::X, 1.0),
+        for (label, axis, sites, want) in [
+            ("X", RotationAxis::Z, 0, c),
+            ("Y", RotationAxis::Z, 0, c),
+            ("Z", RotationAxis::Z, 0, 1.0),
+            ("Z", RotationAxis::X, 0, c),
+            ("Y", RotationAxis::X, 0, c),
+            ("X", RotationAxis::X, 0, 1.0),
+            // A generator off the string's support is invisible.
+            ("XI", RotationAxis::Z, 1, 1.0),
         ] {
-            let a = sum_of::<1>(&[(label, 1.0)]);
-            let got = a.rotated_overlap(&[0], DELTA, axis);
+            let got = sum_of::<1>(&[(label, 1.0)]).rotated_overlap(&[sites], DELTA, axis);
             assert!(
                 (got - want).abs() < 1e-15,
                 "{label} {axis:?}: {got} vs {want}"
             );
         }
-        // A generator off the string's support is invisible.
-        let a = sum_of::<1>(&[("XI", 1.0)]);
-        assert!((a.rotated_overlap(&[1], DELTA, RotationAxis::Z) - 1.0).abs() < 1e-15);
     }
 
     /// `XX` and `YY` form one class on sites `{0, 1}` (Z axis), with `R[XX, YY] = R[YY, XX] = sin² 2δ`, so `a XX + b YY` gives `(a² + b²) cos² 2δ + 2ab sin² 2δ`.
     /// `XX + YY` commutes with `Z ⊗ Z` rotations and returns its norm `2`; `XY − YX` does too, through the negative `R` entries.
+    /// On the X axis `ZZ` and `YY` share a class, as do `ZY` and `YZ`.
     #[test]
     fn two_qubit_class_hand_values() {
         let (s, c) = (2.0 * DELTA).sin_cos();
-        let cases: [(&[(&str, f64)], f64); 4] = [
-            (&[("XX", 0.7), ("YY", -0.4)], 0.65 * c * c - 0.56 * s * s),
-            (&[("XX", 1.0), ("YY", 1.0)], 2.0),
-            (&[("XY", 1.0), ("YX", -1.0)], 2.0),
-            (&[("XX", 1.0), ("YY", -1.0)], 2.0 * (4.0 * DELTA).cos()),
+        let (z, x) = (RotationAxis::Z, RotationAxis::X);
+        let cases = [
+            ([("XX", 0.7), ("YY", -0.4)], z, 0.65 * c * c - 0.56 * s * s),
+            ([("XX", 1.0), ("YY", 1.0)], z, 2.0),
+            ([("XY", 1.0), ("YX", -1.0)], z, 2.0),
+            ([("XX", 1.0), ("YY", -1.0)], z, 2.0 * (4.0 * DELTA).cos()),
+            ([("ZZ", 1.0), ("YY", 1.0)], x, 2.0),
+            ([("ZY", 1.0), ("YZ", -1.0)], x, 2.0),
+            ([("ZY", 1.0), ("YZ", 1.0)], x, 2.0 * (4.0 * DELTA).cos()),
         ];
-        for (terms, want) in cases {
-            let a = sum_of::<1>(terms);
-            let got = a.rotated_overlap(&[0, 1], DELTA, RotationAxis::Z);
-            assert!((got - want).abs() < 1e-14, "{terms:?}: {got} vs {want}");
+        for (terms, axis, want) in cases {
+            let got = sum_of::<1>(&terms).rotated_overlap(&[0, 1], DELTA, axis);
+            assert!(
+                (got - want).abs() < 1e-14,
+                "{terms:?} {axis:?}: {got} vs {want}"
+            );
         }
-        // The same algebra on the X axis: `ZZ` and `YY` share a class, as do `ZY` and `YZ`, and both combinations below are invariant.
-        for terms in [[("ZZ", 1.0), ("YY", 1.0)], [("ZY", 1.0), ("YZ", -1.0)]] {
-            let got = sum_of::<1>(&terms).rotated_overlap(&[0, 1], DELTA, RotationAxis::X);
-            assert!((got - 2.0).abs() < 1e-14, "{terms:?}: {got}");
-        }
-        let got = sum_of::<1>(&[("ZY", 1.0), ("YZ", 1.0)]).rotated_overlap(
-            &[0, 1],
-            DELTA,
-            RotationAxis::X,
-        );
-        assert!(
-            (got - 2.0 * (4.0 * DELTA).cos()).abs() < 1e-14,
-            "ZY + YZ: {got}"
-        );
     }
 
     /// Complex coefficients so the sign convention of every off-diagonal entry shows in the imaginary part too.
@@ -382,12 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn agrees_with_materializing_the_rotation_w1() {
+    fn agrees_with_materializing_the_rotation() {
         check_against_materialized::<1>(8, &[1, 2, 3, 4, 6]);
-    }
-
-    #[test]
-    fn agrees_with_materializing_the_rotation_w2() {
         check_against_materialized::<2>(70, &[62, 63, 64, 65, 67]);
     }
 

@@ -2,7 +2,7 @@
 //!
 //! `g` only orders records inside a device bucket; identity is always decided on the full key.
 
-use crate::bucket::hash::{mix64, SPLITMIX_GAMMA};
+use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Mixed into the hash seed before drawing the fingerprint rows, so `G` is unrelated to the `Gf2Hash` and `PartitionRows` rows of the same seed.
 pub(crate) const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;

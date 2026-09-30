@@ -153,8 +153,6 @@ pub struct MpiTransport {
     epoch: AtomicU32,
     /// Send-side scratch for [`Collectives::allreduce_sum_u64`] — rsmpi's safe `all_reduce_into` has no `MPI_IN_PLACE`, so the input needs a copy, and the buffer is the same length every layer.
     scratch: Mutex<Vec<u64>>,
-    /// The same for [`Collectives::allreduce_sum_f64`].
-    scratch_f64: Mutex<Vec<f64>>,
     /// Largest message the transport sends, in bytes.
     /// A test knob (see [`with_chunk_bytes`](Self::with_chunk_bytes)); production uses [`DEFAULT_CHUNK_BYTES`].
     chunk: usize,
@@ -256,7 +254,6 @@ impl MpiTransport {
             size,
             epoch: AtomicU32::new(0),
             scratch: Mutex::new(Vec::new()),
-            scratch_f64: Mutex::new(Vec::new()),
             chunk: DEFAULT_CHUNK_BYTES,
         })
     }
@@ -696,17 +693,12 @@ impl Collectives for MpiTransport {
         if self.size == 1 {
             return;
         }
-        let mut scratch = self
-            .scratch_f64
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        scratch.clear();
-        scratch.extend_from_slice(buf);
         let root = self.comm.process_at_rank(ROOT as Rank);
         if self.rank as usize == ROOT {
-            root.reduce_into_root(&scratch[..], buf, SystemOperation::sum());
+            let send = buf.to_vec();
+            root.reduce_into_root(&send[..], buf, SystemOperation::sum());
         } else {
-            root.reduce_into(&scratch[..], SystemOperation::sum());
+            root.reduce_into(&buf[..], SystemOperation::sum());
         }
         root.broadcast_into(buf);
     }

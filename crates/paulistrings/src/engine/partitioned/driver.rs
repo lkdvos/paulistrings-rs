@@ -533,8 +533,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// When the rows avoid [`RotationAxis::flip_mask`] of `sites` (see [`PartitionRows::from_seed_excluding`]) every class lies in one partition and the partitions' values are added in rank order; otherwise the partitions are gathered first.
     pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
-        let (mask_x, mask_z) = axis.flip_mask::<W>(sites);
-        if self.rows.avoids(&mask_x, &mask_z) {
+        if self.rows.keeps_flip_classes(sites, axis) {
             self.parts
                 .iter()
                 .map(|part| part.sum.rotated_overlap(sites, delta, axis))

@@ -628,29 +628,19 @@ def test_partition_row_exclude_takes_the_seed():
         ({"x": list(range(8)), "z": list(range(8))}, ValueError, "every coordinate"),
         ([0, 1], TypeError, "must be None or a dict"),
         ({"x": "01"}, TypeError, "must be None or a dict"),
+        ({"x": [0]}, ValueError, "needs partitions"),
+        ({"x": [0]}, ValueError, "alternatives"),
     ],
 )
 def test_bad_partition_row_exclude(exclude, error, message):
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    kw = {"partitions": _cpu_sets()}
+    if message == "needs partitions":
+        kw = {}
+    elif message == "alternatives":
+        kw["partition_row_blocks"] = [[0, 1, 2, 3], [4, 5, 6, 7]]
     with pytest.raises(error, match=message):
-        s.propagate(c, partitions=_cpu_sets(), partition_row_exclude=exclude)
-
-
-def test_partition_row_exclude_needs_partitions():
-    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    with pytest.raises(ValueError, match="needs partitions"):
-        s.propagate(c, partition_row_exclude={"x": [0]})
-
-
-def test_blocks_and_exclude_are_mutually_exclusive():
-    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    with pytest.raises(ValueError, match="alternatives"):
-        s.propagate(
-            c,
-            partitions=_cpu_sets(),
-            partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]],
-            partition_row_exclude={"x": [0]},
-        )
+        s.propagate(c, partition_row_exclude=exclude, **kw)
 
 
 def _collapse_case(num_qubits=WIDTHS[0]):

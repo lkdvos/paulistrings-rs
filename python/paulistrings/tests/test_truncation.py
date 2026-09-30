@@ -20,6 +20,8 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates, truncation
 
+from .test_from_arrays import _as_dict
+
 
 TOL = 1e-12
 
@@ -32,7 +34,7 @@ def _probe_circuit(num_qubits):
     return c
 
 
-def test_coefficient_threshold_drops_subthreshold_terms():
+def test_coefficient_threshold_drops_subthreshold_as_dict():
     # rz(0.1) X = cos(0.1)·X + sin(0.1)·Y; only X clears coeff(0.5).
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
@@ -42,7 +44,7 @@ def test_coefficient_threshold_drops_subthreshold_terms():
     assert abs(only - math.cos(0.1)) < TOL
 
 
-def test_weight_cutoff_drops_higher_weight_terms():
+def test_weight_cutoff_drops_higher_weight_as_dict():
     # Build a 2-qubit sum with weights 0/1/2 mixed: II (w=0), XI (w=1),
     # XX (w=2). Cap weight at 1 → drop XX.
     s = PauliSum.from_strings(
@@ -245,9 +247,9 @@ def test_coeff_factory_is_a_truncation_object():
 # collapse_sample
 
 
-def _splitting_circuit(layers, num_qubits=1):
+def _splitting_circuit(layers):
     """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, ...)`` collapses on every layer."""
-    c = Circuit(num_qubits)
+    c = Circuit(1)
     for _ in range(layers):
         c.rx(0.7, 0)
     return c
@@ -264,17 +266,11 @@ def _fanout_case():
     return s, c
 
 
-def _terms(sum_):
-    """``{(x_words, z_words): coeff}``, so comparisons ignore storage order."""
-    xs, zs, cs = sum_.x_array().tolist(), sum_.z_array().tolist(), sum_.coefficients()
-    return {(tuple(x), tuple(z)): c for x, z, c in zip(xs, zs, cs)}
-
-
 def test_collapse_sample_above_the_final_size_is_a_no_op():
     s, c = _fanout_case()
     want = s.propagate(c, direction="heisenberg")
     got, stats = s.propagate_with_stats(c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
-    assert _terms(got) == _terms(want)
+    assert _as_dict(got) == _as_dict(want)
     assert stats.collapses == 0
 
 
@@ -299,7 +295,7 @@ def test_collapse_sample_is_reproducible_per_seed():
     s, c = _fanout_case()
     runs = {
         seed: [
-            _terms(s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg"))
+            _as_dict(s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg"))
             for _ in range(2)
         ]
         for seed in range(6)
@@ -320,7 +316,7 @@ def test_collapse_sample_counts_per_call_and_continues_its_sequence():
     # Two four-layer calls on one object draw what one eight-layer call draws.
     policy = truncation.collapse_sample(1, 11)
     chained = s.propagate(circuit, policy).propagate(circuit, policy)
-    assert _terms(chained) == _terms(s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
+    assert _as_dict(chained) == _as_dict(s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
 
 
 def test_collapse_sample_draws_by_squared_magnitude():

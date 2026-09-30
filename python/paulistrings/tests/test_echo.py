@@ -13,6 +13,8 @@ import pytest
 import paulistrings
 from paulistrings import PauliSum
 
+from .test_stabilizer import _PAULI, _dense_pauli
+
 DELTA = 0.3
 TOL = 1e-12
 
@@ -23,20 +25,21 @@ def _one(label, coeff=1.0):
 
 @pytest.mark.parametrize(
     "label, axis, anticommutes",
-    [("X", "z", True), ("Y", "z", True), ("Z", "z", False), ("Z", "x", True), ("Y", "x", True), ("X", "x", False)],
+    [
+        ("X", "z", True),
+        ("Y", "z", True),
+        ("Z", "z", False),
+        ("Z", "x", True),
+        ("Y", "x", True),
+        ("X", "x", False),
+        ("X", "Z", True),  # case-insensitive
+        ("Z", None, True),  # the default axis is x
+    ],
 )
 def test_a_single_string_echoes_cos_two_delta_iff_it_anticommutes(label, axis, anticommutes):
-    s = _one(label)
-    assert s.rotated_overlap([0], DELTA, axis=axis) == pytest.approx(
-        math.cos(2 * DELTA) if anticommutes else 1.0, abs=TOL
-    )
-    assert s.anticommute_histogram([0], axis=axis) == ([0.0, 1.0] if anticommutes else [1.0, 0.0])
-
-
-def test_the_default_axis_is_x():
-    s = _one("Z")
-    assert s.rotated_overlap([0], DELTA) == pytest.approx(math.cos(2 * DELTA), abs=TOL)
-    assert s.anticommute_histogram([0]) == [0.0, 1.0]
+    s, kw = _one(label), {} if axis is None else {"axis": axis}
+    assert s.rotated_overlap([0], DELTA, **kw) == pytest.approx(math.cos(2 * DELTA) if anticommutes else 1.0, abs=TOL)
+    assert s.anticommute_histogram([0], **kw) == ([0.0, 1.0] if anticommutes else [1.0, 0.0])
 
 
 def test_the_histogram_counts_anticommuting_sites():
@@ -72,18 +75,10 @@ def test_diagonal_echo():
     assert math.isnan(paulistrings.diagonal_echo([0.0, 0.0], DELTA))
 
 
-_PAULI = {
-    "I": np.eye(2, dtype=complex),
-    "X": np.array([[0, 1], [1, 0]], dtype=complex),
-    "Y": np.array([[0, -1j], [1j, 0]], dtype=complex),
-    "Z": np.diag([1.0, -1.0]).astype(complex),
-}
-
-
 def _dense_echo(terms, sites, delta, axis):
     """``2**-n Tr(A V^dag A V)`` from matrices, qubit ``i`` the ``i``-th Kronecker factor like label character ``i``."""
     n = len(next(iter(terms)))
-    A = sum(c * reduce(np.kron, [_PAULI[ch] for ch in label]) for label, c in terms.items())
+    A = sum(c * _dense_pauli(label) for label, c in terms.items())
     g = _PAULI[axis.upper()]
     rot = math.cos(delta) * _PAULI["I"] - 1j * math.sin(delta) * g
     V = reduce(np.kron, [rot if q in sites else _PAULI["I"] for q in range(n)])
@@ -105,30 +100,22 @@ def test_rotated_overlap_matches_a_dense_trace(axis, seed):
 @pytest.mark.parametrize("axis", ["y", "", "xz"])
 def test_an_unknown_axis_is_a_value_error(axis):
     s = _one("X")
-    with pytest.raises(ValueError, match="axis must be 'x' or 'z'"):
-        s.rotated_overlap([0], DELTA, axis=axis)
-    with pytest.raises(ValueError, match="axis must be 'x' or 'z'"):
-        s.anticommute_histogram([0], axis=axis)
-
-
-def test_the_axis_is_case_insensitive():
-    s = _one("X")
-    assert s.rotated_overlap([0], DELTA, axis="Z") == s.rotated_overlap([0], DELTA, axis="z")
+    for call in (lambda: s.rotated_overlap([0], DELTA, axis=axis), lambda: s.anticommute_histogram([0], axis=axis)):
+        with pytest.raises(ValueError, match="axis must be 'x' or 'z'"):
+            call()
 
 
 @pytest.mark.parametrize("sites, message", [([3], "out of range"), ([0, 0], "listed twice")])
 def test_bad_sites_are_value_errors(sites, message):
     s = PauliSum.from_strings({"XYZ": 1.0}, num_qubits=3)
-    with pytest.raises(ValueError, match=message):
-        s.rotated_overlap(sites, DELTA)
-    with pytest.raises(ValueError, match=message):
-        s.anticommute_histogram(sites)
+    for call in (lambda: s.rotated_overlap(sites, DELTA), lambda: s.anticommute_histogram(sites)):
+        with pytest.raises(ValueError, match=message):
+            call()
 
 
 @pytest.mark.skipif(paulistrings.mpi_available(), reason="the mpi build answers comm= itself (test_mpi.py)")
 def test_comm_without_the_mpi_feature_is_a_runtime_error():
     s = _one("X")
-    with pytest.raises(RuntimeError, match="without MPI support"):
-        s.rotated_overlap([0], DELTA, comm=object())
-    with pytest.raises(RuntimeError, match="without MPI support"):
-        s.anticommute_histogram([0], comm=object())
+    for call in (lambda: s.rotated_overlap([0], DELTA, comm=object()), lambda: s.anticommute_histogram([0], comm=object())):
+        with pytest.raises(RuntimeError, match="without MPI support"):
+            call()

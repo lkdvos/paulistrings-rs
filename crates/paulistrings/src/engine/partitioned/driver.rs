@@ -400,24 +400,7 @@ impl<const W: usize> PartitionedSum<W> {
         runtime: Arc<PartitionRuntime>,
     ) -> Self {
         let size = runtime.num_partitions();
-        assert_eq!(
-            rows.num_partitions(),
-            size,
-            "partition rows name {} partitions but the runtime has {size}",
-            rows.num_partitions(),
-        );
-        assert_eq!(
-            rows.num_qubits(),
-            sum.num_qubits(),
-            "partition rows are for {} qubits, the sum for {}",
-            rows.num_qubits(),
-            sum.num_qubits(),
-        );
-        debug_assert!(
-            rows.is_independent_of(sum.hash()),
-            "partition rows are dependent on the bucket hash rows — the split \
-             will correlate with the bucket partition and load-balance badly",
-        );
+        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
 
         let started = Instant::now();
         let locals = {

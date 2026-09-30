@@ -828,21 +828,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 );
             }
         } else if let DeviceSpec::Ordinals(v) = spec {
-            let total = v.len() * gpu_partitions;
-            if !total.is_power_of_two() {
-                return Err(format!(
-                    "--device lists {} device(s) x --gpu-partitions {gpu_partitions} = {total} \
-                     partitions, which is not a power of two",
-                    v.len()
-                ));
-            }
-            if layers.contains(&LayerKind::RotationRemote) && total == 1 {
-                return Err(
-                    "--layers rotation_remote needs a remote delta, which only exists with more \
-                     than one device partition (several --device ordinals or --gpu-partitions > 1)"
-                        .to_string(),
-                );
-            }
+            check_device_partitions(v.len(), gpu_partitions, &layers)
+                .map_err(|msg| format!("--device: {msg}"))?;
         }
         let one_device =
             !mpi && gpu_partitions == 1 && matches!(spec, DeviceSpec::Ordinals(v) if v.len() == 1);
@@ -1457,7 +1444,6 @@ fn device_truncation(spec: TruncSpec) -> BuiltinTruncation {
 }
 
 /// One device cell, `--gpu-partitions` partitions on each of `devices` (one device at one partition is `GpuPauliSum`): [`run_cell_partitioned`] with `GpuPartitionedSum`.
-/// `upload_ns` is the scatter (filter and upload), `download_ns` the gather, both outside `wall_ns`.
 #[cfg(feature = "cuda")]
 fn run_cell_gpu<const W: usize>(
     layer: LayerKind,
@@ -1469,12 +1455,6 @@ fn run_cell_gpu<const W: usize>(
     use paulistrings::gpu::GpuPartitionedSum;
 
     let partitions = devices.len() * cfg.gpu_partitions;
-    let device = devices
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let base = build_base_sum::<W>(layer, cfg);
     let config = PartitionConfig {
         placement: Placement::Devices {
             devices: devices.to_vec(),
@@ -1489,21 +1469,17 @@ fn run_cell_gpu<const W: usize>(
     });
     let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
         eprintln!(
-            "phase_breakdown: {} on devices {device} x{}: {what}: {e}",
+            "phase_breakdown: {} on devices {devices:?} x{}: {what}: {e}",
             layer.name(),
             cfg.gpu_partitions,
         );
         std::process::exit(2);
     };
+    let base = build_base_sum::<W>(layer, cfg);
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
-    };
-    let split_hash_seed = base.hash().seed();
+    let hash_seed = base.hash().seed();
 
     let started = Instant::now();
     let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&base, rows, runtime)
@@ -1511,65 +1487,104 @@ fn run_cell_gpu<const W: usize>(
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
-
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
-    let _ = split.take_trace();
-    let _ = split.take_stats();
-
-    let steady_n = split.len();
+    let _ = (split.take_trace(), split.take_stats());
+    let n = split.len();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
-
     let started = Instant::now();
-    let output = split.gather().unwrap_or_else(|e| fail("gather", e));
+    std::hint::black_box(split.gather().unwrap_or_else(|e| fail("gather", e)));
     let download_ns = started.elapsed().as_nanos() as u64;
-    std::hint::black_box(&output);
+    let run = DeviceRun {
+        n,
+        hash_seed,
+        wall_ns,
+        partitions,
+        gen_qubits,
+        row_stats,
+        mpi: None,
+        device: DeviceCellStats {
+            devices: devices.to_vec(),
+            upload_ns,
+            download_ns,
+        },
+    };
+    device_cell(layer, threads, cfg, run, &trace, &per_partition)
+}
 
+/// What a device cell measured, beside its trace and phase counters.
+#[cfg(feature = "cuda")]
+struct DeviceRun {
+    n: usize,
+    hash_seed: u64,
+    wall_ns: u64,
+    partitions: usize,
+    gen_qubits: (u32, u32),
+    row_stats: RowChoiceStats,
+    mpi: Option<(u32, u32)>,
+    device: DeviceCellStats,
+}
+
+/// The bucket schedule a device cell propagates under.
+#[cfg(feature = "cuda")]
+fn device_options(cfg: &Config) -> PropagateOptions {
+    PropagateOptions {
+        target_bucket_len: cfg.target_bucket_len,
+        min_buckets: cfg.min_buckets,
+        ..PropagateOptions::default()
+    }
+}
+
+/// A device cell's row.
+#[cfg(feature = "cuda")]
+fn device_cell(
+    layer: LayerKind,
+    threads: usize,
+    cfg: &Config,
+    run: DeviceRun,
+    trace: &PartitionTrace,
+    per_partition: &PartitionPhaseStats,
+) -> CellResult {
     let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-    let stats = fold_partition_stats(&per_partition);
-    let summary = summarize_partitions(partitions, &trace, &per_partition, &stats);
-
+    let stats = fold_partition_stats(per_partition);
+    let summary = summarize_partitions(run.partitions, trace, per_partition, &stats);
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
         threads,
-        n: steady_n,
+        n: run.n,
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        hash_seed: split_hash_seed,
+        hash_seed: run.hash_seed,
         bucket_bits: cfg.bucket_bits,
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        wall_ns,
+        wall_ns: run.wall_ns,
         stats,
         vmrss_kb,
         vmhwm_kb,
-        partitions,
+        partitions: run.partitions,
         partition_cpus: "gpu".to_string(),
         pin_memory: false,
-        gen_qubits,
+        gen_qubits: run.gen_qubits,
         initial: cfg
             .initial
             .unwrap_or_else(|| Initial::default_for(layer))
             .label(),
         partition_rows: cfg.partition_rows.label(),
-        row_stats,
+        row_stats: run.row_stats,
         partitioned: Some(summary),
-        mpi: None,
+        mpi: run.mpi,
         occupancy: None,
-        device: Some(DeviceCellStats {
-            devices: devices.to_vec(),
-            upload_ns,
-            download_ns,
-        }),
+        device: Some(run.device),
     }
 }
 
@@ -2105,37 +2120,40 @@ where
     }
 }
 
-/// The ordinals a single-process `--device` run places partitions on: the list, or every visible device for `auto`, checked against `--gpu-partitions` and the layers.
-#[cfg(feature = "cuda")]
-fn resolve_devices(spec: &DeviceSpec, cfg: &Config) -> Vec<u32> {
-    let devices = match spec {
-        DeviceSpec::Ordinals(v) => v.clone(),
-        DeviceSpec::Auto => (0..paulistrings::gpu::device_count() as u32).collect(),
-    };
-    let fail = |msg: String| -> ! {
-        eprintln!("phase_breakdown: {msg}");
-        std::process::exit(2);
-    };
-    if devices.is_empty() {
-        fail("--device auto: no CUDA device is visible".to_string());
-    }
-    let total = devices.len() * cfg.gpu_partitions;
+/// `devices × gpu_partitions` must be a power of two, and above one when `layers` needs a remote delta.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn check_device_partitions(
+    devices: usize,
+    gpu_partitions: usize,
+    layers: &[LayerKind],
+) -> Result<(), String> {
+    let total = devices * gpu_partitions;
     if !total.is_power_of_two() {
-        fail(format!(
-            "--device auto found {} device(s), x --gpu-partitions {} = {total} partitions, which is \
-             not a power of two; list the ordinals explicitly",
-            devices.len(),
-            cfg.gpu_partitions,
+        return Err(format!(
+            "{devices} device(s) x --gpu-partitions {gpu_partitions} = {total} partitions, which is not a power of two"
         ));
     }
-    if total == 1 && cfg.layers.contains(&LayerKind::RotationRemote) {
-        fail("--layers rotation_remote needs more than one device partition".to_string());
+    if total == 1 && layers.contains(&LayerKind::RotationRemote) {
+        return Err("--layers rotation_remote needs more than one device partition".to_string());
     }
-    devices
+    Ok(())
+}
+
+/// The ordinals a single-process `--device` run places partitions on: the list, or every visible device for `auto`, which `parse_args` could not check.
+#[cfg(feature = "cuda")]
+fn resolve_devices(spec: &DeviceSpec, cfg: &Config) -> Vec<u32> {
+    let DeviceSpec::Ordinals(devices) = spec else {
+        let devices: Vec<u32> = (0..paulistrings::gpu::device_count() as u32).collect();
+        if let Err(msg) = check_device_partitions(devices.len(), cfg.gpu_partitions, &cfg.layers) {
+            eprintln!("phase_breakdown: --device auto: {msg}");
+            std::process::exit(2);
+        }
+        return devices;
+    };
+    devices.clone()
 }
 
 /// One `--mpi --device` cell: [`run_cell_mpi`] with this rank's partition on one CUDA device (`MpiGpuSum`).
-/// `upload_ns` is the scatter (filter and upload), `download_ns` the collective gather, both outside `wall_ns`.
 #[cfg(all(feature = "cuda", feature = "mpi"))]
 fn run_cell_mpi_gpu<const W: usize>(
     layer: LayerKind,
@@ -2187,81 +2205,46 @@ fn run_cell_mpi_gpu<const W: usize>(
         );
     }
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
-    };
+    let hash_seed = base.hash().seed();
 
     let transport = MpiTransport::from_communicator(&world);
-    let split_hash_seed = base.hash().seed();
     let started = Instant::now();
     let mut split = MpiGpuSum::scatter_to_device_with_rows(&base, transport, device, rows)
         .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
-
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
-    let _ = split.take_trace();
-    let _ = split.take_stats();
+    let _ = (split.take_trace(), split.take_stats());
     split.transport().barrier();
-
-    let steady_n = split.len_local();
+    let n = split.len_local();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, options)
+        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
-
     let started = Instant::now();
-    let output = split.gather().unwrap_or_else(|e| fail("gather", e));
+    std::hint::black_box(split.gather().unwrap_or_else(|e| fail("gather", e)));
     let download_ns = started.elapsed().as_nanos() as u64;
-    std::hint::black_box(&output);
-
-    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-    let stats = fold_partition_stats(&per_partition);
-    let summary = summarize_partitions(1, &trace, &per_partition, &stats);
-
-    CellResult {
-        layer: layer.name(),
-        truncation: cfg.truncation.label(),
-        threads,
-        n: steady_n,
-        reps: cfg.reps,
-        qubits: cfg.qubits,
-        seed: cfg.seed,
-        hash_seed: split_hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
+    let run = DeviceRun {
+        n,
+        hash_seed,
         wall_ns,
-        stats,
-        vmrss_kb,
-        vmhwm_kb,
         partitions: 1,
-        partition_cpus: "gpu".to_string(),
-        pin_memory: false,
         gen_qubits,
-        initial: cfg
-            .initial
-            .unwrap_or_else(|| Initial::default_for(layer))
-            .label(),
-        partition_rows: cfg.partition_rows.label(),
         row_stats,
-        partitioned: Some(summary),
         mpi: Some((rank, ranks)),
-        occupancy: None,
-        device: Some(DeviceCellStats {
+        device: DeviceCellStats {
             devices: vec![device],
             upload_ns,
             download_ns,
-        }),
-    }
+        },
+    };
+    device_cell(layer, threads, cfg, run, &trace, &per_partition)
 }
 
 /// The cell-level [`PhaseStats`] of a partitioned run: wall-clock fields are the maximum over
@@ -2989,35 +2972,16 @@ const MPI_USAGE: &str = "\
 /// The extra `--help` lines the `cuda` feature adds.
 #[cfg(feature = "cuda")]
 const DEVICE_USAGE: &str = "\
-  --device <csv|auto>      Run each cell on CUDA devices. One ordinal: GpuPauliSum
-                            on that device. Several (e.g. 0,1,2,3), or auto for
-                            every visible device: GpuPartitionedSum with
-                            --gpu-partitions partitions on each, the row's
-                            `device` listing them. With --mpi: one device per
-                            rank (MpiGpuSum), one ordinal or auto (the rank's
-                            device by CPU locality). The input is uploaded
-                            untimed, a warm-up call then the
-                            timed call run on the resident sum, and the output
-                            is downloaded untimed; `upload_ns`/`download_ns`
-                            report those two, `wall_ns` the timed call, so it
-                            means the same as on a host row. --threads is not
-                            swept: one cell per layer, --threads[0] echoed.
-                            --partitions must stay at 1, topn:<N> runs on one
-                            ordinal at one partition only, and --occupancy-at
-                            is unsupported. Phases:
-                            gather = K1+K2, merge = the fused K3 (sort
-                            included, sort_ns = 0), compact = K4, rescale = K5,
-                            rebucket = device refines, coset_loop = the driving
-                            thread's wall of the fused path; h2d_ns/d2h_ns are
-                            the copies inside a layer.
-  --gpu-partitions <n>     With --device: split the sum into <n> virtual device
-                            partitions on each device (devices x n a power of
-                            two, default 1)
-                            and run them through GpuPartitionedSum, so remote
-                            layers export, exchange and merge received rows;
-                            rotation_remote needs n > 1. The row carries
-                            partitions=<n>, partition_cpus=gpu, upload_ns the
-                            scatter and download_ns the gather.";
+  --device <csv|auto>      Run each cell on CUDA devices: one ordinal is GpuPauliSum,
+                            several (or auto, every visible device) GpuPartitionedSum,
+                            and with --mpi one device per rank (MpiGpuSum, one ordinal
+                            or auto). The upload and download are untimed (upload_ns,
+                            download_ns); wall_ns is the second call on the resident sum.
+                            One cell per layer at --threads[0]; topn:<N> needs one
+                            ordinal at one partition. benchmarks/PROFILING.md maps the
+                            kernels onto the phases.
+  --gpu-partitions <n>     With --device: <n> virtual partitions on each device
+                            (devices x n a power of two, default 1).";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

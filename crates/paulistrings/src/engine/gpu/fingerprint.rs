@@ -2,6 +2,8 @@
 //!
 //! `g` only orders records inside a device bucket; identity is always decided on the full key.
 
+use crate::bucket::hash::{mix64, SPLITMIX_GAMMA};
+
 /// Mixed into the hash seed before drawing the fingerprint rows, so `G` is unrelated to the `Gf2Hash` and `PartitionRows` rows of the same seed.
 pub(crate) const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 
@@ -21,11 +23,8 @@ impl<const W: usize> FingerprintRows<W> {
     pub(crate) fn new(hash_seed: u64) -> Self {
         let mut state = hash_seed ^ FINGERPRINT_SALT;
         let mut next = || {
-            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
+            state = state.wrapping_add(SPLITMIX_GAMMA);
+            mix64(state)
         };
         let mut rows_x = Vec::with_capacity(FP_ROWS);
         let mut rows_z = Vec::with_capacity(FP_ROWS);

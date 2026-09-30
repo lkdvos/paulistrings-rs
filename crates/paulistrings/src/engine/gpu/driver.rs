@@ -1,6 +1,6 @@
 //! [`GpuPartitionedSum`], [`PartitionedSum`] over device partitions, its one-device form [`GpuPauliSum`], and their front doors.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use super::error::GpuError;
@@ -79,6 +79,26 @@ pub(super) fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
         .map(|rank| (rank, codes[rank]))
 }
 
+/// The one-partition runtime on `device`, built once per process and device so a caller scattering every call pays for its pool once.
+pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuError> {
+    static RUNTIMES: Mutex<Vec<(u32, Arc<PartitionRuntime>)>> = Mutex::new(Vec::new());
+    let mut cache = RUNTIMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, runtime)) = cache.iter().find(|(d, _)| *d == device) {
+        return Ok(runtime.clone());
+    }
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![device],
+            per_device: 1,
+        },
+        bind_memory: false,
+        partition_row_seed: None,
+    };
+    let runtime = PartitionRuntime::new(&config).map_err(GpuError::Topology)?;
+    cache.push((device, runtime.clone()));
+    Ok(runtime)
+}
+
 /// Rank `rank` of a `size`-partition group: its share of `sum` under `rows` uploaded to `device`. **Collective** above one partition, through [`scatter_local`].
 pub(super) fn upload_share<const W: usize>(
     sum: &PauliSum<W>,
@@ -121,15 +141,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     }
 
     fn one_device(sum: &PauliSum<W>, ordinal: u32, extra: &[String]) -> Result<Self, GpuError> {
-        let config = PartitionConfig {
-            placement: Placement::Devices {
-                devices: vec![ordinal],
-                per_device: 1,
-            },
-            bind_memory: false,
-            partition_row_seed: None,
-        };
-        let runtime = PartitionRuntime::new(&config).map_err(GpuError::Topology)?;
+        let runtime = device_runtime(ordinal)?;
         Self::upload(sum, PartitionRows::none(sum.num_qubits()), runtime, extra)
     }
 
@@ -174,19 +186,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         extra: &[String],
     ) -> Result<Self, GpuError> {
         let size = runtime.num_partitions();
-        assert_eq!(
-            rows.num_partitions(),
-            size,
-            "partition rows name {} partitions but the runtime has {size}",
-            rows.num_partitions(),
-        );
-        assert_eq!(
-            rows.num_qubits(),
-            sum.num_qubits(),
-            "partition rows are for {} qubits, the sum for {}",
-            rows.num_qubits(),
-            sum.num_qubits(),
-        );
+        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
         let devices: Vec<u32> = runtime
             .slots()
             .iter()
@@ -294,10 +294,16 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         parts[0].check_poison()?;
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
-        let shares = parts
-            .iter()
-            .map(|p| p.sum().to_host())
-            .collect::<Result<Vec<_>, _>>()?;
+        let shares = std::thread::scope(|s| {
+            let downloads: Vec<_> = parts
+                .iter()
+                .map(|p| s.spawn(|| p.sum().to_host()))
+                .collect();
+            downloads
+                .into_iter()
+                .map(|h| h.join().expect("a download thread panicked"))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
         let out = PauliSum::merge_partitions(shares);
         #[cfg(feature = "phase-timing")]
         self.lap_gather(started.elapsed().as_nanos() as u64);

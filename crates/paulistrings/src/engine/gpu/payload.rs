@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
 
+use super::columns::{grow, grow_keep};
 use super::error::GpuError;
-use super::layer::grow;
 use crate::engine::partitioned::transport::BlockHeader;
 
 /// One exchange block with its columns on a device: the header and CSR offsets on the host, `x`/`z`/`coeff` on the device the sender ran on.
@@ -45,7 +45,7 @@ impl<const W: usize> DeviceBlock<W> {
         };
     }
 
-    /// Room for `rows` rows in every column, keeping what is there.
+    /// Room for `rows` rows in every column, discarding what is there.
     pub(crate) fn grow(
         &mut self,
         stream: &Arc<CudaStream>,
@@ -57,7 +57,7 @@ impl<const W: usize> DeviceBlock<W> {
         grow(stream, &mut self.c, 2 * rows, ordinal)
     }
 
-    /// Room for `need` rows, copying the first `live` rows of every column into any new allocation; grows geometrically.
+    /// Room for `need` rows, keeping the first `live` rows of every column; grows geometrically.
     pub(crate) fn reserve_keep(
         &mut self,
         stream: &Arc<CudaStream>,
@@ -69,27 +69,11 @@ impl<const W: usize> DeviceBlock<W> {
         if need <= cap {
             return Ok(());
         }
-        if live == 0 {
-            return self.grow(stream, need, ordinal);
-        }
-        let mut next = Self::new(stream)?;
-        next.grow(stream, need.max(2 * cap), ordinal)?;
-        stream.memcpy_dtod(
-            &self.x.slice(0..live * W),
-            &mut next.x.slice_mut(0..live * W),
-        )?;
-        stream.memcpy_dtod(
-            &self.z.slice(0..live * W),
-            &mut next.z.slice_mut(0..live * W),
-        )?;
-        stream.memcpy_dtod(
-            &self.c.slice(0..2 * live),
-            &mut next.c.slice_mut(0..2 * live),
-        )?;
-        self.x = next.x;
-        self.z = next.z;
-        self.c = next.c;
-        Ok(())
+        let rows = need.max(2 * cap);
+        let bytes = (rows * (2 * W + 2) * 8) as u64;
+        grow_keep(stream, &mut self.x, rows * W, live * W, ordinal, bytes)?;
+        grow_keep(stream, &mut self.z, rows * W, live * W, ordinal, bytes)?;
+        grow_keep(stream, &mut self.c, 2 * rows, 2 * live, ordinal, bytes)
     }
 
     pub(crate) fn rows(&self) -> usize {

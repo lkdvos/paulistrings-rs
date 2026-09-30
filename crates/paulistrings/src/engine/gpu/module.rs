@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::sys::{CUdevice_attribute, CUfunction_attribute};
-use cudarc::driver::CudaFunction;
+use cudarc::driver::{CudaFunction, LaunchConfig};
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
 use super::device;
@@ -14,7 +14,6 @@ use super::error::GpuError;
 use super::kernel_cache;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
-const PROBE: &str = include_str!("kernels/probe.cu");
 const HASH: &str = include_str!("kernels/hash.cu");
 const FINGERPRINT: &str = include_str!("kernels/fingerprint.cu");
 const SCAN: &str = include_str!("kernels/scan.cu");
@@ -31,7 +30,6 @@ const TRUNCATE: &str = include_str!("kernels/truncate.cu");
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
 const KERNEL_SOURCES: &[&str] = &[
     PRELUDE,
-    PROBE,
     HASH,
     FINGERPRINT,
     SCAN,
@@ -70,6 +68,20 @@ pub(crate) fn layer_shared_bytes(n_cap: usize, w: usize) -> u32 {
     (11 * n_cap + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
 }
 
+/// One warp per bucket over `b` buckets, eight warps a block.
+pub(crate) fn warp_per_bucket(b: usize) -> LaunchConfig {
+    thread_per(b * 32, 256)
+}
+
+/// One thread per element over `n` elements, `threads` a block.
+pub(crate) fn thread_per(n: usize, threads: u32) -> LaunchConfig {
+    LaunchConfig {
+        grid_dim: ((n as u32).div_ceil(threads).max(1), 1, 1),
+        block_dim: (threads, 1, 1),
+        shared_mem_bytes: 0,
+    }
+}
+
 /// One compiled fused-layer variant: `items` records per thread, so `items * layer_threads(W)` records per block.
 pub(crate) struct LayerVariant {
     pub(crate) items: usize,
@@ -79,12 +91,6 @@ pub(crate) struct LayerVariant {
 
 /// One device's compiled kernels for one `W`; each `CudaFunction` keeps its `CudaModule` alive.
 pub(crate) struct KernelSet {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) probe: CudaFunction,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) bucket_of: CudaFunction,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) partition_of: CudaFunction,
     pub(crate) fingerprint: CudaFunction,
     pub(crate) scan_block: CudaFunction,
     pub(crate) scan_single: CudaFunction,
@@ -105,11 +111,10 @@ pub(crate) struct KernelSet {
     pub(crate) perm_lens: CudaFunction,
     pub(crate) perm_scatter: CudaFunction,
     pub(crate) octave_hist: CudaFunction,
-    pub(crate) retain: CudaFunction,
     pub(crate) radix_hist: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
     pub(crate) topn_counts: CudaFunction,
-    pub(crate) retain_topn: CudaFunction,
+    pub(crate) retain: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     threads: usize,
@@ -128,9 +133,8 @@ thread_local! {
     pub(crate) static NVRTC_COMPILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook). Needs only NVRTC, no device.
-///
-/// A hit on the on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`, `research/FINDINGS.md` "GPU single-device profile") skips NVRTC entirely; a miss compiles and writes back, best-effort.
+/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook); needs only NVRTC, no device.
+/// A hit on the on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`) skips NVRTC; a miss compiles and writes back, best-effort.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
@@ -242,9 +246,6 @@ pub(crate) fn kernel_set_with_options(
         ));
     }
     let set = Arc::new(KernelSet {
-        probe: f("k_probe")?,
-        bucket_of: f("k_bucket_of")?,
-        partition_of: f("k_partition_of")?,
         fingerprint: f("k_fingerprint")?,
         scan_block: f("k_scan_block")?,
         scan_single: f("k_scan_single")?,
@@ -265,11 +266,10 @@ pub(crate) fn kernel_set_with_options(
         perm_lens: f("k_perm_lens")?,
         perm_scatter: f("k_perm_scatter")?,
         octave_hist: f("k_octave_hist")?,
-        retain: f("k_retain")?,
         radix_hist: f("k_radix_hist")?,
         radix_extract: f("k_radix_extract")?,
         topn_counts: f("k_topn_counts")?,
-        retain_topn: f("k_retain_topn")?,
+        retain: f("k_retain")?,
         layer,
         threads,
     });
@@ -282,8 +282,6 @@ pub(crate) fn kernel_set_with_options(
 
 #[cfg(test)]
 mod tests {
-    use cudarc::driver::{LaunchConfig, PushKernelArg};
-
     use super::*;
 
     /// CI-runnable: needs NVRTC only, no device or driver.
@@ -358,33 +356,5 @@ mod tests {
         ));
         let full = kernel_set(0, 2).expect("load");
         assert_eq!(full.layer_cap(), LAYER_CAP);
-    }
-
-    #[test]
-    fn probe_kernel_runs_for_every_width() {
-        crate::require_cuda!();
-        for w in [1usize, 2, 4, 8, 16] {
-            let set = kernel_set(0, w).expect("compile+load");
-            let ctx = device::context(0).expect("device context");
-            let stream = ctx.default_stream();
-            let n: usize = 32;
-            let mut out = stream.alloc_zeros::<u64>(n).expect("alloc");
-            unsafe {
-                stream
-                    .launch_builder(&set.probe)
-                    .arg(&mut out)
-                    .arg(&(n as i32))
-                    .launch(LaunchConfig {
-                        grid_dim: (1, 1, 1),
-                        block_dim: (n as u32, 1, 1),
-                        shared_mem_bytes: 0,
-                    })
-                    .expect("launch");
-            }
-            let host = stream.clone_dtoh(&out).expect("d2h");
-            for (i, &v) in host.iter().enumerate() {
-                assert_eq!(v, (i as u64) * (w as u64), "W={w} i={i}");
-            }
-        }
     }
 }

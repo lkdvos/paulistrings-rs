@@ -1,19 +1,14 @@
-//! Runtime device probe and the process-wide device table.
+//! Runtime device probe and the process-wide context cache.
 //!
-//! `cudarc`'s own `culib()`/`device_count()` panic when the driver library is absent, so every
-//! function here checks `is_culib_present()` first and never reaches them on a library-less box.
+//! `cudarc`'s own `culib()`/`device_count()` panic when the driver library is absent, so every function here checks `is_culib_present()` first.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::driver::CudaContext;
 
 use super::error::GpuError;
 
-/// Whether both `libcuda` and `libnvrtc` are present *and* at least one device answers.
-///
-/// Safe to call on a box with no GPU and no CUDA installation at all: the presence checks run
-/// before anything that would panic, and every step after them is itself a `Result`.
+/// Whether both `libcuda` and `libnvrtc` are present *and* at least one device answers; never panics, even with no CUDA installation at all.
 pub fn cuda_available() -> bool {
     // SAFETY: `is_culib_present` only probes `dlopen`-style candidates; it never touches a device.
     let libs_present = unsafe {
@@ -25,10 +20,7 @@ pub fn cuda_available() -> bool {
     device_count() > 0
 }
 
-/// Whether `libnccl` can be loaded and a CUDA device is visible, per [`cuda_available`].
-///
-/// Checks `is_culib_present()` before anything reaches `culib()`, which panics when `libnccl` is
-/// absent, so this is safe to call on a box with no NCCL installation at all.
+/// Whether `libnccl` can be loaded and a CUDA device is visible, per [`cuda_available`]; never panics, even with no NCCL installation.
 #[cfg(feature = "mpi")]
 pub fn nccl_available() -> bool {
     if !cuda_available() {
@@ -61,10 +53,7 @@ pub struct DeviceInfo {
     pub total_mem: u64,
 }
 
-/// [`DeviceInfo`] for every visible device.
-///
-/// Returns [`GpuError::NoDevice`] rather than an empty `Vec` when there is nothing to report, so a
-/// caller cannot mistake "no CUDA at all" for "zero devices, but CUDA is fine".
+/// [`DeviceInfo`] for every visible device, or [`GpuError::NoDevice`] rather than an empty `Vec`.
 pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libcuda"));
@@ -75,7 +64,7 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
     }
     let mut out = Vec::with_capacity(n as usize);
     for ordinal in 0..n as u32 {
-        let ctx = DEVICE_TABLE.get(ordinal)?;
+        let ctx = context(ordinal)?;
         let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
         out.push(DeviceInfo {
             ordinal,
@@ -87,38 +76,19 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
     Ok(out)
 }
 
-/// Process-wide cache of one [`CudaContext`] per ordinal, so repeated calls do not re-bind.
-static DEVICE_TABLE: DeviceTable = DeviceTable::new();
-
-struct DeviceTable(OnceLock<Mutex<HashMap<u32, Arc<CudaContext>>>>);
-
-impl DeviceTable {
-    const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    fn contexts(&self) -> &Mutex<HashMap<u32, Arc<CudaContext>>> {
-        self.0.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
-    /// The [`Arc<CudaContext>`] for `ordinal`, creating and caching it on first use.
-    fn get(&self, ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
-        let mut map = self.contexts().lock().expect("device table mutex poisoned");
-        if let Some(ctx) = map.get(&ordinal) {
-            return Ok(ctx.clone());
-        }
-        let ctx = CudaContext::new(ordinal as usize).map_err(GpuError::from)?;
-        map.insert(ordinal, ctx.clone());
-        Ok(ctx)
-    }
-}
-
-/// The cached context for `ordinal`, for the modules that bind one.
+/// The context for `ordinal`, created on first use and cached for the process.
 pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
+    static CONTEXTS: Mutex<Vec<(u32, Arc<CudaContext>)>> = Mutex::new(Vec::new());
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libcuda"));
     }
-    DEVICE_TABLE.get(ordinal)
+    let mut cache = CONTEXTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, ctx)) = cache.iter().find(|(o, _)| *o == ordinal) {
+        return Ok(ctx.clone());
+    }
+    let ctx = CudaContext::new(ordinal as usize)?;
+    cache.push((ordinal, ctx.clone()));
+    Ok(ctx)
 }
 
 #[cfg(test)]
@@ -136,11 +106,8 @@ mod tests {
         let _ = nccl_available();
     }
 
-    /// A real `libnccl.so*` sitting in one of `LD_LIBRARY_PATH`'s directories is this
-    /// workstation's signal that the module is loaded; anywhere else this returns early, so the
-    /// test is never `#[ignore]`d. A directory-name substring match on "nccl" is not enough: this
-    /// crate's own private `CARGO_TARGET_DIR` (`target-nccl`) lands on `LD_LIBRARY_PATH` too, via
-    /// the `mpi` build script's `OUT_DIR`.
+    /// A `libnccl.so*` file on `LD_LIBRARY_PATH` means the module is loaded; without one the test returns early.
+    /// A directory name containing "nccl" is not enough, since the `mpi` build script puts its `OUT_DIR` on the path.
     #[cfg(feature = "mpi")]
     #[test]
     fn nccl_available_true_with_module_on_path() {

@@ -148,8 +148,8 @@ impl NcclComm {
         !self.lock().aborted
     }
 
-    /// Pay NCCL's lazy connection setup now: one byte-sized send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
-    /// **Collective over the communicator**: every rank calls it, after the group has agreed that every [`init`](Self::init) succeeded.
+    /// Pay NCCL's lazy connection setup now: one small send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
+    /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
         let (me, n) = (self.rank, self.size);
         let peers: Vec<u32> = if n == 1 {
@@ -157,26 +157,17 @@ impl NcclComm {
         } else {
             (0..n).filter(|&q| q != me).collect()
         };
-        self.warm_up_round(stream, &peers, &peers)
-    }
-
-    fn warm_up_round(
-        &self,
-        stream: &Arc<CudaStream>,
-        sends: &[u32],
-        recvs: &[u32],
-    ) -> Result<(), GpuError> {
-        let out = stream.alloc_zeros::<u8>(sends.len() * WARM_UP_BYTES)?;
-        let mut back = stream.alloc_zeros::<u8>(recvs.len() * WARM_UP_BYTES)?;
+        let out = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
+        let mut back = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut group = WireGroup::new();
-        for (i, &q) in sends.iter().enumerate() {
+        for (i, &q) in peers.iter().enumerate() {
             group.send(
                 out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES),
                 q,
                 stream,
             );
         }
-        let parts: Vec<(usize, u32)> = recvs.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
+        let parts: Vec<(usize, u32)> = peers.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
         group.recv_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)

@@ -156,8 +156,7 @@ mod cuda {
             return Err(PyValueError::new_err(format!(
                 "{shown} names {n} devices, which is not a power of two: a multi-device run \
                  places one partition per listed device and a partition is named by log2(P) \
-                 GF(2) rows, so the list must have 1, 2, 4, 8, ... entries (repeat an ordinal to \
-                 put several partitions on one device)"
+                 GF(2) rows, so the list must have 1, 2, 4, 8, ... entries"
             )));
         }
         if n > max {
@@ -168,6 +167,11 @@ mod cuda {
         Ok(devices)
     }
 
+    /// `device` if this process can see it, else the error naming `shown`.
+    pub(crate) fn resolve_device(device: u32, shown: &str) -> Result<u32, PyErr> {
+        check_ordinal(device, visible_devices(shown)?, shown)
+    }
+
     /// This rank's device under `comm=`: an ordinal it can see, or `auto` (the group's `local_device_for_comm` pick) for `"auto"`. Local, so the caller agrees the outcome over the group.
     #[cfg(feature = "mpi")]
     pub(crate) fn resolve_rank_device(
@@ -176,12 +180,11 @@ mod cuda {
         rank: u32,
         auto: Result<u32, paulistrings::gpu::GpuError>,
     ) -> Result<u32, PyErr> {
-        let count = visible_devices(&format!("{shown} on rank {rank}"))?;
+        let shown = format!("{shown} on rank {rank}");
+        let count = visible_devices(&shown)?;
         match request {
             DeviceRequest::Auto => auto.map_err(gpu_error),
-            DeviceRequest::Ordinals(list) => {
-                check_ordinal(list[0], count, &format!("{shown} on rank {rank}"))
-            }
+            DeviceRequest::Ordinals(list) => check_ordinal(list[0], count, &shown),
         }
     }
 
@@ -412,10 +415,10 @@ pub(crate) fn to_device(
     sum: &crate::sum::PauliSumImpl,
     device: i64,
 ) -> PyResult<PyObject> {
-    let request = DeviceRequest::Ordinals(vec![ordinal(device)?]);
+    let ordinal = ordinal(device)?;
     #[cfg(feature = "cuda")]
     {
-        let ordinal = resolve_devices(&request, &format!("device={device}"))?[0];
+        let ordinal = cuda::resolve_device(ordinal, &format!("device={device}"))?;
         let inner = py
             .allow_threads(|| cuda::GpuPauliSumImpl::upload(sum, ordinal))
             .map_err(gpu_error)?;
@@ -423,7 +426,7 @@ pub(crate) fn to_device(
     }
     #[cfg(not(feature = "cuda"))]
     {
-        let _ = (py, request, sum);
+        let _ = (py, ordinal, sum);
         Err(cuda_unavailable_error())
     }
 }

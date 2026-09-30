@@ -42,8 +42,6 @@ impl<T: Copy> PinnedBuf<T> {
         let ptr = unsafe { result::malloc_host(bytes, 0) }
             .map_err(|e| GpuError::from_alloc(e, ordinal, bytes as u64))?
             as *mut T;
-        // SAFETY: `ptr` holds `bytes` writable bytes; zeroing makes every later `&[T]` view initialized.
-        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, bytes) };
         self.ptr = ptr;
         self.cap = n;
         Ok(())
@@ -54,7 +52,7 @@ impl<T: Copy> PinnedBuf<T> {
         if n == 0 {
             return &[];
         }
-        // SAFETY: `ptr` is live, initialized and `cap >= n` elements long.
+        // SAFETY: `ptr` is live and `cap >= n` elements long; the only reader, `GpuSum::to_host`, reads what its download just wrote.
         unsafe { std::slice::from_raw_parts(self.ptr, n) }
     }
 

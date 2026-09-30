@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use super::driver::{first_failure, lower_for_run, upload_share};
+use super::driver::{device_runtime, first_failure, lower_for_run, upload_share};
 use super::error::GpuError;
 use super::layer::{GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
@@ -13,9 +13,7 @@ use crate::engine::partitioned::distributed::gather_share;
 use crate::engine::partitioned::transport::{Collectives, Transport};
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
-use crate::engine::partitioned::{
-    DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime, Placement,
-};
+use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::BuiltinTruncation;
@@ -106,20 +104,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         device: u32,
         policy: &PartitionRowPolicy,
     ) -> Result<Self, GpuError> {
-        let size = transport.size();
-        assert!(
-            size.is_power_of_two(),
-            "a group of {size} ranks cannot be a partitioning: a partition is named by log2(P) \
-             GF(2) rows, so the rank count must be a power of two",
-        );
-        let rows = match policy {
-            PartitionRowPolicy::Seeded(seed) => PartitionRows::<W>::from_seed(
-                sum.num_qubits(),
-                size.trailing_zeros() as u8,
-                seed.unwrap_or_else(|| sum.hash().seed()),
-            ),
-            PartitionRowPolicy::Cut(blocks) => PartitionRows::<W>::cut(sum.num_qubits(), blocks),
-        };
+        let rows = policy.rows(sum, transport.size());
         Self::scatter_to_device_with_rows(sum, transport, device, rows)
     }
 
@@ -169,37 +154,9 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         start: impl FnOnce(&X, &mut DevicePartition<W>) -> Result<(), GpuError>,
     ) -> Result<Self, GpuError> {
         let (rank, size) = (transport.rank(), transport.size());
-        assert_eq!(
-            rows.num_partitions(),
-            size as usize,
-            "partition rows name {} partitions but the group has {size} ranks",
-            rows.num_partitions(),
-        );
-        assert_eq!(
-            rows.num_qubits(),
-            sum.num_qubits(),
-            "partition rows are for {} qubits, the sum for {}",
-            rows.num_qubits(),
-            sum.num_qubits(),
-        );
-        debug_assert!(
-            rows.is_independent_of(sum.hash()),
-            "partition rows are dependent on the bucket hash rows — the split will correlate \
-             with the bucket partition and load-balance badly",
-        );
+        rows.assert_splits(sum.hash(), sum.num_qubits(), size as usize);
         let started = Instant::now();
-        let config = PartitionConfig {
-            placement: Placement::Devices {
-                devices: vec![device],
-                per_device: 1,
-            },
-            bind_memory: false,
-            partition_row_seed: None,
-        };
-        let runtime = agree(
-            &transport,
-            PartitionRuntime::new(&config).map_err(GpuError::Topology),
-        )?;
+        let runtime = agree(&transport, device_runtime(device))?;
         let part = {
             let (rows, transport) = (&rows, &transport);
             runtime.install(move || upload_share(sum, rows, (rank, size), device, transport, &[]))

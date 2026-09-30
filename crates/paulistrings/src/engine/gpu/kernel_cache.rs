@@ -1,5 +1,4 @@
 //! On-disk cache for NVRTC-compiled PTX, keyed by source, compile options, NVRTC version and crate version.
-//! See `research/FINDINGS.md` "GPU single-device profile", opportunity 3: NVRTC regenerates PTX from source on every process, though the driver's own JIT cache (`~/.nv/ComputeCache`) already hits on the PTX text.
 
 use std::env;
 use std::fs;
@@ -30,9 +29,7 @@ fn cache_dir() -> Option<PathBuf> {
     )
 }
 
-/// NVRTC's own version, part of the cache key: a different NVRTC can emit different PTX for the same source and options.
-/// `(0, 0)` when the library is not loadable, which folds into a key that never matches a real compile's key, so it is
-/// effectively cache-off rather than a wrong hit; every real caller has already checked `is_culib_present` before this runs.
+/// NVRTC's own version, part of the key since another NVRTC can emit other PTX; `(0, 0)` without the library, a key no real compile writes.
 fn nvrtc_version() -> (i32, i32) {
     if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
         return (0, 0);
@@ -65,8 +62,7 @@ pub(crate) fn lookup(src: &str, opts: &CompileOptions) -> Option<Ptx> {
     Some(Ptx::from_src(text))
 }
 
-/// Best-effort write-back of a freshly compiled `ptx_text`: a temp file in the same directory plus a rename, so a concurrent reader never observes a torn file.
-/// An unwritable directory is skipped with one debug log line, never an error — the cache is an optimization, not a correctness requirement.
+/// Best-effort write-back of `ptx_text` through a temp file and a rename, so a concurrent reader never sees a torn file; an unwritable directory is skipped with a debug line.
 pub(crate) fn store(src: &str, opts: &CompileOptions, ptx_text: &str) {
     let Some(dir) = cache_dir() else { return };
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -195,7 +191,6 @@ mod tests {
             assert!(lookup("src-a", &o).is_none(), "off never hits");
             store("src-a", &o, "ptx-text-a");
         });
-        // the "off" store must not have landed in the real temp dir either.
         with_cache_dir(dir.path(), || {
             assert!(lookup("src-a", &opts(&["-DW=2"])).is_some());
         });
@@ -220,9 +215,7 @@ mod tests {
         let dir = TempDir::new("concurrent");
         with_cache_dir(dir.path(), || {
             let o = opts(&["-DW=2"]);
-            // The env var is already set for the whole test by `with_cache_dir`
-            // above and inherited by these threads; they must not call it again
-            // (it is not reentrant and they would deadlock against this thread).
+            // The threads inherit `with_cache_dir`'s variable and must not take its lock again.
             let handles: Vec<_> = (0..8)
                 .map(|i| {
                     let o = o.clone();

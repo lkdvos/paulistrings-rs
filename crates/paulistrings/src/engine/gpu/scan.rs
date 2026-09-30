@@ -4,38 +4,13 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
 
+use super::columns::grow;
 use super::error::GpuError;
-use super::layer::grow;
 use super::module::KernelSet;
 
 /// Elements per scan block; must match `SCAN_BLOCK` in `kernels/scan.cu`.
 const SCAN_BLOCK: usize = 4096;
 const SCAN_THREADS: u32 = 1024;
-
-/// `out[i] = Σ_{j<i} input[j]` for `i ≤ n`, so `out[n]` is the total; enqueued on `stream`, not synchronized.
-pub(crate) fn exclusive_scan(
-    stream: &Arc<CudaStream>,
-    k: &KernelSet,
-    input: &CudaView<'_, u32>,
-    out: &mut CudaViewMut<'_, u32>,
-    n: usize,
-) -> Result<(), GpuError> {
-    exclusive_scan_with_max(stream, k, input, out, n).map(|_| ())
-}
-
-/// [`exclusive_scan`] that also returns a two-element device buffer `[total, max]` of `input[0..n]`.
-pub(crate) fn exclusive_scan_with_max(
-    stream: &Arc<CudaStream>,
-    k: &KernelSet,
-    input: &CudaView<'_, u32>,
-    out: &mut CudaViewMut<'_, u32>,
-    n: usize,
-) -> Result<CudaSlice<u32>, GpuError> {
-    let mut scratch = ScanScratch::new(stream)?;
-    let mut tot_max = stream.alloc_zeros::<u32>(2)?;
-    exclusive_scan_with_max_into(stream, k, input, out, n, &mut scratch, &mut tot_max)?;
-    Ok(tot_max)
-}
 
 /// Grow-only per-block buffers a scan needs, kept between layers so a scan allocates nothing.
 pub(crate) struct ScanScratch {
@@ -52,8 +27,8 @@ impl ScanScratch {
     }
 }
 
-/// [`exclusive_scan_with_max`] over caller-owned buffers: `tot_max` (two elements) receives `[total, max]`.
-pub(crate) fn exclusive_scan_with_max_into(
+/// `out[i] = Σ_{j<i} input[j]` for `i ≤ n`, so `out[n]` is the total, with `tot_max` (two elements) receiving `[total, max]` of `input[0..n]`; enqueued on `stream`, not synchronized.
+pub(crate) fn exclusive_scan(
     stream: &Arc<CudaStream>,
     k: &KernelSet,
     input: &CudaView<'_, u32>,

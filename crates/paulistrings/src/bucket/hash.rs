@@ -17,14 +17,14 @@ const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
 
 /// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
 #[inline]
-fn mix64(mut z: u64) -> u64 {
+pub(crate) fn mix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
 
 /// splitmix64's increment, the odd constant `⌊2^64/φ⌋`.
-const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`: splitmix64's output at the stream position encoding that tuple.
 /// Row words must not be successive outputs of a GF(2)-linear generator such as xorshift (ARCHITECTURE.md §Hash).
@@ -287,6 +287,27 @@ pub struct PartitionRows<const W: usize> {
 }
 
 impl<const W: usize> PartitionRows<W> {
+    /// Panics unless the rows split a sum over `num_qubits` qubits into `partitions` partitions; debug builds also check them independent of `hash`, whose correlation with the split costs load balance.
+    pub(crate) fn assert_splits(&self, hash: &Gf2Hash<W>, num_qubits: usize, partitions: usize) {
+        assert_eq!(
+            self.num_partitions(),
+            partitions,
+            "partition rows name {} partitions for a split into {partitions}",
+            self.num_partitions(),
+        );
+        assert_eq!(
+            self.num_qubits(),
+            num_qubits,
+            "partition rows are for {} qubits, the sum for {num_qubits}",
+            self.num_qubits(),
+        );
+        debug_assert!(
+            self.is_independent_of(hash),
+            "partition rows are dependent on the bucket hash rows — the split will correlate \
+             with the bucket partition and load-balance badly",
+        );
+    }
+
     /// Draw `bits` partition rows deterministically from `seed`.
     /// The seed is salted, so these rows are unrelated to `Gf2Hash::new(num_qubits, _, seed)`'s rows at any bucket count. Column masking and the all-zero-row retry match [`Gf2Hash::new`].
     ///

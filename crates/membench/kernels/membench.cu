@@ -1,10 +1,6 @@
 // STREAM read / write / copy / triad over f64 arrays, grid-stride, one launch per pass.
 typedef unsigned long long u64;
 
-extern "C" __global__ void k_fill(double* __restrict__ a, double v, u64 n) {
-    for (u64 i = blockIdx.x * (u64)blockDim.x + threadIdx.x; i < n; i += (u64)gridDim.x * blockDim.x) a[i] = v;
-}
-
 // Block partial sums land in out[blockIdx.x]; the host never reads them, they only keep the loads alive.
 extern "C" __global__ void k_read(const double* __restrict__ a, double* __restrict__ out, u64 n) {
     __shared__ double s[32];

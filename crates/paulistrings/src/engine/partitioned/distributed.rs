@@ -51,6 +51,29 @@ pub enum PartitionRowPolicy {
     Cut(Vec<Vec<u32>>),
 }
 
+impl PartitionRowPolicy {
+    /// The rows this policy names for `sum` split across `ranks` ranks.
+    ///
+    /// # Panics
+    ///
+    /// If `ranks` is not a power of two, and as [`PartitionRows::cut`] for a cut.
+    pub(crate) fn rows<const W: usize>(&self, sum: &PauliSum<W>, ranks: u32) -> PartitionRows<W> {
+        assert!(
+            ranks.is_power_of_two(),
+            "a group of {ranks} ranks cannot be a partitioning: a partition is named by log2(P) \
+             GF(2) rows, so the rank count must be a power of two",
+        );
+        match self {
+            PartitionRowPolicy::Seeded(seed) => PartitionRows::<W>::from_seed(
+                sum.num_qubits(),
+                ranks.trailing_zeros() as u8,
+                seed.unwrap_or_else(|| sum.hash().seed()),
+            ),
+            PartitionRowPolicy::Cut(blocks) => PartitionRows::<W>::cut(sum.num_qubits(), blocks),
+        }
+    }
+}
+
 /// One process's partition of a sum split across a [`Transport`]'s group.
 ///
 /// Held across calls — the split, the rows, the pool and the layer scratch all persist — so a Trotter driver scatters once, steps many times, and gathers once.
@@ -374,15 +397,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         runtime: Arc<PartitionRuntime>,
         partition_row_seed: Option<u64>,
     ) -> Self {
-        let size = transport.size();
-        assert!(
-            size.is_power_of_two(),
-            "a group of {size} ranks cannot be a partitioning: a partition is named by log2(P) \
-             GF(2) rows, so the rank count must be a power of two",
-        );
-        let seed = partition_row_seed.unwrap_or_else(|| sum.hash().seed());
-        let rows =
-            PartitionRows::<W>::from_seed(sum.num_qubits(), size.trailing_zeros() as u8, seed);
+        let rows = PartitionRowPolicy::Seeded(partition_row_seed).rows(&sum, transport.size());
         Self::scatter_with_rows(sum, transport, runtime, rows)
     }
 
@@ -404,15 +419,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         policy: &PartitionRowPolicy,
     ) -> Result<Self, TopologyError> {
         let runtime = PartitionRuntime::new(config)?;
-        Ok(match policy {
-            PartitionRowPolicy::Seeded(seed) => {
-                Self::scatter_with_runtime(sum, transport, runtime, *seed)
-            }
-            PartitionRowPolicy::Cut(blocks) => {
-                let rows = PartitionRows::<W>::cut(sum.num_qubits(), blocks);
-                Self::scatter_with_rows(sum, transport, runtime, rows)
-            }
-        })
+        let rows = policy.rows(&sum, transport.size());
+        Ok(Self::scatter_with_rows(sum, transport, runtime, rows))
     }
 
     /// [`scatter`](Self::scatter) with caller-supplied partition rows.
@@ -436,25 +444,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
              domains-per-rank hybrids are not implemented",
             runtime.num_partitions(),
         );
-        assert_eq!(
-            rows.num_partitions(),
-            transport.size() as usize,
-            "partition rows name {} partitions but the group has {} ranks",
-            rows.num_partitions(),
-            transport.size(),
-        );
-        assert_eq!(
-            rows.num_qubits(),
-            sum.num_qubits(),
-            "partition rows are for {} qubits, the sum for {}",
-            rows.num_qubits(),
-            sum.num_qubits(),
-        );
-        debug_assert!(
-            rows.is_independent_of(sum.hash()),
-            "partition rows are dependent on the bucket hash rows — the split will correlate \
-             with the bucket partition and load-balance badly",
-        );
+        rows.assert_splits(sum.hash(), sum.num_qubits(), transport.size() as usize);
 
         let started = Instant::now();
         let local = {

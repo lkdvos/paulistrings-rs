@@ -4,17 +4,17 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
-use super::columns::DeviceColumns;
+use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
 use super::layer::{
-    arena_batches, fused_variant, grow, launch_fused, thread_per, warp_per_bucket, xfer, FusedOut,
-    FusedRecv, FusedTable, LayerScratch, Xfer, XferNs,
+    arena_batches, fused_variant, launch_fused, xfer, FusedOut, FusedRecv, FusedTable,
+    LayerScratch, TableBufs, Xfer, XferNs,
 };
-use super::module::MAX_BUCKET_LEN;
+use super::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use super::payload::{DeviceBlock, DevicePayload};
 use super::prepared::DevicePrepared;
-use super::scan::exclusive_scan_with_max_into;
-use super::sum::GpuSum;
+use super::scan::exclusive_scan;
+use super::sum::{launch_fingerprint, GpuSum};
 use super::truncation::KeepProgram;
 use super::wire::{
     schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind,
@@ -72,12 +72,7 @@ pub(crate) struct PendingRecv<const W: usize> {
 
 /// Grow-only buffers of the sender-side merge: one partner's sub-table, its counts and CSR, and the split of its merged rows over the partner's blocks.
 struct PremergeScratch {
-    amp: CudaSlice<f64>,
-    mask: CudaSlice<u64>,
-    nz: CudaSlice<u32>,
-    bd: CudaSlice<u32>,
-    gm: CudaSlice<u64>,
-    rem: CudaSlice<u32>,
+    table: TableBufs,
     sel: CudaSlice<u32>,
     cnt: CudaSlice<u32>,
     rows: CudaSlice<u32>,
@@ -94,12 +89,7 @@ struct PremergeScratch {
 impl PremergeScratch {
     fn new(s: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
         Ok(Self {
-            amp: s.alloc_zeros(512)?,
-            mask: s.alloc_zeros(32 * w)?,
-            nz: s.alloc_zeros(16)?,
-            bd: s.alloc_zeros(16)?,
-            gm: s.alloc_zeros(16)?,
-            rem: s.alloc_zeros(16)?,
+            table: TableBufs::new(s, w)?,
             sel: s.alloc_zeros(16)?,
             cnt: s.alloc_zeros(1)?,
             rows: s.alloc_zeros(1)?,
@@ -564,19 +554,14 @@ fn move_chunk<const W: usize>(
     if !keep {
         return Ok(n);
     }
-    if n > 0 {
-        let n32 = n as u32;
-        // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; `recv_g` holds the chunk's `n` rows.
-        unsafe {
-            s.launch_builder(&sum.kernels.fingerprint)
-                .arg(&*recv_x)
-                .arg(&*recv_z)
-                .arg(&n32)
-                .arg(&sum.fp_rows)
-                .arg(&mut *recv_g)
-                .launch(thread_per(n, 256))?;
-        }
-    }
+    launch_fingerprint(
+        s,
+        &sum.kernels,
+        &sum.fp_rows,
+        (&*recv_x, &*recv_z),
+        recv_g,
+        n,
+    )?;
     #[cfg(feature = "phase-timing")]
     s.synchronize()?;
     xfer(xfer_ns, Xfer::H2d, || {
@@ -679,7 +664,7 @@ fn export_offsets<const W: usize>(
             .arg(&mut scratch.export.counts)
             .launch(thread_per(b, 1024))?;
     }
-    super::scan::exclusive_scan_with_max_into(
+    exclusive_scan(
         s,
         k,
         &scratch.export.counts.slice(0..b),
@@ -704,9 +689,7 @@ fn export_offsets<const W: usize>(
 /// The scratch buffers K10's fill reads, borrowed apart from the columns it writes.
 struct FillCtx<'a> {
     bucket_at: &'a CudaSlice<u32>,
-    amp: &'a CudaSlice<f64>,
-    mask: &'a CudaSlice<u64>,
-    nz: &'a CudaSlice<u32>,
+    table: &'a TableBufs,
     off: &'a CudaSlice<u32>,
 }
 
@@ -741,9 +724,9 @@ fn export_fill<const W: usize>(
             .arg(&table.q1)
             .arg(&table.rot_cos)
             .arg(&table.rot_sin)
-            .arg(ctx.amp)
-            .arg(ctx.mask)
-            .arg(ctx.nz)
+            .arg(&ctx.table.amp)
+            .arg(&ctx.table.mask)
+            .arg(&ctx.table.nz)
             .arg(&bd)
             .arg(&e)
             .arg(&b32)
@@ -810,9 +793,7 @@ pub(crate) fn export_blocks_device<const W: usize>(
             block.grow(&s, rows, o)?;
             let ctx = FillCtx {
                 bucket_at: &scratch.bucket_at,
-                amp: &scratch.amp,
-                mask: &scratch.mask,
-                nz: &scratch.nz,
+                table: &scratch.table,
                 off: &scratch.export.off,
             };
             export_fill(
@@ -840,7 +821,7 @@ pub(crate) fn export_blocks_device<const W: usize>(
     Ok((send, counts))
 }
 
-/// Elements `exclusive_scan_with_max_into` handles, so the split's `K × positions` offsets must fit.
+/// Elements `exclusive_scan` handles, so the split's `K × positions` offsets must fit.
 const SCAN_LIMIT: usize = 1 << 24;
 
 /// Per partner, the remote entries the sender-side merge applies to, empty where it does not: at least two entries that can emit one key (`DevicePrepared::entries_can_collide`) and every source bucket inside the tag's offset field.
@@ -868,28 +849,7 @@ fn premerge_groups<const W: usize>(
         return Ok(groups);
     }
     // K3's tag addresses 4096 rows of a source bucket; a longer one fails the layer after the exchange, and must not reach K3 before it.
-    let s = &sum.stream;
-    let o = sum.device();
-    let pm = &mut scratch.export.premerge;
-    grow(s, &mut pm.start, b + 1, o)?;
-    exclusive_scan_with_max_into(
-        s,
-        &sum.kernels,
-        &sum.cols.lens.slice(0..b),
-        &mut pm.start.slice_mut(0..b + 1),
-        b,
-        &mut scratch.scan,
-        &mut pm.tot,
-    )?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let tot = &pm.tot;
-    let longest = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        let v = s.clone_dtoh(tot)?;
-        s.synchronize()?;
-        Ok(v[1] as usize)
-    })?;
-    if longest > MAX_BUCKET_LEN {
+    if scratch.longest_bucket(sum)? as usize > MAX_BUCKET_LEN {
         groups.iter_mut().for_each(Vec::clear);
     }
     Ok(groups)
@@ -925,12 +885,7 @@ fn premerge_partner<const W: usize>(
         #[cfg(feature = "phase-timing")]
         s.synchronize()?;
         xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-            s.memcpy_htod(&sub.amp, &mut pm.amp)?;
-            s.memcpy_htod(&sub.mask, &mut pm.mask)?;
-            s.memcpy_htod(&sub.nz, &mut pm.nz)?;
-            s.memcpy_htod(&sub.bucket_delta, &mut pm.bd)?;
-            s.memcpy_htod(&sub.gm, &mut pm.gm)?;
-            s.memcpy_htod(&sub.rem, &mut pm.rem)?;
+            pm.table.upload(&s, &sub)?;
             s.memcpy_htod(&sel[..], &mut pm.sel)?;
             Ok(())
         })?;
@@ -950,15 +905,15 @@ fn premerge_partner<const W: usize>(
             s.launch_builder(&k.rows)
                 .arg(&pm.cnt)
                 .arg(&scratch.bucket_at)
-                .arg(&pm.bd)
-                .arg(&pm.rem)
+                .arg(&pm.table.bd)
+                .arg(&pm.table.rem)
                 .arg(&scratch.export.recv_off)
                 .arg(&mut pm.rows)
                 .arg(&b32)
                 .arg(&k32)
                 .launch(thread_per(b, 1024))?;
         }
-        exclusive_scan_with_max_into(
+        exclusive_scan(
             &s,
             &k,
             &pm.rows.slice(0..b),
@@ -1074,12 +1029,7 @@ fn premerge_batches<const W: usize>(
         let fused = FusedTable {
             cnt: &pm.cnt,
             seg_start: &pm.start,
-            amp: &pm.amp,
-            mask: &pm.mask,
-            nz: &pm.nz,
-            bd: &pm.bd,
-            gm: &pm.gm,
-            rem: &pm.rem,
+            table: &pm.table,
         };
         let recv = FusedRecv {
             off: recv_off,
@@ -1113,14 +1063,14 @@ fn premerge_batches<const W: usize>(
                 .arg(&pm.out_len_pos)
                 .arg(&pm.cnt)
                 .arg(&*bucket_at)
-                .arg(&pm.bd)
+                .arg(&pm.table.bd)
                 .arg(&k32)
                 .arg(&p0u)
                 .arg(&n32)
                 .arg(&mut pm.lens)
                 .launch(thread_per(n, 256))?;
         }
-        exclusive_scan_with_max_into(
+        exclusive_scan(
             s,
             k,
             &pm.lens.slice(0..nk * n),

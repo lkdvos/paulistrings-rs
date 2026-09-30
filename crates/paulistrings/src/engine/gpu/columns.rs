@@ -34,8 +34,46 @@ fn alloc<T: DeviceRepr>(
     ordinal: u32,
     bytes: u64,
 ) -> Result<CudaSlice<T>, GpuError> {
-    // SAFETY: device memory is never read on the host; every kernel reads only rows below the live length.
+    // SAFETY: device memory is never read on the host before a kernel or copy wrote it; every kernel reads only rows below the live length.
     unsafe { stream.alloc::<T>(n.max(1)) }.map_err(|e| GpuError::from_alloc(e, ordinal, bytes))
+}
+
+/// Room for `n` elements in `s`, keeping its first `keep`; a no-op when it already has room, and `s` untouched on failure.
+/// `bytes` is what an out-of-memory error reports.
+pub(crate) fn grow_keep<T: DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    s: &mut CudaSlice<T>,
+    n: usize,
+    keep: usize,
+    ordinal: u32,
+    bytes: u64,
+) -> Result<(), GpuError> {
+    if s.len() >= n {
+        return Ok(());
+    }
+    let mut next = alloc(stream, n, ordinal, bytes)?;
+    if keep > 0 {
+        stream.memcpy_dtod(&s.slice(0..keep), &mut next.slice_mut(0..keep))?;
+    }
+    *s = next;
+    Ok(())
+}
+
+/// Room for `n` elements in `s`, discarding its contents.
+pub(crate) fn grow<T: DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    s: &mut CudaSlice<T>,
+    n: usize,
+    ordinal: u32,
+) -> Result<(), GpuError> {
+    grow_keep(
+        stream,
+        s,
+        n,
+        0,
+        ordinal,
+        (n * std::mem::size_of::<T>()) as u64,
+    )
 }
 
 impl<const W: usize> DeviceColumns<W> {
@@ -87,7 +125,7 @@ impl<const W: usize> DeviceColumns<W> {
 
     /// Grow to hold at least `terms` terms and `buckets` buckets, keeping the live terms and CSR entries.
     /// The term columns and the CSR grow independently, so a refine that only adds buckets never copies a term.
-    /// An allocation failure leaves `self` untouched and reports `OutOfMemory` with the bytes of the whole request.
+    /// An allocation failure reports `OutOfMemory` with the bytes of the whole request, the capacities unchanged.
     pub(crate) fn reserve(&mut self, terms: usize, buckets: usize) -> Result<(), GpuError> {
         let grow_terms = terms > self.term_cap;
         let grow_buckets = buckets > self.bucket_cap;
@@ -95,44 +133,22 @@ impl<const W: usize> DeviceColumns<W> {
             return Ok(());
         }
         let (st, o) = (&self.stream, self.ordinal);
-        let new_terms = if grow_terms { terms } else { 0 };
-        let new_buckets = if grow_buckets { buckets } else { 0 };
-        let bytes = Self::request_bytes(new_terms, new_buckets)?;
-        let term_cols = if grow_terms {
-            Some((
-                alloc::<u64>(st, terms * W, o, bytes)?,
-                alloc::<u64>(st, terms * W, o, bytes)?,
-                alloc::<f64>(st, 2 * terms, o, bytes)?,
-                alloc::<u64>(st, terms, o, bytes)?,
-            ))
-        } else {
-            None
-        };
-        let csr = if grow_buckets {
-            Some((
-                alloc::<u32>(st, buckets + 1, o, bytes)?,
-                alloc::<u32>(st, buckets, o, bytes)?,
-            ))
-        } else {
-            None
-        };
+        let bytes = Self::request_bytes(
+            if grow_terms { terms } else { 0 },
+            if grow_buckets { buckets } else { 0 },
+        )?;
         let (n, b) = (self.len, self.buckets);
-        if let Some((mut x, mut z, mut coeff, mut g)) = term_cols {
-            if n > 0 {
-                st.memcpy_dtod(&self.x.slice(0..n * W), &mut x.slice_mut(0..n * W))?;
-                st.memcpy_dtod(&self.z.slice(0..n * W), &mut z.slice_mut(0..n * W))?;
-                st.memcpy_dtod(&self.coeff.slice(0..2 * n), &mut coeff.slice_mut(0..2 * n))?;
-                st.memcpy_dtod(&self.g.slice(0..n), &mut g.slice_mut(0..n))?;
-            }
-            (self.x, self.z, self.coeff, self.g) = (x, z, coeff, g);
+        if grow_terms {
+            grow_keep(st, &mut self.x, terms * W, n * W, o, bytes)?;
+            grow_keep(st, &mut self.z, terms * W, n * W, o, bytes)?;
+            grow_keep(st, &mut self.coeff, 2 * terms, 2 * n, o, bytes)?;
+            grow_keep(st, &mut self.g, terms, n, o, bytes)?;
             self.term_cap = terms;
         }
-        if let Some((mut start, mut lens)) = csr {
-            if b > 0 {
-                st.memcpy_dtod(&self.start.slice(0..b + 1), &mut start.slice_mut(0..b + 1))?;
-                st.memcpy_dtod(&self.lens.slice(0..b), &mut lens.slice_mut(0..b))?;
-            }
-            (self.start, self.lens) = (start, lens);
+        if grow_buckets {
+            let live = if b > 0 { b + 1 } else { 0 };
+            grow_keep(st, &mut self.start, buckets + 1, live, o, bytes)?;
+            grow_keep(st, &mut self.lens, buckets, b, o, bytes)?;
             self.bucket_cap = buckets;
         }
         Ok(())

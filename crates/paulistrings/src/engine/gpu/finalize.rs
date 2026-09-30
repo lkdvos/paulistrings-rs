@@ -1,17 +1,27 @@
-//! K7, [`ApproxTopN`](crate::truncation::ApproxTopN)'s layer pass on device: the octave histogram, the host edge walk after one `allreduce_sum_u64`, and the retain.
+//! K7, [`ApproxTopN`](crate::truncation::ApproxTopN)'s layer pass on device, and K8, exact [`TopN`](crate::truncation::TopN)'s on one device.
 
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
-use super::columns::DeviceColumns;
+use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
-use super::layer::{grow, warp_per_bucket, LayerScratch};
-use super::scan::exclusive_scan_with_max;
+use super::layer::LayerScratch;
+use super::module::warp_per_bucket;
+use super::scan::exclusive_scan;
 use super::sum::GpuSum;
 use crate::engine::partitioned::transport::Collectives;
 use crate::truncation::builtin::{octave_edge, EdgeDecision, APPROX_BINS};
 
 /// Blocks the histogram launches at most; each block folds its warps' buckets into one shared histogram.
 const HIST_BLOCKS: usize = 1024;
+
+/// The launch shape K7 and K8's whole-sum passes share: warps spread over buckets, capped at `HIST_BLOCKS`.
+fn whole_sum_launch(b: usize) -> LaunchConfig {
+    LaunchConfig {
+        grid_dim: (b.div_ceil(8).clamp(1, HIST_BLOCKS) as u32, 1, 1),
+        block_dim: (256, 1, 1),
+        shared_mem_bytes: 0,
+    }
+}
 
 /// `[len, bin 0, …, bin 2047]` of `sum`, the packed layout of the host's collective `ApproxTopN` pass.
 pub(crate) fn octave_histogram_device<const W: usize>(
@@ -31,11 +41,7 @@ pub(crate) fn octave_histogram_device<const W: usize>(
             .arg(&sum.cols.lens)
             .arg(&b32)
             .arg(&mut scratch.hist)
-            .launch(LaunchConfig {
-                grid_dim: (b.div_ceil(8).clamp(1, HIST_BLOCKS) as u32, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            })?;
+            .launch(whole_sum_launch(b))?;
     }
     scratch.lap(sum, t0, |m| &mut m.truncate)?;
     let packed = s.clone_dtoh(&scratch.hist)?;
@@ -50,71 +56,24 @@ pub(crate) fn retain_at_or_above_device<const W: usize>(
     scratch: &mut LayerScratch<W>,
     edge: EdgeDecision,
 ) -> Result<(), GpuError> {
-    let threshold = match edge {
-        EdgeDecision::KeepAll => return Ok(()),
+    match edge {
+        EdgeDecision::KeepAll => Ok(()),
         EdgeDecision::Clear => {
             let b = sum.hash.num_buckets();
             sum.stream
                 .memset_zeros(&mut sum.cols.lens.slice_mut(0..b))?;
             sum.cols.len = 0;
             sum.debug_check();
-            return Ok(());
+            Ok(())
         }
-        EdgeDecision::AtOrAbove { threshold, .. } => threshold,
-    };
-    let s = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
-    let b = sum.hash.num_buckets();
-    let extent = scratch.extent.max(sum.len());
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, extent, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(extent, b)?;
-    grow(&s, &mut scratch.dst_off, b + 1, o)?;
-    let b32 = b as u32;
-    let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_retain` in truncate.cu; `out` has room for the input's extent.
-    unsafe {
-        s.launch_builder(&k.retain)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
-            .arg(&b32)
-            .arg(&threshold)
-            .arg(&mut out.x)
-            .arg(&mut out.z)
-            .arg(&mut out.coeff)
-            .arg(&mut out.g)
-            .arg(&mut out.start)
-            .arg(&mut out.lens)
-            .launch(warp_per_bucket(b))?;
+        // A non-negative threshold orders as its bits, so `>= threshold` is `> bits || == bits`.
+        EdgeDecision::AtOrAbove { threshold, .. } => {
+            retain_device(sum, scratch, threshold.to_bits(), true)
+        }
     }
-    let tot = exclusive_scan_with_max(
-        &s,
-        &k,
-        &out.lens.slice(0..b),
-        &mut scratch.dst_off.slice_mut(0..b + 1),
-        b,
-    )?;
-    scratch.lap(sum, t0, |m| &mut m.truncate)?;
-    let total = s.clone_dtoh(&tot)?[0];
-    s.synchronize()?;
-    out.len = total as usize;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
-    sum.debug_check();
-    Ok(())
 }
 
 /// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, hist…]`, edge, retain.
-///
 /// `sum` is `None` on a partition that already failed; it still enters the reduction, with zeros, so the group stays in lock-step.
 pub(crate) fn approx_top_n_device<const W: usize>(
     sum: Option<(&mut GpuSum<W>, &mut LayerScratch<W>)>,
@@ -136,19 +95,8 @@ pub(crate) fn approx_top_n_device<const W: usize>(
     retain_at_or_above_device(sum, scratch, edge)
 }
 
-/// The launch shape K7 and K8's whole-sum passes share: warps spread over buckets, capped at `HIST_BLOCKS`.
-fn whole_sum_launch(b: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: (b.div_ceil(8).clamp(1, HIST_BLOCKS) as u32, 1, 1),
-        block_dim: (256, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-/// K8's radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top) over `sum`, by digit at a time from the top byte down.
-///
-/// Each pass histograms one 8-bit digit of the bit pattern, restricted to terms whose higher bits already match the running `prefix` (no restriction on the first pass); the host picks the digit whose cumulative population from the top first reaches the target rank, exactly `TopN::finalize_layer`'s `select_nth_unstable_by` at the bit level.
-/// Once a chosen digit's population is `1`, the remaining bits belong to one term alone and [`k_radix_extract`] reads them directly instead of paying for the rest of the passes.
+/// K8's radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, `TopN::finalize_layer`'s `select_nth_unstable_by` at the bit level.
+/// A digit whose population is `1` names one term, whose remaining bits `k_radix_extract` reads directly.
 fn radix_select_bits<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,
@@ -217,8 +165,8 @@ fn radix_select_bits<const W: usize>(
     unreachable!("the loop returns by pass 7")
 }
 
-/// Apply K8's exact threshold to `sum` in place: keep bits `> t2`, plus the tie group at `t2` when `keep_tied` — [`retain_at_or_above_device`]'s structure with a bit-pattern predicate instead of a `>=` on the double.
-fn retain_topn_device<const W: usize>(
+/// Keep the terms whose `|c|²` bits exceed `t2`, and the tie group at `t2` when `keep_tied`, in each bucket's order and at its start offset.
+fn retain_device<const W: usize>(
     sum: &mut GpuSum<W>,
     scratch: &mut LayerScratch<W>,
     t2: u64,
@@ -240,9 +188,9 @@ fn retain_topn_device<const W: usize>(
     let b32 = b as u32;
     let keep_tied_u32 = u32::from(keep_tied);
     let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_retain_topn` in truncate.cu; `out` has room for the input's extent.
+    // SAFETY: arguments match `k_retain` in truncate.cu; `out` has room for the input's extent.
     unsafe {
-        s.launch_builder(&k.retain_topn)
+        s.launch_builder(&k.retain)
             .arg(&sum.cols.x)
             .arg(&sum.cols.z)
             .arg(&sum.cols.coeff)
@@ -260,15 +208,17 @@ fn retain_topn_device<const W: usize>(
             .arg(&mut out.lens)
             .launch(warp_per_bucket(b))?;
     }
-    let tot = exclusive_scan_with_max(
+    exclusive_scan(
         &s,
         &k,
         &out.lens.slice(0..b),
         &mut scratch.dst_off.slice_mut(0..b + 1),
         b,
+        &mut scratch.scan,
+        &mut scratch.tot_a,
     )?;
     scratch.lap(sum, t0, |m| &mut m.truncate)?;
-    let total = s.clone_dtoh(&tot)?[0];
+    let total = s.clone_dtoh(&scratch.tot_a)?[0];
     s.synchronize()?;
     out.len = total as usize;
     out.buckets = b;
@@ -277,9 +227,8 @@ fn retain_topn_device<const W: usize>(
     Ok(())
 }
 
-/// One `TopN(n)` layer pass on a single device: [`radix_select_bits`], the two global counts K8's tie rule needs, then [`retain_topn_device`] — exactly `TopN::finalize_layer`'s three passes, with `select_nth_unstable_by` replaced by the digit-at-a-time select.
-///
-/// Single-partition only; a group member is rejected before this is ever called (`DevicePartition::finalize_layer`), since the group's `n`-th largest has no collective form (`PartitionedTruncation`'s docs).
+/// One `TopN(n)` layer pass on one device: [`radix_select_bits`], the two global counts the tie rule needs, then [`retain_device`], `TopN::finalize_layer`'s three passes.
+/// A group member never calls it (`DevicePartition::finalize_layer`), since the group's `n`-th largest has no collective form.
 pub(crate) fn top_n_device<const W: usize>(
     sum: &mut GpuSum<W>,
     scratch: &mut LayerScratch<W>,
@@ -312,8 +261,7 @@ pub(crate) fn top_n_device<const W: usize>(
     let counts = s.clone_dtoh(&scratch.radix_out.slice(0..2))?;
     s.synchronize()?;
     let (above, equal) = (counts[0], counts[1]);
-    let keep_tied = above + equal <= n as u64;
-    retain_topn_device(sum, scratch, t2, keep_tied)
+    retain_device(sum, scratch, t2, above + equal <= n as u64)
 }
 
 #[cfg(test)]
@@ -354,14 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn histogram_is_bitwise_the_hosts_w1() {
+    fn histogram_is_bitwise_the_hosts() {
         crate::require_cuda!();
         histogram_matches::<1>();
-    }
-
-    #[test]
-    fn histogram_is_bitwise_the_hosts_w2() {
-        crate::require_cuda!();
         histogram_matches::<2>();
     }
 
@@ -412,14 +355,9 @@ mod tests {
     }
 
     #[test]
-    fn retain_equals_the_hosts_term_for_term_w1() {
+    fn retain_equals_the_hosts_term_for_term() {
         crate::require_cuda!();
         retain_matches::<1>();
-    }
-
-    #[test]
-    fn retain_equals_the_hosts_term_for_term_w2() {
-        crate::require_cuda!();
         retain_matches::<2>();
     }
 
@@ -469,92 +407,56 @@ mod tests {
     }
 
     #[test]
-    fn top_n_equals_the_hosts_term_for_term_w1() {
+    fn top_n_equals_the_hosts_term_for_term() {
         crate::require_cuda!();
         top_n_matches::<1>();
-    }
-
-    #[test]
-    fn top_n_equals_the_hosts_term_for_term_w2() {
-        crate::require_cuda!();
         top_n_matches::<2>();
     }
 
-    /// A tie group straddling the cut is discarded whole, exactly as `TopN::finalize_layer` documents: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps only 5 and 4.
+    /// `TopN::finalize_layer`'s tie rule on device: a group straddling the cut is dropped whole, one ending exactly at `n` is kept, an all-tied sum is wiped, and distinct magnitudes keep exactly `n`.
     #[test]
-    fn top_n_discards_a_straddling_tie_group_on_device() {
+    fn top_n_tie_rules_match_the_host_on_device() {
         crate::require_cuda!();
         use crate::truncation::TopN;
-        let mags = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
-        let sum = PauliSum::<1>::from_sorted_columns(
-            (0u64..6).map(|i| [i]).collect(),
-            vec![[0u64]; 6],
-            mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
-            3,
-        );
-        let mut want = sum.clone();
-        TopN(3).finalize_layer(&mut want);
-        let (mut dev, mut scratch) = device(&sum);
-        top_n_device(&mut dev, &mut scratch, 3).expect("top n");
-        assert_eq!(dev.len(), want.len());
-        assert_eq!(dev.to_host().unwrap().to_arrays(), want.to_arrays());
-    }
-
-    /// A tie group that ends exactly at rank `n` fits and is kept whole: magnitudes 5, 4, 3, 3, 2, 1 with `n = 4` keeps all four of 5, 4, 3, 3.
-    #[test]
-    fn top_n_keeps_a_tie_group_that_fits_exactly_on_device() {
-        crate::require_cuda!();
-        use crate::truncation::TopN;
-        let mags = [5.0f64, 4.0, 3.0, 3.0, 2.0, 1.0];
-        let sum = PauliSum::<1>::from_sorted_columns(
-            (0u64..6).map(|i| [i]).collect(),
-            vec![[0u64]; 6],
-            mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
-            3,
-        );
-        let mut want = sum.clone();
-        TopN(4).finalize_layer(&mut want);
-        let (mut dev, mut scratch) = device(&sum);
-        top_n_device(&mut dev, &mut scratch, 4).expect("top n");
-        assert_eq!(dev.len(), want.len());
-        assert_eq!(dev.to_host().unwrap().to_arrays(), want.to_arrays());
-    }
-
-    /// Every candidate ties at the threshold: the group of six cannot fit in three, so the whole sum is wiped — same rule as `top_n_wipes_an_all_tied_sum_to_empty` on the host.
-    #[test]
-    fn top_n_wipes_an_all_tied_sum_on_device() {
-        crate::require_cuda!();
-        let sum = PauliSum::<1>::from_sorted_columns(
-            (0u64..6).map(|i| [i]).collect(),
-            vec![[0u64]; 6],
-            vec![
-                Complex64::new(2.0, 0.0),
-                Complex64::new(-2.0, 0.0),
-                Complex64::new(0.0, 2.0),
-                Complex64::new(0.0, -2.0),
-                Complex64::new(2.0, 0.0),
-                Complex64::new(-2.0, 0.0),
-            ],
-            3,
-        );
-        let (mut dev, mut scratch) = device(&sum);
-        top_n_device(&mut dev, &mut scratch, 3).expect("top n");
-        assert!(dev.is_empty(), "an all-tied sum is wiped");
-        dev.assert_invariants_device().unwrap();
-    }
-
-    /// A fixture with no ties at all: every magnitude distinct, so `TopN(n)` retains exactly `n` and the radix select never hits its tie branch.
-    #[test]
-    fn top_n_all_distinct_retains_exactly_n_on_device() {
-        crate::require_cuda!();
-        use crate::truncation::TopN;
-        let sum = rand_sum::<1>(5_000, 32, 0xD157);
-        let mut want = sum.clone();
-        TopN(1234).finalize_layer(&mut want);
-        assert_eq!(want.len(), 1234);
-        let (mut dev, mut scratch) = device(&sum);
-        top_n_device(&mut dev, &mut scratch, 1234).expect("top n");
-        assert_eq!(dev.len(), 1234);
-        assert_eq!(dev.to_host().unwrap().to_arrays(), want.to_arrays());
+        let six = |c: [(f64, f64); 6]| {
+            PauliSum::<1>::from_sorted_columns(
+                (0u64..6).map(|i| [i]).collect(),
+                vec![[0u64]; 6],
+                c.iter().map(|&(re, im)| Complex64::new(re, im)).collect(),
+                3,
+            )
+        };
+        let real = |m: [f64; 6]| six(m.map(|m| (m, 0.0)));
+        let cases = [
+            ("straddling", real([5.0, 4.0, 3.0, 3.0, 3.0, 2.0]), 3, 2),
+            ("fits exactly", real([5.0, 4.0, 3.0, 3.0, 2.0, 1.0]), 4, 4),
+            (
+                "all tied",
+                six([
+                    (2.0, 0.0),
+                    (-2.0, 0.0),
+                    (0.0, 2.0),
+                    (0.0, -2.0),
+                    (2.0, 0.0),
+                    (-2.0, 0.0),
+                ]),
+                3,
+                0,
+            ),
+            ("all distinct", rand_sum::<1>(5_000, 32, 0xD157), 1234, 1234),
+        ];
+        for (what, sum, n, kept) in cases {
+            let mut want = sum.clone();
+            TopN(n).finalize_layer(&mut want);
+            assert_eq!(want.len(), kept, "{what}: host");
+            let (mut dev, mut scratch) = device(&sum);
+            top_n_device(&mut dev, &mut scratch, n).expect("top n");
+            dev.assert_invariants_device().unwrap();
+            assert_eq!(
+                dev.to_host().unwrap().to_arrays(),
+                want.to_arrays(),
+                "{what}"
+            );
+        }
     }
 }

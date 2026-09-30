@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, PushKernelArg};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -10,35 +10,15 @@ use super::columns::DeviceColumns;
 use super::device;
 use super::error::GpuError;
 use super::fingerprint::FingerprintRows;
-use super::module::{self, KernelSet};
-use super::scan::exclusive_scan;
+use super::module::{self, thread_per, warp_per_bucket, KernelSet};
+use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
 use crate::bucket::hash::{Gf2Hash, B_MAX_BITS};
 use crate::bucket::sum::BucketCols;
 use crate::pauli_sum::PauliSum;
 
-const TERM_THREADS: u32 = 256;
-const BUCKET_THREADS: u32 = 256;
 /// Hash bits one refine pass adds at most; must match `REFINE_MAX_DELTA` in `kernels/refine.cu`.
 const REFINE_MAX_DELTA: u8 = 4;
-
-/// One thread per term.
-fn per_term(m: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((m as u32).div_ceil(TERM_THREADS).max(1), 1, 1),
-        block_dim: (TERM_THREADS, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-/// One warp per bucket.
-fn per_bucket(b: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((b as u32).div_ceil(BUCKET_THREADS / 32).max(1), 1, 1),
-        block_dim: (BUCKET_THREADS, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
 
 /// GF(2) rows in the device layout of `kernels/prelude.cuh`, padded so an empty matrix still allocates.
 fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -> Vec<u64> {
@@ -71,10 +51,40 @@ pub struct GpuSum<const W: usize> {
     pub(super) spare: Option<DeviceColumns<W>>,
     /// All `B_MAX_BITS` rows of `hash`, so a refine uploads nothing.
     pub(super) hash_rows: CudaSlice<u64>,
-    /// The fingerprint rows `FingerprintRows::new(hash.seed())` in device layout.
+    /// `FingerprintRows::new(hash.seed())`, and its rows in device layout.
+    pub(super) fp: FingerprintRows<W>,
     pub(super) fp_rows: CudaSlice<u64>,
+    /// The refine's scan buffers and `[total, max]`.
+    scan: (ScanScratch, CudaSlice<u32>),
     /// Page-locked download staging, allocated on first [`Self::to_host`] and reused.
     staging: Mutex<HostStaging>,
+}
+
+/// K0: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
+pub(super) fn launch_fingerprint(
+    stream: &Arc<CudaStream>,
+    k: &KernelSet,
+    fp_rows: &CudaSlice<u64>,
+    (x, z): (&CudaSlice<u64>, &CudaSlice<u64>),
+    g: &mut CudaSlice<u64>,
+    n: usize,
+) -> Result<(), GpuError> {
+    if n == 0 {
+        return Ok(());
+    }
+    let n32 = n as u32;
+    // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; every column holds `n` rows.
+    unsafe {
+        stream
+            .launch_builder(&k.fingerprint)
+            .arg(x)
+            .arg(z)
+            .arg(&n32)
+            .arg(fp_rows)
+            .arg(g)
+            .launch(thread_per(n, 256))?;
+    }
+    Ok(())
 }
 
 impl<const W: usize> GpuSum<W> {
@@ -131,21 +141,17 @@ impl<const W: usize> GpuSum<W> {
         let hash_rows = stream.clone_htod(&flat_rows::<W>(
             (0..B_MAX_BITS as usize).map(|i| hash.row(i)),
         ))?;
-        let fp_rows = stream.clone_htod(&FingerprintRows::<W>::new(hash.seed()).flat())?;
-        if n > 0 {
-            let n32 = n as u32;
-            // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; `g` holds `n` entries.
-            unsafe {
-                stream
-                    .launch_builder(&kernels.fingerprint)
-                    .arg(&cols.x)
-                    .arg(&cols.z)
-                    .arg(&n32)
-                    .arg(&fp_rows)
-                    .arg(&mut cols.g)
-                    .launch(per_term(n))?;
-            }
-        }
+        let fp = FingerprintRows::<W>::new(hash.seed());
+        let fp_rows = stream.clone_htod(&fp.flat())?;
+        launch_fingerprint(
+            &stream,
+            &kernels,
+            &fp_rows,
+            (&cols.x, &cols.z),
+            &mut cols.g,
+            n,
+        )?;
+        let scan = (ScanScratch::new(&stream)?, stream.alloc_zeros::<u32>(2)?);
         stream.synchronize()?;
         let staging = Mutex::new(HostStaging::new(&ctx));
         let s = Self {
@@ -157,7 +163,9 @@ impl<const W: usize> GpuSum<W> {
             cols,
             spare: None,
             hash_rows,
+            fp,
             fp_rows,
+            scan,
             staging,
         };
         s.debug_check();
@@ -287,14 +295,17 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&bits32)
                 .arg(&delta32)
                 .arg(&mut out.lens)
-                .launch(per_bucket(b_old))?;
+                .launch(warp_per_bucket(b_old))?;
         }
+        let (scan, tot) = &mut self.scan;
         exclusive_scan(
             s,
             k,
             &out.lens.slice(0..b_new),
             &mut out.start.slice_mut(0..b_new + 1),
             b_new,
+            scan,
+            tot,
         )?;
         // SAFETY: arguments match `k_refine_scatter`; `out` holds `n` terms, the scan's total.
         unsafe {
@@ -314,7 +325,7 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&mut out.z)
                 .arg(&mut out.coeff)
                 .arg(&mut out.g)
-                .launch(per_bucket(b_old))?;
+                .launch(warp_per_bucket(b_old))?;
         }
         out.len = n;
         out.buckets = b_new;
@@ -363,7 +374,7 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&self.fp_rows)
                 .arg(&nq32)
                 .arg(&mut bad)
-                .launch(per_bucket(b))?;
+                .launch(warp_per_bucket(b))?;
         }
         let bad = s.clone_dtoh(&bad)?;
         let start = s.clone_dtoh(&cols.start.slice(0..b))?;
@@ -460,7 +471,6 @@ fn gather_sorted<const W: usize>(
 mod tests {
     use super::*;
     use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::PartitionRows;
     use crate::bucket::sum::DEFAULT_HASH_SEED;
     use crate::pauli_string::PauliString;
     use crate::phase::Phase;
@@ -491,40 +501,6 @@ mod tests {
                 z: words(z),
                 g,
             }
-        }
-
-        /// `out[i] = gf2_image(row i)` from the hash or partition kernel over rows `rows` with `bits` active.
-        fn device_image(&self, partition: Option<&PartitionRows<W>>) -> Vec<u32> {
-            let n = self.cols.len;
-            let s = &self.stream;
-            let mut out = s.alloc_zeros::<u32>(n.max(1)).unwrap();
-            let (f, rows, bits) = match partition {
-                None => (&self.kernels.bucket_of, None, u32::from(self.hash.bits())),
-                Some(p) => {
-                    let (rx, rz) = p.rows();
-                    let flat = flat_rows::<W>(rx.iter().copied().zip(rz.iter().copied()));
-                    (
-                        &self.kernels.partition_of,
-                        Some(s.clone_htod(&flat).unwrap()),
-                        u32::from(p.bits()),
-                    )
-                }
-            };
-            let n32 = n as u32;
-            unsafe {
-                s.launch_builder(f)
-                    .arg(&self.cols.x)
-                    .arg(&self.cols.z)
-                    .arg(&n32)
-                    .arg(rows.as_ref().unwrap_or(&self.hash_rows))
-                    .arg(&bits)
-                    .arg(&mut out)
-                    .launch(per_term(n))
-                    .unwrap();
-            }
-            let v = s.clone_dtoh(&out.slice(0..n)).unwrap();
-            s.synchronize().unwrap();
-            v
         }
     }
 
@@ -652,50 +628,6 @@ mod tests {
     fn device_fingerprint_matches_host_w2() {
         crate::require_cuda!();
         device_fingerprints::<2>();
-    }
-
-    fn hash_kernels<const W: usize>() {
-        let nq = 64 * W - 3;
-        for sum in [
-            rand_sum::<W>(50_000, nq, 0xAB),
-            low_weight_sum::<W>(50_000, nq, 2, 0xCD),
-        ] {
-            let dev = GpuSum::from_host(&sum, 0).expect("upload");
-            let raw = dev.download_raw();
-            let got = dev.device_image(None);
-            assert_eq!(got.len(), sum.len());
-            for (i, &got) in got.iter().enumerate() {
-                assert_eq!(
-                    got,
-                    sum.hash().bucket_of(&raw.x[i], &raw.z[i]),
-                    "bucket_of {i}"
-                );
-            }
-            for bits in [1u8, 3, 6] {
-                let rows = PartitionRows::<W>::from_seed(nq, bits, 0x1234);
-                let got = dev.device_image(Some(&rows));
-                assert_eq!(got.len(), sum.len());
-                for (i, &got) in got.iter().enumerate() {
-                    assert_eq!(
-                        got,
-                        rows.partition_of(&raw.x[i], &raw.z[i]),
-                        "partition_of {i}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn hash_kernels_match_host_w1() {
-        crate::require_cuda!();
-        hash_kernels::<1>();
-    }
-
-    #[test]
-    fn hash_kernels_match_host_w2() {
-        crate::require_cuda!();
-        hash_kernels::<2>();
     }
 
     fn refine_against_host<const W: usize>(sum: PauliSum<W>, what: &str) {

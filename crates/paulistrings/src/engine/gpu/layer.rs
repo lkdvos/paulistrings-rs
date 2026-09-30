@@ -3,17 +3,16 @@
 use std::sync::Arc;
 
 use cudarc::driver::sys::CUevent_flags;
-use cudarc::driver::{
-    CudaEvent, CudaFunction, CudaSlice, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg,
-};
+use cudarc::driver::{CudaEvent, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 
-use super::columns::DeviceColumns;
+use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
 use super::export::{exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECV_SEGMENT};
-use super::fingerprint::FingerprintRows;
-use super::module::{layer_shared_bytes, layer_threads, KernelSet, MAX_BUCKET_LEN};
+use super::module::{
+    layer_shared_bytes, layer_threads, thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN,
+};
 use super::prepared::DevicePrepared;
-use super::scan::{exclusive_scan_with_max_into, ScanScratch};
+use super::scan::{exclusive_scan, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
 use crate::bucket::hash::B_MAX_BITS;
@@ -117,18 +116,13 @@ pub(crate) fn gpu_desired_bits(
     policy: GpuBucketPolicy,
     current: u8,
 ) -> u8 {
-    let want = match policy {
-        GpuBucketPolicy::TermsPerBucket(target) => desired_bits(len, target.max(1), 1),
-        GpuBucketPolicy::RecordsPerBlock(target) => {
-            let records = len.saturating_mul(fanout.max(1));
-            let mut b = 0u8;
-            while b < B_MAX_BITS && records > target.max(1).saturating_mul(1usize << b) {
-                b += 1;
-            }
-            b
-        }
+    let (rows, target) = match policy {
+        GpuBucketPolicy::TermsPerBucket(target) => (len, target),
+        GpuBucketPolicy::RecordsPerBlock(target) => (len.saturating_mul(fanout.max(1)), target),
     };
-    want.max(current).min(B_MAX_BITS)
+    desired_bits(rows, target.max(1), 1)
+        .max(current)
+        .min(B_MAX_BITS)
 }
 
 /// The entries `prep` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
@@ -213,6 +207,44 @@ pub(crate) struct ExchangeLaps {
     pub recv_rows: u64,
 }
 
+/// A [`DevicePrepared`]'s per-entry tables on the device.
+pub(super) struct TableBufs {
+    pub(super) amp: CudaSlice<f64>,
+    pub(super) mask: CudaSlice<u64>,
+    pub(super) nz: CudaSlice<u32>,
+    pub(super) bd: CudaSlice<u32>,
+    pub(super) gm: CudaSlice<u64>,
+    pub(super) rem: CudaSlice<u32>,
+}
+
+impl TableBufs {
+    pub(super) fn new(s: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
+        Ok(Self {
+            amp: s.alloc_zeros(512)?,
+            mask: s.alloc_zeros(32 * w)?,
+            nz: s.alloc_zeros(16)?,
+            bd: s.alloc_zeros(16)?,
+            gm: s.alloc_zeros(16)?,
+            rem: s.alloc_zeros(16)?,
+        })
+    }
+
+    /// Copy every table of `t` up; the copies are synchronous.
+    pub(super) fn upload<const W: usize>(
+        &mut self,
+        s: &Arc<CudaStream>,
+        t: &DevicePrepared<W>,
+    ) -> Result<(), GpuError> {
+        s.memcpy_htod(&t.amp, &mut self.amp)?;
+        s.memcpy_htod(&t.mask, &mut self.mask)?;
+        s.memcpy_htod(&t.nz, &mut self.nz)?;
+        s.memcpy_htod(&t.bucket_delta, &mut self.bd)?;
+        s.memcpy_htod(&t.gm, &mut self.gm)?;
+        s.memcpy_htod(&t.rem, &mut self.rem)?;
+        Ok(())
+    }
+}
+
 /// Grow-only device buffers one partition keeps between layers.
 pub(crate) struct LayerScratch<const W: usize> {
     pub(super) bucket_at: CudaSlice<u32>,
@@ -228,18 +260,15 @@ pub(crate) struct LayerScratch<const W: usize> {
     /// K8's small scalar outputs: the extracted singleton bits, or `[above, equal]` counts.
     pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
-    pub(super) amp: CudaSlice<f64>,
-    pub(super) mask: CudaSlice<u64>,
-    pub(super) nz: CudaSlice<u32>,
-    bd: CudaSlice<u32>,
-    gm: CudaSlice<u64>,
-    rem: CudaSlice<u32>,
+    pub(super) table: TableBufs,
     entry_of: CudaSlice<u32>,
     pub(super) arena: Option<DeviceColumns<W>>,
     seg_host: Vec<u32>,
     bucket_at_host: Vec<u32>,
     /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
     bucket_at_key: Option<(u8, Vec<u32>)>,
+    /// The longest source bucket at the current bucket count, once a pass of the layer has read it.
+    longest: Option<u32>,
     pub(super) scan: ScanScratch,
     /// Scan totals, two slots so a count's pair of scans can be read together.
     pub(super) tot_a: CudaSlice<u32>,
@@ -297,37 +326,6 @@ pub(super) fn xfer<T>(
     }
 }
 
-pub(super) fn grow<T: DeviceRepr>(
-    stream: &Arc<CudaStream>,
-    s: &mut CudaSlice<T>,
-    n: usize,
-    ordinal: u32,
-) -> Result<(), GpuError> {
-    if s.len() >= n {
-        return Ok(());
-    }
-    // SAFETY: every kernel writes a buffer before reading it, and the host never reads one.
-    *s = unsafe { stream.alloc::<T>(n) }
-        .map_err(|e| GpuError::from_alloc(e, ordinal, (n * std::mem::size_of::<T>()) as u64))?;
-    Ok(())
-}
-
-pub(super) fn warp_per_bucket(b: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((b as u32).div_ceil(8).max(1), 1, 1),
-        block_dim: (256, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-pub(super) fn thread_per(n: usize, threads: u32) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(threads).max(1), 1, 1),
-        block_dim: (threads, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
-
 impl<const W: usize> LayerScratch<W> {
     pub(crate) fn new(sum: &GpuSum<W>, options: GpuLayerOptions) -> Result<Self, GpuError> {
         let s = &sum.stream;
@@ -342,17 +340,13 @@ impl<const W: usize> LayerScratch<W> {
             radix_hist: s.alloc_zeros(256)?,
             radix_out: s.alloc_zeros(2)?,
             fallback: s.alloc_zeros(2)?,
-            amp: s.alloc_zeros(512)?,
-            mask: s.alloc_zeros(32 * W)?,
-            nz: s.alloc_zeros(16)?,
-            bd: s.alloc_zeros(16)?,
-            gm: s.alloc_zeros(16)?,
-            rem: s.alloc_zeros(16)?,
+            table: TableBufs::new(s, W)?,
             entry_of: s.alloc_zeros(16)?,
             arena: None,
             seg_host: Vec::new(),
             bucket_at_host: Vec::new(),
             bucket_at_key: None,
+            longest: None,
             scan: ScanScratch::new(s)?,
             tot_a: s.alloc_zeros(2)?,
             tot_b: s.alloc_zeros(2)?,
@@ -449,25 +443,12 @@ impl<const W: usize> LayerScratch<W> {
         #[cfg(feature = "phase-timing")]
         s.synchronize()?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
-        let (amp, mask, nz, bd, gm, rem) = (
-            &mut self.amp,
-            &mut self.mask,
-            &mut self.nz,
-            &mut self.bd,
-            &mut self.gm,
-            &mut self.rem,
-        );
+        let bufs = &mut self.table;
         xfer(&mut self.xfer_ns, Xfer::H2d, || {
             if map_stale {
                 s.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
             }
-            s.memcpy_htod(&table.amp, amp)?;
-            s.memcpy_htod(&table.mask, mask)?;
-            s.memcpy_htod(&table.nz, nz)?;
-            s.memcpy_htod(&table.bucket_delta, bd)?;
-            s.memcpy_htod(&table.gm, gm)?;
-            s.memcpy_htod(&table.rem, rem)?;
-            Ok(())
+            bufs.upload(s, table)
         })?;
         if map_stale {
             self.bucket_at_key = Some(key);
@@ -500,13 +481,45 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&table.q1)
                 .arg(&table.rot_cos)
                 .arg(&table.rot_sin)
-                .arg(&self.amp)
-                .arg(&self.mask)
-                .arg(&self.nz)
+                .arg(&self.table.amp)
+                .arg(&self.table.mask)
+                .arg(&self.table.nz)
                 .arg(&mut self.cnt)
                 .launch(warp_per_bucket(b))?;
         }
         self.lap(sum, t0, |m| &mut m.count)
+    }
+
+    /// The longest source bucket, read once per bucket count and layer.
+    pub(super) fn longest_bucket(&mut self, sum: &GpuSum<W>) -> Result<u32, GpuError> {
+        if let Some(l) = self.longest {
+            return Ok(l);
+        }
+        self.scan_lens(sum)?;
+        #[cfg(feature = "phase-timing")]
+        sum.stream.synchronize()?;
+        let (s, tot_b) = (&sum.stream, &self.tot_b);
+        let l = xfer(&mut self.xfer_ns, Xfer::D2h, || {
+            let v = s.clone_dtoh(tot_b)?;
+            s.synchronize()?;
+            Ok(v[1])
+        })?;
+        self.longest = Some(l);
+        Ok(l)
+    }
+
+    /// The scan of the bucket lengths whose maximum `tot_b[1]` is the longest bucket.
+    fn scan_lens(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
+        let b = sum.hash.num_buckets();
+        exclusive_scan(
+            &sum.stream,
+            &sum.kernels,
+            &sum.cols.lens.slice(0..b),
+            &mut self.dst_off.slice_mut(0..b + 1),
+            b,
+            &mut self.scan,
+            &mut self.tot_b,
+        )
     }
 
     /// K2 and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
@@ -525,15 +538,15 @@ impl<const W: usize> LayerScratch<W> {
             s.launch_builder(&k.rows)
                 .arg(&self.cnt)
                 .arg(&self.bucket_at)
-                .arg(&self.bd)
-                .arg(&self.rem)
+                .arg(&self.table.bd)
+                .arg(&self.table.rem)
                 .arg(&self.export.recv_off)
                 .arg(&mut self.rows)
                 .arg(&b32)
                 .arg(&e32)
                 .launch(thread_per(b, 1024))?;
         }
-        exclusive_scan_with_max_into(
+        exclusive_scan(
             s,
             k,
             &self.rows.slice(0..b),
@@ -542,15 +555,10 @@ impl<const W: usize> LayerScratch<W> {
             &mut self.scan,
             &mut self.tot_a,
         )?;
-        exclusive_scan_with_max_into(
-            s,
-            k,
-            &sum.cols.lens.slice(0..b),
-            &mut self.dst_off.slice_mut(0..b + 1),
-            b,
-            &mut self.scan,
-            &mut self.tot_b,
-        )?;
+        let known = self.longest;
+        if known.is_none() {
+            self.scan_lens(sum)?;
+        }
         self.lap(sum, t1, |m| &mut m.sizes)?;
         // Downloads wait for the scans, so the timed region again starts after its own sync.
         #[cfg(feature = "phase-timing")]
@@ -558,14 +566,18 @@ impl<const W: usize> LayerScratch<W> {
         self.seg_host.resize(b + 1, 0);
         let (seg_start, seg_host) = (&self.seg_start, &mut self.seg_host);
         let (tot_a, tot_b) = (&self.tot_a, &self.tot_b);
-        let (tm, lm) = xfer(&mut self.xfer_ns, Xfer::D2h, || {
+        let (tm, longest) = xfer(&mut self.xfer_ns, Xfer::D2h, || {
             let tm = s.clone_dtoh(tot_a)?;
-            let lm = s.clone_dtoh(tot_b)?;
+            let longest = match known {
+                Some(l) => l,
+                None => s.clone_dtoh(tot_b)?[1],
+            };
             s.memcpy_dtoh(&seg_start.slice(0..b + 1), &mut seg_host[..])?;
             s.synchronize()?;
-            Ok((tm, lm))
+            Ok((tm, longest))
         })?;
-        Ok((tm[0], tm[1], lm[1]))
+        self.longest = Some(longest);
+        Ok((tm[0], tm[1], longest))
     }
 }
 
@@ -601,8 +613,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
 ) -> Result<LayerExchangeCounts, GpuError> {
     let size = transport.size();
     scratch.next_event = 0;
-    let fp = FingerprintRows::<W>::new(sum.hash.seed());
-    let mut table = DevicePrepared::new(prep, &sum.hash, &fp, &plan.remote);
+    let mut table = DevicePrepared::new(prep, &sum.hash, &sum.fp, &plan.remote);
     let has_remote = plan.has_remote();
     debug_assert_eq!(table.n_remote, plan.remote.len());
     scratch.counters = GpuLayerCounters {
@@ -612,6 +623,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     };
     scratch.export.recv_rows = 0;
     scratch.export.recv_max_segment = 0;
+    scratch.longest = None;
     debug_assert!(scratch.export.pending.is_none());
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
@@ -619,6 +631,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             sum.refine_to(bits)?;
             scratch.lap(sum, t, |m| &mut m.refine)?;
             scratch.extent = sum.len();
+            scratch.longest = None;
             scratch.counters.refine_passes += 1;
             Ok(())
         };
@@ -680,52 +693,37 @@ fn apply_layer_body<const W: usize, X: Transport>(
     }
     let cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
-    let (records, records_max) = if has_remote {
-        if let Err(e) = scratch
+    // Oversize blocks and over-long source buckets are known from the count table; a lone partition refines one more bit, which halves both.
+    let (records, records_max) = loop {
+        let counted = scratch
             .upload_table(sum, &table)
-            .and_then(|()| scratch.count_local(sum, &table))
-        {
+            .and_then(|()| scratch.count_local(sum, &table));
+        if let Err(e) = counted {
             pair(scratch, sum.hash.bits());
             return Err(e);
         }
-        counts = exchange_rows(sum, &table, plan, scratch, transport)?;
+        if has_remote {
+            counts = exchange_rows(sum, &table, plan, scratch, transport)?;
+        }
         let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
-        if max_seg as usize > cap
-            || max_len as usize > MAX_BUCKET_LEN
-            || scratch.export.recv_max_segment > MAX_RECV_SEGMENT
+        if max_seg as usize <= cap
+            && max_len as usize <= MAX_BUCKET_LEN
+            && scratch.export.recv_max_segment <= MAX_RECV_SEGMENT
         {
+            break (total, max_seg);
+        }
+        if !solo {
             return Err(GpuError::Unsupported(
                 "a fused-layer block or a received segment exceeds the record cap at the agreed bucket count",
             ));
         }
-        (total, max_seg)
-    } else if solo {
-        // Oversize blocks and over-long source buckets are known from the count table; one more bit halves both.
-        loop {
-            scratch.upload_table(sum, &table)?;
-            scratch.count_local(sum, &table)?;
-            let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
-            if max_seg as usize <= cap && max_len as usize <= MAX_BUCKET_LEN {
-                break (total, max_seg);
-            }
-            if sum.hash.bits() >= max_bits {
-                return Err(GpuError::Unsupported(
-                    "a fused-layer block exceeds the record cap at the bucket-bit limit",
-                ));
-            }
-            refine(sum, scratch, sum.hash.bits() + 1)?;
-            table.rehash(&sum.hash);
-        }
-    } else {
-        scratch.upload_table(sum, &table)?;
-        scratch.count_local(sum, &table)?;
-        let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
-        if max_seg as usize > cap || max_len as usize > MAX_BUCKET_LEN {
+        if sum.hash.bits() >= max_bits {
             return Err(GpuError::Unsupported(
-                "a fused-layer block exceeds the record cap at the agreed bucket count",
+                "a fused-layer block exceeds the record cap at the bucket-bit limit",
             ));
         }
-        (total, max_seg)
+        refine(sum, scratch, sum.hash.bits() + 1)?;
+        table.rehash(&sum.hash);
     };
     let bits = sum.hash.bits();
     let b = sum.hash.num_buckets();
@@ -734,8 +732,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.counters.records_max = records_max;
     scratch.counters.rows_received = counts.rows_received;
 
-    let kernels = sum.kernels.clone();
-    let (func, n_cap, smem) = fused_variant(&kernels, W, records_max as usize, table.dense);
+    let k: Arc<KernelSet> = sum.kernels.clone();
+    let (func, n_cap, smem) = fused_variant(&k, W, records_max as usize, table.dense);
     scratch.counters.n_cap = n_cap as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
@@ -754,7 +752,6 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.counters.recv_chunks = chunk_starts.len() as u32;
 
     let s = sum.stream.clone();
-    let k: Arc<KernelSet> = sum.kernels.clone();
     let o = sum.device();
     let mut arena = match scratch.arena.take() {
         Some(a) => a,
@@ -785,12 +782,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         let fused = FusedTable {
             cnt: &scratch.cnt,
             seg_start: &scratch.seg_start,
-            amp: &scratch.amp,
-            mask: &scratch.mask,
-            nz: &scratch.nz,
-            bd: &scratch.bd,
-            gm: &scratch.gm,
-            rem: &scratch.rem,
+            table: &scratch.table,
         };
         let recv = FusedRecv {
             off: &scratch.export.recv_off,
@@ -819,7 +811,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         scratch.lap(sum, t0, |m| &mut m.layer)?;
         let n = p1 - p0;
         let t1 = scratch.event(sum)?;
-        exclusive_scan_with_max_into(
+        exclusive_scan(
             &s,
             &k,
             &scratch.out_len_pos.slice(p0..p1),
@@ -933,16 +925,11 @@ pub(super) fn fused_variant(
     (func, n_cap, layer_shared_bytes(n_cap, w))
 }
 
-/// The table-side buffers one fused-layer launch reads, in the uploaded layout of a [`DevicePrepared`].
+/// The table-side buffers one fused-layer launch reads: the counts and segment starts sized for `table`'s upload.
 pub(super) struct FusedTable<'a> {
     pub(super) cnt: &'a CudaSlice<u32>,
     pub(super) seg_start: &'a CudaSlice<u32>,
-    pub(super) amp: &'a CudaSlice<f64>,
-    pub(super) mask: &'a CudaSlice<u64>,
-    pub(super) nz: &'a CudaSlice<u32>,
-    pub(super) bd: &'a CudaSlice<u32>,
-    pub(super) gm: &'a CudaSlice<u64>,
-    pub(super) rem: &'a CudaSlice<u32>,
+    pub(super) table: &'a TableBufs,
 }
 
 /// The concatenated received blocks a fused-layer launch reads for its received entries.
@@ -1003,12 +990,12 @@ pub(super) fn launch_fused<const W: usize>(
             .arg(&table.q1)
             .arg(&table.rot_cos)
             .arg(&table.rot_sin)
-            .arg(t.amp)
-            .arg(t.mask)
-            .arg(t.nz)
-            .arg(t.bd)
-            .arg(t.gm)
-            .arg(t.rem)
+            .arg(&t.table.amp)
+            .arg(&t.table.mask)
+            .arg(&t.table.nz)
+            .arg(&t.table.bd)
+            .arg(&t.table.gm)
+            .arg(&t.table.rem)
             .arg(r.off)
             .arg(r.base)
             .arg(&b32)
@@ -1055,7 +1042,7 @@ fn rescale_device<const W: usize>(
     grow(&s, &mut scratch.dst_off, b + 1, o)?;
     #[cfg(feature = "phase-timing")]
     s.synchronize()?;
-    let amp = &mut scratch.amp;
+    let amp = &mut scratch.table.amp;
     xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
         s.memcpy_htod(&table.amp, amp)?;
         Ok(())
@@ -1075,7 +1062,7 @@ fn rescale_device<const W: usize>(
             .arg(&table.kq)
             .arg(&table.q0)
             .arg(&table.q1)
-            .arg(&scratch.amp)
+            .arg(&scratch.table.amp)
             .arg(keep)
             .arg(&mut out.x)
             .arg(&mut out.z)
@@ -1085,7 +1072,7 @@ fn rescale_device<const W: usize>(
             .arg(&mut out.lens)
             .launch(warp_per_bucket(b))?;
     }
-    exclusive_scan_with_max_into(
+    exclusive_scan(
         &s,
         &k,
         &out.lens.slice(0..b),
@@ -1140,18 +1127,12 @@ fn permute_device<const W: usize>(
     out.reserve(n_in, b)?;
     #[cfg(feature = "phase-timing")]
     s.synchronize()?;
-    let (amp, mask, bd, gm, entry_of) = (
-        &mut scratch.amp,
-        &mut scratch.mask,
-        &mut scratch.bd,
-        &mut scratch.gm,
-        &mut scratch.entry_of,
-    );
+    let (bufs, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
     xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&table.amp, amp)?;
-        s.memcpy_htod(&table.mask, mask)?;
-        s.memcpy_htod(&table.bucket_delta, bd)?;
-        s.memcpy_htod(&table.gm, gm)?;
+        s.memcpy_htod(&table.amp, &mut bufs.amp)?;
+        s.memcpy_htod(&table.mask, &mut bufs.mask)?;
+        s.memcpy_htod(&table.bucket_delta, &mut bufs.bd)?;
+        s.memcpy_htod(&table.gm, &mut bufs.gm)?;
         s.memcpy_htod(&table.entry_of, entry_of)?;
         Ok(())
     })?;
@@ -1176,9 +1157,9 @@ fn permute_device<const W: usize>(
             .arg(&table.q1)
             .arg(&table.rot_cos)
             .arg(&table.rot_sin)
-            .arg(&scratch.amp)
-            .arg(&scratch.mask)
-            .arg(&scratch.nz)
+            .arg(&scratch.table.amp)
+            .arg(&scratch.table.mask)
+            .arg(&scratch.table.nz)
             .arg(&scratch.entry_of)
             .arg(keep)
             .arg(&mut scratch.cnt)
@@ -1190,13 +1171,13 @@ fn permute_device<const W: usize>(
     unsafe {
         s.launch_builder(&k.perm_lens)
             .arg(&scratch.cnt)
-            .arg(&scratch.bd)
+            .arg(&scratch.table.bd)
             .arg(&b32)
             .arg(&e32)
             .arg(&mut out.lens)
             .launch(thread_per(b, 256))?;
     }
-    exclusive_scan_with_max_into(
+    exclusive_scan(
         &s,
         &k,
         &out.lens.slice(0..b),
@@ -1223,12 +1204,12 @@ fn permute_device<const W: usize>(
             .arg(&table.q1)
             .arg(&table.rot_cos)
             .arg(&table.rot_sin)
-            .arg(&scratch.amp)
-            .arg(&scratch.mask)
-            .arg(&scratch.nz)
+            .arg(&scratch.table.amp)
+            .arg(&scratch.table.mask)
+            .arg(&scratch.table.nz)
             .arg(&scratch.entry_of)
-            .arg(&scratch.bd)
-            .arg(&scratch.gm)
+            .arg(&scratch.table.bd)
+            .arg(&scratch.table.gm)
             .arg(&scratch.cnt)
             .arg(&out.start)
             .arg(keep)

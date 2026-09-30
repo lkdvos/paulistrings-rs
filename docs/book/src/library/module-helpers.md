@@ -6,7 +6,7 @@
 | `paulistrings.numa_nodes()` | `list[list[int]]`, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process's CPU affinity mask |
 | `paulistrings.mpi_available()` | `bool`, whether this build can run `PauliSum.propagate(comm=...)` (compiled with the `mpi` feature) |
 | `paulistrings.cuda_available()` | `bool`, whether this build can run `PauliSum.propagate(device=...)`: compiled with the `cuda` feature, `libcuda` and `libnvrtc` loadable, and a device visible |
-| `paulistrings.GpuPauliSum` | the device-resident sum `PauliSum.to_device` returns; see [`GpuPauliSum`](propagate.md#gpupaulisum) |
+| `paulistrings.GpuPauliSum` | the device-resident sum `PauliSum.to_device` returns, present only in a build with the `cuda` feature; see [`GpuPauliSum`](propagate.md#gpupaulisum) |
 | `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` | `int`, the default `small_sum_threshold` `propagate`/`propagate_with_stats` use when the kwarg is omitted |
 | `paulistrings.reset_log_cache()` | drops pyo3-log's cached per-logger effective level |
 

@@ -1,4 +1,4 @@
-//! A [`BuiltinTruncation`] lowered for the device: the per-term [`KeepProgram`] the fused layer evaluates, and the tree whose layer pass K7 runs.
+//! A [`BuiltinTruncation`] lowered for the device: the per-term [`KeepProgram`] the fused layer evaluates, and the walk over the tree's layer pass.
 
 use cudarc::driver::DeviceRepr;
 
@@ -95,29 +95,6 @@ impl KeepProgram {
             p.arg[i] = arg;
         }
         Ok(p)
-    }
-}
-
-/// A policy as the device runs it: the per-term program and the tree whose layer pass [`DevicePartition`](super::partition::DevicePartition) walks.
-#[derive(Clone, Debug)]
-pub(crate) struct DevicePolicy {
-    pub(crate) tree: BuiltinTruncation,
-    pub(crate) keep: KeepProgram,
-}
-
-impl DevicePolicy {
-    pub(crate) fn lower(tree: BuiltinTruncation) -> Result<Self, GpuError> {
-        Ok(Self {
-            keep: KeepProgram::lower(&tree)?,
-            tree,
-        })
-    }
-
-    pub(crate) fn keep_all() -> Self {
-        Self {
-            tree: BuiltinTruncation::Keep,
-            keep: KeepProgram::KEEP,
-        }
     }
 }
 
@@ -298,15 +275,16 @@ mod tests {
 
     #[test]
     fn every_builtin_lowers_including_top_n() {
-        let tree = <_ as TruncationPolicy<1>>::device_policy(&And(
+        let tree = T::from(And(
             CoefficientThreshold(1e-3),
             And(ApproxTopN(500), WeightCutoff(4)),
-        ))
-        .unwrap();
-        let p = DevicePolicy::lower(tree).unwrap();
-        assert_eq!(p.keep.decode(), and(T::Coeff(1e-3), T::Weight(4)));
-        let top = <_ as TruncationPolicy<1>>::device_policy(&TopN(10)).unwrap();
-        assert_eq!(DevicePolicy::lower(top).unwrap().keep, KeepProgram::KEEP);
+        ));
+        let p = KeepProgram::lower(&tree).unwrap();
+        assert_eq!(p.decode(), and(T::Coeff(1e-3), T::Weight(4)));
+        assert_eq!(
+            KeepProgram::lower(&T::from(TopN(10))).unwrap(),
+            KeepProgram::KEEP
+        );
     }
 
     #[test]

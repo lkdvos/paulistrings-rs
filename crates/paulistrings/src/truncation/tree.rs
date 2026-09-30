@@ -1,6 +1,6 @@
 //! [`BuiltinTruncation`], every builtin policy and combinator as one runtime value.
 
-use super::builtin::{ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
+use super::builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
 use super::TruncationPolicy;
 use crate::engine::partitioned::transport::Collectives;
 use crate::engine::partitioned::truncation::PartitionedTruncation;
@@ -10,7 +10,7 @@ use num_complex::Complex64;
 /// The builtin truncation policies as one value-level tree, the form a backend lowers.
 ///
 /// Every variant delegates to the builtin type it names, so a `BuiltinTruncation` truncates exactly as the corresponding composition of [`CoefficientThreshold`], [`WeightCutoff`], [`TopN`], [`ApproxTopN`], [`And`](super::And) and [`Or`](super::Or) does, on the host and in partitioned mode.
-/// [`TruncationPolicy::device_policy`] returns one for every builtin, which is how the CUDA backend reads a policy.
+/// Every builtin and combinator converts into one with [`From`], which is how the CUDA backend takes a policy; a custom [`TruncationPolicy`] has no conversion, so it cannot reach a device.
 ///
 /// `Or` combines per-term filters only and runs neither side's layer pass, matching [`Or`](super::Or); `And` runs both, first then second.
 /// In partitioned mode an exact `TopN` whose layer pass would run panics, since it has no collective form (see [`PartitionedTruncation`]).
@@ -91,9 +91,48 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
             Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => false,
         }
     }
+}
 
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(self.clone())
+impl From<CoefficientThreshold> for BuiltinTruncation {
+    fn from(p: CoefficientThreshold) -> Self {
+        Self::Coeff(p.0)
+    }
+}
+
+impl From<WeightCutoff> for BuiltinTruncation {
+    fn from(p: WeightCutoff) -> Self {
+        Self::Weight(p.0)
+    }
+}
+
+impl From<TopN> for BuiltinTruncation {
+    fn from(p: TopN) -> Self {
+        Self::TopN(p.0)
+    }
+}
+
+impl From<ApproxTopN> for BuiltinTruncation {
+    fn from(p: ApproxTopN) -> Self {
+        Self::ApproxTopN(p.0)
+    }
+}
+
+impl<A: Into<BuiltinTruncation>, B: Into<BuiltinTruncation>> From<And<A, B>> for BuiltinTruncation {
+    fn from(p: And<A, B>) -> Self {
+        Self::And(Box::new(p.0.into()), Box::new(p.1.into()))
+    }
+}
+
+impl<A: Into<BuiltinTruncation>, B: Into<BuiltinTruncation>> From<Or<A, B>> for BuiltinTruncation {
+    fn from(p: Or<A, B>) -> Self {
+        Self::Or(Box::new(p.0.into()), Box::new(p.1.into()))
+    }
+}
+
+/// A borrowed policy converts as its clone does, so a device driver takes `&policy` as the host engine does.
+impl<P: Clone + Into<BuiltinTruncation>> From<&P> for BuiltinTruncation {
+    fn from(p: &P) -> Self {
+        p.clone().into()
     }
 }
 
@@ -214,32 +253,17 @@ mod tests {
     }
 
     #[test]
-    fn device_policy_of_a_tree_is_itself_and_every_builtin_lowers() {
+    fn every_builtin_converts_node_for_node() {
         let tree = and(T::Coeff(1e-3), or(T::ApproxTopN(7), T::Weight(2)));
-        assert_eq!(
-            <T as TruncationPolicy<1>>::device_policy(&tree),
-            Some(tree.clone())
-        );
-        let lowered = <_ as TruncationPolicy<1>>::device_policy(&And(
+        let builtin = And(
             CoefficientThreshold(1e-3),
             Or(ApproxTopN(7), WeightCutoff(2)),
-        ));
-        assert_eq!(lowered, Some(tree));
-        assert_eq!(
-            <_ as TruncationPolicy<2>>::device_policy(&TopN(10)),
-            Some(T::TopN(10))
         );
-        assert_eq!(
-            <_ as TruncationPolicy<1>>::device_policy(&KeepAll),
-            Some(T::Keep)
-        );
-        struct Custom;
-        impl<const W: usize> TruncationPolicy<W> for Custom {}
-        assert_eq!(<_ as TruncationPolicy<1>>::device_policy(&Custom), None);
-        assert_eq!(
-            <_ as TruncationPolicy<1>>::device_policy(&And(CoefficientThreshold(0.1), Custom)),
-            None
-        );
+        assert_eq!(T::from(&builtin), tree);
+        assert_eq!(T::from(builtin), tree);
+        assert_eq!(T::from(TopN(10)), T::TopN(10));
+        assert_eq!(T::from(&tree), tree);
+        assert_eq!(T::from(KeepAll), T::Keep);
     }
 
     #[test]

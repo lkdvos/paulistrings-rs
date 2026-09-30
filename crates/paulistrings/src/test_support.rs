@@ -613,15 +613,18 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
 /// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which [`PartitionedTruncation`]'s default body rejects — a policy with no layer pass has to say so explicitly.
 ///
 /// [`PartitionedTruncation`]: crate::PartitionedTruncation
+#[derive(Clone, Copy, Debug)]
 pub struct KeepAll;
 
 impl<const W: usize> TruncationPolicy<W> for KeepAll {
     fn finalizes_layer(&self) -> bool {
         false
     }
+}
 
-    fn device_policy(&self) -> Option<crate::truncation::BuiltinTruncation> {
-        Some(crate::truncation::BuiltinTruncation::Keep)
+impl From<KeepAll> for crate::truncation::BuiltinTruncation {
+    fn from(_: KeepAll) -> Self {
+        Self::Keep
     }
 }
 

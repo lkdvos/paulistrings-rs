@@ -20,7 +20,7 @@ const RECORD: usize = 2 + 2 * MAX_DEVICES;
 /// **Collective** over `comm`: one `MPI_Comm_split_type(MPI_COMM_TYPE_SHARED)` and one all-gather over the node.
 /// Each rank reports the NUMA nodes its CPU affinity mask touches and the NUMA node of every device it sees (from sysfs by PCI address), and every rank of the node computes the same assignment from the gathered reports.
 /// When every rank of the node sees the same devices, each gets a distinct device on one of its NUMA nodes where the matching allows, else a distinct device on another node, and ranks share devices, evenly, only when they outnumber them.
-/// When the ranks see different devices (`srun --gpus-per-task`), or the NUMA facts are unreadable (a non-Linux host, no sysfs, `numa_node` of `-1`), the pick is the node-local rank modulo the visible devices, as for [`local_device_for_rank`](super::local_device_for_rank).
+/// When the ranks see different devices (`srun --gpus-per-task`), or the NUMA facts are unreadable (a non-Linux host, no sysfs, `numa_node` of `-1`), the pick is the node-local rank modulo the visible devices.
 /// Logs each rank's pick at INFO, and at WARN when the device sits on a NUMA node the rank's CPUs are not on.
 ///
 /// # Errors

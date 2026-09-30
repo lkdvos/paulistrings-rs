@@ -85,8 +85,7 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// As [`Self::from_host`] with extra NVRTC options, the `-DFP_BITS=<b>` collision hook.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn from_host_with_options(
+    pub(crate) fn from_host_with_options(
         sum: &PauliSum<W>,
         ordinal: u32,
         extra_options: &[String],

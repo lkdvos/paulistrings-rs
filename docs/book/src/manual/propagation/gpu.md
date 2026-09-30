@@ -118,7 +118,7 @@ A rank that cannot use its device fails the call on every rank, the peers raisin
 
 ## Rust: several devices, and one device per MPI rank {#rust-multi-device}
 
-`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device, and holds it across calls:
+`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device, and holds it across calls; `GpuPauliSum` is its one-device form, built by `GpuPauliSum::from_host(&sum, ordinal)`:
 
 <!-- doctest: skip -->
 ```rust
@@ -131,12 +131,13 @@ let config = PartitionConfig {
     partition_row_seed: None,
 };
 let runtime = PartitionRuntime::new(&config)?;
-let mut split = GpuPartitionedSum::scatter(observable, runtime, &config)?;
-split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&observable, runtime, &config)?;
+split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```
 
-The exchanged columns move device to device, or through the host where the driver grants no peer access.
+The exchanged columns move device to device.
+A device driver takes its policy as a `BuiltinTruncation`, which every builtin and combinator converts into (`ApproxTopN(n)` or `&ApproxTopN(n)` alike).
 `per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
 
@@ -180,7 +181,7 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 
 - **The resident `GpuPauliSum` is one device.** A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.
 - **Exact `topn` runs only on one device.** `truncation.topn` matches the host term for term on a lone `device=<int>`, `to_device`, or a `device=` that resolves to one ordinal; a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError`, since the `n`-th largest of a split sum has no collective form — use `truncation.approx_topn(n)` there instead.
-- **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions lower to the device; a custom Rust `TruncationPolicy` without a `device_policy` is refused before the first layer.
+- **Only the built-in policies run on a device.** Every `truncation` factory and its `&`/`|` compositions run on the device; a custom Rust `TruncationPolicy` has no conversion to `BuiltinTruncation`, so passing one to a device driver does not compile.
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.
 - **Widths `W ≥ 8` (more than 256 qubits) are correct but untuned.**
 - **A multi-device or MPI group holds its exchange in device memory.** One export volume and one receive volume stay resident on a partition's device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.

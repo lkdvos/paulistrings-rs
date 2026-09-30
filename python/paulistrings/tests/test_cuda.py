@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, GpuPauliSum, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, truncation
 
 needs_cuda = pytest.mark.skipif(
     not paulistrings.cuda_available(),
@@ -98,7 +98,6 @@ def _assert_terms_close(got, want, tol=TOL):
 
 def test_cuda_available_is_a_bool():
     assert isinstance(paulistrings.cuda_available(), bool)
-    assert "GpuPauliSum" in paulistrings.__all__
 
 
 @pytest.mark.skipif(paulistrings.cuda_available(), reason="a CUDA device is available")
@@ -201,7 +200,7 @@ def test_resident_sum_steps_like_two_host_calls(num_qubits):
 def test_resident_sum_surface():
     s = _observable(68, terms=100)
     resident = s.to_device()
-    assert isinstance(resident, GpuPauliSum)
+    assert isinstance(resident, paulistrings.GpuPauliSum)
     assert len(resident) == len(s)
     assert resident.num_qubits == 68
     assert resident.device == 0
@@ -209,7 +208,7 @@ def test_resident_sum_surface():
     assert repr(resident) == f"GpuPauliSum(num_qubits=68, terms={len(s)}, device=0)"
     _assert_terms_close(resident.to_host(), s)
     with pytest.raises(TypeError):
-        GpuPauliSum()
+        paulistrings.GpuPauliSum()
 
 
 @needs_cuda

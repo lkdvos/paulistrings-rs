@@ -1,8 +1,5 @@
-//! The CUDA surface of the bindings: `device=` parsing, the resident `GpuPauliSum` class, and `GpuError` as a Python exception.
-//! `GpuPauliSum` exists in every build so the Python name is stable; without the `cuda` feature its storage enum is uninhabited, so nothing can construct one.
+//! The CUDA surface of the bindings: `device=` parsing, the resident `GpuPauliSum` class (registered only under the `cuda` feature), and `GpuError` as a Python exception.
 
-use crate::sum::{check_num_qubits, parse_direction, parse_engine, PauliSum, PropagationStats};
-use crate::truncation_spec::{PolicySpec, PyTruncation};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
@@ -10,9 +7,7 @@ use pyo3::types::PyBool;
 #[cfg(all(feature = "cuda", feature = "mpi"))]
 pub(crate) use cuda::resolve_rank_device;
 #[cfg(feature = "cuda")]
-pub(crate) use cuda::{gpu_error, resolve_device, resolve_devices, GpuPauliSumImpl};
-#[cfg(not(feature = "cuda"))]
-pub(crate) use no_cuda::{cuda_unavailable_error, GpuPauliSumImpl};
+pub(crate) use cuda::{gpu_error, resolve_devices, GpuPauliSum};
 
 /// `value` as a device ordinal, or a `ValueError` naming it.
 fn ordinal(value: i64) -> PyResult<u32> {
@@ -64,8 +59,9 @@ pub(crate) fn parse_device(obj: &Bound<'_, PyAny>) -> PyResult<DeviceRequest> {
     ))
 }
 
-/// Why a spec containing an exact `topn` cannot run on more than one CUDA device (or one device per rank under `comm=`), prefixed by the caller with the kwarg or method that asked for one.
+/// Why a policy containing an exact `topn` cannot run on more than one CUDA device (or one device per rank under `comm=`), prefixed by the caller with the kwarg or method that asked for one.
 /// A lone device (`device=<int>`, `to_device`, or `device=` resolving to one ordinal) supports it directly.
+#[cfg(feature = "cuda")]
 pub(crate) const TOPN_DEVICE_MSG: &str =
     "exact truncation.topn has no collective form above one CUDA device; use truncation.approx_topn, or a single device= ordinal";
 
@@ -88,13 +84,15 @@ pub(crate) fn device_comm_unavailable_error() -> PyErr {
 mod cuda {
     use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
+    use crate::sum::{check_num_qubits, parse_direction, parse_engine, PauliSum, PropagationStats};
     use crate::sum::{PauliSumImpl, PropagateFailure};
-    use crate::truncation_spec::{PolicySpec, SpecPolicy};
+    use crate::truncation_spec::PyTruncation;
     use paulistrings::bucket::P_MAX_BITS;
     use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
+    use paulistrings::truncation::BuiltinTruncation;
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
     use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError, PyValueError};
-    use pyo3::PyErr;
+    use pyo3::prelude::*;
 
     /// The `RuntimeError` text for a peer's [`GpuError::Poisoned`], a plain function so it is testable without linking Python.
     pub(crate) fn poisoned_message(rank: usize, layer: usize) -> String {
@@ -170,11 +168,6 @@ mod cuda {
         Ok(devices)
     }
 
-    /// The one device ordinal `request` names on this machine, for `to_device`.
-    pub(crate) fn resolve_device(request: &DeviceRequest, shown: &str) -> Result<u32, PyErr> {
-        Ok(resolve_devices(request, shown)?[0])
-    }
-
     /// This rank's device under `comm=`: an ordinal it can see, or `auto` (the group's `local_device_for_comm` pick) for `"auto"`. Local, so the caller agrees the outcome over the group.
     #[cfg(feature = "mpi")]
     pub(crate) fn resolve_rank_device(
@@ -213,7 +206,7 @@ mod cuda {
         pub(crate) fn download(&self) -> Result<PauliSumImpl, GpuError> {
             Ok(
                 for_each_width_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| {
-                    s.to_host()?
+                    s.gather()?
                 }),
             )
         }
@@ -227,7 +220,7 @@ mod cuda {
         }
 
         pub(crate) fn device(&self) -> u32 {
-            for_each_width!(self, |s| s.device())
+            for_each_width!(self, |s| s.devices()[0])
         }
 
         pub(crate) fn num_buckets(&self) -> usize {
@@ -239,7 +232,7 @@ mod cuda {
         pub(crate) fn propagate(
             &mut self,
             circuit: &CircuitImpl,
-            spec: &PolicySpec,
+            policy: &BuiltinTruncation,
             direction: Direction,
             options: PropagateOptions,
             traced: bool,
@@ -248,13 +241,13 @@ mod cuda {
                 GpuPauliSumImpl,
                 self,
                 circuit,
-                |s, c, W, _wrap| {
+                |s, c, _W, _wrap| {
                     if traced {
                         s.enable_trace();
                         let _ = s.take_trace();
                     }
                     let result =
-                        s.propagate_with_options(c, &SpecPolicy::<W>(spec), direction, options);
+                        s.propagate_with_options(c, policy, direction, options);
                     let trace = s.take_trace();
                     result.map_err(PropagateFailure::Gpu)?;
                     Ok(if traced { trace } else { None })
@@ -263,59 +256,154 @@ mod cuda {
             )
         }
     }
+
+    /// A `PauliSum` resident on one CUDA device, stepped in place by `propagate` and read back by `to_host`.
+    ///
+    /// Built by `PauliSum.to_device(device)`; there is no public constructor.
+    /// Keeping the sum on the device between calls skips the upload and download a `PauliSum.propagate(device=...)` call pays each time, which is what a Trotter loop of many short calls wants.
+    ///
+    /// ```python
+    /// resident = observable.to_device(0)
+    /// for _ in range(steps):
+    ///     resident.propagate(step, truncation.approx_topn(10_000_000), direction="heisenberg")
+    /// evolved = resident.to_host()
+    /// ```
+    #[pyclass(module = "paulistrings._paulistrings", name = "GpuPauliSum")]
+    pub struct GpuPauliSum {
+        pub(crate) inner: GpuPauliSumImpl,
+    }
+
+    #[pymethods]
+    impl GpuPauliSum {
+        /// Propagate the resident sum through `circuit`, in place.
+        ///
+        /// Arguments are `PauliSum.propagate`'s of the same name; `target_bucket_len` and `min_buckets` drive the host-side bucket schedule the device refines on top of.
+        /// A `GpuPauliSum` is always one device, so exact `truncation.topn` runs here (unlike `device=[...]` or `comm=` with `device=`, which raise `NotImplementedError`); a channel on more than two qubits other than a Pauli rotation still raises `NotImplementedError`.
+        /// A device error mid-run leaves the sum holding the last completed layer's output, and a later call resumes from it; an exhausted device raises `MemoryError`.
+        /// The GIL is released for the duration.
+        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
+        fn propagate(
+            &mut self,
+            py: Python<'_>,
+            circuit: &crate::circuit::Circuit,
+            policy: Option<&PyTruncation>,
+            direction: Option<&str>,
+            target_bucket_len: Option<usize>,
+            min_buckets: Option<usize>,
+        ) -> PyResult<()> {
+            self.step(
+                py,
+                circuit,
+                policy,
+                direction,
+                target_bucket_len,
+                min_buckets,
+                false,
+            )?;
+            Ok(())
+        }
+
+        /// `propagate`, returning a `PropagationStats` for this call's layers.
+        /// Its `partition` is filled as for a one-partition run, with `partition.devices` naming the device.
+        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
+        fn propagate_with_stats(
+            &mut self,
+            py: Python<'_>,
+            circuit: &crate::circuit::Circuit,
+            policy: Option<&PyTruncation>,
+            direction: Option<&str>,
+            target_bucket_len: Option<usize>,
+            min_buckets: Option<usize>,
+        ) -> PyResult<PropagationStats> {
+            let trace = self
+                .step(
+                    py,
+                    circuit,
+                    policy,
+                    direction,
+                    target_bucket_len,
+                    min_buckets,
+                    true,
+                )?
+                .unwrap_or_default();
+            Ok(PropagationStats::from_device_trace(
+                &trace,
+                self.inner.device(),
+                self.inner.len(),
+            ))
+        }
+
+        /// Download the sum as a host `PauliSum`, each bucket in the host's canonical order. The resident sum is left in place.
+        fn to_host(&self, py: Python<'_>) -> PyResult<PauliSum> {
+            let inner = py
+                .allow_threads(|| self.inner.download())
+                .map_err(gpu_error)?;
+            Ok(PauliSum { inner })
+        }
+
+        fn __len__(&self) -> usize {
+            self.inner.len()
+        }
+
+        #[getter]
+        fn num_qubits(&self) -> usize {
+            self.inner.num_qubits()
+        }
+
+        /// The CUDA device ordinal the sum lives on.
+        #[getter]
+        fn device(&self) -> u32 {
+            self.inner.device()
+        }
+
+        /// Current bucket count of the device partition, grow-only like `PauliSum.num_buckets`.
+        #[getter]
+        fn num_buckets(&self) -> usize {
+            self.inner.num_buckets()
+        }
+
+        fn __repr__(&self) -> String {
+            format!(
+                "GpuPauliSum(num_qubits={}, terms={}, device={})",
+                self.inner.num_qubits(),
+                self.inner.len(),
+                self.inner.device()
+            )
+        }
+    }
+
+    impl GpuPauliSum {
+        /// The shared body of `propagate` and `propagate_with_stats`: every check raises before the GIL is released.
+        #[allow(clippy::too_many_arguments)]
+        fn step(
+            &mut self,
+            py: Python<'_>,
+            circuit: &crate::circuit::Circuit,
+            policy: Option<&PyTruncation>,
+            direction: Option<&str>,
+            target_bucket_len: Option<usize>,
+            min_buckets: Option<usize>,
+            traced: bool,
+        ) -> PyResult<Option<paulistrings::PartitionTrace>> {
+            let dir = parse_direction(direction)?;
+            let options = parse_engine(None, None, target_bucket_len, min_buckets)?;
+            check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
+            let policy = PyTruncation::tree_of(policy);
+            let inner = &mut self.inner;
+            Ok(py.allow_threads(move || {
+                inner.propagate(&circuit.inner, &policy, dir, options, traced)
+            })?)
+        }
+    }
 }
 
+/// The `RuntimeError` a `device=` or `to_device` raises in a build without the `cuda` feature.
 #[cfg(not(feature = "cuda"))]
-mod no_cuda {
-    use crate::circuit::CircuitImpl;
-    use crate::sum::{PauliSumImpl, PropagateFailure};
-    use crate::truncation_spec::PolicySpec;
-    use paulistrings::{Direction, PartitionTrace, PropagateOptions};
-    use pyo3::PyErr;
-
-    /// The `RuntimeError` a `device=` or `to_device` raises in a build without the `cuda` feature.
-    pub(crate) fn cuda_unavailable_error() -> PyErr {
-        pyo3::exceptions::PyRuntimeError::new_err(
-            "paulistrings was built without CUDA support; rebuild with \
-             `maturin develop --release --features cuda`",
-        )
-    }
-
-    /// Uninhabited: a build without the `cuda` feature has no device sum to hold.
-    pub(crate) enum GpuPauliSumImpl {}
-
-    impl GpuPauliSumImpl {
-        pub(crate) fn download(&self) -> Result<PauliSumImpl, PyErr> {
-            match *self {}
-        }
-
-        pub(crate) fn len(&self) -> usize {
-            match *self {}
-        }
-
-        pub(crate) fn num_qubits(&self) -> usize {
-            match *self {}
-        }
-
-        pub(crate) fn device(&self) -> u32 {
-            match *self {}
-        }
-
-        pub(crate) fn num_buckets(&self) -> usize {
-            match *self {}
-        }
-
-        pub(crate) fn propagate(
-            &mut self,
-            _circuit: &CircuitImpl,
-            _spec: &PolicySpec,
-            _direction: Direction,
-            _options: PropagateOptions,
-            _traced: bool,
-        ) -> Result<Option<PartitionTrace>, PropagateFailure> {
-            match *self {}
-        }
-    }
+pub(crate) fn cuda_unavailable_error() -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(
+        "paulistrings was built without CUDA support; rebuild with \
+         `maturin develop --release --features cuda`",
+    )
 }
 
 /// `PauliSum.to_device`'s body: upload `sum` to one device, with the GIL released for the copy.
@@ -323,165 +411,20 @@ pub(crate) fn to_device(
     py: Python<'_>,
     sum: &crate::sum::PauliSumImpl,
     device: i64,
-) -> PyResult<GpuPauliSum> {
+) -> PyResult<PyObject> {
     let request = DeviceRequest::Ordinals(vec![ordinal(device)?]);
     #[cfg(feature = "cuda")]
     {
-        let ordinal = resolve_device(&request, &format!("device={device}"))?;
+        let ordinal = resolve_devices(&request, &format!("device={device}"))?[0];
         let inner = py
-            .allow_threads(|| GpuPauliSumImpl::upload(sum, ordinal))
+            .allow_threads(|| cuda::GpuPauliSumImpl::upload(sum, ordinal))
             .map_err(gpu_error)?;
-        Ok(GpuPauliSum { inner })
+        Ok(Py::new(py, GpuPauliSum { inner })?.into_py(py))
     }
     #[cfg(not(feature = "cuda"))]
     {
         let _ = (py, request, sum);
         Err(cuda_unavailable_error())
-    }
-}
-
-/// A `PauliSum` resident on one CUDA device, stepped in place by `propagate` and read back by `to_host`.
-///
-/// Built by `PauliSum.to_device(device)`; there is no public constructor.
-/// Keeping the sum on the device between calls skips the upload and download a `PauliSum.propagate(device=...)` call pays each time, which is what a Trotter loop of many short calls wants.
-/// Without the `cuda` feature the class exists but no instance can be made.
-///
-/// ```python
-/// resident = observable.to_device(0)
-/// for _ in range(steps):
-///     resident.propagate(step, truncation.approx_topn(10_000_000), direction="heisenberg")
-/// evolved = resident.to_host()
-/// ```
-#[pyclass(module = "paulistrings._paulistrings", name = "GpuPauliSum")]
-pub struct GpuPauliSum {
-    inner: GpuPauliSumImpl,
-}
-
-#[pymethods]
-impl GpuPauliSum {
-    /// Propagate the resident sum through `circuit`, in place.
-    ///
-    /// Arguments are `PauliSum.propagate`'s of the same name; `target_bucket_len` and `min_buckets` drive the host-side bucket schedule the device refines on top of.
-    /// A `GpuPauliSum` is always one device, so exact `truncation.topn` runs here (unlike `device=[...]` or `comm=` with `device=`, which raise `NotImplementedError`); a channel on more than two qubits other than a Pauli rotation still raises `NotImplementedError`.
-    /// A device error mid-run leaves the sum holding the last completed layer's output, and a later call resumes from it; an exhausted device raises `MemoryError`.
-    /// The GIL is released for the duration.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
-    fn propagate(
-        &mut self,
-        py: Python<'_>,
-        circuit: &crate::circuit::Circuit,
-        policy: Option<&PyTruncation>,
-        direction: Option<&str>,
-        target_bucket_len: Option<usize>,
-        min_buckets: Option<usize>,
-    ) -> PyResult<()> {
-        self.step(
-            py,
-            circuit,
-            policy,
-            direction,
-            target_bucket_len,
-            min_buckets,
-            false,
-        )?;
-        Ok(())
-    }
-
-    /// `propagate`, returning a `PropagationStats` for this call's layers.
-    /// Its `partition` is filled as for a one-partition run, with `partition.devices` naming the device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
-    fn propagate_with_stats(
-        &mut self,
-        py: Python<'_>,
-        circuit: &crate::circuit::Circuit,
-        policy: Option<&PyTruncation>,
-        direction: Option<&str>,
-        target_bucket_len: Option<usize>,
-        min_buckets: Option<usize>,
-    ) -> PyResult<PropagationStats> {
-        let trace = self
-            .step(
-                py,
-                circuit,
-                policy,
-                direction,
-                target_bucket_len,
-                min_buckets,
-                true,
-            )?
-            .unwrap_or_default();
-        Ok(PropagationStats::from_device_trace(
-            &trace,
-            self.inner.device(),
-            self.inner.len(),
-        ))
-    }
-
-    /// Download the sum as a host `PauliSum`, each bucket in the host's canonical order. The resident sum is left in place.
-    fn to_host(&self, py: Python<'_>) -> PyResult<PauliSum> {
-        #[cfg(feature = "cuda")]
-        let inner = py
-            .allow_threads(|| self.inner.download())
-            .map_err(gpu_error)?;
-        #[cfg(not(feature = "cuda"))]
-        let inner = {
-            let _ = py;
-            self.inner.download()?
-        };
-        Ok(PauliSum { inner })
-    }
-
-    fn __len__(&self) -> usize {
-        self.inner.len()
-    }
-
-    #[getter]
-    fn num_qubits(&self) -> usize {
-        self.inner.num_qubits()
-    }
-
-    /// The CUDA device ordinal the sum lives on.
-    #[getter]
-    fn device(&self) -> u32 {
-        self.inner.device()
-    }
-
-    /// Current bucket count of the device partition, grow-only like `PauliSum.num_buckets`.
-    #[getter]
-    fn num_buckets(&self) -> usize {
-        self.inner.num_buckets()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "GpuPauliSum(num_qubits={}, terms={}, device={})",
-            self.inner.num_qubits(),
-            self.inner.len(),
-            self.inner.device()
-        )
-    }
-}
-
-impl GpuPauliSum {
-    /// The shared body of `propagate` and `propagate_with_stats`: every check raises before the GIL is released.
-    #[allow(clippy::too_many_arguments)]
-    fn step(
-        &mut self,
-        py: Python<'_>,
-        circuit: &crate::circuit::Circuit,
-        policy: Option<&PyTruncation>,
-        direction: Option<&str>,
-        target_bucket_len: Option<usize>,
-        min_buckets: Option<usize>,
-        traced: bool,
-    ) -> PyResult<Option<paulistrings::PartitionTrace>> {
-        let dir = parse_direction(direction)?;
-        let options = parse_engine(None, None, target_bucket_len, min_buckets)?;
-        check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
-        let no_op = PolicySpec::NoOp;
-        let spec = policy.map_or(&no_op, |p| &p.spec);
-        let inner = &mut self.inner;
-        Ok(py.allow_threads(move || inner.propagate(&circuit.inner, spec, dir, options, traced))?)
     }
 }
 

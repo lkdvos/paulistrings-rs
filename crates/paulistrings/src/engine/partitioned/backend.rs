@@ -12,7 +12,9 @@ use crate::channel::prepared::Prepared;
 use crate::engine::stats::PhaseStats;
 
 /// The policy-independent half of a partition: what the layer loop reads and reshapes between layers.
-pub(crate) trait PartitionStorage<const W: usize>: Send + Sized {
+///
+/// Nominally `pub`, like [`HostPartition`], so the drivers' `pub` methods can bound on it; the module is crate-private.
+pub trait PartitionStorage<const W: usize>: Send + Sized {
     /// Terms this partition holds.
     fn len(&self) -> usize;
     /// The hash and bucket count every partition of the group shares.
@@ -42,7 +44,7 @@ pub(crate) trait PartitionStorage<const W: usize>: Send + Sized {
 /// The layer itself under policy type `T`.
 ///
 /// Everything collective stays in `run_layers`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step.
-pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
+pub trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
     /// One layer's export, exchange and merge, as [`apply_layer_partitioned_with_plan`].
     fn apply_layer<X: Transport>(
         &mut self,

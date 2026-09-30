@@ -320,8 +320,8 @@ They differ in the transport group's lifetime (per call, against one endpoint fo
 Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
 Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
 The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
-`HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
-`DevicePartition` (the `cuda` feature) is the device backend: its K10 export lays out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
+`HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum<W, B = HostPartition<W>>` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
+`DevicePartition` (the `cuda` feature) is the device backend, and the device drivers are the same two types over it (`GpuPartitionedSum`, whose one-partition form is `GpuPauliSum`, and `GpuDistributedSum`), adding only the upload at scatter, the fallible gather and the poisoning of a failed group: its K10 export lays out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
 Exchange rows never leave device memory, so a group is all device partitions or all host ones.
 **Every device group exchanges over a device wire.**
 A remote layer sends only the block headers and CSR offsets through `Transport::exchange`, then one `allreduce_sum_u64` vote on going ahead and on the chunk count, then, on a unanimous yes, one wire group per chunk, chunk-major, that moves the chunk's `x`/`z`/`coeff` columns straight into the receiver's receive columns, where the receiver computes the fingerprints; this vote is the one call beyond the host layer's, legal only because every rank of the group runs the same protocol.
@@ -404,6 +404,7 @@ The split is performance-critical: `keep_term` runs on every merged output — p
 
 Built-ins: `CoefficientThreshold(eps)` and `WeightCutoff(k)` are per-term filters; `TopN(n)` and `ApproxTopN(n)` are layer finalizations.
 Policies compose with `And` / `Or` (Python: `&` / `|`).
+`BuiltinTruncation` is the same set as one runtime value, and every builtin and combinator converts into it; the device drivers take one, which is what they lower, so a custom policy has no device form and cannot reach a device.
 
 **Magnitudes are compared as `|c|²`, never as `|c|`.**
 `Complex64::norm()` is `hypot`, a libm call, and `x ↦ x²` is strictly increasing on `[0, ∞)`, so `|c|² > t²` decides the same predicate.
@@ -452,7 +453,7 @@ The accumulator is an ingestion path only — it never appears in the propagatio
 The Python package is a thin layer over enums (`PauliSumImpl`, `CircuitImpl`) holding the monomorphized widths (§Width); every method dispatches once and calls the same core code Rust users call.
 Construction accepts dictionaries and `(string, coefficient)` pairs; bulk export returns NumPy arrays (`to_arrays`).
 Expectation values against product states, overlaps, and the identity coefficient are computed in Rust.
-Truncation factories return spec objects composed with `&` / `|` and translated to core policies at the boundary.
+Truncation factories return an opaque handle over a core `BuiltinTruncation`, composed with `&` / `|`, which every engine takes as it is.
 The extension module is `paulistrings._paulistrings` (abi3), and `python/paulistrings/` re-exports it.
 
 The Python `Circuit` additionally keeps the width-erased `ChannelSpec` of every channel pushed, alongside the materialized `Circuit<W>`: the core stores prepared channels and cannot hand a gate description back out, so that list is what serves gate-list introspection (`Circuit.gates`, emitted in the frozen task-JSON gate vocabulary), slicing, concatenation, and `adjoint()`.
@@ -489,7 +490,7 @@ A layer with received entries keeps the fused path, whose receive already merges
 The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ 4096 × 2^b`, where `fanout` is the number of table entries with any nonzero amplitude, never below the current count, and capped at `B_MAX_BITS`.
 
 **Errors.**
-Every device operation returns `GpuError`; the layer loop's seam is infallible, so `DevicePartition` records the first error, skips every later layer, and the driver returns it after the loop with the sum holding the last completed layer's output.
+Every device operation returns `GpuError`; the layer loop's seam is infallible, so `DevicePartition` records the first error, skips every later layer, and the driver returns it after the loop, agreed over the group: a lone partition holds the last completed layer's output and resumes from it, while a group of more than one is poisoned until the caller scatters again.
 `DevicePartition::refine` advances only a host mirror of the hash; the layer refines the device to the mirror and the bucket policy in one pass, and the mirror is re-synced to the device whenever the driver reads the error.
 
 ## Performance-Model

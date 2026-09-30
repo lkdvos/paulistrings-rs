@@ -180,9 +180,9 @@ pub struct GpuLayerCounters {
     pub recv_chunks: u32,
 }
 
-/// Kernel milliseconds per family, accumulated while [`GpuPauliSum::set_kernel_timing`](super::GpuPauliSum::set_kernel_timing) is on.
+/// Kernel milliseconds per family, accumulated under `phase-timing` and folded into the partition's `PhaseStats`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct GpuKernelMs {
+pub(crate) struct GpuKernelMs {
     /// K1, the count table.
     pub count: f64,
     /// K2, segment sizes and their scans.
@@ -250,7 +250,6 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
     pub(crate) counters: GpuLayerCounters,
-    pub(crate) time_kernels: bool,
     pub(crate) kernel_ms: GpuKernelMs,
     /// Timing events, reused across layers.
     events: Vec<CudaEvent>,
@@ -361,7 +360,6 @@ impl<const W: usize> LayerScratch<W> {
             extent: sum.len(),
             options,
             counters: GpuLayerCounters::default(),
-            time_kernels: false,
             kernel_ms: GpuKernelMs::default(),
             events: Vec::new(),
             next_event: 0,
@@ -372,9 +370,9 @@ impl<const W: usize> LayerScratch<W> {
         })
     }
 
-    /// Whether kernel events are recorded this layer: on request, or always under `phase-timing`.
+    /// Whether kernel events are recorded: under `phase-timing` only.
     fn timing(&self) -> bool {
-        self.time_kernels || cfg!(feature = "phase-timing")
+        cfg!(feature = "phase-timing")
     }
 
     pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {

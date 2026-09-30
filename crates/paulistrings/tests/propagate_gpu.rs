@@ -15,7 +15,7 @@ use paulistrings::truncation::{
 };
 use paulistrings::{
     propagate, propagate_with_options, Circuit, Direction, Gf2Hash, PartitionedTruncation,
-    PauliString, PauliSum, PropagateOptions, TruncationPolicy,
+    PauliString, PauliSum, PropagateOptions,
 };
 
 const TOL: f64 = 1e-11;
@@ -43,7 +43,7 @@ fn check_with<const W: usize, T>(
     options: Option<GpuLayerOptions>,
     extra: &[String],
 ) where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -53,7 +53,7 @@ fn check_with<const W: usize, T>(
         }
         dev.propagate(circuit, policy, direction)
             .expect("device propagate");
-        let got = dev.to_host().expect("download");
+        let got = dev.gather().expect("download");
         let what = format!("{name} {direction:?}");
         assert_eq!(got.len(), want.len(), "{what}: term count");
         assert_eq!(dev.len(), want.len(), "{what}: device len");
@@ -63,7 +63,7 @@ fn check_with<const W: usize, T>(
 
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
     check_with(circuit, sum, policy, name, None, &[]);
 }
@@ -265,14 +265,14 @@ fn approx_top_n_bounds_every_layer_like_the_host() {
     let policy = ApproxTopN(1500);
     check(&circuit, &input, &policy, "approx 1500, 30 layers");
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-    dev.propagate(&circuit, &policy, Direction::Forward)
+    dev.propagate(&circuit, policy, Direction::Forward)
         .expect("device propagate");
     assert!(dev.len() <= 1500 && !dev.is_empty());
 }
 
 fn assert_rejected_untouched<T>(policy: &T, what: &str)
 where
-    T: PartitionedTruncation<1> + ?Sized,
+    T: PartitionedTruncation<1> + Clone + Into<BuiltinTruncation>,
 {
     let input = rand_sum::<1>(100, 8, 0x55);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
@@ -281,7 +281,7 @@ where
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{what}: {r:?}");
     assert_eq!(dev.len(), input.len(), "{what}: nothing ran");
     assert_eq!(
-        dev.to_host().unwrap().to_arrays(),
+        dev.gather().unwrap().to_arrays(),
         input.to_arrays(),
         "{what}: bitwise untouched"
     );
@@ -293,10 +293,6 @@ fn unlowerable_policies_are_rejected_before_the_first_layer() {
     use BuiltinTruncation as T;
     let chain = (1..9).fold(T::Coeff(0.0), |acc, k| and(acc, T::Weight(k)));
     assert_rejected_untouched(&chain, "17-node program");
-    struct Custom;
-    impl<const W: usize> TruncationPolicy<W> for Custom {}
-    impl<const W: usize> PartitionedTruncation<W> for Custom {}
-    assert_rejected_untouched(&Custom, "custom policy");
 }
 
 /// A lone device (`GpuPauliSum`) runs an exact `TopN` — alone, and composed with `And`/`Or` — and matches the host term for term, `len()` included.
@@ -320,7 +316,7 @@ fn exact_top_n_matches_the_host_on_one_device() {
         "topn | weight",
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-    dev.propagate(&circuit, &T::TopN(1500), Direction::Forward)
+    dev.propagate(&circuit, T::TopN(1500), Direction::Forward)
         .expect("device propagate");
     assert!(dev.len() <= 1500 && !dev.is_empty());
 }
@@ -339,10 +335,10 @@ fn exact_top_n_edge_cases_match_the_host() {
     let mut dev = GpuPauliSum::from_host(&sum, 0).expect("upload");
     for n in [0usize, 1, sum.len(), sum.len() + 5] {
         let want = propagate(&circuit, sum.clone(), &T::TopN(n), Direction::Forward);
-        dev.propagate(&circuit, &T::TopN(n), Direction::Forward)
+        dev.propagate(&circuit, T::TopN(n), Direction::Forward)
             .expect("device propagate");
         assert_eq!(dev.len(), want.len(), "n={n}");
-        assert_terms_close(&dev.to_host().unwrap(), &want, TOL, &format!("n={n}"));
+        assert_terms_close(&dev.gather().unwrap(), &want, TOL, &format!("n={n}"));
         dev = GpuPauliSum::from_host(&sum, 0).expect("re-upload");
     }
 }
@@ -364,8 +360,9 @@ fn exact_top_n_is_unsupported_above_one_partition() {
         ..PartitionConfig::default()
     };
     let runtime = PartitionRuntime::new(&config).expect("runtime");
-    let mut split = GpuPartitionedSum::scatter(input, runtime, &config).expect("scatter");
-    let r = split.propagate(&circuit, &T::TopN(10), Direction::Forward);
+    let mut split =
+        GpuPartitionedSum::scatter_to_devices(&input, runtime, &config).expect("scatter");
+    let r = split.propagate(&circuit, T::TopN(10), Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),
         "{r:?}"
@@ -410,10 +407,10 @@ fn fallback_paths_run_resolve_and_are_reproducible() {
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let run = |opts: &[String]| {
         let mut dev = GpuPauliSum::from_host_with_options(&input, 0, opts).expect("upload");
-        dev.propagate(&circuit, &KeepAll, Direction::Forward)
+        dev.propagate(&circuit, KeepAll, Direction::Forward)
             .expect("propagate");
-        let c = dev.last_layer_counters();
-        let got = dev.to_host().unwrap();
+        let c = dev.last_layer_counters(0);
+        let got = dev.gather().unwrap();
         assert_terms_close(&got, &want, TOL, &format!("{opts:?}"));
         (arrays_bits(&got), c)
     };
@@ -438,11 +435,11 @@ fn a_small_shared_memory_limit_still_agrees() {
     let mut dev =
         GpuPauliSum::from_host_with_options(&input, 0, &["-DTEST_SHARED_LIMIT=40000".to_string()])
             .expect("upload");
-    dev.propagate(&circuit, &KeepAll, Direction::Forward)
+    dev.propagate(&circuit, KeepAll, Direction::Forward)
         .expect("propagate");
-    let c = dev.last_layer_counters();
+    let c = dev.last_layer_counters(0);
     assert!(c.n_cap <= 2048 && c.records_max <= 2048, "{c:?}");
-    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "small shared limit");
+    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "small shared limit");
 }
 
 /// The host schedule leaves buckets longer than the tag can address, so the layer refines before counting again.
@@ -468,11 +465,11 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         ..GpuLayerOptions::default()
     });
-    dev.propagate_with_options(&circuit, &KeepAll, Direction::Forward, options)
+    dev.propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
         .expect("propagate");
-    let c = dev.last_layer_counters();
+    let c = dev.last_layer_counters(0);
     assert!(c.refine_passes > 0, "{c:?}");
-    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "oversize loop");
+    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "oversize loop");
 }
 
 /// A small arena batches the positions, and the output outgrows the spare's capacity mid-layer.
@@ -488,10 +485,10 @@ fn multi_batch_output_growth_agrees_and_is_reproducible() {
             arena_bytes: 1 << 20,
             ..GpuLayerOptions::default()
         });
-        dev.propagate(&circuit, &KeepAll, Direction::Forward)
+        dev.propagate(&circuit, KeepAll, Direction::Forward)
             .expect("propagate");
-        let c = dev.last_layer_counters();
-        (dev.to_host().unwrap(), c)
+        let c = dev.last_layer_counters(0);
+        (dev.gather().unwrap(), c)
     };
     let (got, c) = run();
     assert!(c.batches > 1, "{c:?}");
@@ -545,22 +542,22 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
         ..GpuLayerOptions::default()
     });
     assert!(matches!(
-        dev.propagate(&whole, &KeepAll, Direction::Forward),
+        dev.propagate(&whole, KeepAll, Direction::Forward),
         Err(GpuError::Unsupported(_))
     ));
     let after_first = propagate(&first, input.clone(), &KeepAll, Direction::Forward);
     assert_eq!(dev.len(), after_first.len());
     assert_terms_close(
-        &dev.to_host().unwrap(),
+        &dev.gather().unwrap(),
         &after_first,
         TOL,
         "last completed layer",
     );
     dev.set_layer_options(GpuLayerOptions::default());
-    dev.propagate(&rest, &KeepAll, Direction::Forward)
+    dev.propagate(&rest, KeepAll, Direction::Forward)
         .expect("resumes");
     let want = propagate(&all, input, &KeepAll, Direction::Forward);
-    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "resumed");
+    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "resumed");
 }
 
 /// Rescale, growth with refine, and a mixed circuit across three calls on one resident sum.
@@ -581,10 +578,10 @@ fn repeated_propagate_on_one_resident_sum() {
     c3.push(Clifford1Q::h(0));
     for (i, c) in [c1, c2, c3].iter().enumerate() {
         host = propagate(c, host, &KeepAll, Direction::Heisenberg);
-        dev.propagate(c, &KeepAll, Direction::Heisenberg)
+        dev.propagate(c, KeepAll, Direction::Heisenberg)
             .expect("propagate");
         assert_eq!(dev.len(), host.len(), "call {i}");
-        assert_terms_close(&dev.to_host().unwrap(), &host, TOL, &format!("call {i}"));
+        assert_terms_close(&dev.gather().unwrap(), &host, TOL, &format!("call {i}"));
     }
 }
 
@@ -643,9 +640,9 @@ fn output_is_bitwise_reproducible_run_to_run() {
     let circuit = random_circuit::<2>(128, 10, 0x9999, true);
     let run = || {
         let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-        dev.propagate(&circuit, &KeepAll, Direction::Forward)
+        dev.propagate(&circuit, KeepAll, Direction::Forward)
             .expect("propagate");
-        let (x, z, c) = dev.to_host().unwrap().to_arrays();
+        let (x, z, c) = dev.gather().unwrap().to_arrays();
         let bits: Vec<(u64, u64)> = c.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect();
         (x, z, bits)
     };
@@ -685,21 +682,21 @@ fn propagate_gpu_front_door_and_options() {
     let input = rand_sum::<1>(1000, 8, 0xBB);
     let circuit = random_circuit::<1>(8, 6, 0xCCCC, true);
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
-    let got = paulistrings::gpu::propagate_gpu(&circuit, &input, &KeepAll, Direction::Forward, 0)
+    let got = paulistrings::gpu::propagate_gpu(&circuit, &input, KeepAll, Direction::Forward, 0)
         .expect("propagate_gpu");
     assert_terms_close(&got, &want, TOL, "front door");
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.enable_trace();
     dev.propagate_with_options(
         &circuit,
-        &KeepAll,
+        KeepAll,
         Direction::Forward,
         PropagateOptions::default(),
     )
     .expect("with options");
     let trace = dev.take_trace().expect("tracing on");
     assert_eq!(trace.layers.len(), circuit.channels.len());
-    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "traced");
+    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "traced");
 }
 
 /// One device run: the downloaded sum and the last layer's counters.
@@ -712,7 +709,7 @@ fn device_run<const W: usize, T>(
     extra: &[String],
 ) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
 where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
     let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
     if let Some(o) = options {
@@ -720,9 +717,9 @@ where
     }
     dev.propagate(circuit, policy, direction)
         .expect("device propagate");
-    let got = dev.to_host().expect("download");
+    let got = dev.gather().expect("download");
     assert_eq!(dev.len(), got.len());
-    (got, dev.last_layer_counters())
+    (got, dev.last_layer_counters(0))
 }
 
 /// Both directions against the host, asserting whether the last layer took the permutation path.
@@ -735,7 +732,7 @@ fn check_permuted<const W: usize, T>(
     extra: &[String],
     permuted: bool,
 ) where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -896,7 +893,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     dev.set_layer_options(opts);
     dev.propagate_with_options(
         &circuit,
-        &KeepAll,
+        KeepAll,
         Direction::Forward,
         PropagateOptions {
             target_bucket_len: 1 << 20,
@@ -905,7 +902,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         },
     )
     .expect("device propagate");
-    let c = dev.last_layer_counters();
+    let c = dev.last_layer_counters(0);
     assert!(c.permuted && c.bits == 0 && c.refine_passes == 0, "{c:?}");
-    assert_terms_close(&dev.to_host().unwrap(), &want, TOL, "one bucket of 20000");
+    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "one bucket of 20000");
 }

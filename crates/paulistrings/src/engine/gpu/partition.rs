@@ -7,7 +7,7 @@ use super::layer::{
     LayerScratch,
 };
 use super::sum::GpuSum;
-use super::truncation::{layer_pass_leaves, DevicePolicy};
+use super::truncation::{layer_pass_leaves, KeepProgram};
 use crate::bucket::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
@@ -15,7 +15,6 @@ use crate::engine::partitioned::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::{Collectives, Transport};
-use crate::engine::partitioned::truncation::PartitionedTruncation;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::truncation::BuiltinTruncation;
@@ -24,13 +23,16 @@ use crate::truncation::BuiltinTruncation;
 ///
 /// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU-Readiness).
 /// `hash` is the driver's view of the bucket count: `refine` advances it alone, `apply_layer` brings the device up to it, and [`Self::take_error`] re-syncs it to the device.
-/// `policy` is the lowered form of the run's policy, which the layer and the layer pass read instead of the generic `T`.
-pub(crate) struct DevicePartition<const W: usize> {
+/// `keep` is the per-term half of the run's policy, lowered once per call.
+/// Nominally `pub`, like `HostPartition`, so it can be the drivers' device backend; the module is crate-private.
+pub struct DevicePartition<const W: usize> {
     sum: Option<GpuSum<W>>,
     scratch: Option<LayerScratch<W>>,
     hash: Gf2Hash<W>,
-    pub(crate) policy: DevicePolicy,
+    pub(crate) keep: KeepProgram,
     pub(crate) error: Option<GpuError>,
+    /// `(rank, layer)` of the group's first failure; set on every partition at once, and refuses every later call.
+    pub(crate) poison: Option<(usize, usize)>,
     /// Partitions in the group this partition runs in; above one, the layer never refines off-schedule and the proposal carries growth headroom.
     pub(crate) group_size: u32,
     /// Layers `apply_layer` was asked for since construction.
@@ -51,8 +53,9 @@ impl<const W: usize> DevicePartition<W> {
             hash: sum.hash().clone(),
             sum: Some(sum),
             scratch: Some(scratch),
-            policy: DevicePolicy::keep_all(),
+            keep: KeepProgram::KEEP,
             error: None,
+            poison: None,
             group_size: 1,
             layers_applied: 0,
             failed_layer: None,
@@ -86,6 +89,33 @@ impl<const W: usize> DevicePartition<W> {
         }
         match self.error.take() {
             Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// The recorded error and its group code, `0` if healthy and the failed layer plus one otherwise, for [`first_failure`](super::first_failure).
+    pub(crate) fn take_failure(&mut self) -> (Result<(), GpuError>, u64) {
+        let layer = self.failed_layer.take();
+        let own = self.take_error();
+        let code = if own.is_err() {
+            layer.unwrap_or(0) as u64 + 1
+        } else {
+            0
+        };
+        (own, code)
+    }
+
+    /// Refuse every later call after the group's first failure, `(rank, layer)`, dropping the wire now rather than at a finalize against failed peers.
+    pub(crate) fn poison(&mut self, rank: usize, layer: usize) {
+        self.poison = Some((rank, layer));
+        if let Some(wire) = self.scratch.as_ref().and_then(|s| s.export.wire.as_ref()) {
+            wire.abort();
+        }
+    }
+
+    pub(crate) fn check_poison(&self) -> Result<(), GpuError> {
+        match self.poison {
+            Some((rank, layer)) => Err(GpuError::Poisoned { rank, layer }),
             None => Ok(()),
         }
     }
@@ -145,8 +175,9 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
             sum: self.sum.take(),
             scratch: self.scratch.take(),
             hash: self.hash.clone(),
-            policy: self.policy.clone(),
+            keep: self.keep,
             error: self.error.take(),
+            poison: self.poison,
             group_size: self.group_size,
             layers_applied: self.layers_applied,
             failed_layer: self.failed_layer.take(),
@@ -163,16 +194,13 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
     }
 }
 
-impl<const W: usize, T> PartitionBackend<W, T> for DevicePartition<W>
-where
-    T: PartitionedTruncation<W> + ?Sized,
-{
+impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<W> {
     fn apply_layer<X: Transport>(
         &mut self,
         prep: &Prepared<W>,
         plan: &PartitionPlan,
         _rows: &PartitionRows<W>,
-        _policy: &T,
+        _policy: &BuiltinTruncation,
         transport: &X,
     ) -> LayerExchangeCounts {
         let size = transport.size();
@@ -203,7 +231,7 @@ where
             sum,
             prep,
             plan,
-            &self.policy.keep,
+            &self.keep,
             scratch,
             self.hash.bits(),
             transport,
@@ -228,10 +256,9 @@ where
     /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host impl's for the same policy.
     ///
     /// Exact `TopN` runs only alone on the device (`group_size == 1`): the `n`-th largest magnitude of a group's sum has no collective form (`PartitionedTruncation`'s docs), so a group member reports `Unsupported` rather than issue a wrong local selection.
-    fn finalize_layer(&mut self, _policy: &T, coll: &dyn Collectives) {
-        let tree = self.policy.tree.clone();
+    fn finalize_layer(&mut self, policy: &BuiltinTruncation, coll: &dyn Collectives) {
         let single = self.group_size == 1;
-        layer_pass_leaves(&tree, &mut |leaf| {
+        layer_pass_leaves(policy, &mut |leaf| {
             let r = match leaf {
                 BuiltinTruncation::ApproxTopN(n) => {
                     let healthy = self.error.is_none();
@@ -309,6 +336,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
+    use crate::engine::partitioned::truncation::PartitionedTruncation;
     use crate::test_support::rand_sum_real;
     use crate::truncation::BuiltinTruncation as T;
     use crate::TruncationPolicy;
@@ -358,10 +386,8 @@ mod tests {
                 GpuLayerOptions::default(),
             )
             .expect("partition");
-            part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
-            <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(
-                &mut part, &tree, &device,
-            );
+            part.keep = KeepProgram::lower(&tree).expect("lower");
+            PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
             part.take_error().expect("device layer pass");
             let host = CountingGroup::default();
             let mut want_sum = input.clone();
@@ -400,10 +426,8 @@ mod tests {
                 GpuLayerOptions::default(),
             )
             .expect("partition");
-            part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
-            <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(
-                &mut part, &tree, &device,
-            );
+            part.keep = KeepProgram::lower(&tree).expect("lower");
+            PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
             part.take_error().expect("device layer pass");
             assert_eq!(
                 device.0.load(Ordering::Relaxed),
@@ -437,9 +461,9 @@ mod tests {
         )
         .expect("partition");
         part.group_size = 2;
-        part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
+        part.keep = KeepProgram::lower(&tree).expect("lower");
         let group = CountingGroup::default();
-        <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(&mut part, &tree, &group);
+        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
         assert!(matches!(part.take_error(), Err(GpuError::Unsupported(_))));
     }
 
@@ -454,10 +478,10 @@ mod tests {
             GpuLayerOptions::default(),
         )
         .expect("partition");
-        part.policy = DevicePolicy::lower(tree.clone()).expect("lower");
+        part.keep = KeepProgram::lower(&tree).expect("lower");
         part.error = Some(GpuError::Unsupported("injected"));
         let group = CountingGroup::default();
-        <DevicePartition<1> as PartitionBackend<1, T>>::finalize_layer(&mut part, &tree, &group);
+        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
         assert_eq!(group.0.load(Ordering::Relaxed), 2);
         assert!(matches!(
             part.take_error(),

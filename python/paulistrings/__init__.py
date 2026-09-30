@@ -14,7 +14,8 @@ places one pinned thread pool per NUMA domain in this process, ``comm=`` takes
 an ``mpi4py`` communicator and places one partition per rank. ``device=`` runs
 it on CUDA devices instead (one partition per listed device, or with ``comm=``
 one device per rank), and ``PauliSum.to_device`` returns a one-device
-``GpuPauliSum`` that stays resident there across calls. ``numa_nodes()``
+``GpuPauliSum`` that stays resident there across calls (the class exists only
+in a build with the ``cuda`` feature). ``numa_nodes()``
 reports what ``partitions="auto"`` has to place against,
 ``mpi_available()`` whether this build was compiled with the ``mpi`` feature, and
 ``cuda_available()`` whether it was compiled with ``cuda`` *and* a CUDA device is visible.
@@ -24,7 +25,6 @@ from . import _paulistrings
 from ._paulistrings import (
     DEFAULT_SMALL_SUM_THRESHOLD,
     Circuit,
-    GpuPauliSum,
     PartitionStats,
     PauliString,
     PauliSum,
@@ -43,7 +43,6 @@ __all__ = [
     "Circuit",
     "PauliString",
     "PauliSum",
-    "GpuPauliSum",
     "p",
     "PropagationStats",
     "PartitionStats",
@@ -58,3 +57,7 @@ __all__ = [
     "numa_nodes",
     "reset_log_cache",
 ]
+
+if hasattr(_paulistrings, "GpuPauliSum"):
+    GpuPauliSum = _paulistrings.GpuPauliSum
+    __all__.append("GpuPauliSum")

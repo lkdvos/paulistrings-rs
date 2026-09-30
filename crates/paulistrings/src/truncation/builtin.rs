@@ -1,6 +1,6 @@
 //! Built-in truncation policies and combinators. See ARCHITECTURE.md §Truncation.
 
-use super::{BuiltinTruncation, TruncationPolicy};
+use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -26,6 +26,7 @@ thread_local! {
 /// let policy = CoefficientThreshold(1e-9);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CoefficientThreshold(
     /// Magnitude threshold. Terms with `|coeff| <= epsilon` are dropped.
     pub f64,
@@ -44,10 +45,6 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
     fn finalizes_layer(&self) -> bool {
         false
     }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::Coeff(self.0))
-    }
 }
 
 /// Drop terms whose Pauli weight (number of non-identity qubits) exceeds `k`.
@@ -59,6 +56,7 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
 /// let policy = WeightCutoff(4);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeightCutoff(
     /// Maximum allowed Pauli weight. Terms with weight `> k` are dropped.
     pub u32,
@@ -74,10 +72,6 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     /// Per-term only — no layer pass.
     fn finalizes_layer(&self) -> bool {
         false
-    }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::Weight(self.0))
     }
 }
 
@@ -114,6 +108,7 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 /// let policy = TopN(1_000_000);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopN(
     /// Upper bound on the number of terms to retain. Terms below the
     /// magnitude threshold — and any tie group at the threshold that does not
@@ -197,10 +192,6 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         });
         sum.recount();
     }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::TopN(self.0))
-    }
 }
 
 /// Number of bins in [`ApproxTopN`]'s histogram: one per `f64` binade, the full range of the 11-bit biased exponent.
@@ -233,6 +224,7 @@ pub(crate) const APPROX_BINS: usize = 2048;
 /// let policy = ApproxTopN(1_000_000);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApproxTopN(
     /// Target term count, and a hard upper bound on what is retained. Terms
     /// below the chosen octave edge are dropped at layer finalization.
@@ -357,10 +349,6 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
             debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
         }
     }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::ApproxTopN(self.0))
-    }
 }
 
 /// Logical AND of two policies — both must accept.
@@ -372,6 +360,7 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
 /// let policy = And(CoefficientThreshold(1e-6), WeightCutoff(4));
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct And<A, B>(
     /// First policy. `keep_term` and `finalize_layer` both consult this first.
     pub A,
@@ -399,13 +388,6 @@ where
     fn finalizes_layer(&self) -> bool {
         self.0.finalizes_layer() || self.1.finalizes_layer()
     }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::And(
-            Box::new(self.0.device_policy()?),
-            Box::new(self.1.device_policy()?),
-        ))
-    }
 }
 
 /// Logical OR of two policies — either accepting is enough.
@@ -422,6 +404,7 @@ where
 /// let policy = Or(CoefficientThreshold(0.1), WeightCutoff(0));
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Or<A, B>(
     /// First policy.
     pub A,
@@ -443,13 +426,6 @@ where
     /// docs), so it has no layer pass regardless of what its children answer.
     fn finalizes_layer(&self) -> bool {
         false
-    }
-
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::Or(
-            Box::new(self.0.device_policy()?),
-            Box::new(self.1.device_policy()?),
-        ))
     }
 }
 

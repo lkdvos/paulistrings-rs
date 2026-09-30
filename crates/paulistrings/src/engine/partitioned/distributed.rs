@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::backend::{HostPartition, PartitionBackend};
+use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
 use super::driver::{run_layers, scatter_local, PartitionCtx, PartitionWork};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
@@ -56,7 +56,7 @@ pub enum PartitionRowPolicy {
 /// Held across calls — the split, the rows, the pool and the layer scratch all persist — so a Trotter driver scatters once, steps many times, and gathers once.
 /// See the module docs for the input/output contract.
 ///
-/// `B` is where the rank's partition lives: host memory by default, a CUDA device under the `cuda` feature's `gpu::GpuDistributedSum`, which wraps this type.
+/// `B` is where the rank's partition lives: host memory by default, a CUDA device under the `cuda` feature's `gpu::GpuDistributedSum`, which is this type over the device backend.
 ///
 /// # Examples
 ///
@@ -307,6 +307,35 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
     }
 }
 
+impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, B> {
+    /// Terms this rank holds. Local, and cheap.
+    pub fn len_local(&self) -> usize {
+        self.local.len()
+    }
+
+    /// Terms in the whole sum. **Collective** — one all-reduce, same answer on every rank.
+    pub fn len(&self) -> usize {
+        let mut buf = [self.local.len() as u64];
+        self.transport.allreduce_sum_u64(&mut buf);
+        buf[0] as usize
+    }
+
+    /// Whether the whole sum is empty. **Collective**, via [`len`](Self::len).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The bucket bits this rank holds. Equal on every rank by construction — the count is agreed collectively every layer.
+    pub fn bits(&self) -> u8 {
+        self.local.hash().bits()
+    }
+
+    /// Qubits the sum is over.
+    pub fn num_qubits(&self) -> usize {
+        self.rows.num_qubits()
+    }
+}
+
 impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// Split the replicated `sum` across `transport`'s group, keeping this rank's share, and build the one-partition runtime `config` describes.
     ///
@@ -511,33 +540,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// This rank's share of the sum — a valid [`PauliSum`] under the group's shared hash, holding exactly the keys of partition [`rank`](Self::rank).
     pub fn local(&self) -> &PauliSum<W> {
         &self.local.sum
-    }
-
-    /// Terms this rank holds. Local, and cheap.
-    pub fn len_local(&self) -> usize {
-        self.local.sum.len()
-    }
-
-    /// Terms in the whole sum. **Collective** — one all-reduce, same answer on every rank.
-    pub fn len(&self) -> usize {
-        let mut buf = [self.local.sum.len() as u64];
-        self.transport.allreduce_sum_u64(&mut buf);
-        buf[0] as usize
-    }
-
-    /// Whether the whole sum is empty. **Collective**, via [`len`](Self::len).
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// The bucket bits this rank holds. Equal on every rank by construction — the count is agreed collectively every layer.
-    pub fn bits(&self) -> u8 {
-        self.local.sum.hash().bits()
-    }
-
-    /// Qubits the sum is over.
-    pub fn num_qubits(&self) -> usize {
-        self.local.sum.num_qubits()
     }
 
     /// `⟨ψ|O|ψ⟩` in a uniform single-qubit product state, over the whole sum.

@@ -117,11 +117,11 @@ See [`scripts/slurm/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/m
 ## One GPU per rank {#gpu-per-rank}
 
 Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each rank's share on one CUDA device, with the same contract as `MpiSum`: replicated input, collective calls, rank 0 gathers.
-`gpu::local_device_for_comm` picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to `gpu::local_device_for_rank`, the launcher's node-local rank (`OMPI_COMM_WORLD_LOCAL_RANK`, `MV2_COMM_WORLD_LOCAL_RANK`, `MPI_LOCALRANKID`, `SLURM_LOCALID`) modulo the visible devices:
+`gpu::local_device_for_comm` picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to the rank's node-local index modulo the visible devices:
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::engine::partitioned::{Collectives, PartitionRowPolicy};
+use paulistrings::engine::partitioned::PartitionRowPolicy;
 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
@@ -129,8 +129,8 @@ let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialize
 let world = universe.world();
 let device = local_device_for_comm(&world)?;
 let transport = MpiTransport::from_communicator(&world);
-let mut split = MpiGpuSum::<2>::scatter(observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
-split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
+let mut split = MpiGpuSum::<2>::scatter_to_device(&observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
+split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());
 }

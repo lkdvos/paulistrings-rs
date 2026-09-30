@@ -24,7 +24,9 @@ use paulistrings::engine::partitioned::{
 };
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
-use paulistrings::truncation::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN};
+#[cfg(feature = "cuda")]
+use paulistrings::truncation::BuiltinTruncation;
+use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
     propagate_with_scratch_and_options, BuildAccumulator, Circuit, Direction, Gf2Hash,
     LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
@@ -842,10 +844,12 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 );
             }
         }
-        if let TruncSpec::TopN(topn) = truncation {
+        let one_device =
+            !mpi && gpu_partitions == 1 && matches!(spec, DeviceSpec::Ordinals(v) if v.len() == 1);
+        if let (TruncSpec::TopN(topn), false) = (truncation, one_device) {
             return Err(format!(
-                "--truncation topn:{topn} has no device form (exact TopN is not implemented on \
-                 device); use --truncation atopn:{topn}"
+                "--truncation topn:{topn} runs on one device partition only (the n-th largest of \
+                 a split sum has no collective form); use --truncation atopn:{topn}"
             ));
         }
         if occupancy_at.is_some() {
@@ -1055,9 +1059,6 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
     fn finalizes_layer(&self) -> bool {
         false
     }
-    fn device_policy(&self) -> Option<BuiltinTruncation> {
-        Some(BuiltinTruncation::Keep)
-    }
 }
 impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
 
@@ -1162,9 +1163,9 @@ struct CellResult {
 struct DeviceCellStats {
     /// The ordinals the cell's partitions ran on, one entry per device (the rank's own under `--mpi`).
     devices: Vec<u32>,
-    /// `GpuPauliSum::from_host` of the cell's input, including the first-use kernel compile.
+    /// The scatter of the cell's input, including the first-use kernel compile.
     upload_ns: u64,
-    /// `GpuPauliSum::to_host` of the timed call's output.
+    /// The gather of the timed call's output.
     download_ns: u64,
 }
 
@@ -1444,111 +1445,27 @@ where
     }
 }
 
-/// One device cell: upload (untimed, reported), warm up, drain, time one `propagate` of the resident sum, download (untimed, reported).
-/// Mirrors [`run_cell_partitioned`] at `P = 1`, so `wall_ns` means the same thing on a device row as on a host row.
+/// `--truncation` as the device drivers take it.
 #[cfg(feature = "cuda")]
-fn run_cell_gpu<const W: usize, P>(
-    layer: LayerKind,
-    threads: usize,
-    device: u32,
-    cfg: &Config,
-    policy: &P,
-) -> CellResult
-where
-    P: PartitionedTruncation<W>,
-{
-    use paulistrings::gpu::GpuPauliSum;
-
-    let base = build_base_sum::<W>(layer, cfg);
-    let gen_qubits = (0u32, 1u32);
-    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
-    };
-    let fail = |what: &str, e: paulistrings::gpu::GpuError| -> ! {
-        eprintln!(
-            "phase_breakdown: {} on device {device}: {what}: {e}",
-            layer.name()
-        );
-        std::process::exit(2);
-    };
-
-    let started = Instant::now();
-    let mut dev = GpuPauliSum::from_host(&base, device).unwrap_or_else(|e| fail("upload", e));
-    let upload_ns = started.elapsed().as_nanos() as u64;
-
-    // Untimed warm-up, counters discarded — the same contract as the host cells.
-    dev.propagate_with_options(&circuit, policy, Direction::Forward, options)
-        .unwrap_or_else(|e| fail("warm-up", e));
-    let _ = dev.take_stats();
-    let _ = dev.take_kernel_ms();
-
-    let steady_n = dev.len();
-    let started = Instant::now();
-    dev.propagate_with_options(&circuit, policy, Direction::Forward, options)
-        .unwrap_or_else(|e| fail("timed call", e));
-    let wall_ns = started.elapsed().as_nanos() as u64;
-    let stats = dev.take_stats();
-
-    let started = Instant::now();
-    let output = dev.to_host().unwrap_or_else(|e| fail("download", e));
-    let download_ns = started.elapsed().as_nanos() as u64;
-    std::hint::black_box(&output);
-
-    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-
-    CellResult {
-        layer: layer.name(),
-        truncation: cfg.truncation.label(),
-        threads,
-        n: steady_n,
-        reps: cfg.reps,
-        qubits: cfg.qubits,
-        seed: cfg.seed,
-        hash_seed: cfg.hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-        wall_ns,
-        stats,
-        vmrss_kb,
-        vmhwm_kb,
-        partitions: 1,
-        partition_cpus: cfg.partition_cpus.label(),
-        pin_memory: cfg.bind_memory,
-        gen_qubits,
-        initial: cfg
-            .initial
-            .unwrap_or_else(|| Initial::default_for(layer))
-            .label(),
-        partition_rows: cfg.partition_rows.label(),
-        row_stats: RowChoiceStats::default(),
-        partitioned: None,
-        mpi: None,
-        occupancy: None,
-        device: Some(DeviceCellStats {
-            devices: vec![device],
-            upload_ns,
-            download_ns,
-        }),
+fn device_truncation(spec: TruncSpec) -> BuiltinTruncation {
+    match spec {
+        TruncSpec::Keep => BuiltinTruncation::Keep,
+        TruncSpec::Coeff(t) => BuiltinTruncation::Coeff(t),
+        TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
+        TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
     }
 }
 
-/// One cell of `--gpu-partitions` virtual partitions on each of `devices`: [`run_cell_partitioned`] with `GpuPartitionedSum`.
+/// One device cell, `--gpu-partitions` partitions on each of `devices` (one device at one partition is `GpuPauliSum`): [`run_cell_partitioned`] with `GpuPartitionedSum`.
 /// `upload_ns` is the scatter (filter and upload), `download_ns` the gather, both outside `wall_ns`.
 #[cfg(feature = "cuda")]
-fn run_cell_gpu_partitioned<const W: usize, P>(
+fn run_cell_gpu<const W: usize>(
     layer: LayerKind,
     threads: usize,
     devices: &[u32],
     cfg: &Config,
-    policy: &P,
-) -> CellResult
-where
-    P: PartitionedTruncation<W>,
-{
+    policy: &BuiltinTruncation,
+) -> CellResult {
     use paulistrings::gpu::GpuPartitionedSum;
 
     let partitions = devices.len() * cfg.gpu_partitions;
@@ -1589,8 +1506,9 @@ where
     let split_hash_seed = base.hash().seed();
 
     let started = Instant::now();
-    let mut split = GpuPartitionedSum::scatter_with_rows(base, rows, runtime)
+    let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&base, rows, runtime)
         .unwrap_or_else(|e| fail("scatter", e));
+    drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
 
@@ -2219,16 +2137,13 @@ fn resolve_devices(spec: &DeviceSpec, cfg: &Config) -> Vec<u32> {
 /// One `--mpi --device` cell: [`run_cell_mpi`] with this rank's partition on one CUDA device (`MpiGpuSum`).
 /// `upload_ns` is the scatter (filter and upload), `download_ns` the collective gather, both outside `wall_ns`.
 #[cfg(all(feature = "cuda", feature = "mpi"))]
-fn run_cell_mpi_gpu<const W: usize, P>(
+fn run_cell_mpi_gpu<const W: usize>(
     layer: LayerKind,
     threads: usize,
     spec: &DeviceSpec,
     cfg: &Config,
-    policy: &P,
-) -> CellResult
-where
-    P: PartitionedTruncation<W>,
-{
+    policy: &BuiltinTruncation,
+) -> CellResult {
     use paulistrings::engine::partitioned::Collectives;
     use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
@@ -2281,8 +2196,9 @@ where
     let transport = MpiTransport::from_communicator(&world);
     let split_hash_seed = base.hash().seed();
     let started = Instant::now();
-    let mut split = MpiGpuSum::scatter_with_rows(base, transport, device, rows)
+    let mut split = MpiGpuSum::scatter_to_device_with_rows(&base, transport, device, rows)
         .unwrap_or_else(|e| fail("scatter", e));
+    drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
 
@@ -2968,23 +2884,18 @@ where
     // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.
     #[cfg(feature = "cuda")]
     if let Some(spec) = &cfg.device {
-        let policy = partitioned_policy
-            .expect("a device cell without a partitioned policy — parse_args rejects topn");
+        let policy = device_truncation(cfg.truncation);
         #[cfg(feature = "mpi")]
         if cfg.mpi {
             for &layer in &cfg.layers {
-                let cell = run_cell_mpi_gpu::<W, PP>(layer, cfg.threads[0], spec, cfg, policy);
+                let cell = run_cell_mpi_gpu::<W>(layer, cfg.threads[0], spec, cfg, &policy);
                 emit_cell(cfg, &cell, sidecar.as_mut());
             }
             return;
         }
         let devices = resolve_devices(spec, cfg);
         for &layer in &cfg.layers {
-            let cell = if devices.len() == 1 && cfg.gpu_partitions == 1 {
-                run_cell_gpu::<W, PP>(layer, cfg.threads[0], devices[0], cfg, policy)
-            } else {
-                run_cell_gpu_partitioned::<W, PP>(layer, cfg.threads[0], &devices, cfg, policy)
-            };
+            let cell = run_cell_gpu::<W>(layer, cfg.threads[0], &devices, cfg, &policy);
             emit_cell(cfg, &cell, sidecar.as_mut());
         }
         return;
@@ -3084,15 +2995,16 @@ const DEVICE_USAGE: &str = "\
                             --gpu-partitions partitions on each, the row's
                             `device` listing them. With --mpi: one device per
                             rank (MpiGpuSum), one ordinal or auto (the rank's
-                            local device). On one device (GpuPauliSum): the
-                            input is uploaded untimed, a warm-up call then the
+                            device by CPU locality). The input is uploaded
+                            untimed, a warm-up call then the
                             timed call run on the resident sum, and the output
                             is downloaded untimed; `upload_ns`/`download_ns`
                             report those two, `wall_ns` the timed call, so it
                             means the same as on a host row. --threads is not
                             swept: one cell per layer, --threads[0] echoed.
-                            --partitions must stay at 1 and topn:<N> is
-                            refused; --occupancy-at is unsupported. Phases:
+                            --partitions must stay at 1, topn:<N> runs on one
+                            ordinal at one partition only, and --occupancy-at
+                            is unsupported. Phases:
                             gather = K1+K2, merge = the fused K3 (sort
                             included, sort_ns = 0), compact = K4, rescale = K5,
                             rebucket = device refines, coset_loop = the driving

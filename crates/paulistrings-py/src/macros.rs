@@ -58,7 +58,7 @@ macro_rules! for_each_width_pair_rewrap {
     };
 }
 
-/// Cross-enum width dispatch for the propagate entry points: pairs a `$enum` value (`PauliSumImpl`, `GpuPauliSumImpl`) with the `CircuitImpl` of the same width and binds the active width to a local `const $w: usize` for `$body` (needed for `SpecPolicy::<W>`).
+/// Cross-enum width dispatch for the propagate entry points: pairs a `$enum` value (`PauliSumImpl`, `GpuPauliSumImpl`) with the `CircuitImpl` of the same width and binds the active width to a local `const $w: usize` for a `$body` that names the width.
 /// `$wrap` is bound to the matching `$enum` variant's constructor, for a body whose result is itself width-carrying; an in-place body ignores it.
 /// The `else` arm handles the width-mismatch case, unreachable in practice but surfaced as an error rather than a panic, so the caller supplies the `return Err(...)`.
 macro_rules! for_each_width_propagate {

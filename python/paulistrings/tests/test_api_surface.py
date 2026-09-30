@@ -24,8 +24,16 @@ def test_top_level_names():
     assert hasattr(paulistrings, "numa_nodes")
     assert hasattr(paulistrings, "mpi_available")
     assert hasattr(paulistrings, "cuda_available")
-    assert hasattr(paulistrings, "GpuPauliSum")
     assert hasattr(PauliSum, "to_device")
+
+
+def test_gpu_pauli_sum_exists_exactly_in_a_cuda_build():
+    """``GpuPauliSum`` is registered only by a ``cuda`` build, and re-exported exactly when it is."""
+    built = hasattr(paulistrings._paulistrings, "GpuPauliSum")
+    assert hasattr(paulistrings, "GpuPauliSum") == built
+    assert ("GpuPauliSum" in paulistrings.__all__) == built
+    if paulistrings.cuda_available():
+        assert built
 
 
 def test_cuda_available_answers_without_a_device():

@@ -1,22 +1,21 @@
 //! Python `PauliSum` class with width-monomorphized backing storage. See
 //! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
 
-use crate::truncation_spec::{
-    spec_has_exact_topn, PolicySpec, PyTruncation, SpecPolicy, TOPN_PARTITIONED_MSG,
-};
+use crate::truncation_spec::{PyTruncation, TOPN_PARTITIONED_MSG};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::engine::partitioned::{numa_nodes, CpuSet};
 use paulistrings::pauli_string::PauliString;
 use paulistrings::phase::Phase;
+use paulistrings::truncation::BuiltinTruncation;
 #[cfg(feature = "mpi")]
 use paulistrings::PartitionRowPolicy;
 use paulistrings::{
-    propagate_with_options, propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction,
-    EngineSelection, GateTrace, LayerScratch, PartitionConfig, PartitionRows, PartitionRuntime,
-    PartitionTrace, PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis,
-    ProductState, PropagateOptions, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
+    propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction, EngineSelection,
+    GateTrace, LayerScratch, PartitionConfig, PartitionRows, PartitionRuntime, PartitionTrace,
+    PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
+    PropagateOptions, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -853,10 +852,7 @@ enum RunMode {
     /// duplicate.
     #[cfg(feature = "mpi")]
     Distributed(crate::mpi::MpiRun),
-    /// The whole sum on one CUDA device (`device=`), uploaded and downloaded around the run.
-    #[cfg(feature = "cuda")]
-    Cuda { device: u32 },
-    /// One partition per listed CUDA device (`device=[...]`), in this process; the rows are `Partitioned`'s.
+    /// One partition per listed CUDA device (`device=`), in this process, uploaded and downloaded around the run; the rows are `Partitioned`'s.
     #[cfg(feature = "cuda")]
     Devices(PartitionConfig, Vec<u32>, Option<Vec<Vec<u32>>>),
     /// One CUDA device per MPI rank (`comm=` with `device=`); owns the adopted communicator as `Distributed` does.
@@ -879,25 +875,32 @@ enum RunTrace {
 }
 
 impl RunMode {
-    /// Run `circuit` over `sum`. Called inside `allow_threads`; consumes the
-    /// mode, so a distributed run's communicator is freed before it returns.
+    /// Run `circuit` over `sum`, also recording the per-layer counts when `traced`. Called inside `allow_threads`; consumes the mode, so a distributed run's communicator is freed before it returns.
     fn run<const W: usize>(
         self,
         circuit: &CoreCircuit<W>,
         sum: &CorePauliSum<W>,
-        spec: &PolicySpec,
+        policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
-    ) -> Result<CorePauliSum<W>, PropagateFailure> {
-        let policy = SpecPolicy::<W>(spec);
+        traced: bool,
+    ) -> Result<(CorePauliSum<W>, Option<RunTrace>), PropagateFailure> {
         match self {
-            RunMode::Classic => Ok(propagate_with_options(
-                circuit,
-                sum.clone(),
-                &policy,
-                direction,
-                options,
-            )),
+            RunMode::Classic => {
+                let mut scratch = LayerScratch::<W>::new();
+                if traced {
+                    scratch.enable_gate_trace();
+                }
+                let out = propagate_with_scratch_and_options(
+                    circuit,
+                    sum.clone(),
+                    policy,
+                    direction,
+                    &mut scratch,
+                    options,
+                );
+                Ok((out, scratch.take_gate_trace().map(RunTrace::Term)))
+            }
             RunMode::Partitioned(config, row_blocks) => {
                 // The runtime (and its pinned pools) is cached per config, so
                 // a Trotter loop of many short calls builds it once.
@@ -909,105 +912,25 @@ impl RunMode {
                     }
                     None => PartitionedSum::<W>::scatter(sum.clone(), runtime, &config),
                 };
-                split.propagate_with_options(circuit, &policy, direction, options);
-                Ok(split.into_gathered())
-            }
-            #[cfg(feature = "mpi")]
-            RunMode::Distributed(run) => run
-                .propagate(circuit, sum, &policy, direction, options)
-                .map_err(PropagateFailure::Topology),
-            #[cfg(feature = "cuda")]
-            RunMode::Cuda { device } => {
-                let mut dev = paulistrings::gpu::GpuPauliSum::from_host(sum, device)
-                    .map_err(PropagateFailure::Gpu)?;
-                dev.propagate_with_options(circuit, &policy, direction, options)
-                    .map_err(PropagateFailure::Gpu)?;
-                dev.to_host().map_err(PropagateFailure::Gpu)
-            }
-            #[cfg(feature = "cuda")]
-            RunMode::Devices(config, _, row_blocks) => Ok(run_devices(
-                &config,
-                row_blocks.as_deref(),
-                circuit,
-                sum,
-                &policy,
-                direction,
-                options,
-                false,
-            )?
-            .0),
-            #[cfg(all(feature = "cuda", feature = "mpi"))]
-            RunMode::DistributedDevice(run) => Ok(run
-                .propagate(circuit, sum, &policy, direction, options, false)?
-                .0),
-        }
-    }
-
-    /// [`run`](Self::run), also recording the per-layer counts.
-    fn run_traced<const W: usize>(
-        self,
-        circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W>,
-        spec: &PolicySpec,
-        direction: Direction,
-        options: PropagateOptions,
-    ) -> Result<(CorePauliSum<W>, RunTrace), PropagateFailure> {
-        let policy = SpecPolicy::<W>(spec);
-        match self {
-            RunMode::Classic => {
-                let mut scratch = LayerScratch::<W>::new();
-                scratch.enable_gate_trace();
-                let out = propagate_with_scratch_and_options(
-                    circuit,
-                    sum.clone(),
-                    &policy,
-                    direction,
-                    &mut scratch,
-                    options,
-                );
-                let trace = scratch
-                    .take_gate_trace()
-                    .expect("the trace is enabled before the layer loop runs");
-                Ok((out, RunTrace::Term(trace)))
-            }
-            RunMode::Partitioned(config, row_blocks) => {
-                let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
-                let mut split = match &row_blocks {
-                    Some(rows) => {
-                        let rows = build_partition_rows::<W>(rows, sum.num_qubits());
-                        PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime)
-                    }
-                    None => PartitionedSum::<W>::scatter(sum.clone(), runtime, &config),
-                };
-                split.enable_trace();
-                split.propagate_with_options(circuit, &policy, direction, options);
-                // From the runtime, not the trace: a zero-layer circuit
-                // records no layer, but the placement is still worth
-                // reporting.
+                if traced {
+                    split.enable_trace();
+                }
+                split.propagate_with_options(circuit, policy, direction, options);
+                // The partition count from the runtime, not the trace: a zero-layer circuit records no layer, but the placement is still worth reporting.
                 let partitions = split.num_partitions();
-                let trace = split.take_trace().unwrap_or_default();
-                Ok((
-                    split.into_gathered(),
-                    RunTrace::Partition(trace, partitions),
-                ))
+                let trace = split
+                    .take_trace()
+                    .map(|trace| RunTrace::Partition(trace, partitions));
+                Ok((split.into_gathered(), trace))
             }
             #[cfg(feature = "mpi")]
             RunMode::Distributed(run) => {
-                let (out, trace, rank, size) = run
-                    .propagate_traced(circuit, sum, &policy, direction, options)
+                let (out, trace) = run
+                    .propagate(circuit, sum, policy, direction, options, traced)
                     .map_err(PropagateFailure::Topology)?;
-                Ok((out, RunTrace::Distributed(trace, rank, size, None)))
-            }
-            #[cfg(feature = "cuda")]
-            RunMode::Cuda { device } => {
-                let mut dev = paulistrings::gpu::GpuPauliSum::from_host(sum, device)
-                    .map_err(PropagateFailure::Gpu)?;
-                dev.enable_trace();
-                dev.propagate_with_options(circuit, &policy, direction, options)
-                    .map_err(PropagateFailure::Gpu)?;
-                let trace = dev.take_trace().unwrap_or_default();
-                let out = dev.to_host().map_err(PropagateFailure::Gpu)?;
-                Ok((out, RunTrace::Device(trace, vec![device])))
+                let trace =
+                    trace.map(|(trace, rank, size)| RunTrace::Distributed(trace, rank, size, None));
+                Ok((out, trace))
             }
             #[cfg(feature = "cuda")]
             RunMode::Devices(config, devices, row_blocks) => {
@@ -1016,19 +939,21 @@ impl RunMode {
                     row_blocks.as_deref(),
                     circuit,
                     sum,
-                    &policy,
+                    policy,
                     direction,
                     options,
-                    true,
+                    traced,
                 )?;
-                Ok((out, RunTrace::Device(trace.unwrap_or_default(), devices)))
+                Ok((out, trace.map(|trace| RunTrace::Device(trace, devices))))
             }
             #[cfg(all(feature = "cuda", feature = "mpi"))]
             RunMode::DistributedDevice(run) => {
                 let (out, trace) =
-                    run.propagate(circuit, sum, &policy, direction, options, true)?;
-                let (trace, rank, size, device) = trace.expect("a traced run returns its trace");
-                Ok((out, RunTrace::Distributed(trace, rank, size, Some(device))))
+                    run.propagate(circuit, sum, policy, direction, options, traced)?;
+                let trace = trace.map(|(trace, rank, size, device)| {
+                    RunTrace::Distributed(trace, rank, size, Some(device))
+                });
+                Ok((out, trace))
             }
         }
     }
@@ -1042,7 +967,7 @@ fn run_devices<const W: usize>(
     row_blocks: Option<&[Vec<u32>]>,
     circuit: &CoreCircuit<W>,
     sum: &CorePauliSum<W>,
-    policy: &SpecPolicy<'_, W>,
+    policy: &BuiltinTruncation,
     direction: Direction,
     options: PropagateOptions,
     traced: bool,
@@ -1053,9 +978,9 @@ fn run_devices<const W: usize>(
     let split = match row_blocks {
         Some(blocks) => {
             let rows = build_partition_rows::<W>(blocks, sum.num_qubits());
-            GpuPartitionedSum::scatter_with_rows(sum.clone(), rows, runtime)
+            GpuPartitionedSum::scatter_to_devices_with_rows(sum, rows, runtime)
         }
-        None => GpuPartitionedSum::<W>::scatter(sum.clone(), runtime, config),
+        None => GpuPartitionedSum::<W>::scatter_to_devices(sum, runtime, config),
     };
     let mut split = split.map_err(PropagateFailure::Gpu)?;
     if traced {
@@ -1081,7 +1006,7 @@ fn parse_run_mode(
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
     device: Option<&Bound<'_, PyAny>>,
-    spec: &PolicySpec,
+    policy: &BuiltinTruncation,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     let distributed = comm_requested(comm);
@@ -1094,7 +1019,7 @@ fn parse_run_mode(
             gather,
             partition_row_seed,
             partition_row_blocks,
-            spec,
+            policy,
             num_qubits,
         );
     }
@@ -1115,7 +1040,7 @@ fn parse_run_mode(
         ));
     }
     let config = parse_partitions(partitions, pin_memory, partition_row_seed)?;
-    if (distributed || config.is_some()) && spec_has_exact_topn(spec) {
+    if (distributed || config.is_some()) && policy.contains_exact_top_n() {
         return Err(topn_partitioned_error(if distributed {
             None
         } else {
@@ -1186,7 +1111,7 @@ fn parse_device_mode(
     gather: bool,
     partition_row_seed: Option<u64>,
     partition_row_blocks: Option<&Bound<'_, PyAny>>,
-    spec: &PolicySpec,
+    policy: &BuiltinTruncation,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     if partitioned {
@@ -1216,32 +1141,13 @@ fn parse_device_mode(
         if list.len() > 1 {
             return Err(PyValueError::new_err(format!(
                 "{shown} with comm=: each MPI rank drives one CUDA device, so pass one ordinal \
-                 or 'auto' (the node-local rank modulo the visible devices)"
+                 or 'auto' (a device near the rank's CPUs)"
             )));
         }
-    }
-    // A comm= run is always more than one partition (one per rank), which has
-    // no collective n-th-largest; a lone device (resolved below) is exact
-    // TopN's one supported device shape.
-    if comm.is_some() && spec_has_exact_topn(spec) {
-        return Err(PyNotImplementedError::new_err(format!(
-            "{shown}: {}",
-            crate::gpu::TOPN_DEVICE_MSG
-        )));
     }
     #[cfg(not(feature = "cuda"))]
     {
-        let _ = (py, row_blocks, num_qubits);
-        // Without the feature there is no way to learn whether `request`
-        // would resolve to one device, so an exact `topn` is rejected on its
-        // own terms rather than as a availability error.
-        if spec_has_exact_topn(spec) {
-            return Err(PyNotImplementedError::new_err(format!(
-                "{shown}: {}",
-                crate::gpu::TOPN_DEVICE_MSG
-            )));
-        }
-        let _ = request;
+        let _ = (py, request, row_blocks, num_qubits, policy);
         match comm {
             Some(_) => Err(crate::gpu::device_comm_unavailable_error()),
             None => Err(crate::gpu::cuda_unavailable_error()),
@@ -1249,10 +1155,21 @@ fn parse_device_mode(
     }
     #[cfg(feature = "cuda")]
     {
-        if let Some(comm) = comm {
+        let devices = match comm {
+            Some(_) => None,
+            None => Some(crate::gpu::resolve_devices(&request, &shown)?),
+        };
+        // Exact TopN runs at one partition only: one resolved device, never a comm= group (one partition per rank).
+        if policy.contains_exact_top_n() && devices.as_ref().is_none_or(|d| d.len() > 1) {
+            return Err(PyNotImplementedError::new_err(format!(
+                "{shown}: {}",
+                crate::gpu::TOPN_DEVICE_MSG
+            )));
+        }
+        let (Some(devices), None) = (devices, comm) else {
             return parse_distributed_device_mode(
                 py,
-                comm,
+                comm.expect("a device group without devices is a comm= run"),
                 &request,
                 &shown,
                 gather,
@@ -1260,31 +1177,21 @@ fn parse_device_mode(
                 row_blocks,
                 num_qubits,
             );
-        }
-        let _ = py;
-        let devices = crate::gpu::resolve_devices(&request, &shown)?;
-        if devices.len() == 1 {
-            if row_blocks.is_some() {
+        };
+        match &row_blocks {
+            Some(_) if devices.len() == 1 => {
                 return Err(PyValueError::new_err(format!(
                     "partition_row_blocks= needs partitions=, comm= or several devices (it has \
                      no effect on the one-device run {shown})"
                 )));
             }
-            return Ok(RunMode::Cuda { device: devices[0] });
-        }
-        if spec_has_exact_topn(spec) {
-            return Err(PyNotImplementedError::new_err(format!(
-                "{shown}: {}",
-                crate::gpu::TOPN_DEVICE_MSG
-            )));
-        }
-        if let Some(blocks) = &row_blocks {
-            validate_partition_row_blocks(
+            Some(blocks) => validate_partition_row_blocks(
                 blocks,
                 num_qubits,
                 devices.len(),
                 &format!("{shown} ({} partitions)", devices.len()),
-            )?;
+            )?,
+            None => {}
         }
         let config = PartitionConfig {
             placement: Placement::Devices {
@@ -1550,6 +1457,7 @@ impl PropagationStats {
     }
 
     /// A one-device run's record: one partition, `partition.devices == [device]`.
+    #[cfg(feature = "cuda")]
     pub(crate) fn from_device_trace(
         trace: &PartitionTrace,
         device: u32,
@@ -2084,7 +1992,7 @@ impl PauliSum {
     ///
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
-    /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (the node-local rank modulo the visible devices), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
+    /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (a device near the rank's CPUs, distinct per rank on a node while there are enough), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
     /// `device` is an alternative to `partitions`, ignores `engine`, and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
@@ -2114,11 +2022,7 @@ impl PauliSum {
         let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
-        let no_op = PolicySpec::NoOp;
-        let spec: &PolicySpec = match policy {
-            Some(p) => &p.spec,
-            None => &no_op,
-        };
+        let policy = PyTruncation::tree_of(policy);
         // Last, because adopting a communicator is collective: every check
         // above raises on all ranks alike, before any of them has entered MPI.
         let mode = parse_run_mode(
@@ -2130,12 +2034,12 @@ impl PauliSum {
             comm,
             gather,
             device,
-            spec,
+            &policy,
             self.inner.num_qubits(),
         )?;
         // The whole simulation runs without the GIL: everything the engine
         // touches is plain Rust data (`PauliSumImpl`, `CircuitImpl` and
-        // `PolicySpec` are all `Send + Sync`), so nothing here needs Python.
+        // `BuiltinTruncation` are all `Send + Sync`), so nothing here needs Python.
         // Releasing it lets Python `logging` handlers — the consumers of the
         // engine's per-layer progress records, bridged by `pyo3-log` — and any
         // other Python thread run while a long propagate is in flight.
@@ -2148,7 +2052,7 @@ impl PauliSum {
                 PauliSumImpl,
                 &self.inner,
                 &circuit.inner,
-                |s, c, W, wrap| wrap(mode.run::<W>(c, s, spec, dir, options)?),
+                |s, c, W, wrap| wrap(mode.run::<W>(c, s, &policy, dir, options, false)?.0),
                 else {
                     // Same num_qubits but different widths is impossible
                     // because both width pickers map num_qubits to the
@@ -2190,11 +2094,7 @@ impl PauliSum {
         let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
-        let no_op = PolicySpec::NoOp;
-        let spec: &PolicySpec = match policy {
-            Some(p) => &p.spec,
-            None => &no_op,
-        };
+        let policy = PyTruncation::tree_of(policy);
         let mode = parse_run_mode(
             py,
             partitions,
@@ -2204,7 +2104,7 @@ impl PauliSum {
             comm,
             gather,
             device,
-            spec,
+            &policy,
             self.inner.num_qubits(),
         )?;
         // GIL released for the propagation, as in `propagate` above. The trace
@@ -2222,8 +2122,8 @@ impl PauliSum {
                 &self.inner,
                 &circuit.inner,
                 |s, c, W, wrap| {
-                    let (out, trace) = mode.run_traced::<W>(c, s, spec, dir, options)?;
-                    *slot = Some(trace);
+                    let (out, trace) = mode.run::<W>(c, s, &policy, dir, options, true)?;
+                    *slot = trace;
                     wrap(out)
                 },
                 else {
@@ -2244,7 +2144,7 @@ impl PauliSum {
     /// The resident sum is stepped in place by `GpuPauliSum.propagate` and read back by `GpuPauliSum.to_host`, so a loop of many short propagations pays one upload and one download rather than one of each per call.
     /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
     #[pyo3(signature = (device=0))]
-    fn to_device(&self, py: Python<'_>, device: i64) -> PyResult<crate::gpu::GpuPauliSum> {
+    fn to_device(&self, py: Python<'_>, device: i64) -> PyResult<PyObject> {
         crate::gpu::to_device(py, &self.inner, device)
     }
 }

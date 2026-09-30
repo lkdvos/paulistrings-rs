@@ -738,13 +738,14 @@ fn run_matrix(r: &mut Runner) {
     });
 }
 
-/// The device half of the matrix: the same shapes through `MpiGpuSum`, each rank on [`local_device_for_rank`].
+/// The device half of the matrix: the same shapes through `MpiGpuSum`, each rank on [`local_device_for_comm`].
 #[cfg(feature = "cuda")]
 mod device {
     use super::*;
     use paulistrings::gpu::{
-        cuda_available, local_device_for_rank, propagate_mpi_gpu, GpuError, MpiGpuSum,
+        cuda_available, local_device_for_comm, propagate_mpi_gpu, GpuError, MpiGpuSum,
     };
+    use paulistrings::truncation::BuiltinTruncation;
 
     impl Runner<'_> {
         /// Scatter onto this rank's device, propagate, gather on rank 0 and compare against the single-process oracle.
@@ -759,15 +760,15 @@ mod device {
             chunk_bytes: Option<usize>,
             what: &str,
         ) where
-            T: PartitionedTruncation<W> + ?Sized,
+            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
         {
             let mut transport = MpiTransport::from_communicator(self.world);
             if let Some(bytes) = chunk_bytes {
                 transport = transport.with_chunk_bytes(bytes);
             }
-            let device = local_device_for_rank(self.rank).expect("a device on every rank");
-            let mut split = MpiGpuSum::scatter(
-                sum.clone(),
+            let device = local_device_for_comm(self.world).expect("a device on every rank");
+            let mut split = MpiGpuSum::scatter_to_device(
+                sum,
                 transport,
                 device,
                 &PartitionRowPolicy::Seeded(Some(seed)),
@@ -791,7 +792,7 @@ mod device {
             got: Option<PauliSum<W>>,
             what: &str,
         ) where
-            T: PartitionedTruncation<W> + ?Sized,
+            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
         {
             match (self.rank, got) {
                 (0, Some(got)) => {
@@ -814,7 +815,7 @@ mod device {
             seed: u64,
             what: &str,
         ) where
-            T: PartitionedTruncation<W> + ?Sized,
+            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
         {
             for direction in [Direction::Forward, Direction::Heisenberg] {
                 self.device_differential(circuit, sum, policy, direction, seed, None, what);
@@ -839,9 +840,9 @@ mod device {
         }
 
         // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike, and the device cases have nothing to run on.
-        let device = local_device_for_rank(r.rank).expect("a device on every rank");
-        let started = MpiGpuSum::<1>::scatter(
-            rand_sum::<1>(50, 8, 0xB0FF),
+        let device = local_device_for_comm(r.world).expect("a device on every rank");
+        let started = MpiGpuSum::<1>::scatter_to_device(
+            &rand_sum::<1>(50, 8, 0xB0FF),
             MpiTransport::from_communicator(r.world),
             device,
             &PartitionRowPolicy::Seeded(Some(SEED)),
@@ -981,8 +982,8 @@ mod device {
                 let sum = rand_sum::<1>(300, 10, 0xB015);
                 let got = propagate_mpi_gpu(
                     &circuit,
-                    sum.clone(),
-                    &KeepAll,
+                    &sum,
+                    KeepAll,
                     Direction::Forward,
                     PropagateOptions::default(),
                     r.world,

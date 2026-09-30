@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-b366992d.js";
+            window.path_to_searchindex_js = "../../searchindex-3523c87e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-0b5a9687.js"></script>
@@ -217,8 +217,7 @@ It is unbiased only for weight-diagonal read-outs such as <a href="../measuremen
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>
-<p>Keep a <code>coeff</code> threshold above roughly <code>1e-12</code> on deep circuits.
-<code>cos(π/2)</code> evaluates to <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch alongside the real one, and with no threshold — or one below the residual — those branches fan out without bound and the run pays for terms that carry no physics.
+<p>A rotation by a multiple of <code>π/2</code> is an exact Clifford, one term with no residual branch, so a Clifford circuit needs no threshold.
 <code>policy=None</code> disables truncation entirely, dropping only exact zeros; it is the exact reference where the problem is small enough to afford it (<a href="settings.html#untruncated-runs">Untruncated runs</a>).</p>
 <p>Whichever policy you pick, the cutoff is a guess until it has been swept.
 The full policy table is in the <a href="../../library/truncation.html">Library</a>.</p>

@@ -475,462 +475,461 @@
 <a href=#475 id=475 data-nosnippet>475</a>    ///
 <a href=#476 id=476 data-nosnippet>476</a>    /// When the rows avoid [`RotationAxis::flip_mask`] of `sites` (see [`PartitionRows::from_seed_excluding`]) every class lies in one partition and the partitions' values are added in rank order; otherwise the partitions are gathered first.
 <a href=#477 id=477 data-nosnippet>477</a>    </span><span class="kw">pub fn </span>rotated_overlap(<span class="kw-2">&amp;</span><span class="self">self</span>, sites: <span class="kw-2">&amp;</span>[usize], delta: f64, axis: RotationAxis) -&gt; f64 {
-<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span>(mask_x, mask_z) = axis.flip_mask::&lt;W&gt;(sites);
-<a href=#479 id=479 data-nosnippet>479</a>        <span class="kw">if </span><span class="self">self</span>.rows.avoids(<span class="kw-2">&amp;</span>mask_x, <span class="kw-2">&amp;</span>mask_z) {
-<a href=#480 id=480 data-nosnippet>480</a>            <span class="self">self</span>.locals
-<a href=#481 id=481 data-nosnippet>481</a>                .iter()
-<a href=#482 id=482 data-nosnippet>482</a>                .map(|local| local.rotated_overlap(sites, delta, axis))
-<a href=#483 id=483 data-nosnippet>483</a>                .sum()
-<a href=#484 id=484 data-nosnippet>484</a>        } <span class="kw">else </span>{
-<a href=#485 id=485 data-nosnippet>485</a>            <span class="self">self</span>.gather().rotated_overlap(sites, delta, axis)
-<a href=#486 id=486 data-nosnippet>486</a>        }
-<a href=#487 id=487 data-nosnippet>487</a>    }
-<a href=#488 id=488 data-nosnippet>488</a>
-<a href=#489 id=489 data-nosnippet>489</a>    <span class="doccomment">/// Start recording a [`PartitionTrace`] on every subsequent [`propagate`](Self::propagate) call.
-<a href=#490 id=490 data-nosnippet>490</a>    /// Idempotent, and it never discards records already taken.
-<a href=#491 id=491 data-nosnippet>491</a>    ///
-<a href=#492 id=492 data-nosnippet>492</a>    /// Always compiled, unlike the `phase-timing` counters: everything recorded is already computed by the layer, so a traced layer costs a `Vec` push on the partition's driving thread and an untraced one costs a register test.
-<a href=#493 id=493 data-nosnippet>493</a>    </span><span class="kw">pub fn </span>enable_trace(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
-<a href=#494 id=494 data-nosnippet>494</a>        <span class="self">self</span>.trace.get_or_insert_with(PartitionTrace::default);
-<a href=#495 id=495 data-nosnippet>495</a>    }
-<a href=#496 id=496 data-nosnippet>496</a>
-<a href=#497 id=497 data-nosnippet>497</a>    <span class="doccomment">/// Drain and return the per-layer records, or `None` if tracing was never enabled (`Some` iff tracing is on).
-<a href=#498 id=498 data-nosnippet>498</a>    ///
-<a href=#499 id=499 data-nosnippet>499</a>    /// Draining leaves tracing *enabled* with no records, so a sum reused across calls reports each call separately without re-enabling; records accumulate across layers and calls until drained.
-<a href=#500 id=500 data-nosnippet>500</a>    </span><span class="kw">pub fn </span>take_trace(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;PartitionTrace&gt; {
-<a href=#501 id=501 data-nosnippet>501</a>        <span class="self">self</span>.trace.as_mut().map(std::mem::take)
-<a href=#502 id=502 data-nosnippet>502</a>    }
-<a href=#503 id=503 data-nosnippet>503</a>
-<a href=#504 id=504 data-nosnippet>504</a>    <span class="doccomment">/// Drain and return the per-phase timing counters: one [`PhaseStats`] per partition, plus the driver's own scatter/gather time and layer count.
-<a href=#505 id=505 data-nosnippet>505</a>    ///
-<a href=#506 id=506 data-nosnippet>506</a>    /// Every counter is zeroed afterwards, so a probe can read one measured region at a time.
-<a href=#507 id=507 data-nosnippet>507</a>    /// `gather_ns` covers [`Self::gather`] calls only — [`Self::into_gathered`] consumes the sum, and with it the counters.
-<a href=#508 id=508 data-nosnippet>508</a>    </span><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#509 id=509 data-nosnippet>509</a>    </span><span class="kw">pub fn </span>take_stats(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; PartitionPhaseStats {
-<a href=#510 id=510 data-nosnippet>510</a>        PartitionPhaseStats {
-<a href=#511 id=511 data-nosnippet>511</a>            per_partition: <span class="self">self
-<a href=#512 id=512 data-nosnippet>512</a>                </span>.states
-<a href=#513 id=513 data-nosnippet>513</a>                .iter_mut()
-<a href=#514 id=514 data-nosnippet>514</a>                .map(|state| state.layer.take_stats())
-<a href=#515 id=515 data-nosnippet>515</a>                .collect(),
-<a href=#516 id=516 data-nosnippet>516</a>            scatter_ns: std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.scatter_ns),
-<a href=#517 id=517 data-nosnippet>517</a>            gather_ns: <span class="self">self</span>.gather_ns.swap(<span class="number">0</span>, std::sync::atomic::Ordering::Relaxed),
-<a href=#518 id=518 data-nosnippet>518</a>            layers: std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.layers),
-<a href=#519 id=519 data-nosnippet>519</a>        }
-<a href=#520 id=520 data-nosnippet>520</a>    }
-<a href=#521 id=521 data-nosnippet>521</a>
-<a href=#522 id=522 data-nosnippet>522</a>    <span class="doccomment">/// Debug helper: checks every invariant a partitioned sum is supposed to
-<a href=#523 id=523 data-nosnippet>523</a>    /// hold between calls.
-<a href=#524 id=524 data-nosnippet>524</a>    ///
-<a href=#525 id=525 data-nosnippet>525</a>    /// `O(terms)` — a full scan per partition — so it belongs in a test or an
-<a href=#526 id=526 data-nosnippet>526</a>    /// assertion, not in a loop. The per-partition structural check is
-<a href=#527 id=527 data-nosnippet>527</a>    /// `PauliSum`'s own `assert_invariants`, which exists only in test and
-<a href=#528 id=528 data-nosnippet>528</a>    /// debug builds; in a release build this checks the cross-partition
-<a href=#529 id=529 data-nosnippet>529</a>    /// properties alone.
-<a href=#530 id=530 data-nosnippet>530</a>    ///
-<a href=#531 id=531 data-nosnippet>531</a>    /// # Panics
-<a href=#532 id=532 data-nosnippet>532</a>    ///
-<a href=#533 id=533 data-nosnippet>533</a>    /// If a partition's sum is internally inconsistent, holds a key belonging
-<a href=#534 id=534 data-nosnippet>534</a>    /// to another partition, or disagrees with partition 0 about the hash rows,
-<a href=#535 id=535 data-nosnippet>535</a>    /// the bucket count or the qubit count.
-<a href=#536 id=536 data-nosnippet>536</a>    </span><span class="kw">pub fn </span>assert_invariants(<span class="kw-2">&amp;</span><span class="self">self</span>) {
-<a href=#537 id=537 data-nosnippet>537</a>        <span class="macro">assert_eq!</span>(
-<a href=#538 id=538 data-nosnippet>538</a>            <span class="self">self</span>.locals.len(),
-<a href=#539 id=539 data-nosnippet>539</a>            <span class="self">self</span>.rows.num_partitions(),
-<a href=#540 id=540 data-nosnippet>540</a>            <span class="string">"partition count disagrees with the rows"</span>,
-<a href=#541 id=541 data-nosnippet>541</a>        );
-<a href=#542 id=542 data-nosnippet>542</a>        <span class="kw">let </span>head = <span class="kw-2">&amp;</span><span class="self">self</span>.locals[<span class="number">0</span>];
-<a href=#543 id=543 data-nosnippet>543</a>        <span class="kw">for </span>(rank, local) <span class="kw">in </span><span class="self">self</span>.locals.iter().enumerate() {
-<a href=#544 id=544 data-nosnippet>544</a>            <span class="comment">// `PauliSum::assert_invariants` itself exists only in test and
-<a href=#545 id=545 data-nosnippet>545</a>            // debug builds; the cross-partition checks below are always
-<a href=#546 id=546 data-nosnippet>546</a>            // compiled, so this method's signature does not change with the
-<a href=#547 id=547 data-nosnippet>547</a>            // profile.
-<a href=#548 id=548 data-nosnippet>548</a>            </span><span class="attr">#[cfg(any(test, debug_assertions))]
-<a href=#549 id=549 data-nosnippet>549</a>            </span>local.assert_invariants();
-<a href=#550 id=550 data-nosnippet>550</a>            <span class="macro">assert_eq!</span>(
-<a href=#551 id=551 data-nosnippet>551</a>                local.num_qubits(),
-<a href=#552 id=552 data-nosnippet>552</a>                head.num_qubits(),
-<a href=#553 id=553 data-nosnippet>553</a>                <span class="string">"partition {rank}: qubit count differs from partition 0"</span>,
-<a href=#554 id=554 data-nosnippet>554</a>            );
-<a href=#555 id=555 data-nosnippet>555</a>            <span class="macro">assert!</span>(
-<a href=#556 id=556 data-nosnippet>556</a>                local.hash().same_rows_as(head.hash()),
-<a href=#557 id=557 data-nosnippet>557</a>                <span class="string">"partition {rank}: hash rows differ from partition 0"</span>,
-<a href=#558 id=558 data-nosnippet>558</a>            );
-<a href=#559 id=559 data-nosnippet>559</a>            <span class="macro">assert_eq!</span>(
-<a href=#560 id=560 data-nosnippet>560</a>                local.hash().bits(),
-<a href=#561 id=561 data-nosnippet>561</a>                head.hash().bits(),
-<a href=#562 id=562 data-nosnippet>562</a>                <span class="string">"partition {rank}: bucket bits differ from partition 0"</span>,
-<a href=#563 id=563 data-nosnippet>563</a>            );
-<a href=#564 id=564 data-nosnippet>564</a>            <span class="kw">let </span>held = local.partition_rank_of_all(<span class="kw-2">&amp;</span><span class="self">self</span>.rows);
-<a href=#565 id=565 data-nosnippet>565</a>            <span class="macro">assert!</span>(
-<a href=#566 id=566 data-nosnippet>566</a>                held.is_none() || held == <span class="prelude-val">Some</span>(rank <span class="kw">as </span>u32),
-<a href=#567 id=567 data-nosnippet>567</a>                <span class="string">"partition {rank} holds keys of partition {held:?}"</span>,
-<a href=#568 id=568 data-nosnippet>568</a>            );
-<a href=#569 id=569 data-nosnippet>569</a>        }
-<a href=#570 id=570 data-nosnippet>570</a>    }
-<a href=#571 id=571 data-nosnippet>571</a>}
-<a href=#572 id=572 data-nosnippet>572</a>
-<a href=#573 id=573 data-nosnippet>573</a><span class="doccomment">/// The partitioned engine's phase breakdown: one [`PhaseStats`] per partition plus the driver's own counters.
-<a href=#574 id=574 data-nosnippet>574</a>///
-<a href=#575 id=575 data-nosnippet>575</a>/// Drained by [`PartitionedSum::take_stats`].
-<a href=#576 id=576 data-nosnippet>576</a>/// Each partition's `PhaseStats` was measured on that partition's own driving thread and its own pool, so the wall-clock fields are **concurrent**, not additive: the partitions ran at the same time, and the spread between them is the group's load imbalance.
-<a href=#577 id=577 data-nosnippet>577</a>/// `exchange_ns` in particular absorbs the wait for a partner, so a partition that finishes its own share early pays for the imbalance there.
-<a href=#578 id=578 data-nosnippet>578</a></span><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#579 id=579 data-nosnippet>579</a>#[derive(Clone, Debug, Default, PartialEq, Eq)]
-<a href=#580 id=580 data-nosnippet>580</a></span><span class="kw">pub struct </span>PartitionPhaseStats {
-<a href=#581 id=581 data-nosnippet>581</a>    <span class="doccomment">/// One breakdown per partition, in rank order.
-<a href=#582 id=582 data-nosnippet>582</a>    </span><span class="kw">pub </span>per_partition: Vec&lt;PhaseStats&gt;,
-<a href=#583 id=583 data-nosnippet>583</a>    <span class="doccomment">/// Wall time of the scatter that built this sum (filter + coarsen, on the
-<a href=#584 id=584 data-nosnippet>584</a>    /// partitions' own pools).
-<a href=#585 id=585 data-nosnippet>585</a>    </span><span class="kw">pub </span>scatter_ns: u64,
-<a href=#586 id=586 data-nosnippet>586</a>    <span class="doccomment">/// Wall time summed over [`PartitionedSum::gather`] calls.
-<a href=#587 id=587 data-nosnippet>587</a>    </span><span class="kw">pub </span>gather_ns: u64,
-<a href=#588 id=588 data-nosnippet>588</a>    <span class="doccomment">/// Layers driven since the counters were last drained.
-<a href=#589 id=589 data-nosnippet>589</a>    </span><span class="kw">pub </span>layers: u64,
-<a href=#590 id=590 data-nosnippet>590</a>}
-<a href=#591 id=591 data-nosnippet>591</a>
-<a href=#592 id=592 data-nosnippet>592</a><span class="doccomment">/// One partition's share of `sum`, at the bucket count the group agrees on — **the** scatter body, shared by the in-process and distributed drivers.
-<a href=#593 id=593 data-nosnippet>593</a>///
-<a href=#594 id=594 data-nosnippet>594</a>/// Runs on the partition's own pool (the caller is inside `install`), so every column is first-touched in the domain that will read it.
-<a href=#595 id=595 data-nosnippet>595</a>/// One collective: the per-partition [`desired_bits`] maximum, which is what makes the group agree on a count before the first layer.
-<a href=#596 id=596 data-nosnippet>596</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>scatter_local&lt;<span class="kw">const </span>W: usize&gt;(
-<a href=#597 id=597 data-nosnippet>597</a>    sum: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;,
-<a href=#598 id=598 data-nosnippet>598</a>    rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
-<a href=#599 id=599 data-nosnippet>599</a>    rank: u32,
-<a href=#600 id=600 data-nosnippet>600</a>    coll: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Collectives,
-<a href=#601 id=601 data-nosnippet>601</a>) -&gt; PauliSum&lt;W&gt; {
-<a href=#602 id=602 data-nosnippet>602</a>    <span class="kw">let </span><span class="kw-2">mut </span>local = sum.filter_partition(rows, rank);
-<a href=#603 id=603 data-nosnippet>603</a>    <span class="kw">let </span>want = desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
-<a href=#604 id=604 data-nosnippet>604</a>    <span class="kw">let </span>want = coll.allreduce_max_u8(want);
-<a href=#605 id=605 data-nosnippet>605</a>    local.coarsen_to(scatter_bits(local.hash().bits(), rows.bits(), want));
-<a href=#606 id=606 data-nosnippet>606</a>    local
-<a href=#607 id=607 data-nosnippet>607</a>}
-<a href=#608 id=608 data-nosnippet>608</a>
-<a href=#609 id=609 data-nosnippet>609</a><span class="doccomment">/// The bucket bits a partition takes on at scatter: at most `pbits` shed from the count the unpartitioned sum arrived with, and never below what this partition's own share wants.
-<a href=#610 id=610 data-nosnippet>610</a>///
-<a href=#611 id=611 data-nosnippet>611</a>/// `bits` is the incoming count, `pbits = log2(P)`, `want` the all-reduced per-partition [`desired_bits`].
-<a href=#612 id=612 data-nosnippet>612</a>/// Shedding exactly `pbits` keeps the bucket count *summed over partitions* equal to the unpartitioned one; the `want` floor stops a sum that arrived under-bucketed from being coarsened at all.
-<a href=#613 id=613 data-nosnippet>613</a>/// At `P = 1`, `pbits = 0`, so this is `bits` — the scatter is the identity and the partitioned run is the unpartitioned one.
-<a href=#614 id=614 data-nosnippet>614</a></span><span class="kw">fn </span>scatter_bits(bits: u8, pbits: u8, want: u8) -&gt; u8 {
-<a href=#615 id=615 data-nosnippet>615</a>    want.max(bits.saturating_sub(pbits)).min(bits)
-<a href=#616 id=616 data-nosnippet>616</a>}
-<a href=#617 id=617 data-nosnippet>617</a>
-<a href=#618 id=618 data-nosnippet>618</a><span class="doccomment">/// What a partition knows about itself while it walks the layers: which keys are its own, where it sits in the group, and whether it is recording.
-<a href=#619 id=619 data-nosnippet>619</a>///
-<a href=#620 id=620 data-nosnippet>620</a>/// The two drivers fill this differently — `rank` and `size` come from `map_partitions` in one and from the transport in the other — and nothing in the loop below cares which.
-<a href=#621 id=621 data-nosnippet>621</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>PartitionCtx&lt;<span class="lifetime">'a</span>, <span class="kw">const </span>W: usize&gt; {
-<a href=#622 id=622 data-nosnippet>622</a>    <span class="doccomment">/// The rows deciding which partition a key belongs to.
-<a href=#623 id=623 data-nosnippet>623</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) rows: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>PartitionRows&lt;W&gt;,
-<a href=#624 id=624 data-nosnippet>624</a>    <span class="doccomment">/// This partition's index, for the per-layer log line.
-<a href=#625 id=625 data-nosnippet>625</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) rank: usize,
-<a href=#626 id=626 data-nosnippet>626</a>    <span class="doccomment">/// Partitions in the group, likewise.
-<a href=#627 id=627 data-nosnippet>627</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) size: usize,
-<a href=#628 id=628 data-nosnippet>628</a>    <span class="doccomment">/// Whether to append a [`PartitionLayerRow`] per layer. Hoisted out of the
-<a href=#629 id=629 data-nosnippet>629</a>    /// loop: nothing inside one can turn tracing on or off.
-<a href=#630 id=630 data-nosnippet>630</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) tracing: bool,
-<a href=#631 id=631 data-nosnippet>631</a>}
-<a href=#632 id=632 data-nosnippet>632</a>
-<a href=#633 id=633 data-nosnippet>633</a><span class="doccomment">/// [`Channel::prepare`] or the engine's one hard error.
-<a href=#634 id=634 data-nosnippet>634</a>///
-<a href=#635 id=635 data-nosnippet>635</a>/// Called twice on a layer that refines (the bucket count is settled between the two), so the panic — which is the unpartitioned engine's, with the partition and layer named — lives here rather than inline.
-<a href=#636 id=636 data-nosnippet>636</a></span><span class="kw">fn </span>prepare_or_panic&lt;<span class="kw">const </span>W: usize&gt;(
-<a href=#637 id=637 data-nosnippet>637</a>    ch: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Channel&lt;W&gt;,
-<a href=#638 id=638 data-nosnippet>638</a>    local: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;,
-<a href=#639 id=639 data-nosnippet>639</a>    adjoint: bool,
-<a href=#640 id=640 data-nosnippet>640</a>    rank: usize,
-<a href=#641 id=641 data-nosnippet>641</a>    idx: usize,
-<a href=#642 id=642 data-nosnippet>642</a>) -&gt; <span class="kw">crate</span>::channel::prepared::Prepared&lt;W&gt; {
-<a href=#643 id=643 data-nosnippet>643</a>    ch.prepare(local.hash(), adjoint).unwrap_or_else(|| {
-<a href=#644 id=644 data-nosnippet>644</a>        <span class="comment">// Same hard error as the unpartitioned engine: no whole-sum fallback
-<a href=#645 id=645 data-nosnippet>645</a>        // exists to absorb a channel the engine cannot tabulate.
-<a href=#646 id=646 data-nosnippet>646</a>        </span><span class="kw">let </span>weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
-<a href=#647 id=647 data-nosnippet>647</a>        <span class="macro">panic!</span>(
-<a href=#648 id=648 data-nosnippet>648</a>            <span class="string">"partition {rank}, layer {idx}: Channel::prepare declined, so this channel \
-<a href=#649 id=649 data-nosnippet>649</a>             cannot be propagated. The engine tabulates channels of support ≤ \
-<a href=#650 id=650 data-nosnippet>650</a>             {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
-<a href=#651 id=651 data-nosnippet>651</a>             not write outside its declared support. See \
-<a href=#652 id=652 data-nosnippet>652</a>             research/FINDINGS.md"</span>,
-<a href=#653 id=653 data-nosnippet>653</a>        )
-<a href=#654 id=654 data-nosnippet>654</a>    })
-<a href=#655 id=655 data-nosnippet>655</a>}
-<a href=#656 id=656 data-nosnippet>656</a>
-<a href=#657 id=657 data-nosnippet>657</a><span class="doccomment">/// One partition's whole layer loop — **the** layer loop, shared by the in-process driver ([`PartitionedSum`]) and the distributed one ([`DistributedSum`](super::DistributedSum)).
-<a href=#658 id=658 data-nosnippet>658</a>///
-<a href=#659 id=659 data-nosnippet>659</a>/// Runs on the partition's driving thread inside its own pool, in lock-step with its peers: the same channels in the same order, the same collectives per layer.
-<a href=#660 id=660 data-nosnippet>660</a>/// The two drivers differ only in *what a partition is* — a NUMA domain and an in-process endpoint, or a whole process and an MPI rank — which is entirely the transport's business, so the body below is generic over it and there is exactly one copy of the per-layer sequence.
-<a href=#661 id=661 data-nosnippet>661</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>run_layers&lt;<span class="kw">const </span>W: usize, T, X&gt;(
-<a href=#662 id=662 data-nosnippet>662</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
-<a href=#663 id=663 data-nosnippet>663</a>    policy: <span class="kw-2">&amp;</span>T,
-<a href=#664 id=664 data-nosnippet>664</a>    direction: Direction,
-<a href=#665 id=665 data-nosnippet>665</a>    options: PropagateOptions,
-<a href=#666 id=666 data-nosnippet>666</a>    ctx: PartitionCtx&lt;<span class="lifetime">'_</span>, W&gt;,
-<a href=#667 id=667 data-nosnippet>667</a>    work: <span class="kw-2">&amp;mut </span>PartitionWork&lt;W&gt;,
-<a href=#668 id=668 data-nosnippet>668</a>    transport: <span class="kw-2">&amp;</span>X,
-<a href=#669 id=669 data-nosnippet>669</a>) <span class="kw">where
-<a href=#670 id=670 data-nosnippet>670</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
-<a href=#671 id=671 data-nosnippet>671</a>    X: Transport,
-<a href=#672 id=672 data-nosnippet>672</a>{
-<a href=#673 id=673 data-nosnippet>673</a>    <span class="kw">let </span>PartitionCtx {
-<a href=#674 id=674 data-nosnippet>674</a>        rows,
-<a href=#675 id=675 data-nosnippet>675</a>        rank,
-<a href=#676 id=676 data-nosnippet>676</a>        size,
-<a href=#677 id=677 data-nosnippet>677</a>        tracing,
-<a href=#678 id=678 data-nosnippet>678</a>    } = ctx;
-<a href=#679 id=679 data-nosnippet>679</a>    <span class="kw">let </span>n = circuit.channels.len();
-<a href=#680 id=680 data-nosnippet>680</a>    <span class="kw">let </span>adjoint = <span class="macro">matches!</span>(direction, Direction::Heisenberg);
-<a href=#681 id=681 data-nosnippet>681</a>    <span class="kw">let </span>size32 = transport.size();
-<a href=#682 id=682 data-nosnippet>682</a>    <span class="comment">// Both hoisted out of the loop: neither can change inside one, and `finalizes_layer` is a property of the policy *type*, hence the same answer on every partition — which is what makes skipping the call collective-safe.
-<a href=#683 id=683 data-nosnippet>683</a>    </span><span class="kw">let </span>finalizes = policy.finalizes_layer();
-<a href=#684 id=684 data-nosnippet>684</a>    <span class="kw">let </span>policy_calls = AtomicU32::new(<span class="number">0</span>);
-<a href=#685 id=685 data-nosnippet>685</a>    <span class="kw">let </span>local = <span class="kw-2">&amp;mut </span>work.local;
-<a href=#686 id=686 data-nosnippet>686</a>
-<a href=#687 id=687 data-nosnippet>687</a>    <span class="kw">for </span>k <span class="kw">in </span><span class="number">0</span>..n {
-<a href=#688 id=688 data-nosnippet>688</a>        <span class="kw">let </span>idx = <span class="kw">match </span>direction {
-<a href=#689 id=689 data-nosnippet>689</a>            Direction::Forward =&gt; k,
-<a href=#690 id=690 data-nosnippet>690</a>            Direction::Heisenberg =&gt; n - <span class="number">1 </span>- k,
-<a href=#691 id=691 data-nosnippet>691</a>        };
-<a href=#692 id=692 data-nosnippet>692</a>        <span class="kw">let </span>ch: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Channel&lt;W&gt; = circuit.channels[idx].as_ref();
-<a href=#693 id=693 data-nosnippet>693</a>
-<a href=#694 id=694 data-nosnippet>694</a>        <span class="comment">// As in the unpartitioned engine: the per-layer DEBUG log and the opt-in gate trace share one clock read.
-<a href=#695 id=695 data-nosnippet>695</a>        </span><span class="kw">let </span>debug_on = <span class="macro">log::log_enabled!</span>(target: LOG_TARGET, log::Level::Debug);
-<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">let </span>want_timer = tracing || debug_on;
-<a href=#697 id=697 data-nosnippet>697</a>        <span class="kw">let </span>layer_t0 = want_timer.then(Instant::now);
-<a href=#698 id=698 data-nosnippet>698</a>        <span class="kw">let </span>terms_before = local.len();
-<a href=#699 id=699 data-nosnippet>699</a>
-<a href=#700 id=700 data-nosnippet>700</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#701 id=701 data-nosnippet>701</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>st = Stamp::now();
-<a href=#702 id=702 data-nosnippet>702</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#703 id=703 data-nosnippet>703</a>        </span>{
-<a href=#704 id=704 data-nosnippet>704</a>            work.state.layer.stats.layers += <span class="number">1</span>;
-<a href=#705 id=705 data-nosnippet>705</a>            work.state.layer.stats.terms_in += terms_before <span class="kw">as </span>u64;
-<a href=#706 id=706 data-nosnippet>706</a>        }
-<a href=#707 id=707 data-nosnippet>707</a>
-<a href=#708 id=708 data-nosnippet>708</a>        <span class="comment">// Prepared *before* the bucket count is settled, because the plan is what says whether this layer needs a collective at all: a delta's remoteness is a property of its mask and the partition rows, neither of which the bucket count touches.
-<a href=#709 id=709 data-nosnippet>709</a>        // Only `bucket_delta` depends on it, so the prepared form is re-derived below on the rare layer that actually refines.
-<a href=#710 id=710 data-nosnippet>710</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>prep = prepare_or_panic(ch, local, adjoint, rank, idx);
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span><span class="kw-2">mut </span>plan = PartitionPlan::new(<span class="kw-2">&amp;</span>prep, rows, rank <span class="kw">as </span>u32);
-<a href=#712 id=712 data-nosnippet>712</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#713 id=713 data-nosnippet>713</a>        </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.prepare_ns);
-<a href=#714 id=714 data-nosnippet>714</a>
-<a href=#715 id=715 data-nosnippet>715</a>        <span class="comment">// The bucket count, on the BITS_AGREE_EVERY schedule: on any layer that exchanges (both sides index the blocks by it), and otherwise every `BITS_AGREE_EVERY`-th.
-<a href=#716 id=716 data-nosnippet>716</a>        // At `P = 1` there is no group, so the local answer is the agreed one and the loop rebuckets every layer exactly as `propagate` does.
-<a href=#717 id=717 data-nosnippet>717</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>collectives = <span class="number">0u32</span>;
-<a href=#718 id=718 data-nosnippet>718</a>        <span class="kw">let </span>solo = size32 == <span class="number">1</span>;
-<a href=#719 id=719 data-nosnippet>719</a>        <span class="kw">if </span>solo || plan.has_remote() || agrees_bucket_bits(k) {
-<a href=#720 id=720 data-nosnippet>720</a>            <span class="kw">let </span><span class="kw-2">mut </span>want =
-<a href=#721 id=721 data-nosnippet>721</a>                desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
-<a href=#722 id=722 data-nosnippet>722</a>                    .max(local.hash().bits());
-<a href=#723 id=723 data-nosnippet>723</a>            <span class="kw">if </span>!solo {
-<a href=#724 id=724 data-nosnippet>724</a>                want = transport.allreduce_max_u8(want);
-<a href=#725 id=725 data-nosnippet>725</a>                collectives += <span class="number">1</span>;
-<a href=#726 id=726 data-nosnippet>726</a>            }
-<a href=#727 id=727 data-nosnippet>727</a>            <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#728 id=728 data-nosnippet>728</a>            </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.collective_ns);
-<a href=#729 id=729 data-nosnippet>729</a>            <span class="kw">if </span>want &gt; local.hash().bits() {
-<a href=#730 id=730 data-nosnippet>730</a>                <span class="kw">while </span>local.hash().bits() &lt; want {
-<a href=#731 id=731 data-nosnippet>731</a>                    local.refine();
-<a href=#732 id=732 data-nosnippet>732</a>                }
-<a href=#733 id=733 data-nosnippet>733</a>                <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#734 id=734 data-nosnippet>734</a>                </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.rebucket_ns);
-<a href=#735 id=735 data-nosnippet>735</a>                <span class="comment">// The hash moved, so every `bucket_delta` in the prepared form did too.
-<a href=#736 id=736 data-nosnippet>736</a>                // Rare — the count is grow-only and settles — and this is the only reason a layer prepares twice.
-<a href=#737 id=737 data-nosnippet>737</a>                </span>prep = prepare_or_panic(ch, local, adjoint, rank, idx);
-<a href=#738 id=738 data-nosnippet>738</a>                plan = PartitionPlan::new(<span class="kw-2">&amp;</span>prep, rows, rank <span class="kw">as </span>u32);
-<a href=#739 id=739 data-nosnippet>739</a>                <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#740 id=740 data-nosnippet>740</a>                </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.prepare_ns);
-<a href=#741 id=741 data-nosnippet>741</a>            }
-<a href=#742 id=742 data-nosnippet>742</a>        }
-<a href=#743 id=743 data-nosnippet>743</a>
-<a href=#744 id=744 data-nosnippet>744</a>        <span class="comment">// The layer times its own export, exchange and coset loop into the same `LayerScratch`.
-<a href=#745 id=745 data-nosnippet>745</a>        </span><span class="kw">let </span>counts = apply_layer_partitioned_with_plan(
-<a href=#746 id=746 data-nosnippet>746</a>            local,
-<a href=#747 id=747 data-nosnippet>747</a>            <span class="kw-2">&amp;</span>prep,
-<a href=#748 id=748 data-nosnippet>748</a>            <span class="kw-2">&amp;</span>plan,
-<a href=#749 id=749 data-nosnippet>749</a>            rows,
-<a href=#750 id=750 data-nosnippet>750</a>            policy,
-<a href=#751 id=751 data-nosnippet>751</a>            <span class="kw-2">&amp;mut </span>work.state,
-<a href=#752 id=752 data-nosnippet>752</a>            transport,
-<a href=#753 id=753 data-nosnippet>753</a>        );
-<a href=#754 id=754 data-nosnippet>754</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#755 id=755 data-nosnippet>755</a>        </span>st.rearm();
-<a href=#756 id=756 data-nosnippet>756</a>
-<a href=#757 id=757 data-nosnippet>757</a>        <span class="comment">// Collective, so it runs on every partition or on none — and `finalizes_layer` is the same answer on all of them (see `PartitionedTruncation`).
-<a href=#758 id=758 data-nosnippet>758</a>        // A policy with no layer pass costs nothing.
-<a href=#759 id=759 data-nosnippet>759</a>        </span><span class="kw">if </span>finalizes {
-<a href=#760 id=760 data-nosnippet>760</a>            policy_calls.store(<span class="number">0</span>, Ordering::Relaxed);
-<a href=#761 id=761 data-nosnippet>761</a>            <span class="kw">let </span>counting = CountingCollectives {
-<a href=#762 id=762 data-nosnippet>762</a>                inner: transport,
-<a href=#763 id=763 data-nosnippet>763</a>                calls: <span class="kw-2">&amp;</span>policy_calls,
-<a href=#764 id=764 data-nosnippet>764</a>            };
-<a href=#765 id=765 data-nosnippet>765</a>            policy.finalize_layer_partitioned(local, <span class="kw-2">&amp;</span>counting);
-<a href=#766 id=766 data-nosnippet>766</a>            collectives += policy_calls.load(Ordering::Relaxed);
-<a href=#767 id=767 data-nosnippet>767</a>        }
-<a href=#768 id=768 data-nosnippet>768</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#769 id=769 data-nosnippet>769</a>        </span>{
-<a href=#770 id=770 data-nosnippet>770</a>            st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.finalize_ns);
-<a href=#771 id=771 data-nosnippet>771</a>            work.state.layer.stats.terms_out += local.len() <span class="kw">as </span>u64;
-<a href=#772 id=772 data-nosnippet>772</a>        }
-<a href=#773 id=773 data-nosnippet>773</a>
-<a href=#774 id=774 data-nosnippet>774</a>        <span class="comment">// Opt-in trace, behind a hoisted flag and a `#[cold]` callee for the same reason as the unpartitioned engine's term trace: this loop inlines the bucketed layer, whose merge kernels are sensitive to code motion (CLAUDE.md §Performance discipline).
-<a href=#775 id=775 data-nosnippet>775</a>        // The counts are moved, not copied — the exchange already allocated them.
-<a href=#776 id=776 data-nosnippet>776</a>        </span><span class="kw">let </span>remote_deltas = counts.remote_deltas;
-<a href=#777 id=777 data-nosnippet>777</a>        <span class="kw">let </span>rows_received = counts.rows_received;
-<a href=#778 id=778 data-nosnippet>778</a>        <span class="kw">let </span>dt = layer_t0.map(|t0| t0.elapsed());
-<a href=#779 id=779 data-nosnippet>779</a>        <span class="kw">if </span>tracing {
-<a href=#780 id=780 data-nosnippet>780</a>            record_layer_row(
-<a href=#781 id=781 data-nosnippet>781</a>                <span class="kw-2">&amp;mut </span>work.rows,
-<a href=#782 id=782 data-nosnippet>782</a>                local.hash().bits(),
-<a href=#783 id=783 data-nosnippet>783</a>                collectives,
-<a href=#784 id=784 data-nosnippet>784</a>                idx <span class="kw">as </span>u32,
-<a href=#785 id=785 data-nosnippet>785</a>                k <span class="kw">as </span>u32,
-<a href=#786 id=786 data-nosnippet>786</a>                ch.debug_name(),
-<a href=#787 id=787 data-nosnippet>787</a>                terms_before,
-<a href=#788 id=788 data-nosnippet>788</a>                local.len(),
-<a href=#789 id=789 data-nosnippet>789</a>                counts,
-<a href=#790 id=790 data-nosnippet>790</a>                dt.unwrap_or_default().as_nanos() <span class="kw">as </span>u64,
-<a href=#791 id=791 data-nosnippet>791</a>            );
-<a href=#792 id=792 data-nosnippet>792</a>        }
-<a href=#793 id=793 data-nosnippet>793</a>
-<a href=#794 id=794 data-nosnippet>794</a>        <span class="kw">if </span>debug_on {
-<a href=#795 id=795 data-nosnippet>795</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = dt {
-<a href=#796 id=796 data-nosnippet>796</a>                <span class="macro">log::debug!</span>(
-<a href=#797 id=797 data-nosnippet>797</a>                    target: LOG_TARGET,
-<a href=#798 id=798 data-nosnippet>798</a>                    <span class="string">"partition {}/{} layer {}/{} [{}]: {} -&gt; {} terms, {} remote deltas, \
-<a href=#799 id=799 data-nosnippet>799</a>                     {} rows in, {:.1} ms"</span>,
-<a href=#800 id=800 data-nosnippet>800</a>                    rank,
-<a href=#801 id=801 data-nosnippet>801</a>                    size,
-<a href=#802 id=802 data-nosnippet>802</a>                    k + <span class="number">1</span>,
-<a href=#803 id=803 data-nosnippet>803</a>                    n,
-<a href=#804 id=804 data-nosnippet>804</a>                    ch.debug_name(),
-<a href=#805 id=805 data-nosnippet>805</a>                    terms_before,
-<a href=#806 id=806 data-nosnippet>806</a>                    local.len(),
-<a href=#807 id=807 data-nosnippet>807</a>                    remote_deltas,
-<a href=#808 id=808 data-nosnippet>808</a>                    rows_received,
-<a href=#809 id=809 data-nosnippet>809</a>                    dt.as_secs_f64() * <span class="number">1e3</span>,
-<a href=#810 id=810 data-nosnippet>810</a>                );
-<a href=#811 id=811 data-nosnippet>811</a>            }
-<a href=#812 id=812 data-nosnippet>812</a>        }
-<a href=#813 id=813 data-nosnippet>813</a>    }
-<a href=#814 id=814 data-nosnippet>814</a>}
-<a href=#815 id=815 data-nosnippet>815</a>
-<a href=#816 id=816 data-nosnippet>816</a><span class="doccomment">/// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
-<a href=#817 id=817 data-nosnippet>817</a>///
-<a href=#818 id=818 data-nosnippet>818</a>/// One-shot convenience: it builds a [`PartitionRuntime`], scatters, runs and gathers.
-<a href=#819 id=819 data-nosnippet>819</a>/// A caller propagating repeatedly (a Trotter driver stepping an observable) should hold the runtime and a [`PartitionedSum`] instead, so the pools, the split and the scratch survive between calls.
-<a href=#820 id=820 data-nosnippet>820</a>///
-<a href=#821 id=821 data-nosnippet>821</a>/// # Errors
-<a href=#822 id=822 data-nosnippet>822</a>///
-<a href=#823 id=823 data-nosnippet>823</a>/// [`TopologyError`] if `config` cannot be resolved into slots or a pool cannot be built.
-<a href=#824 id=824 data-nosnippet>824</a>/// Everything else is a panic, as in [`propagate`](crate::propagate).
-<a href=#825 id=825 data-nosnippet>825</a>///
-<a href=#826 id=826 data-nosnippet>826</a>/// # Examples
-<a href=#827 id=827 data-nosnippet>827</a>///
-<a href=#828 id=828 data-nosnippet>828</a>/// ```
-<a href=#829 id=829 data-nosnippet>829</a>/// use paulistrings::channel::Clifford1Q;
-<a href=#830 id=830 data-nosnippet>830</a>/// use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
-<a href=#831 id=831 data-nosnippet>831</a>/// use paulistrings::{
-<a href=#832 id=832 data-nosnippet>832</a>///     BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, Phase,
-<a href=#833 id=833 data-nosnippet>833</a>///     TruncationPolicy,
-<a href=#834 id=834 data-nosnippet>834</a>/// };
-<a href=#835 id=835 data-nosnippet>835</a>/// use num_complex::Complex64;
-<a href=#836 id=836 data-nosnippet>836</a>///
-<a href=#837 id=837 data-nosnippet>837</a>/// struct KeepAll;
-<a href=#838 id=838 data-nosnippet>838</a>/// impl&lt;const W: usize&gt; TruncationPolicy&lt;W&gt; for KeepAll {
-<a href=#839 id=839 data-nosnippet>839</a>///     // `finalizes_layer`'s default is the conservative `true`; the
-<a href=#840 id=840 data-nosnippet>840</a>///     // `PartitionedTruncation` default body rejects that, since it cannot
-<a href=#841 id=841 data-nosnippet>841</a>///     // know a layer pass it would be skipping is a no-op.
-<a href=#842 id=842 data-nosnippet>842</a>///     fn finalizes_layer(&amp;self) -&gt; bool { false }
-<a href=#843 id=843 data-nosnippet>843</a>/// }
-<a href=#844 id=844 data-nosnippet>844</a>/// impl&lt;const W: usize&gt; PartitionedTruncation&lt;W&gt; for KeepAll {}
-<a href=#845 id=845 data-nosnippet>845</a>///
-<a href=#846 id=846 data-nosnippet>846</a>/// let mut acc = BuildAccumulator::&lt;1&gt;::new(2);
-<a href=#847 id=847 data-nosnippet>847</a>/// acc.add_term(PauliString::&lt;1&gt;::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-<a href=#848 id=848 data-nosnippet>848</a>/// let mut circuit = Circuit::&lt;1&gt;::new(2);
-<a href=#849 id=849 data-nosnippet>849</a>/// circuit.push(Clifford1Q::h(0));
-<a href=#850 id=850 data-nosnippet>850</a>///
-<a href=#851 id=851 data-nosnippet>851</a>/// let config = PartitionConfig {
-<a href=#852 id=852 data-nosnippet>852</a>///     placement: Placement::Unpinned { partitions: 2, threads_per_partition: Some(1) },
-<a href=#853 id=853 data-nosnippet>853</a>///     bind_memory: false,
-<a href=#854 id=854 data-nosnippet>854</a>///     partition_row_seed: None,
-<a href=#855 id=855 data-nosnippet>855</a>/// };
-<a href=#856 id=856 data-nosnippet>856</a>/// let out = propagate_partitioned(
-<a href=#857 id=857 data-nosnippet>857</a>///     &amp;circuit, acc.finalize(), &amp;KeepAll, Direction::Heisenberg, &amp;config,
-<a href=#858 id=858 data-nosnippet>858</a>/// ).expect("topology resolves");
-<a href=#859 id=859 data-nosnippet>859</a>/// assert_eq!(out.get(&amp;[1], &amp;[0]), Some(Complex64::new(1.0, 0.0)));
-<a href=#860 id=860 data-nosnippet>860</a>/// ```
-<a href=#861 id=861 data-nosnippet>861</a></span><span class="kw">pub fn </span>propagate_partitioned&lt;<span class="kw">const </span>W: usize, T&gt;(
-<a href=#862 id=862 data-nosnippet>862</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
-<a href=#863 id=863 data-nosnippet>863</a>    sum: PauliSum&lt;W&gt;,
-<a href=#864 id=864 data-nosnippet>864</a>    policy: <span class="kw-2">&amp;</span>T,
-<a href=#865 id=865 data-nosnippet>865</a>    direction: Direction,
-<a href=#866 id=866 data-nosnippet>866</a>    config: <span class="kw-2">&amp;</span>PartitionConfig,
-<a href=#867 id=867 data-nosnippet>867</a>) -&gt; <span class="prelude-ty">Result</span>&lt;PauliSum&lt;W&gt;, TopologyError&gt;
-<a href=#868 id=868 data-nosnippet>868</a><span class="kw">where
-<a href=#869 id=869 data-nosnippet>869</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
-<a href=#870 id=870 data-nosnippet>870</a>{
-<a href=#871 id=871 data-nosnippet>871</a>    propagate_partitioned_with_options(
-<a href=#872 id=872 data-nosnippet>872</a>        circuit,
-<a href=#873 id=873 data-nosnippet>873</a>        sum,
-<a href=#874 id=874 data-nosnippet>874</a>        policy,
-<a href=#875 id=875 data-nosnippet>875</a>        direction,
-<a href=#876 id=876 data-nosnippet>876</a>        config,
-<a href=#877 id=877 data-nosnippet>877</a>        PropagateOptions::default(),
-<a href=#878 id=878 data-nosnippet>878</a>    )
-<a href=#879 id=879 data-nosnippet>879</a>}
-<a href=#880 id=880 data-nosnippet>880</a>
-<a href=#881 id=881 data-nosnippet>881</a><span class="doccomment">/// [`propagate_partitioned`] with explicit [`PropagateOptions`].
-<a href=#882 id=882 data-nosnippet>882</a>///
-<a href=#883 id=883 data-nosnippet>883</a>/// [`EngineSelection`](crate::EngineSelection) is ignored; see
-<a href=#884 id=884 data-nosnippet>884</a>/// [`PartitionedSum::propagate_with_options`].
-<a href=#885 id=885 data-nosnippet>885</a>///
-<a href=#886 id=886 data-nosnippet>886</a>/// # Errors
-<a href=#887 id=887 data-nosnippet>887</a>///
-<a href=#888 id=888 data-nosnippet>888</a>/// [`TopologyError`], as [`propagate_partitioned`].
-<a href=#889 id=889 data-nosnippet>889</a></span><span class="kw">pub fn </span>propagate_partitioned_with_options&lt;<span class="kw">const </span>W: usize, T&gt;(
-<a href=#890 id=890 data-nosnippet>890</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
-<a href=#891 id=891 data-nosnippet>891</a>    sum: PauliSum&lt;W&gt;,
-<a href=#892 id=892 data-nosnippet>892</a>    policy: <span class="kw-2">&amp;</span>T,
-<a href=#893 id=893 data-nosnippet>893</a>    direction: Direction,
-<a href=#894 id=894 data-nosnippet>894</a>    config: <span class="kw-2">&amp;</span>PartitionConfig,
-<a href=#895 id=895 data-nosnippet>895</a>    options: PropagateOptions,
-<a href=#896 id=896 data-nosnippet>896</a>) -&gt; <span class="prelude-ty">Result</span>&lt;PauliSum&lt;W&gt;, TopologyError&gt;
-<a href=#897 id=897 data-nosnippet>897</a><span class="kw">where
-<a href=#898 id=898 data-nosnippet>898</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
-<a href=#899 id=899 data-nosnippet>899</a>{
-<a href=#900 id=900 data-nosnippet>900</a>    <span class="kw">let </span>runtime = PartitionRuntime::new(config)<span class="question-mark">?</span>;
-<a href=#901 id=901 data-nosnippet>901</a>    <span class="kw">let </span><span class="kw-2">mut </span>split = PartitionedSum::scatter(sum, runtime, config);
-<a href=#902 id=902 data-nosnippet>902</a>    split.propagate_with_options(circuit, policy, direction, options);
-<a href=#903 id=903 data-nosnippet>903</a>    <span class="prelude-val">Ok</span>(split.into_gathered())
-<a href=#904 id=904 data-nosnippet>904</a>}
-<a href=#905 id=905 data-nosnippet>905</a>
-<a href=#906 id=906 data-nosnippet>906</a><span class="attr">#[cfg(test)]
-<a href=#907 id=907 data-nosnippet>907</a></span><span class="kw">mod </span>tests {
-<a href=#908 id=908 data-nosnippet>908</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#909 id=909 data-nosnippet>909</a>
-<a href=#910 id=910 data-nosnippet>910</a>    <span class="doccomment">/// `P = 1` sheds nothing, so a scatter cannot change the bucket count and the partitioned run starts exactly where `propagate` would.
-<a href=#911 id=911 data-nosnippet>911</a>    </span><span class="attr">#[test]
-<a href=#912 id=912 data-nosnippet>912</a>    </span><span class="kw">fn </span>scatter_bits_is_the_identity_at_one_partition() {
-<a href=#913 id=913 data-nosnippet>913</a>        <span class="kw">for </span>bits <span class="kw">in </span><span class="number">0u8</span>..<span class="number">12 </span>{
-<a href=#914 id=914 data-nosnippet>914</a>            <span class="kw">for </span>want <span class="kw">in </span><span class="number">0u8</span>..<span class="number">12 </span>{
-<a href=#915 id=915 data-nosnippet>915</a>                <span class="macro">assert_eq!</span>(scatter_bits(bits, <span class="number">0</span>, want), bits, <span class="string">"bits={bits} want={want}"</span>);
-<a href=#916 id=916 data-nosnippet>916</a>            }
-<a href=#917 id=917 data-nosnippet>917</a>        }
-<a href=#918 id=918 data-nosnippet>918</a>    }
-<a href=#919 id=919 data-nosnippet>919</a>
-<a href=#920 id=920 data-nosnippet>920</a>    <span class="doccomment">/// With `P` partitions the count sheds `log2(P)` bits, so the bucket count summed over partitions is the unpartitioned one — unless a partition's own share wants more.
-<a href=#921 id=921 data-nosnippet>921</a>    </span><span class="attr">#[test]
-<a href=#922 id=922 data-nosnippet>922</a>    </span><span class="kw">fn </span>scatter_bits_sheds_at_most_log2_p() {
-<a href=#923 id=923 data-nosnippet>923</a>        <span class="comment">// Incoming 10 bits, 4 partitions each wanting 8: shed exactly 2.
-<a href=#924 id=924 data-nosnippet>924</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">8</span>), <span class="number">8</span>);
-<a href=#925 id=925 data-nosnippet>925</a>        <span class="comment">// Wanting more than the split leaves: the want wins, capped by what is there (the layer loop grows past it).
-<a href=#926 id=926 data-nosnippet>926</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">9</span>), <span class="number">9</span>);
-<a href=#927 id=927 data-nosnippet>927</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">12</span>), <span class="number">10</span>);
-<a href=#928 id=928 data-nosnippet>928</a>        <span class="comment">// Wanting less than the split leaves: never shed more than log2(P).
-<a href=#929 id=929 data-nosnippet>929</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">3</span>), <span class="number">8</span>);
-<a href=#930 id=930 data-nosnippet>930</a>        <span class="comment">// Fewer incoming bits than there are partitions: the floor saturates at a single bucket per partition, so the per-share want decides.
-<a href=#931 id=931 data-nosnippet>931</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">1</span>, <span class="number">2</span>, <span class="number">0</span>), <span class="number">0</span>);
-<a href=#932 id=932 data-nosnippet>932</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">1</span>, <span class="number">2</span>, <span class="number">1</span>), <span class="number">1</span>);
-<a href=#933 id=933 data-nosnippet>933</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">0</span>, <span class="number">4</span>, <span class="number">0</span>), <span class="number">0</span>);
-<a href=#934 id=934 data-nosnippet>934</a>    }
-<a href=#935 id=935 data-nosnippet>935</a>}
+<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">if </span><span class="self">self</span>.rows.keeps_flip_classes(sites, axis) {
+<a href=#479 id=479 data-nosnippet>479</a>            <span class="self">self</span>.locals
+<a href=#480 id=480 data-nosnippet>480</a>                .iter()
+<a href=#481 id=481 data-nosnippet>481</a>                .map(|local| local.rotated_overlap(sites, delta, axis))
+<a href=#482 id=482 data-nosnippet>482</a>                .sum()
+<a href=#483 id=483 data-nosnippet>483</a>        } <span class="kw">else </span>{
+<a href=#484 id=484 data-nosnippet>484</a>            <span class="self">self</span>.gather().rotated_overlap(sites, delta, axis)
+<a href=#485 id=485 data-nosnippet>485</a>        }
+<a href=#486 id=486 data-nosnippet>486</a>    }
+<a href=#487 id=487 data-nosnippet>487</a>
+<a href=#488 id=488 data-nosnippet>488</a>    <span class="doccomment">/// Start recording a [`PartitionTrace`] on every subsequent [`propagate`](Self::propagate) call.
+<a href=#489 id=489 data-nosnippet>489</a>    /// Idempotent, and it never discards records already taken.
+<a href=#490 id=490 data-nosnippet>490</a>    ///
+<a href=#491 id=491 data-nosnippet>491</a>    /// Always compiled, unlike the `phase-timing` counters: everything recorded is already computed by the layer, so a traced layer costs a `Vec` push on the partition's driving thread and an untraced one costs a register test.
+<a href=#492 id=492 data-nosnippet>492</a>    </span><span class="kw">pub fn </span>enable_trace(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+<a href=#493 id=493 data-nosnippet>493</a>        <span class="self">self</span>.trace.get_or_insert_with(PartitionTrace::default);
+<a href=#494 id=494 data-nosnippet>494</a>    }
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a>    <span class="doccomment">/// Drain and return the per-layer records, or `None` if tracing was never enabled (`Some` iff tracing is on).
+<a href=#497 id=497 data-nosnippet>497</a>    ///
+<a href=#498 id=498 data-nosnippet>498</a>    /// Draining leaves tracing *enabled* with no records, so a sum reused across calls reports each call separately without re-enabling; records accumulate across layers and calls until drained.
+<a href=#499 id=499 data-nosnippet>499</a>    </span><span class="kw">pub fn </span>take_trace(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;PartitionTrace&gt; {
+<a href=#500 id=500 data-nosnippet>500</a>        <span class="self">self</span>.trace.as_mut().map(std::mem::take)
+<a href=#501 id=501 data-nosnippet>501</a>    }
+<a href=#502 id=502 data-nosnippet>502</a>
+<a href=#503 id=503 data-nosnippet>503</a>    <span class="doccomment">/// Drain and return the per-phase timing counters: one [`PhaseStats`] per partition, plus the driver's own scatter/gather time and layer count.
+<a href=#504 id=504 data-nosnippet>504</a>    ///
+<a href=#505 id=505 data-nosnippet>505</a>    /// Every counter is zeroed afterwards, so a probe can read one measured region at a time.
+<a href=#506 id=506 data-nosnippet>506</a>    /// `gather_ns` covers [`Self::gather`] calls only — [`Self::into_gathered`] consumes the sum, and with it the counters.
+<a href=#507 id=507 data-nosnippet>507</a>    </span><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#508 id=508 data-nosnippet>508</a>    </span><span class="kw">pub fn </span>take_stats(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; PartitionPhaseStats {
+<a href=#509 id=509 data-nosnippet>509</a>        PartitionPhaseStats {
+<a href=#510 id=510 data-nosnippet>510</a>            per_partition: <span class="self">self
+<a href=#511 id=511 data-nosnippet>511</a>                </span>.states
+<a href=#512 id=512 data-nosnippet>512</a>                .iter_mut()
+<a href=#513 id=513 data-nosnippet>513</a>                .map(|state| state.layer.take_stats())
+<a href=#514 id=514 data-nosnippet>514</a>                .collect(),
+<a href=#515 id=515 data-nosnippet>515</a>            scatter_ns: std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.scatter_ns),
+<a href=#516 id=516 data-nosnippet>516</a>            gather_ns: <span class="self">self</span>.gather_ns.swap(<span class="number">0</span>, std::sync::atomic::Ordering::Relaxed),
+<a href=#517 id=517 data-nosnippet>517</a>            layers: std::mem::take(<span class="kw-2">&amp;mut </span><span class="self">self</span>.layers),
+<a href=#518 id=518 data-nosnippet>518</a>        }
+<a href=#519 id=519 data-nosnippet>519</a>    }
+<a href=#520 id=520 data-nosnippet>520</a>
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="doccomment">/// Debug helper: checks every invariant a partitioned sum is supposed to
+<a href=#522 id=522 data-nosnippet>522</a>    /// hold between calls.
+<a href=#523 id=523 data-nosnippet>523</a>    ///
+<a href=#524 id=524 data-nosnippet>524</a>    /// `O(terms)` — a full scan per partition — so it belongs in a test or an
+<a href=#525 id=525 data-nosnippet>525</a>    /// assertion, not in a loop. The per-partition structural check is
+<a href=#526 id=526 data-nosnippet>526</a>    /// `PauliSum`'s own `assert_invariants`, which exists only in test and
+<a href=#527 id=527 data-nosnippet>527</a>    /// debug builds; in a release build this checks the cross-partition
+<a href=#528 id=528 data-nosnippet>528</a>    /// properties alone.
+<a href=#529 id=529 data-nosnippet>529</a>    ///
+<a href=#530 id=530 data-nosnippet>530</a>    /// # Panics
+<a href=#531 id=531 data-nosnippet>531</a>    ///
+<a href=#532 id=532 data-nosnippet>532</a>    /// If a partition's sum is internally inconsistent, holds a key belonging
+<a href=#533 id=533 data-nosnippet>533</a>    /// to another partition, or disagrees with partition 0 about the hash rows,
+<a href=#534 id=534 data-nosnippet>534</a>    /// the bucket count or the qubit count.
+<a href=#535 id=535 data-nosnippet>535</a>    </span><span class="kw">pub fn </span>assert_invariants(<span class="kw-2">&amp;</span><span class="self">self</span>) {
+<a href=#536 id=536 data-nosnippet>536</a>        <span class="macro">assert_eq!</span>(
+<a href=#537 id=537 data-nosnippet>537</a>            <span class="self">self</span>.locals.len(),
+<a href=#538 id=538 data-nosnippet>538</a>            <span class="self">self</span>.rows.num_partitions(),
+<a href=#539 id=539 data-nosnippet>539</a>            <span class="string">"partition count disagrees with the rows"</span>,
+<a href=#540 id=540 data-nosnippet>540</a>        );
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="kw">let </span>head = <span class="kw-2">&amp;</span><span class="self">self</span>.locals[<span class="number">0</span>];
+<a href=#542 id=542 data-nosnippet>542</a>        <span class="kw">for </span>(rank, local) <span class="kw">in </span><span class="self">self</span>.locals.iter().enumerate() {
+<a href=#543 id=543 data-nosnippet>543</a>            <span class="comment">// `PauliSum::assert_invariants` itself exists only in test and
+<a href=#544 id=544 data-nosnippet>544</a>            // debug builds; the cross-partition checks below are always
+<a href=#545 id=545 data-nosnippet>545</a>            // compiled, so this method's signature does not change with the
+<a href=#546 id=546 data-nosnippet>546</a>            // profile.
+<a href=#547 id=547 data-nosnippet>547</a>            </span><span class="attr">#[cfg(any(test, debug_assertions))]
+<a href=#548 id=548 data-nosnippet>548</a>            </span>local.assert_invariants();
+<a href=#549 id=549 data-nosnippet>549</a>            <span class="macro">assert_eq!</span>(
+<a href=#550 id=550 data-nosnippet>550</a>                local.num_qubits(),
+<a href=#551 id=551 data-nosnippet>551</a>                head.num_qubits(),
+<a href=#552 id=552 data-nosnippet>552</a>                <span class="string">"partition {rank}: qubit count differs from partition 0"</span>,
+<a href=#553 id=553 data-nosnippet>553</a>            );
+<a href=#554 id=554 data-nosnippet>554</a>            <span class="macro">assert!</span>(
+<a href=#555 id=555 data-nosnippet>555</a>                local.hash().same_rows_as(head.hash()),
+<a href=#556 id=556 data-nosnippet>556</a>                <span class="string">"partition {rank}: hash rows differ from partition 0"</span>,
+<a href=#557 id=557 data-nosnippet>557</a>            );
+<a href=#558 id=558 data-nosnippet>558</a>            <span class="macro">assert_eq!</span>(
+<a href=#559 id=559 data-nosnippet>559</a>                local.hash().bits(),
+<a href=#560 id=560 data-nosnippet>560</a>                head.hash().bits(),
+<a href=#561 id=561 data-nosnippet>561</a>                <span class="string">"partition {rank}: bucket bits differ from partition 0"</span>,
+<a href=#562 id=562 data-nosnippet>562</a>            );
+<a href=#563 id=563 data-nosnippet>563</a>            <span class="kw">let </span>held = local.partition_rank_of_all(<span class="kw-2">&amp;</span><span class="self">self</span>.rows);
+<a href=#564 id=564 data-nosnippet>564</a>            <span class="macro">assert!</span>(
+<a href=#565 id=565 data-nosnippet>565</a>                held.is_none() || held == <span class="prelude-val">Some</span>(rank <span class="kw">as </span>u32),
+<a href=#566 id=566 data-nosnippet>566</a>                <span class="string">"partition {rank} holds keys of partition {held:?}"</span>,
+<a href=#567 id=567 data-nosnippet>567</a>            );
+<a href=#568 id=568 data-nosnippet>568</a>        }
+<a href=#569 id=569 data-nosnippet>569</a>    }
+<a href=#570 id=570 data-nosnippet>570</a>}
+<a href=#571 id=571 data-nosnippet>571</a>
+<a href=#572 id=572 data-nosnippet>572</a><span class="doccomment">/// The partitioned engine's phase breakdown: one [`PhaseStats`] per partition plus the driver's own counters.
+<a href=#573 id=573 data-nosnippet>573</a>///
+<a href=#574 id=574 data-nosnippet>574</a>/// Drained by [`PartitionedSum::take_stats`].
+<a href=#575 id=575 data-nosnippet>575</a>/// Each partition's `PhaseStats` was measured on that partition's own driving thread and its own pool, so the wall-clock fields are **concurrent**, not additive: the partitions ran at the same time, and the spread between them is the group's load imbalance.
+<a href=#576 id=576 data-nosnippet>576</a>/// `exchange_ns` in particular absorbs the wait for a partner, so a partition that finishes its own share early pays for the imbalance there.
+<a href=#577 id=577 data-nosnippet>577</a></span><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#578 id=578 data-nosnippet>578</a>#[derive(Clone, Debug, Default, PartialEq, Eq)]
+<a href=#579 id=579 data-nosnippet>579</a></span><span class="kw">pub struct </span>PartitionPhaseStats {
+<a href=#580 id=580 data-nosnippet>580</a>    <span class="doccomment">/// One breakdown per partition, in rank order.
+<a href=#581 id=581 data-nosnippet>581</a>    </span><span class="kw">pub </span>per_partition: Vec&lt;PhaseStats&gt;,
+<a href=#582 id=582 data-nosnippet>582</a>    <span class="doccomment">/// Wall time of the scatter that built this sum (filter + coarsen, on the
+<a href=#583 id=583 data-nosnippet>583</a>    /// partitions' own pools).
+<a href=#584 id=584 data-nosnippet>584</a>    </span><span class="kw">pub </span>scatter_ns: u64,
+<a href=#585 id=585 data-nosnippet>585</a>    <span class="doccomment">/// Wall time summed over [`PartitionedSum::gather`] calls.
+<a href=#586 id=586 data-nosnippet>586</a>    </span><span class="kw">pub </span>gather_ns: u64,
+<a href=#587 id=587 data-nosnippet>587</a>    <span class="doccomment">/// Layers driven since the counters were last drained.
+<a href=#588 id=588 data-nosnippet>588</a>    </span><span class="kw">pub </span>layers: u64,
+<a href=#589 id=589 data-nosnippet>589</a>}
+<a href=#590 id=590 data-nosnippet>590</a>
+<a href=#591 id=591 data-nosnippet>591</a><span class="doccomment">/// One partition's share of `sum`, at the bucket count the group agrees on — **the** scatter body, shared by the in-process and distributed drivers.
+<a href=#592 id=592 data-nosnippet>592</a>///
+<a href=#593 id=593 data-nosnippet>593</a>/// Runs on the partition's own pool (the caller is inside `install`), so every column is first-touched in the domain that will read it.
+<a href=#594 id=594 data-nosnippet>594</a>/// One collective: the per-partition [`desired_bits`] maximum, which is what makes the group agree on a count before the first layer.
+<a href=#595 id=595 data-nosnippet>595</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>scatter_local&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#596 id=596 data-nosnippet>596</a>    sum: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;,
+<a href=#597 id=597 data-nosnippet>597</a>    rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
+<a href=#598 id=598 data-nosnippet>598</a>    rank: u32,
+<a href=#599 id=599 data-nosnippet>599</a>    coll: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Collectives,
+<a href=#600 id=600 data-nosnippet>600</a>) -&gt; PauliSum&lt;W&gt; {
+<a href=#601 id=601 data-nosnippet>601</a>    <span class="kw">let </span><span class="kw-2">mut </span>local = sum.filter_partition(rows, rank);
+<a href=#602 id=602 data-nosnippet>602</a>    <span class="kw">let </span>want = desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+<a href=#603 id=603 data-nosnippet>603</a>    <span class="kw">let </span>want = coll.allreduce_max_u8(want);
+<a href=#604 id=604 data-nosnippet>604</a>    local.coarsen_to(scatter_bits(local.hash().bits(), rows.bits(), want));
+<a href=#605 id=605 data-nosnippet>605</a>    local
+<a href=#606 id=606 data-nosnippet>606</a>}
+<a href=#607 id=607 data-nosnippet>607</a>
+<a href=#608 id=608 data-nosnippet>608</a><span class="doccomment">/// The bucket bits a partition takes on at scatter: at most `pbits` shed from the count the unpartitioned sum arrived with, and never below what this partition's own share wants.
+<a href=#609 id=609 data-nosnippet>609</a>///
+<a href=#610 id=610 data-nosnippet>610</a>/// `bits` is the incoming count, `pbits = log2(P)`, `want` the all-reduced per-partition [`desired_bits`].
+<a href=#611 id=611 data-nosnippet>611</a>/// Shedding exactly `pbits` keeps the bucket count *summed over partitions* equal to the unpartitioned one; the `want` floor stops a sum that arrived under-bucketed from being coarsened at all.
+<a href=#612 id=612 data-nosnippet>612</a>/// At `P = 1`, `pbits = 0`, so this is `bits` — the scatter is the identity and the partitioned run is the unpartitioned one.
+<a href=#613 id=613 data-nosnippet>613</a></span><span class="kw">fn </span>scatter_bits(bits: u8, pbits: u8, want: u8) -&gt; u8 {
+<a href=#614 id=614 data-nosnippet>614</a>    want.max(bits.saturating_sub(pbits)).min(bits)
+<a href=#615 id=615 data-nosnippet>615</a>}
+<a href=#616 id=616 data-nosnippet>616</a>
+<a href=#617 id=617 data-nosnippet>617</a><span class="doccomment">/// What a partition knows about itself while it walks the layers: which keys are its own, where it sits in the group, and whether it is recording.
+<a href=#618 id=618 data-nosnippet>618</a>///
+<a href=#619 id=619 data-nosnippet>619</a>/// The two drivers fill this differently — `rank` and `size` come from `map_partitions` in one and from the transport in the other — and nothing in the loop below cares which.
+<a href=#620 id=620 data-nosnippet>620</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>PartitionCtx&lt;<span class="lifetime">'a</span>, <span class="kw">const </span>W: usize&gt; {
+<a href=#621 id=621 data-nosnippet>621</a>    <span class="doccomment">/// The rows deciding which partition a key belongs to.
+<a href=#622 id=622 data-nosnippet>622</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) rows: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>PartitionRows&lt;W&gt;,
+<a href=#623 id=623 data-nosnippet>623</a>    <span class="doccomment">/// This partition's index, for the per-layer log line.
+<a href=#624 id=624 data-nosnippet>624</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) rank: usize,
+<a href=#625 id=625 data-nosnippet>625</a>    <span class="doccomment">/// Partitions in the group, likewise.
+<a href=#626 id=626 data-nosnippet>626</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) size: usize,
+<a href=#627 id=627 data-nosnippet>627</a>    <span class="doccomment">/// Whether to append a [`PartitionLayerRow`] per layer. Hoisted out of the
+<a href=#628 id=628 data-nosnippet>628</a>    /// loop: nothing inside one can turn tracing on or off.
+<a href=#629 id=629 data-nosnippet>629</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) tracing: bool,
+<a href=#630 id=630 data-nosnippet>630</a>}
+<a href=#631 id=631 data-nosnippet>631</a>
+<a href=#632 id=632 data-nosnippet>632</a><span class="doccomment">/// [`Channel::prepare`] or the engine's one hard error.
+<a href=#633 id=633 data-nosnippet>633</a>///
+<a href=#634 id=634 data-nosnippet>634</a>/// Called twice on a layer that refines (the bucket count is settled between the two), so the panic — which is the unpartitioned engine's, with the partition and layer named — lives here rather than inline.
+<a href=#635 id=635 data-nosnippet>635</a></span><span class="kw">fn </span>prepare_or_panic&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#636 id=636 data-nosnippet>636</a>    ch: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Channel&lt;W&gt;,
+<a href=#637 id=637 data-nosnippet>637</a>    local: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;,
+<a href=#638 id=638 data-nosnippet>638</a>    adjoint: bool,
+<a href=#639 id=639 data-nosnippet>639</a>    rank: usize,
+<a href=#640 id=640 data-nosnippet>640</a>    idx: usize,
+<a href=#641 id=641 data-nosnippet>641</a>) -&gt; <span class="kw">crate</span>::channel::prepared::Prepared&lt;W&gt; {
+<a href=#642 id=642 data-nosnippet>642</a>    ch.prepare(local.hash(), adjoint).unwrap_or_else(|| {
+<a href=#643 id=643 data-nosnippet>643</a>        <span class="comment">// Same hard error as the unpartitioned engine: no whole-sum fallback
+<a href=#644 id=644 data-nosnippet>644</a>        // exists to absorb a channel the engine cannot tabulate.
+<a href=#645 id=645 data-nosnippet>645</a>        </span><span class="kw">let </span>weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
+<a href=#646 id=646 data-nosnippet>646</a>        <span class="macro">panic!</span>(
+<a href=#647 id=647 data-nosnippet>647</a>            <span class="string">"partition {rank}, layer {idx}: Channel::prepare declined, so this channel \
+<a href=#648 id=648 data-nosnippet>648</a>             cannot be propagated. The engine tabulates channels of support ≤ \
+<a href=#649 id=649 data-nosnippet>649</a>             {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
+<a href=#650 id=650 data-nosnippet>650</a>             not write outside its declared support. See \
+<a href=#651 id=651 data-nosnippet>651</a>             research/FINDINGS.md"</span>,
+<a href=#652 id=652 data-nosnippet>652</a>        )
+<a href=#653 id=653 data-nosnippet>653</a>    })
+<a href=#654 id=654 data-nosnippet>654</a>}
+<a href=#655 id=655 data-nosnippet>655</a>
+<a href=#656 id=656 data-nosnippet>656</a><span class="doccomment">/// One partition's whole layer loop — **the** layer loop, shared by the in-process driver ([`PartitionedSum`]) and the distributed one ([`DistributedSum`](super::DistributedSum)).
+<a href=#657 id=657 data-nosnippet>657</a>///
+<a href=#658 id=658 data-nosnippet>658</a>/// Runs on the partition's driving thread inside its own pool, in lock-step with its peers: the same channels in the same order, the same collectives per layer.
+<a href=#659 id=659 data-nosnippet>659</a>/// The two drivers differ only in *what a partition is* — a NUMA domain and an in-process endpoint, or a whole process and an MPI rank — which is entirely the transport's business, so the body below is generic over it and there is exactly one copy of the per-layer sequence.
+<a href=#660 id=660 data-nosnippet>660</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>run_layers&lt;<span class="kw">const </span>W: usize, T, X&gt;(
+<a href=#661 id=661 data-nosnippet>661</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
+<a href=#662 id=662 data-nosnippet>662</a>    policy: <span class="kw-2">&amp;</span>T,
+<a href=#663 id=663 data-nosnippet>663</a>    direction: Direction,
+<a href=#664 id=664 data-nosnippet>664</a>    options: PropagateOptions,
+<a href=#665 id=665 data-nosnippet>665</a>    ctx: PartitionCtx&lt;<span class="lifetime">'_</span>, W&gt;,
+<a href=#666 id=666 data-nosnippet>666</a>    work: <span class="kw-2">&amp;mut </span>PartitionWork&lt;W&gt;,
+<a href=#667 id=667 data-nosnippet>667</a>    transport: <span class="kw-2">&amp;</span>X,
+<a href=#668 id=668 data-nosnippet>668</a>) <span class="kw">where
+<a href=#669 id=669 data-nosnippet>669</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
+<a href=#670 id=670 data-nosnippet>670</a>    X: Transport,
+<a href=#671 id=671 data-nosnippet>671</a>{
+<a href=#672 id=672 data-nosnippet>672</a>    <span class="kw">let </span>PartitionCtx {
+<a href=#673 id=673 data-nosnippet>673</a>        rows,
+<a href=#674 id=674 data-nosnippet>674</a>        rank,
+<a href=#675 id=675 data-nosnippet>675</a>        size,
+<a href=#676 id=676 data-nosnippet>676</a>        tracing,
+<a href=#677 id=677 data-nosnippet>677</a>    } = ctx;
+<a href=#678 id=678 data-nosnippet>678</a>    <span class="kw">let </span>n = circuit.channels.len();
+<a href=#679 id=679 data-nosnippet>679</a>    <span class="kw">let </span>adjoint = <span class="macro">matches!</span>(direction, Direction::Heisenberg);
+<a href=#680 id=680 data-nosnippet>680</a>    <span class="kw">let </span>size32 = transport.size();
+<a href=#681 id=681 data-nosnippet>681</a>    <span class="comment">// Both hoisted out of the loop: neither can change inside one, and `finalizes_layer` is a property of the policy *type*, hence the same answer on every partition — which is what makes skipping the call collective-safe.
+<a href=#682 id=682 data-nosnippet>682</a>    </span><span class="kw">let </span>finalizes = policy.finalizes_layer();
+<a href=#683 id=683 data-nosnippet>683</a>    <span class="kw">let </span>policy_calls = AtomicU32::new(<span class="number">0</span>);
+<a href=#684 id=684 data-nosnippet>684</a>    <span class="kw">let </span>local = <span class="kw-2">&amp;mut </span>work.local;
+<a href=#685 id=685 data-nosnippet>685</a>
+<a href=#686 id=686 data-nosnippet>686</a>    <span class="kw">for </span>k <span class="kw">in </span><span class="number">0</span>..n {
+<a href=#687 id=687 data-nosnippet>687</a>        <span class="kw">let </span>idx = <span class="kw">match </span>direction {
+<a href=#688 id=688 data-nosnippet>688</a>            Direction::Forward =&gt; k,
+<a href=#689 id=689 data-nosnippet>689</a>            Direction::Heisenberg =&gt; n - <span class="number">1 </span>- k,
+<a href=#690 id=690 data-nosnippet>690</a>        };
+<a href=#691 id=691 data-nosnippet>691</a>        <span class="kw">let </span>ch: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Channel&lt;W&gt; = circuit.channels[idx].as_ref();
+<a href=#692 id=692 data-nosnippet>692</a>
+<a href=#693 id=693 data-nosnippet>693</a>        <span class="comment">// As in the unpartitioned engine: the per-layer DEBUG log and the opt-in gate trace share one clock read.
+<a href=#694 id=694 data-nosnippet>694</a>        </span><span class="kw">let </span>debug_on = <span class="macro">log::log_enabled!</span>(target: LOG_TARGET, log::Level::Debug);
+<a href=#695 id=695 data-nosnippet>695</a>        <span class="kw">let </span>want_timer = tracing || debug_on;
+<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">let </span>layer_t0 = want_timer.then(Instant::now);
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="kw">let </span>terms_before = local.len();
+<a href=#698 id=698 data-nosnippet>698</a>
+<a href=#699 id=699 data-nosnippet>699</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#700 id=700 data-nosnippet>700</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>st = Stamp::now();
+<a href=#701 id=701 data-nosnippet>701</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#702 id=702 data-nosnippet>702</a>        </span>{
+<a href=#703 id=703 data-nosnippet>703</a>            work.state.layer.stats.layers += <span class="number">1</span>;
+<a href=#704 id=704 data-nosnippet>704</a>            work.state.layer.stats.terms_in += terms_before <span class="kw">as </span>u64;
+<a href=#705 id=705 data-nosnippet>705</a>        }
+<a href=#706 id=706 data-nosnippet>706</a>
+<a href=#707 id=707 data-nosnippet>707</a>        <span class="comment">// Prepared *before* the bucket count is settled, because the plan is what says whether this layer needs a collective at all: a delta's remoteness is a property of its mask and the partition rows, neither of which the bucket count touches.
+<a href=#708 id=708 data-nosnippet>708</a>        // Only `bucket_delta` depends on it, so the prepared form is re-derived below on the rare layer that actually refines.
+<a href=#709 id=709 data-nosnippet>709</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span><span class="kw-2">mut </span>plan = PartitionPlan::new(<span class="kw-2">&amp;</span>prep, rows, rank <span class="kw">as </span>u32);
+<a href=#711 id=711 data-nosnippet>711</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#712 id=712 data-nosnippet>712</a>        </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.prepare_ns);
+<a href=#713 id=713 data-nosnippet>713</a>
+<a href=#714 id=714 data-nosnippet>714</a>        <span class="comment">// The bucket count, on the BITS_AGREE_EVERY schedule: on any layer that exchanges (both sides index the blocks by it), and otherwise every `BITS_AGREE_EVERY`-th.
+<a href=#715 id=715 data-nosnippet>715</a>        // At `P = 1` there is no group, so the local answer is the agreed one and the loop rebuckets every layer exactly as `propagate` does.
+<a href=#716 id=716 data-nosnippet>716</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>collectives = <span class="number">0u32</span>;
+<a href=#717 id=717 data-nosnippet>717</a>        <span class="kw">let </span>solo = size32 == <span class="number">1</span>;
+<a href=#718 id=718 data-nosnippet>718</a>        <span class="kw">if </span>solo || plan.has_remote() || agrees_bucket_bits(k) {
+<a href=#719 id=719 data-nosnippet>719</a>            <span class="kw">let </span><span class="kw-2">mut </span>want =
+<a href=#720 id=720 data-nosnippet>720</a>                desired_bits(local.len(), options.target_bucket_len, options.min_buckets)
+<a href=#721 id=721 data-nosnippet>721</a>                    .max(local.hash().bits());
+<a href=#722 id=722 data-nosnippet>722</a>            <span class="kw">if </span>!solo {
+<a href=#723 id=723 data-nosnippet>723</a>                want = transport.allreduce_max_u8(want);
+<a href=#724 id=724 data-nosnippet>724</a>                collectives += <span class="number">1</span>;
+<a href=#725 id=725 data-nosnippet>725</a>            }
+<a href=#726 id=726 data-nosnippet>726</a>            <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#727 id=727 data-nosnippet>727</a>            </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.collective_ns);
+<a href=#728 id=728 data-nosnippet>728</a>            <span class="kw">if </span>want &gt; local.hash().bits() {
+<a href=#729 id=729 data-nosnippet>729</a>                <span class="kw">while </span>local.hash().bits() &lt; want {
+<a href=#730 id=730 data-nosnippet>730</a>                    local.refine();
+<a href=#731 id=731 data-nosnippet>731</a>                }
+<a href=#732 id=732 data-nosnippet>732</a>                <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#733 id=733 data-nosnippet>733</a>                </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.rebucket_ns);
+<a href=#734 id=734 data-nosnippet>734</a>                <span class="comment">// The hash moved, so every `bucket_delta` in the prepared form did too.
+<a href=#735 id=735 data-nosnippet>735</a>                // Rare — the count is grow-only and settles — and this is the only reason a layer prepares twice.
+<a href=#736 id=736 data-nosnippet>736</a>                </span>prep = prepare_or_panic(ch, local, adjoint, rank, idx);
+<a href=#737 id=737 data-nosnippet>737</a>                plan = PartitionPlan::new(<span class="kw-2">&amp;</span>prep, rows, rank <span class="kw">as </span>u32);
+<a href=#738 id=738 data-nosnippet>738</a>                <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#739 id=739 data-nosnippet>739</a>                </span>st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.prepare_ns);
+<a href=#740 id=740 data-nosnippet>740</a>            }
+<a href=#741 id=741 data-nosnippet>741</a>        }
+<a href=#742 id=742 data-nosnippet>742</a>
+<a href=#743 id=743 data-nosnippet>743</a>        <span class="comment">// The layer times its own export, exchange and coset loop into the same `LayerScratch`.
+<a href=#744 id=744 data-nosnippet>744</a>        </span><span class="kw">let </span>counts = apply_layer_partitioned_with_plan(
+<a href=#745 id=745 data-nosnippet>745</a>            local,
+<a href=#746 id=746 data-nosnippet>746</a>            <span class="kw-2">&amp;</span>prep,
+<a href=#747 id=747 data-nosnippet>747</a>            <span class="kw-2">&amp;</span>plan,
+<a href=#748 id=748 data-nosnippet>748</a>            rows,
+<a href=#749 id=749 data-nosnippet>749</a>            policy,
+<a href=#750 id=750 data-nosnippet>750</a>            <span class="kw-2">&amp;mut </span>work.state,
+<a href=#751 id=751 data-nosnippet>751</a>            transport,
+<a href=#752 id=752 data-nosnippet>752</a>        );
+<a href=#753 id=753 data-nosnippet>753</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#754 id=754 data-nosnippet>754</a>        </span>st.rearm();
+<a href=#755 id=755 data-nosnippet>755</a>
+<a href=#756 id=756 data-nosnippet>756</a>        <span class="comment">// Collective, so it runs on every partition or on none — and `finalizes_layer` is the same answer on all of them (see `PartitionedTruncation`).
+<a href=#757 id=757 data-nosnippet>757</a>        // A policy with no layer pass costs nothing.
+<a href=#758 id=758 data-nosnippet>758</a>        </span><span class="kw">if </span>finalizes {
+<a href=#759 id=759 data-nosnippet>759</a>            policy_calls.store(<span class="number">0</span>, Ordering::Relaxed);
+<a href=#760 id=760 data-nosnippet>760</a>            <span class="kw">let </span>counting = CountingCollectives {
+<a href=#761 id=761 data-nosnippet>761</a>                inner: transport,
+<a href=#762 id=762 data-nosnippet>762</a>                calls: <span class="kw-2">&amp;</span>policy_calls,
+<a href=#763 id=763 data-nosnippet>763</a>            };
+<a href=#764 id=764 data-nosnippet>764</a>            policy.finalize_layer_partitioned(local, <span class="kw-2">&amp;</span>counting);
+<a href=#765 id=765 data-nosnippet>765</a>            collectives += policy_calls.load(Ordering::Relaxed);
+<a href=#766 id=766 data-nosnippet>766</a>        }
+<a href=#767 id=767 data-nosnippet>767</a>        <span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#768 id=768 data-nosnippet>768</a>        </span>{
+<a href=#769 id=769 data-nosnippet>769</a>            st.lap(<span class="kw-2">&amp;mut </span>work.state.layer.stats.finalize_ns);
+<a href=#770 id=770 data-nosnippet>770</a>            work.state.layer.stats.terms_out += local.len() <span class="kw">as </span>u64;
+<a href=#771 id=771 data-nosnippet>771</a>        }
+<a href=#772 id=772 data-nosnippet>772</a>
+<a href=#773 id=773 data-nosnippet>773</a>        <span class="comment">// Opt-in trace, behind a hoisted flag and a `#[cold]` callee for the same reason as the unpartitioned engine's term trace: this loop inlines the bucketed layer, whose merge kernels are sensitive to code motion (CLAUDE.md §Performance discipline).
+<a href=#774 id=774 data-nosnippet>774</a>        // The counts are moved, not copied — the exchange already allocated them.
+<a href=#775 id=775 data-nosnippet>775</a>        </span><span class="kw">let </span>remote_deltas = counts.remote_deltas;
+<a href=#776 id=776 data-nosnippet>776</a>        <span class="kw">let </span>rows_received = counts.rows_received;
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="kw">let </span>dt = layer_t0.map(|t0| t0.elapsed());
+<a href=#778 id=778 data-nosnippet>778</a>        <span class="kw">if </span>tracing {
+<a href=#779 id=779 data-nosnippet>779</a>            record_layer_row(
+<a href=#780 id=780 data-nosnippet>780</a>                <span class="kw-2">&amp;mut </span>work.rows,
+<a href=#781 id=781 data-nosnippet>781</a>                local.hash().bits(),
+<a href=#782 id=782 data-nosnippet>782</a>                collectives,
+<a href=#783 id=783 data-nosnippet>783</a>                idx <span class="kw">as </span>u32,
+<a href=#784 id=784 data-nosnippet>784</a>                k <span class="kw">as </span>u32,
+<a href=#785 id=785 data-nosnippet>785</a>                ch.debug_name(),
+<a href=#786 id=786 data-nosnippet>786</a>                terms_before,
+<a href=#787 id=787 data-nosnippet>787</a>                local.len(),
+<a href=#788 id=788 data-nosnippet>788</a>                counts,
+<a href=#789 id=789 data-nosnippet>789</a>                dt.unwrap_or_default().as_nanos() <span class="kw">as </span>u64,
+<a href=#790 id=790 data-nosnippet>790</a>            );
+<a href=#791 id=791 data-nosnippet>791</a>        }
+<a href=#792 id=792 data-nosnippet>792</a>
+<a href=#793 id=793 data-nosnippet>793</a>        <span class="kw">if </span>debug_on {
+<a href=#794 id=794 data-nosnippet>794</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = dt {
+<a href=#795 id=795 data-nosnippet>795</a>                <span class="macro">log::debug!</span>(
+<a href=#796 id=796 data-nosnippet>796</a>                    target: LOG_TARGET,
+<a href=#797 id=797 data-nosnippet>797</a>                    <span class="string">"partition {}/{} layer {}/{} [{}]: {} -&gt; {} terms, {} remote deltas, \
+<a href=#798 id=798 data-nosnippet>798</a>                     {} rows in, {:.1} ms"</span>,
+<a href=#799 id=799 data-nosnippet>799</a>                    rank,
+<a href=#800 id=800 data-nosnippet>800</a>                    size,
+<a href=#801 id=801 data-nosnippet>801</a>                    k + <span class="number">1</span>,
+<a href=#802 id=802 data-nosnippet>802</a>                    n,
+<a href=#803 id=803 data-nosnippet>803</a>                    ch.debug_name(),
+<a href=#804 id=804 data-nosnippet>804</a>                    terms_before,
+<a href=#805 id=805 data-nosnippet>805</a>                    local.len(),
+<a href=#806 id=806 data-nosnippet>806</a>                    remote_deltas,
+<a href=#807 id=807 data-nosnippet>807</a>                    rows_received,
+<a href=#808 id=808 data-nosnippet>808</a>                    dt.as_secs_f64() * <span class="number">1e3</span>,
+<a href=#809 id=809 data-nosnippet>809</a>                );
+<a href=#810 id=810 data-nosnippet>810</a>            }
+<a href=#811 id=811 data-nosnippet>811</a>        }
+<a href=#812 id=812 data-nosnippet>812</a>    }
+<a href=#813 id=813 data-nosnippet>813</a>}
+<a href=#814 id=814 data-nosnippet>814</a>
+<a href=#815 id=815 data-nosnippet>815</a><span class="doccomment">/// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
+<a href=#816 id=816 data-nosnippet>816</a>///
+<a href=#817 id=817 data-nosnippet>817</a>/// One-shot convenience: it builds a [`PartitionRuntime`], scatters, runs and gathers.
+<a href=#818 id=818 data-nosnippet>818</a>/// A caller propagating repeatedly (a Trotter driver stepping an observable) should hold the runtime and a [`PartitionedSum`] instead, so the pools, the split and the scratch survive between calls.
+<a href=#819 id=819 data-nosnippet>819</a>///
+<a href=#820 id=820 data-nosnippet>820</a>/// # Errors
+<a href=#821 id=821 data-nosnippet>821</a>///
+<a href=#822 id=822 data-nosnippet>822</a>/// [`TopologyError`] if `config` cannot be resolved into slots or a pool cannot be built.
+<a href=#823 id=823 data-nosnippet>823</a>/// Everything else is a panic, as in [`propagate`](crate::propagate).
+<a href=#824 id=824 data-nosnippet>824</a>///
+<a href=#825 id=825 data-nosnippet>825</a>/// # Examples
+<a href=#826 id=826 data-nosnippet>826</a>///
+<a href=#827 id=827 data-nosnippet>827</a>/// ```
+<a href=#828 id=828 data-nosnippet>828</a>/// use paulistrings::channel::Clifford1Q;
+<a href=#829 id=829 data-nosnippet>829</a>/// use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
+<a href=#830 id=830 data-nosnippet>830</a>/// use paulistrings::{
+<a href=#831 id=831 data-nosnippet>831</a>///     BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, Phase,
+<a href=#832 id=832 data-nosnippet>832</a>///     TruncationPolicy,
+<a href=#833 id=833 data-nosnippet>833</a>/// };
+<a href=#834 id=834 data-nosnippet>834</a>/// use num_complex::Complex64;
+<a href=#835 id=835 data-nosnippet>835</a>///
+<a href=#836 id=836 data-nosnippet>836</a>/// struct KeepAll;
+<a href=#837 id=837 data-nosnippet>837</a>/// impl&lt;const W: usize&gt; TruncationPolicy&lt;W&gt; for KeepAll {
+<a href=#838 id=838 data-nosnippet>838</a>///     // `finalizes_layer`'s default is the conservative `true`; the
+<a href=#839 id=839 data-nosnippet>839</a>///     // `PartitionedTruncation` default body rejects that, since it cannot
+<a href=#840 id=840 data-nosnippet>840</a>///     // know a layer pass it would be skipping is a no-op.
+<a href=#841 id=841 data-nosnippet>841</a>///     fn finalizes_layer(&amp;self) -&gt; bool { false }
+<a href=#842 id=842 data-nosnippet>842</a>/// }
+<a href=#843 id=843 data-nosnippet>843</a>/// impl&lt;const W: usize&gt; PartitionedTruncation&lt;W&gt; for KeepAll {}
+<a href=#844 id=844 data-nosnippet>844</a>///
+<a href=#845 id=845 data-nosnippet>845</a>/// let mut acc = BuildAccumulator::&lt;1&gt;::new(2);
+<a href=#846 id=846 data-nosnippet>846</a>/// acc.add_term(PauliString::&lt;1&gt;::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+<a href=#847 id=847 data-nosnippet>847</a>/// let mut circuit = Circuit::&lt;1&gt;::new(2);
+<a href=#848 id=848 data-nosnippet>848</a>/// circuit.push(Clifford1Q::h(0));
+<a href=#849 id=849 data-nosnippet>849</a>///
+<a href=#850 id=850 data-nosnippet>850</a>/// let config = PartitionConfig {
+<a href=#851 id=851 data-nosnippet>851</a>///     placement: Placement::Unpinned { partitions: 2, threads_per_partition: Some(1) },
+<a href=#852 id=852 data-nosnippet>852</a>///     bind_memory: false,
+<a href=#853 id=853 data-nosnippet>853</a>///     partition_row_seed: None,
+<a href=#854 id=854 data-nosnippet>854</a>/// };
+<a href=#855 id=855 data-nosnippet>855</a>/// let out = propagate_partitioned(
+<a href=#856 id=856 data-nosnippet>856</a>///     &amp;circuit, acc.finalize(), &amp;KeepAll, Direction::Heisenberg, &amp;config,
+<a href=#857 id=857 data-nosnippet>857</a>/// ).expect("topology resolves");
+<a href=#858 id=858 data-nosnippet>858</a>/// assert_eq!(out.get(&amp;[1], &amp;[0]), Some(Complex64::new(1.0, 0.0)));
+<a href=#859 id=859 data-nosnippet>859</a>/// ```
+<a href=#860 id=860 data-nosnippet>860</a></span><span class="kw">pub fn </span>propagate_partitioned&lt;<span class="kw">const </span>W: usize, T&gt;(
+<a href=#861 id=861 data-nosnippet>861</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
+<a href=#862 id=862 data-nosnippet>862</a>    sum: PauliSum&lt;W&gt;,
+<a href=#863 id=863 data-nosnippet>863</a>    policy: <span class="kw-2">&amp;</span>T,
+<a href=#864 id=864 data-nosnippet>864</a>    direction: Direction,
+<a href=#865 id=865 data-nosnippet>865</a>    config: <span class="kw-2">&amp;</span>PartitionConfig,
+<a href=#866 id=866 data-nosnippet>866</a>) -&gt; <span class="prelude-ty">Result</span>&lt;PauliSum&lt;W&gt;, TopologyError&gt;
+<a href=#867 id=867 data-nosnippet>867</a><span class="kw">where
+<a href=#868 id=868 data-nosnippet>868</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
+<a href=#869 id=869 data-nosnippet>869</a>{
+<a href=#870 id=870 data-nosnippet>870</a>    propagate_partitioned_with_options(
+<a href=#871 id=871 data-nosnippet>871</a>        circuit,
+<a href=#872 id=872 data-nosnippet>872</a>        sum,
+<a href=#873 id=873 data-nosnippet>873</a>        policy,
+<a href=#874 id=874 data-nosnippet>874</a>        direction,
+<a href=#875 id=875 data-nosnippet>875</a>        config,
+<a href=#876 id=876 data-nosnippet>876</a>        PropagateOptions::default(),
+<a href=#877 id=877 data-nosnippet>877</a>    )
+<a href=#878 id=878 data-nosnippet>878</a>}
+<a href=#879 id=879 data-nosnippet>879</a>
+<a href=#880 id=880 data-nosnippet>880</a><span class="doccomment">/// [`propagate_partitioned`] with explicit [`PropagateOptions`].
+<a href=#881 id=881 data-nosnippet>881</a>///
+<a href=#882 id=882 data-nosnippet>882</a>/// [`EngineSelection`](crate::EngineSelection) is ignored; see
+<a href=#883 id=883 data-nosnippet>883</a>/// [`PartitionedSum::propagate_with_options`].
+<a href=#884 id=884 data-nosnippet>884</a>///
+<a href=#885 id=885 data-nosnippet>885</a>/// # Errors
+<a href=#886 id=886 data-nosnippet>886</a>///
+<a href=#887 id=887 data-nosnippet>887</a>/// [`TopologyError`], as [`propagate_partitioned`].
+<a href=#888 id=888 data-nosnippet>888</a></span><span class="kw">pub fn </span>propagate_partitioned_with_options&lt;<span class="kw">const </span>W: usize, T&gt;(
+<a href=#889 id=889 data-nosnippet>889</a>    circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
+<a href=#890 id=890 data-nosnippet>890</a>    sum: PauliSum&lt;W&gt;,
+<a href=#891 id=891 data-nosnippet>891</a>    policy: <span class="kw-2">&amp;</span>T,
+<a href=#892 id=892 data-nosnippet>892</a>    direction: Direction,
+<a href=#893 id=893 data-nosnippet>893</a>    config: <span class="kw-2">&amp;</span>PartitionConfig,
+<a href=#894 id=894 data-nosnippet>894</a>    options: PropagateOptions,
+<a href=#895 id=895 data-nosnippet>895</a>) -&gt; <span class="prelude-ty">Result</span>&lt;PauliSum&lt;W&gt;, TopologyError&gt;
+<a href=#896 id=896 data-nosnippet>896</a><span class="kw">where
+<a href=#897 id=897 data-nosnippet>897</a>    </span>T: PartitionedTruncation&lt;W&gt; + <span class="question-mark">?</span>Sized,
+<a href=#898 id=898 data-nosnippet>898</a>{
+<a href=#899 id=899 data-nosnippet>899</a>    <span class="kw">let </span>runtime = PartitionRuntime::new(config)<span class="question-mark">?</span>;
+<a href=#900 id=900 data-nosnippet>900</a>    <span class="kw">let </span><span class="kw-2">mut </span>split = PartitionedSum::scatter(sum, runtime, config);
+<a href=#901 id=901 data-nosnippet>901</a>    split.propagate_with_options(circuit, policy, direction, options);
+<a href=#902 id=902 data-nosnippet>902</a>    <span class="prelude-val">Ok</span>(split.into_gathered())
+<a href=#903 id=903 data-nosnippet>903</a>}
+<a href=#904 id=904 data-nosnippet>904</a>
+<a href=#905 id=905 data-nosnippet>905</a><span class="attr">#[cfg(test)]
+<a href=#906 id=906 data-nosnippet>906</a></span><span class="kw">mod </span>tests {
+<a href=#907 id=907 data-nosnippet>907</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#908 id=908 data-nosnippet>908</a>
+<a href=#909 id=909 data-nosnippet>909</a>    <span class="doccomment">/// `P = 1` sheds nothing, so a scatter cannot change the bucket count and the partitioned run starts exactly where `propagate` would.
+<a href=#910 id=910 data-nosnippet>910</a>    </span><span class="attr">#[test]
+<a href=#911 id=911 data-nosnippet>911</a>    </span><span class="kw">fn </span>scatter_bits_is_the_identity_at_one_partition() {
+<a href=#912 id=912 data-nosnippet>912</a>        <span class="kw">for </span>bits <span class="kw">in </span><span class="number">0u8</span>..<span class="number">12 </span>{
+<a href=#913 id=913 data-nosnippet>913</a>            <span class="kw">for </span>want <span class="kw">in </span><span class="number">0u8</span>..<span class="number">12 </span>{
+<a href=#914 id=914 data-nosnippet>914</a>                <span class="macro">assert_eq!</span>(scatter_bits(bits, <span class="number">0</span>, want), bits, <span class="string">"bits={bits} want={want}"</span>);
+<a href=#915 id=915 data-nosnippet>915</a>            }
+<a href=#916 id=916 data-nosnippet>916</a>        }
+<a href=#917 id=917 data-nosnippet>917</a>    }
+<a href=#918 id=918 data-nosnippet>918</a>
+<a href=#919 id=919 data-nosnippet>919</a>    <span class="doccomment">/// With `P` partitions the count sheds `log2(P)` bits, so the bucket count summed over partitions is the unpartitioned one — unless a partition's own share wants more.
+<a href=#920 id=920 data-nosnippet>920</a>    </span><span class="attr">#[test]
+<a href=#921 id=921 data-nosnippet>921</a>    </span><span class="kw">fn </span>scatter_bits_sheds_at_most_log2_p() {
+<a href=#922 id=922 data-nosnippet>922</a>        <span class="comment">// Incoming 10 bits, 4 partitions each wanting 8: shed exactly 2.
+<a href=#923 id=923 data-nosnippet>923</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">8</span>), <span class="number">8</span>);
+<a href=#924 id=924 data-nosnippet>924</a>        <span class="comment">// Wanting more than the split leaves: the want wins, capped by what is there (the layer loop grows past it).
+<a href=#925 id=925 data-nosnippet>925</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">9</span>), <span class="number">9</span>);
+<a href=#926 id=926 data-nosnippet>926</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">12</span>), <span class="number">10</span>);
+<a href=#927 id=927 data-nosnippet>927</a>        <span class="comment">// Wanting less than the split leaves: never shed more than log2(P).
+<a href=#928 id=928 data-nosnippet>928</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">10</span>, <span class="number">2</span>, <span class="number">3</span>), <span class="number">8</span>);
+<a href=#929 id=929 data-nosnippet>929</a>        <span class="comment">// Fewer incoming bits than there are partitions: the floor saturates at a single bucket per partition, so the per-share want decides.
+<a href=#930 id=930 data-nosnippet>930</a>        </span><span class="macro">assert_eq!</span>(scatter_bits(<span class="number">1</span>, <span class="number">2</span>, <span class="number">0</span>), <span class="number">0</span>);
+<a href=#931 id=931 data-nosnippet>931</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">1</span>, <span class="number">2</span>, <span class="number">1</span>), <span class="number">1</span>);
+<a href=#932 id=932 data-nosnippet>932</a>        <span class="macro">assert_eq!</span>(scatter_bits(<span class="number">0</span>, <span class="number">4</span>, <span class="number">0</span>), <span class="number">0</span>);
+<a href=#933 id=933 data-nosnippet>933</a>    }
+<a href=#934 id=934 data-nosnippet>934</a>}
 </code></pre></div></section></main></body></html>

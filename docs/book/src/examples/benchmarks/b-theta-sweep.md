@@ -209,9 +209,7 @@ driver refuses to run otherwise.
 - Timings were taken on a shared workstation with other work running: the
   same weight-10 configuration measured 13.8 s and 28.6 s minutes apart.
   Term counts, expectation values and parity outcomes are load-independent.
-- [`min_abs_coeff ≥ 1e-12`](../../manual/propagation/truncation.md#choosing-a-policy) everywhere: `cos(π/2) == 6.123233995736766e-17`,
-  not zero, so a Clifford-angle rotation leaves a numerically dead residual
-  branch, and below that floor an untruncated propagation fans out unbounded.
+- [`min_abs_coeff ≥ 1e-12`](../../manual/propagation/truncation.md#choosing-a-policy) everywhere.
 - Two derived fields in the committed `summary.json` were recomputed from
   the recorded measurements; that file's `notes` field says so.
 

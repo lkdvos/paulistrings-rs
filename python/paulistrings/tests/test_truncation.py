@@ -33,21 +33,13 @@ def _probe_circuit(num_qubits):
 
 
 def test_coefficient_threshold_drops_subthreshold_terms():
-    # rz(π/2) X = cos(π/2)·X + i sin(π/2)·X·Z = 0·X + Y. cos(π/2) is a small
-    # FP residue (~6e-17), so without a threshold both terms survive.
+    # rz(0.1) X = cos(0.1)·X + sin(0.1)·Y; only X clears coeff(0.5).
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
-    c.rz(math.pi / 2, 0)
-
-    no_policy = s.propagate(c)
-    # Both X (residue) and +Y (≈ +1) survive when no policy filters them.
-    assert len(no_policy.coefficients()) == 2
-
-    # With coeff(0.5), the X residue ≪ 0.5 is dropped; +Y is kept.
-    out = s.propagate(c, policy=truncation.coeff(0.5))
-    assert len(out.coefficients()) == 1
-    (only,) = out.coefficients()
-    assert abs(only - (1 + 0j)) < TOL
+    c.rz(0.1, 0)
+    assert len(s.propagate(c).coefficients()) == 2
+    (only,) = s.propagate(c, policy=truncation.coeff(0.5)).coefficients()
+    assert abs(only - math.cos(0.1)) < TOL
 
 
 def test_weight_cutoff_drops_higher_weight_terms():

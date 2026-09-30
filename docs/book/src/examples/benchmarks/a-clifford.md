@@ -18,11 +18,9 @@ seeded fixtures built outside the timed region.
 The cutoff is `1e-8`, not a dyadic value. This engine drops `|c| <= eps`
 while `PauliPropagation.jl` keeps `|c| == eps` — a genuine, measured
 [cross-engine divergence](../comparisons.md#the-one-real-divergence). Clifford
-angles produce exact dyadic coefficients (`sin(π/2) == 1.0`, and `cos(π/2)` is
-the tiny residual), so a dyadic cutoff is exactly where that boundary is likely
-to be hit bit-for-bit. `1e-8` is far from any dyadic value and nine orders of
-magnitude above the `~6.1e-17` residual being truncated away, so it changes
-nothing about which branch survives.
+angles produce exact dyadic coefficients, so a dyadic cutoff is exactly where
+that boundary is likely to be hit bit-for-bit. `1e-8` is far from any dyadic
+value, so it changes nothing about which branch survives.
 
 ## Oracle
 

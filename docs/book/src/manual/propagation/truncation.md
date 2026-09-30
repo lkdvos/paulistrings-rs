@@ -50,8 +50,7 @@ policy = truncation.weight(6) & truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) & truncation.topn(200_000)
 ```
 
-Keep a `coeff` threshold above roughly `1e-12` on deep circuits.
-`cos(π/2)` evaluates to `6.123233995736766e-17`, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch alongside the real one, and with no threshold — or one below the residual — those branches fan out without bound and the run pays for terms that carry no physics.
+A rotation by a multiple of `π/2` is an exact Clifford, one term with no residual branch, so a Clifford circuit needs no threshold.
 `policy=None` disables truncation entirely, dropping only exact zeros; it is the exact reference where the problem is small enough to afford it ([Untruncated runs](settings.md#untruncated-runs)).
 
 Whichever policy you pick, the cutoff is a guess until it has been swept.

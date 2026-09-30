@@ -105,11 +105,11 @@ extern "C" __global__ void k_topn_counts(const double* __restrict__ c, const u32
 
 // Keep the terms with |c|^2 bits > `t2`, or == `t2` when `keep_tied`, order-preserving, one warp per bucket into the same start offsets.
 extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __restrict__ z,
-                                         const double* __restrict__ c, const u64* __restrict__ g,
-                                         const u32* __restrict__ in_start, const u32* __restrict__ in_len, u32 B,
-                                         u64 t2, u32 keep_tied, u64* __restrict__ ox, u64* __restrict__ oz,
-                                         double* __restrict__ oc, u64* __restrict__ og, u32* __restrict__ out_start,
-                                         u32* __restrict__ out_len) {
+                                    const double* __restrict__ c, const u64* __restrict__ g,
+                                    const u32* __restrict__ in_start, const u32* __restrict__ in_len, u32 B,
+                                    u64 t2, u32 keep_tied, u64* __restrict__ ox, u64* __restrict__ oz,
+                                    double* __restrict__ oc, u64* __restrict__ og, u32* __restrict__ out_start,
+                                    u32* __restrict__ out_len) {
     const u32 lane = lane_id();
     const u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id();
     if (beta >= B) return;
@@ -124,7 +124,8 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
             cr = c[2 * src];
             ci = c[2 * src + 1];
             const u64 bits = (u64)__double_as_longlong(cr * cr + ci * ci);
-            ok = (bits > t2) || (keep_tied && bits == t2);
+            // A NaN's bit pattern sits above +inf's; the host's `>=` drops it, so the bit comparison must too.
+            ok = bits <= 0x7ff0000000000000ull && ((bits > t2) || (keep_tied && bits == t2));
         }
         const u32 bal = __ballot_sync(~0u, ok);
         if (ok) {

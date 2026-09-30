@@ -46,7 +46,7 @@ extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* _
     }
 }
 
-// K12: the sender-side merge of one partner's blocks; K3 runs between the counts and the split over the partner's sub-table.
+// The sender-side merge of one partner's blocks; K3 runs between the counts and the split over the partner's sub-table.
 // sub[beta * K + j] = cnt[beta * E + sel[j]], the count table of the sub-table from the layer's.
 extern "C" __global__ void k_premerge_counts(const u32* __restrict__ cnt, u32 E, const u32* __restrict__ sel, u32 K,
                                              u32 B, u32* __restrict__ sub) {

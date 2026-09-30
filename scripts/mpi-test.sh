@@ -20,8 +20,8 @@
 # The device cases skip on every rank unless every rank sees a device; above
 # one rank they need NCCL on a distinct device per rank, and ranks that cannot
 # start it (one GPU for two ranks, say) instead check that the scatter fails on
-# every rank. The multi-GPU net is `scripts/slurm/mpi-gpu-nccl.sbatch`, which
-# the user submits.
+# every rank. The multi-GPU net is `scripts/slurm/mpi-gpu.sbatch`, which the
+# user submits.
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything

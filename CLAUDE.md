@@ -194,15 +194,15 @@ It records what was measured and rejected, including several ideas that look obv
 - Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
 - The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
-- Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card.
+- Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, which the sender-side merge (ARCHITECTURE.md §Partitioning) shrinks.
 - An MPI device group of more than one rank exchanges only over NCCL: a rank that cannot load libnccl 2.22+, or two ranks on one device, fail the scatter on every rank.
 - `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (the default stays one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
-- In-process and MPI device groups run one exchange protocol over a `DeviceWire` (`PeerWire` in process, NCCL under MPI); the chunked receive has not run over a real NCCL communicator, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
-- The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios: `gu2q` on two virtual partitions of one card is ~20% slower with it on.
+- In-process and MPI device groups run one exchange protocol over a `DeviceWire` (`PeerWire` in process, NCCL under MPI); the chunked receive is untested over a multi-rank NCCL communicator, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
+- The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios.
 - The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
 - A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
-- Peer access grants the destination context access to the source device and the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/wire/peer.rs`.
-- No NCCL run has crossed nodes.
+- A pooled allocation is reachable from a peer only once the source device's memory pool grants the destination access, on top of context peer access (`try_enable_peer_access` in `engine/gpu/wire/peer.rs`).
+- NCCL across nodes is untested.
 
 ## Repo layout
 

@@ -138,11 +138,11 @@ if let Some(evolved) = split.gather()? {
 
 `gpu::propagate_mpi_gpu` is the one-shot form.
 A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
-Launch with one visible device per task (`srun --gpus-per-task=1 --mpi=pmix`, as `scripts/slurm/mpi-gpu-ranks.sbatch` does) or with every node GPU visible to every task (`--gpus-per-node`, as `scripts/slurm/mpi-gpu-nccl.sbatch` does, which the NCCL exchange needs), where the locality pick matters.
+Launch with every node GPU visible to every task (`srun --gpus-per-node=<k> --mpi=pmix`, as `scripts/slurm/mpi-gpu.sbatch` does), where the locality pick matters.
 
 A remote layer's columns move device to device over NCCL ([CUDA devices](gpu.md#exchange)), which needs the NCCL library at run time ([Installation](../../installation.md#gpu-and-mpi-features)).
 The communicator starts once, collectively, at the scatter that builds the split; a rank that cannot load NCCL, or two ranks sharing a device, fail the scatter on every rank.
-`--gpus-per-node` (rather than `--gpus-per-task=1`) is what lets NCCL find every rank's device and use NVLink between them; `scripts/slurm/mpi-gpu-nccl.sbatch` launches that way.
+`--gpus-per-node` rather than `--gpus-per-task=1` is what lets NCCL find every rank's device and use NVLink between them.
 
 From Python, `propagate(..., comm=comm, device="auto")` is the same run, in an extension built with `--features cuda,mpi`: `device=` takes this rank's ordinal or `"auto"`, which is `local_device_for_comm`, and `result=`, `partition_row_seed=` and `partition_row_blocks=` keep their host meanings ([CUDA devices](gpu.md#comm-device)).
 `scripts/mpi-test.sh --ranks 2,4 --python --cuda` builds that extension and runs `test_mpi.py`'s device cases, which skip on every rank unless every rank sees a device and, above one rank, the group can start NCCL.

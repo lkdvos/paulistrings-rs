@@ -2,28 +2,32 @@
 #SBATCH --job-name=ps-mpi-gpu
 #SBATCH --partition=gpu
 #SBATCH --constraint=a100-80gb&rocky9
-#SBATCH --nodes=2
+#SBATCH --exclude=workergpu062
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=16G
 #SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# One CUDA device per MPI rank (`gpu::MpiGpuSum`, features `mpi,cuda`, exchanging over NCCL) across two 4-GPU nodes:
-# the multi-rank differential net (`tests/mpi_ranks.rs`, whose device cases run when every rank
-# sees a device), then `phase_breakdown --mpi --device auto` at replicated input `--n N x ranks`.
-# `--gpus-per-task=1` gives each task one visible device, so `auto` resolves to ordinal 0 on
-# every rank; the node type is the constraint (`sbatch --constraint=h100-sxm5 ...` for the
-# 4 x H100-SXM5 genoa nodes). The rank count (nodes x tasks per node) must be a power of two.
+# One CUDA device per MPI rank (`gpu::MpiGpuSum`, features `cuda,mpi`, exchanging over NCCL): the differential net, then the probe's cells.
+# `--gpus-per-node` rather than `--gpus-per-task=1`: with only its own GPU visible a task's NCCL falls back from NVLink to shared memory.
+#
+# Node shapes (rank count must be a power of two):
+#   1 node x 2 ranks   : env -u SBATCH_RESERVATION sbatch --ntasks-per-node=2 --gpus-per-node=2 scripts/slurm/mpi-gpu.sbatch
+#   1 node x 4 ranks   : env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-gpu.sbatch
+#   2 nodes x 8 ranks  : env -u SBATCH_RESERVATION sbatch --nodes=2 scripts/slurm/mpi-gpu.sbatch
+#   H100-SXM5, 1 x 4   : env -u SBATCH_RESERVATION sbatch --constraint=h100-sxm5 scripts/slurm/mpi-gpu.sbatch
 #
 # Environment knobs (all optional):
 #   LAYERS   probe layers (default rotation_zz,cnot,gu2q,su4,rotation_remote; heavyhex_step runs as its own cell)
 #   N        terms per rank (default 4000000); the probe's --n is N x ranks
 #   REPS     --reps (default 5)
-#   PROBE=0  run the differential net alone
+#   PROBE=0  run the differential net alone, skip the probe
 #   PS_REV   commit to build (default: HEAD when the job starts), in a private git worktree
 #   NET_BOUND, PROBE_BOUND   seconds the differential net / one probe step may take (default 1200 / 1500)
+#   NCCL_TIMEOUT_S           PAULISTRINGS_NCCL_TIMEOUT_S for the differential net (default 60)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
@@ -56,15 +60,23 @@ nodes=${SLURM_JOB_NUM_NODES:-1}
 ranks=${SLURM_NTASKS:-1}
 cpus=${SLURM_CPUS_PER_TASK:-8}
 echo "== job ${SLURM_JOB_ID:-?} on $SLURM_JOB_NODELIST, rev $PS_REV ($(git log -1 --format=%s "$PS_REV")), $(date -Is)"
-echo "== $ranks ranks over $nodes nodes, one GPU and $cpus CPUs each"
+echo "== $ranks ranks over $nodes nodes, $cpus CPUs each"
 if [ $(( ranks & (ranks - 1) )) -ne 0 ]; then
     echo "the rank count $ranks is not a power of two (a partition is named by log2(P) GF(2) rows)" >&2
     exit 2
 fi
-bounded 300 srun --ntasks-per-node=1 bash -c 'echo "-- $(hostname -s)"; nvidia-smi -L; nvidia-smi topo -m'
 
-cargo test --offline --release --features mpi,cuda -p paulistrings --test mpi_ranks --no-run
-bin=$(cargo test --offline --release --features mpi,cuda -p paulistrings --test mpi_ranks --no-run \
+# What NCCL sees before it picks a transport.
+bounded 300 srun --ntasks-per-node=1 bash -c '
+    echo "-- $(hostname -s)"
+    nvidia-smi -L
+    nvidia-smi topo -m
+    ibv_devinfo -l 2>&1 || echo "(no ibv_devinfo)"
+    lsmod | grep -E "nvidia_peermem|nv_peer_mem" || echo "(no nvidia_peermem / nv_peer_mem module)"
+    ip -br addr
+'
+
+bin=$(cargo test --offline --release --features cuda,mpi,test-utils -p paulistrings --test mpi_ranks --no-run \
       --message-format=json \
       | python3 -c 'import json,sys
 for l in sys.stdin:
@@ -73,10 +85,17 @@ for l in sys.stdin:
     if r.get("reason")=="compiler-artifact" and r["target"]["name"]=="mpi_ranks" and r.get("executable"): print(r["executable"])')
 [ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
 echo "== mpi_ranks: $bin"
-failed=0
-bounded "${NET_BOUND:-1200}" srun --mpi=pmix --cpu-bind=cores "$bin" \
-    || { failed=$?; echo "== mpi_ranks FAILED (exit $failed)"; leftover_gpu_processes; }
 
+# The net runs under a short NCCL wait bound with NCCL_DEBUG on, so the chosen transport is on record.
+failed=0
+bounded "${NET_BOUND:-1200}" env PAULISTRINGS_NCCL_TIMEOUT_S="${NCCL_TIMEOUT_S:-60}" \
+    NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET \
+    srun --mpi=pmix --cpu-bind=cores --export=ALL \
+    stdbuf -oL -eL "$bin" || { failed=$?; echo "== mpi_ranks FAILED (exit $failed)"; leftover_gpu_processes; }
+
+if [ "$failed" != 0 ] && [ "${PROBE:-1}" = "1" ]; then
+    echo "== the differential net failed; skipping the probe"
+fi
 if [ "$failed" = 0 ] && [ "${PROBE:-1}" = "1" ]; then
     cargo build --offline --release --features phase-timing,mpi,cuda -p paulistrings \
         --example phase_breakdown
@@ -84,16 +103,16 @@ if [ "$failed" = 0 ] && [ "${PROBE:-1}" = "1" ]; then
     out="$repo/benchmarks/results/$(date +%Y-%m-%d)-mpi-gpu"
     mkdir -p "$out"
     n=$(( ${N:-4000000} * ranks ))
+    layers=${LAYERS:-rotation_zz,cnot,gu2q,su4,rotation_remote}
     sidecar="$out/mpi-gpu-${SLURM_JOB_ID:-local}-r$ranks.jsonl"
-    echo "== probe: $ranks ranks, --n $n (replicated), --device auto -> $sidecar.rank*"
-    bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
-        --layers "${LAYERS:-rotation_zz,cnot,gu2q,su4,rotation_remote}" --n "$n" \
-        --reps "${REPS:-5}" --format json --json-out "$sidecar" \
-        || { failed=$?; echo "== probe FAILED (exit $failed)"; leftover_gpu_processes; }
+    run_probe() {
+        bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto \
+            --threads "$cpus" --format json --json-out "$sidecar" "$@" \
+            || { failed=$?; echo "== probe $* FAILED (exit $failed)"; leftover_gpu_processes; }
+    }
+    echo "== probe: $ranks ranks, --n $n (replicated), layers $layers -> $sidecar.rank*"
+    run_probe --layers "$layers" --n "$n" --reps "${REPS:-5}"
     echo "== probe: heavyhex_step, five steps under coeff:2^-13"
-    bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto --threads "$cpus" \
-        --layers heavyhex_step --reps 5 --truncation coeff:0.0001220703125 --format json \
-        --json-out "$sidecar" \
-        || { failed=$?; echo "== probe heavyhex_step FAILED (exit $failed)"; leftover_gpu_processes; }
+    run_probe --layers heavyhex_step --reps 5 --truncation coeff:0.0001220703125
 fi
 exit "$failed"

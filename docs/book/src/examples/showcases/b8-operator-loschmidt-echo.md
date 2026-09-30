@@ -13,6 +13,7 @@ The echo is `S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)`, where `A = C†OC`, `O = Z^{�
 
 ## PP-MC
 
+<!-- doctest: skip -->
 ```python
 from paulistrings import truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)

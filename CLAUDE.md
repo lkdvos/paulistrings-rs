@@ -191,7 +191,9 @@ It records what was measured and rejected, including several ideas that look obv
 - A multi-device or one-device-per-rank run from Python (`device=[...]`, `comm=` with `device=`) scatters and gathers on every call; only the one-device `GpuPauliSum` stays resident, while Rust holds a `GpuPartitionedSum` or `MpiGpuSum` across calls.
 - Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
 - A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
-- Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. Tuning the rows is open research.
+- Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. `partition_row_blocks=` (a locality cut) and `partition_row_exclude=` (rows that skip chosen x/z coordinates) are the two manual levers; choosing rows automatically is open research.
+- `CollapseSample` counts collapses on rank 0's policy object only in partitioned and MPI runs; `PropagationStats.collapses` reports that count on every rank. It has no device form: every device driver reports `GpuError::Unsupported` before the first layer, and `device=` raises `NotImplementedError`.
+- `DistributedSum::rotated_overlap` needs partition rows that avoid the flipped coordinates (x-bits of the sites for axis X, z-bits for Z) and panics on every rank otherwise; the histogram read-out has no such constraint.
 - The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
 - The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
 - Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, which the sender-side merge (ARCHITECTURE.md §Partitioning) shrinks.
@@ -215,7 +217,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
                           rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
                           behind `cuda` and `mpi`),
-                          stabilizer, test_support
+                          stabilizer, echo, rng, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

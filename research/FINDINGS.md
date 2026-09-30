@@ -135,6 +135,19 @@ Asked whether partition rows drawn as a cut of the gate graph, rather than at ra
 On the heavy-hex kicked-Ising step cut rows leave 4 of 271 layers remote instead of 139 and export 10× fewer rows, making P=2 **15–21% faster per step** than the single-process engine.
 Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and moving the bucket-bits all-reduce to a 16-layer schedule took the 4- and 8-rank steps from flat to scaling (125 → 86 → 81 ms), for **3.4× / 3.2×** over random rows.
 
+### Collapse-to-one sampling (hybrid PP-MC)
+
+Asked whether the engine reproduces the hybrid Pauli-propagation Monte Carlo of arXiv:2607.25998 and how far past its 5e8 cache it goes.
+`CollapseSample` draws one string by `|c|²` whenever a gate leaves more than the cache, collectively over partitions and ranks.
+On the tracker's 56-qubit echo a trajectory at cache 5e7 is 131 s on 8 threads and 3.9 GB, against the paper's ~8 min on 10 cores and 8–10 GB.
+Cache 3e10 over 16 ranks is 22–27 min per trajectory and moves no η value outside its standard error of 5e8.
+Single-path MC on the tracker's 49-qubit circuits reproduces the collaboration's submitted values (0.815 vs 0.808, 0.621 vs 0.619).
+
+### Partition rows on x-bits for CZ and `rz` circuits
+
+CZ and `rz` never change a string's x-bits, so rows drawn on x-coordinates alone (`partition_row_exclude={"z": all}`) leave only `rx` gates exchanging.
+On the 56-qubit echo at 4 ranks this took non-local layers from 77% to 34%, peak RSS per rank from 1.73 to 0.75 GB, and wall time from 103–136 s to 66 s.
+
 ### Python API extensions
 
 The capability register designed for the examples and benchmarks suite is implemented and shipped.
@@ -428,6 +441,7 @@ Raising the constant is also what first exercises `GATHER_OUTPUT_MAJOR_MIN_R`'s 
 
 `cut` needs a lattice the caller can bisect by hand, and the automatic alternative was removed for imbalance.
 A row choice that scores balance as well as remote weight is open research, as is exchange volume for circuits with no obvious geometry.
+Excluding coordinates by gate type is a second axis: on circuits whose entanglers are diagonal, x-bit rows keep every entangler local (see above).
 
 ### The small per-rank distributed regime
 
@@ -438,6 +452,13 @@ Fewer, larger pipeline chunks when a layer is small, and export parallelism with
 
 `shrink_to_fit` once `m` has stabilized never over-reserves, so it does not inherit the reservation experiment's failure mode.
 Never attempted.
+A returned sum keeps its peak bucket capacity: a caller that held one PP-MC result across the next `propagate` doubled that run's peak RSS (34 → 67 GB at cache 5e8).
+
+### Partitioned memory overhead
+
+At cache 2e7 on the 56-qubit echo a single process peaks at 97 B per cached term, four in-process partitions at 221 B, and four MPI ranks with random rows at 345 B.
+Ranks are balanced to 1%, so imbalance is ruled out; the grow-only exchange pools account for about 64 B, and the rest is unattributed.
+Peak RSS also ratchets upward across collapses and across trajectories in one process.
 
 ### Word-planar layout, and kernels outside fat LTO
 

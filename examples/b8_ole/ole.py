@@ -10,6 +10,7 @@ import gzip
 import json
 import math
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -97,37 +98,18 @@ def qubit_index() -> dict[int, int]:
     return {q: i for i, q in enumerate(spec()["device_qubits"])}
 
 
-def _quarter_turns(angle: float) -> int | None:
-    """`k` if `angle` is `k * pi/2` modulo `2 pi` to rounding, else `None`."""
-    k = angle / (math.pi / 2)
-    return int(round(k)) % 4 if abs(k - round(k)) < 1e-9 else None
-
-
-def to_circuit(ops, num_qubits: int | None = None, index: dict[int, int] | None = None, snap_cliffords: bool = True):
+def to_circuit(ops, index: dict[int, int] | None = None):
     """A `paulistrings.Circuit`, one gate per channel, so collapse checks fall after every gate as in the paper.
 
-    With `snap_cliffords`, rotations by a multiple of `pi/2` become exact Cliffords (up to global phase).
-    As rotations they branch: `cos(pi/2)` rounds to `6e-17`, so each `rz(pi/2)` would add a near-zero copy of every anticommuting string, which fills the PP-MC cache.
+    Quarter-turn `rx`/`rz` snap to exact Cliffords inside `PauliRotation` itself; nothing here branches.
     """
     from paulistrings import Circuit
 
     index = qubit_index() if index is None else index
-    circuit = Circuit(len(index) if num_qubits is None else num_qubits)
+    circuit = Circuit(len(index))
     for name, angle, qs in ops:
         q = [index[x] for x in qs]
-        k = _quarter_turns(angle) if snap_cliffords and name in ("rx", "rz") else None
-        if k is not None:
-            if name == "rx" and k:
-                circuit.h(q[0])
-            if k == 1:
-                circuit.s(q[0])
-            elif k == 2:
-                circuit.z(q[0])
-            elif k == 3:
-                circuit.sdg(q[0])
-            if name == "rx" and k:
-                circuit.h(q[0])
-        elif name == "rx":
+        if name == "rx":
             circuit.rx(angle, q[0])
         elif name == "rz":
             circuit.rz(angle, q[0])
@@ -137,10 +119,10 @@ def to_circuit(ops, num_qubits: int | None = None, index: dict[int, int] | None 
             circuit.s(q[0])
         elif name == "sdg":
             circuit.sdg(q[0])
-        elif name in ("sx", "sxdg"):
-            circuit.h(q[0])
-            circuit.s(q[0]) if name == "sx" else circuit.sdg(q[0])
-            circuit.h(q[0])
+        elif name == "sx":
+            circuit.rx(math.pi / 2, q[0])
+        elif name == "sxdg":
+            circuit.rx(-math.pi / 2, q[0])
         else:
             raise ValueError(f"unsupported gate {name!r}")
     return circuit
@@ -148,25 +130,17 @@ def to_circuit(ops, num_qubits: int | None = None, index: dict[int, int] | None 
 
 def observable(index: dict[int, int] | None = None):
     """`O = prod_{q in V_O} Z_q` with coefficient 1."""
-    from paulistrings import PauliSum
+    sys.path.insert(0, str(HERE.parent))
+    from common.observables import pauli_sum_from_support
 
     index = qubit_index() if index is None else index
-    chars = ["I"] * len(index)
-    for q in spec()["observable_qubits"]:
-        chars[index[q]] = "Z"
-    return PauliSum.from_strings({"".join(chars): 1.0}, num_qubits=len(index))
+    support = {index[q]: "Z" for q in spec()["observable_qubits"]}
+    return pauli_sum_from_support(support, len(index))
 
 
 def perturbation_sites(index: dict[int, int] | None = None) -> list[int]:
     index = qubit_index() if index is None else index
     return [index[q] for q in spec()["perturbation_qubits"]]
-
-
-def diagonal_echo(hist, delta: float) -> float:
-    """`sum_n w_n cos(2 delta)^n / sum_n w_n`: the paper's diagonal OLE with every moment `C_2m,diag` resummed."""
-    w = np.asarray(hist, dtype=float)
-    norm = w.sum()
-    return float(np.dot(w, np.cos(2 * delta) ** np.arange(len(w))) / norm) if norm > 0 else float("nan")
 
 
 def diagonal_moments(hist, orders: int) -> np.ndarray:

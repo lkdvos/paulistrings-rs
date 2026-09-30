@@ -20,7 +20,7 @@ sys.path.insert(0, str(HERE))
 
 import ole  # noqa: E402
 
-KEY = ("L", "eta", "delta", "policy", "cache", "eps", "max_weight", "mpi_ranks", "snap_cliffords")
+KEY = ("L", "eta", "delta", "policy", "cache", "eps", "max_weight", "mpi_ranks")
 
 
 def load(roots) -> dict[tuple, list[dict]]:
@@ -29,7 +29,6 @@ def load(roots) -> dict[tuple, list[dict]]:
         for path in sorted(Path(root).rglob("seed_*.json")):
             rec = json.loads(path.read_text())
             cfg = rec["config"]
-            cfg.setdefault("snap_cliffords", False)
             groups[tuple(round(cfg[k], 6) if isinstance(cfg[k], float) else cfg[k] for k in KEY)].append(rec)
     return groups
 
@@ -44,8 +43,11 @@ def summarize(groups) -> list[dict]:
             if len(vals) == 0:
                 continue
             row[f"{field}_mean"] = float(vals.mean())
-            row[f"{field}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else math.nan
-            row[f"{field}_stderr"] = row[f"{field}_std"] / math.sqrt(len(vals)) if len(vals) > 1 else math.nan
+            if len(vals) > 1:
+                row[f"{field}_std"] = float(vals.std(ddof=1))
+                row[f"{field}_stderr"] = row[f"{field}_std"] / math.sqrt(len(vals))
+            else:
+                row[f"{field}_std"] = row[f"{field}_stderr"] = math.nan
         row["norm_mean"] = float(np.mean([r["norm"] for r in recs]))
         row["collapses_mean"] = float(np.mean([r["collapses"] or 0 for r in recs]))
         row["propagate_s_mean"] = float(np.mean([r["propagate_s"] for r in recs]))
@@ -110,7 +112,7 @@ def main(argv=None) -> int:
         s = f"S_diag={r['S_diag_mean']:.4f}±{r.get('S_diag_stderr', math.nan):.4f} (std {r.get('S_diag_std', math.nan):.4f})"
         if "S_exact_mean" in r:
             s += f" S_exact={r['S_exact_mean']:.4f}"
-        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} snap={r['snap_cliffords']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
+        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
     if args.csv:
         fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in KEY, k))
         with args.csv.open("w", newline="") as fh:

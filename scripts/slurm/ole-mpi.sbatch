@@ -30,16 +30,7 @@ python -c 'import paulistrings, sys; sys.exit(0 if paulistrings.mpi_available() 
 
 echo "== job ${SLURM_JOB_ID:-?} on ${SLURM_JOB_NODELIST:-?}, $(date -Is), rev $(git rev-parse HEAD)"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
-numa=$(ls -d /sys/devices/system/node/node* | wc -l)
-cpus_per_numa=$(( SLURM_CPUS_ON_NODE / numa ))
-nodes=${SLURM_JOB_NUM_NODES:-1}
-# The rank count must be a power of two (log2(P) GF(2) partition rows).
-total=$(( nodes * numa ))
-ranks=1
-while [ $(( ranks * 2 )) -le "$total" ]; do ranks=$(( ranks * 2 )); done
-per_node=$(( ranks / nodes ))
-[ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
-echo "== $ranks ranks ($per_node per node), $cpus_per_numa threads each"
+source scripts/slurm/ranks.sh
 
 extra=()
 [ -n "${EPS:-}" ] && extra+=(--eps "$EPS")

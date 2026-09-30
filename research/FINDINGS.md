@@ -441,7 +441,6 @@ Raising the constant is also what first exercises `GATHER_OUTPUT_MAJOR_MIN_R`'s 
 
 `cut` needs a lattice the caller can bisect by hand, and the automatic alternative was removed for imbalance.
 A row choice that scores balance as well as remote weight is open research, as is exchange volume for circuits with no obvious geometry.
-Excluding coordinates by gate type is a second axis: on circuits whose entanglers are diagonal, x-bit rows keep every entangler local (see above).
 
 ### The small per-rank distributed regime
 

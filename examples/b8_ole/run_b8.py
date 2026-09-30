@@ -8,21 +8,22 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
+import operator
 import os
-import platform
-import resource
-import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
 
 import ole  # noqa: E402
+from common.harness import make_policy, peak_memory_kb  # noqa: E402
+from common.report import collect_provenance  # noqa: E402
 
 
 def _seeds(text: str) -> list[int]:
@@ -30,15 +31,6 @@ def _seeds(text: str) -> list[int]:
         lo, hi = (int(x) for x in text.split(":"))
         return list(range(lo, hi))
     return [int(x) for x in text.split(",")]
-
-
-def _git_rev() -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(HERE), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def build_policy(args, seed: int):
@@ -49,14 +41,10 @@ def build_policy(args, seed: int):
         parts.append(truncation.collapse_sample(int(args.cache), seed))
     elif args.policy == "approx_topn":
         parts.append(truncation.approx_topn(int(args.cache)))
-    if args.eps is not None:
-        parts.append(truncation.coeff(args.eps))
-    if args.max_weight is not None:
-        parts.append(truncation.weight(args.max_weight))
-    policy = None
-    for p in parts:
-        policy = p if policy is None else policy & p
-    return policy
+    base = make_policy(args.max_weight, args.eps)
+    if base is not None:
+        parts.append(base)
+    return functools.reduce(operator.and_, parts) if parts else None
 
 
 def parse_args(argv=None):
@@ -72,7 +60,6 @@ def parse_args(argv=None):
     ap.add_argument("--max-weight", type=int, default=None)
     ap.add_argument("--seeds", default="0", help="'lo:hi' or comma list; one trajectory per seed")
     ap.add_argument("--exact-overlap", action="store_true", help="also compute the exact rotated_overlap S_delta")
-    ap.add_argument("--no-snap-cliffords", action="store_true", help="import rz(k pi/2) as branching rotations, as before the fix")
     ap.add_argument("--mpi", action="store_true", help="one partition per MPI rank (needs the `mpi` build and mpi4py)")
     ap.add_argument("--partitions", default=None, help="in-process NUMA partitions: an int or 'auto'")
     ap.add_argument("--out", type=Path, required=True)
@@ -96,8 +83,7 @@ def main(argv=None) -> int:
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
 
-    snap = not args.no_snap_cliffords
-    circuit = ole.to_circuit(ole.echo_half(args.L, eta), snap_cliffords=snap)
+    circuit = ole.to_circuit(ole.echo_half(args.L, eta))
     obs = ole.observable()
     sites = ole.perturbation_sites()
 
@@ -105,7 +91,6 @@ def main(argv=None) -> int:
         f"L{args.L}_eta{eta:.4f}_d{delta:g}_{args.policy}"
         + (f"_M{args.cache:.0e}" if args.policy in ("ppmc", "approx_topn") else "")
         + (f"_eps{args.eps:.0e}" if args.eps is not None else "")
-        + ("_snap" if snap else "")
     )
     outdir = args.out / tag
     if rank == 0:
@@ -122,6 +107,8 @@ def main(argv=None) -> int:
     elif args.partitions is not None:
         kwargs["partitions"] = args.partitions if args.partitions == "auto" else int(args.partitions)
         kwargs["partition_row_exclude"] = exclude
+
+    import paulistrings
 
     for seed in _seeds(args.seeds):
         t0 = time.perf_counter()
@@ -143,13 +130,12 @@ def main(argv=None) -> int:
                 "seed": seed,
                 "mpi_ranks": comm.Get_size() if comm is not None else 1,
                 "partitions": args.partitions,
-                "snap_cliffords": snap,
             },
-            "S_diag": ole.diagonal_echo(hist, delta),
+            "S_diag": paulistrings.diagonal_echo(hist, delta),
             "norm": float(sum(hist)),
             "hist": [float(w) for w in hist],
-            "collapses": getattr(stats, "collapses", None),
-            "final_terms": getattr(stats, "final_terms", None),
+            "collapses": stats.collapses,
+            "final_terms": stats.final_terms,
             "propagate_s": t_prop,
         }
         if args.exact_overlap:
@@ -157,20 +143,19 @@ def main(argv=None) -> int:
             raw = result.rotated_overlap(sites, delta, axis="x", comm=comm)
             record["S_exact"] = raw / record["norm"] if record["norm"] > 0 else math.nan
             record["overlap_s"] = time.perf_counter() - t1
-        peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_kb = peak_memory_kb() or 0.0
         if comm is not None:
             from mpi4py import MPI
 
             peak_kb = comm.allreduce(peak_kb, op=MPI.MAX)
             record["final_terms"] = comm.allreduce(len(result), op=MPI.SUM)
-        elif record["final_terms"] is None:
-            record["final_terms"] = len(result)
         record["peak_rss_kb_max_rank"] = peak_kb
         if rank == 0:
+            provenance = collect_provenance(repo_root=HERE)
             record["provenance"] = {
-                "git_rev": _git_rev(),
-                "host": socket.gethostname(),
-                "python": platform.python_version(),
+                "git_rev": provenance.commit,
+                "host": provenance.hostname,
+                "python": provenance.python_version,
                 "rayon_threads": os.environ.get("RAYON_NUM_THREADS"),
                 "slurm_job": os.environ.get("SLURM_JOB_ID"),
                 "argv": sys.argv,

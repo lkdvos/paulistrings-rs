@@ -209,7 +209,6 @@ pub struct GpuKernelMs {
 pub(crate) struct ExchangeLaps {
     pub export_ns: u64,
     pub exchange_ns: u64,
-    pub chunk_wait_ns: u64,
     pub rows_exported: u64,
     pub recv_rows: u64,
 }

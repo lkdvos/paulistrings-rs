@@ -22,6 +22,7 @@ mod scan;
 mod staging;
 mod sum;
 mod truncation;
+mod wire;
 
 #[cfg(feature = "mpi")]
 pub use device::nccl_available;
@@ -32,8 +33,6 @@ pub use layer::{
     GpuBucketPolicy, GpuKernelMs, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
-#[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
-pub use nccl::{LoopbackFault, LoopbackTally, LoopbackWire};
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
 pub use rank::{local_device_for_rank, GpuDistributedSum};

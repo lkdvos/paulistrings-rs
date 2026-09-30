@@ -279,7 +279,6 @@ fn fold_layer_stats<const W: usize>(
     stats.rescale_ns += rescale;
     stats.export_ns += laps.export_ns;
     stats.exchange_ns += laps.exchange_ns;
-    stats.chunk_wait_ns += laps.chunk_wait_ns;
     stats.rows_exported += laps.rows_exported;
     stats.recv_rows += laps.recv_rows;
     stats.coset_loop_ns +=

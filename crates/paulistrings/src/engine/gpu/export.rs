@@ -1,4 +1,4 @@
-//! K10 export, the exchange, and the received rows' adoption for one device layer, through device payloads or NCCL. See ARCHITECTURE.md §Partitioning.
+//! K10 export, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Partitioning.
 
 use std::sync::Arc;
 
@@ -11,28 +11,23 @@ use super::layer::{
     FusedRecv, FusedTable, LayerScratch, Xfer, XferNs,
 };
 use super::module::MAX_BUCKET_LEN;
-use super::payload::{self, DeviceBlock, DevicePayload, GpuExchange};
+use super::payload::{DeviceBlock, DevicePayload};
 use super::prepared::DevicePrepared;
 use super::scan::exclusive_scan_with_max_into;
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
+use super::wire::{
+    schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind,
+};
 use crate::engine::coset::Gf2Span;
-use crate::engine::partitioned::layer::{exchange_chunks, LayerExchangeCounts};
+use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::{ChunkMap, Transport};
-
-#[cfg(feature = "mpi")]
-use super::nccl::{
-    nccl_schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton, WireColumn, WireGroup,
-    WireOpKind,
-};
 
 /// Grow-only device and host buffers of the export and receive passes, kept between layers.
 pub(crate) struct DeviceExport<const W: usize> {
     counts: CudaSlice<u32>,
     off: CudaSlice<u32>,
-    /// The destination-position order and chunk edges of the current layer.
-    pub(crate) chunks: ChunkMap,
     /// Received blocks, concatenated: `off` is `K × (B + 1)` CSR offsets, `base[k]` the first row of block `k`.
     pub(crate) recv_off: CudaSlice<u32>,
     pub(crate) recv_base: CudaSlice<u32>,
@@ -45,21 +40,16 @@ pub(crate) struct DeviceExport<const W: usize> {
     /// The longest received segment of the current layer; must fit the tag's offset field.
     pub(crate) recv_max_segment: usize,
     pub(crate) recv_rows: usize,
-    /// Which payload form the exchange uses; `Device` unless an MPI group started NCCL.
-    pub(crate) mode: GpuExchange,
     premerge: PremergeScratch,
     stream: Arc<CudaStream>,
-    /// The device wire of [`GpuExchange::Nccl`], `Some` whenever that is the mode.
-    #[cfg(feature = "mpi")]
+    /// The group's device wire, `Some` in every group of more than one partition.
     pub(crate) wire: Option<Arc<dyn DeviceWire>>,
-    /// Send payloads of a group that failed after the vote: a peer may still be reading them, so they never return to the shared bin and are freed with the split, after `wire`.
-    #[cfg(feature = "mpi")]
-    quarantine: Vec<DevicePayload<W>>,
+    /// Send payloads not in flight.
+    sends: Vec<DevicePayload<W>>,
     /// Skeleton payloads not in flight.
-    #[cfg(feature = "mpi")]
     skeletons: Vec<BlockSkeletons<W>>,
-    /// Test hook: the next NCCL layer's receive growth fails as out of memory.
-    #[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
+    /// Test hook: the next remote layer's receive growth fails as out of memory.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_recv_growth: bool,
     /// The current layer's received rows still to move into `recv_*`.
     pub(crate) pending: Option<PendingRecv<W>>,
@@ -68,29 +58,16 @@ pub(crate) struct DeviceExport<const W: usize> {
     pub(crate) fail_after_chunk: Option<usize>,
 }
 
-/// A remote layer's received rows not yet in `recv_*`: chunk `c`, positions `map.bound(c)..map.bound(c + 1)`, moves just before the fused layer reaches it, so `recv_*` holds one chunk at a time (ARCHITECTURE.md §Partitioning).
+/// A remote layer's transfers not yet made: chunk `c`, positions `map.bound(c)..map.bound(c + 1)`, moves just before the fused layer reaches it, so `recv_*` holds one chunk at a time (ARCHITECTURE.md §Partitioning).
+/// `send` holds this partition's blocks, its block for remote delta `k` at `own[k]`; `failed` once a group failed to post or complete, after which none posts.
 pub(crate) struct PendingRecv<const W: usize> {
     pub(crate) map: ChunkMap,
     /// The first chunk not yet moved.
     next: usize,
-    source: RecvSource<W>,
-}
-
-enum RecvSource<const W: usize> {
-    /// The partners' device payloads, remote delta `k`'s block at `at[k] = (partner, index)`.
-    Device {
-        recv: Vec<Option<DevicePayload<W>>>,
-        at: Vec<(usize, usize)>,
-    },
-    /// This rank's send payloads, its block for remote delta `k` at `own[k]`, and the layer's schedule; `failed` once one of its groups failed to post or complete, after which none posts.
-    #[cfg(feature = "mpi")]
-    Nccl {
-        send: Vec<Option<DevicePayload<W>>>,
-        own: Vec<(usize, usize)>,
-        ops: Vec<ScheduledOp>,
-        posted: bool,
-        failed: bool,
-    },
+    send: Vec<Option<DevicePayload<W>>>,
+    own: Vec<(usize, usize)>,
+    ops: Vec<ScheduledOp>,
+    failed: bool,
 }
 
 /// Grow-only buffers of the sender-side merge: one partner's sub-table, its counts and CSR, and the split of its merged rows over the partner's blocks.
@@ -144,7 +121,6 @@ impl<const W: usize> DeviceExport<W> {
         Ok(Self {
             counts: s.alloc_zeros(1)?,
             off: s.alloc_zeros(2)?,
-            chunks: ChunkMap::default(),
             recv_off: s.alloc_zeros(2)?,
             recv_base: s.alloc_zeros(16)?,
             recv_x: s.alloc_zeros(W)?,
@@ -155,84 +131,52 @@ impl<const W: usize> DeviceExport<W> {
             base_host: Vec::new(),
             recv_max_segment: 0,
             recv_rows: 0,
-            mode: GpuExchange::Device,
             premerge: PremergeScratch::new(s, W)?,
             stream: s.clone(),
-            #[cfg(feature = "mpi")]
             wire: None,
-            #[cfg(feature = "mpi")]
-            quarantine: Vec::new(),
-            #[cfg(feature = "mpi")]
+            sends: Vec::new(),
             skeletons: Vec::new(),
-            #[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
+            #[cfg(any(test, feature = "test-utils"))]
             fail_recv_growth: false,
             pending: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_after_chunk: None,
         })
     }
+
+    /// A pooled skeleton payload, emptied.
+    fn skeleton(&mut self) -> BlockSkeletons<W> {
+        let mut s = self.skeletons.pop().unwrap_or_default();
+        s.blocks.clear();
+        s
+    }
 }
 
-/// The exchange call a partition owes its partners when its own layer failed before exporting: one well-formed empty block per remote delta the plan names, under the real chunk map, so every receiver finishes the layer and the error surfaces after the loop.
+/// The exchange a partition owes its partners when its own layer failed before exporting: one empty skeleton per remote delta the plan names and a no vote, so every receiver finishes the layer and the error surfaces after the loop.
 pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
     transport: &X,
     plan: &PartitionPlan,
     bits: u8,
     export: &mut DeviceExport<W>,
 ) {
-    let size = transport.size();
-    let b = 1usize << bits;
-    export.chunks.rebuild(
-        &Gf2Span::new(&plan.local_bucket_deltas, bits),
-        b,
-        exchange_chunks(),
-    );
-    let mut used = vec![0usize; size as usize];
-    match export.mode {
-        GpuExchange::Device => {
-            let device = export.stream.context().ordinal() as u32;
-            let mut send: Vec<Option<DevicePayload<W>>> = (0..size).map(|_| None).collect();
-            for r in &plan.remote {
-                let q = r.partner as usize;
-                let payload = send[q].get_or_insert_with(|| payload::reclaim::<W>(device));
-                let j = used[q];
-                used[q] += 1;
-                // An empty block holds 32 bytes of device memory; a partition that cannot allocate those has no way to pair its partners and lets them fail by name.
-                payload
-                    .block_mut(j, &export.stream)
-                    .expect("allocating an empty device exchange block")
-                    .set_empty(r.entry as u32, b);
-            }
-            for (q, payload) in send.iter_mut().enumerate() {
-                if let Some(payload) = payload {
-                    payload.blocks.truncate(used[q]);
-                }
-            }
-            let (recv, ()) =
-                transport.exchange_layer(send, &mut Vec::new(), &export.chunks, |_, _| ());
-            recv.into_iter().flatten().for_each(payload::recycle);
+    let mut send: Vec<Option<BlockSkeletons<W>>> = (0..transport.size()).map(|_| None).collect();
+    for r in &plan.remote {
+        let q = r.partner as usize;
+        if send[q].is_none() {
+            send[q] = Some(export.skeleton());
         }
-        #[cfg(feature = "mpi")]
-        GpuExchange::Nccl => {
-            let mut send: Vec<Option<BlockSkeletons<W>>> = (0..size).map(|_| None).collect();
-            for r in &plan.remote {
-                let skel = send[r.partner as usize].get_or_insert_with(|| {
-                    let mut s = export.skeletons.pop().unwrap_or_default();
-                    s.blocks.clear();
-                    s
-                });
-                skel.push_empty(r.entry as u32, b);
-            }
-            let recv = transport.exchange(send, &mut export.skeletons);
-            export.skeletons.extend(recv.into_iter().flatten());
-            vote(transport, None);
-        }
+        send[q]
+            .as_mut()
+            .expect("just set")
+            .push_empty(r.entry as u32, 1 << bits);
     }
+    let recv = transport.exchange(send, &mut export.skeletons);
+    export.skeletons.extend(recv.into_iter().flatten());
+    vote(transport, None);
 }
 
-/// The NCCL exchange's go/no-go and chunk count: `ready` is `Some(log2 chunks)` when this rank can receive in that many, and the result the largest such count when every rank of the group can, which fits every rank's buffers since a finer power-of-two cut never grows a chunk.
+/// The exchange's go/no-go and chunk count: `ready` is `Some(log2 chunks)` when this rank can receive in that many, and the result the largest such count when every rank of the group can, which fits every rank's buffers since a finer power-of-two cut never grows a chunk.
 /// **Collective**: one `allreduce_sum_u64` of `2 × size` words, rank `r`'s slot `r` set when it is not ready and slot `size + r` its count.
-#[cfg(feature = "mpi")]
 fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     let (rank, size) = (transport.rank() as usize, transport.size() as usize);
     let mut votes = vec![0u64; 2 * size];
@@ -243,8 +187,8 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// Export → exchange → adoption of the received rows with their fingerprints, by the export's [`GpuExchange`] mode.
-/// Runs after K1 has filled `cnt` at the agreed bucket count; the layer's K2/K3 then read `scratch.export.recv_*`.
+/// The exchange (ARCHITECTURE.md §Partitioning): K10 fills device blocks, their skeletons cross over `transport`, and the group votes on going ahead and on a chunk count; on a unanimous yes the send payloads become the pending receive, whose [`receive_chunk`] posts one wire group per chunk straight into `recv_*` and fingerprints what arrived.
+/// Runs after K1 has filled `cnt` at the agreed bucket count; a rank that cannot receive votes no and returns its error, and on any no nobody posts and a ready rank takes every received block as empty.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -252,130 +196,16 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     scratch: &mut LayerScratch<W>,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
-    match scratch.export.mode {
-        GpuExchange::Device => exchange_rows_device(sum, table, plan, scratch, transport),
-        #[cfg(feature = "mpi")]
-        GpuExchange::Nccl => exchange_rows_nccl(sum, table, plan, scratch, transport),
-    }
-}
-
-/// The device-payload exchange: K10 fills device columns and fingerprints them, the payload moves, and the receiver keeps the partners' payloads as its pending receive, copied device-to-device one chunk at a time by [`receive_chunk`].
-fn exchange_rows_device<const W: usize, X: Transport>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
-    plan: &PartitionPlan,
-    scratch: &mut LayerScratch<W>,
-    transport: &X,
-) -> Result<LayerExchangeCounts, GpuError> {
     let size = transport.size();
     #[cfg(feature = "phase-timing")]
     let t_export = std::time::Instant::now();
-    let (send, mut counts) = match export_blocks_device(sum, table, plan, scratch, size, true) {
+    let (send, mut counts) = match export_blocks_device(sum, table, plan, scratch, size) {
         Ok(v) => v,
         Err(e) => {
             pair_empty_exchange::<W, X>(transport, plan, sum.hash.bits(), &mut scratch.export);
             return Err(e);
         }
     };
-    #[cfg(feature = "phase-timing")]
-    {
-        scratch.laps.export_ns += t_export.elapsed().as_nanos() as u64;
-        scratch.laps.rows_exported += counts.rows_sent.iter().sum::<u64>();
-    }
-    let b = sum.hash.num_buckets();
-    let cap_rows = recv_cap_rows::<W>(scratch.options.exchange_bytes);
-    let export = &mut scratch.export;
-    let xfer_ns = &mut scratch.xfer_ns;
-    #[cfg(feature = "phase-timing")]
-    let laps = &mut scratch.laps;
-    export.chunks.rebuild(
-        &Gf2Span::new(&plan.local_bucket_deltas, sum.hash.bits()),
-        b,
-        exchange_chunks(),
-    );
-    let map = std::mem::take(&mut export.chunks);
-    #[cfg(feature = "phase-timing")]
-    let t_exchange = std::time::Instant::now();
-    let (recv, body) = transport.exchange_layer(send, &mut Vec::new(), &map, |recv, wait| {
-        #[cfg(feature = "phase-timing")]
-        let t_body = std::time::Instant::now();
-        for k in 0..map.chunks() {
-            wait.wait_chunk(k);
-        }
-        #[cfg(feature = "phase-timing")]
-        {
-            laps.chunk_wait_ns += t_body.elapsed().as_nanos() as u64;
-        }
-        let blocks = paired_blocks(plan, recv, |p: &DevicePayload<W>, j| p.blocks.get(j));
-        lay_out(
-            export,
-            b,
-            blocks
-                .iter()
-                .map(|bl| (bl.header.num_buckets, &bl.offsets[..], bl.rows())),
-        );
-        let (log2, most) = recv_chunks(&export.off_host, b, cap_rows);
-        size_receive(sum, export, most, xfer_ns).map(|()| log2)
-    });
-    export.chunks = map;
-    #[cfg(feature = "phase-timing")]
-    {
-        laps.exchange_ns += t_exchange.elapsed().as_nanos() as u64;
-    }
-    let log2 = match body {
-        Ok(log2) => log2,
-        Err(e) => {
-            recv.into_iter().flatten().for_each(payload::recycle);
-            return Err(e);
-        }
-    };
-    export.pending = Some(PendingRecv {
-        map: position_chunks(sum.hash.bits(), b, log2),
-        next: 0,
-        source: RecvSource::Device {
-            recv,
-            at: paired_at(plan),
-        },
-    });
-    let rows_received = export.recv_rows as u64;
-    #[cfg(feature = "phase-timing")]
-    {
-        laps.recv_rows += rows_received;
-    }
-    counts.rows_received = rows_received;
-    counts.remote_deltas = plan.remote.len();
-    Ok(counts)
-}
-
-/// The NCCL exchange (ARCHITECTURE.md §Partitioning): K10 fills device blocks, their skeletons cross over `transport`, and the group votes on going ahead and on a chunk count; on a unanimous yes the send payloads become the pending receive, whose [`receive_chunk`] posts one wire group per chunk straight into `recv_*` and fingerprints what arrived.
-/// A rank that cannot receive votes no and returns its error; on any no nobody posts, and a ready rank takes every received block as empty and fails nothing of its own.
-#[cfg(feature = "mpi")]
-fn exchange_rows_nccl<const W: usize, X: Transport>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
-    plan: &PartitionPlan,
-    scratch: &mut LayerScratch<W>,
-    transport: &X,
-) -> Result<LayerExchangeCounts, GpuError> {
-    let size = transport.size();
-    #[cfg(feature = "phase-timing")]
-    let t_export = std::time::Instant::now();
-    let (send, mut counts) = match export_blocks_device(sum, table, plan, scratch, size, false) {
-        Ok(v) => v,
-        Err(e) => {
-            pair_empty_exchange::<W, X>(transport, plan, sum.hash.bits(), &mut scratch.export);
-            return Err(e);
-        }
-    };
-    // The fingerprint column stays behind.
-    for (q, p) in send.iter().enumerate() {
-        counts.bytes_sent[q] = p.as_ref().map_or(0, |p| {
-            p.blocks
-                .iter()
-                .map(|b| (b.bytes() - b.rows() * std::mem::size_of::<u64>()) as u64)
-                .sum()
-        });
-    }
     #[cfg(feature = "phase-timing")]
     {
         scratch.laps.export_ns += t_export.elapsed().as_nanos() as u64;
@@ -391,7 +221,7 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
         .iter()
         .map(|p| {
             p.as_ref().map(|p| {
-                let mut s = export.skeletons.pop().unwrap_or_default();
+                let mut s = export.skeleton();
                 s.fill_from(&p.blocks);
                 s
             })
@@ -399,7 +229,7 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
         .collect();
     let recv = transport.exchange(skeletons, &mut export.skeletons);
     let (rows, ops) = {
-        let blocks = paired_blocks(plan, &recv, |p: &BlockSkeletons<W>, j| p.blocks.get(j));
+        let blocks = paired_blocks(plan, &recv);
         let ready = stage_receive(sum, export, &blocks, cap_rows, xfer_ns)
             .and_then(|log2| wire_ready(export).map(|()| log2));
         match vote(transport, ready.as_ref().ok().copied()) {
@@ -419,7 +249,7 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
                     })
                     .collect();
                 let recv_off: Vec<&[u32]> = blocks.iter().map(|b| b.offsets.as_slice()).collect();
-                let ops = nccl_schedule(&partners, &own_off, &recv_off, &map);
+                let ops = schedule(&partners, &own_off, &recv_off, &map);
                 (Ok(export.recv_rows as u64), Some((map, own, ops)))
             }
             None => (ready.and_then(|_| discard_received(export)), None),
@@ -431,16 +261,13 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
             export.pending = Some(PendingRecv {
                 map,
                 next: 0,
-                source: RecvSource::Nccl {
-                    send,
-                    own,
-                    ops,
-                    posted: false,
-                    failed: false,
-                },
+                send,
+                own,
+                ops,
+                failed: false,
             });
         }
-        None => send.into_iter().flatten().for_each(payload::recycle),
+        None => export.sends.extend(send.into_iter().flatten()),
     }
     #[cfg(feature = "phase-timing")]
     {
@@ -457,7 +284,6 @@ fn exchange_rows_nccl<const W: usize, X: Transport>(
 }
 
 /// The receive layout from the skeletons in plan order, checked against the segment cap before any row moves; sizes `recv_*` for this rank's own chunk count, which it returns as `log2`.
-#[cfg(feature = "mpi")]
 fn stage_receive<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
@@ -494,36 +320,20 @@ fn stage_receive<const W: usize>(
     Ok(log2)
 }
 
-#[cfg(all(feature = "mpi", test))]
-impl<const W: usize> DeviceExport<W> {
-    /// Device addresses of every quarantined block's key column (test hook).
-    pub(crate) fn quarantined_ptrs(&self) -> Vec<u64> {
-        use cudarc::driver::DevicePtr;
-        self.quarantine
-            .iter()
-            .flat_map(|p| &p.blocks)
-            .map(|b| b.x.device_ptr(&self.stream).0)
-            .collect()
-    }
-}
-
 /// Whether this rank's wire can carry the group, so a failure it can predict is a no vote rather than an error after a yes.
-#[cfg(feature = "mpi")]
 fn wire_ready<const W: usize>(export: &DeviceExport<W>) -> Result<(), GpuError> {
     match &export.wire {
         None => Err(GpuError::Unsupported(
-            "GpuExchange::Nccl without a device wire",
+            "a remote layer on a partition without a device wire",
         )),
-        Some(wire) if !wire.is_healthy() => Err(GpuError::Nccl {
-            code: cudarc::nccl::sys::ncclResult_t::ncclInvalidUsage as i32,
-            what: "an exchange on a failed or aborted device wire".to_string(),
-        }),
+        Some(wire) if !wire.is_healthy() => Err(GpuError::Wire(
+            "an exchange on a failed or aborted device wire",
+        )),
         Some(_) => Ok(()),
     }
 }
 
 /// A ready rank's side of a no vote: every received block is empty.
-#[cfg(feature = "mpi")]
 fn discard_received<const W: usize>(export: &mut DeviceExport<W>) -> Result<u64, GpuError> {
     let n = export.off_host.len();
     export
@@ -639,30 +449,17 @@ fn size_receive<const W: usize>(
     })
 }
 
-/// Positions `lo..hi` of every received block laid end to end from row 0 of `recv_*` in plan order: per block its `(first row in the block, rows, first row in recv_*)`, and in `base` the value that makes the fused layer's `base[k] + off[k][p]` land there.
+/// Positions `lo..hi` of every received block laid end to end from row 0 of `recv_*` in plan order, returning their rows, with in `base` the value that makes the fused layer's `base[k] + off[k][p]` land there.
 /// That base is `start - off[k][lo]` in wrapping `u32` arithmetic, which the kernel's own `u32` sum undoes for every `p` in the chunk.
-fn chunk_layout(
-    off: &[u32],
-    b: usize,
-    lo: usize,
-    hi: usize,
-    base: &mut Vec<u32>,
-) -> (Vec<(usize, usize, usize)>, usize) {
+fn chunk_layout(off: &[u32], b: usize, lo: usize, hi: usize, base: &mut Vec<u32>) -> usize {
     base.clear();
     base.resize(16, 0);
     let mut at = 0usize;
-    let parts = off
-        .chunks_exact(b + 1)
-        .enumerate()
-        .map(|(k, o)| {
-            let (r0, r1) = (o[lo] as usize, o[hi] as usize);
-            base[k] = (at as u32).wrapping_sub(o[lo]);
-            let part = (r0, r1 - r0, at);
-            at += r1 - r0;
-            part
-        })
-        .collect();
-    (parts, at)
+    for (k, o) in off.chunks_exact(b + 1).enumerate() {
+        base[k] = (at as u32).wrapping_sub(o[lo]);
+        at += (o[hi] - o[lo]) as usize;
+    }
+    at
 }
 
 /// Move chunk `c` of the pending receive into `recv_*`, fingerprinted, with its bases in `recv_base`; returns its rows.
@@ -694,7 +491,7 @@ pub(crate) fn receive_chunk<const W: usize>(
     r
 }
 
-/// Chunk `c` of `pending` into `recv_*`; with `keep` its rows are fingerprinted and its bases uploaded, without it the transfer only completes, as a failed layer's must.
+/// Chunk `c` of `pending` into `recv_*` through one wire group; with `keep` its rows are fingerprinted and its bases uploaded, without it the transfer only completes, as a failed layer's must.
 fn move_chunk<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
@@ -709,9 +506,10 @@ fn move_chunk<const W: usize>(
         pending.map.bound(c) as usize,
         pending.map.bound(c + 1) as usize,
     );
-    let (parts, n) = chunk_layout(&export.off_host, b, lo, hi, &mut export.base_host);
-    #[cfg(feature = "mpi")]
-    let wire = export.wire.clone();
+    let n = chunk_layout(&export.off_host, b, lo, hi, &mut export.base_host);
+    let wire = export.wire.clone().ok_or(GpuError::Unsupported(
+        "a remote layer on a partition without a device wire",
+    ))?;
     let DeviceExport {
         recv_base,
         recv_x,
@@ -721,98 +519,52 @@ fn move_chunk<const W: usize>(
         base_host,
         ..
     } = export;
-    let fingerprint = match &mut pending.source {
-        RecvSource::Device { recv, at } => {
-            for (k, &(r0, rows, dst)) in parts.iter().enumerate() {
-                if rows == 0 || !keep {
-                    continue;
-                }
-                let (q, j) = at[k];
-                let block = &recv[q]
-                    .as_ref()
-                    .expect("a payload for every partner")
-                    .blocks[j];
-                if block.x.context().ordinal() != sum.ctx.ordinal() {
-                    let _ = payload::enable_peer_access(&sum.ctx, block.x.context());
-                }
-                s.memcpy_dtod(
-                    &block.x.slice(r0 * W..(r0 + rows) * W),
-                    &mut recv_x.slice_mut(dst * W..(dst + rows) * W),
-                )?;
-                s.memcpy_dtod(
-                    &block.z.slice(r0 * W..(r0 + rows) * W),
-                    &mut recv_z.slice_mut(dst * W..(dst + rows) * W),
-                )?;
-                s.memcpy_dtod(
-                    &block.c.slice(2 * r0..2 * (r0 + rows)),
-                    &mut recv_c.slice_mut(2 * dst..2 * (dst + rows)),
-                )?;
-                s.memcpy_dtod(
-                    &block.g.slice(r0..r0 + rows),
-                    &mut recv_g.slice_mut(dst..dst + rows),
-                )?;
-            }
-            pending.next = c + 1;
-            false
-        }
-        #[cfg(feature = "mpi")]
-        RecvSource::Nccl {
-            send,
-            own,
-            ops,
-            posted,
-            failed,
-        } => {
-            let wire = wire.ok_or(GpuError::Unsupported(
-                "GpuExchange::Nccl without a device wire",
-            ))?;
-            let mut group = WireGroup::new();
-            for op in ops
-                .iter()
-                .filter(|op| op.chunk == c && op.kind == WireOpKind::Send)
-            {
-                let (q, j) = own[op.k];
-                let block = &send[q]
-                    .as_ref()
-                    .expect("a payload for every partner")
-                    .blocks[j];
-                let (r0, r1) = op.rows;
-                let e = op.column.elems_per_row::<W>();
-                match op.column {
-                    WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, s),
-                    WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, s),
-                    WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, s),
-                }
-            }
-            let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
-                let e = column.elems_per_row::<W>();
-                ops.iter()
-                    .filter(|op| {
-                        op.chunk == c && op.kind == WireOpKind::Recv && op.column == column
-                    })
-                    .map(|op| ((op.rows.1 - op.rows.0) * e, op.peer))
-                    .collect()
-            };
-            group.recv_parts(recv_x.slice_mut(0..n * W), &recv_parts(WireColumn::X), s);
-            group.recv_parts(recv_z.slice_mut(0..n * W), &recv_parts(WireColumn::Z), s);
-            group.recv_parts(
-                recv_c.slice_mut(0..2 * n),
-                &recv_parts(WireColumn::Coeff),
-                s,
-            );
-            *posted = true;
-            if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(s)) {
-                *failed = true;
-                return Err(e);
-            }
-            pending.next = c + 1;
-            true
-        }
+    let PendingRecv { send, own, ops, .. } = &*pending;
+    // `schedule` lists every send before every receive, each chunk-major.
+    let (sends, recvs) = ops.split_at(ops.partition_point(|op| op.kind == WireOpKind::Send));
+    let of_chunk = |ops: &'_ [ScheduledOp]| -> std::ops::Range<usize> {
+        ops.partition_point(|op| op.chunk < c)..ops.partition_point(|op| op.chunk <= c)
     };
+    let (sends, recvs) = (&sends[of_chunk(sends)], &recvs[of_chunk(recvs)]);
+    let mut group = WireGroup::new();
+    for op in sends {
+        let (q, j) = own[op.k];
+        let block = &send[q]
+            .as_ref()
+            .expect("a payload for every partner")
+            .blocks[j];
+        let (r0, r1) = op.rows;
+        let e = op.column.elems_per_row::<W>();
+        match op.column {
+            WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, s),
+            WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, s),
+            WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, s),
+        }
+    }
+    let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
+        let e = column.elems_per_row::<W>();
+        recvs
+            .iter()
+            .filter(|op| op.column == column)
+            .map(|op| ((op.rows.1 - op.rows.0) * e, op.peer))
+            .collect()
+    };
+    group.recv_parts(recv_x.slice_mut(0..n * W), &recv_parts(WireColumn::X), s);
+    group.recv_parts(recv_z.slice_mut(0..n * W), &recv_parts(WireColumn::Z), s);
+    group.recv_parts(
+        recv_c.slice_mut(0..2 * n),
+        &recv_parts(WireColumn::Coeff),
+        s,
+    );
+    if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(s)) {
+        pending.failed = true;
+        return Err(e);
+    }
+    pending.next = c + 1;
     if !keep {
         return Ok(n);
     }
-    if fingerprint && n > 0 {
+    if n > 0 {
         let n32 = n as u32;
         // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; `recv_g` holds the chunk's `n` rows.
         unsafe {
@@ -834,7 +586,7 @@ fn move_chunk<const W: usize>(
     Ok(n)
 }
 
-/// End the current layer's pending receive, if any: chunks a failure left unmoved still complete their transfers, rows discarded, so every peer's receive completes, unless a group already failed; then the payloads return to the bin, or a failed group's sends to quarantine, where a peer may still be reading them.
+/// End the current layer's pending receive, if any: chunks a failure left unmoved still complete their transfers, rows discarded, so every peer's receive completes, unless a group already failed; then the send payloads return to the pool.
 pub(crate) fn finish_receive<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,
@@ -845,8 +597,7 @@ pub(crate) fn finish_receive<const W: usize>(
     };
     let mut drained = Ok(());
     for c in pending.next..pending.map.chunks() {
-        #[cfg(feature = "mpi")]
-        if matches!(pending.source, RecvSource::Nccl { failed: true, .. }) {
+        if pending.failed {
             break;
         }
         if let Err(e) = move_chunk(sum, export, &mut pending, c, false, &mut scratch.xfer_ns) {
@@ -855,22 +606,8 @@ pub(crate) fn finish_receive<const W: usize>(
         }
     }
     let synced = sum.stream.synchronize().map_err(GpuError::from);
-    match pending.source {
-        RecvSource::Device { recv, .. } => recv.into_iter().flatten().for_each(payload::recycle),
-        #[cfg(feature = "mpi")]
-        RecvSource::Nccl {
-            send,
-            posted,
-            failed,
-            ..
-        } => {
-            if posted && failed {
-                export.quarantine.extend(send.into_iter().flatten());
-            } else {
-                send.into_iter().flatten().for_each(payload::recycle);
-            }
-        }
-    }
+    // A failed group's peers may still read these, but a failed partition never exports again, so they are only freed with it.
+    export.sends.extend(pending.send.into_iter().flatten());
     drained.and(synced)
 }
 
@@ -889,7 +626,6 @@ fn paired_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
 }
 
 /// Remote delta `k`'s `(partner, index)` among this rank's send blocks, which the export fills in plan order per partner.
-#[cfg(feature = "mpi")]
 fn own_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
     let mut used = std::collections::HashMap::<u32, usize>::new();
     plan.remote
@@ -902,18 +638,17 @@ fn own_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// The received block per remote delta in plan order, by [`paired_at`].
-fn paired_blocks<'a, P, B>(
+/// The received skeleton per remote delta in plan order, by [`paired_at`].
+fn paired_blocks<'a, const W: usize>(
     plan: &PartitionPlan,
-    recv: &'a [Option<P>],
-    block: impl Fn(&'a P, usize) -> Option<&'a B>,
-) -> Vec<&'a B> {
+    recv: &'a [Option<BlockSkeletons<W>>],
+) -> Vec<&'a Skeleton> {
     paired_at(plan)
         .into_iter()
         .map(|(q, j)| {
             recv[q]
                 .as_ref()
-                .and_then(|payload| block(payload, j))
+                .and_then(|payload| payload.blocks.get(j))
                 .unwrap_or_else(|| panic!("partition {q} sent no block {j} for a remote delta"))
         })
         .collect()
@@ -1021,14 +756,13 @@ fn export_fill<const W: usize>(
     Ok(())
 }
 
-/// K10 for every remote delta into device blocks, each fingerprinted on the sender when `fingerprint`: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
+/// K10 for every remote delta into device blocks: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
 pub(crate) fn export_blocks_device<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
     plan: &PartitionPlan,
     scratch: &mut LayerScratch<W>,
     size: u32,
-    fingerprint: bool,
 ) -> Result<(Vec<Option<DevicePayload<W>>>, LayerExchangeCounts), GpuError> {
     let mut send: Vec<Option<DevicePayload<W>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
@@ -1037,16 +771,22 @@ pub(crate) fn export_blocks_device<const W: usize>(
     let o = sum.device();
     grow(&s, &mut scratch.export.counts, b, o)?;
     grow(&s, &mut scratch.export.off, b + 1, o)?;
+    for r in &plan.remote {
+        let q = r.partner as usize;
+        if send[q].is_none() {
+            send[q] = Some(scratch.export.sends.pop().unwrap_or_default());
+        }
+    }
     let groups = premerge_groups(sum, table, plan, scratch, size)?;
     let mut merged = vec![false; size as usize];
     for (q, entries) in groups.iter().enumerate() {
         if entries.is_empty() {
             continue;
         }
-        let payload = send[q].get_or_insert_with(|| payload::reclaim::<W>(o));
+        let payload = send[q].as_mut().expect("a payload for every partner");
         payload.block_mut(entries.len() - 1, &s)?;
         let blocks = &mut payload.blocks[..entries.len()];
-        if let Some(rows) = premerge_partner(sum, table, entries, scratch, blocks, fingerprint)? {
+        if let Some(rows) = premerge_partner(sum, table, entries, scratch, blocks)? {
             merged[q] = true;
             counts.rows_sent[q] += rows;
             counts.bytes_sent[q] += blocks.iter().map(|b| b.bytes() as u64).sum::<u64>();
@@ -1055,7 +795,7 @@ pub(crate) fn export_blocks_device<const W: usize>(
     let mut blocks_used = vec![0usize; size as usize];
     for r in &plan.remote {
         let q = r.partner as usize;
-        let payload = send[q].get_or_insert_with(|| payload::reclaim::<W>(o));
+        let payload = send[q].as_mut().expect("a payload for every partner");
         let j = blocks_used[q];
         blocks_used[q] += 1;
         if merged[q] {
@@ -1085,19 +825,6 @@ pub(crate) fn export_blocks_device<const W: usize>(
                 &mut block.z,
                 &mut block.c,
             )?;
-            if fingerprint {
-                let n32 = rows as u32;
-                // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; the block's columns hold `rows` rows.
-                unsafe {
-                    s.launch_builder(&sum.kernels.fingerprint)
-                        .arg(&block.x)
-                        .arg(&block.z)
-                        .arg(&n32)
-                        .arg(&sum.fp_rows)
-                        .arg(&mut block.g)
-                        .launch(thread_per(rows, 256))?;
-                }
-            }
         }
         scratch.lap(sum, t0, |m| &mut m.export)?;
         counts.rows_sent[q] += rows as u64;
@@ -1169,14 +896,13 @@ fn premerge_groups<const W: usize>(
 }
 
 /// The sender-side merge of one partner's blocks (ARCHITECTURE.md §Partitioning): K3 over the sub-table of the partner's remote `entries` under the keep-everything program, so equal keys sum and exact zeros drop but nothing truncates; then each position's merged rows are split greedily over the blocks in entry order, never more than a block's unmerged count there, so every segment still fits the receiver's tag.
-/// `blocks` are the partner's in its remote-delta order, their fingerprints written when `with_g`; returns the rows written, or `None` having written nothing when a position's records exceed the fused kernel's cap.
+/// `blocks` are the partner's in its remote-delta order; returns the rows written, or `None` having written nothing when a position's records exceed the fused kernel's cap.
 fn premerge_partner<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
     entries: &[usize],
     scratch: &mut LayerScratch<W>,
     blocks: &mut [DeviceBlock<W>],
-    with_g: bool,
 ) -> Result<Option<u64>, GpuError> {
     let s: Arc<CudaStream> = sum.stream.clone();
     let k = sum.kernels.clone();
@@ -1287,7 +1013,7 @@ fn premerge_partner<const W: usize>(
         &batches,
         (func, smem),
         &mut running,
-        (blocks, with_g),
+        blocks,
     );
     scratch.arena = Some(arena);
     r?;
@@ -1317,7 +1043,7 @@ fn premerge_batches<const W: usize>(
     batches: &[(usize, usize)],
     kernel: (&cudarc::driver::CudaFunction, u32),
     running: &mut [u32],
-    (blocks, with_g): (&mut [DeviceBlock<W>], bool),
+    blocks: &mut [DeviceBlock<W>],
 ) -> Result<(), GpuError> {
     let s = &sum.stream;
     let k = &sum.kernels;
@@ -1423,21 +1149,19 @@ fn premerge_batches<const W: usize>(
         };
         let copy = |j: usize,
                     dst0: u32,
-                    dst: (
+                    (x, z, c): (
             &mut CudaSlice<u64>,
             &mut CudaSlice<u64>,
             &mut CudaSlice<f64>,
-            &mut CudaSlice<u64>,
         )|
          -> Result<(), GpuError> {
-            let (j32, with_g) = (j as u32, u32::from(with_g));
-            // SAFETY: arguments match `k_premerge_copy` in export.cu; the destination holds `dst0` plus block `j`'s share of the batch, and `og` is written only when `with_g`.
+            let j32 = j as u32;
+            // SAFETY: arguments match `k_premerge_copy` in export.cu; the destination holds `dst0` plus block `j`'s share of the batch.
             unsafe {
                 s.launch_builder(&k.premerge_copy)
                     .arg(&arena.x)
                     .arg(&arena.z)
                     .arg(&arena.coeff)
-                    .arg(&arena.g)
                     .arg(&pm.start)
                     .arg(&pm.lens)
                     .arg(&pm.loff)
@@ -1445,11 +1169,9 @@ fn premerge_batches<const W: usize>(
                     .arg(&p0u)
                     .arg(&n32)
                     .arg(&dst0)
-                    .arg(&with_g)
-                    .arg(dst.0)
-                    .arg(dst.1)
-                    .arg(dst.2)
-                    .arg(dst.3)
+                    .arg(x)
+                    .arg(z)
+                    .arg(c)
                     .launch(warp_per_bucket(n))?;
             }
             Ok(())
@@ -1460,8 +1182,8 @@ fn premerge_batches<const W: usize>(
             if rows > 0 {
                 let live = running[j] as usize;
                 bl.reserve_keep(s, live, live + rows, o)?;
-                let DeviceBlock { x, z, c, g, .. } = bl;
-                copy(j, running[j], (x, z, c, g))?;
+                let DeviceBlock { x, z, c, .. } = bl;
+                copy(j, running[j], (x, z, c))?;
             }
             running[j] += rows as u32;
         }
@@ -1516,18 +1238,17 @@ mod tests {
         LayerScratch::new(dev, opts).expect("scratch")
     }
 
-    /// A device block's columns on the host, `g` included.
+    /// A device block's columns on the host.
     fn download<const W: usize>(
         s: &Arc<CudaStream>,
         block: &DeviceBlock<W>,
-    ) -> (Vec<u64>, Vec<u64>, Vec<f64>, Vec<u64>) {
+    ) -> (Vec<u64>, Vec<u64>, Vec<f64>) {
         let n = block.rows();
         let x = s.clone_dtoh(&block.x.slice(0..n * W)).unwrap();
         let z = s.clone_dtoh(&block.z.slice(0..n * W)).unwrap();
         let c = s.clone_dtoh(&block.c.slice(0..2 * n)).unwrap();
-        let g = s.clone_dtoh(&block.g.slice(0..n)).unwrap();
         s.synchronize().unwrap();
-        (x, z, c, g)
+        (x, z, c)
     }
 
     /// Device payloads equal `export_layer`'s host payloads bitwise: presence, headers, offsets and the three columns.
@@ -1546,7 +1267,7 @@ mod tests {
                     for (j, (gb, wb)) in g.blocks.iter().zip(&w.blocks).enumerate() {
                         assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
                         assert_eq!(gb.offsets, wb.offsets, "{what}: offsets {j} to {q}");
-                        let (x, z, c, _) = download(s, gb);
+                        let (x, z, c) = download(s, gb);
                         let (wx, wz, wc) = wb.cols();
                         assert_eq!(x, wx.as_flattened(), "{what}: x {j} to {q}");
                         assert_eq!(z, wz.as_flattened(), "{what}: z {j} to {q}");
@@ -1562,8 +1283,8 @@ mod tests {
         }
     }
 
-    /// The device payloads equal the host blocks bitwise, their `g` is the host fingerprint, and a receive under no cap, a third of the rows and one row lands every chunk's rows in `recv_*` in plan order, at bases that address them from the full offsets.
-    fn device_export_matches_host_and_adopts<const W: usize>(
+    /// The device payloads equal `export_layer`'s blocks bitwise, and the SU(4) ships several blocks to one partner.
+    fn device_export_matches_host<const W: usize>(
         num_qubits: usize,
         n: usize,
         seed: u64,
@@ -1572,8 +1293,7 @@ mod tests {
         let input = rand_sum::<W>(n, num_qubits, seed);
         let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
         let size = rows.num_partitions() as u32;
-        let mut adopted_blocks = 0usize;
-        let mut multi_block_payloads = 0;
+        let (mut exported, mut multi_block_payloads) = (0usize, 0);
         for (name, ch) in &fixture_channels::<W>() {
             for rank in 0..size {
                 let local = input.filter_partition(&rows, rank);
@@ -1604,154 +1324,16 @@ mod tests {
                 scratch.upload_table(&dev, &table).expect("table");
                 scratch.count_local(&dev, &table).expect("count");
                 let (got, got_counts) =
-                    export_blocks_device(&dev, &table, &plan, &mut scratch, size, true)
-                        .expect("export");
+                    export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
                 let what = format!("W={W} {name} rank {rank}");
                 assert_eq!(got_counts.rows_sent, want_counts.rows_to, "{what}: rows");
-                let mut all_x = Vec::new();
-                let mut all_z = Vec::new();
-                let mut all_c = Vec::new();
-                let mut all_g = Vec::new();
-                let mut all_off = Vec::new();
-                let mut bases = Vec::new();
-                let mut blocks: Vec<&DeviceBlock<W>> = Vec::new();
-                for (q, (g, w)) in got.iter().zip(&want).enumerate() {
-                    match (g, w) {
-                        (None, None) => {}
-                        (Some(g), Some(w)) => {
-                            assert_eq!(g.device, Some(0));
-                            if g.blocks.len() >= 2 {
-                                multi_block_payloads += 1;
-                            }
-                            assert_eq!(g.blocks.len(), w.blocks.len(), "{what}: blocks to {q}");
-                            for (j, (gb, wb)) in g.blocks.iter().zip(&w.blocks).enumerate() {
-                                assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
-                                assert_eq!(gb.offsets, wb.offsets, "{what}: offsets {j} to {q}");
-                                let (x, z, c, gfp) = download(&dev.stream, gb);
-                                let (wx, wz, wc) = wb.cols();
-                                assert_eq!(x, wx.as_flattened(), "{what}: x {j} to {q}");
-                                assert_eq!(z, wz.as_flattened(), "{what}: z {j} to {q}");
-                                assert_eq!(
-                                    c,
-                                    bytemuck::cast_slice::<Complex64, f64>(wc),
-                                    "{what}: coeff {j} to {q}"
-                                );
-                                let want_g: Vec<u64> = wx
-                                    .iter()
-                                    .zip(wz)
-                                    .map(|(x, z)| fp.fingerprint(x, z))
-                                    .collect();
-                                assert_eq!(gfp, want_g, "{what}: fingerprints {j} to {q}");
-                                bases.push(all_g.len() as u32);
-                                all_off.extend_from_slice(&gb.offsets);
-                                all_x.extend_from_slice(&x);
-                                all_z.extend_from_slice(&z);
-                                all_c.extend_from_slice(&c);
-                                all_g.extend_from_slice(&gfp);
-                                blocks.push(gb);
-                            }
-                        }
-                        _ => panic!("{what}: payload presence to {q} differs"),
-                    }
-                }
-                let at: Vec<(usize, usize)> = got
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(q, g)| {
-                        let n = g.as_ref().map_or(0, |g| g.blocks.len());
-                        (0..n).map(move |j| (q, j))
-                    })
-                    .collect();
-                let nblocks = blocks.len();
-                let total = all_g.len();
-                let mut recv = got;
-                for cap in [usize::MAX, total.div_ceil(3).max(1), 1] {
-                    let e = &mut scratch.export;
-                    let blocks: Vec<&DeviceBlock<W>> = at
-                        .iter()
-                        .map(|&(q, j)| &recv[q].as_ref().unwrap().blocks[j])
-                        .collect();
-                    lay_out(
-                        e,
-                        nb,
-                        blocks
-                            .iter()
-                            .map(|bl| (bl.header.num_buckets, &bl.offsets[..], bl.rows())),
-                    );
-                    assert_eq!(e.recv_rows, total, "{what}: rows laid out");
-                    assert_eq!(e.off_host, all_off, "{what}: offsets laid out");
-                    let (log2, most) = recv_chunks(&e.off_host, nb, cap);
-                    size_receive(&dev, e, most, &mut scratch.xfer_ns).expect("size");
-                    let map = position_chunks(dev.hash().bits(), nb, log2);
-                    let chunks = map.chunks();
-                    match cap {
-                        usize::MAX => assert_eq!(chunks, 1, "{what}: no cap, one chunk"),
-                        1 => assert!(most <= 1 || chunks == nb, "{what}: one row per chunk"),
-                        _ => assert!(
-                            chunks >= 3 || chunks == nb,
-                            "{what}: a third of the rows needs three chunks"
-                        ),
-                    }
-                    scratch.export.pending = Some(PendingRecv {
-                        map: map.clone(),
-                        next: 0,
-                        source: RecvSource::Device {
-                            recv: std::mem::take(&mut recv),
-                            at: at.clone(),
-                        },
-                    });
-                    let mut moved = 0usize;
-                    for c in 0..chunks {
-                        let (lo, hi) = (map.bound(c) as usize, map.bound(c + 1) as usize);
-                        let n = receive_chunk(&dev, &mut scratch, c).expect("chunk");
-                        assert!(
-                            n <= most,
-                            "{what}: chunk {c} of {chunks} exceeds its buffer"
-                        );
-                        let s = &dev.stream;
-                        let e = &scratch.export;
-                        let base = s.clone_dtoh(&e.recv_base.slice(0..nblocks)).unwrap();
-                        let x = s.clone_dtoh(&e.recv_x.slice(0..n * W)).unwrap();
-                        let z = s.clone_dtoh(&e.recv_z.slice(0..n * W)).unwrap();
-                        let cf = s.clone_dtoh(&e.recv_c.slice(0..2 * n)).unwrap();
-                        let g = s.clone_dtoh(&e.recv_g.slice(0..n)).unwrap();
-                        s.synchronize().unwrap();
-                        let (mut wx, mut wz, mut wc, mut wg) = (vec![], vec![], vec![], vec![]);
-                        for k in 0..nblocks {
-                            let off = &all_off[k * (nb + 1)..(k + 1) * (nb + 1)];
-                            let first = bases[k] as usize + off[lo] as usize;
-                            let last = bases[k] as usize + off[hi] as usize;
-                            assert_eq!(
-                                base[k].wrapping_add(off[lo]) as usize,
-                                wg.len(),
-                                "{what}: chunk {c} base of block {k}"
-                            );
-                            wx.extend_from_slice(&all_x[first * W..last * W]);
-                            wz.extend_from_slice(&all_z[first * W..last * W]);
-                            wc.extend_from_slice(&all_c[2 * first..2 * last]);
-                            wg.extend_from_slice(&all_g[first..last]);
-                        }
-                        assert_eq!((x, z), (wx, wz), "{what}: chunk {c} of {chunks} keys");
-                        assert_eq!(cf, wc, "{what}: chunk {c} of {chunks} coefficients");
-                        assert_eq!(g, wg, "{what}: chunk {c} of {chunks} fingerprints");
-                        moved += n;
-                    }
-                    assert_eq!(moved, total, "{what}: every row moves once");
-                    let Some(PendingRecv {
-                        source: RecvSource::Device { recv: back, .. },
-                        ..
-                    }) = scratch.export.pending.take()
-                    else {
-                        panic!("{what}: the pending receive is the device one");
-                    };
-                    recv = back;
-                }
-                adopted_blocks += nblocks;
-                let got = recv;
-                got.into_iter().flatten().for_each(payload::recycle);
+                assert_payloads_eq(&dev.stream, &got, &want, &what);
+                let blocks = got.iter().flatten().map(|p| p.blocks.len());
+                multi_block_payloads += blocks.clone().filter(|&n| n >= 2).count();
+                exported += blocks.sum::<usize>();
             }
         }
-        assert!(adopted_blocks > 0, "the fixture must export something");
+        assert!(exported > 0, "the fixture must export something");
         assert!(
             multi_block_payloads > 0,
             "the SU(4) layer must ship several remote deltas to one partner"
@@ -1781,16 +1363,13 @@ mod tests {
             "one position is one chunk"
         );
         let mut base = Vec::new();
-        let (parts, n) = chunk_layout(&off, b, 2, 4, &mut base);
-        assert_eq!(parts, vec![(1, 2, 0), (0, 4, 2)]);
-        assert_eq!(n, 6);
+        assert_eq!(chunk_layout(&off, b, 2, 4, &mut base), 6);
         assert_eq!(base[0].wrapping_add(off[2]), 0);
         assert_eq!(base[1].wrapping_add(off[9 + 3]), 2);
         assert_eq!(base[1].wrapping_add(off[9 + 4]), 6);
     }
 
     /// Every rank learns one verdict and the largest chunk count any ready rank asked for; one rank not ready is a no everywhere.
-    #[cfg(feature = "mpi")]
     #[test]
     fn the_vote_agrees_the_largest_chunk_count() {
         use crate::engine::partitioned::transport::{Collectives, InProcessTransport};
@@ -1831,8 +1410,8 @@ mod tests {
         let table = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
         scratch.upload_table(&dev, &table).expect("table");
         scratch.count_local(&dev, &table).expect("count");
-        let (got, counts) = export_blocks_device(&dev, &table, &plan, &mut scratch, 2, true)
-            .expect("device export");
+        let (got, counts) =
+            export_blocks_device(&dev, &table, &plan, &mut scratch, 2).expect("device export");
         let payload = got[1].as_ref().expect("a device payload for the partner");
         assert_eq!(payload.blocks.len(), plan.remote.len());
         for (block, want) in payload.blocks.iter().zip(&want[1].as_ref().unwrap().blocks) {
@@ -1845,17 +1424,17 @@ mod tests {
     }
 
     #[test]
-    fn device_payloads_match_export_layer_bitwise_and_adopt_w1() {
+    fn device_payloads_match_export_layer_bitwise_w1() {
         crate::require_cuda!();
-        device_export_matches_host_and_adopts::<1>(12, 6000, 0xE7, 1);
-        device_export_matches_host_and_adopts::<1>(12, 6000, 0xE8, 2);
+        device_export_matches_host::<1>(12, 6000, 0xE7, 1);
+        device_export_matches_host::<1>(12, 6000, 0xE8, 2);
     }
 
     #[test]
-    fn device_payloads_match_export_layer_bitwise_and_adopt_w2() {
+    fn device_payloads_match_export_layer_bitwise_w2() {
         crate::require_cuda!();
-        device_export_matches_host_and_adopts::<2>(100, 5000, 0xE9, 1);
-        device_export_matches_host_and_adopts::<2>(100, 5000, 0xEA, 2);
+        device_export_matches_host::<2>(100, 5000, 0xE9, 1);
+        device_export_matches_host::<2>(100, 5000, 0xEA, 2);
     }
 
     /// Per destination position, one partner's rows keyed by `(x, z)` with their coefficients summed across the partner's blocks, and the largest number of times one key occurs.
@@ -1924,36 +1503,23 @@ mod tests {
         (b.offsets.clone(), x.to_vec(), z.to_vec(), c.to_vec())
     }
 
-    /// Device blocks the same way, checking every `g` is the host fingerprint of its key.
-    fn device_block_cols<const W: usize>(
-        s: &Arc<CudaStream>,
-        b: &DeviceBlock<W>,
-        fp: &FingerprintRows<W>,
-        fp_mask: u64,
-        what: &str,
-    ) -> BlockCols<W> {
-        let (x, z, c, g) = download(s, b);
+    /// Device blocks the same way.
+    fn device_block_cols<const W: usize>(s: &Arc<CudaStream>, b: &DeviceBlock<W>) -> BlockCols<W> {
+        let (x, z, c) = download(s, b);
         let x: Vec<[u64; W]> = x.chunks(W).map(|w| w.try_into().unwrap()).collect();
         let z: Vec<[u64; W]> = z.chunks(W).map(|w| w.try_into().unwrap()).collect();
         let c: Vec<Complex64> = c.chunks(2).map(|p| Complex64::new(p[0], p[1])).collect();
-        for i in 0..x.len() {
-            assert_eq!(
-                g[i],
-                fp.fingerprint(&x[i], &z[i]) & fp_mask,
-                "{what}: fingerprint {i}"
-            );
-        }
         (b.offsets.clone(), x, z, c)
     }
 
     /// With the sender-side merge on, the device payloads carry per position what `export_layer` carries summed by key, no key twice across one partner's blocks, and no segment longer than its unmerged one.
-    /// Returns `(rows sent, unmerged rows, fallback blocks)` per channel name, summed over ranks; `nvrtc` and `fp_mask` are the collision hook's options and the fingerprint mask they imply.
+    /// Returns `(rows sent, unmerged rows, fallback blocks)` per channel name, summed over ranks; `nvrtc` are the collision hook's options.
     fn premerge_matches_host_by_key<const W: usize>(
         input: &crate::PauliSum<W>,
         rows: &PartitionRows<W>,
         channels: &[(&'static str, Box<dyn Channel<W>>)],
         arena_bytes: usize,
-        (nvrtc, fp_mask): (&[String], u64),
+        nvrtc: &[String],
     ) -> Vec<(&'static str, u64, u64, (u32, u32))> {
         let size = rows.num_partitions() as u32;
         let mut totals = Vec::new();
@@ -1988,9 +1554,8 @@ mod tests {
                 scratch.upload_table(&dev, &table).expect("table");
                 scratch.count_local(&dev, &table).expect("count");
                 let what = format!("W={W} {name} rank {rank} arena={arena_bytes}");
-                let (g, counts) =
-                    export_blocks_device(&dev, &table, &plan, &mut scratch, size, true)
-                        .expect("device export");
+                let (g, counts) = export_blocks_device(&dev, &table, &plan, &mut scratch, size)
+                    .expect("device export");
                 let got: Vec<Option<Vec<BlockCols<W>>>> = g
                     .iter()
                     .map(|p| {
@@ -2000,13 +1565,12 @@ mod tests {
                                 .map(|b| {
                                     assert_eq!(b.header.num_buckets as usize, nb);
                                     assert_eq!(b.header.rows as usize, b.offsets[nb] as usize);
-                                    device_block_cols(&dev.stream, b, &fp, fp_mask, &what)
+                                    device_block_cols(&dev.stream, b)
                                 })
                                 .collect()
                         })
                     })
                     .collect();
-                g.into_iter().flatten().for_each(payload::recycle);
                 for (q, w) in want.iter().enumerate() {
                     let (Some(w), Some(g)) = (w, &got[q]) else {
                         assert!(w.is_none() && got[q].is_none(), "{what}: presence to {q}");
@@ -2069,7 +1633,7 @@ mod tests {
         let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
         for arena in [crate::engine::gpu::DEFAULT_ARENA_BYTES, 1] {
             for (name, sent, unmerged, fallbacks) in
-                premerge_matches_host_by_key(&input, &rows, &fixture_channels(), arena, (&[], !0))
+                premerge_matches_host_by_key(&input, &rows, &fixture_channels(), arena, &[])
             {
                 check_shrink(name, sent, unmerged, pbits);
                 assert_eq!(
@@ -2080,17 +1644,14 @@ mod tests {
             }
         }
         // Every merge block takes a fallback: the `g_hi32` passes with the low word cleared, the full-key sort with no fingerprint at all.
-        for (opt, mask, full_key) in [
-            ("-DFP_ZERO_LO", !0xFFFF_FFFFu64, false),
-            ("-DFP_BITS=0", 0, true),
-        ] {
+        for (opt, full_key) in [("-DFP_ZERO_LO", false), ("-DFP_BITS=0", true)] {
             let nvrtc = [opt.to_string()];
             for (name, sent, unmerged, fallbacks) in premerge_matches_host_by_key(
                 &input,
                 &rows,
                 &fixture_channels(),
                 crate::engine::gpu::DEFAULT_ARENA_BYTES,
-                (&nvrtc, mask),
+                &nvrtc,
             ) {
                 check_shrink(name, sent, unmerged, pbits);
                 if name == "su4" {
@@ -2190,18 +1751,17 @@ mod tests {
             scratch.upload_table(&dev, &table).expect("table");
             scratch.count_local(&dev, &table).expect("count");
             let (got, counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, 2, true).expect("export");
+                export_blocks_device(&dev, &table, &plan, &mut scratch, 2).expect("export");
             let keys: Vec<(u64, u64)> = got[1]
                 .as_ref()
                 .unwrap()
                 .blocks
                 .iter()
                 .flat_map(|b| {
-                    let (x, z, _, _) = download(&dev.stream, b);
+                    let (x, z, _) = download(&dev.stream, b);
                     x.into_iter().zip(z).collect::<Vec<_>>()
                 })
                 .collect();
-            got.into_iter().flatten().for_each(payload::recycle);
             (keys, counts.rows_sent[1])
         };
         let (plain, plain_rows) = shipped(false);
@@ -2262,8 +1822,7 @@ mod tests {
             scratch.upload_table(&dev, &table).expect("table");
             scratch.count_local(&dev, &table).expect("count");
             let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size, true)
-                    .expect("export");
+                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
             dev.stream.synchronize().expect("sync");
             let what = format!("rank {rank}");
             assert_eq!(
@@ -2275,7 +1834,6 @@ mod tests {
                 "{what}: no rows were premerged"
             );
             assert_payloads_eq(&dev.stream, &got, &want, &what);
-            got.into_iter().flatten().for_each(payload::recycle);
         }
         assert!(remote_layers > 0, "the fixture must export something");
     }
@@ -2329,8 +1887,7 @@ mod tests {
             scratch.upload_table(&dev, &table).expect("table");
             scratch.count_local(&dev, &table).expect("count");
             let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size, true)
-                    .expect("export");
+                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
             dev.stream.synchronize().expect("sync");
             let what = format!("rank {rank}");
             assert_eq!(
@@ -2342,7 +1899,6 @@ mod tests {
                 "{what}: no rows were premerged"
             );
             assert_payloads_eq(&dev.stream, &got, &want, &what);
-            got.into_iter().flatten().for_each(payload::recycle);
         }
         assert!(remote_layers > 0, "the fixture must export something");
     }
@@ -2409,8 +1965,7 @@ mod tests {
             scratch.upload_table(&dev, &table).expect("table");
             scratch.count_local(&dev, &table).expect("count");
             let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size, true)
-                    .expect("export");
+                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
             dev.stream.synchronize().expect("sync");
             let what = format!("rank {rank}");
             assert_eq!(
@@ -2422,31 +1977,7 @@ mod tests {
                 "{what}: no rows were premerged"
             );
             assert_payloads_eq(&dev.stream, &got, &want, &what);
-            got.into_iter().flatten().for_each(payload::recycle);
         }
         assert!(remote_layers > 0, "the fixture must export something");
-    }
-
-    /// A recycled payload comes back for its own device and keeps its blocks; another device's does not.
-    /// `W = 3` is a width no other test pools, and [`payload::BIN_TEST`] keeps concurrent drops from draining the pool mid-test.
-    #[test]
-    fn the_payload_bin_is_keyed_by_device() {
-        crate::require_cuda!();
-        let sum = rand_sum::<1>(10, 8, 0xB1);
-        let dev = GpuSum::from_host(&sum, 0).expect("upload");
-        let _quiet = payload::BIN_TEST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        payload::drain_bin_held();
-        let mut p = payload::reclaim::<3>(0);
-        p.block_mut(1, &dev.stream).expect("blocks");
-        payload::recycle(p);
-        assert!(payload::reclaim::<3>(7).blocks.is_empty());
-        assert!(payload::reclaim::<5>(0).blocks.is_empty());
-        let p = payload::reclaim::<3>(0);
-        assert_eq!((p.device, p.blocks.len()), (Some(0), 2));
-        payload::recycle(p);
-        payload::drain_bin_held();
-        assert!(payload::reclaim::<3>(0).blocks.is_empty());
     }
 }

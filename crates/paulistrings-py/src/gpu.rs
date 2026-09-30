@@ -113,14 +113,7 @@ mod cuda {
             GpuError::Poisoned { rank, layer } => {
                 PyRuntimeError::new_err(poisoned_message(rank, layer))
             }
-            GpuError::NoDevice
-            | GpuError::LibraryMissing(_)
-            | GpuError::Driver(_)
-            | GpuError::Compile { .. } => PyRuntimeError::new_err(err.to_string()),
-            #[cfg(feature = "mpi")]
-            GpuError::Nccl { .. } | GpuError::Timeout { .. } => {
-                PyRuntimeError::new_err(err.to_string())
-            }
+            _ => PyRuntimeError::new_err(err.to_string()),
         }
     }
 

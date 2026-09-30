@@ -491,7 +491,7 @@ fn an_injected_failure_poisons_the_split_and_the_partners_finish() {
     }
 }
 
-/// A received segment of exactly `MAX_BUCKET_LEN` rows is merged from a device payload; one more is `Unsupported`, the receiver's segment and the sender's source bucket both exceeding the tag limit.
+/// A received segment of exactly `MAX_BUCKET_LEN` rows is merged; one more is `Unsupported`, the receiver's segment and the sender's source bucket both exceeding the tag limit.
 #[test]
 fn a_received_device_segment_at_the_tag_limit_is_accepted_and_one_more_is_unsupported() {
     require_cuda!();
@@ -533,12 +533,7 @@ fn a_received_device_segment_at_the_tag_limit_is_accepted_and_one_more_is_unsupp
     let want = propagate_with_options(&circuit, input, &KeepAll, Direction::Forward, options);
     let fits = fits.expect("a segment of 4096 rows is merged");
     assert_eq!(fits.len(), want.len());
-    assert_terms_close(
-        &fits,
-        &want,
-        TOL,
-        "segment of 4096 rows over a device payload",
-    );
+    assert_terms_close(&fits, &want, TOL, "segment of 4096 rows");
     let (_, over) = run_zz(MAX_BUCKET_LEN + 1, 0xF2);
     assert!(
         matches!(over, Err(GpuError::Unsupported(_))),

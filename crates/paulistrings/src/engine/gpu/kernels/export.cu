@@ -73,11 +73,10 @@ extern "C" __global__ void k_premerge_split(const u32* __restrict__ out_len_pos,
 
 // Block j's share of every position in the batch, from the batch-relative arena to dst0 + loff[j * n + i] - loff[j * n]; one warp per position.
 extern "C" __global__ void k_premerge_copy(const u64* __restrict__ ax, const u64* __restrict__ az,
-                                           const double* __restrict__ ac, const u64* __restrict__ ag,
-                                           const u32* __restrict__ seg_start, const u32* __restrict__ lens,
-                                           const u32* __restrict__ loff, u32 j, u32 p0, u32 n, u32 dst0, u32 with_g,
-                                           u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc,
-                                           u64* __restrict__ og) {
+                                           const double* __restrict__ ac, const u32* __restrict__ seg_start,
+                                           const u32* __restrict__ lens, const u32* __restrict__ loff, u32 j, u32 p0,
+                                           u32 n, u32 dst0, u64* __restrict__ ox, u64* __restrict__ oz,
+                                           double* __restrict__ oc) {
     const u32 lane = lane_id();
     const u32 i = blockIdx.x * (blockDim.x / WARP) + warp_id();
     if (i >= n) return;
@@ -95,6 +94,5 @@ extern "C" __global__ void k_premerge_copy(const u64* __restrict__ ax, const u64
         }
         oc[2 * d] = ac[2 * s];
         oc[2 * d + 1] = ac[2 * s + 1];
-        if (with_g) og[d] = ag[s];
     }
 }

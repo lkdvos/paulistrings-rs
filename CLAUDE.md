@@ -197,11 +197,11 @@ It records what was measured and rejected, including several ideas that look obv
 - Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, so the sender-side merge (ARCHITECTURE.md §Partitioning) is what lets two virtual partitions at ~5.7e7 `su4` terms fit a 48 GB card.
 - An MPI device group of more than one rank exchanges only over NCCL: a rank that cannot load libnccl 2.22+, or two ranks on one device, fail the scatter on every rank.
 - `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (the default stays one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
-- The chunked NCCL receive has run only over `LoopbackWire`, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
+- In-process and MPI device groups run one exchange protocol over a `DeviceWire` (`PeerWire` in process, NCCL under MPI); the chunked receive has not run over a real NCCL communicator, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
 - The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios: `gu2q` on two virtual partitions of one card is ~20% slower with it on.
 - The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
 - A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
-- Peer access grants the destination context access to the source device and the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/payload.rs`.
+- Peer access grants the destination context access to the source device and the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/wire/peer.rs`.
 - No NCCL run has crossed nodes.
 
 ## Repo layout
@@ -213,7 +213,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
                           engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
-                          rank,scan,staging,sum,truncation} (CUDA, behind `cuda`; `nccl`
+                          rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
                           behind `cuda` and `mpi`),
                           stabilizer, test_support
   tests/ benches/ examples/ docs/examples/

@@ -1166,9 +1166,6 @@ struct DeviceCellStats {
     upload_ns: u64,
     /// `GpuPauliSum::to_host` of the timed call's output.
     download_ns: u64,
-    /// How this cell's exchange moved rows: `"device"` in process, `"nccl"` under MPI, `"none"`
-    /// where there is no partition boundary.
-    exchange: &'static str,
 }
 
 /// A bucket-occupancy snapshot: how term counts spread across buckets at one rep.
@@ -1535,8 +1532,6 @@ where
             devices: vec![device],
             upload_ns,
             download_ns,
-            // A lone device has no partition boundary to exchange rows across.
-            exchange: "none",
         }),
     }
 }
@@ -1597,7 +1592,6 @@ where
     let mut split = GpuPartitionedSum::scatter_with_rows(base, rows, runtime)
         .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
-    let exchange = "device";
     split.enable_trace();
 
     split
@@ -1657,7 +1651,6 @@ where
             devices: devices.to_vec(),
             upload_ns,
             download_ns,
-            exchange,
         }),
     }
 }
@@ -2291,7 +2284,6 @@ where
     let mut split = MpiGpuSum::scatter_with_rows(base, transport, device, rows)
         .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
-    let exchange = if split.size() > 1 { "nccl" } else { "none" };
     split.enable_trace();
 
     split
@@ -2352,7 +2344,6 @@ where
             devices: vec![device],
             upload_ns,
             download_ns,
-            exchange,
         }),
     }
 }
@@ -2813,11 +2804,10 @@ fn json_line(cell: &CellResult) -> String {
     // Absent on a host row, like `rank`.
     let device_fields = match &cell.device {
         Some(d) => format!(
-            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{},\"gpu_exchange\":\"{}\"",
+            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{}",
             device_csv(d),
             d.upload_ns,
             d.download_ns,
-            d.exchange,
         ),
         None => String::new(),
     };
@@ -2852,7 +2842,7 @@ rows_exported\t\
 bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
 partition_coset_loop_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
 partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight\t\
-compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns\tgpu_exchange";
+compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns";
 
 fn print_tsv_row(cell: &CellResult) {
     let s = &cell.stats;
@@ -2863,7 +2853,7 @@ fn print_tsv_row(cell: &CellResult) {
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
          {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}",
         cell.layer,
         cell.truncation,
         cell.threads,
@@ -2933,7 +2923,6 @@ fn print_tsv_row(cell: &CellResult) {
             .map_or_else(|| "-1".to_string(), device_csv),
         cell.device.as_ref().map_or(0, |d| d.upload_ns),
         cell.device.as_ref().map_or(0, |d| d.download_ns),
-        cell.device.as_ref().map_or("none", |d| d.exchange),
     );
 }
 

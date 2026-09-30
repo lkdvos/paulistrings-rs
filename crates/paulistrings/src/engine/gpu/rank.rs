@@ -184,29 +184,22 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         Self::scatter_then(sum, transport, device, rows, start_exchange)
     }
 
-    /// [`scatter_with_rows`](Self::scatter_with_rows) exchanging over NCCL's protocol with `wire` standing in for the communicator (test hook); every rank of the group passes its own rank's wire.
-    ///
-    /// # Panics
-    ///
-    /// If `wire` is not for this rank of a group of this size.
-    #[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
-    pub fn scatter_with_loopback(
+    /// [`scatter_with_rows`](Self::scatter_with_rows) exchanging over `wire`, this rank's of an in-process group, instead of NCCL (test hook).
+    #[cfg(test)]
+    pub(crate) fn scatter_with_wire(
         sum: PauliSum<W>,
         transport: X,
         device: u32,
         rows: PartitionRows<W>,
-        wire: super::nccl::LoopbackWire,
+        wire: super::wire::PeerWire,
     ) -> Result<Self, GpuError> {
-        use super::nccl::DeviceWire;
+        use super::wire::DeviceWire;
         assert_eq!(
             (wire.rank(), wire.size()),
-            (transport.rank(), transport.size()),
-            "a loopback wire for another rank"
+            (transport.rank(), transport.size())
         );
         Self::scatter_then(sum, transport, device, rows, move |_, part| {
-            let export = &mut part.scratch_mut().export;
-            export.mode = super::payload::GpuExchange::Nccl;
-            export.wire = Some(std::sync::Arc::new(wire));
+            part.scratch_mut().export.wire = Some(std::sync::Arc::new(wire));
             Ok(())
         })
     }
@@ -337,7 +330,6 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
             None => Ok(()),
             Some((rank, layer)) => {
                 // A poisoned split is never used again, so its wire goes now rather than waiting on a finalize at drop.
-                #[cfg(feature = "mpi")]
                 if let Some(wire) = &self.inner.backend().scratch().export.wire {
                     wire.abort();
                 }
@@ -360,8 +352,8 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
         self.inner.backend_mut().fail_at_layer = Some(layer);
     }
 
-    /// Make the next NCCL exchange's receive growth on this rank fail as out of memory, after the skeletons and before the vote (test hook).
-    #[cfg(all(feature = "mpi", any(test, feature = "test-utils")))]
+    /// Make the next exchange's receive growth on this rank fail as out of memory, after the skeletons and before the vote (test hook).
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn inject_recv_oom(&mut self) {
         self.inner
             .backend_mut()
@@ -378,12 +370,6 @@ impl<const W: usize, X: Transport> GpuDistributedSum<W, X> {
             .scratch_mut()
             .export
             .fail_after_chunk = Some(chunk);
-    }
-
-    /// Device addresses of the send blocks this rank holds back from the shared pool after a failed wire group (test hook).
-    #[cfg(all(test, feature = "mpi"))]
-    pub(crate) fn quarantined_ptrs(&self) -> Vec<u64> {
-        self.inner.backend().scratch().export.quarantined_ptrs()
     }
 
     /// Download every rank's share and collect the whole sum on rank 0: `Ok(Some(sum))` there, `Ok(None)` elsewhere. **Collective.**
@@ -546,9 +532,7 @@ fn start_nccl<const W: usize>(
         |comm| comm.warm_up(&stream),
         NcclComm::abort,
     )?;
-    let export = &mut part.scratch_mut().export;
-    export.mode = super::payload::GpuExchange::Nccl;
-    export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
+    part.scratch_mut().export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
         comm,
     ))));
     Ok(())
@@ -669,11 +653,11 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "mpi")]
-    mod nccl {
+    /// The exchange protocol over the in-process [`PeerWire`](super::super::wire::PeerWire).
+    mod protocol {
         use std::sync::{Arc, Mutex};
 
-        use super::super::super::nccl::{LoopbackTally, LoopbackWire};
+        use super::super::super::wire::{PeerTally, PeerWire};
         use super::*;
         use crate::engine::partitioned::transport::{ChunkMap, ChunkWait, Payload};
         use crate::engine::partitioned::{PartitionRuntime, TopologyError};
@@ -687,15 +671,15 @@ mod tests {
 
         type Outcome<const W: usize> = Result<Option<PauliSum<W>>, GpuError>;
 
-        /// `input` under `rows` onto device 0, exchanging over the NCCL protocol on `wire` if there is one.
+        /// `input` under `rows` onto device 0, exchanging over `wire` if there is one.
         fn scatter<const W: usize, X: Transport + 'static>(
             input: &PauliSum<W>,
             transport: X,
             rows: &PartitionRows<W>,
-            wire: Option<LoopbackWire>,
+            wire: Option<PeerWire>,
         ) -> Result<GpuDistributedSum<W, X>, GpuError> {
             match wire {
-                Some(wire) => GpuDistributedSum::scatter_with_loopback(
+                Some(wire) => GpuDistributedSum::scatter_with_wire(
                     input.clone(),
                     transport,
                     0,
@@ -711,7 +695,7 @@ mod tests {
         /// Each `(transport, wire)` rank scatters `input` under `rows` onto device 0 as [`scatter`], runs `setup`, propagates under `options` and gathers.
         #[allow(clippy::too_many_arguments)]
         fn run_split<const W: usize, T, X>(
-            group: Vec<(X, Option<LoopbackWire>)>,
+            group: Vec<(X, Option<PeerWire>)>,
             input: &PauliSum<W>,
             rows: &PartitionRows<W>,
             circuit: &Circuit<W>,
@@ -746,7 +730,7 @@ mod tests {
         /// As [`run_split`], but every rank also returns its last layer's counters, whether or not the call succeeded, since a mid-layer failure still leaves them set.
         #[allow(clippy::too_many_arguments)]
         fn run_split_with_counters<const W: usize, T, X>(
-            group: Vec<(X, Option<LoopbackWire>)>,
+            group: Vec<(X, Option<PeerWire>)>,
             input: &PauliSum<W>,
             rows: &PartitionRows<W>,
             circuit: &Circuit<W>,
@@ -781,18 +765,13 @@ mod tests {
             })
         }
 
-        fn loopback_group(size: u32) -> Vec<(InProcessTransport, Option<LoopbackWire>)> {
-            loopback_tallied(size).0
+        fn wired_group(size: u32) -> Vec<(InProcessTransport, Option<PeerWire>)> {
+            wired_tallied(size).0
         }
 
-        /// As [`loopback_group`], with the tally of the groups its wires post.
-        fn loopback_tallied(
-            size: u32,
-        ) -> (
-            Vec<(InProcessTransport, Option<LoopbackWire>)>,
-            LoopbackTally,
-        ) {
-            let wires = LoopbackWire::group(size);
+        /// As [`wired_group`], with the tally of the groups its wires post.
+        fn wired_tallied(size: u32) -> (Vec<(InProcessTransport, Option<PeerWire>)>, PeerTally) {
+            let wires = PeerWire::group(size);
             let tally = wires[0].tally();
             let group =
                 InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120))
@@ -807,7 +786,7 @@ mod tests {
             PartitionRows::<W>::from_seed(nq, size.trailing_zeros() as u8, 0x5EED)
         }
 
-        fn nccl_differential<const W: usize, T>(
+        fn wire_differential<const W: usize, T>(
             circuit: &Circuit<W>,
             input: &PauliSum<W>,
             policy: &T,
@@ -820,7 +799,7 @@ mod tests {
                 for size in [1u32, 2, 4] {
                     let rows = seeded_rows::<W>(input.num_qubits(), size);
                     let mut out = run_split(
-                        loopback_group(size),
+                        wired_group(size),
                         input,
                         &rows,
                         circuit,
@@ -834,21 +813,21 @@ mod tests {
                     for r in rest {
                         assert!(r.expect("peer rank").is_none(), "only rank 0 gathers");
                     }
-                    let what = format!("{what} nccl ranks={size} {direction:?}");
+                    let what = format!("{what} ranks={size} {direction:?}");
                     assert_eq!(got.len(), want.len(), "{what}: term count");
                     assert_terms_close(&got, &want, 1e-11, &what);
                 }
             }
         }
 
-        /// The NCCL protocol over the loopback wire against `propagate`, the sender-side merge on and off.
+        /// The protocol over the peer wire against `propagate`, the sender-side merge on and off.
         #[test]
-        fn nccl_ranks_match_propagate() {
+        fn ranks_match_propagate() {
             crate::require_cuda!();
             let dense = random_circuit::<1>(8, 12, 0xD15, true);
-            nccl_differential(&dense, &rand_sum::<1>(400, 8, 0xD16), &KeepAll, "w1 dense");
+            wire_differential(&dense, &rand_sum::<1>(400, 8, 0xD16), &KeepAll, "w1 dense");
             let trotter = trotter_circuit::<2>(24, 0.1);
-            nccl_differential(
+            wire_differential(
                 &trotter,
                 &rand_sum_real::<2>(900, 24, 0xD17),
                 &ApproxTopN(1_200),
@@ -864,7 +843,7 @@ mod tests {
             };
             let want = crate::propagate(&dense, input.clone(), &KeepAll, Direction::Forward);
             let out = run_split(
-                loopback_group(2),
+                wired_group(2),
                 &input,
                 &rows,
                 &dense,
@@ -879,7 +858,7 @@ mod tests {
                 .unwrap()
                 .expect("rank 0")
                 .expect("gathers");
-            assert_terms_close(&got, &want, 1e-11, "w1 dense nccl, merge off");
+            assert_terms_close(&got, &want, 1e-11, "w1 dense, merge off");
         }
 
         /// Three SU(4) layers on overlapping pairs, dense enough to cross at every partition count.
@@ -903,8 +882,8 @@ mod tests {
             }
         }
 
-        /// The NCCL protocol with the receive cut into chunks, over the loopback wire against `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
-        fn chunked_nccl_case<const W: usize>(nq: usize, n: usize, seed: u64) {
+        /// The protocol with the receive cut into chunks, over the peer wire against `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
+        fn chunked_case<const W: usize>(nq: usize, n: usize, seed: u64) {
             let input = rand_sum::<W>(n, nq, seed);
             let circuit = su4_layers::<W>(nq);
             for direction in [Direction::Forward, Direction::Heisenberg] {
@@ -914,7 +893,7 @@ mod tests {
                     let mut plain = 0u64;
                     for (cap, least) in [(usize::MAX, 1u64), (128, 3), (8, 8)] {
                         let what = format!("W={W} ranks={size} {direction:?} cap={cap}");
-                        let (group, tally) = loopback_tallied(size);
+                        let (group, tally) = wired_tallied(size);
                         let options = capped::<W>(cap);
                         let out = run_split(
                             group,
@@ -955,20 +934,20 @@ mod tests {
         }
 
         #[test]
-        fn a_capped_nccl_receive_moves_in_chunk_groups_and_agrees_w1() {
+        fn a_capped_receive_moves_in_chunk_groups_and_agrees_w1() {
             crate::require_cuda!();
-            chunked_nccl_case::<1>(10, 1_500, 0xC4B1);
+            chunked_case::<1>(10, 1_500, 0xC4B1);
         }
 
         #[test]
-        fn a_capped_nccl_receive_moves_in_chunk_groups_and_agrees_w2() {
+        fn a_capped_receive_moves_in_chunk_groups_and_agrees_w2() {
             crate::require_cuda!();
-            chunked_nccl_case::<2>(90, 1_500, 0xC4B2);
+            chunked_case::<2>(90, 1_500, 0xC4B2);
         }
 
         /// Ranks that disagree on their own receive cap still agree on the chunk count: the group takes the largest any rank asked for, so a loose rank's `recv_chunks` matches a tight peer's, even though a finer cut never grows anyone's chunk.
         #[test]
-        fn a_capped_nccl_receive_agrees_the_largest_of_different_per_rank_caps() {
+        fn a_capped_receive_agrees_the_largest_of_different_per_rank_caps() {
             crate::require_cuda!();
             let nq = 10;
             let circuit = su4_layers::<1>(nq);
@@ -985,7 +964,7 @@ mod tests {
                 let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                     split.set_layer_options(capped::<1>(caps_for_setup[split.rank() as usize]));
                 };
-                let (group, tally) = loopback_tallied(size);
+                let (group, tally) = wired_tallied(size);
                 let out = run_split_with_counters(
                     group,
                     &input,
@@ -1049,7 +1028,7 @@ mod tests {
                 };
                 let start = std::time::Instant::now();
                 let out = run_split_with_counters(
-                    loopback_group(size),
+                    wired_group(size),
                     &input,
                     &rows,
                     &circuit,
@@ -1092,9 +1071,9 @@ mod tests {
                 .collect()
         }
 
-        /// A failure before the exchange takes the NCCL arm of the empty pairing: every rank fails, the culprit with its own error and every peer naming it.
+        /// A failure before the exchange takes the empty pairing: every rank fails, the culprit with its own error and every peer naming it.
         #[test]
-        fn an_nccl_failure_before_the_exchange_is_agreed_over_the_group() {
+        fn a_failure_before_the_exchange_is_agreed_over_the_group() {
             crate::require_cuda!();
             let dense = random_circuit::<1>(8, 6, 0xD18, true);
             let input = rand_sum::<1>(300, 8, 0xD19);
@@ -1106,7 +1085,7 @@ mod tests {
                     }
                 };
                 let out = run_split(
-                    loopback_group(size),
+                    wired_group(size),
                     &input,
                     &rows,
                     &dense,
@@ -1145,7 +1124,7 @@ mod tests {
                         split.inject_recv_oom();
                     }
                 };
-                let (group, tally) = loopback_tallied(size);
+                let (group, tally) = wired_tallied(size);
                 let out = run_split(
                     group,
                     &input,
@@ -1211,7 +1190,7 @@ mod tests {
                     ..GpuLayerOptions::default()
                 });
             };
-            let (group, tally) = loopback_tallied(2);
+            let (group, tally) = wired_tallied(2);
             let out = run_split(
                 group,
                 &input,
@@ -1257,13 +1236,13 @@ mod tests {
         #[test]
         fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {
             crate::require_cuda!();
-            use super::super::super::nccl::LoopbackFault;
+            use super::super::super::wire::PeerFault;
             let dense = random_circuit::<1>(8, 6, 0xD1C, true);
             let input = rand_sum::<1>(300, 8, 0xD1D);
             for size in [2u32, 4] {
-                for fault in [LoopbackFault::Post, LoopbackFault::Wait] {
+                for fault in [PeerFault::Post, PeerFault::Wait] {
                     let culprit = size - 1;
-                    let wires = LoopbackWire::group_with_fault(
+                    let wires = PeerWire::group_with_fault(
                         size,
                         culprit,
                         fault,
@@ -1296,7 +1275,7 @@ mod tests {
                         elapsed < std::time::Duration::from_secs(60),
                         "{what}: {elapsed:?}"
                     );
-                    let posted = if fault == LoopbackFault::Post {
+                    let posted = if fault == PeerFault::Post {
                         size - 1
                     } else {
                         size
@@ -1309,7 +1288,7 @@ mod tests {
                     for (r, e) in errors(out).iter().enumerate() {
                         if r == culprit as usize {
                             assert!(
-                                matches!(e, GpuError::Nccl { what, .. } if what.contains("injected")),
+                                matches!(e, GpuError::Wire(m) if m.contains("injected")),
                                 "{what}: {e:?}"
                             );
                         } else {
@@ -1323,73 +1302,15 @@ mod tests {
             }
         }
 
-        /// After a wait fault the failing rank's send payloads stay out of the shared bin, where they would outlive a peer's read only by luck, until the split drops.
-        #[test]
-        fn a_failed_groups_send_payloads_never_reach_the_bin() {
-            crate::require_cuda!();
-            use super::super::super::nccl::LoopbackFault;
-            use super::super::super::payload::bin_holds;
-            let dense = random_circuit::<1>(8, 6, 0xD20, true);
-            let input = rand_sum::<1>(300, 8, 0xD21);
-            let (size, culprit) = (2u32, 1u32);
-            let rows = seeded_rows::<1>(8, size);
-            let wires = LoopbackWire::group_with_fault(
-                size,
-                culprit,
-                LoopbackFault::Wait,
-                std::time::Duration::from_secs(2),
-            );
-            let group =
-                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120));
-            let held: Vec<Vec<u64>> = std::thread::scope(|s| {
-                let hs: Vec<_> = group
-                    .into_iter()
-                    .zip(wires)
-                    .map(|(t, w)| {
-                        let (input, rows, dense) = (&input, &rows, &dense);
-                        s.spawn(move || {
-                            let mut split = GpuDistributedSum::scatter_with_loopback(
-                                input.clone(),
-                                t,
-                                0,
-                                rows.clone(),
-                                w,
-                            )
-                            .expect("scatter");
-                            assert!(split
-                                .propagate(dense, &KeepAll, Direction::Forward)
-                                .is_err());
-                            let held = split.quarantined_ptrs();
-                            assert!(
-                                held.iter().all(|&p| !bin_holds::<1>(p)),
-                                "rank {}: a quarantined block is in the bin",
-                                split.rank()
-                            );
-                            held
-                        })
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).collect()
-            });
-            assert!(
-                !held[culprit as usize].is_empty(),
-                "the failing rank holds its send blocks"
-            );
-            assert!(
-                !held[0].is_empty(),
-                "a peer whose own wait timed out holds its send blocks too"
-            );
-        }
-
         /// A rank whose wire is already dead votes no instead of failing after a yes: nothing is posted, it returns the wire's error and its peers name it.
         #[test]
         fn a_dead_wire_votes_no() {
             crate::require_cuda!();
-            use super::super::super::nccl::DeviceWire;
+            use super::super::super::wire::DeviceWire;
             let dense = random_circuit::<1>(8, 6, 0xD1E, true);
             let input = rand_sum::<1>(300, 8, 0xD1F);
             let size = 2u32;
-            let (group, tally) = loopback_tallied(size);
+            let (group, tally) = wired_tallied(size);
             group[1].1.as_ref().expect("a wire").abort();
             let rows = seeded_rows::<1>(8, size);
             let out = run_split(
@@ -1405,7 +1326,7 @@ mod tests {
             assert_eq!(tally.groups(), 0, "a no vote posts nothing");
             let errs = errors(out);
             assert!(
-                matches!(&errs[1], GpuError::Nccl { what, .. } if what.contains("failed or aborted device wire")),
+                matches!(&errs[1], GpuError::Wire(m) if m.contains("failed or aborted device wire")),
                 "{:?}",
                 errs[1]
             );
@@ -1417,6 +1338,7 @@ mod tests {
         }
 
         /// One rank's init or warm-up failing: every rank errs, the culprit with its own error, and every communicator that was made is aborted.
+        #[cfg(feature = "mpi")]
         #[test]
         fn a_failed_start_errs_on_every_rank_and_aborts_every_communicator() {
             use std::sync::atomic::{AtomicU32, Ordering};
@@ -1606,7 +1528,7 @@ mod tests {
             })
         }
 
-        /// The device split's propagate-time calls per rank, over the NCCL protocol.
+        /// The device split's propagate-time calls per rank, over the peer wire.
         fn device_calls(
             size: u32,
             input: &PauliSum<1>,
@@ -1614,7 +1536,7 @@ mod tests {
             circuit: &Circuit<1>,
         ) -> Vec<Vec<&'static str>> {
             let (group, logs) = counting_group(size);
-            let wires = LoopbackWire::group(size).into_iter().map(Some);
+            let wires = PeerWire::group(size).into_iter().map(Some);
             let clear = |split: &mut GpuDistributedSum<1, Counting>| {
                 logs[split.rank() as usize].take();
             };
@@ -1654,22 +1576,22 @@ mod tests {
             for size in [2u32, 4] {
                 let rows = seeded_rows::<1>(24, size);
                 let host = host_calls(size, &input, &rows, &circuit);
-                let nccl = device_calls(size, &input, &rows, &circuit);
+                let device = device_calls(size, &input, &rows, &circuit);
                 for r in 0..size as usize {
                     let remote = host[r].iter().filter(|&&c| c == "exchange_layer").count();
                     assert!(
                         remote > 0 && remote < circuit.channels.len(),
                         "rank {r}: {remote} remote layers"
                     );
-                    let mut want_nccl: Vec<&'static str> = host[r]
+                    let mut want: Vec<&'static str> = host[r]
                         .iter()
                         .flat_map(|&c| match c {
                             "exchange_layer" => vec!["exchange", "allreduce_sum_u64"],
                             other => vec![other],
                         })
                         .collect();
-                    want_nccl.push("allreduce_sum_u64");
-                    assert_eq!(nccl[r], want_nccl, "rank {r} of {size}: the NCCL exchange");
+                    want.push("allreduce_sum_u64");
+                    assert_eq!(device[r], want, "rank {r} of {size}: the device exchange");
                 }
             }
         }

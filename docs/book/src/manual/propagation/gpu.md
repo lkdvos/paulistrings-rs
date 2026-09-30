@@ -136,15 +136,15 @@ split.propagate(&circuit, &ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```
 
-An in-process group exchanges device-resident payloads: the columns move device to device, or through the host where the driver grants no peer access.
+The exchanged columns move device to device, or through the host where the driver grants no peer access.
 `per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
 
 ## Exchange mode, merge and chunking {#exchange}
 
-An in-process group copies the columns device to device; an MPI group of more than one rank (`gpu::MpiGpuSum`) moves them straight into the receiver's device memory over NCCL.
+Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver's device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (`gpu::MpiGpuSum`).
 The NCCL communicator starts **once, collectively, at scatter**: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
-`PAULISTRINGS_NCCL_TIMEOUT_S` (default 300) bounds every wait on the communicator; a timeout or an NCCL error aborts it and the split, surfacing as `GpuError::Timeout` / `GpuError::Nccl` (`RuntimeError` from Python).
+`PAULISTRINGS_NCCL_TIMEOUT_S` (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as `GpuError::Timeout`, `GpuError::Wire` or `GpuError::Nccl` (`RuntimeError` from Python).
 Running it needs the `nccl/2.23.4-1` module alongside `cuda,mpi` — see [Installation](../../installation.md#gpu-and-mpi-features) and [MPI ranks](mpi.md#gpu-per-rank).
 
 **A device sender merges one partner's rows by key before the exchange** (`GpuLayerOptions::premerge`), so two remote deltas that land on the same receiver key ship as one row.
@@ -160,7 +160,7 @@ A Clifford layer that crosses a partition boundary keeps the fused layer, which 
 
 ## Peer access and NVLink {#peer-access}
 
-Before its first copy from device `src` into device `dst`, an in-process group lets `dst` reach `src`'s memory directly, so the copy goes over NVLink or PCIe peer-to-peer, granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+Before its first copy from device `src` into device `dst`, an in-process group (`GpuPartitionedSum`) lets `dst` reach `src`'s memory directly, so the copy goes over NVLink or PCIe peer-to-peer, granting both the driver's peer-context access and the source's memory-pool access list a pooled allocation needs to be reachable from a peer at all.
 On a pair the driver reports as unsupported the copy stages through the host instead of faulting, and the outcome is logged.
 
 ## What changes on a device
@@ -187,7 +187,7 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 - **A device partition in a group cannot refine mid-run.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap.
 - **The sender-side merge (`premerge`) does not pay on a same-device exchange at low merge ratios.** Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.
 - **Multi-node runs are unmeasured.** Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.
-- **The chunked NCCL receive has run only over the in-process loopback test wire**, not a real communicator, and one chunk's transfer does not overlap the fused layer of the chunk before it.
+- **One chunk's transfer does not overlap the fused layer of the chunk before it**, and the chunked receive has not run over a real NCCL communicator.
 
 ## See it in use
 

@@ -44,8 +44,9 @@ pub enum GpuError {
         /// What was being attempted.
         what: String,
     },
-    /// A bounded wait on a device or communicator operation exceeded its deadline; see `PAULISTRINGS_NCCL_TIMEOUT_S`.
-    #[cfg(feature = "mpi")]
+    /// A device wire of an exchange failed or was given up.
+    Wire(&'static str),
+    /// A bounded wait on a device wire exceeded its deadline; see `PAULISTRINGS_NCCL_TIMEOUT_S`.
     Timeout {
         /// What was being waited on.
         what: &'static str,
@@ -70,7 +71,7 @@ impl fmt::Display for GpuError {
             ),
             #[cfg(feature = "mpi")]
             GpuError::Nccl { code, what } => write!(f, "NCCL error {code} during {what}"),
-            #[cfg(feature = "mpi")]
+            GpuError::Wire(what) => write!(f, "device wire failed: {what}"),
             GpuError::Timeout { what } => write!(f, "timed out waiting on {what}"),
         }
     }

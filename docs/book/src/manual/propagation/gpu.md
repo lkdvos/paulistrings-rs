@@ -196,7 +196,7 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 - **A multi-device or MPI group trades staging time for device memory.** Exchanging device-resident payloads keeps one export volume and one receive volume resident on a partition's device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count the host-staged path (or a single device) still fits.
 - **A device partition in a group cannot refine mid-run.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap.
 - **The sender-side merge (`premerge`) does not pay on a same-device exchange at low merge ratios.** Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.
-- **The cross-device peer copy is untested on a real multi-GPU node.** `gpu::peer_access` grants both peer-context access and the source device's memory-pool access a peer copy needs to land directly rather than stage through the host, and today's multi-device numbers come from virtual partitions sharing one card.
+- **Multi-node runs are unmeasured.** Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.
 - **The chunked NCCL receive has run only over the in-process loopback test wire**, not a real communicator, and one chunk's transfer does not overlap the fused layer of the chunk before it.
 
 ## See it in use

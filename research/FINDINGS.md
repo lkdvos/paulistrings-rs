@@ -402,6 +402,20 @@ K14 moves 112 MB per 1e6 rows in 0.221 ms (510 GB/s), so the scatter is near the
 
 Open: a Clifford layer with received entries, and whether an emitter count plus a gapless write can replace K12's survivor pass without reintroducing compaction.
 
+### NCCL exchange between MPI ranks
+
+Asked whether `GpuExchange::Nccl` should be `gpu::MpiGpuSum`'s default over host staging.
+Measured on one A100-SXM4-80GB node (workergpu070, job 7125331, rev 466b4a4) at two ranks as a runtime-knob A/B on one binary, five alternating pairs, every pair agreeing in sign (`research/HARDWARE.md` § `gpu` cluster nodes — NCCL exchange between MPI ranks): `su4` at 5.65e7 terms per rank 1250 → 357 ms per layer (3.5×), `cnot` 43.6 → 6.9 (6.3×), `rotation_remote` 72.4 → 10.7 (6.8×), and `rotation_zz`, which exchanges nothing, flat.
+NCCL chose `P2P/CUMEM/read` between the ranks, which is why the template makes every node GPU visible to every task.
+The `su4` exchange phase moves 2.72e9 bytes per rank in 57.5 ms, a lower bound on the link rate since the phase also holds the skeleton exchange, the vote and the receiver's fingerprints.
+**Verdict: NCCL is the default whenever every rank can start it on a distinct device; host staging stays behind `PAULISTRINGS_GPU_EXCHANGE=host`.**
+
+A four-rank run on workergpu047 (job 7125332) timed out in the scatter's warm-up group on one rank while its three peers completed, with the peers' writes into that rank's GPU never becoming visible to it, and `ncclCommAbort` then never returned on any rank.
+The same four-rank bring-up on workergpu063 (job 7127220) passed every variant of `scripts/slurm/nccl-probe.sbatch`, including the engine's own communicator, warm-up and CPU placement, all six device pairs and the P2P, CUMEM, protocol, blocking and warm-up-shape variants, so the failure is attributed to that node; the probe pinned to workergpu047 is what confirms it.
+Every job step is now bounded (`scripts/slurm/bounded.sh`) and a failed `mpi_ranks` ends its processes within 15 s, so a wedged node costs one step rather than the allocation.
+
+NCCL could open only `mlx5_0` of the node's three HCAs and reports GPU Direct RDMA disabled on it; neither touches a one-node run, and a two-node run is not measured.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

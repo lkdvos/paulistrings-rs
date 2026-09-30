@@ -136,7 +136,7 @@ The partitioned row keeps the single device's total `m`, so its speedup is stron
 |---|---|---|---|---|
 | workergpu068, A100-SXM4-80GB | 2 of 4 | NV4 between the pair | 1410 / 1593 MHz | 7101047, rev 01df3eb |
 | workergpu065, A100-SXM4-80GB | 4 | NV4 between every pair | 1410 / 1593 MHz | 7099959, rev 8234874 |
-| H100-SXM5 | 4 | | | |
+| workergpu046, A100-SXM4-80GB | 2 of 4 | NV4 between the pair | not recorded | 7110164, rev 54b7bd2 |
 
 | node | cell | m | 1 device ms/layer | 1 device ns/term | 2 devices ms/layer | 2 devices ns/term | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -163,6 +163,18 @@ Every row above predates `cuMemPoolSetAccess` in `enable_peer_access`: cudarc al
 The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
 One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
 
+Two devices with the peer-pool grant and the sender-side merge, workergpu046 (job 7110164, rev 54b7bd2):
+
+| cell | m | 1 device ms/layer | 2 devices ms/layer | 2 devices ns/term | speedup | export ms | exchange ms | barrier ms | bytes exported/layer |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cnot` | 4.00e6 | 3.323 | 4.207 | 1.05 | 0.79× | 0.48 | 1.54 | 0.17 | 1.12e8 |
+| `su4` | 5.65e7 | 211.2 | 194.4 | 3.44 | 1.09× | 74.40 | 38.36 | 13.45 | 3.17e9 |
+| `rotation_remote` | 6.00e6 | — | 5.892 | 0.98 | — | 0.53 | 2.50 | 0.92 | 2.24e8 |
+| `heavyhex_step` | 1.16e6 | 1.734 | 1.109 | 0.96 | 1.56× | 0.05 | 0.07 | 0.02 | 4.86e6 |
+
+`gpu_peer` on the same pair: `cuMemcpyPeerAsync` 93.9 GB/s each way, `cuMemcpyDtoDAsync` 94.0 GB/s, a kernel reading or writing its peer 88 GB/s, both directions at once 94.0 GB/s aggregate; on workergpu063 (job 7127220) every one of the twelve ordered pairs of four devices copies at 91.6–92.2 GB/s with no NVLink replay, recovery or CRC errors.
+The `su4` exchange moves the merged 3.17e9 bytes in 38.4 ms, ≈ 83 GB/s.
+
 ## `gpu` cluster nodes — one device per MPI rank
 
 From `scripts/slurm/mpi-gpu-ranks.sbatch` runs.
@@ -177,10 +189,30 @@ Exchange goes through host memory (`h2d` + `d2h` is 55–57% of a remote layer's
 | 2 (1) | A100 | `su4` | 5.65e7 | 7357 | 2253 | 172.7 | 2669 | 4871 | 4145 | 2.02e10 | 58.7 GB |
 | 2 (1) | A100 | `rotation_remote` | 6.00e6 | 72.83 | 22.01 | 0.08 | 26.04 | 50.70 | 39.98 | 1.92e8 | 58.7 GB |
 | 2 (1) | A100 | `heavyhex_step` | 5.77e5 | 1.95 | 0.47 | 0.04 | 0.29 | 1.42 | 0.65 | 2.08e6 | 0.6 GB |
-| 4 (1) | A100 | | | | | | | | | | |
-| 8 (2) | A100 | | | | | | | | | | |
+| 4 (1) | A100, job 7110165 | `rotation_zz` | 6.00e6 | 5.81 | 0 | 0 | 0 | 5.72 | 0.06 | 0 | 3.3 GB |
+| 4 (1) | A100 | `cnot` | 4.00e6 | 70.43 | 26.37 | 0.79 | 23.82 | 42.80 | 40.42 | 1.44e8 | 4.3 GB |
+| 4 (1) | A100 | `gu2q` | 1.30e7 | 138.7 | 46.15 | 0.20 | 48.78 | 92.26 | 66.42 | 2.88e8 | 4.3 GB |
+| 4 (1) | A100 | `su4` | 5.65e7 | 3607 | 1307 | 7.17 | 1303 | 2292 | 1767 | 8.13e9 | 46.2 GB |
+| 4 (1) | A100 | `rotation_remote` | 6.00e6 | 85.70 | 24.54 | 0.08 | 30.85 | 57.31 | 44.31 | 1.92e8 | 46.2 GB |
+| 4 (1) | A100 | `heavyhex_step` | 2.89e5 | 1.37 | 0.36 | 0.03 | 0.25 | 0.96 | 0.50 | 1.47e6 | 0.5 GB |
 
 `rotation_zz` weak-scales flat (5.75 vs 5.74 ms on one device); the peak RSS is the probe's replicated input, carried from `su4` into the later cells.
+The 2-rank rows are job 7101048 (rev 01df3eb, exported rows unmerged); the 4-rank rows are job 7110165 (rev 54b7bd2, sender-side merge on, workergpu068).
+
+## `gpu` cluster nodes — NCCL exchange between MPI ranks
+
+From `scripts/slurm/mpi-gpu-nccl.sbatch`: one A100-SXM4-80GB node, `--gpus-per-node` so every rank sees every GPU, one GPU and 8 CPUs per rank, replicated input, `--reps 5`, rank 0 shown, ms per layer, medians of five alternating host/NCCL pairs on one binary (`--gpu-exchange host|nccl`).
+NCCL 2.23.4 chose `P2P/CUMEM/read` between every pair of ranks.
+
+| ranks | node, job | layer | m per rank | host staging | NCCL | speedup | NCCL exchange | bytes exported/rank |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| 2 | workergpu070, 7125331 | `rotation_zz` | 6.00e6 | 5.78 | 5.80 | 1.00× | 0 | 0 |
+| 2 | | `cnot` | 4.00e6 | 43.62 | 6.92 | 6.3× | 2.49 | 9.61e7 |
+| 2 | | `rotation_remote` | 6.00e6 | 72.35 | 10.70 | 6.8× | 4.36 | 1.92e8 |
+| 2 | | `su4` | 5.65e7 | 1250 | 356.9 | 3.5× | 57.50 | 2.72e9 |
+
+Every pair agrees in sign and the per-cell ranges do not overlap (`su4` host 1227–1275, NCCL 356.5–357.8).
+The four-rank bring-up (`scripts/slurm/nccl-probe.sbatch`, job 7127220, workergpu063) passes every variant: the engine's communicator and warm-up at four ranks, all six device pairs, `NCCL_P2P_DISABLE=1`, `NCCL_CUMEM_ENABLE=0`, `NCCL_PROTO=Simple`, blocking init, per-peer and ring warm-ups, and the locality device pick, 10.3 s init and 0.7 s warm-up.
 
 ## `ccq` cluster node types
 

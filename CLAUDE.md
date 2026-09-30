@@ -210,7 +210,7 @@ It records what was measured and rejected, including several ideas that look obv
 - The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
 - A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
 - `gpu::peer_access` grants the destination context peer access to the source device and grants the destination access on the *source* device's memory pool (`cuDeviceGetMemPool` on the source, `cuMemPoolSetAccess` naming the destination), the grant a pooled allocation needs to be reachable from a peer at all — see `try_enable_peer_access` in `crates/paulistrings/src/engine/gpu/payload.rs`.
-- The cross-device peer copy is untested on a real multi-GPU node; today's measurements are virtual partitions on one card.
+- A four-rank NCCL run has passed its bring-up probe but not yet the full `mpi_ranks` net or an A/B, and no NCCL run has crossed nodes.
 
 ## Repo layout
 

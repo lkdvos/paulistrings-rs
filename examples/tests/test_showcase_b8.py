@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import sys
-from functools import reduce
 from pathlib import Path
 
 import numpy as np
@@ -78,34 +77,43 @@ def _restrict(ops, qubits):
 
 
 def _dense_echo(ops, qubits, obs_q, probe_q, delta):
+    """`2^-n tr(A V^dagger A V)` with `A = C^dagger O C`, gates applied axis by axis to a `2^n x 2^n` matrix."""
     n = len(qubits)
     idx = {q: i for i, q in enumerate(qubits)}
-    I2 = np.eye(2)
-    X = np.array([[0, 1], [1, 0]], dtype=complex)
-    Z = np.diag([1.0, -1.0]).astype(complex)
+    dim = 2**n
 
-    def single(m, q):
-        mats = [I2] * n
-        mats[idx[q]] = m
-        return reduce(np.kron, mats)
+    def apply(m, gate, axes):
+        # Left-multiply `m` by `gate` acting on the row-index axes `axes`.
+        t = m.reshape((2,) * n + (dim,))
+        k = len(axes)
+        g = gate.reshape((2,) * (2 * k))
+        t = np.tensordot(g, t, axes=(list(range(k, 2 * k)), axes))
+        t = np.moveaxis(t, list(range(k)), axes)
+        return t.reshape(dim, dim)
 
     def rot(p, theta):
         return math.cos(theta / 2) * np.eye(2) - 1j * math.sin(theta / 2) * p
 
-    C = np.eye(2**n, dtype=complex)
+    X = np.array([[0, 1], [1, 0]], dtype=complex)
+    Z = np.diag([1.0, -1.0]).astype(complex)
+    cz = np.diag([1.0, 1.0, 1.0, -1.0]).astype(complex)
+    C = np.eye(dim, dtype=complex)
     for name, angle, qs in ops:
         if name == "rx":
-            g = single(rot(X, angle), qs[0])
+            C = apply(C, rot(X, angle), [idx[qs[0]]])
         elif name == "rz":
-            g = single(rot(Z, angle), qs[0])
+            C = apply(C, rot(Z, angle), [idx[qs[0]]])
         else:
-            zz = single(Z, qs[0]) @ single(Z, qs[1])
-            g = (np.eye(2**n) + single(Z, qs[0]) + single(Z, qs[1]) - zz) / 2
-        C = g @ C
-    O = reduce(lambda a, b: a @ b, [single(Z, q) for q in obs_q])
-    A = C.conj().T @ O @ C
-    V = reduce(lambda a, b: a @ b, [single(math.cos(delta) * I2 - 1j * math.sin(delta) * X, q) for q in probe_q], np.eye(2**n))
-    return float(np.real(np.trace(A @ V.conj().T @ A @ V)) / 2**n)
+            C = apply(C, cz, [idx[qs[0]], idx[qs[1]]])
+    diag = np.ones(dim)
+    bits = (np.arange(dim)[:, None] >> (n - 1 - np.arange(n))[None, :]) & 1
+    for q in obs_q:
+        diag = diag * (1 - 2 * bits[:, idx[q]])
+    A = C.conj().T @ (diag[:, None] * C)
+    V = np.eye(dim, dtype=complex)
+    for q in probe_q:
+        V = apply(V, math.cos(delta) * np.eye(2) - 1j * math.sin(delta) * X, [idx[q]])
+    return float(np.real(np.trace(A @ V.conj().T @ A @ V)) / dim)
 
 
 def _engine_patch(L, eta):

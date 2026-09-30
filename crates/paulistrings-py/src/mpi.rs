@@ -4,7 +4,7 @@
 //! The adoption is collective (happens with the GIL held, before `allow_threads`, after every check that could raise), and the duplicate must not outlive `MPI_Finalize` — [`MpiRun`] drops both the transport and the `DistributedSum` before returning.
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
-use crate::truncation_spec::collapse_count;
+use crate::truncation_spec::{collapse_count, collapses_since};
 use paulistrings::engine::partitioned::Collectives;
 #[cfg(feature = "cuda")]
 use paulistrings::gpu::first_failure;
@@ -198,8 +198,8 @@ fn agreed_collapses(
     coll: &dyn Collectives,
 ) -> Option<u64> {
     // Only rank 0's samplers count, so the sum over ranks is rank 0's delta.
-    collapse_count(policy).zip(before).map(|(after, before)| {
-        let mut delta = [after - before];
+    collapses_since(policy, before).map(|delta| {
+        let mut delta = [delta];
         coll.allreduce_sum_u64(&mut delta);
         delta[0]
     })

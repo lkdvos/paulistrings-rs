@@ -15,6 +15,13 @@ pub(crate) const TOPN_PARTITIONED_MSG: &str =
 pub(crate) const COLLAPSE_SAMPLE_DEVICE_MSG: &str =
     "truncation.collapse_sample has no device form; run it on the host (device=None)";
 
+/// Collapses since `before`, both read from `policy` with [`collapse_count`].
+pub(crate) fn collapses_since(policy: &BuiltinTruncation, before: Option<u64>) -> Option<u64> {
+    collapse_count(policy)
+        .zip(before)
+        .map(|(after, before)| after - before)
+}
+
 /// Collapses performed so far by the distinct samplers in `tree`, or `None` if it has none.
 /// A sampler reached twice (`s & s`) is counted once. In a partitioned or distributed run only rank 0's objects count.
 pub(crate) fn collapse_count(tree: &BuiltinTruncation) -> Option<u64> {

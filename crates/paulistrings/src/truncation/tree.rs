@@ -162,16 +162,8 @@ mod tests {
     use super::BuiltinTruncation as T;
     use super::*;
     use crate::engine::partitioned::transport::InProcessTransport;
-    use crate::test_support::{assert_same_terms, rand_sum_real, KeepAll};
+    use crate::test_support::{and, assert_same_terms, or, rand_sum_real, KeepAll};
     use crate::truncation::{And, Or};
-
-    fn and(a: T, b: T) -> T {
-        T::And(Box::new(a), Box::new(b))
-    }
-
-    fn or(a: T, b: T) -> T {
-        T::Or(Box::new(a), Box::new(b))
-    }
 
     /// Weights 0..3 on one word, and coefficients on both sides of 0.1 and 0.5.
     fn grid() -> Vec<([u64; 1], [u64; 1], Complex64)> {

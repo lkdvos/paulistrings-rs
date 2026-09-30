@@ -1,20 +1,7 @@
-"""``device=`` and ``GpuPauliSum`` on the propagate surface — the CUDA path.
+"""The bindings' CUDA path: ``device=``, device lists and ``GpuPauliSum`` against the host ``propagate``, the placement conflicts and the stats record.
 
-The Rust side is covered by ``crates/paulistrings/tests/propagate_gpu.rs``,
-the differential net of the device layer against the host engine. This file
-checks the Python boundary: that ``device=0``, a device list and a resident
-``GpuPauliSum`` agree with the host ``propagate`` under every lowerable policy,
-that the placement kwargs are mutually exclusive, that the unsupported requests
-raise the documented exceptions, and that the stats record names the devices.
-A device list may repeat an ordinal, which is how the multi-device path runs on
-a one-GPU box.
-
-Everything that needs a device is skipped when ``cuda_available()`` is false;
-the two tests at the top run on every build. Build and run with::
-
-    maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
-    pytest python/paulistrings/tests/test_cuda.py
-"""
+The device layer's own differential net is ``crates/paulistrings/tests/propagate_gpu.rs``; a device list may repeat an ordinal, which runs the multi-device path on one GPU.
+Tests needing a device skip unless ``cuda_available()``."""
 
 import numpy as np
 import pytest
@@ -278,13 +265,15 @@ def test_stats_name_the_device():
 
 
 @needs_cuda
-def test_zero_layer_circuit_on_device():
+@pytest.mark.parametrize("device", [0, [0, 0]], ids=["one", "list"])
+def test_zero_layer_circuit_on_device(device):
     s = _observable(8, terms=64)
-    got, stats = s.propagate_with_stats(Circuit(8), device=0)
+    got, stats = s.propagate_with_stats(Circuit(8), device=device)
     _assert_terms_close(got, s)
     assert stats.layers == 0
-    assert stats.partition.partitions == 1
-    assert stats.partition.devices == [0]
+    devices = device if isinstance(device, list) else [device]
+    assert stats.partition.partitions == len(devices)
+    assert stats.partition.devices == devices
 
 
 # --------------------------------------------------------------------------
@@ -292,10 +281,9 @@ def test_zero_layer_circuit_on_device():
 
 
 @needs_cuda
-def test_exact_topn_runs_on_one_device_and_is_not_implemented_across_several():
+def test_exact_topn_is_not_implemented_across_several_devices():
     s, c = _observable(8, terms=64), _circuit(8)
-    _assert_terms_close(s.propagate(c, truncation.topn(10), device=0), s.propagate(c, truncation.topn(10)))
-    with pytest.raises(NotImplementedError, match="topn"):
+    with pytest.raises(NotImplementedError, match="approx_topn"):
         s.propagate(c, truncation.topn(10), device=[0, 0])
     with pytest.raises(NotImplementedError, match="topn"):
         s.propagate(c, truncation.coeff(0.1) | truncation.topn(10), device=[0, 0])
@@ -413,17 +401,6 @@ def _real_observable(num_qubits, terms, seed=20260924):
 @needs_cuda
 @pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
-def test_device_list_matches_host_on_a_dense_circuit(devices, direction):
-    s, c = _observable(8, terms=1_000), _dense_circuit(8)
-    want = s.propagate(c, direction=direction)
-    got = s.propagate(c, direction=direction, device=devices)
-    assert len(got) > len(s), "the circuit must actually fan out"
-    _assert_terms_close(got, want)
-
-
-@needs_cuda
-@pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
-@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direction):
     """``approx_topn`` all-reduces its histogram over the partitions, so the retained set is the host's exactly."""
     s, c = _real_observable(68, terms=2_000), _trotter_circuit(68)
@@ -437,10 +414,12 @@ def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direct
 
 @needs_cuda
 @pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
-def test_device_list_stats_name_every_partition(devices):
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_device_list_matches_host_and_names_every_partition(devices, direction):
     s, c = _observable(8, terms=1_000), _dense_circuit(8)
-    want, host_stats = s.propagate_with_stats(c, direction="heisenberg")
-    got, stats = s.propagate_with_stats(c, direction="heisenberg", device=devices)
+    want, host_stats = s.propagate_with_stats(c, direction=direction)
+    got, stats = s.propagate_with_stats(c, direction=direction, device=devices)
+    assert len(got) > len(s), "the circuit must actually fan out"
     _assert_terms_close(got, want)
     assert stats.terms_in == host_stats.terms_in
     assert stats.terms_out == host_stats.terms_out
@@ -460,16 +439,6 @@ def test_device_list_runs_twice_on_the_cached_runtime():
     want = s.propagate(c, direction="heisenberg")
     for _ in range(2):
         _assert_terms_close(s.propagate(c, direction="heisenberg", device=[0, 0]), want)
-
-
-@needs_cuda
-def test_device_list_zero_layer_circuit():
-    s = _observable(8, terms=64)
-    got, stats = s.propagate_with_stats(Circuit(8), device=[0, 0])
-    _assert_terms_close(got, s)
-    assert stats.layers == 0
-    assert stats.partition.partitions == 2
-    assert stats.partition.devices == [0, 0]
 
 
 @needs_cuda
@@ -516,5 +485,3 @@ def test_device_list_errors():
         s.propagate(c, device=[0, 0], partition_row_blocks=[list(range(8))])
     with pytest.raises(ValueError, match="alternatives"):
         s.propagate(c, device=[0, 0], partition_row_seed=1, partition_row_blocks=[[0], [1]])
-    with pytest.raises(NotImplementedError, match="approx_topn"):
-        s.propagate(c, truncation.topn(10), device=[0, 0])

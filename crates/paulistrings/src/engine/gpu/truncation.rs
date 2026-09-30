@@ -118,6 +118,7 @@ pub(crate) fn layer_pass_leaves(
 mod tests {
     use super::BuiltinTruncation as T;
     use super::*;
+    use crate::test_support::{and, or};
     use crate::truncation::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
     use crate::TruncationPolicy;
     use num_complex::Complex64;
@@ -172,14 +173,6 @@ mod tests {
                 .map(|i| (self.op[i], self.arg[i]))
                 .collect()
         }
-    }
-
-    fn and(a: T, b: T) -> T {
-        T::And(Box::new(a), Box::new(b))
-    }
-
-    fn or(a: T, b: T) -> T {
-        T::Or(Box::new(a), Box::new(b))
     }
 
     #[test]

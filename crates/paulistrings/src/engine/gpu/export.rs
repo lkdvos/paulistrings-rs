@@ -177,7 +177,7 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// The exchange (ARCHITECTURE.md §Partitioning): K10 fills device blocks, their skeletons cross over `transport`, and the group votes on going ahead and on a chunk count; on a unanimous yes the send payloads become the pending receive, whose [`receive_chunk`] posts one wire group per chunk straight into `recv_*` and fingerprints what arrived.
+/// One remote layer's exchange (ARCHITECTURE.md §Partitioning): K10's blocks, their skeletons over `transport` and the vote; on a yes the pending receive that [`receive_chunk`] moves chunk by chunk.
 /// Runs after K1 has filled `cnt` at the agreed bucket count; a rank that cannot receive votes no and returns its error, and on any no nobody posts and a ready rank takes every received block as empty.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
@@ -855,7 +855,7 @@ fn premerge_groups<const W: usize>(
     Ok(groups)
 }
 
-/// The sender-side merge of one partner's blocks (ARCHITECTURE.md §Partitioning): K3 over the sub-table of the partner's remote `entries` under the keep-everything program, so equal keys sum and exact zeros drop but nothing truncates; then each position's merged rows are split greedily over the blocks in entry order, never more than a block's unmerged count there, so every segment still fits the receiver's tag.
+/// The sender-side merge of one partner's blocks (ARCHITECTURE.md §Partitioning): K3 over the partner's sub-table under the keep-everything program, each position's rows split back over the blocks within their unmerged counts so every segment still fits the receiver's tag.
 /// `blocks` are the partner's in its remote-delta order; returns the rows written, or `None` having written nothing when a position's records exceed the fused kernel's cap.
 fn premerge_partner<const W: usize>(
     sum: &GpuSum<W>,
@@ -1147,13 +1147,14 @@ pub(crate) const MAX_RECV_SEGMENT: usize = MAX_BUCKET_LEN;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::hash::PartitionRows;
+    use crate::bucket::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
     use crate::channel::clifford::Clifford2Q;
     use crate::channel::{Channel, GeneralUnitary2Q};
-    use crate::engine::gpu::fingerprint::FingerprintRows;
     use crate::engine::gpu::layer::GpuLayerOptions;
+    use crate::engine::gpu::DEFAULT_ARENA_BYTES;
     use crate::engine::partitioned::export::{export_layer, ExportScratch};
     use crate::engine::partitioned::transport::{ExchangeBlock, PartnerPayload};
+    use crate::pauli_sum::PauliSum;
     use crate::test_support::{haar_su4_matrix, rand_sum, zz_rotation};
     use num_complex::Complex64;
 
@@ -1169,23 +1170,92 @@ mod tests {
         ]
     }
 
-    /// A layer scratch with the sender-side merge on or off.
-    fn scratch_with<const W: usize>(dev: &GpuSum<W>, premerge: bool) -> LayerScratch<W> {
-        scratch_arena(dev, premerge, crate::engine::gpu::DEFAULT_ARENA_BYTES)
+    fn su4<const W: usize>() -> GeneralUnitary2Q {
+        GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix())
     }
 
-    /// As [`scratch_with`] under an arena of `arena_bytes`; one byte batches the merge by the record cap.
-    fn scratch_arena<const W: usize>(
-        dev: &GpuSum<W>,
-        premerge: bool,
-        arena_bytes: usize,
-    ) -> LayerScratch<W> {
-        let opts = GpuLayerOptions {
+    /// Every support pattern of qubits 0 and 1 under each of `base`'s keys, so an SU(4) on `(0, 1)` makes one partner's remote rows collide.
+    fn dense_on_01<const W: usize>(base: &PauliSum<W>) -> PauliSum<W> {
+        let mut acc = crate::accumulator::BuildAccumulator::<W>::new(base.num_qubits());
+        for (x, z, c) in base.iter() {
+            for s in 0..16u64 {
+                let (mut x, mut z) = (*x, *z);
+                x[0] = (x[0] & !0b11) | (s & 0b11);
+                z[0] = (z[0] & !0b11) | (s >> 2);
+                acc.add_term(
+                    crate::pauli_string::PauliString::<W> { x, z },
+                    crate::phase::Phase::ONE,
+                    c * (1.0 + s as f64),
+                );
+            }
+        }
+        acc.finalize()
+    }
+
+    /// One rank's layer: the host's `export_layer` and the device's `export_blocks_device` of the same share.
+    struct Exported<const W: usize> {
+        plan: PartitionPlan,
+        nb: usize,
+        want: Vec<Option<PartnerPayload<W>>>,
+        want_rows: Vec<u64>,
+        dev: GpuSum<W>,
+        scratch: LayerScratch<W>,
+        got: Vec<Option<DevicePayload<W>>>,
+        got_counts: LayerExchangeCounts,
+    }
+
+    /// Rank `rank`'s share of `input` under `rows` through `ch`, exported on the host and on the device (sender-side merge `premerge`, arena `arena_bytes`, NVRTC options `nvrtc`); `None` when the rank has no remote delta.
+    fn export_rank<const W: usize>(
+        input: &PauliSum<W>,
+        rows: &PartitionRows<W>,
+        ch: &dyn Channel<W>,
+        rank: u32,
+        (premerge, arena_bytes, nvrtc): (bool, usize, &[String]),
+    ) -> Option<Exported<W>> {
+        let size = rows.num_partitions() as u32;
+        let local = input.filter_partition(rows, rank);
+        let prep = ch.prepare(local.hash(), false).expect("prepared");
+        let plan = PartitionPlan::new(&prep, rows, rank);
+        if !plan.has_remote() {
+            return None;
+        }
+        let nb = local.num_buckets();
+        let mut map = ChunkMap::default();
+        map.rebuild(
+            &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
+            nb,
+            1,
+        );
+        let (want, want_counts) = export_layer(
+            &local,
+            &prep,
+            &plan,
+            size,
+            &map,
+            &mut ExportScratch::default(),
+        );
+        let dev = GpuSum::from_host_with_options(&local, 0, nvrtc).expect("upload");
+        let options = GpuLayerOptions {
             premerge,
             arena_bytes,
             ..GpuLayerOptions::default()
         };
-        LayerScratch::new(dev, opts).expect("scratch")
+        let mut scratch = LayerScratch::new(&dev, options).expect("scratch");
+        let table = DevicePrepared::new(&prep, dev.hash(), &dev.fp, &plan.remote);
+        scratch.upload_table(&dev, &table).expect("table");
+        scratch.count_local(&dev, &table).expect("count");
+        let (got, got_counts) =
+            export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
+        Some(Exported {
+            plan,
+            nb,
+            want,
+            want_rows: want_counts.rows_to,
+            dev,
+            scratch,
+            got,
+            got_counts,
+        })
     }
 
     /// A device block's columns on the host.
@@ -1201,15 +1271,11 @@ mod tests {
         (x, z, c)
     }
 
-    /// Device payloads equal `export_layer`'s host payloads bitwise: presence, headers, offsets and the three columns.
-    fn assert_payloads_eq<const W: usize>(
-        s: &Arc<CudaStream>,
-        got: &[Option<DevicePayload<W>>],
-        want: &[Option<PartnerPayload<W>>],
-        what: &str,
-    ) {
-        assert_eq!(got.len(), want.len());
-        for (q, (g, w)) in got.iter().zip(want).enumerate() {
+    /// The device payloads equal the host payloads bitwise: presence, headers, offsets and the three columns.
+    fn assert_payloads_eq<const W: usize>(e: &Exported<W>, what: &str) {
+        assert_eq!(e.got_counts.rows_sent, e.want_rows, "{what}: rows");
+        assert_eq!(e.got.len(), e.want.len());
+        for (q, (g, w)) in e.got.iter().zip(&e.want).enumerate() {
             match (g, w) {
                 (None, None) => {}
                 (Some(g), Some(w)) => {
@@ -1217,7 +1283,7 @@ mod tests {
                     for (j, (gb, wb)) in g.blocks.iter().zip(&w.blocks).enumerate() {
                         assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
                         assert_eq!(gb.offsets, wb.offsets, "{what}: offsets {j} to {q}");
-                        let (x, z, c) = download(s, gb);
+                        let (x, z, c) = download(&e.dev.stream, gb);
                         let (wx, wz, wc) = wb.cols();
                         assert_eq!(x, wx.as_flattened(), "{what}: x {j} to {q}");
                         assert_eq!(z, wz.as_flattened(), "{what}: z {j} to {q}");
@@ -1233,52 +1299,19 @@ mod tests {
         }
     }
 
-    /// The device payloads equal `export_layer`'s blocks bitwise, and the SU(4) ships several blocks to one partner.
-    fn device_export_matches_host<const W: usize>(
-        num_qubits: usize,
-        n: usize,
-        seed: u64,
-        pbits: u8,
-    ) {
-        let input = rand_sum::<W>(n, num_qubits, seed);
+    /// Unmerged, the device payloads equal `export_layer`'s blocks bitwise, and the SU(4) ships several blocks to one partner.
+    fn device_export_matches_host<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
+        let input = rand_sum::<W>(6000, num_qubits, seed);
         let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
-        let size = rows.num_partitions() as u32;
         let (mut exported, mut multi_block_payloads) = (0usize, 0);
         for (name, ch) in &fixture_channels::<W>() {
-            for rank in 0..size {
-                let local = input.filter_partition(&rows, rank);
-                let prep = ch.prepare(local.hash(), false).expect("prepared");
-                let plan = PartitionPlan::new(&prep, &rows, rank);
-                if !plan.has_remote() {
+            for rank in 0..rows.num_partitions() as u32 {
+                let off = (false, DEFAULT_ARENA_BYTES, &[][..]);
+                let Some(e) = export_rank(&input, &rows, ch.as_ref(), rank, off) else {
                     continue;
-                }
-                let nb = local.num_buckets();
-                let mut map = ChunkMap::default();
-                map.rebuild(
-                    &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-                    nb,
-                    1,
-                );
-                let (want, want_counts) = export_layer(
-                    &local,
-                    &prep,
-                    &plan,
-                    size,
-                    &map,
-                    &mut ExportScratch::default(),
-                );
-                let dev = GpuSum::from_host(&local, 0).expect("upload");
-                let mut scratch = scratch_with(&dev, false);
-                let fp = FingerprintRows::<W>::new(dev.hash().seed());
-                let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
-                scratch.upload_table(&dev, &table).expect("table");
-                scratch.count_local(&dev, &table).expect("count");
-                let (got, got_counts) =
-                    export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
-                let what = format!("W={W} {name} rank {rank}");
-                assert_eq!(got_counts.rows_sent, want_counts.rows_to, "{what}: rows");
-                assert_payloads_eq(&dev.stream, &got, &want, &what);
-                let blocks = got.iter().flatten().map(|p| p.blocks.len());
+                };
+                assert_payloads_eq(&e, &format!("W={W} {name} rank {rank}"));
+                let blocks = e.got.iter().flatten().map(|p| p.blocks.len());
                 multi_block_payloads += blocks.clone().filter(|&n| n >= 2).count();
                 exported += blocks.sum::<usize>();
             }
@@ -1288,6 +1321,15 @@ mod tests {
             multi_block_payloads > 0,
             "the SU(4) layer must ship several remote deltas to one partner"
         );
+    }
+
+    #[test]
+    fn device_payloads_match_export_layer_bitwise() {
+        crate::require_cuda!();
+        device_export_matches_host::<1>(12, 0xE7, 1);
+        device_export_matches_host::<1>(12, 0xE8, 2);
+        device_export_matches_host::<2>(100, 0xE9, 1);
+        device_export_matches_host::<2>(100, 0xEA, 2);
     }
 
     /// Two blocks over eight positions receiving `[1, 0, 2, 4, 0, 3, 1, 1]` rows: each cap takes the fewest power-of-two chunks that fit it, and one position alone may exceed it.
@@ -1342,68 +1384,35 @@ mod tests {
     #[test]
     fn an_empty_partition_ships_empty_blocks() {
         crate::require_cuda!();
-        let nq = 12;
         let seed = 0xE55u64;
-        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 3, seed);
-        let local = crate::PauliSum::<1>::empty_with_hash(nq, hash.clone());
-        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
-        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-        let prep = ch.prepare(&hash, false).expect("prepared");
-        let plan = PartitionPlan::new(&prep, &rows, 0);
-        assert!(plan.has_remote(), "fixture: the SU(4) must cross");
-        let mut map = ChunkMap::default();
-        map.rebuild(&Gf2Span::new(&plan.local_bucket_deltas, 3), 8, 1);
-        let (want, _) = export_layer(&local, &prep, &plan, 2, &map, &mut ExportScratch::default());
-        let dev = GpuSum::from_host(&local, 0).expect("upload");
-        let mut scratch = LayerScratch::new(&dev, GpuLayerOptions::default()).expect("scratch");
-        let fp = FingerprintRows::<1>::new(seed);
-        let table = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
-        scratch.upload_table(&dev, &table).expect("table");
-        scratch.count_local(&dev, &table).expect("count");
-        let (got, counts) =
-            export_blocks_device(&dev, &table, &plan, &mut scratch, 2).expect("device export");
-        let payload = got[1].as_ref().expect("a device payload for the partner");
-        assert_eq!(payload.blocks.len(), plan.remote.len());
-        for (block, want) in payload.blocks.iter().zip(&want[1].as_ref().unwrap().blocks) {
-            assert_eq!(block.rows(), 0);
-            assert_eq!(block.offsets.len(), 9);
-            assert_eq!(block.header, want.header);
-            assert_eq!(block.offsets, want.offsets);
-        }
-        assert_eq!(counts.rows_sent, vec![0, 0]);
+        let input = PauliSum::<1>::empty_with_hash(12, Gf2Hash::<1>::new(12, 3, seed));
+        let rows = PartitionRows::<1>::from_seed(12, 1, seed ^ 0x77);
+        let off = (false, DEFAULT_ARENA_BYTES, &[][..]);
+        let e = export_rank(&input, &rows, &su4::<1>(), 0, off).expect("the SU(4) must cross");
+        assert_payloads_eq(&e, "empty");
+        let payload = e.got[1].as_ref().expect("a device payload for the partner");
+        assert_eq!(payload.blocks.len(), e.plan.remote.len());
+        assert!(payload
+            .blocks
+            .iter()
+            .all(|b| b.rows() == 0 && b.offsets.len() == 9));
     }
 
-    #[test]
-    fn device_payloads_match_export_layer_bitwise_w1() {
-        crate::require_cuda!();
-        device_export_matches_host::<1>(12, 6000, 0xE7, 1);
-        device_export_matches_host::<1>(12, 6000, 0xE8, 2);
-    }
+    type Key<const W: usize> = ([u64; W], [u64; W]);
 
-    #[test]
-    fn device_payloads_match_export_layer_bitwise_w2() {
-        crate::require_cuda!();
-        device_export_matches_host::<2>(100, 5000, 0xE9, 1);
-        device_export_matches_host::<2>(100, 5000, 0xEA, 2);
-    }
-
-    /// Per destination position, one partner's rows keyed by `(x, z)` with their coefficients summed across the partner's blocks, and the largest number of times one key occurs.
-    type PositionSums<const W: usize> =
-        Vec<std::collections::BTreeMap<([u64; W], [u64; W]), Complex64>>;
+    /// Per destination position, one partner's rows keyed by `(x, z)` with their coefficients summed across the partner's blocks.
+    type PositionSums<const W: usize> = Vec<std::collections::BTreeMap<Key<W>, Complex64>>;
 
     /// One block's `(offsets, x, z, coeff)`, live rows only.
     type BlockCols<const W: usize> = (Vec<u32>, Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>);
 
-    /// Occurrences per key at each position.
-    type PositionCounts<const W: usize> =
-        Vec<std::collections::BTreeMap<([u64; W], [u64; W]), usize>>;
-
+    /// The per-position key sums of `blocks`, and the largest number of times one key occurs at one position.
     fn position_sums<const W: usize>(
         blocks: &[BlockCols<W>],
         b: usize,
     ) -> (PositionSums<W>, usize) {
         let mut out: PositionSums<W> = vec![Default::default(); b];
-        let mut seen: PositionCounts<W> = vec![Default::default(); b];
+        let mut seen: Vec<std::collections::BTreeMap<Key<W>, usize>> = vec![Default::default(); b];
         let mut most = 0;
         for (off, x, z, c) in blocks {
             for p in 0..b {
@@ -1447,13 +1456,11 @@ mod tests {
         }
     }
 
-    /// Host blocks as `(offsets, x, z, coeff)`, live rows only.
     fn host_block_cols<const W: usize>(b: &ExchangeBlock<W>) -> BlockCols<W> {
         let (x, z, c) = b.cols();
         (b.offsets.clone(), x.to_vec(), z.to_vec(), c.to_vec())
     }
 
-    /// Device blocks the same way.
     fn device_block_cols<const W: usize>(s: &Arc<CudaStream>, b: &DeviceBlock<W>) -> BlockCols<W> {
         let (x, z, c) = download(s, b);
         let x: Vec<[u64; W]> = x.chunks(W).map(|w| w.try_into().unwrap()).collect();
@@ -1463,70 +1470,40 @@ mod tests {
     }
 
     /// With the sender-side merge on, the device payloads carry per position what `export_layer` carries summed by key, no key twice across one partner's blocks, and no segment longer than its unmerged one.
-    /// Returns `(rows sent, unmerged rows, fallback blocks)` per channel name, summed over ranks; `nvrtc` are the collision hook's options.
+    /// Returns `(rows sent, unmerged rows, fallback blocks)` per channel name, summed over ranks.
     fn premerge_matches_host_by_key<const W: usize>(
-        input: &crate::PauliSum<W>,
+        input: &PauliSum<W>,
         rows: &PartitionRows<W>,
-        channels: &[(&'static str, Box<dyn Channel<W>>)],
         arena_bytes: usize,
         nvrtc: &[String],
     ) -> Vec<(&'static str, u64, u64, (u32, u32))> {
-        let size = rows.num_partitions() as u32;
         let mut totals = Vec::new();
-        for (name, ch) in channels {
+        for (name, ch) in &fixture_channels::<W>() {
             let (mut sent, mut unmerged, mut fallbacks) = (0u64, 0u64, (0u32, 0u32));
-            for rank in 0..size {
-                let local = input.filter_partition(rows, rank);
-                let prep = ch.prepare(local.hash(), false).expect("prepared");
-                let plan = PartitionPlan::new(&prep, rows, rank);
-                if !plan.has_remote() {
+            for rank in 0..rows.num_partitions() as u32 {
+                let on = (true, arena_bytes, nvrtc);
+                let Some(e) = export_rank(input, rows, ch.as_ref(), rank, on) else {
                     continue;
-                }
-                let nb = local.num_buckets();
-                let mut map = ChunkMap::default();
-                map.rebuild(
-                    &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-                    nb,
-                    1,
+                };
+                let (nb, what) = (
+                    e.nb,
+                    format!("W={W} {name} rank {rank} arena={arena_bytes}"),
                 );
-                let (want, want_counts) = export_layer(
-                    &local,
-                    &prep,
-                    &plan,
-                    size,
-                    &map,
-                    &mut ExportScratch::default(),
-                );
-                let dev = GpuSum::from_host_with_options(&local, 0, nvrtc).expect("upload");
-                let fp = FingerprintRows::<W>::new(dev.hash().seed());
-                let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
-                let mut scratch = scratch_arena(&dev, true, arena_bytes);
-                scratch.upload_table(&dev, &table).expect("table");
-                scratch.count_local(&dev, &table).expect("count");
-                let what = format!("W={W} {name} rank {rank} arena={arena_bytes}");
-                let (g, counts) = export_blocks_device(&dev, &table, &plan, &mut scratch, size)
-                    .expect("device export");
-                let got: Vec<Option<Vec<BlockCols<W>>>> = g
-                    .iter()
-                    .map(|p| {
-                        p.as_ref().map(|p| {
-                            p.blocks
-                                .iter()
-                                .map(|b| {
-                                    assert_eq!(b.header.num_buckets as usize, nb);
-                                    assert_eq!(b.header.rows as usize, b.offsets[nb] as usize);
-                                    device_block_cols(&dev.stream, b)
-                                })
-                                .collect()
-                        })
-                    })
-                    .collect();
-                for (q, w) in want.iter().enumerate() {
-                    let (Some(w), Some(g)) = (w, &got[q]) else {
-                        assert!(w.is_none() && got[q].is_none(), "{what}: presence to {q}");
+                for (q, w) in e.want.iter().enumerate() {
+                    let (Some(w), Some(g)) = (w, &e.got[q]) else {
+                        assert!(w.is_none() && e.got[q].is_none(), "{what}: presence to {q}");
                         continue;
                     };
-                    assert_eq!(g.len(), w.blocks.len(), "{what}: blocks to {q}");
+                    assert_eq!(g.blocks.len(), w.blocks.len(), "{what}: blocks to {q}");
+                    let g: Vec<BlockCols<W>> = g
+                        .blocks
+                        .iter()
+                        .map(|b| {
+                            assert_eq!(b.header.num_buckets as usize, nb);
+                            assert_eq!(b.header.rows, b.offsets[nb]);
+                            device_block_cols(&e.dev.stream, b)
+                        })
+                        .collect();
                     for (j, (gb, wb)) in g.iter().zip(&w.blocks).enumerate() {
                         assert_eq!(gb.0.len(), nb + 1, "{what}: offsets {j} to {q}");
                         for p in 0..nb {
@@ -1538,54 +1515,54 @@ mod tests {
                     }
                     let wcols: Vec<_> = w.blocks.iter().map(host_block_cols).collect();
                     let (want_sums, _) = position_sums(&wcols, nb);
-                    let (got_sums, most) = position_sums(g, nb);
+                    let (got_sums, most) = position_sums(&g, nb);
                     assert_position_sums_close(&got_sums, &want_sums, 1e-12, &what);
-                    if w.blocks.len() >= 2 && matches!(*name, "su4") {
+                    if w.blocks.len() >= 2 && *name == "su4" {
                         assert_eq!(most, 1, "{what}: a key twice across the blocks to {q}");
                     }
                 }
+                let shipped: usize = e
+                    .got
+                    .iter()
+                    .flatten()
+                    .flat_map(|p| &p.blocks)
+                    .map(DeviceBlock::rows)
+                    .sum();
                 assert_eq!(
-                    counts.rows_sent.iter().sum::<u64>(),
-                    got.iter()
-                        .flatten()
-                        .flatten()
-                        .map(|b| b.1.len() as u64)
-                        .sum::<u64>(),
+                    e.got_counts.rows_sent.iter().sum::<u64>(),
+                    shipped as u64,
                     "{what}: counted rows"
                 );
-                sent += counts.rows_sent.iter().sum::<u64>();
-                unmerged += want_counts.rows_to.iter().sum::<u64>();
-                fallbacks.0 += scratch.counters.fallback_hi;
-                fallbacks.1 += scratch.counters.fallback_key;
+                sent += shipped as u64;
+                unmerged += e.want_rows.iter().sum::<u64>();
+                fallbacks.0 += e.scratch.counters.fallback_hi;
+                fallbacks.1 += e.scratch.counters.fallback_key;
             }
             totals.push((*name, sent, unmerged, fallbacks));
         }
         totals
     }
 
-    fn premerge_fixture<const W: usize>(num_qubits: usize, n: usize, seed: u64, pbits: u8) {
-        // A dense sum on qubits 0 and 1: every support pattern occurs for each remaining key, so the SU(4)'s remote rows collide.
-        let base = rand_sum::<W>(n / 16, num_qubits, seed);
-        let mut acc = crate::accumulator::BuildAccumulator::<W>::new(num_qubits);
-        for (x, z, c) in base.iter() {
-            for s in 0..16u64 {
-                let (mut x, mut z) = (*x, *z);
-                x[0] = (x[0] & !0b11) | (s & 0b11);
-                z[0] = (z[0] & !0b11) | (s >> 2);
-                acc.add_term(
-                    crate::pauli_string::PauliString::<W> { x, z },
-                    crate::phase::Phase::ONE,
-                    c * (1.0 + s as f64),
-                );
-            }
-        }
-        let input = acc.finalize();
+    fn premerge_fixture<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
+        let input = dense_on_01(&rand_sum::<W>(400, num_qubits, seed));
         let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
-        for arena in [crate::engine::gpu::DEFAULT_ARENA_BYTES, 1] {
+        // The SU(4) ships under half its unmerged rows; the Clifford and the rotation have nothing to merge.
+        let check_shrink = |name: &str, sent: u64, unmerged: u64| {
+            if name == "su4" {
+                assert!(
+                    sent * 2 < unmerged,
+                    "P={}: su4 sent {sent} of {unmerged} rows",
+                    1 << pbits
+                );
+            } else {
+                assert_eq!(sent, unmerged, "{name}: nothing to merge");
+            }
+        };
+        for arena in [DEFAULT_ARENA_BYTES, 1] {
             for (name, sent, unmerged, fallbacks) in
-                premerge_matches_host_by_key(&input, &rows, &fixture_channels(), arena, &[])
+                premerge_matches_host_by_key(&input, &rows, arena, &[])
             {
-                check_shrink(name, sent, unmerged, pbits);
+                check_shrink(name, sent, unmerged);
                 assert_eq!(
                     fallbacks,
                     (0, 0),
@@ -1596,14 +1573,10 @@ mod tests {
         // Every merge block takes a fallback: the `g_hi32` passes with the low word cleared, the full-key sort with no fingerprint at all.
         for (opt, full_key) in [("-DFP_ZERO_LO", false), ("-DFP_BITS=0", true)] {
             let nvrtc = [opt.to_string()];
-            for (name, sent, unmerged, fallbacks) in premerge_matches_host_by_key(
-                &input,
-                &rows,
-                &fixture_channels(),
-                crate::engine::gpu::DEFAULT_ARENA_BYTES,
-                &nvrtc,
-            ) {
-                check_shrink(name, sent, unmerged, pbits);
+            for (name, sent, unmerged, fallbacks) in
+                premerge_matches_host_by_key(&input, &rows, DEFAULT_ARENA_BYTES, &nvrtc)
+            {
+                check_shrink(name, sent, unmerged);
                 if name == "su4" {
                     let taken = if full_key { fallbacks.1 } else { fallbacks.0 };
                     assert!(taken > 0, "{opt}: su4 merged without the expected fallback");
@@ -1612,31 +1585,13 @@ mod tests {
         }
     }
 
-    /// The SU(4) ships under half its unmerged rows; the Clifford and the rotation have nothing to merge.
-    fn check_shrink(name: &str, sent: u64, unmerged: u64, pbits: u8) {
-        if name == "su4" {
-            assert!(
-                sent * 2 < unmerged,
-                "P={}: su4 sent {sent} of {unmerged} rows",
-                1 << pbits
-            );
-        } else {
-            assert_eq!(sent, unmerged, "{name}: nothing to merge");
-        }
-    }
-
     #[test]
-    fn premerged_blocks_match_export_layer_by_key_and_shrink_w1() {
+    fn premerged_blocks_match_export_layer_by_key_and_shrink() {
         crate::require_cuda!();
-        premerge_fixture::<1>(12, 6400, 0xF7, 1);
-        premerge_fixture::<1>(12, 6400, 0xF8, 2);
-    }
-
-    #[test]
-    fn premerged_blocks_match_export_layer_by_key_and_shrink_w2() {
-        crate::require_cuda!();
-        premerge_fixture::<2>(100, 6400, 0xF9, 1);
-        premerge_fixture::<2>(100, 6400, 0xFA, 2);
+        premerge_fixture::<1>(12, 0xF7, 1);
+        premerge_fixture::<1>(12, 0xF8, 2);
+        premerge_fixture::<2>(100, 0xF9, 1);
+        premerge_fixture::<2>(100, 0xFA, 2);
     }
 
     /// Two terms whose remote rows to one key cancel exactly: the merged export drops the key, the unmerged one ships both rows.
@@ -1694,10 +1649,13 @@ mod tests {
             (kb.x[0] ^ d[eb].mask_x[0], kb.z[0] ^ d[eb].mask_z[0])
         );
         let dev = GpuSum::from_host(&local, 0).expect("upload");
-        let fp = FingerprintRows::<1>::new(hash.seed());
-        let table = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
+        let table = DevicePrepared::new(&prep, &hash, &dev.fp, &plan.remote);
         let shipped = |premerge: bool| {
-            let mut scratch = scratch_with(&dev, premerge);
+            let options = GpuLayerOptions {
+                premerge,
+                ..GpuLayerOptions::default()
+            };
+            let mut scratch = LayerScratch::new(&dev, options).expect("scratch");
             scratch.upload_table(&dev, &table).expect("table");
             scratch.count_local(&dev, &table).expect("count");
             let (got, counts) =
@@ -1724,210 +1682,56 @@ mod tests {
         );
     }
 
-    /// A source bucket longer than [`MAX_BUCKET_LEN`] forces `premerge_groups` to clear every group (export.rs's tag-overflow guard), so the sender falls back to the unmerged export, bitwise `export_layer`'s.
-    /// A single bucket (`bits = 0`) with enough rows still exceeds the limit after `filter_partition` halves it.
+    /// With the merge on, every rank of `input` under `rows` through an SU(4) falls back to the unmerged export, bitwise `export_layer`'s.
+    fn assert_unmerged_fallback(input: &PauliSum<1>, rows: &PartitionRows<1>, nvrtc: &[String]) {
+        let mut remote_layers = 0;
+        for rank in 0..rows.num_partitions() as u32 {
+            let on = (true, DEFAULT_ARENA_BYTES, nvrtc);
+            let Some(e) = export_rank(input, rows, &su4::<1>(), rank, on) else {
+                continue;
+            };
+            remote_layers += 1;
+            assert_eq!(
+                e.scratch.counters.rows_premerged, 0,
+                "rank {rank}: no rows were premerged"
+            );
+            assert_payloads_eq(&e, &format!("rank {rank}"));
+        }
+        assert!(remote_layers > 0, "the fixture must export something");
+    }
+
+    /// A source bucket longer than [`MAX_BUCKET_LEN`] clears every merge group, the tag-overflow guard; one bucket of 12000 rows stays over the limit after the split halves it.
     #[test]
     fn oversize_source_bucket_falls_back_to_unmerged_export() {
         crate::require_cuda!();
-        let nq = 12;
-        let seed = 0xB16u64;
-        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 0, seed);
-        let input = rand_sum::<1>(12_000, nq, seed).with_hash(hash);
-        assert_eq!(input.num_buckets(), 1);
-        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
-        let size = rows.num_partitions() as u32;
-        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-        let mut remote_layers = 0;
-        for rank in 0..size {
-            let local = input.filter_partition(&rows, rank);
-            assert!(
-                local.bucket(0).2.len() > MAX_BUCKET_LEN,
-                "fixture: the single bucket must exceed the tag's offset field"
-            );
-            let prep = ch.prepare(local.hash(), false).expect("prepared");
-            let plan = PartitionPlan::new(&prep, &rows, rank);
-            if !plan.has_remote() {
-                continue;
-            }
-            remote_layers += 1;
-            let nb = local.num_buckets();
-            let mut map = ChunkMap::default();
-            map.rebuild(
-                &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-                nb,
-                1,
-            );
-            let (want, want_counts) = export_layer(
-                &local,
-                &prep,
-                &plan,
-                size,
-                &map,
-                &mut ExportScratch::default(),
-            );
-            let dev = GpuSum::from_host(&local, 0).expect("upload");
-            let mut scratch = scratch_with(&dev, true);
-            let fp = FingerprintRows::<1>::new(dev.hash().seed());
-            let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
-            scratch.upload_table(&dev, &table).expect("table");
-            scratch.count_local(&dev, &table).expect("count");
-            let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
-            dev.stream.synchronize().expect("sync");
-            let what = format!("rank {rank}");
-            assert_eq!(
-                got_counts.rows_sent, want_counts.rows_to,
-                "{what}: the oversize bucket must skip the merge, not shrink it"
-            );
-            assert_eq!(
-                scratch.counters.rows_premerged, 0,
-                "{what}: no rows were premerged"
-            );
-            assert_payloads_eq(&dev.stream, &got, &want, &what);
-        }
-        assert!(remote_layers > 0, "the fixture must export something");
+        let input = rand_sum::<1>(12_000, 12, 0xB16).with_hash(Gf2Hash::<1>::new(12, 0, 0xB16));
+        let rows = PartitionRows::<1>::from_seed(12, 1, 0xB16 ^ 0x77);
+        assert!(input.filter_partition(&rows, 0).bucket(0).2.len() > MAX_BUCKET_LEN);
+        assert_unmerged_fallback(&input, &rows, &[]);
     }
 
-    /// A merge position whose selected entries' combined record count exceeds the fused kernel's record cap: `premerge_partner` returns `Ok(None)` without writing, and the sender falls back to the unmerged export, bitwise `export_layer`'s for that partner.
-    /// `-DTEST_SHARED_LIMIT` (module.rs's test hook) shrinks the loaded record cap to its smallest variant so a modest single bucket exceeds it, while staying under [`MAX_BUCKET_LEN`] so the tag-overflow guard does not fire first.
+    /// A merge position whose records exceed the fused kernel's record cap: `premerge_partner` writes nothing and returns `None`.
+    /// `-DTEST_SHARED_LIMIT` shrinks the cap to the smallest variant so a bucket under [`MAX_BUCKET_LEN`] exceeds it.
     #[test]
     fn oversize_merge_position_falls_back_to_unmerged_export() {
         crate::require_cuda!();
-        let nq = 12;
-        let seed = 0xCA9u64;
-        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 0, seed);
-        let input = rand_sum::<1>(6000, nq, seed).with_hash(hash);
-        assert_eq!(input.num_buckets(), 1);
-        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
-        let size = rows.num_partitions() as u32;
-        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-        let small_cap = ["-DTEST_SHARED_LIMIT=17000".to_string()];
-        let mut remote_layers = 0;
-        for rank in 0..size {
-            let local = input.filter_partition(&rows, rank);
-            assert!(
-                local.bucket(0).2.len() <= MAX_BUCKET_LEN,
-                "fixture: the bucket must stay under the tag limit so only the record cap trips"
-            );
-            let prep = ch.prepare(local.hash(), false).expect("prepared");
-            let plan = PartitionPlan::new(&prep, &rows, rank);
-            if !plan.has_remote() {
-                continue;
-            }
-            remote_layers += 1;
-            let nb = local.num_buckets();
-            let mut map = ChunkMap::default();
-            map.rebuild(
-                &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-                nb,
-                1,
-            );
-            let (want, want_counts) = export_layer(
-                &local,
-                &prep,
-                &plan,
-                size,
-                &map,
-                &mut ExportScratch::default(),
-            );
-            let dev = GpuSum::from_host_with_options(&local, 0, &small_cap).expect("upload");
-            let mut scratch = scratch_with(&dev, true);
-            let fp = FingerprintRows::<1>::new(dev.hash().seed());
-            let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
-            scratch.upload_table(&dev, &table).expect("table");
-            scratch.count_local(&dev, &table).expect("count");
-            let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
-            dev.stream.synchronize().expect("sync");
-            let what = format!("rank {rank}");
-            assert_eq!(
-                got_counts.rows_sent, want_counts.rows_to,
-                "{what}: the oversize merge position must skip the merge, not shrink it"
-            );
-            assert_eq!(
-                scratch.counters.rows_premerged, 0,
-                "{what}: no rows were premerged"
-            );
-            assert_payloads_eq(&dev.stream, &got, &want, &what);
-        }
-        assert!(remote_layers > 0, "the fixture must export something");
+        let input = rand_sum::<1>(6000, 12, 0xCA9).with_hash(Gf2Hash::<1>::new(12, 0, 0xCA9));
+        let rows = PartitionRows::<1>::from_seed(12, 1, 0xCA9 ^ 0x77);
+        assert!(input.filter_partition(&rows, 0).bucket(0).2.len() <= MAX_BUCKET_LEN);
+        assert_unmerged_fallback(&input, &rows, &["-DTEST_SHARED_LIMIT=17000".to_string()]);
     }
 
-    /// A partner group whose `entries × buckets` product exceeds [`SCAN_LIMIT`]: `premerge_groups` clears it before ever touching K3, so the sender falls back to the unmerged export, bitwise `export_layer`'s.
-    /// `B_MAX_BITS` buckets (the largest a hash can address) times the SU(4)'s eight-entry group already clears `SCAN_LIMIT`; the terms themselves can be a small dense-collision fixture, since the guard reads only entry count and bucket count.
+    /// A partner group whose `entries × buckets` exceeds [`SCAN_LIMIT`] is cleared before K3: `B_MAX_BITS` buckets times the SU(4)'s eight-entry group already does.
     #[test]
     fn oversize_partner_group_falls_back_to_unmerged_export() {
         crate::require_cuda!();
-        let nq = 32;
-        let seed = 0xB5CAu64;
-        let base = rand_sum::<1>(400, nq, seed);
-        let mut acc = crate::accumulator::BuildAccumulator::<1>::new(nq);
-        for (x, z, c) in base.iter() {
-            for s in 0..16u64 {
-                let (mut x, mut z) = (*x, *z);
-                x[0] = (x[0] & !0b11) | (s & 0b11);
-                z[0] = (z[0] & !0b11) | (s >> 2);
-                acc.add_term(
-                    crate::pauli_string::PauliString::<1> { x, z },
-                    crate::phase::Phase::ONE,
-                    c * (1.0 + s as f64),
-                );
-            }
-        }
-        let hash =
-            crate::bucket::hash::Gf2Hash::<1>::new(nq, crate::bucket::hash::B_MAX_BITS, seed);
-        let input = acc.finalize().with_hash(hash);
-        assert!(
-            input.num_buckets() * 8 > SCAN_LIMIT,
-            "fixture: entries × buckets must exceed SCAN_LIMIT"
+        let base = rand_sum::<1>(400, 32, 0xB5CA);
+        let input = dense_on_01(&base).with_hash(Gf2Hash::<1>::new(32, B_MAX_BITS, 0xB5CA));
+        assert!(input.num_buckets() * 8 > SCAN_LIMIT);
+        assert_unmerged_fallback(
+            &input,
+            &PartitionRows::<1>::from_seed(32, 1, 0xB5CA ^ 0x77),
+            &[],
         );
-        let rows = PartitionRows::<1>::from_seed(nq, 1, seed ^ 0x77);
-        let size = rows.num_partitions() as u32;
-        let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-        let mut remote_layers = 0;
-        for rank in 0..size {
-            let local = input.filter_partition(&rows, rank);
-            let prep = ch.prepare(local.hash(), false).expect("prepared");
-            let plan = PartitionPlan::new(&prep, &rows, rank);
-            if !plan.has_remote() {
-                continue;
-            }
-            remote_layers += 1;
-            let nb = local.num_buckets();
-            let mut map = ChunkMap::default();
-            map.rebuild(
-                &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-                nb,
-                1,
-            );
-            let (want, want_counts) = export_layer(
-                &local,
-                &prep,
-                &plan,
-                size,
-                &map,
-                &mut ExportScratch::default(),
-            );
-            let dev = GpuSum::from_host(&local, 0).expect("upload");
-            let mut scratch = scratch_with(&dev, true);
-            let fp = FingerprintRows::<1>::new(dev.hash().seed());
-            let table = DevicePrepared::new(&prep, dev.hash(), &fp, &plan.remote);
-            scratch.upload_table(&dev, &table).expect("table");
-            scratch.count_local(&dev, &table).expect("count");
-            let (got, got_counts) =
-                export_blocks_device(&dev, &table, &plan, &mut scratch, size).expect("export");
-            dev.stream.synchronize().expect("sync");
-            let what = format!("rank {rank}");
-            assert_eq!(
-                got_counts.rows_sent, want_counts.rows_to,
-                "{what}: the oversize group must skip the merge, not shrink it"
-            );
-            assert_eq!(
-                scratch.counters.rows_premerged, 0,
-                "{what}: no rows were premerged"
-            );
-            assert_payloads_eq(&dev.stream, &got, &want, &what);
-        }
-        assert!(remote_layers > 0, "the fixture must export something");
     }
 }

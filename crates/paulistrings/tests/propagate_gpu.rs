@@ -5,9 +5,10 @@ use paulistrings::channel::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
+use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
-    differential_channels_w2, haar_su4_matrix, rand_sum, random_circuit, trotter_circuit,
+    and, assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
+    differential_channels_w2, haar_su4_matrix, or, rand_sum, random_circuit, trotter_circuit,
     zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::truncation::{
@@ -20,43 +21,54 @@ use paulistrings::{
 
 const TOL: f64 = 1e-11;
 
-macro_rules! require_cuda {
-    () => {
-        if !paulistrings::gpu::cuda_available() {
-            return;
-        }
-    };
-}
-
 fn one_layer<const W: usize>(num_qubits: usize, ch: Box<dyn Channel<W>>) -> Circuit<W> {
     let mut c = Circuit::<W>::new(num_qubits);
     c.channels.push(ch);
     c
 }
 
-/// Host oracle versus the device in both directions, with the device run under `options`.
+/// One device run: the downloaded sum and the last layer's counters.
+fn device_run<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    options: Option<GpuLayerOptions>,
+    extra: &[String],
+) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
+where
+    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+{
+    let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
+    if let Some(o) = options {
+        dev.set_layer_options(o);
+    }
+    dev.propagate(circuit, policy, direction)
+        .expect("device propagate");
+    let got = dev.gather().expect("download");
+    assert_eq!(dev.len(), got.len());
+    (got, dev.last_layer_counters(0))
+}
+
+/// Host oracle versus the device in both directions, the device run under `options` and `extra`; with `permuted`, whether the last layer must take the permutation path.
 fn check_with<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
     policy: &T,
     name: &str,
-    options: Option<GpuLayerOptions>,
-    extra: &[String],
+    (options, extra): (Option<GpuLayerOptions>, &[String]),
+    permuted: Option<bool>,
 ) where
     T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
-        let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
-        if let Some(o) = options {
-            dev.set_layer_options(o);
-        }
-        dev.propagate(circuit, policy, direction)
-            .expect("device propagate");
-        let got = dev.gather().expect("download");
+        let (got, c) = device_run(circuit, sum, policy, direction, options, extra);
         let what = format!("{name} {direction:?}");
+        if let Some(p) = permuted {
+            assert_eq!(c.permuted, p, "{what}: {c:?}");
+        }
         assert_eq!(got.len(), want.len(), "{what}: term count");
-        assert_eq!(dev.len(), want.len(), "{what}: device len");
         assert_terms_close(&got, &want, TOL, &what);
     }
 }
@@ -65,7 +77,7 @@ fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T,
 where
     T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
 {
-    check_with(circuit, sum, policy, name, None, &[]);
+    check_with(circuit, sum, policy, name, (None, &[]), None);
 }
 
 #[test]
@@ -170,31 +182,8 @@ fn exact_cancellation_drops_the_zero_term() {
     );
 }
 
-#[test]
-fn truncation_policies_match_the_host_term_for_term() {
-    require_cuda!();
-    let input = rand_sum::<2>(3000, 128, 0x44);
-    let circuit = random_circuit::<2>(128, 12, 0x5555, true);
-    check(&circuit, &input, &CoefficientThreshold(1e-3), "coeff 1e-3");
-    check(&circuit, &input, &WeightCutoff(4), "weight 4");
-    check(
-        &circuit,
-        &input,
-        &CoefficientThreshold(-1.0),
-        "coeff negative eps",
-    );
-}
-
-fn and(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
-    BuiltinTruncation::And(Box::new(a), Box::new(b))
-}
-
-fn or(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
-    BuiltinTruncation::Or(Box::new(a), Box::new(b))
-}
-
-/// The truncation matrix on a dense random circuit, host `propagate` and the device driven by the same `BuiltinTruncation` value.
-/// `ApproxTopN` is partition-exact and the per-term filters are exact, so the term counts must match as well as the terms.
+/// The truncation matrix on a dense random circuit, host `propagate` and one device driven by the same `BuiltinTruncation` value.
+/// Every policy here is exact on one device, exact `TopN` included, so the term counts must match as well as the terms.
 fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64) {
     use BuiltinTruncation as T;
     let input = rand_sum::<W>(2000, num_qubits, seed);
@@ -205,11 +194,15 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
     let matrix = [
         ("keep", T::Keep),
         ("coeff 1e-3", T::Coeff(1e-3)),
+        ("coeff negative eps", T::Coeff(-1.0)),
         ("weight 4", T::Weight(4)),
         ("approx n", T::ApproxTopN(n)),
         ("coeff & approx", and(T::Coeff(1e-3), T::ApproxTopN(n))),
         ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
         ("coeff | weight", or(T::Coeff(1e-3), T::Weight(4))),
+        ("topn n", T::TopN(n)),
+        ("coeff & topn", and(T::Coeff(1e-6), T::TopN(n))),
+        ("topn | weight", or(T::TopN(n), T::Weight(0))),
     ];
     for (name, policy) in &matrix {
         check(&circuit, &input, policy, &format!("W={W} {name}"));
@@ -295,32 +288,6 @@ fn unlowerable_policies_are_rejected_before_the_first_layer() {
     assert_rejected_untouched(&chain, "17-node program");
 }
 
-/// A lone device (`GpuPauliSum`) runs an exact `TopN` — alone, and composed with `And`/`Or` — and matches the host term for term, `len()` included.
-#[test]
-fn exact_top_n_matches_the_host_on_one_device() {
-    require_cuda!();
-    use BuiltinTruncation as T;
-    let input = rand_sum::<1>(3000, 12, 0x7091);
-    let circuit = random_circuit::<1>(12, 20, 0x7092, true);
-    check(&circuit, &input, &T::TopN(1500), "topn alone");
-    check(
-        &circuit,
-        &input,
-        &and(T::Coeff(1e-6), T::TopN(1500)),
-        "coeff & topn",
-    );
-    check(
-        &circuit,
-        &input,
-        &or(T::TopN(1500), T::Weight(0)),
-        "topn | weight",
-    );
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-    dev.propagate(&circuit, T::TopN(1500), Direction::Forward)
-        .expect("device propagate");
-    assert!(dev.len() <= 1500 && !dev.is_empty());
-}
-
 /// Ties at the boundary (a group that straddles the cut, one that fits exactly), `n = 0` and `n >= len`, all on the device against the host's exact rule.
 #[test]
 fn exact_top_n_edge_cases_match_the_host() {
@@ -375,7 +342,14 @@ fn short_fingerprints_still_agree() {
     let input = rand_sum::<2>(2000, 128, 0x66);
     let circuit = random_circuit::<2>(128, 8, 0x7777, true);
     for fp in ["-DFP_BITS=8", "-DFP_BITS=0"] {
-        check_with(&circuit, &input, &KeepAll, fp, None, &[fp.to_string()]);
+        check_with(
+            &circuit,
+            &input,
+            &KeepAll,
+            fp,
+            (None, &[fp.to_string()]),
+            None,
+        );
     }
 }
 
@@ -406,11 +380,7 @@ fn fallback_paths_run_resolve_and_are_reproducible() {
     let circuit = su4_layer::<2>(128, 0, 1);
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let run = |opts: &[String]| {
-        let mut dev = GpuPauliSum::from_host_with_options(&input, 0, opts).expect("upload");
-        dev.propagate(&circuit, KeepAll, Direction::Forward)
-            .expect("propagate");
-        let c = dev.last_layer_counters(0);
-        let got = dev.gather().unwrap();
+        let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, opts);
         assert_terms_close(&got, &want, TOL, &format!("{opts:?}"));
         (arrays_bits(&got), c)
     };
@@ -432,14 +402,10 @@ fn a_small_shared_memory_limit_still_agrees() {
     let input = rand_sum::<2>(3000, 128, 0x5E);
     let circuit = su4_layer::<2>(128, 0, 1);
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
-    let mut dev =
-        GpuPauliSum::from_host_with_options(&input, 0, &["-DTEST_SHARED_LIMIT=40000".to_string()])
-            .expect("upload");
-    dev.propagate(&circuit, KeepAll, Direction::Forward)
-        .expect("propagate");
-    let c = dev.last_layer_counters(0);
+    let limit = ["-DTEST_SHARED_LIMIT=40000".to_string()];
+    let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &limit);
     assert!(c.n_cap <= 2048 && c.records_max <= 2048, "{c:?}");
-    assert_terms_close(&dev.gather().unwrap(), &want, TOL, "small shared limit");
+    assert_terms_close(&got, &want, TOL, "small shared limit");
 }
 
 /// The host schedule leaves buckets longer than the tag can address, so the layer refines before counting again.
@@ -479,16 +445,19 @@ fn multi_batch_output_growth_agrees_and_is_reproducible() {
     let input = rand_sum::<2>(20_000, 128, 0xBA7C);
     let circuit = su4_layer::<2>(128, 5, 70);
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
+    let small = GpuLayerOptions {
+        arena_bytes: 1 << 20,
+        ..GpuLayerOptions::default()
+    };
     let run = || {
-        let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-        dev.set_layer_options(GpuLayerOptions {
-            arena_bytes: 1 << 20,
-            ..GpuLayerOptions::default()
-        });
-        dev.propagate(&circuit, KeepAll, Direction::Forward)
-            .expect("propagate");
-        let c = dev.last_layer_counters(0);
-        (dev.gather().unwrap(), c)
+        device_run(
+            &circuit,
+            &input,
+            &KeepAll,
+            Direction::Forward,
+            Some(small),
+            &[],
+        )
     };
     let (got, c) = run();
     assert!(c.batches > 1, "{c:?}");
@@ -498,20 +467,6 @@ fn multi_batch_output_growth_agrees_and_is_reproducible() {
     );
     assert_terms_close(&got, &want, TOL, "multi-batch");
     assert_eq!(arrays_bits(&run().0), arrays_bits(&got));
-}
-
-#[test]
-fn wide_words_w16() {
-    require_cuda!();
-    let input = rand_sum::<16>(300, 1024, 0x16);
-    let mut gen = PauliString::<16>::x(1000);
-    gen.z[3] |= 1 << 7;
-    gen.x[9] |= 1 << 60;
-    let mut c = Circuit::<16>::new(1024);
-    c.push(Clifford2Q::cnot(3, 900));
-    c.push(PauliRotation::new(gen, 0.3));
-    c.push(GeneralUnitary2Q::from_matrix(5, 700, haar_su4_matrix()));
-    check(&c, &input, &KeepAll, "W=16");
 }
 
 /// A layer that cannot fit returns `Err`, leaves the previous layer's output, and the same object continues correctly afterwards.
@@ -628,8 +583,8 @@ fn fixed_terms_per_bucket_policy_agrees() {
         &input,
         &KeepAll,
         "fixed 256, 1 MiB arena",
-        Some(o),
-        &[],
+        (Some(o), &[]),
+        None,
     );
 }
 
@@ -638,42 +593,33 @@ fn output_is_bitwise_reproducible_run_to_run() {
     require_cuda!();
     let input = rand_sum::<2>(5000, 128, 0x88);
     let circuit = random_circuit::<2>(128, 10, 0x9999, true);
-    let run = || {
-        let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-        dev.propagate(&circuit, KeepAll, Direction::Forward)
-            .expect("propagate");
-        let (x, z, c) = dev.gather().unwrap().to_arrays();
-        let bits: Vec<(u64, u64)> = c.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect();
-        (x, z, bits)
-    };
+    let run =
+        || arrays_bits(&device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &[]).0);
     let first = run();
     for _ in 0..2 {
         assert_eq!(run(), first);
     }
 }
 
-#[test]
-fn wide_words_w4() {
-    require_cuda!();
-    let input4 = rand_sum::<4>(2000, 250, 0x99);
-    let mut c4 = Circuit::<4>::new(250);
-    c4.push(Clifford2Q::cnot(64, 129));
-    check(&c4, &input4, &KeepAll, "W=4 cnot");
-    c4.push(PauliRotation::new(PauliString::<4>::x(249), 0.4));
-    check(&c4, &input4, &KeepAll, "W=4 cnot+rotation");
-    c4.push(GeneralUnitary2Q::from_matrix(3, 200, haar_su4_matrix()));
-    check(&c4, &input4, &KeepAll, "W=4 cnot+rotation+su4");
+/// A CNOT, a rotation with a generator in several words and an SU(4) across words, at `nq` qubits.
+fn wide_words<const W: usize>(nq: u32, seed: u64) {
+    let input = rand_sum::<W>(500, nq as usize, seed);
+    let mut gen = PauliString::<W>::x(nq - 1);
+    gen.z[W / 2] |= 1 << 7;
+    gen.x[W - 2] |= 1 << 60;
+    let mut c = Circuit::<W>::new(nq as usize);
+    c.push(Clifford2Q::cnot(3, nq - 100));
+    c.push(PauliRotation::new(gen, 0.3));
+    c.push(GeneralUnitary2Q::from_matrix(5, nq - 60, haar_su4_matrix()));
+    check(&c, &input, &KeepAll, &format!("W={W}"));
 }
 
 #[test]
-fn wide_words_w8() {
+fn wide_words_match_propagate() {
     require_cuda!();
-    let input8 = rand_sum::<8>(500, 512, 0xAA);
-    let mut c8 = Circuit::<8>::new(512);
-    c8.push(Clifford2Q::cnot(100, 300));
-    check(&c8, &input8, &KeepAll, "W=8 cnot");
-    c8.push(GeneralUnitary2Q::from_matrix(5, 400, haar_su4_matrix()));
-    check(&c8, &input8, &KeepAll, "W=8 cnot+su4");
+    wide_words::<4>(250, 0x99);
+    wide_words::<8>(512, 0xAA);
+    wide_words::<16>(1024, 0x16);
 }
 
 #[test]
@@ -697,51 +643,6 @@ fn propagate_gpu_front_door_and_options() {
     let trace = dev.take_trace().expect("tracing on");
     assert_eq!(trace.layers.len(), circuit.channels.len());
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "traced");
-}
-
-/// One device run: the downloaded sum and the last layer's counters.
-fn device_run<const W: usize, T>(
-    circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
-    policy: &T,
-    direction: Direction,
-    options: Option<GpuLayerOptions>,
-    extra: &[String],
-) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
-where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
-{
-    let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
-    if let Some(o) = options {
-        dev.set_layer_options(o);
-    }
-    dev.propagate(circuit, policy, direction)
-        .expect("device propagate");
-    let got = dev.gather().expect("download");
-    assert_eq!(dev.len(), got.len());
-    (got, dev.last_layer_counters(0))
-}
-
-/// Both directions against the host, asserting whether the last layer took the permutation path.
-fn check_permuted<const W: usize, T>(
-    circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
-    policy: &T,
-    name: &str,
-    options: Option<GpuLayerOptions>,
-    extra: &[String],
-    permuted: bool,
-) where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
-{
-    for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
-        let (got, c) = device_run(circuit, sum, policy, direction, options, extra);
-        let what = format!("{name} {direction:?}");
-        assert_eq!(c.permuted, permuted, "{what}: {c:?}");
-        assert_eq!(got.len(), want.len(), "{what}: term count");
-        assert_terms_close(&got, &want, TOL, &what);
-    }
 }
 
 /// Every Clifford runs on the permutation path (K12–K14) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
@@ -773,14 +674,13 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
     for (name, ch) in gates {
         let circuit = one_layer(nq, ch);
         for (pname, policy) in &policies {
-            check_permuted(
+            check_with(
                 &circuit,
                 &input,
                 policy,
                 &format!("{name} {pname}"),
-                None,
-                &[],
-                true,
+                (None, &[]),
+                Some(true),
             );
         }
     }
@@ -790,14 +690,14 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
         Some(paulistrings::channel::prepared::Prepared::Local(p)) if p.is_key_preserving()
     );
     for (pname, policy) in &policies {
-        check_permuted(
+        let what = format!("random clifford {pname}");
+        check_with(
             &circuit,
             &input,
             policy,
-            &format!("random clifford {pname}"),
-            None,
-            &[],
-            last_permutes,
+            &what,
+            (None, &[]),
+            Some(last_permutes),
         );
     }
     let off = GpuLayerOptions {
@@ -808,7 +708,14 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
         nq,
         Box::new(Clifford2Q::cnot(q0, q1)) as Box<dyn Channel<W>>,
     );
-    check_permuted(&cnot, &input, &KeepAll, "knob off", Some(off), &[], false);
+    check_with(
+        &cnot,
+        &input,
+        &KeepAll,
+        "knob off",
+        (Some(off), &[]),
+        Some(false),
+    );
     let (on, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, None, &[]);
     let (fused, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, Some(off), &[]);
     assert_eq!(
@@ -817,26 +724,29 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
         "one product per key: the two paths agree bit for bit"
     );
     for hook in ["-DFP_BITS=8", "-DFP_ZERO_LO"] {
-        check_permuted(
+        let extra = [hook.to_string()];
+        check_with(
             &circuit,
             &input,
             &KeepAll,
             hook,
-            None,
-            &[hook.to_string()],
-            last_permutes,
+            (None, &extra),
+            Some(last_permutes),
         );
     }
     let rot = one_layer(
         nq,
         Box::new(zz_rotation::<W>(q0, q1, 0.4)) as Box<dyn Channel<W>>,
     );
-    check_permuted(&rot, &input, &KeepAll, "rotation", None, &[], false);
-    let su4 = one_layer(
-        nq,
-        Box::new(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())) as Box<dyn Channel<W>>,
+    check_with(&rot, &input, &KeepAll, "rotation", (None, &[]), Some(false));
+    check_with(
+        &su4_layer::<W>(nq, q0, q1),
+        &input,
+        &KeepAll,
+        "su4",
+        (None, &[]),
+        Some(false),
     );
-    check_permuted(&su4, &input, &KeepAll, "su4", None, &[], false);
     let dep = one_layer(
         nq,
         Box::new(Depolarizing {

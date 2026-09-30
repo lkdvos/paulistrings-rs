@@ -253,9 +253,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
         }
     }
 
-    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host impl's for the same policy.
-    ///
-    /// Exact `TopN` runs only alone on the device (`group_size == 1`): the `n`-th largest magnitude of a group's sum has no collective form (`PartitionedTruncation`'s docs), so a group member reports `Unsupported` rather than issue a wrong local selection.
+    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's; a group member (`group_size > 1`) reports exact `TopN` `Unsupported`.
     fn finalize_layer(&mut self, policy: &BuiltinTruncation, coll: &dyn Collectives) {
         let single = self.group_size == 1;
         layer_pass_leaves(policy, &mut |leaf| {
@@ -333,36 +331,29 @@ fn fold_layer_stats<const W: usize>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
     use super::*;
     use crate::engine::partitioned::truncation::PartitionedTruncation;
-    use crate::test_support::rand_sum_real;
+    use crate::test_support::{and, or, rand_sum_real, LoggingTransport};
     use crate::truncation::BuiltinTruncation as T;
     use crate::TruncationPolicy;
 
-    /// A one-partition group that counts its `allreduce_sum_u64` calls.
-    #[derive(Default)]
-    struct CountingGroup(AtomicU32);
-
-    impl Collectives for CountingGroup {
-        fn rank(&self) -> u32 {
-            0
-        }
-        fn size(&self) -> u32 {
-            1
-        }
-        fn allreduce_max_u8(&self, v: u8) -> u8 {
-            v
-        }
-        fn allreduce_sum_u64(&self, _buf: &mut [u64]) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-        fn barrier(&self) {}
+    /// A one-rank group whose `allreduce_sum_u64` calls are counted.
+    fn one_rank() -> LoggingTransport {
+        LoggingTransport::group(1).pop().expect("one rank")
     }
 
-    fn and(a: T, b: T) -> T {
-        T::And(Box::new(a), Box::new(b))
+    fn reductions(t: &LoggingTransport) -> usize {
+        t.log.count("allreduce_sum_u64")
+    }
+
+    fn part(input: &crate::PauliSum<1>, tree: &T) -> DevicePartition<1> {
+        let mut part = DevicePartition::new(
+            GpuSum::from_host(input, 0).expect("upload"),
+            GpuLayerOptions::default(),
+        )
+        .expect("partition");
+        part.keep = KeepProgram::lower(tree).expect("lower");
+        part
     }
 
     /// A device layer pass issues as many reductions as the host's `PartitionedTruncation` does for the same tree, and keeps the same terms.
@@ -374,30 +365,22 @@ mod tests {
             (T::ApproxTopN(1000), 1),
             (and(T::Coeff(1e-3), T::ApproxTopN(1000)), 1),
             (and(T::ApproxTopN(2000), T::ApproxTopN(500)), 2),
-            (
-                T::Or(Box::new(T::ApproxTopN(10)), Box::new(T::Coeff(1e-3))),
-                0,
-            ),
+            (or(T::ApproxTopN(10), T::Coeff(1e-3)), 0),
         ];
         for (tree, want) in cases {
-            let device = CountingGroup::default();
-            let mut part = DevicePartition::new(
-                GpuSum::from_host(&input, 0).expect("upload"),
-                GpuLayerOptions::default(),
-            )
-            .expect("partition");
-            part.keep = KeepProgram::lower(&tree).expect("lower");
+            let device = one_rank();
+            let mut part = part(&input, &tree);
             PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
             part.take_error().expect("device layer pass");
-            let host = CountingGroup::default();
+            let host = one_rank();
             let mut want_sum = input.clone();
             <T as PartitionedTruncation<1>>::finalize_layer_partitioned(
                 &tree,
                 &mut want_sum,
                 &host,
             );
-            assert_eq!(device.0.load(Ordering::Relaxed), want, "{tree:?}: device");
-            assert_eq!(host.0.load(Ordering::Relaxed), want, "{tree:?}: host");
+            assert_eq!(reductions(&device), want, "{tree:?}: device");
+            assert_eq!(reductions(&host), want, "{tree:?}: host");
             assert_eq!(part.len(), want_sum.len(), "{tree:?}: len");
             assert_eq!(
                 part.sum().to_host().unwrap().to_arrays(),
@@ -417,20 +400,15 @@ mod tests {
             T::TopN(1000),
             and(T::Coeff(1e-3), T::TopN(1000)),
             and(T::TopN(2000), T::Weight(20)),
-            T::Or(Box::new(T::TopN(10)), Box::new(T::Coeff(1e-3))),
+            or(T::TopN(10), T::Coeff(1e-3)),
         ];
         for tree in cases {
-            let device = CountingGroup::default();
-            let mut part = DevicePartition::new(
-                GpuSum::from_host(&input, 0).expect("upload"),
-                GpuLayerOptions::default(),
-            )
-            .expect("partition");
-            part.keep = KeepProgram::lower(&tree).expect("lower");
+            let device = one_rank();
+            let mut part = part(&input, &tree);
             PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
             part.take_error().expect("device layer pass");
             assert_eq!(
-                device.0.load(Ordering::Relaxed),
+                reductions(&device),
                 0,
                 "{tree:?}: exact TopN has no collective form"
             );
@@ -455,15 +433,9 @@ mod tests {
         crate::require_cuda!();
         let input = rand_sum_real::<1>(500, 32, 0xC013);
         let tree = T::TopN(100);
-        let mut part = DevicePartition::new(
-            GpuSum::from_host(&input, 0).expect("upload"),
-            GpuLayerOptions::default(),
-        )
-        .expect("partition");
+        let mut part = part(&input, &tree);
         part.group_size = 2;
-        part.keep = KeepProgram::lower(&tree).expect("lower");
-        let group = CountingGroup::default();
-        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
+        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &one_rank());
         assert!(matches!(part.take_error(), Err(GpuError::Unsupported(_))));
     }
 
@@ -473,16 +445,11 @@ mod tests {
         crate::require_cuda!();
         let input = rand_sum_real::<1>(500, 32, 0xFA11);
         let tree = and(T::ApproxTopN(100), T::ApproxTopN(50));
-        let mut part = DevicePartition::new(
-            GpuSum::from_host(&input, 0).expect("upload"),
-            GpuLayerOptions::default(),
-        )
-        .expect("partition");
-        part.keep = KeepProgram::lower(&tree).expect("lower");
+        let mut part = part(&input, &tree);
         part.error = Some(GpuError::Unsupported("injected"));
-        let group = CountingGroup::default();
+        let group = one_rank();
         PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
-        assert_eq!(group.0.load(Ordering::Relaxed), 2);
+        assert_eq!(reductions(&group), 2);
         assert!(matches!(
             part.take_error(),
             Err(GpuError::Unsupported("injected"))

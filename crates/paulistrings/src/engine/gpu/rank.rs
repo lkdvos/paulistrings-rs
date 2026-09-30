@@ -444,262 +444,220 @@ mod tests {
 
     /// The exchange protocol over the in-process [`PeerWire`](super::super::wire::PeerWire).
     mod protocol {
-        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
 
-        use super::super::super::wire::{PeerTally, PeerWire};
+        use super::super::super::layer::GpuBucketPolicy;
+        use super::super::super::module::MAX_BUCKET_LEN;
+        use super::super::super::wire::{DeviceWire, PeerFault, PeerTally, PeerWire};
         use super::*;
-        use crate::engine::partitioned::transport::{ChunkMap, ChunkWait, Payload};
-        use crate::engine::partitioned::truncation::PartitionedTruncation;
-        use crate::engine::partitioned::{PartitionRuntime, TopologyError};
+        use crate::engine::partitioned::PartitionRuntime;
         use crate::test_support::{
-            assert_terms_close, rand_sum_real, random_circuit, trotter_circuit, KeepAll,
-        };
-        use crate::test_support::{
-            rows_reading_z63, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation,
+            assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63, su4_chain,
+            trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog,
+            LoggingTransport,
         };
         use crate::truncation::ApproxTopN;
 
         type Outcome<const W: usize> = Result<Option<PauliSum<W>>, GpuError>;
 
-        /// `input` under `rows` onto device 0, exchanging over `wire` if there is one.
-        fn scatter<const W: usize, X: Transport + 'static>(
-            input: &PauliSum<W>,
-            transport: X,
-            rows: &PartitionRows<W>,
-            wire: Option<PeerWire>,
-        ) -> Result<GpuDistributedSum<W, X>, GpuError> {
-            match wire {
-                Some(wire) => {
-                    GpuDistributedSum::scatter_with_wire(input, transport, 0, rows.clone(), wire)
-                }
-                None => GpuDistributedSum::scatter_to_device_with_rows(
-                    input,
-                    transport,
-                    0,
-                    rows.clone(),
-                ),
-            }
-        }
-
-        /// Each `(transport, wire)` rank scatters `input` under `rows` onto device 0 as [`scatter`], runs `setup`, propagates under `options` and gathers.
-        #[allow(clippy::too_many_arguments)]
-        fn run_split<const W: usize, T, X>(
-            group: Vec<(X, Option<PeerWire>)>,
-            input: &PauliSum<W>,
-            rows: &PartitionRows<W>,
-            circuit: &Circuit<W>,
-            policy: &T,
-            direction: Direction,
-            options: PropagateOptions,
-            setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
-        ) -> Vec<Outcome<W>>
-        where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation> + Sync,
-            X: Transport + 'static,
-        {
-            std::thread::scope(|s| {
-                let hs: Vec<_> = group
-                    .into_iter()
-                    .map(|(transport, wire)| {
-                        s.spawn(move || {
-                            let mut split = scatter(input, transport, rows, wire)?;
-                            setup(&mut split);
-                            let ran =
-                                split.propagate_with_options(circuit, policy, direction, options);
-                            let gathered = split.gather();
-                            ran?;
-                            gathered
-                        })
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).collect()
-            })
-        }
-
-        /// As [`run_split`], but every rank also returns its last layer's counters, whether or not the call succeeded, since a mid-layer failure still leaves them set.
-        #[allow(clippy::too_many_arguments)]
-        fn run_split_with_counters<const W: usize, T, X>(
-            group: Vec<(X, Option<PeerWire>)>,
-            input: &PauliSum<W>,
-            rows: &PartitionRows<W>,
-            circuit: &Circuit<W>,
-            policy: &T,
-            direction: Direction,
-            options: PropagateOptions,
-            setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
-        ) -> Vec<(Outcome<W>, GpuLayerCounters)>
-        where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation> + Sync,
-            X: Transport + 'static,
-        {
-            std::thread::scope(|s| {
-                let hs: Vec<_> = group
-                    .into_iter()
-                    .map(|(transport, wire)| {
-                        s.spawn(move || {
-                            let mut split = match scatter(input, transport, rows, wire) {
-                                Ok(split) => split,
-                                Err(e) => return (Err(e), GpuLayerCounters::default()),
-                            };
-                            setup(&mut split);
-                            let ran =
-                                split.propagate_with_options(circuit, policy, direction, options);
-                            let counters = split.last_layer_counters();
-                            let gathered = ran.and_then(|()| split.gather());
-                            (gathered, counters)
-                        })
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).collect()
-            })
-        }
-
-        fn wired_group(size: u32) -> Vec<(InProcessTransport, Option<PeerWire>)> {
-            wired_tallied(size).0
-        }
-
-        /// As [`wired_group`], with the tally of the groups its wires post.
-        fn wired_tallied(size: u32) -> (Vec<(InProcessTransport, Option<PeerWire>)>, PeerTally) {
-            let wires = PeerWire::group(size);
+        /// `transports` each paired with its rank's wire, and the tally of the groups the wires post.
+        fn over_wires<X>(
+            transports: Vec<X>,
+            wires: Vec<PeerWire>,
+        ) -> (Vec<(X, PeerWire)>, PeerTally) {
             let tally = wires[0].tally();
-            let group =
-                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120))
-                    .into_iter()
-                    .zip(wires)
-                    .map(|(t, w)| (t, Some(w)))
-                    .collect();
-            (group, tally)
+            (transports.into_iter().zip(wires).collect(), tally)
+        }
+
+        /// A group of `size` in-process ranks over a healthy peer wire.
+        fn wired(size: u32) -> (Vec<(InProcessTransport, PeerWire)>, PeerTally) {
+            let transports = InProcessTransport::group_with_timeout(size, Duration::from_secs(120));
+            over_wires(transports, PeerWire::group(size))
         }
 
         fn seeded_rows<const W: usize>(nq: usize, size: u32) -> PartitionRows<W> {
             PartitionRows::<W>::from_seed(nq, size.trailing_zeros() as u8, 0x5EED)
         }
 
-        fn wire_differential<const W: usize, T>(
-            circuit: &Circuit<W>,
-            input: &PauliSum<W>,
-            policy: &T,
-            what: &str,
-        ) where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation> + Sync,
-        {
-            for direction in [Direction::Forward, Direction::Heisenberg] {
-                let want = crate::propagate(circuit, input.clone(), policy, direction);
-                for size in [1u32, 2, 4] {
-                    let rows = seeded_rows::<W>(input.num_qubits(), size);
-                    let mut out = run_split(
-                        wired_group(size),
-                        input,
-                        &rows,
-                        circuit,
-                        policy,
-                        direction,
-                        PropagateOptions::default(),
-                        &|_| {},
+        /// One device run of `circuit` over `input` split by `rows`: `KeepAll`, forward, default options unless a case says otherwise.
+        struct Run<'a, const W: usize> {
+            input: &'a PauliSum<W>,
+            rows: PartitionRows<W>,
+            circuit: &'a Circuit<W>,
+            policy: BuiltinTruncation,
+            direction: Direction,
+            options: PropagateOptions,
+        }
+
+        impl<'a, const W: usize> Run<'a, W> {
+            fn new(
+                input: &'a PauliSum<W>,
+                rows: PartitionRows<W>,
+                circuit: &'a Circuit<W>,
+            ) -> Self {
+                Self {
+                    input,
+                    rows,
+                    circuit,
+                    policy: BuiltinTruncation::Keep,
+                    direction: Direction::Forward,
+                    options: PropagateOptions::default(),
+                }
+            }
+
+            /// The host oracle.
+            fn want(&self) -> PauliSum<W> {
+                crate::propagate(
+                    self.circuit,
+                    self.input.clone(),
+                    &self.policy,
+                    self.direction,
+                )
+            }
+
+            /// Every rank scatters onto device 0 over its wire, runs `setup`, propagates and gathers; its outcome and last layer's counters.
+            fn on<X: Transport + 'static>(
+                &self,
+                group: Vec<(X, PeerWire)>,
+                setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
+            ) -> Vec<(Outcome<W>, GpuLayerCounters)> {
+                std::thread::scope(|s| {
+                    let hs: Vec<_> = group
+                        .into_iter()
+                        .map(|(transport, wire)| {
+                            s.spawn(move || {
+                                let rows = self.rows.clone();
+                                let mut split = match GpuDistributedSum::scatter_with_wire(
+                                    self.input, transport, 0, rows, wire,
+                                ) {
+                                    Ok(split) => split,
+                                    Err(e) => return (Err(e), GpuLayerCounters::default()),
+                                };
+                                setup(&mut split);
+                                let ran = split.propagate_with_options(
+                                    self.circuit,
+                                    &self.policy,
+                                    self.direction,
+                                    self.options,
+                                );
+                                let counters = split.last_layer_counters();
+                                (ran.and_then(|()| split.gather()), counters)
+                            })
+                        })
+                        .collect();
+                    hs.into_iter().map(|h| h.join().unwrap()).collect()
+                })
+            }
+
+            /// [`Self::on`] a fresh healthy group of `size`, rank 0's result checked against [`Self::want`].
+            fn check(&self, size: u32, what: &str) {
+                let got = rank0(self.on(wired(size).0, &|_| {}));
+                let want = self.want();
+                assert_eq!(got.len(), want.len(), "{what}: term count");
+                assert_terms_close(&got, &want, 1e-11, what);
+            }
+        }
+
+        /// Rank 0's gathered sum, every other rank having succeeded with nothing.
+        fn rank0<const W: usize>(out: Vec<(Outcome<W>, GpuLayerCounters)>) -> PauliSum<W> {
+            let mut out = out
+                .into_iter()
+                .map(|(o, _)| o.expect("every rank succeeds"));
+            let got = out.next().unwrap().expect("rank 0 gathers");
+            assert!(out.all(|o| o.is_none()), "only rank 0 gathers");
+            got
+        }
+
+        /// Every rank's error, for the failure nets.
+        fn errors<const W: usize>(out: Vec<(Outcome<W>, GpuLayerCounters)>) -> Vec<GpuError> {
+            out.into_iter()
+                .enumerate()
+                .map(|(r, (o, _))| match o {
+                    Err(e) => e,
+                    Ok(s) => panic!("rank {r} succeeded with {:?} terms", s.map(|s| s.len())),
+                })
+                .collect()
+        }
+
+        /// The culprit ended on `own` and every peer on a `Poisoned` naming it.
+        fn agreed(errs: &[GpuError], culprit: u32, own: impl Fn(&GpuError) -> bool) {
+            for (r, e) in errs.iter().enumerate() {
+                if r == culprit as usize {
+                    assert!(own(e), "rank {r}: {e:?}");
+                } else {
+                    assert!(
+                        matches!(e, GpuError::Poisoned { rank, .. } if *rank == culprit as usize),
+                        "rank {r}: {e:?}"
                     );
-                    let rest: Vec<_> = out.drain(1..).collect();
-                    let got = out.pop().unwrap().expect("rank 0").expect("rank 0 gathers");
-                    for r in rest {
-                        assert!(r.expect("peer rank").is_none(), "only rank 0 gathers");
-                    }
-                    let what = format!("{what} ranks={size} {direction:?}");
-                    assert_eq!(got.len(), want.len(), "{what}: term count");
-                    assert_terms_close(&got, &want, 1e-11, &what);
                 }
             }
         }
 
-        /// The protocol over the peer wire against `propagate`, the sender-side merge on and off.
+        /// The protocol over the peer wire against `propagate` at 1, 2 and 4 ranks in both directions, and with the sender-side merge off.
         #[test]
         fn ranks_match_propagate() {
             crate::require_cuda!();
             let dense = random_circuit::<1>(8, 12, 0xD15, true);
-            wire_differential(&dense, &rand_sum::<1>(400, 8, 0xD16), &KeepAll, "w1 dense");
+            let input = rand_sum::<1>(400, 8, 0xD16);
             let trotter = trotter_circuit::<2>(24, 0.1);
-            wire_differential(
-                &trotter,
-                &rand_sum_real::<2>(900, 24, 0xD17),
-                &ApproxTopN(1_200),
-                "w2 trotter",
-            );
-            let input = rand_sum::<1>(400, 8, 0xD18);
-            let rows = seeded_rows::<1>(8, 2);
+            let real = rand_sum_real::<2>(900, 24, 0xD17);
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                for size in [1u32, 2, 4] {
+                    let what = format!("ranks={size} {direction:?}");
+                    let run = Run {
+                        direction,
+                        ..Run::new(&input, seeded_rows(8, size), &dense)
+                    };
+                    run.check(size, &format!("w1 dense {what}"));
+                    let run = Run {
+                        direction,
+                        policy: BuiltinTruncation::ApproxTopN(1_200),
+                        ..Run::new(&real, seeded_rows(24, size), &trotter)
+                    };
+                    run.check(size, &format!("w2 trotter {what}"));
+                }
+            }
+            let run = Run::new(&input, seeded_rows(8, 2), &dense);
             let unmerged = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 split.set_layer_options(GpuLayerOptions {
                     premerge: false,
                     ..GpuLayerOptions::default()
                 });
             };
-            let want = crate::propagate(&dense, input.clone(), &KeepAll, Direction::Forward);
-            let out = run_split(
-                wired_group(2),
-                &input,
-                &rows,
-                &dense,
-                &KeepAll,
-                Direction::Forward,
-                PropagateOptions::default(),
-                &unmerged,
-            );
-            let got = out
-                .into_iter()
-                .next()
-                .unwrap()
-                .expect("rank 0")
-                .expect("gathers");
-            assert_terms_close(&got, &want, 1e-11, "w1 dense, merge off");
+            let got = rank0(run.on(wired(2).0, &unmerged));
+            assert_terms_close(&got, &run.want(), 1e-11, "w1 dense, merge off");
         }
 
-        /// Three SU(4) layers on overlapping pairs, dense enough to cross at every partition count.
-        fn su4_layers<const W: usize>(nq: usize) -> Circuit<W> {
-            use crate::channel::GeneralUnitary2Q;
-            use crate::test_support::haar_su4_matrix;
-            let mut c = Circuit::<W>::new(nq);
-            for (a, b) in [(0, 1), (1, 2), (0, 1)] {
-                c.push(GeneralUnitary2Q::from_matrix(a, b, haar_su4_matrix()));
-            }
-            c
-        }
-
-        /// Options every rank of a chunked net sets: many small buckets, so a remote layer has positions to cut, and a receive cap of `rows` rows.
-        fn capped<const W: usize>(rows: usize) -> GpuLayerOptions {
+        /// Many small buckets, so a remote layer has positions to cut, and a receive cap of `rows` rows.
+        fn capped(rows: usize) -> GpuLayerOptions {
             GpuLayerOptions {
-                bucket_policy: super::super::super::layer::GpuBucketPolicy::TermsPerBucket(8),
+                bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
                 exchange_bytes: rows
-                    .saturating_mul(super::super::super::export::recv_row_bytes::<W>()),
+                    .saturating_mul(super::super::super::export::recv_row_bytes::<1>()),
                 ..GpuLayerOptions::default()
             }
         }
 
-        /// The protocol with the receive cut into chunks, over the peer wire against `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
-        fn chunked_case<const W: usize>(nq: usize, n: usize, seed: u64) {
-            let input = rand_sum::<W>(n, nq, seed);
-            let circuit = su4_layers::<W>(nq);
+        /// The receive cut into chunks over the peer wire agrees with `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
+        /// `W = 2` runs the same protocol in `propagate_gpu_partitioned`'s chunked net.
+        #[test]
+        fn a_capped_receive_moves_in_chunk_groups_and_agrees() {
+            crate::require_cuda!();
+            let input = rand_sum::<1>(1_500, 10, 0xC4B1);
+            let circuit = su4_chain::<1>(10);
             for direction in [Direction::Forward, Direction::Heisenberg] {
-                let want = crate::propagate(&circuit, input.clone(), &KeepAll, direction);
                 for size in [2u32, 4] {
-                    let rows = seeded_rows::<W>(nq, size);
+                    let run = Run {
+                        direction,
+                        ..Run::new(&input, seeded_rows(10, size), &circuit)
+                    };
+                    let want = run.want();
                     let mut plain = 0u64;
                     for (cap, least) in [(usize::MAX, 1u64), (128, 3), (8, 8)] {
-                        let what = format!("W={W} ranks={size} {direction:?} cap={cap}");
-                        let (group, tally) = wired_tallied(size);
-                        let options = capped::<W>(cap);
-                        let out = run_split(
-                            group,
-                            &input,
-                            &rows,
-                            &circuit,
-                            &KeepAll,
-                            direction,
-                            PropagateOptions::default(),
-                            &|split| split.set_layer_options(options),
-                        );
-                        let got = out
-                            .into_iter()
-                            .next()
-                            .unwrap()
-                            .expect("rank 0")
-                            .expect("gathers");
+                        let what = format!("ranks={size} {direction:?} cap={cap}");
+                        let (group, tally) = wired(size);
+                        let options = capped(cap);
+                        let got = rank0(run.on(group, &|split| split.set_layer_options(options)));
                         assert_eq!(got.len(), want.len(), "{what}: term count");
                         assert_terms_close(&got, &want, 1e-11, &what);
                         let groups = tally.groups();
@@ -722,290 +680,156 @@ mod tests {
             }
         }
 
-        #[test]
-        fn a_capped_receive_moves_in_chunk_groups_and_agrees_w1() {
-            crate::require_cuda!();
-            chunked_case::<1>(10, 1_500, 0xC4B1);
-        }
-
-        #[test]
-        fn a_capped_receive_moves_in_chunk_groups_and_agrees_w2() {
-            crate::require_cuda!();
-            chunked_case::<2>(90, 1_500, 0xC4B2);
-        }
-
-        /// Ranks that disagree on their own receive cap still agree on the chunk count: the group takes the largest any rank asked for, so a loose rank's `recv_chunks` matches a tight peer's, even though a finer cut never grows anyone's chunk.
+        /// Ranks that disagree on their own receive cap still agree on the chunk count: the group takes the largest any rank asked for.
         #[test]
         fn a_capped_receive_agrees_the_largest_of_different_per_rank_caps() {
             crate::require_cuda!();
-            let nq = 10;
-            let circuit = su4_layers::<1>(nq);
-            let input = rand_sum::<1>(1_500, nq, 0xC4B5);
-            let want = crate::propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
-            for size in [2u32, 4] {
-                let rows = seeded_rows::<1>(nq, size);
-                let caps: Vec<usize> = match size {
-                    2 => vec![usize::MAX, 8],
-                    4 => vec![usize::MAX, 128, 32, 8],
-                    _ => unreachable!(),
+            let circuit = su4_chain::<1>(10);
+            let input = rand_sum::<1>(1_500, 10, 0xC4B5);
+            for (size, caps) in [
+                (2u32, vec![usize::MAX, 8]),
+                (4, vec![usize::MAX, 128, 32, 8]),
+            ] {
+                let run = Run::new(&input, seeded_rows(10, size), &circuit);
+                let setup = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    split.set_layer_options(capped(caps[split.rank() as usize]));
                 };
-                let caps_for_setup = caps.clone();
-                let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
-                    split.set_layer_options(capped::<1>(caps_for_setup[split.rank() as usize]));
-                };
-                let (group, tally) = wired_tallied(size);
-                let out = run_split_with_counters(
-                    group,
-                    &input,
-                    &rows,
-                    &circuit,
-                    &KeepAll,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                    &setup,
-                );
-                let what = format!("ranks={size} differing caps={caps:?}");
-                let mut chunk_counts = Vec::new();
-                let mut got = None;
-                for (r, (outcome, counters)) in out.into_iter().enumerate() {
-                    let sum = outcome.unwrap_or_else(|e| panic!("{what} rank {r}: {e:?}"));
-                    chunk_counts.push(counters.recv_chunks);
-                    if r == 0 {
-                        got = Some(sum.expect("rank 0 gathers"));
-                    } else {
-                        assert!(sum.is_none(), "{what}: only rank 0 gathers");
-                    }
-                }
-                let got = got.unwrap();
-                assert_eq!(got.len(), want.len(), "{what}: term count");
-                assert_terms_close(&got, &want, 1e-11, &what);
-                let agreed = chunk_counts[0];
+                let out = run.on(wired(size).0, &setup);
+                let chunks: Vec<u32> = out.iter().map(|(_, c)| c.recv_chunks).collect();
+                let what = format!("ranks={size} caps={caps:?}");
                 assert!(
-                    agreed > 1,
-                    "{what}: the tightest cap must force more than one chunk, got {chunk_counts:?}"
+                    chunks[0] > 1,
+                    "{what}: the tightest cap forces chunks, got {chunks:?}"
                 );
-                assert!(
-                    chunk_counts.iter().all(|&c| c == agreed),
-                    "{what}: every rank's recv_chunks must equal the agreed maximum, got {chunk_counts:?}"
-                );
-                let groups = tally.groups();
-                assert_eq!(
-                    groups % u64::from(size),
-                    0,
-                    "{what}: every rank posts every group"
-                );
-                assert!(groups > 0, "{what}: the circuit must cross");
+                assert!(chunks.iter().all(|&c| c == chunks[0]), "{what}: {chunks:?}");
+                assert_terms_close(&rank0(out), &run.want(), 1e-11, &what);
             }
         }
 
         /// A rank failing after its second chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
-        /// The cap of 8 rows forces at least 8 chunks on the crossing layer, and the culprit's own `recv_chunks` (set before the chunk loop runs) proves the failure landed on a layer with more than one, not a degenerate single-chunk one.
+        /// The culprit's own `recv_chunks`, set before the chunk loop runs, proves the failure landed on a layer of several chunks.
         #[test]
         fn a_mid_receive_failure_drains_its_groups_and_is_agreed_over_the_group() {
             crate::require_cuda!();
             let input = rand_sum::<1>(1_500, 10, 0xC4B3);
-            let circuit = su4_layers::<1>(10);
+            let circuit = su4_chain::<1>(10);
             for size in [2u32, 4] {
-                let rows = seeded_rows::<1>(10, size);
                 let culprit = size - 1;
-                let options = capped::<1>(8);
                 let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
-                    split.set_layer_options(options);
+                    split.set_layer_options(capped(8));
                     if split.rank() == culprit {
                         split.inject_chunk_oom(1);
                     }
                 };
-                let start = std::time::Instant::now();
-                let out = run_split_with_counters(
-                    wired_group(size),
-                    &input,
-                    &rows,
-                    &circuit,
-                    &KeepAll,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                    &setup,
-                );
-                assert!(start.elapsed() < std::time::Duration::from_secs(60));
-                let (outcomes, counters): (Vec<_>, Vec<_>) = out.into_iter().unzip();
+                let start = Instant::now();
+                let out =
+                    Run::new(&input, seeded_rows(10, size), &circuit).on(wired(size).0, &setup);
+                assert!(start.elapsed() < Duration::from_secs(60));
                 assert!(
-                    counters[culprit as usize].recv_chunks > 1,
-                    "ranks={size}: the failing layer must have had more than one chunk, got {:?}",
-                    counters[culprit as usize]
+                    out[culprit as usize].1.recv_chunks > 1,
+                    "ranks={size}: {:?}",
+                    out[culprit as usize].1
                 );
-                for (r, e) in errors(outcomes).iter().enumerate() {
-                    if r == culprit as usize {
-                        assert!(
-                            matches!(e, GpuError::OutOfMemory { device: 0, .. }),
-                            "{e:?}"
-                        );
-                    } else {
-                        assert!(
-                            matches!(e, GpuError::Poisoned { rank, .. } if *rank == culprit as usize),
-                            "rank {r}: {e:?}"
-                        );
-                    }
-                }
+                agreed(&errors(out), culprit, |e| {
+                    matches!(e, GpuError::OutOfMemory { device: 0, .. })
+                });
             }
         }
 
-        /// `(rank, error)` per rank, for the failure nets.
-        fn errors<const W: usize>(out: Vec<Outcome<W>>) -> Vec<GpuError> {
-            out.into_iter()
-                .enumerate()
-                .map(|(r, o)| match o {
-                    Err(e) => e,
-                    Ok(s) => panic!("rank {r} succeeded with {:?} terms", s.map(|s| s.len())),
-                })
-                .collect()
-        }
-
-        /// A failure before the exchange takes the empty pairing: every rank fails, the culprit with its own error and every peer naming it.
+        /// A failure before the exchange takes the empty pairing: every rank fails, the culprit with its own error and every peer naming it at its layer.
         #[test]
         fn a_failure_before_the_exchange_is_agreed_over_the_group() {
             crate::require_cuda!();
             let dense = random_circuit::<1>(8, 6, 0xD18, true);
             let input = rand_sum::<1>(300, 8, 0xD19);
             for size in [2u32, 4] {
-                let rows = seeded_rows::<1>(8, size);
                 let fail = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                     if split.rank() == 1 {
                         split.inject_failure(2);
                     }
                 };
-                let out = run_split(
-                    wired_group(size),
-                    &input,
-                    &rows,
-                    &dense,
-                    &KeepAll,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                    &fail,
-                );
-                for (r, e) in errors(out).iter().enumerate() {
-                    if r == 1 {
-                        assert!(
-                            matches!(e, GpuError::Unsupported("injected before the exchange")),
-                            "{e:?}"
-                        );
-                    } else {
-                        assert!(
-                            matches!(e, GpuError::Poisoned { rank: 1, layer: 2 }),
-                            "rank {r}: {e:?}"
-                        );
-                    }
-                }
+                let errs =
+                    errors(Run::new(&input, seeded_rows(8, size), &dense).on(wired(size).0, &fail));
+                agreed(&errs, 1, |e| {
+                    matches!(e, GpuError::Unsupported("injected before the exchange"))
+                });
+                assert!(errs
+                    .iter()
+                    .enumerate()
+                    .all(|(r, e)| r == 1 || matches!(e, GpuError::Poisoned { layer: 2, .. })));
             }
         }
 
-        /// A rank whose receive growth fails votes no: nobody moves a row, it returns the out-of-memory error, and every peer names it at the same layer.
+        /// A rank whose receive growth fails votes no: nobody moves a row, it returns the out-of-memory error, and every peer names it.
         #[test]
         fn a_receive_oom_votes_no_and_is_agreed_over_the_group() {
             crate::require_cuda!();
             let dense = random_circuit::<1>(8, 6, 0xD1A, true);
             let input = rand_sum::<1>(300, 8, 0xD1B);
             for size in [2u32, 4] {
-                let rows = seeded_rows::<1>(8, size);
                 let culprit = size - 1;
                 let oom = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                     if split.rank() == culprit {
                         split.inject_recv_oom();
                     }
                 };
-                let (group, tally) = wired_tallied(size);
-                let out = run_split(
-                    group,
-                    &input,
-                    &rows,
-                    &dense,
-                    &KeepAll,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                    &oom,
-                );
+                let (group, tally) = wired(size);
+                let errs = errors(Run::new(&input, seeded_rows(8, size), &dense).on(group, &oom));
                 assert_eq!(
                     tally.groups(),
                     0,
                     "a no vote posts nothing, and the culprit votes no from then on"
                 );
-                let errs = errors(out);
-                let GpuError::Poisoned { rank, layer } = errs[0] else {
-                    panic!("rank 0: {:?}", errs[0]);
-                };
-                assert_eq!(rank, culprit as usize);
-                for (r, e) in errs.iter().enumerate() {
-                    if r == culprit as usize {
-                        assert!(
-                            matches!(e, GpuError::OutOfMemory { device: 0, .. }),
-                            "{e:?}"
-                        );
-                    } else {
-                        assert!(
-                            matches!(e, GpuError::Poisoned { rank: q, layer: l } if *q == rank && *l == layer),
-                            "rank {r}: {e:?}"
-                        );
-                    }
-                }
+                agreed(&errs, culprit, |e| {
+                    matches!(e, GpuError::OutOfMemory { device: 0, .. })
+                });
             }
         }
 
         /// One source bucket of `n` rows crossing from rank 1 to rank 0 at one bucket: `MAX_BUCKET_LEN` rows fit, one more makes the receiver vote no.
         /// A device sender's own over-long bucket fails it after the exchange, so the receiver is rank 0, the culprit the agreement names first.
-        fn one_segment(n: usize) -> (Vec<Outcome<1>>, u64) {
-            let mut c = Circuit::<1>::new(64);
-            c.push(zz_rotation::<1>(0, 63, 0.3));
-            let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
-            for (x, z, coeff) in x0_terms_identity_on_q63(n, 0xF1 + n as u64).iter() {
-                let p = crate::pauli_string::PauliString::<1> {
-                    x: *x,
-                    z: [z[0] | 1 << 63],
-                };
-                acc.add_term(p, crate::phase::Phase::ONE, coeff);
-            }
-            let input = acc
-                .finalize()
-                .with_hash(crate::bucket::hash::Gf2Hash::new(64, 0, 0xF0));
-            let options = PropagateOptions {
-                target_bucket_len: 1 << 20,
-                min_buckets: 1,
-                ..PropagateOptions::default()
-            };
-            let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
-                split.set_layer_options(GpuLayerOptions {
-                    bucket_policy: super::super::super::layer::GpuBucketPolicy::TermsPerBucket(
-                        1 << 20,
-                    ),
-                    ..GpuLayerOptions::default()
-                });
-            };
-            let (group, tally) = wired_tallied(2);
-            let out = run_split(
-                group,
-                &input,
-                &rows_reading_z63(),
-                &c,
-                &KeepAll,
-                Direction::Forward,
-                options,
-                &wide,
-            );
-            (out, tally.groups())
-        }
-
         #[test]
         fn an_oversize_received_segment_votes_no_and_names_the_receiver() {
             crate::require_cuda!();
-            use super::super::super::module::MAX_BUCKET_LEN;
+            let mut c = Circuit::<1>::new(64);
+            c.push(zz_rotation::<1>(0, 63, 0.3));
+            let one_segment = |n: usize| {
+                let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
+                for (x, z, coeff) in x0_terms_identity_on_q63(n, 0xF1 + n as u64).iter() {
+                    let p = crate::pauli_string::PauliString::<1> {
+                        x: *x,
+                        z: [z[0] | 1 << 63],
+                    };
+                    acc.add_term(p, crate::phase::Phase::ONE, coeff);
+                }
+                let input = acc
+                    .finalize()
+                    .with_hash(crate::bucket::hash::Gf2Hash::new(64, 0, 0xF0));
+                let run = Run {
+                    options: PropagateOptions {
+                        target_bucket_len: 1 << 20,
+                        min_buckets: 1,
+                        ..PropagateOptions::default()
+                    },
+                    ..Run::new(&input, rows_reading_z63(), &c)
+                };
+                let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    split.set_layer_options(GpuLayerOptions {
+                        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+                        ..GpuLayerOptions::default()
+                    });
+                };
+                let (group, tally) = wired(2);
+                let out = run.on(group, &wide);
+                (out, tally.groups())
+            };
             let (fits, groups) = one_segment(MAX_BUCKET_LEN);
             assert_eq!(groups, 2, "one group per rank");
-            let got = fits
-                .into_iter()
-                .next()
-                .unwrap()
-                .expect("rank 0")
-                .expect("gathers");
-            assert_eq!(got.len(), 2 * MAX_BUCKET_LEN, "every term splits into two");
+            assert_eq!(
+                rank0(fits).len(),
+                2 * MAX_BUCKET_LEN,
+                "every term splits into two"
+            );
             let (over, groups) = one_segment(MAX_BUCKET_LEN + 1);
             assert_eq!(groups, 0, "the receiver voted no before any row moved");
             let errs = errors(over);
@@ -1021,49 +845,24 @@ mod tests {
             );
         }
 
-        /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails the call within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
+        /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
         #[test]
         fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {
             crate::require_cuda!();
-            use super::super::super::wire::PeerFault;
             let dense = random_circuit::<1>(8, 6, 0xD1C, true);
             let input = rand_sum::<1>(300, 8, 0xD1D);
             for size in [2u32, 4] {
                 for fault in [PeerFault::Post, PeerFault::Wait] {
                     let culprit = size - 1;
-                    let wires = PeerWire::group_with_fault(
-                        size,
-                        culprit,
-                        fault,
-                        std::time::Duration::from_secs(2),
-                    );
-                    let tally = wires[0].tally();
-                    let group = InProcessTransport::group_with_timeout(
-                        size,
-                        std::time::Duration::from_secs(120),
-                    )
-                    .into_iter()
-                    .zip(wires)
-                    .map(|(t, w)| (t, Some(w)))
-                    .collect();
-                    let rows = seeded_rows::<1>(8, size);
-                    let start = std::time::Instant::now();
-                    let out = run_split(
-                        group,
-                        &input,
-                        &rows,
-                        &dense,
-                        &KeepAll,
-                        Direction::Forward,
-                        PropagateOptions::default(),
-                        &|_| {},
-                    );
-                    let elapsed = start.elapsed();
+                    let wires =
+                        PeerWire::group_with_fault(size, culprit, fault, Duration::from_secs(2));
+                    let transports =
+                        InProcessTransport::group_with_timeout(size, Duration::from_secs(120));
+                    let (group, tally) = over_wires(transports, wires);
+                    let start = Instant::now();
+                    let out = Run::new(&input, seeded_rows(8, size), &dense).on(group, &|_| {});
                     let what = format!("size {size} {fault:?}");
-                    assert!(
-                        elapsed < std::time::Duration::from_secs(60),
-                        "{what}: {elapsed:?}"
-                    );
+                    assert!(start.elapsed() < Duration::from_secs(60), "{what}");
                     let posted = if fault == PeerFault::Post {
                         size - 1
                     } else {
@@ -1095,34 +894,16 @@ mod tests {
         #[test]
         fn a_dead_wire_votes_no() {
             crate::require_cuda!();
-            use super::super::super::wire::DeviceWire;
             let dense = random_circuit::<1>(8, 6, 0xD1E, true);
             let input = rand_sum::<1>(300, 8, 0xD1F);
-            let size = 2u32;
-            let (group, tally) = wired_tallied(size);
-            group[1].1.as_ref().expect("a wire").abort();
-            let rows = seeded_rows::<1>(8, size);
-            let out = run_split(
-                group,
-                &input,
-                &rows,
-                &dense,
-                &KeepAll,
-                Direction::Forward,
-                PropagateOptions::default(),
-                &|_| {},
-            );
+            let (group, tally) = wired(2);
+            group[1].1.abort();
+            let errs = errors(Run::new(&input, seeded_rows(8, 2), &dense).on(group, &|_| {}));
             assert_eq!(tally.groups(), 0, "a no vote posts nothing");
-            let errs = errors(out);
-            assert!(
-                matches!(&errs[1], GpuError::Wire(m) if m.contains("failed or aborted device wire")),
-                "{:?}",
-                errs[1]
-            );
-            assert!(
-                matches!(errs[0], GpuError::Poisoned { rank: 1, .. }),
-                "{:?}",
-                errs[0]
+            agreed(
+                &errs,
+                1,
+                |e| matches!(e, GpuError::Wire(m) if m.contains("failed or aborted device wire")),
             );
         }
 
@@ -1131,20 +912,14 @@ mod tests {
         #[test]
         fn a_failed_start_errs_on_every_rank_and_aborts_every_communicator() {
             use std::sync::atomic::{AtomicU32, Ordering};
-            #[derive(Clone, Copy, Debug, PartialEq)]
-            enum Fault {
-                Init,
-                WarmUp,
-            }
             for size in [2u32, 4] {
-                for (fault, culprit) in [
-                    (Fault::Init, 1),
-                    (Fault::WarmUp, 1),
-                    (Fault::Init, 0),
-                    (Fault::WarmUp, size - 1),
-                ] {
-                    let aborted = AtomicU32::new(0);
-                    let made = AtomicU32::new(0);
+                for (warm_up, culprit) in [(false, 1), (true, 1), (false, 0), (true, size - 1)] {
+                    let (aborted, made) = (AtomicU32::new(0), AtomicU32::new(0));
+                    let own = if warm_up {
+                        "injected warm-up failure"
+                    } else {
+                        "injected init failure"
+                    };
                     let out: Vec<Result<u32, String>> = std::thread::scope(|s| {
                         let hs: Vec<_> = InProcessTransport::group(size)
                             .into_iter()
@@ -1152,24 +927,22 @@ mod tests {
                                 let (aborted, made) = (&aborted, &made);
                                 s.spawn(move || {
                                     let me = t.rank();
+                                    let fails = |at_warm_up| me == culprit && warm_up == at_warm_up;
                                     bootstrap(
                                         &t,
                                         || {
-                                            if fault == Fault::Init && me == culprit {
-                                                return Err(GpuError::Unsupported(
-                                                    "injected init failure",
-                                                ));
+                                            if fails(false) {
+                                                return Err(GpuError::Unsupported(own));
                                             }
                                             made.fetch_add(1, Ordering::Relaxed);
                                             Ok(me)
                                         },
                                         |_| {
-                                            if fault == Fault::WarmUp && me == culprit {
-                                                return Err(GpuError::Unsupported(
-                                                    "injected warm-up failure",
-                                                ));
+                                            if fails(true) {
+                                                Err(GpuError::Unsupported(own))
+                                            } else {
+                                                Ok(())
                                             }
-                                            Ok(())
                                         },
                                         |_| {
                                             aborted.fetch_add(1, Ordering::Relaxed);
@@ -1181,13 +954,8 @@ mod tests {
                             .collect();
                         hs.into_iter().map(|h| h.join().unwrap()).collect()
                     });
-                    let what = format!("size {size}, {fault:?} on {culprit}");
+                    let what = format!("size {size}, warm-up {warm_up} on {culprit}");
                     assert!(out.iter().all(Result::is_err), "{what}: {out:?}");
-                    let own = if fault == Fault::Init {
-                        "injected init failure"
-                    } else {
-                        "injected warm-up failure"
-                    };
                     assert!(
                         out[culprit as usize].as_ref().unwrap_err().contains(own),
                         "{what}: {out:?}"
@@ -1201,160 +969,6 @@ mod tests {
             }
         }
 
-        /// Every transport call a rank issues, in order.
-        #[derive(Clone, Default)]
-        struct Log(Arc<Mutex<Vec<&'static str>>>);
-
-        impl Log {
-            fn push(&self, call: &'static str) {
-                self.0.lock().unwrap().push(call);
-            }
-            fn take(&self) -> Vec<&'static str> {
-                std::mem::take(&mut *self.0.lock().unwrap())
-            }
-        }
-
-        struct Counting {
-            inner: InProcessTransport,
-            log: Log,
-        }
-
-        impl Collectives for Counting {
-            fn rank(&self) -> u32 {
-                self.inner.rank()
-            }
-            fn size(&self) -> u32 {
-                self.inner.size()
-            }
-            fn allreduce_max_u8(&self, v: u8) -> u8 {
-                self.log.push("allreduce_max_u8");
-                self.inner.allreduce_max_u8(v)
-            }
-            fn allreduce_sum_u64(&self, buf: &mut [u64]) {
-                self.log.push("allreduce_sum_u64");
-                self.inner.allreduce_sum_u64(buf);
-            }
-            fn barrier(&self) {
-                self.log.push("barrier");
-                self.inner.barrier();
-            }
-        }
-
-        impl Transport for Counting {
-            fn exchange_layer<P, F, R>(
-                &self,
-                send: Vec<Option<P>>,
-                spare: &mut Vec<P>,
-                map: &ChunkMap,
-                body: F,
-            ) -> (Vec<Option<P>>, R)
-            where
-                P: Payload,
-                F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
-            {
-                self.log.push("exchange_layer");
-                self.inner.exchange_layer(send, spare, map, body)
-            }
-            fn exchange<P: Payload>(
-                &self,
-                send: Vec<Option<P>>,
-                spare: &mut Vec<P>,
-            ) -> Vec<Option<P>> {
-                self.log.push("exchange");
-                self.inner.exchange(send, spare)
-            }
-        }
-
-        fn counting_group(size: u32) -> (Vec<Counting>, Vec<Log>) {
-            let logs: Vec<Log> = (0..size).map(|_| Log::default()).collect();
-            let group =
-                InProcessTransport::group_with_timeout(size, std::time::Duration::from_secs(120))
-                    .into_iter()
-                    .zip(&logs)
-                    .map(|(inner, log)| Counting {
-                        inner,
-                        log: log.clone(),
-                    })
-                    .collect();
-            (group, logs)
-        }
-
-        /// The host `DistributedSum`'s propagate-time calls per rank.
-        fn host_calls(
-            size: u32,
-            input: &PauliSum<1>,
-            rows: &PartitionRows<1>,
-            circuit: &Circuit<1>,
-        ) -> Vec<Vec<&'static str>> {
-            let (group, logs) = counting_group(size);
-            std::thread::scope(|s| {
-                let hs: Vec<_> = group
-                    .into_iter()
-                    .zip(&logs)
-                    .map(|(t, log)| {
-                        s.spawn(move || -> Result<Vec<&'static str>, TopologyError> {
-                            let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2, 0))?;
-                            let mut split = DistributedSum::scatter_with_rows(
-                                input.clone(),
-                                t,
-                                runtime,
-                                rows.clone(),
-                            );
-                            log.take();
-                            split.propagate_with_options(
-                                circuit,
-                                &ApproxTopN(900),
-                                Direction::Forward,
-                                PropagateOptions::default(),
-                            );
-                            Ok(log.take())
-                        })
-                    })
-                    .collect();
-                hs.into_iter()
-                    .map(|h| h.join().unwrap().expect("topology"))
-                    .collect()
-            })
-        }
-
-        /// The device split's propagate-time calls per rank, over the peer wire.
-        fn device_calls(
-            size: u32,
-            input: &PauliSum<1>,
-            rows: &PartitionRows<1>,
-            circuit: &Circuit<1>,
-        ) -> Vec<Vec<&'static str>> {
-            let (group, logs) = counting_group(size);
-            let wires = PeerWire::group(size).into_iter().map(Some);
-            let clear = |split: &mut GpuDistributedSum<1, Counting>| {
-                logs[split.rank() as usize].take();
-            };
-            let out = run_split(
-                group.into_iter().zip(wires).collect(),
-                input,
-                rows,
-                circuit,
-                &ApproxTopN(900),
-                Direction::Forward,
-                PropagateOptions::default(),
-                &clear,
-            );
-            for o in out {
-                o.expect("device rank");
-            }
-            logs.iter()
-                .map(|l| {
-                    let mut calls = l.take();
-                    let gather = calls
-                        .iter()
-                        .rposition(|&c| c == "allreduce_sum_u64")
-                        .expect("the gather agrees its download");
-                    calls.truncate(gather);
-                    calls
-                })
-                .collect()
-        }
-
         /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer.
         /// The device run ends on the propagate's own failure agreement, which the host driver has no counterpart of.
         #[test]
@@ -1364,9 +978,46 @@ mod tests {
             let input = rand_sum_real::<1>(700, 24, 0xC0C0);
             for size in [2u32, 4] {
                 let rows = seeded_rows::<1>(24, size);
-                let host = host_calls(size, &input, &rows, &circuit);
-                let device = device_calls(size, &input, &rows, &circuit);
-                for r in 0..size as usize {
+                let group = LoggingTransport::group(size);
+                let host: Vec<Vec<&'static str>> = std::thread::scope(|s| {
+                    let hs: Vec<_> = group
+                        .into_iter()
+                        .map(|t| {
+                            let (input, rows, circuit) = (&input, &rows, &circuit);
+                            s.spawn(move || {
+                                let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2, 0))
+                                    .expect("topology");
+                                let mut split = DistributedSum::scatter_with_rows(
+                                    input.clone(),
+                                    t,
+                                    runtime,
+                                    rows.clone(),
+                                );
+                                split.transport().log.take();
+                                split.propagate(circuit, &ApproxTopN(900), Direction::Forward);
+                                split.transport().log.take()
+                            })
+                        })
+                        .collect();
+                    hs.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+                let run = Run {
+                    policy: BuiltinTruncation::ApproxTopN(900),
+                    ..Run::new(&input, rows.clone(), &circuit)
+                };
+                let group = LoggingTransport::group(size);
+                let device_logs: Vec<CallLog> = group.iter().map(|t| t.log.clone()).collect();
+                let (group, _) = over_wires(group, PeerWire::group(size));
+                rank0(run.on(group, &|split| {
+                    split.transport().log.take();
+                }));
+                for (r, log) in device_logs.iter().enumerate() {
+                    let mut device = log.take();
+                    let gather = device
+                        .iter()
+                        .rposition(|&c| c == "allreduce_sum_u64")
+                        .expect("the gather agrees its download");
+                    device.truncate(gather);
                     let remote = host[r].iter().filter(|&&c| c == "exchange_layer").count();
                     assert!(
                         remote > 0 && remote < circuit.channels.len(),
@@ -1380,7 +1031,7 @@ mod tests {
                         })
                         .collect();
                     want.push("allreduce_sum_u64");
-                    assert_eq!(device[r], want, "rank {r} of {size}: the device exchange");
+                    assert_eq!(device, want, "rank {r} of {size}: the device exchange");
                 }
             }
         }

@@ -28,6 +28,116 @@ macro_rules! require_cuda {
     };
 }
 
+/// `a` and `b` as a [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) `And` node.
+pub fn and(
+    a: crate::truncation::BuiltinTruncation,
+    b: crate::truncation::BuiltinTruncation,
+) -> crate::truncation::BuiltinTruncation {
+    crate::truncation::BuiltinTruncation::And(Box::new(a), Box::new(b))
+}
+
+/// `a` or `b` as a [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) `Or` node.
+pub fn or(
+    a: crate::truncation::BuiltinTruncation,
+    b: crate::truncation::BuiltinTruncation,
+) -> crate::truncation::BuiltinTruncation {
+    crate::truncation::BuiltinTruncation::Or(Box::new(a), Box::new(b))
+}
+
+/// Every transport call one rank issued, in order.
+#[derive(Clone, Default)]
+pub struct CallLog(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl CallLog {
+    fn push(&self, call: &'static str) {
+        self.0.lock().unwrap().push(call);
+    }
+
+    /// The calls so far, clearing the log.
+    pub fn take(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+
+    /// How many of the calls so far were `call`.
+    pub fn count(&self, call: &str) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&c| c == call)
+            .count()
+    }
+}
+
+/// An [`InProcessTransport`](crate::engine::partitioned::InProcessTransport) rank that logs every collective and exchange it is asked for.
+pub struct LoggingTransport {
+    inner: crate::engine::partitioned::InProcessTransport,
+    /// This rank's calls.
+    pub log: CallLog,
+}
+
+impl LoggingTransport {
+    /// A group of `size` ranks, each waiting up to two minutes on its partners.
+    pub fn group(size: u32) -> Vec<Self> {
+        crate::engine::partitioned::InProcessTransport::group_with_timeout(
+            size,
+            std::time::Duration::from_secs(120),
+        )
+        .into_iter()
+        .map(|inner| Self {
+            inner,
+            log: CallLog::default(),
+        })
+        .collect()
+    }
+}
+
+impl crate::engine::partitioned::Collectives for LoggingTransport {
+    fn rank(&self) -> u32 {
+        self.inner.rank()
+    }
+    fn size(&self) -> u32 {
+        self.inner.size()
+    }
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        self.log.push("allreduce_max_u8");
+        self.inner.allreduce_max_u8(v)
+    }
+    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+        self.log.push("allreduce_sum_u64");
+        self.inner.allreduce_sum_u64(buf);
+    }
+    fn barrier(&self) {
+        self.log.push("barrier");
+        self.inner.barrier();
+    }
+}
+
+impl crate::engine::partitioned::Transport for LoggingTransport {
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+        map: &crate::engine::partitioned::ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: crate::engine::partitioned::Payload,
+        F: FnOnce(&[Option<P>], &dyn crate::engine::partitioned::ChunkWait) -> R,
+    {
+        self.log.push("exchange_layer");
+        self.inner.exchange_layer(send, spare, map, body)
+    }
+    fn exchange<P: crate::engine::partitioned::Payload>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+    ) -> Vec<Option<P>> {
+        self.log.push("exchange");
+        self.inner.exchange(send, spare)
+    }
+}
+
 /// Apply one channel layer the obvious way, as a differential oracle.
 ///
 /// For every input term: [`Channel::apply`] (or `apply_adjoint` when `adjoint`) into a `max_fanout`-sized [`OutputBuffer`], accumulate into a hashmap keyed by `(x, z)`, filter the summed coefficients through [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, rebuild a [`PauliSum`].
@@ -850,6 +960,19 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
 /// Partition rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every [`x0_terms_identity_on_q63`] term sits on rank 0.
 pub fn rows_reading_z63() -> crate::bucket::hash::PartitionRows<1> {
     crate::bucket::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
+}
+
+/// Haar SU(4) layers on `(0, 1)`, `(1, 2)` and `(0, 1)` of `num_qubits` qubits: dense and overlapping, so one partner's remote rows collide at every partition count.
+pub fn su4_chain<const W: usize>(num_qubits: usize) -> crate::Circuit<W> {
+    let mut c = crate::Circuit::<W>::new(num_qubits);
+    for (a, b) in [(0, 1), (1, 2), (0, 1)] {
+        c.push(crate::channel::GeneralUnitary2Q::from_matrix(
+            a,
+            b,
+            haar_su4_matrix(),
+        ));
+    }
+    c
 }
 
 /// A weight-2 `ZZ` rotation — the TFIM bond term, the smallest layer whose generator can cross a partition boundary.

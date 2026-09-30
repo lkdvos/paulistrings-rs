@@ -8,9 +8,10 @@ use paulistrings::engine::partitioned::{
 use paulistrings::gpu::{
     GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
 };
+use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
-    rows_reading_z63, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    rows_reading_z63, su4_chain, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::truncation::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
@@ -24,14 +25,6 @@ const TOL: f64 = 1e-11;
 const THETA: f64 = 0.1;
 const ROW_SEED: u64 = 0x5EED_C0FF_EE00_1234;
 const PS: [usize; 3] = [1, 2, 4];
-
-macro_rules! require_cuda {
-    () => {
-        if !paulistrings::gpu::cuda_available() {
-            return;
-        }
-    };
-}
 
 /// The ordinals `PAULISTRINGS_GPU_TEST_DEVICES` names, `[0]` when unset.
 fn test_devices() -> Vec<u32> {
@@ -132,16 +125,6 @@ fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(32, THETA);
     let sum = rand_sum_real::<2>(1_500, 32, 0x71A1);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter w2", &PS);
-}
-
-#[test]
-fn builtin_truncation_tree_matches_propagate() {
-    require_cuda!();
-    use paulistrings::truncation::BuiltinTruncation as T;
-    let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = rand_sum_real::<1>(2_000, 32, 0x71A2);
-    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(3_000)));
-    check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
 /// Dense: a Haar SU(4) under random rows has about half its deltas remote at `P = 2`.
@@ -493,57 +476,6 @@ fn an_injected_failure_poisons_the_split_and_the_partners_finish() {
     }
 }
 
-/// A received segment of exactly `MAX_BUCKET_LEN` rows is merged; one more is `Unsupported`, the receiver's segment and the sender's source bucket both exceeding the tag limit.
-#[test]
-fn a_received_device_segment_at_the_tag_limit_is_accepted_and_one_more_is_unsupported() {
-    require_cuda!();
-    const MAX_BUCKET_LEN: usize = 4096;
-    let mut circuit = Circuit::<1>::new(64);
-    circuit.push(zz_rotation::<1>(0, 63, 0.3));
-    let options = PropagateOptions {
-        target_bucket_len: 1 << 20,
-        min_buckets: 1,
-        ..PropagateOptions::default()
-    };
-    let layer_options = GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
-        ..GpuLayerOptions::default()
-    };
-    let one_bucket = |sum: PauliSum<1>| {
-        let seed = sum.hash().seed();
-        sum.with_hash(paulistrings::Gf2Hash::new(64, 0, seed))
-    };
-    let run_zz = |n: usize, seed: u64| -> (PauliSum<1>, Result<PauliSum<1>, GpuError>) {
-        let input = one_bucket(x0_terms_identity_on_q63(n, seed));
-        let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-        let mut split =
-            GpuPartitionedSum::scatter_to_devices_with_rows(&input, rows_reading_z63(), runtime)
-                .expect("scatter");
-        split.set_layer_options(layer_options);
-        split.enable_trace();
-        let r = split
-            .propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
-            .and_then(|()| split.gather());
-        // A device sender's own bucket cap is the same 4096 rows, so only the fitting case reports its counts.
-        if let Some(trace) = split.take_trace().filter(|_| n <= MAX_BUCKET_LEN) {
-            let sent: u64 = trace.layers[0].rows_sent[0].iter().sum();
-            assert_eq!(sent as usize, n, "every term is exported from rank 0");
-        }
-        (input, r)
-    };
-    let (input, fits) = run_zz(MAX_BUCKET_LEN, 0xF1);
-    let want = propagate_with_options(&circuit, input, &KeepAll, Direction::Forward, options);
-    let fits = fits.expect("a segment of 4096 rows is merged");
-    assert_eq!(fits.len(), want.len());
-    assert_terms_close(&fits, &want, TOL, "segment of 4096 rows");
-    let (_, over) = run_zz(MAX_BUCKET_LEN + 1, 0xF2);
-    assert!(
-        matches!(over, Err(GpuError::Unsupported(_))),
-        "{:?}",
-        over.map(|s| s.len())
-    );
-}
-
 /// Rank 1 holds no terms, so it pairs every remote layer with empty blocks while rank 0 ships it rows, across rotations and Cliffords that cross and one that stays local.
 #[test]
 fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
@@ -742,17 +674,6 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     assert_terms_close(&split.gather().expect("gather"), &want, TOL, "cut P=4");
 }
 
-/// Two SU(4) layers on overlapping pairs over `nq` qubits, dense enough that one partner's remote rows collide.
-fn su4_circuit<const W: usize>(nq: usize) -> Circuit<W> {
-    use paulistrings::channel::GeneralUnitary2Q;
-    use paulistrings::test_support::haar_su4_matrix;
-    let mut c = Circuit::<W>::new(nq);
-    c.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
-    c.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
-    c.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
-    c
-}
-
 /// Rows every partition shipped over a traced propagation, and the gathered result.
 fn traced_rows<const W: usize>(
     circuit: &Circuit<W>,
@@ -784,7 +705,7 @@ fn traced_rows<const W: usize>(
 
 fn premerge_case<const W: usize>(nq: usize, n: usize, seed: u64) {
     let sum = rand_sum::<W>(n, nq, seed);
-    let circuit = su4_circuit::<W>(nq);
+    let circuit = su4_chain::<W>(nq);
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for p in [2usize, 4] {
         let what = format!("W={W} P={p}");
@@ -875,7 +796,7 @@ fn capped_split<const W: usize>(
 /// Under no receive cap, a cap of 128 rows and one of 8, four SU(4) layers run one call each agree with `propagate`, the uncapped receive moving in one chunk and a capped one in several; under a cap the whole circuit agrees in both directions.
 fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
     let sum = rand_sum::<W>(n, nq, seed);
-    let circuit = su4_circuit::<W>(nq);
+    let circuit = su4_chain::<W>(nq);
     let layers: Vec<Circuit<W>> = [(0u32, 1u32), (1, 2), (0, 1), (2, 3)]
         .iter()
         .map(|&(a, b)| {
@@ -950,7 +871,7 @@ fn a_capped_device_receive_moves_in_chunks_and_agrees_w2() {
 fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     require_cuda!();
     let sum = rand_sum::<1>(2_000, 10, 0xC4A3);
-    let circuit = su4_circuit::<1>(10);
+    let circuit = su4_chain::<1>(10);
     for p in [2usize, 4] {
         let mut split = capped_split(&sum, p, recv_bytes::<1>(128));
         split.inject_chunk_oom(1, 1);

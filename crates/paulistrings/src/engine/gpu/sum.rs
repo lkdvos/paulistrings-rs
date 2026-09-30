@@ -562,26 +562,16 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_is_bitwise_w1() {
+    fn round_trip_is_bitwise() {
         crate::require_cuda!();
         round_trips::<1>();
-    }
-
-    #[test]
-    fn round_trip_is_bitwise_w2() {
-        crate::require_cuda!();
         round_trips::<2>();
     }
 
     #[test]
-    fn round_trip_is_bitwise_w4() {
+    fn round_trip_is_bitwise_at_w4_and_one_million_terms() {
         crate::require_cuda!();
         round_trip(&rand_sum::<4>(10_000, 250, 0x4444), "W=4 rand 1e4");
-    }
-
-    #[test]
-    fn round_trip_is_bitwise_at_one_million_terms() {
-        crate::require_cuda!();
         round_trip(&rand_sum::<2>(1_000_000, 128, 0xCAFE), "rand 1e6");
     }
 
@@ -619,14 +609,9 @@ mod tests {
     }
 
     #[test]
-    fn device_fingerprint_matches_host_w1() {
+    fn device_fingerprint_matches_host() {
         crate::require_cuda!();
         device_fingerprints::<1>();
-    }
-
-    #[test]
-    fn device_fingerprint_matches_host_w2() {
-        crate::require_cuda!();
         device_fingerprints::<2>();
     }
 
@@ -670,14 +655,9 @@ mod tests {
     }
 
     #[test]
-    fn refine_matches_host_w1() {
+    fn refine_matches_host() {
         crate::require_cuda!();
         refines::<1>();
-    }
-
-    #[test]
-    fn refine_matches_host_w2() {
-        crate::require_cuda!();
         refines::<2>();
     }
 

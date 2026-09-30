@@ -41,7 +41,9 @@ use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::truncation::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
+};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
     PauliString, PauliSum, Phase, PropagateOptions,
@@ -199,14 +201,21 @@ fn abort_world(world: &SimpleCommunicator) -> ! {
     world.abort(1)
 }
 
+/// Where a case's partitions live: host memory, or one CUDA device per rank (`MpiGpuSum`, feature `cuda`).
+#[derive(Clone, Copy, PartialEq)]
+enum Backend {
+    Host,
+    #[cfg(feature = "cuda")]
+    Device,
+}
+
 impl Runner<'_> {
-    /// Scatter `sum` over the group, propagate, gather on rank 0, and compare
-    /// against the single-process oracle.
-    // Seven knobs, and every one of them varies across the matrix; bundling
-    // them into a struct would only move the argument list.
+    /// Scatter `sum` over the group on `backend`, propagate, gather on rank 0, and compare against the single-process oracle.
+    // Every argument varies across the matrix; bundling them would only move the list.
     #[allow(clippy::too_many_arguments)]
     fn differential<const W: usize, T>(
         &self,
+        backend: Backend,
         circuit: &Circuit<W>,
         sum: &PauliSum<W>,
         policy: &T,
@@ -215,20 +224,54 @@ impl Runner<'_> {
         chunk_bytes: Option<usize>,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
     {
         let mut transport = MpiTransport::from_communicator(self.world);
         if let Some(bytes) = chunk_bytes {
             transport = transport.with_chunk_bytes(bytes);
         }
-        let config = self.config(seed);
-        let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
-        split.assert_invariants();
-        split.propagate(circuit, policy, direction);
-        split.assert_invariants();
-        let got = split.gather();
+        let got = match backend {
+            Backend::Host => {
+                let mut split = DistributedSum::scatter(sum.clone(), transport, &self.config(seed))
+                    .expect("topology resolves");
+                split.assert_invariants();
+                split.propagate(circuit, policy, direction);
+                split.assert_invariants();
+                split.gather()
+            }
+            #[cfg(feature = "cuda")]
+            Backend::Device => {
+                use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+                let device = local_device_for_comm(self.world).expect("a device on every rank");
+                let mut split = MpiGpuSum::scatter_to_device(
+                    sum,
+                    transport,
+                    device,
+                    &PartitionRowPolicy::Seeded(Some(seed)),
+                )
+                .expect("device scatter");
+                assert_eq!(split.device(), device);
+                split
+                    .propagate(circuit, policy, direction)
+                    .expect("device propagate");
+                split.gather().expect("device gather")
+            }
+        };
+        self.compare(circuit, sum, policy, direction, got, what);
+    }
 
+    /// Rank 0's gathered result against [`propagate`], term count included; every other rank must hold `None`.
+    fn compare<const W: usize, T>(
+        &self,
+        circuit: &Circuit<W>,
+        sum: &PauliSum<W>,
+        policy: &T,
+        direction: Direction,
+        got: Option<PauliSum<W>>,
+        what: &str,
+    ) where
+        T: PartitionedTruncation<W> + ?Sized,
+    {
         match (self.rank, got) {
             (0, Some(got)) => {
                 let want = propagate(circuit, sum.clone(), policy, direction);
@@ -245,18 +288,34 @@ impl Runner<'_> {
     /// [`differential`](Self::differential) in both directions.
     fn both_directions<const W: usize, T>(
         &self,
+        backend: Backend,
         circuit: &Circuit<W>,
         sum: &PauliSum<W>,
         policy: &T,
         seed: u64,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
     {
         for direction in [Direction::Forward, Direction::Heisenberg] {
-            self.differential(circuit, sum, policy, direction, seed, None, what);
+            self.differential(backend, circuit, sum, policy, direction, seed, None, what);
         }
     }
+}
+
+/// A partition-row seed under which every layer of `circuit` over `sum` is remote, found identically on every rank.
+fn all_remote_seed(circuit: &Circuit<1>, sum: &PauliSum<1>, size: u32) -> u64 {
+    let nq = sum.num_qubits();
+    let pbits = size.trailing_zeros() as u8;
+    (0u64..4096)
+        .map(|s| SEED ^ s)
+        .find(|&seed| {
+            let rows = PartitionRows::<1>::from_seed(nq, pbits, seed);
+            count_remote_deltas(circuit, sum.hash(), &rows, false)
+                .iter()
+                .all(|&(_, remote)| remote > 0)
+        })
+        .expect("some row draw sends the generator across")
 }
 
 /// The partition-row seed the fixtures use unless a case needs a specific
@@ -302,7 +361,8 @@ fn main() {
         failures: 0,
         cases: 0,
     };
-    run_matrix(&mut r);
+    run_matrix(&mut r, Backend::Host);
+    run_host_cases(&mut r);
     #[cfg(feature = "cuda")]
     device::run_device_matrix(&mut r);
 
@@ -320,82 +380,71 @@ fn main() {
     }
 }
 
-fn run_matrix(r: &mut Runner) {
-    // ---- W = 1, the layer shapes, both directions ----------------------
-    r.case("w1 single zz rotation", |r| {
+/// The layer shapes every backend runs, both directions; case names carry `tag`.
+fn run_matrix(r: &mut Runner, backend: Backend) {
+    let tag = match backend {
+        Backend::Host => "",
+        #[cfg(feature = "cuda")]
+        Backend::Device => "device ",
+    };
+    r.case(&format!("{tag}w1 single zz rotation"), |r| {
         let circuit = single_rotation::<1>(16);
         let sum = rand_sum_real::<1>(400, 16, 0xA001);
-        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 rotation");
+        r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "w1 rotation");
     });
 
-    r.case("w1 cnot ring", |r| {
+    r.case(&format!("{tag}w1 cnot ring"), |r| {
         let circuit = cnot_ring::<1>(12);
         let sum = rand_sum::<1>(400, 12, 0xA002);
-        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 cnot");
+        r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "w1 cnot");
     });
 
-    r.case("w1 haar su(4)", |r| {
+    r.case(&format!("{tag}w1 haar su(4)"), |r| {
         let circuit = haar_su4::<1>(8);
         let sum = rand_sum::<1>(300, 8, 0xA003);
-        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w1 su4");
+        r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "w1 su4");
     });
 
-    r.case("w1 trotter, 32 layers", |r| {
+    r.case(&format!("{tag}w1 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<1>(16, THETA);
         assert!(
             circuit.channels.len() >= 20,
             "the bits collective must move"
         );
         let sum = rand_sum_real::<1>(800, 16, 0xA004);
-        r.both_directions(&circuit, &sum, &ApproxTopN(1_500), SEED, "w1 trotter");
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &ApproxTopN(1_500),
+            SEED,
+            "w1 trotter",
+        );
     });
 
-    // ---- W = 2: two-word keys through the same shapes -------------------
-    r.case("w2 haar su(4)", |r| {
+    r.case(&format!("{tag}w2 haar su(4)"), |r| {
         let circuit = haar_su4::<2>(8);
         let sum = rand_sum::<2>(300, 8, 0xA005);
-        r.both_directions(&circuit, &sum, &KeepAll, SEED, "w2 su4");
+        r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "w2 su4");
     });
 
-    r.case("w2 trotter, 32 layers", |r| {
+    r.case(&format!("{tag}w2 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<2>(16, THETA);
         let sum = rand_sum_real::<2>(600, 16, 0xA006);
-        r.both_directions(&circuit, &sum, &ApproxTopN(1_200), SEED, "w2 trotter");
-    });
-
-    // ---- policies -------------------------------------------------------
-    r.case("policies on a mixed circuit", |r| {
-        let mut circuit = cnot_ring::<1>(8);
-        circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
-        circuit.push(zz_rotation::<1>(0, 4, 0.31));
-        circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
-        let sum = rand_sum::<1>(250, 8, 0xA007);
-
-        r.both_directions(&circuit, &sum, &KeepAll, SEED, "policy none");
         r.both_directions(
+            backend,
             &circuit,
             &sum,
-            &CoefficientThreshold(1e-9),
+            &ApproxTopN(1_200),
             SEED,
-            "policy eps",
-        );
-        r.both_directions(&circuit, &sum, &WeightCutoff(4), SEED, "policy weight");
-        r.both_directions(&circuit, &sum, &ApproxTopN(400), SEED, "policy approx");
-        r.both_directions(
-            &circuit,
-            &sum,
-            &And(CoefficientThreshold(1e-12), ApproxTopN(400)),
-            SEED,
-            "policy and",
+            "w2 trotter",
         );
     });
 
-    /// A budget small enough that the collective octave selection fires on
-    /// several layers, so the exact `len()` equality the differential asserts
-    /// is a real test of partition-exactness.
+    /// A budget small enough that the collective octave selection fires on several layers, so the exact `len()` equality is a real test of partition-exactness.
     const TIGHT: usize = 200;
 
-    r.case("approx-topn firing every layer", |r| {
+    r.case(&format!("{tag}approx-topn firing every layer"), |r| {
         let circuit = trotter_circuit::<1>(14, THETA);
         let sum = rand_sum_real::<1>(600, 14, 0xA008);
         let want = propagate(
@@ -404,14 +453,96 @@ fn run_matrix(r: &mut Runner) {
             &ApproxTopN(TIGHT),
             Direction::Forward,
         );
-        if r.rank == 0 {
-            assert!(
-                want.len() <= 4 * TIGHT,
-                "the budget must actually bind: {} terms out",
-                want.len(),
+        assert!(
+            want.len() <= 4 * TIGHT,
+            "the budget must actually bind: {} terms out",
+            want.len(),
+        );
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &ApproxTopN(TIGHT),
+            SEED,
+            "approx tight",
+        );
+    });
+
+    r.case(&format!("{tag}an all-remote rotation"), |r| {
+        let sum = rand_sum_real::<1>(400, 12, 0xA020);
+        let circuit = single_rotation::<1>(12);
+        // A group of one has no boundary to cross; the plain differential still runs.
+        let seed = if r.size == 1 {
+            SEED
+        } else {
+            all_remote_seed(&circuit, &sum, r.size)
+        };
+        r.both_directions(backend, &circuit, &sum, &KeepAll, seed, "all-remote");
+    });
+
+    r.case(&format!("{tag}multi-chunk parts at 1 KiB"), |r| {
+        let circuit = haar_su4::<1>(8);
+        let sum = rand_sum::<1>(1_200, 8, 0xA030);
+        // Far more than 1 KiB per column, so every part is chunked several times over.
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            r.differential(
+                backend,
+                &circuit,
+                &sum,
+                &KeepAll,
+                direction,
+                SEED,
+                Some(1024),
+                "chunked",
             );
         }
-        r.both_directions(&circuit, &sum, &ApproxTopN(TIGHT), SEED, "approx tight");
+    });
+}
+
+/// The host-only cases.
+fn run_host_cases(r: &mut Runner) {
+    let backend = Backend::Host;
+    // ---- policies -------------------------------------------------------
+    r.case("policies on a mixed circuit", |r| {
+        let mut circuit = cnot_ring::<1>(8);
+        circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+        circuit.push(zz_rotation::<1>(0, 4, 0.31));
+        circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
+        let sum = rand_sum::<1>(250, 8, 0xA007);
+
+        r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "policy none");
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &CoefficientThreshold(1e-9),
+            SEED,
+            "policy eps",
+        );
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &WeightCutoff(4),
+            SEED,
+            "policy weight",
+        );
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &ApproxTopN(400),
+            SEED,
+            "policy approx",
+        );
+        r.both_directions(
+            backend,
+            &circuit,
+            &sum,
+            &And(CoefficientThreshold(1e-12), ApproxTopN(400)),
+            SEED,
+            "policy and",
+        );
     });
 
     // ---- degenerate inputs ----------------------------------------------
@@ -421,7 +552,7 @@ fn run_matrix(r: &mut Runner) {
         circuit.push(Clifford2Q::cnot(0, 1));
         for n in 1..=3 {
             let sum = rand_sum::<1>(n, 8, 0xA009 + n as u64);
-            r.both_directions(&circuit, &sum, &KeepAll, SEED, "tiny sum");
+            r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "tiny sum");
         }
     });
 
@@ -429,6 +560,7 @@ fn run_matrix(r: &mut Runner) {
         let circuit = Circuit::<1>::new(8);
         let sum = rand_sum::<1>(120, 8, 0xA00D);
         r.differential(
+            backend,
             &circuit,
             &sum,
             &KeepAll,
@@ -587,71 +719,14 @@ fn run_matrix(r: &mut Runner) {
             PropagateOptions::default(),
             r.world,
         );
-        match (r.rank, got) {
-            (0, Some(got)) => {
-                let want = propagate(&circuit, sum, &KeepAll, Direction::Forward);
-                assert_terms_close(&got, &want, TOL, "propagate_mpi");
-                assert_eq!(got.len(), want.len());
-            }
-            (0, None) => panic!("propagate_mpi: rank 0 did not gather"),
-            (rank, Some(_)) => panic!("propagate_mpi: rank {rank} gathered but is not the root"),
-            (_, None) => {}
-        }
-    });
-
-    // ---- a layer whose every row crosses --------------------------------
-    r.case("an all-remote rotation", |r| {
-        let nq = 12;
-        let sum = rand_sum_real::<1>(400, nq, 0xA020);
-        let circuit = single_rotation::<1>(nq);
-
-        if r.size == 1 {
-            // A group of one has no boundary to cross; the case degenerates to
-            // the plain differential, which is still worth running.
-            r.both_directions(&circuit, &sum, &KeepAll, SEED, "all-remote (P=1)");
-            return;
-        }
-
-        // Search for a row draw under which the rotation's generator pass is
-        // remote — every anticommuting term then leaves the rank. Deterministic,
-        // and every rank searches the same sequence, so they agree without a
-        // collective.
-        let pbits = r.size.trailing_zeros() as u8;
-        let seed = (0u64..4096)
-            .find(|&s| {
-                let rows = PartitionRows::<1>::from_seed(nq, pbits, SEED ^ s);
-                count_remote_deltas(&circuit, sum.hash(), &rows, false)
-                    .iter()
-                    .all(|&(_, remote)| remote > 0)
-            })
-            .map(|s| SEED ^ s)
-            .expect("some row draw sends the generator across");
-
-        let rows = PartitionRows::<1>::from_seed(nq, pbits, seed);
-        let counts = count_remote_deltas(&circuit, sum.hash(), &rows, false);
-        assert_eq!(counts.len(), 1);
-        assert!(counts[0].1 > 0, "the layer must be remote: {counts:?}");
-
-        r.both_directions(&circuit, &sum, &KeepAll, seed, "all-remote");
-    });
-
-    // ---- the chunked send path ------------------------------------------
-    r.case("multi-chunk parts at 1 KiB", |r| {
-        let circuit = haar_su4::<1>(8);
-        let sum = rand_sum::<1>(1_200, 8, 0xA030);
-        // A 1200-term sum through three SU(4) blocks moves far more than 1 KiB
-        // per column, so every part is chunked several times over.
-        for direction in [Direction::Forward, Direction::Heisenberg] {
-            r.differential(
-                &circuit,
-                &sum,
-                &KeepAll,
-                direction,
-                SEED,
-                Some(1024),
-                "chunked",
-            );
-        }
+        r.compare(
+            &circuit,
+            &sum,
+            &KeepAll,
+            Direction::Forward,
+            got,
+            "propagate_mpi",
+        );
     });
 
     r.case("a one-byte chunk size still delivers", |r| {
@@ -661,6 +736,7 @@ fn run_matrix(r: &mut Runner) {
         circuit.push(Clifford2Q::cnot(0, 3));
         let sum = rand_sum::<1>(24, 6, 0xA031);
         r.differential(
+            backend,
             &circuit,
             &sum,
             &KeepAll,
@@ -738,108 +814,39 @@ fn run_matrix(r: &mut Runner) {
     });
 }
 
-/// The device half of the matrix: the same shapes through `MpiGpuSum`, each rank on [`local_device_for_comm`].
+/// The device half: the shared matrix through `MpiGpuSum`, each rank on `local_device_for_comm`, and the device-only cases.
 #[cfg(feature = "cuda")]
 mod device {
     use super::*;
     use paulistrings::gpu::{
         cuda_available, local_device_for_comm, propagate_mpi_gpu, GpuError, MpiGpuSum,
     };
-    use paulistrings::truncation::BuiltinTruncation;
 
-    impl Runner<'_> {
-        /// Scatter onto this rank's device, propagate, gather on rank 0 and compare against the single-process oracle.
-        #[allow(clippy::too_many_arguments)]
-        fn device_differential<const W: usize, T>(
-            &self,
-            circuit: &Circuit<W>,
-            sum: &PauliSum<W>,
-            policy: &T,
-            direction: Direction,
-            seed: u64,
-            chunk_bytes: Option<usize>,
-            what: &str,
-        ) where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
-        {
-            let mut transport = MpiTransport::from_communicator(self.world);
-            if let Some(bytes) = chunk_bytes {
-                transport = transport.with_chunk_bytes(bytes);
-            }
-            let device = local_device_for_comm(self.world).expect("a device on every rank");
-            let mut split = MpiGpuSum::scatter_to_device(
-                sum,
-                transport,
-                device,
-                &PartitionRowPolicy::Seeded(Some(seed)),
-            )
-            .expect("device scatter");
-            assert_eq!(split.device(), device);
-            split
-                .propagate(circuit, policy, direction)
-                .expect("device propagate");
-            let got = split.gather().expect("device gather");
-            self.compare(circuit, sum, policy, direction, got, what);
-        }
-
-        /// Rank 0's gathered result against [`propagate`]; every other rank must hold `None`.
-        fn compare<const W: usize, T>(
-            &self,
-            circuit: &Circuit<W>,
-            sum: &PauliSum<W>,
-            policy: &T,
-            direction: Direction,
-            got: Option<PauliSum<W>>,
-            what: &str,
-        ) where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
-        {
-            match (self.rank, got) {
-                (0, Some(got)) => {
-                    let want = propagate(circuit, sum.clone(), policy, direction);
-                    let what = format!("{what} ranks={} {direction:?}", self.size);
-                    assert_terms_close(&got, &want, TOL, &what);
-                    assert_eq!(got.len(), want.len(), "{what}: term count");
-                }
-                (0, None) => panic!("{what}: rank 0 did not gather"),
-                (r, Some(_)) => panic!("{what}: rank {r} gathered but is not the root"),
-                (_, None) => {}
-            }
-        }
-
-        fn device_both_directions<const W: usize, T>(
-            &self,
-            circuit: &Circuit<W>,
-            sum: &PauliSum<W>,
-            policy: &T,
-            seed: u64,
-            what: &str,
-        ) where
-            T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
-        {
-            for direction in [Direction::Forward, Direction::Heisenberg] {
-                self.device_differential(circuit, sum, policy, direction, seed, None, what);
-            }
-        }
+    /// The number of ranks for which `flag` holds. **Collective.**
+    fn count(r: &Runner, flag: bool) -> u64 {
+        let mut total = [0u64];
+        r.world.all_reduce_into(
+            &[u64::from(flag)][..],
+            &mut total[..],
+            SystemOperation::sum(),
+        );
+        total[0]
     }
 
     pub(super) fn run_device_matrix(r: &mut Runner) {
         // Every rank must take the same branch, or the cases below are collectives some ranks never enter.
-        let send = [u64::from(!cuda_available())];
-        let mut without = [0u64];
-        r.world
-            .all_reduce_into(&send[..], &mut without[..], SystemOperation::sum());
-        if without[0] > 0 {
+        let without = count(r, !cuda_available());
+        if without > 0 {
             if r.rank == 0 {
                 println!(
-                    "skipped  device cases ({} of {} ranks see no CUDA device)",
-                    without[0], r.size
+                    "skipped  device cases ({without} of {} ranks see no CUDA device)",
+                    r.size
                 );
             }
             return;
         }
 
-        // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike, and the device cases have nothing to run on.
+        // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike.
         let device = local_device_for_comm(r.world).expect("a device on every rank");
         let started = MpiGpuSum::<1>::scatter_to_device(
             &rand_sum::<1>(50, 8, 0xB0FF),
@@ -848,13 +855,10 @@ mod device {
             &PartitionRowPolicy::Seeded(Some(SEED)),
         )
         .map(|_| ());
-        let send = [u64::from(started.is_err())];
-        let mut failed = [0u64];
-        r.world
-            .all_reduce_into(&send[..], &mut failed[..], SystemOperation::sum());
-        if failed[0] > 0 {
+        let failed = count(r, started.is_err());
+        if failed > 0 {
             r.case("a device group that cannot start NCCL fails on every rank", |r| {
-                assert_eq!(failed[0], u64::from(r.size), "some rank started: {started:?}");
+                assert_eq!(failed, u64::from(r.size), "some rank started: {started:?}");
                 assert!(
                     matches!(&started, Err(GpuError::Unsupported(m)) if m.contains("share a device") || m.contains("libnccl")),
                     "{started:?}"
@@ -866,114 +870,7 @@ mod device {
             return;
         }
 
-        r.case("device w1 single zz rotation", |r| {
-            let circuit = single_rotation::<1>(16);
-            let sum = rand_sum_real::<1>(400, 16, 0xB001);
-            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 rotation");
-        });
-
-        r.case("device w1 cnot ring", |r| {
-            let circuit = cnot_ring::<1>(12);
-            let sum = rand_sum::<1>(400, 12, 0xB002);
-            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 cnot");
-        });
-
-        r.case("device w1 haar su(4)", |r| {
-            let circuit = haar_su4::<1>(8);
-            let sum = rand_sum::<1>(300, 8, 0xB003);
-            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w1 su4");
-        });
-
-        r.case("device w1 trotter, 32 layers", |r| {
-            let circuit = trotter_circuit::<1>(16, THETA);
-            let sum = rand_sum_real::<1>(800, 16, 0xB004);
-            r.device_both_directions(
-                &circuit,
-                &sum,
-                &ApproxTopN(1_500),
-                SEED,
-                "device w1 trotter",
-            );
-        });
-
-        r.case("device w2 haar su(4)", |r| {
-            let circuit = haar_su4::<2>(8);
-            let sum = rand_sum::<2>(300, 8, 0xB005);
-            r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device w2 su4");
-        });
-
-        r.case("device w2 trotter, 32 layers", |r| {
-            let circuit = trotter_circuit::<2>(16, THETA);
-            let sum = rand_sum_real::<2>(600, 16, 0xB006);
-            r.device_both_directions(
-                &circuit,
-                &sum,
-                &ApproxTopN(1_200),
-                SEED,
-                "device w2 trotter",
-            );
-        });
-
-        r.case("device approx-topn firing every layer", |r| {
-            const TIGHT: usize = 200;
-            let circuit = trotter_circuit::<1>(14, THETA);
-            let sum = rand_sum_real::<1>(600, 14, 0xB008);
-            let want = propagate(
-                &circuit,
-                sum.clone(),
-                &ApproxTopN(TIGHT),
-                Direction::Forward,
-            );
-            assert!(
-                want.len() <= 4 * TIGHT,
-                "the budget must actually bind: {} terms out",
-                want.len(),
-            );
-            r.device_both_directions(
-                &circuit,
-                &sum,
-                &ApproxTopN(TIGHT),
-                SEED,
-                "device approx tight",
-            );
-        });
-
-        r.case("device all-remote rotation", |r| {
-            let nq = 12;
-            let sum = rand_sum_real::<1>(400, nq, 0xB020);
-            let circuit = single_rotation::<1>(nq);
-            if r.size == 1 {
-                r.device_both_directions(&circuit, &sum, &KeepAll, SEED, "device all-remote (P=1)");
-                return;
-            }
-            let pbits = r.size.trailing_zeros() as u8;
-            let seed = (0u64..4096)
-                .find(|&s| {
-                    let rows = PartitionRows::<1>::from_seed(nq, pbits, SEED ^ s);
-                    count_remote_deltas(&circuit, sum.hash(), &rows, false)
-                        .iter()
-                        .all(|&(_, remote)| remote > 0)
-                })
-                .map(|s| SEED ^ s)
-                .expect("some row draw sends the generator across");
-            r.device_both_directions(&circuit, &sum, &KeepAll, seed, "device all-remote");
-        });
-
-        r.case("device multi-chunk parts at 1 KiB", |r| {
-            let circuit = haar_su4::<1>(8);
-            let sum = rand_sum::<1>(1_200, 8, 0xB030);
-            for direction in [Direction::Forward, Direction::Heisenberg] {
-                r.device_differential(
-                    &circuit,
-                    &sum,
-                    &KeepAll,
-                    direction,
-                    SEED,
-                    Some(1024),
-                    "device chunked",
-                );
-            }
-        });
+        run_matrix(r, Backend::Device);
 
         r.case(
             "propagate_mpi_gpu is the persistent device driver in one call",
@@ -1001,26 +898,15 @@ mod device {
             },
         );
 
-        // Several partners, each carrying several blocks of distinct sizes: a haar su(4) at
-        // P >= 2 sends every remote delta's own block, so a rank with more than one partner
-        // (P >= 4) or more than one remote generator already produces the shape `nccl_schedule`
-        // must preserve in order; at P < 4 the case still holds
-        // (fewer, but still size-distinct, blocks) so it runs at any rank count.
+        // Four disjoint dense two-qubit layers: a rank sends each partner several blocks whose row counts differ across layers, so an out-of-order per-partner match would not silently agree.
         r.case("device several distinct-size blocks per partner", |r| {
-            let nq = 12;
-            let circuit = {
-                let mut c = Circuit::<1>::new(nq);
-                // Four disjoint dense two-qubit deltas of the same generic SU(4): every rank
-                // holding several of them sends its partners several blocks whose row counts
-                // differ across layers, so an out-of-order per-partner match would not
-                // silently agree.
-                for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
-                    c.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
-                }
-                c
-            };
-            let sum = rand_sum::<1>(2_000, nq, 0xB031);
-            r.device_both_directions(
+            let mut circuit = Circuit::<1>::new(12);
+            for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
+                circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
+            }
+            let sum = rand_sum::<1>(2_000, 12, 0xB031);
+            r.both_directions(
+                Backend::Device,
                 &circuit,
                 &sum,
                 &KeepAll,

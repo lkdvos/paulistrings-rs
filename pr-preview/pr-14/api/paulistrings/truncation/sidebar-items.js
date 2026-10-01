@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["builtin"],"trait":["TruncationPolicy"]};
+window.SIDEBAR_ITEMS = {"enum":["BuiltinTruncation"],"mod":["builtin"],"trait":["TruncationPolicy"]};

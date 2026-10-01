@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3523c87e.js";
+            window.path_to_searchindex_js = "../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-0b5a9687.js"></script>
+        <script src="../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,13 +187,13 @@
                small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                partitions=None, pin_memory=True, partition_row_seed=None,
                partition_row_blocks=None, partition_row_exclude=None, comm=None,
-               result="gather") -&gt; PauliSum
+               result="gather", device=None) -&gt; PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
                           small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                           partitions=None, pin_memory=True, partition_row_seed=None,
                           partition_row_blocks=None, partition_row_exclude=None, comm=None,
-                          result="gather")
+                          result="gather", device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -219,6 +219,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
 <tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, which remembers its rows for the <code>comm=</code> <a href="measurement.html#under-comm">echo read-outs</a></td></tr>
+<tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>
 </div>
@@ -238,12 +239,60 @@ The GIL is released for the duration of both calls.</p>
 </table>
 </div>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
-<p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code> or <code>comm=</code>.
+<p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
 <code>partition_row_exclude={"x": sites}</code> keeps every class <code>rotated_overlap(sites, axis="x")</code> groups on one rank; <code>{"z": sites}</code> does the same for <code>axis="z"</code>.
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
 <p>See <a href="../manual/propagation/partitions.html">NUMA partitions</a> and <a href="../manual/propagation/mpi.html">MPI ranks</a> for recipes.</p>
+<h2 id="device"><a class="header" href="#device"><code>device</code></a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Placement</th></tr>
+</thead>
+<tbody>
+<tr><td><code>None</code></td><td>the host engine</td></tr>
+<tr><td>an <code>int</code></td><td>the whole sum on that CUDA device ordinal; <code>ValueError</code> if this process cannot see it</td></tr>
+<tr><td><code>list[int]</code></td><td>one partition per entry, in partition order; a one-element list is that device</td></tr>
+<tr><td><code>"auto"</code></td><td>devices <code>0..k</code> for the largest power of two <code>k</code> visible, so device 0 alone on a one-GPU box</td></tr>
+</tbody>
+</table>
+</div>
+<p>A list’s length must be a power of two, at most 64, or it is a <code>ValueError</code>; an ordinal may repeat, putting several partitions on one device.
+Several devices split the sum like <code>partitions=</code>: <code>partition_row_seed</code> and <code>partition_row_blocks</code> pick the rows, the block count equal to the list length.
+<code>device=</code> is an alternative to <code>partitions=</code>; passing both, or <code>result="local"</code> without <code>comm=</code>, or <code>partition_row_blocks=</code> with a single device, is a <code>ValueError</code>.
+<code>engine</code> is ignored, <code>truncation.topn</code> runs on one device and raises <code>NotImplementedError</code> on several or under <code>comm=</code> (use <code>approx_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
+<p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (a device near the rank’s CPUs, <code>gpu::local_device_for_comm</code>), and a list of several ordinals is a <code>ValueError</code>.
+<code>result=</code> and the row kwargs mean what they mean on the host <code>comm=</code> path, and a rank that cannot use its device fails the call on every rank.
+The pair needs the extension built with both the <code>cuda</code> and <code>mpi</code> features, and raises <code>RuntimeError</code> naming the missing one otherwise.
+See <a href="../manual/propagation/gpu.html">CUDA devices</a>.</p>
+<h2 id="gpupaulisum"><a class="header" href="#gpupaulisum"><code>GpuPauliSum</code></a></h2>
+<pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
+
+resident.propagate(circuit, policy=None, direction=None,
+                   target_bucket_len=None, min_buckets=None) -&gt; None
+resident.propagate_with_stats(circuit, policy=None, direction=None,
+                              target_bucket_len=None, min_buckets=None) -&gt; PropagationStats
+resident.to_host() -&gt; PauliSum
+</code></pre>
+<p>A sum resident on one CUDA device: <code>propagate</code> steps it <strong>in place</strong>, <code>to_host</code> copies it back and leaves it resident.
+The class exists only in a build with the <code>cuda</code> feature; elsewhere <code>to_device</code> raises <code>RuntimeError</code>.
+The arguments mean what they mean on <code>PauliSum.propagate</code>, with the same errors.
+A device error mid-run leaves the sum holding the last completed layer’s output.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>len(resident)</code></td><td><code>int</code></td><td>terms on the device</td></tr>
+<tr><td><code>.num_qubits</code></td><td><code>int</code></td><td>the sum’s qubit count</td></tr>
+<tr><td><code>.device</code></td><td><code>int</code></td><td>the CUDA device ordinal</td></tr>
+<tr><td><code>.num_buckets</code></td><td><code>int</code></td><td>the device partition’s current bucket count, grow-only</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
 <p>A <strong>layer</strong> here is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates in the field-standard sense.
@@ -263,7 +312,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.application_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the propagation loop, <code>0..layers</code> regardless of <code>direction</code></td></tr>
 <tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
-<tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code> call, else <code>None</code></td></tr>
+<tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
 <tr><td><code>.collapses</code></td><td><code>int | None</code></td><td>collapses a <code>truncation.collapse_sample</code> made during this call, <code>None</code> without one; under <code>comm=</code> rank 0’s count, all-reduced so every rank reports it</td></tr>
 </tbody>
 </table>
@@ -279,6 +328,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.partitions</code></td><td><code>int</code></td><td>partition count (power of two); the MPI group size under <code>comm=</code></td></tr>
 <tr><td><code>.rank</code></td><td><code>int | None</code></td><td>this process’s rank under <code>comm=</code>, else <code>None</code></td></tr>
 <tr><td><code>.size</code></td><td><code>int | None</code></td><td>the <code>comm=</code> group size, else <code>None</code></td></tr>
+<tr><td><code>.devices</code></td><td><code>list[int] | None</code></td><td>the CUDA device of each partition for a <code>device=</code> run (this rank’s one device under <code>comm=</code>), else <code>None</code></td></tr>
 <tr><td><code>.local</code></td><td><code>list[bool]</code></td><td>whether each layer moved no row across a partition boundary (<code>rows_exported[k] == 0</code>)</td></tr>
 <tr><td><code>.rows_exported</code></td><td><code>list[int]</code></td><td>rows sent across partition boundaries per layer, summed over sender/receiver pairs</td></tr>
 <tr><td><code>.bytes_exported</code></td><td><code>list[int]</code></td><td>wire bytes behind <code>rows_exported</code>, including per-block headers</td></tr>

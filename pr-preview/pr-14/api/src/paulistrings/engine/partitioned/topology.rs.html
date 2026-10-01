@@ -183,7 +183,7 @@
 <a href=#183 id=183 data-nosnippet>183</a>}
 <a href=#184 id=184 data-nosnippet>184</a>
 <a href=#185 id=185 data-nosnippet>185</a><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
-<a href=#186 id=186 data-nosnippet>186</a></span><span class="kw">fn </span>sysfs_numa_nodes(allowed: <span class="kw-2">&amp;</span>CpuSet) -&gt; Vec&lt;(usize, CpuSet)&gt; {
+<a href=#186 id=186 data-nosnippet>186</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>sysfs_numa_nodes(allowed: <span class="kw-2">&amp;</span>CpuSet) -&gt; Vec&lt;(usize, CpuSet)&gt; {
 <a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">const </span>ROOT: <span class="kw-2">&amp;</span>str = <span class="string">"/sys/devices/system/node"</span>;
 <a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">let </span><span class="prelude-val">Ok</span>(entries) = std::fs::read_dir(ROOT) <span class="kw">else </span>{
 <a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">return </span>Vec::new();
@@ -212,7 +212,7 @@
 <a href=#212 id=212 data-nosnippet>212</a>}
 <a href=#213 id=213 data-nosnippet>213</a>
 <a href=#214 id=214 data-nosnippet>214</a><span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
-<a href=#215 id=215 data-nosnippet>215</a></span><span class="kw">fn </span>sysfs_numa_nodes(_allowed: <span class="kw-2">&amp;</span>CpuSet) -&gt; Vec&lt;(usize, CpuSet)&gt; {
+<a href=#215 id=215 data-nosnippet>215</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>sysfs_numa_nodes(_allowed: <span class="kw-2">&amp;</span>CpuSet) -&gt; Vec&lt;(usize, CpuSet)&gt; {
 <a href=#216 id=216 data-nosnippet>216</a>    Vec::new()
 <a href=#217 id=217 data-nosnippet>217</a>}
 <a href=#218 id=218 data-nosnippet>218</a>
@@ -334,528 +334,598 @@
 <a href=#334 id=334 data-nosnippet>334</a>    </span><span class="kw">pub </span>node: <span class="prelude-ty">Option</span>&lt;usize&gt;,
 <a href=#335 id=335 data-nosnippet>335</a>    <span class="doccomment">/// Worker count for the slot's Rayon pool.
 <a href=#336 id=336 data-nosnippet>336</a>    </span><span class="kw">pub </span>threads: usize,
-<a href=#337 id=337 data-nosnippet>337</a>}
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a><span class="doccomment">/// Builds the Rayon pool for one partition, pinning each worker to the slot's CPUs and (when `bind_memory`) binding its allocations to the slot's node.
-<a href=#340 id=340 data-nosnippet>340</a>///
-<a href=#341 id=341 data-nosnippet>341</a>/// Pinning happens on the worker itself, before it enters Rayon's main loop, so the pool's own stacks and per-worker allocations are first-touched locally.
-<a href=#342 id=342 data-nosnippet>342</a>/// A worker whose pinning call fails logs a warning and runs unpinned: a placement failure degrades locality, it does not stop the run.
-<a href=#343 id=343 data-nosnippet>343</a>///
-<a href=#344 id=344 data-nosnippet>344</a>/// # Errors
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="doccomment">/// The CUDA device a device partition runs on, `None` for a host partition.
+<a href=#338 id=338 data-nosnippet>338</a>    </span><span class="kw">pub </span>device: <span class="prelude-ty">Option</span>&lt;u32&gt;,
+<a href=#339 id=339 data-nosnippet>339</a>}
+<a href=#340 id=340 data-nosnippet>340</a>
+<a href=#341 id=341 data-nosnippet>341</a><span class="doccomment">/// Builds the Rayon pool for one partition, pinning each worker to the slot's CPUs and (when `bind_memory`) binding its allocations to the slot's node.
+<a href=#342 id=342 data-nosnippet>342</a>///
+<a href=#343 id=343 data-nosnippet>343</a>/// Pinning happens on the worker itself, before it enters Rayon's main loop, so the pool's own stacks and per-worker allocations are first-touched locally.
+<a href=#344 id=344 data-nosnippet>344</a>/// A worker whose pinning call fails logs a warning and runs unpinned: a placement failure degrades locality, it does not stop the run.
 <a href=#345 id=345 data-nosnippet>345</a>///
-<a href=#346 id=346 data-nosnippet>346</a>/// [`TopologyError::Io`] wrapping the spawn or pool-build failure.
-<a href=#347 id=347 data-nosnippet>347</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>build_pool(
-<a href=#348 id=348 data-nosnippet>348</a>    slot: <span class="kw-2">&amp;</span>PartitionSlot,
-<a href=#349 id=349 data-nosnippet>349</a>    bind_memory: bool,
-<a href=#350 id=350 data-nosnippet>350</a>    name: <span class="kw-2">&amp;</span>str,
-<a href=#351 id=351 data-nosnippet>351</a>) -&gt; <span class="prelude-ty">Result</span>&lt;rayon::ThreadPool, TopologyError&gt; {
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="kw">let </span>cpus = slot.cpus.clone();
-<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">let </span>node = slot.node;
-<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">let </span>pool_name = name.to_string();
-<a href=#355 id=355 data-nosnippet>355</a>    rayon::ThreadPoolBuilder::new()
-<a href=#356 id=356 data-nosnippet>356</a>        .num_threads(slot.threads)
-<a href=#357 id=357 data-nosnippet>357</a>        .thread_name(<span class="kw">move </span>|index| <span class="macro">format!</span>(<span class="string">"{pool_name}-{index}"</span>))
-<a href=#358 id=358 data-nosnippet>358</a>        .spawn_handler(<span class="kw">move </span>|thread| {
-<a href=#359 id=359 data-nosnippet>359</a>            <span class="kw">let </span>cpus = cpus.clone();
-<a href=#360 id=360 data-nosnippet>360</a>            <span class="kw">let </span><span class="kw-2">mut </span>builder = std::thread::Builder::new();
-<a href=#361 id=361 data-nosnippet>361</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(name) = thread.name() {
-<a href=#362 id=362 data-nosnippet>362</a>                builder = builder.name(name.to_string());
-<a href=#363 id=363 data-nosnippet>363</a>            }
-<a href=#364 id=364 data-nosnippet>364</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(size) = thread.stack_size() {
-<a href=#365 id=365 data-nosnippet>365</a>                builder = builder.stack_size(size);
-<a href=#366 id=366 data-nosnippet>366</a>            }
-<a href=#367 id=367 data-nosnippet>367</a>            builder.spawn(<span class="kw">move </span>|| {
-<a href=#368 id=368 data-nosnippet>368</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(cpus) = <span class="kw-2">&amp;</span>cpus {
-<a href=#369 id=369 data-nosnippet>369</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(err) = pin_current_thread(cpus) {
-<a href=#370 id=370 data-nosnippet>370</a>                        <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"failed to pin worker to {cpus}: {err}"</span>);
-<a href=#371 id=371 data-nosnippet>371</a>                    }
-<a href=#372 id=372 data-nosnippet>372</a>                }
-<a href=#373 id=373 data-nosnippet>373</a>                <span class="kw">if </span>bind_memory {
-<a href=#374 id=374 data-nosnippet>374</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(err) = bind_current_thread_memory(node) {
-<a href=#375 id=375 data-nosnippet>375</a>                        <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"failed to bind worker memory to {node:?}: {err}"</span>);
-<a href=#376 id=376 data-nosnippet>376</a>                    }
-<a href=#377 id=377 data-nosnippet>377</a>                }
-<a href=#378 id=378 data-nosnippet>378</a>                thread.run();
-<a href=#379 id=379 data-nosnippet>379</a>            })<span class="question-mark">?</span>;
-<a href=#380 id=380 data-nosnippet>380</a>            <span class="prelude-val">Ok</span>(())
-<a href=#381 id=381 data-nosnippet>381</a>        })
-<a href=#382 id=382 data-nosnippet>382</a>        .build()
-<a href=#383 id=383 data-nosnippet>383</a>        .map_err(|err| TopologyError::Io(io::Error::other(err.to_string())))
-<a href=#384 id=384 data-nosnippet>384</a>}
-<a href=#385 id=385 data-nosnippet>385</a>
-<a href=#386 id=386 data-nosnippet>386</a><span class="doccomment">/// How partitions map onto the machine.
-<a href=#387 id=387 data-nosnippet>387</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
-<a href=#388 id=388 data-nosnippet>388</a></span><span class="kw">pub enum </span>Placement {
-<a href=#389 id=389 data-nosnippet>389</a>    <span class="doccomment">/// One partition per NUMA node in the affinity mask.
-<a href=#390 id=390 data-nosnippet>390</a>    ///
-<a href=#391 id=391 data-nosnippet>391</a>    /// The partition count is the node count rounded **down** to a power of two (at least one); when that is fewer than the node count, adjacent nodes are merged into a partition rather than dropped, so every allowed CPU stays in play.
-<a href=#392 id=392 data-nosnippet>392</a>    /// Each partition takes as many threads as it has CPUs.
-<a href=#393 id=393 data-nosnippet>393</a>    </span>Auto {
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="doccomment">/// Upper bound on the partition count, itself rounded down to a power
-<a href=#395 id=395 data-nosnippet>395</a>        /// of two. `None` for no bound.
-<a href=#396 id=396 data-nosnippet>396</a>        </span>max_partitions: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#397 id=397 data-nosnippet>397</a>    },
-<a href=#398 id=398 data-nosnippet>398</a>    <span class="doccomment">/// One partition per listed CPU set, exactly as given.
-<a href=#399 id=399 data-nosnippet>399</a>    ///
-<a href=#400 id=400 data-nosnippet>400</a>    /// Sets may overlap (the resolve logs a warning and proceeds), but each must be non-empty and a subset of the process's affinity mask.
-<a href=#401 id=401 data-nosnippet>401</a>    </span>Explicit(
-<a href=#402 id=402 data-nosnippet>402</a>        <span class="doccomment">/// The CPU sets, one per partition; the count must be a power of two.
-<a href=#403 id=403 data-nosnippet>403</a>        </span>Vec&lt;CpuSet&gt;,
-<a href=#404 id=404 data-nosnippet>404</a>    ),
-<a href=#405 id=405 data-nosnippet>405</a>    <span class="doccomment">/// Partitions with no pinning at all: the shape of a partitioned run
-<a href=#406 id=406 data-nosnippet>406</a>    /// without its placement, for tests and CI.
-<a href=#407 id=407 data-nosnippet>407</a>    </span>Unpinned {
-<a href=#408 id=408 data-nosnippet>408</a>        <span class="doccomment">/// Number of partitions; must be a power of two.
-<a href=#409 id=409 data-nosnippet>409</a>        </span>partitions: usize,
-<a href=#410 id=410 data-nosnippet>410</a>        <span class="doccomment">/// Threads per partition, or `None` to split `available_parallelism`
-<a href=#411 id=411 data-nosnippet>411</a>        /// evenly (at least one thread each).
-<a href=#412 id=412 data-nosnippet>412</a>        </span>threads_per_partition: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#413 id=413 data-nosnippet>413</a>    },
-<a href=#414 id=414 data-nosnippet>414</a>}
-<a href=#415 id=415 data-nosnippet>415</a>
-<a href=#416 id=416 data-nosnippet>416</a><span class="doccomment">/// Placement plus the knobs the partitioned engine reads alongside it.
-<a href=#417 id=417 data-nosnippet>417</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
-<a href=#418 id=418 data-nosnippet>418</a></span><span class="kw">pub struct </span>PartitionConfig {
-<a href=#419 id=419 data-nosnippet>419</a>    <span class="doccomment">/// How partitions map onto the machine.
-<a href=#420 id=420 data-nosnippet>420</a>    </span><span class="kw">pub </span>placement: Placement,
-<a href=#421 id=421 data-nosnippet>421</a>    <span class="doccomment">/// Whether each pool's workers bind their allocations to the partition's
-<a href=#422 id=422 data-nosnippet>422</a>    /// NUMA node (`MPOL_BIND`, through `set_mempolicy`).
-<a href=#423 id=423 data-nosnippet>423</a>    ///
-<a href=#424 id=424 data-nosnippet>424</a>    /// The Python surface spells this `pin_memory=`, and the probe's JSON
-<a href=#425 id=425 data-nosnippet>425</a>    /// sidecar follows the Python name; everything on the Rust side is
-<a href=#426 id=426 data-nosnippet>426</a>    /// `bind_memory`, because it is a memory policy and not a thread affinity.
-<a href=#427 id=427 data-nosnippet>427</a>    </span><span class="kw">pub </span>bind_memory: bool,
-<a href=#428 id=428 data-nosnippet>428</a>    <span class="doccomment">/// Seed selecting which GF(2) hash rows designate the partition, or
-<a href=#429 id=429 data-nosnippet>429</a>    /// `None` to take the engine's default choice.
-<a href=#430 id=430 data-nosnippet>430</a>    </span><span class="kw">pub </span>partition_row_seed: <span class="prelude-ty">Option</span>&lt;u64&gt;,
-<a href=#431 id=431 data-nosnippet>431</a>}
-<a href=#432 id=432 data-nosnippet>432</a>
-<a href=#433 id=433 data-nosnippet>433</a><span class="kw">impl </span>Default <span class="kw">for </span>PartitionConfig {
-<a href=#434 id=434 data-nosnippet>434</a>    <span class="doccomment">/// One partition per NUMA node, memory bound to it, default partition
-<a href=#435 id=435 data-nosnippet>435</a>    /// rows.
-<a href=#436 id=436 data-nosnippet>436</a>    </span><span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#437 id=437 data-nosnippet>437</a>        <span class="self">Self </span>{
-<a href=#438 id=438 data-nosnippet>438</a>            placement: Placement::Auto {
-<a href=#439 id=439 data-nosnippet>439</a>                max_partitions: <span class="prelude-val">None</span>,
-<a href=#440 id=440 data-nosnippet>440</a>            },
-<a href=#441 id=441 data-nosnippet>441</a>            bind_memory: <span class="bool-val">true</span>,
-<a href=#442 id=442 data-nosnippet>442</a>            partition_row_seed: <span class="prelude-val">None</span>,
-<a href=#443 id=443 data-nosnippet>443</a>        }
-<a href=#444 id=444 data-nosnippet>444</a>    }
+<a href=#346 id=346 data-nosnippet>346</a>/// # Errors
+<a href=#347 id=347 data-nosnippet>347</a>///
+<a href=#348 id=348 data-nosnippet>348</a>/// [`TopologyError::Io`] wrapping the spawn or pool-build failure.
+<a href=#349 id=349 data-nosnippet>349</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>build_pool(
+<a href=#350 id=350 data-nosnippet>350</a>    slot: <span class="kw-2">&amp;</span>PartitionSlot,
+<a href=#351 id=351 data-nosnippet>351</a>    bind_memory: bool,
+<a href=#352 id=352 data-nosnippet>352</a>    name: <span class="kw-2">&amp;</span>str,
+<a href=#353 id=353 data-nosnippet>353</a>) -&gt; <span class="prelude-ty">Result</span>&lt;rayon::ThreadPool, TopologyError&gt; {
+<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">let </span>cpus = slot.cpus.clone();
+<a href=#355 id=355 data-nosnippet>355</a>    <span class="kw">let </span>node = slot.node;
+<a href=#356 id=356 data-nosnippet>356</a>    <span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">let </span>device = slot.device;
+<a href=#358 id=358 data-nosnippet>358</a>    <span class="kw">let </span>pool_name = name.to_string();
+<a href=#359 id=359 data-nosnippet>359</a>    rayon::ThreadPoolBuilder::new()
+<a href=#360 id=360 data-nosnippet>360</a>        .num_threads(slot.threads)
+<a href=#361 id=361 data-nosnippet>361</a>        .thread_name(<span class="kw">move </span>|index| <span class="macro">format!</span>(<span class="string">"{pool_name}-{index}"</span>))
+<a href=#362 id=362 data-nosnippet>362</a>        .spawn_handler(<span class="kw">move </span>|thread| {
+<a href=#363 id=363 data-nosnippet>363</a>            <span class="kw">let </span>cpus = cpus.clone();
+<a href=#364 id=364 data-nosnippet>364</a>            <span class="kw">let </span><span class="kw-2">mut </span>builder = std::thread::Builder::new();
+<a href=#365 id=365 data-nosnippet>365</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(name) = thread.name() {
+<a href=#366 id=366 data-nosnippet>366</a>                builder = builder.name(name.to_string());
+<a href=#367 id=367 data-nosnippet>367</a>            }
+<a href=#368 id=368 data-nosnippet>368</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(size) = thread.stack_size() {
+<a href=#369 id=369 data-nosnippet>369</a>                builder = builder.stack_size(size);
+<a href=#370 id=370 data-nosnippet>370</a>            }
+<a href=#371 id=371 data-nosnippet>371</a>            builder.spawn(<span class="kw">move </span>|| {
+<a href=#372 id=372 data-nosnippet>372</a>                <span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#373 id=373 data-nosnippet>373</a>                </span><span class="kw">if let </span><span class="prelude-val">Some</span>(device) = device {
+<a href=#374 id=374 data-nosnippet>374</a>                    bind_device_context(device);
+<a href=#375 id=375 data-nosnippet>375</a>                }
+<a href=#376 id=376 data-nosnippet>376</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(cpus) = <span class="kw-2">&amp;</span>cpus {
+<a href=#377 id=377 data-nosnippet>377</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(err) = pin_current_thread(cpus) {
+<a href=#378 id=378 data-nosnippet>378</a>                        <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"failed to pin worker to {cpus}: {err}"</span>);
+<a href=#379 id=379 data-nosnippet>379</a>                    }
+<a href=#380 id=380 data-nosnippet>380</a>                }
+<a href=#381 id=381 data-nosnippet>381</a>                <span class="kw">if </span>bind_memory {
+<a href=#382 id=382 data-nosnippet>382</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(err) = bind_current_thread_memory(node) {
+<a href=#383 id=383 data-nosnippet>383</a>                        <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"failed to bind worker memory to {node:?}: {err}"</span>);
+<a href=#384 id=384 data-nosnippet>384</a>                    }
+<a href=#385 id=385 data-nosnippet>385</a>                }
+<a href=#386 id=386 data-nosnippet>386</a>                thread.run();
+<a href=#387 id=387 data-nosnippet>387</a>            })<span class="question-mark">?</span>;
+<a href=#388 id=388 data-nosnippet>388</a>            <span class="prelude-val">Ok</span>(())
+<a href=#389 id=389 data-nosnippet>389</a>        })
+<a href=#390 id=390 data-nosnippet>390</a>        .build()
+<a href=#391 id=391 data-nosnippet>391</a>        .map_err(|err| TopologyError::Io(io::Error::other(err.to_string())))
+<a href=#392 id=392 data-nosnippet>392</a>}
+<a href=#393 id=393 data-nosnippet>393</a>
+<a href=#394 id=394 data-nosnippet>394</a><span class="doccomment">/// Make `device`'s CUDA context current on this thread, warning rather than failing like the pinning calls.
+<a href=#395 id=395 data-nosnippet>395</a></span><span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#396 id=396 data-nosnippet>396</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>bind_device_context(device: u32) {
+<a href=#397 id=397 data-nosnippet>397</a>    <span class="kw">match </span><span class="kw">crate</span>::engine::gpu::device::context(device) {
+<a href=#398 id=398 data-nosnippet>398</a>        <span class="prelude-val">Ok</span>(ctx) =&gt; {
+<a href=#399 id=399 data-nosnippet>399</a>            <span class="kw">if let </span><span class="prelude-val">Err</span>(err) = ctx.bind_to_thread() {
+<a href=#400 id=400 data-nosnippet>400</a>                <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"failed to bind device {device} to a partition thread: {err}"</span>);
+<a href=#401 id=401 data-nosnippet>401</a>            }
+<a href=#402 id=402 data-nosnippet>402</a>        }
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="prelude-val">Err</span>(err) =&gt; <span class="macro">log::warn!</span>(target: LOG_TARGET, <span class="string">"device {device} for a partition thread: {err}"</span>),
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>}
+<a href=#406 id=406 data-nosnippet>406</a>
+<a href=#407 id=407 data-nosnippet>407</a><span class="doccomment">/// How partitions map onto the machine.
+<a href=#408 id=408 data-nosnippet>408</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
+<a href=#409 id=409 data-nosnippet>409</a></span><span class="kw">pub enum </span>Placement {
+<a href=#410 id=410 data-nosnippet>410</a>    <span class="doccomment">/// One partition per NUMA node in the affinity mask.
+<a href=#411 id=411 data-nosnippet>411</a>    ///
+<a href=#412 id=412 data-nosnippet>412</a>    /// The partition count is the node count rounded **down** to a power of two (at least one); when that is fewer than the node count, adjacent nodes are merged into a partition rather than dropped, so every allowed CPU stays in play.
+<a href=#413 id=413 data-nosnippet>413</a>    /// Each partition takes as many threads as it has CPUs.
+<a href=#414 id=414 data-nosnippet>414</a>    </span>Auto {
+<a href=#415 id=415 data-nosnippet>415</a>        <span class="doccomment">/// Upper bound on the partition count, itself rounded down to a power
+<a href=#416 id=416 data-nosnippet>416</a>        /// of two. `None` for no bound.
+<a href=#417 id=417 data-nosnippet>417</a>        </span>max_partitions: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#418 id=418 data-nosnippet>418</a>    },
+<a href=#419 id=419 data-nosnippet>419</a>    <span class="doccomment">/// One partition per listed CPU set, exactly as given.
+<a href=#420 id=420 data-nosnippet>420</a>    ///
+<a href=#421 id=421 data-nosnippet>421</a>    /// Sets may overlap (the resolve logs a warning and proceeds), but each must be non-empty and a subset of the process's affinity mask.
+<a href=#422 id=422 data-nosnippet>422</a>    </span>Explicit(
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="doccomment">/// The CPU sets, one per partition; the count must be a power of two.
+<a href=#424 id=424 data-nosnippet>424</a>        </span>Vec&lt;CpuSet&gt;,
+<a href=#425 id=425 data-nosnippet>425</a>    ),
+<a href=#426 id=426 data-nosnippet>426</a>    <span class="doccomment">/// Partitions with no pinning at all: the shape of a partitioned run
+<a href=#427 id=427 data-nosnippet>427</a>    /// without its placement, for tests and CI.
+<a href=#428 id=428 data-nosnippet>428</a>    </span>Unpinned {
+<a href=#429 id=429 data-nosnippet>429</a>        <span class="doccomment">/// Number of partitions; must be a power of two.
+<a href=#430 id=430 data-nosnippet>430</a>        </span>partitions: usize,
+<a href=#431 id=431 data-nosnippet>431</a>        <span class="doccomment">/// Threads per partition, or `None` to split `available_parallelism`
+<a href=#432 id=432 data-nosnippet>432</a>        /// evenly (at least one thread each).
+<a href=#433 id=433 data-nosnippet>433</a>        </span>threads_per_partition: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#434 id=434 data-nosnippet>434</a>    },
+<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// `per_device` partitions on each listed CUDA device, in rank order, for the `cuda` backend's [`GpuPartitionedSum`](crate::gpu::GpuPartitionedSum).
+<a href=#436 id=436 data-nosnippet>436</a>    ///
+<a href=#437 id=437 data-nosnippet>437</a>    /// `devices.len() × per_device` must be a power of two; each slot is unpinned with a small host pool for the export and receive plumbing, and every worker of that pool binds the device's context when it starts.
+<a href=#438 id=438 data-nosnippet>438</a>    </span><span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#439 id=439 data-nosnippet>439</a>    </span>Devices {
+<a href=#440 id=440 data-nosnippet>440</a>        <span class="doccomment">/// Device ordinals, one entry per device.
+<a href=#441 id=441 data-nosnippet>441</a>        </span>devices: Vec&lt;u32&gt;,
+<a href=#442 id=442 data-nosnippet>442</a>        <span class="doccomment">/// Partitions sharing each device; `1` in production, more to test the exchange on one device.
+<a href=#443 id=443 data-nosnippet>443</a>        </span>per_device: usize,
+<a href=#444 id=444 data-nosnippet>444</a>    },
 <a href=#445 id=445 data-nosnippet>445</a>}
 <a href=#446 id=446 data-nosnippet>446</a>
-<a href=#447 id=447 data-nosnippet>447</a><span class="kw">impl </span>PartitionConfig {
-<a href=#448 id=448 data-nosnippet>448</a>    <span class="doccomment">/// Resolves the placement against the machine into one slot per partition.
-<a href=#449 id=449 data-nosnippet>449</a>    ///
-<a href=#450 id=450 data-nosnippet>450</a>    /// The slot count is always a power of two, which is what makes a partition index a fixed set of GF(2) hash rows.
-<a href=#451 id=451 data-nosnippet>451</a>    ///
-<a href=#452 id=452 data-nosnippet>452</a>    /// # Errors
-<a href=#453 id=453 data-nosnippet>453</a>    ///
-<a href=#454 id=454 data-nosnippet>454</a>    /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition
-<a href=#455 id=455 data-nosnippet>455</a>    /// count is not a power of two, [`TopologyError::EmptySet`] if an explicit
-<a href=#456 id=456 data-nosnippet>456</a>    /// set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set
-<a href=#457 id=457 data-nosnippet>457</a>    /// names a CPU outside the process's affinity mask.
-<a href=#458 id=458 data-nosnippet>458</a>    </span><span class="kw">pub fn </span>resolve(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
-<a href=#459 id=459 data-nosnippet>459</a>        <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.placement {
-<a href=#460 id=460 data-nosnippet>460</a>            Placement::Auto { max_partitions } =&gt; <span class="prelude-val">Ok</span>(resolve_auto(<span class="kw-2">*</span>max_partitions)),
-<a href=#461 id=461 data-nosnippet>461</a>            Placement::Explicit(sets) =&gt; resolve_explicit(sets),
-<a href=#462 id=462 data-nosnippet>462</a>            Placement::Unpinned {
-<a href=#463 id=463 data-nosnippet>463</a>                partitions,
-<a href=#464 id=464 data-nosnippet>464</a>                threads_per_partition,
-<a href=#465 id=465 data-nosnippet>465</a>            } =&gt; resolve_unpinned(<span class="kw-2">*</span>partitions, <span class="kw-2">*</span>threads_per_partition),
-<a href=#466 id=466 data-nosnippet>466</a>        }
-<a href=#467 id=467 data-nosnippet>467</a>    }
-<a href=#468 id=468 data-nosnippet>468</a>}
-<a href=#469 id=469 data-nosnippet>469</a>
-<a href=#470 id=470 data-nosnippet>470</a><span class="kw">fn </span>resolve_auto(max_partitions: <span class="prelude-ty">Option</span>&lt;usize&gt;) -&gt; Vec&lt;PartitionSlot&gt; {
-<a href=#471 id=471 data-nosnippet>471</a>    <span class="kw">let </span>nodes = numa_nodes();
-<a href=#472 id=472 data-nosnippet>472</a>    <span class="kw">let </span><span class="kw-2">mut </span>count = prev_power_of_two(nodes.len());
-<a href=#473 id=473 data-nosnippet>473</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(max) = max_partitions {
-<a href=#474 id=474 data-nosnippet>474</a>        count = prev_power_of_two(count.min(max));
-<a href=#475 id=475 data-nosnippet>475</a>    }
-<a href=#476 id=476 data-nosnippet>476</a>
-<a href=#477 id=477 data-nosnippet>477</a>    <span class="comment">// Merge adjacent nodes when the count was rounded down, so no allowed CPU is left out of the run: the first `nodes.len() % count` partitions take one node more than the rest.
-<a href=#478 id=478 data-nosnippet>478</a>    </span><span class="kw">let </span>(base, remainder) = (nodes.len() / count, nodes.len() % count);
-<a href=#479 id=479 data-nosnippet>479</a>    <span class="kw">let </span><span class="kw-2">mut </span>slots = Vec::with_capacity(count);
-<a href=#480 id=480 data-nosnippet>480</a>    <span class="kw">let </span><span class="kw-2">mut </span>rest = nodes.as_slice();
-<a href=#481 id=481 data-nosnippet>481</a>    <span class="kw">for </span>partition <span class="kw">in </span><span class="number">0</span>..count {
-<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">let </span>take = base + usize::from(partition &lt; remainder);
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="kw">let </span>(group, tail) = rest.split_at(take);
-<a href=#484 id=484 data-nosnippet>484</a>        rest = tail;
-<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">let </span>cpus = group
-<a href=#486 id=486 data-nosnippet>486</a>            .iter()
-<a href=#487 id=487 data-nosnippet>487</a>            .fold(CpuSet(Vec::new()), |acc, (<span class="kw">_</span>, set)| acc.union(set));
-<a href=#488 id=488 data-nosnippet>488</a>        slots.push(PartitionSlot {
-<a href=#489 id=489 data-nosnippet>489</a>            node: (group.len() == <span class="number">1</span>).then(|| group[<span class="number">0</span>].<span class="number">0</span>),
-<a href=#490 id=490 data-nosnippet>490</a>            threads: cpus.len(),
-<a href=#491 id=491 data-nosnippet>491</a>            cpus: <span class="prelude-val">Some</span>(cpus),
-<a href=#492 id=492 data-nosnippet>492</a>        });
-<a href=#493 id=493 data-nosnippet>493</a>    }
-<a href=#494 id=494 data-nosnippet>494</a>    slots
-<a href=#495 id=495 data-nosnippet>495</a>}
-<a href=#496 id=496 data-nosnippet>496</a>
-<a href=#497 id=497 data-nosnippet>497</a><span class="kw">fn </span>resolve_explicit(sets: <span class="kw-2">&amp;</span>[CpuSet]) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
-<a href=#498 id=498 data-nosnippet>498</a>    <span class="kw">if </span>!sets.len().is_power_of_two() {
-<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(sets.len()));
-<a href=#500 id=500 data-nosnippet>500</a>    }
-<a href=#501 id=501 data-nosnippet>501</a>    <span class="kw">let </span>allowed = allowed_cpus();
-<a href=#502 id=502 data-nosnippet>502</a>    <span class="kw">let </span>nodes = numa_nodes();
-<a href=#503 id=503 data-nosnippet>503</a>
-<a href=#504 id=504 data-nosnippet>504</a>    <span class="kw">let </span><span class="kw-2">mut </span>slots = Vec::with_capacity(sets.len());
-<a href=#505 id=505 data-nosnippet>505</a>    <span class="kw">for </span>set <span class="kw">in </span>sets {
-<a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">if </span>set.is_empty() {
-<a href=#507 id=507 data-nosnippet>507</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::EmptySet);
-<a href=#508 id=508 data-nosnippet>508</a>        }
-<a href=#509 id=509 data-nosnippet>509</a>        <span class="kw">let </span>cpus = CpuSet(set.normalized());
-<a href=#510 id=510 data-nosnippet>510</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>cpu) = cpus.<span class="number">0</span>.iter().find(|cpu| !allowed.<span class="number">0</span>.contains(cpu)) {
-<a href=#511 id=511 data-nosnippet>511</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::CpuNotAllowed(cpu));
-<a href=#512 id=512 data-nosnippet>512</a>        }
-<a href=#513 id=513 data-nosnippet>513</a>        <span class="kw">let </span><span class="kw-2">mut </span>containing = nodes
-<a href=#514 id=514 data-nosnippet>514</a>            .iter()
-<a href=#515 id=515 data-nosnippet>515</a>            .filter(|(<span class="kw">_</span>, node)| cpus.is_subset_of(node))
-<a href=#516 id=516 data-nosnippet>516</a>            .map(|(id, <span class="kw">_</span>)| <span class="kw-2">*</span>id);
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">let </span>node = <span class="kw">match </span>(containing.next(), containing.next()) {
-<a href=#518 id=518 data-nosnippet>518</a>            (<span class="prelude-val">Some</span>(id), <span class="prelude-val">None</span>) =&gt; <span class="prelude-val">Some</span>(id),
-<a href=#519 id=519 data-nosnippet>519</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#520 id=520 data-nosnippet>520</a>        };
-<a href=#521 id=521 data-nosnippet>521</a>        slots.push(PartitionSlot {
-<a href=#522 id=522 data-nosnippet>522</a>            node,
-<a href=#523 id=523 data-nosnippet>523</a>            threads: cpus.len(),
-<a href=#524 id=524 data-nosnippet>524</a>            cpus: <span class="prelude-val">Some</span>(cpus),
-<a href=#525 id=525 data-nosnippet>525</a>        });
-<a href=#526 id=526 data-nosnippet>526</a>    }
-<a href=#527 id=527 data-nosnippet>527</a>
-<a href=#528 id=528 data-nosnippet>528</a>    <span class="kw">for </span>(i, slot) <span class="kw">in </span>slots.iter().enumerate() {
-<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">for </span>other <span class="kw">in </span>slots.iter().skip(i + <span class="number">1</span>) {
-<a href=#530 id=530 data-nosnippet>530</a>            <span class="kw">let </span>(a, b) = (slot.cpus.as_ref(), other.cpus.as_ref());
-<a href=#531 id=531 data-nosnippet>531</a>            <span class="kw">if let </span>(<span class="prelude-val">Some</span>(a), <span class="prelude-val">Some</span>(b)) = (a, b) {
-<a href=#532 id=532 data-nosnippet>532</a>                <span class="kw">let </span>shared = a.intersect(b);
-<a href=#533 id=533 data-nosnippet>533</a>                <span class="kw">if </span>!shared.is_empty() {
-<a href=#534 id=534 data-nosnippet>534</a>                    <span class="macro">log::warn!</span>(
-<a href=#535 id=535 data-nosnippet>535</a>                        target: LOG_TARGET,
-<a href=#536 id=536 data-nosnippet>536</a>                        <span class="string">"explicit partitions {a} and {b} overlap on {shared}; \
-<a href=#537 id=537 data-nosnippet>537</a>                         their pools will contend for those CPUs"</span>,
-<a href=#538 id=538 data-nosnippet>538</a>                    );
-<a href=#539 id=539 data-nosnippet>539</a>                }
-<a href=#540 id=540 data-nosnippet>540</a>            }
-<a href=#541 id=541 data-nosnippet>541</a>        }
-<a href=#542 id=542 data-nosnippet>542</a>    }
-<a href=#543 id=543 data-nosnippet>543</a>    <span class="prelude-val">Ok</span>(slots)
-<a href=#544 id=544 data-nosnippet>544</a>}
-<a href=#545 id=545 data-nosnippet>545</a>
-<a href=#546 id=546 data-nosnippet>546</a><span class="kw">fn </span>resolve_unpinned(
-<a href=#547 id=547 data-nosnippet>547</a>    partitions: usize,
-<a href=#548 id=548 data-nosnippet>548</a>    threads_per_partition: <span class="prelude-ty">Option</span>&lt;usize&gt;,
-<a href=#549 id=549 data-nosnippet>549</a>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
-<a href=#550 id=550 data-nosnippet>550</a>    <span class="kw">if </span>!partitions.is_power_of_two() {
-<a href=#551 id=551 data-nosnippet>551</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(partitions));
-<a href=#552 id=552 data-nosnippet>552</a>    }
-<a href=#553 id=553 data-nosnippet>553</a>    <span class="kw">let </span>threads = threads_per_partition
-<a href=#554 id=554 data-nosnippet>554</a>        .unwrap_or(available_parallelism() / partitions)
-<a href=#555 id=555 data-nosnippet>555</a>        .max(<span class="number">1</span>);
-<a href=#556 id=556 data-nosnippet>556</a>    <span class="prelude-val">Ok</span>(<span class="macro">vec!</span>[
-<a href=#557 id=557 data-nosnippet>557</a>        PartitionSlot {
-<a href=#558 id=558 data-nosnippet>558</a>            cpus: <span class="prelude-val">None</span>,
-<a href=#559 id=559 data-nosnippet>559</a>            node: <span class="prelude-val">None</span>,
-<a href=#560 id=560 data-nosnippet>560</a>            threads,
-<a href=#561 id=561 data-nosnippet>561</a>        };
-<a href=#562 id=562 data-nosnippet>562</a>        partitions
-<a href=#563 id=563 data-nosnippet>563</a>    ])
-<a href=#564 id=564 data-nosnippet>564</a>}
-<a href=#565 id=565 data-nosnippet>565</a>
-<a href=#566 id=566 data-nosnippet>566</a><span class="doccomment">/// The largest power of two `&lt;= n`, and 1 for `n == 0`.
-<a href=#567 id=567 data-nosnippet>567</a></span><span class="kw">fn </span>prev_power_of_two(n: usize) -&gt; usize {
-<a href=#568 id=568 data-nosnippet>568</a>    <span class="kw">if </span>n &lt;= <span class="number">1 </span>{
-<a href=#569 id=569 data-nosnippet>569</a>        <span class="number">1
-<a href=#570 id=570 data-nosnippet>570</a>    </span>} <span class="kw">else </span>{
-<a href=#571 id=571 data-nosnippet>571</a>        <span class="number">1 </span>&lt;&lt; (usize::BITS - <span class="number">1 </span>- n.leading_zeros())
-<a href=#572 id=572 data-nosnippet>572</a>    }
-<a href=#573 id=573 data-nosnippet>573</a>}
-<a href=#574 id=574 data-nosnippet>574</a>
-<a href=#575 id=575 data-nosnippet>575</a><span class="kw">fn </span>available_parallelism() -&gt; usize {
-<a href=#576 id=576 data-nosnippet>576</a>    std::thread::available_parallelism().map_or(<span class="number">1</span>, std::num::NonZeroUsize::get)
-<a href=#577 id=577 data-nosnippet>577</a>}
-<a href=#578 id=578 data-nosnippet>578</a>
-<a href=#579 id=579 data-nosnippet>579</a><span class="doccomment">/// What can go wrong discovering topology or resolving a [`PartitionConfig`].
-<a href=#580 id=580 data-nosnippet>580</a></span><span class="attr">#[derive(Debug)]
-<a href=#581 id=581 data-nosnippet>581</a></span><span class="kw">pub enum </span>TopologyError {
-<a href=#582 id=582 data-nosnippet>582</a>    <span class="doccomment">/// A cpulist string was not the `"0-7,16-23"` form.
-<a href=#583 id=583 data-nosnippet>583</a>    </span>InvalidCpuList(
-<a href=#584 id=584 data-nosnippet>584</a>        <span class="doccomment">/// The offending list, trimmed.
-<a href=#585 id=585 data-nosnippet>585</a>        </span>String,
-<a href=#586 id=586 data-nosnippet>586</a>    ),
-<a href=#587 id=587 data-nosnippet>587</a>    <span class="doccomment">/// A partition count was not a power of two.
-<a href=#588 id=588 data-nosnippet>588</a>    </span>NotPowerOfTwo(
-<a href=#589 id=589 data-nosnippet>589</a>        <span class="doccomment">/// The rejected count.
-<a href=#590 id=590 data-nosnippet>590</a>        </span>usize,
-<a href=#591 id=591 data-nosnippet>591</a>    ),
-<a href=#592 id=592 data-nosnippet>592</a>    <span class="doccomment">/// A CPU set was empty where a partition needs at least one CPU.
-<a href=#593 id=593 data-nosnippet>593</a>    </span>EmptySet,
-<a href=#594 id=594 data-nosnippet>594</a>    <span class="doccomment">/// A syscall or sysfs read failed, or a pool could not be built.
-<a href=#595 id=595 data-nosnippet>595</a>    </span>Io(
-<a href=#596 id=596 data-nosnippet>596</a>        <span class="doccomment">/// The underlying error.
-<a href=#597 id=597 data-nosnippet>597</a>        </span>io::Error,
-<a href=#598 id=598 data-nosnippet>598</a>    ),
-<a href=#599 id=599 data-nosnippet>599</a>    <span class="doccomment">/// An explicit set named a CPU outside the process's affinity mask.
-<a href=#600 id=600 data-nosnippet>600</a>    </span>CpuNotAllowed(
-<a href=#601 id=601 data-nosnippet>601</a>        <span class="doccomment">/// The CPU index that is outside the process's affinity mask.
-<a href=#602 id=602 data-nosnippet>602</a>        </span>usize,
-<a href=#603 id=603 data-nosnippet>603</a>    ),
-<a href=#604 id=604 data-nosnippet>604</a>}
-<a href=#605 id=605 data-nosnippet>605</a>
-<a href=#606 id=606 data-nosnippet>606</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>TopologyError {
-<a href=#607 id=607 data-nosnippet>607</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#608 id=608 data-nosnippet>608</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#609 id=609 data-nosnippet>609</a>            <span class="self">Self</span>::InvalidCpuList(list) =&gt; {
-<a href=#610 id=610 data-nosnippet>610</a>                <span class="macro">write!</span>(f, <span class="string">"{list:?} is not a cpulist of the form \"0-7,16-23\""</span>)
-<a href=#611 id=611 data-nosnippet>611</a>            }
-<a href=#612 id=612 data-nosnippet>612</a>            <span class="self">Self</span>::NotPowerOfTwo(count) =&gt; <span class="macro">write!</span>(
-<a href=#613 id=613 data-nosnippet>613</a>                f,
-<a href=#614 id=614 data-nosnippet>614</a>                <span class="string">"partition count {count} is not a power of two; a partition index is a fixed \
-<a href=#615 id=615 data-nosnippet>615</a>                 set of GF(2) hash rows"</span>,
-<a href=#616 id=616 data-nosnippet>616</a>            ),
-<a href=#617 id=617 data-nosnippet>617</a>            <span class="self">Self</span>::EmptySet =&gt; <span class="macro">write!</span>(f, <span class="string">"a partition needs a non-empty CPU set"</span>),
-<a href=#618 id=618 data-nosnippet>618</a>            <span class="self">Self</span>::Io(err) =&gt; <span class="macro">write!</span>(f, <span class="string">"topology I/O failed: {err}"</span>),
-<a href=#619 id=619 data-nosnippet>619</a>            <span class="self">Self</span>::CpuNotAllowed(cpu) =&gt; {
-<a href=#620 id=620 data-nosnippet>620</a>                <span class="macro">write!</span>(f, <span class="string">"CPU {cpu} is outside this process's affinity mask"</span>,)
-<a href=#621 id=621 data-nosnippet>621</a>            }
-<a href=#622 id=622 data-nosnippet>622</a>        }
-<a href=#623 id=623 data-nosnippet>623</a>    }
-<a href=#624 id=624 data-nosnippet>624</a>}
-<a href=#625 id=625 data-nosnippet>625</a>
-<a href=#626 id=626 data-nosnippet>626</a><span class="kw">impl </span>std::error::Error <span class="kw">for </span>TopologyError {
-<a href=#627 id=627 data-nosnippet>627</a>    <span class="kw">fn </span>source(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)&gt; {
-<a href=#628 id=628 data-nosnippet>628</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#629 id=629 data-nosnippet>629</a>            <span class="self">Self</span>::Io(err) =&gt; <span class="prelude-val">Some</span>(err),
-<a href=#630 id=630 data-nosnippet>630</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#631 id=631 data-nosnippet>631</a>        }
-<a href=#632 id=632 data-nosnippet>632</a>    }
-<a href=#633 id=633 data-nosnippet>633</a>}
-<a href=#634 id=634 data-nosnippet>634</a>
-<a href=#635 id=635 data-nosnippet>635</a><span class="kw">impl </span>From&lt;io::Error&gt; <span class="kw">for </span>TopologyError {
-<a href=#636 id=636 data-nosnippet>636</a>    <span class="kw">fn </span>from(err: io::Error) -&gt; <span class="self">Self </span>{
-<a href=#637 id=637 data-nosnippet>637</a>        <span class="self">Self</span>::Io(err)
-<a href=#638 id=638 data-nosnippet>638</a>    }
-<a href=#639 id=639 data-nosnippet>639</a>}
-<a href=#640 id=640 data-nosnippet>640</a>
-<a href=#641 id=641 data-nosnippet>641</a><span class="attr">#[cfg(test)]
-<a href=#642 id=642 data-nosnippet>642</a></span><span class="kw">mod </span>tests {
-<a href=#643 id=643 data-nosnippet>643</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#644 id=644 data-nosnippet>644</a>
-<a href=#645 id=645 data-nosnippet>645</a>    <span class="attr">#[test]
-<a href=#646 id=646 data-nosnippet>646</a>    </span><span class="kw">fn </span>parse_accepts_ranges_and_singletons() {
-<a href=#647 id=647 data-nosnippet>647</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap().<span class="number">0</span>, {
-<a href=#648 id=648 data-nosnippet>648</a>            <span class="kw">let </span><span class="kw-2">mut </span>v: Vec&lt;usize&gt; = (<span class="number">0</span>..<span class="number">8</span>).collect();
-<a href=#649 id=649 data-nosnippet>649</a>            v.extend(<span class="number">16</span>..<span class="number">24</span>);
-<a href=#650 id=650 data-nosnippet>650</a>            v
-<a href=#651 id=651 data-nosnippet>651</a>        });
-<a href=#652 id=652 data-nosnippet>652</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"3"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">3</span>]);
-<a href=#653 id=653 data-nosnippet>653</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"5-5"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">5</span>]);
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">" 0-1,\n"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">1</span>]);
-<a href=#655 id=655 data-nosnippet>655</a>    }
-<a href=#656 id=656 data-nosnippet>656</a>
-<a href=#657 id=657 data-nosnippet>657</a>    <span class="attr">#[test]
-<a href=#658 id=658 data-nosnippet>658</a>    </span><span class="kw">fn </span>parse_rejects_malformed_lists() {
-<a href=#659 id=659 data-nosnippet>659</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(CpuSet::parse(<span class="string">""</span>), <span class="prelude-val">Err</span>(TopologyError::EmptySet)));
-<a href=#660 id=660 data-nosnippet>660</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#661 id=661 data-nosnippet>661</a>            CpuSet::parse(<span class="string">"a"</span>),
-<a href=#662 id=662 data-nosnippet>662</a>            <span class="prelude-val">Err</span>(TopologyError::InvalidCpuList(<span class="kw">_</span>))
-<a href=#663 id=663 data-nosnippet>663</a>        ));
-<a href=#664 id=664 data-nosnippet>664</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#665 id=665 data-nosnippet>665</a>            CpuSet::parse(<span class="string">"7-3"</span>),
-<a href=#666 id=666 data-nosnippet>666</a>            <span class="prelude-val">Err</span>(TopologyError::InvalidCpuList(<span class="kw">_</span>))
-<a href=#667 id=667 data-nosnippet>667</a>        ));
-<a href=#668 id=668 data-nosnippet>668</a>    }
-<a href=#669 id=669 data-nosnippet>669</a>
-<a href=#670 id=670 data-nosnippet>670</a>    <span class="attr">#[test]
-<a href=#671 id=671 data-nosnippet>671</a>    </span><span class="kw">fn </span>display_compresses_ranges_and_round_trips() {
-<a href=#672 id=672 data-nosnippet>672</a>        <span class="kw">let </span>set = CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap();
-<a href=#673 id=673 data-nosnippet>673</a>        <span class="macro">assert_eq!</span>(set.to_string(), <span class="string">"0-7,16-23"</span>);
-<a href=#674 id=674 data-nosnippet>674</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="kw-2">&amp;</span>set.to_string()).unwrap(), set);
-<a href=#675 id=675 data-nosnippet>675</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"3,1,2,2"</span>).unwrap().to_string(), <span class="string">"1-3"</span>);
-<a href=#676 id=676 data-nosnippet>676</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"1,3,5-6"</span>).unwrap().to_string(), <span class="string">"1,3,5-6"</span>);
-<a href=#677 id=677 data-nosnippet>677</a>    }
-<a href=#678 id=678 data-nosnippet>678</a>
-<a href=#679 id=679 data-nosnippet>679</a>    <span class="attr">#[test]
-<a href=#680 id=680 data-nosnippet>680</a>    </span><span class="kw">fn </span>intersect_keeps_common_cpus() {
-<a href=#681 id=681 data-nosnippet>681</a>        <span class="kw">let </span>a = CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap();
-<a href=#682 id=682 data-nosnippet>682</a>        <span class="kw">let </span>b = CpuSet::parse(<span class="string">"4-18"</span>).unwrap();
-<a href=#683 id=683 data-nosnippet>683</a>        <span class="macro">assert_eq!</span>(a.intersect(<span class="kw-2">&amp;</span>b).to_string(), <span class="string">"4-7,16-18"</span>);
-<a href=#684 id=684 data-nosnippet>684</a>        <span class="macro">assert!</span>(a.intersect(<span class="kw-2">&amp;</span>CpuSet::parse(<span class="string">"100"</span>).unwrap()).is_empty());
-<a href=#685 id=685 data-nosnippet>685</a>        <span class="macro">assert_eq!</span>(a.len(), <span class="number">16</span>);
-<a href=#686 id=686 data-nosnippet>686</a>    }
-<a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>    <span class="attr">#[test]
-<a href=#689 id=689 data-nosnippet>689</a>    </span><span class="kw">fn </span>numa_nodes_are_disjoint_subsets_of_the_affinity_mask() {
-<a href=#690 id=690 data-nosnippet>690</a>        <span class="kw">let </span>allowed = allowed_cpus();
-<a href=#691 id=691 data-nosnippet>691</a>        <span class="kw">let </span>nodes = numa_nodes();
-<a href=#692 id=692 data-nosnippet>692</a>        <span class="macro">assert!</span>(!nodes.is_empty());
-<a href=#693 id=693 data-nosnippet>693</a>        <span class="kw">for </span>(i, (<span class="kw">_</span>, set)) <span class="kw">in </span>nodes.iter().enumerate() {
-<a href=#694 id=694 data-nosnippet>694</a>            <span class="macro">assert!</span>(!set.is_empty());
-<a href=#695 id=695 data-nosnippet>695</a>            <span class="macro">assert_eq!</span>(set.intersect(<span class="kw-2">&amp;</span>allowed), <span class="kw-2">*</span>set, <span class="string">"node cpus outside affinity"</span>);
-<a href=#696 id=696 data-nosnippet>696</a>            <span class="kw">for </span>(<span class="kw">_</span>, other) <span class="kw">in </span>nodes.iter().skip(i + <span class="number">1</span>) {
-<a href=#697 id=697 data-nosnippet>697</a>                <span class="macro">assert!</span>(set.intersect(other).is_empty(), <span class="string">"nodes overlap"</span>);
-<a href=#698 id=698 data-nosnippet>698</a>            }
+<a href=#447 id=447 data-nosnippet>447</a><span class="doccomment">/// Host workers of a device partition's pool: enough for the export staging and payload plumbing.
+<a href=#448 id=448 data-nosnippet>448</a></span><span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#449 id=449 data-nosnippet>449</a></span><span class="kw">pub const </span>DEVICE_PARTITION_THREADS: usize = <span class="number">4</span>;
+<a href=#450 id=450 data-nosnippet>450</a>
+<a href=#451 id=451 data-nosnippet>451</a><span class="doccomment">/// Placement plus the knobs the partitioned engine reads alongside it.
+<a href=#452 id=452 data-nosnippet>452</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
+<a href=#453 id=453 data-nosnippet>453</a></span><span class="kw">pub struct </span>PartitionConfig {
+<a href=#454 id=454 data-nosnippet>454</a>    <span class="doccomment">/// How partitions map onto the machine.
+<a href=#455 id=455 data-nosnippet>455</a>    </span><span class="kw">pub </span>placement: Placement,
+<a href=#456 id=456 data-nosnippet>456</a>    <span class="doccomment">/// Whether each pool's workers bind their allocations to the partition's
+<a href=#457 id=457 data-nosnippet>457</a>    /// NUMA node (`MPOL_BIND`, through `set_mempolicy`).
+<a href=#458 id=458 data-nosnippet>458</a>    ///
+<a href=#459 id=459 data-nosnippet>459</a>    /// The Python surface spells this `pin_memory=`, and the probe's JSON
+<a href=#460 id=460 data-nosnippet>460</a>    /// sidecar follows the Python name; everything on the Rust side is
+<a href=#461 id=461 data-nosnippet>461</a>    /// `bind_memory`, because it is a memory policy and not a thread affinity.
+<a href=#462 id=462 data-nosnippet>462</a>    </span><span class="kw">pub </span>bind_memory: bool,
+<a href=#463 id=463 data-nosnippet>463</a>    <span class="doccomment">/// Seed selecting which GF(2) hash rows designate the partition, or
+<a href=#464 id=464 data-nosnippet>464</a>    /// `None` to take the engine's default choice.
+<a href=#465 id=465 data-nosnippet>465</a>    </span><span class="kw">pub </span>partition_row_seed: <span class="prelude-ty">Option</span>&lt;u64&gt;,
+<a href=#466 id=466 data-nosnippet>466</a>}
+<a href=#467 id=467 data-nosnippet>467</a>
+<a href=#468 id=468 data-nosnippet>468</a><span class="kw">impl </span>Default <span class="kw">for </span>PartitionConfig {
+<a href=#469 id=469 data-nosnippet>469</a>    <span class="doccomment">/// One partition per NUMA node, memory bound to it, default partition
+<a href=#470 id=470 data-nosnippet>470</a>    /// rows.
+<a href=#471 id=471 data-nosnippet>471</a>    </span><span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="self">Self </span>{
+<a href=#473 id=473 data-nosnippet>473</a>            placement: Placement::Auto {
+<a href=#474 id=474 data-nosnippet>474</a>                max_partitions: <span class="prelude-val">None</span>,
+<a href=#475 id=475 data-nosnippet>475</a>            },
+<a href=#476 id=476 data-nosnippet>476</a>            bind_memory: <span class="bool-val">true</span>,
+<a href=#477 id=477 data-nosnippet>477</a>            partition_row_seed: <span class="prelude-val">None</span>,
+<a href=#478 id=478 data-nosnippet>478</a>        }
+<a href=#479 id=479 data-nosnippet>479</a>    }
+<a href=#480 id=480 data-nosnippet>480</a>}
+<a href=#481 id=481 data-nosnippet>481</a>
+<a href=#482 id=482 data-nosnippet>482</a><span class="kw">impl </span>PartitionConfig {
+<a href=#483 id=483 data-nosnippet>483</a>    <span class="doccomment">/// Resolves the placement against the machine into one slot per partition.
+<a href=#484 id=484 data-nosnippet>484</a>    ///
+<a href=#485 id=485 data-nosnippet>485</a>    /// The slot count is always a power of two, which is what makes a partition index a fixed set of GF(2) hash rows.
+<a href=#486 id=486 data-nosnippet>486</a>    ///
+<a href=#487 id=487 data-nosnippet>487</a>    /// # Errors
+<a href=#488 id=488 data-nosnippet>488</a>    ///
+<a href=#489 id=489 data-nosnippet>489</a>    /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition
+<a href=#490 id=490 data-nosnippet>490</a>    /// count is not a power of two, [`TopologyError::EmptySet`] if an explicit
+<a href=#491 id=491 data-nosnippet>491</a>    /// set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set
+<a href=#492 id=492 data-nosnippet>492</a>    /// names a CPU outside the process's affinity mask.
+<a href=#493 id=493 data-nosnippet>493</a>    </span><span class="kw">pub fn </span>resolve(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
+<a href=#494 id=494 data-nosnippet>494</a>        <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.placement {
+<a href=#495 id=495 data-nosnippet>495</a>            Placement::Auto { max_partitions } =&gt; <span class="prelude-val">Ok</span>(resolve_auto(<span class="kw-2">*</span>max_partitions)),
+<a href=#496 id=496 data-nosnippet>496</a>            Placement::Explicit(sets) =&gt; resolve_explicit(sets),
+<a href=#497 id=497 data-nosnippet>497</a>            Placement::Unpinned {
+<a href=#498 id=498 data-nosnippet>498</a>                partitions,
+<a href=#499 id=499 data-nosnippet>499</a>                threads_per_partition,
+<a href=#500 id=500 data-nosnippet>500</a>            } =&gt; resolve_unpinned(<span class="kw-2">*</span>partitions, <span class="kw-2">*</span>threads_per_partition),
+<a href=#501 id=501 data-nosnippet>501</a>            <span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#502 id=502 data-nosnippet>502</a>            </span>Placement::Devices {
+<a href=#503 id=503 data-nosnippet>503</a>                devices,
+<a href=#504 id=504 data-nosnippet>504</a>                per_device,
+<a href=#505 id=505 data-nosnippet>505</a>            } =&gt; resolve_devices(devices, <span class="kw-2">*</span>per_device),
+<a href=#506 id=506 data-nosnippet>506</a>        }
+<a href=#507 id=507 data-nosnippet>507</a>    }
+<a href=#508 id=508 data-nosnippet>508</a>}
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a><span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#511 id=511 data-nosnippet>511</a></span><span class="kw">fn </span>resolve_devices(
+<a href=#512 id=512 data-nosnippet>512</a>    devices: <span class="kw-2">&amp;</span>[u32],
+<a href=#513 id=513 data-nosnippet>513</a>    per_device: usize,
+<a href=#514 id=514 data-nosnippet>514</a>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
+<a href=#515 id=515 data-nosnippet>515</a>    <span class="kw">let </span>count = devices.len() * per_device;
+<a href=#516 id=516 data-nosnippet>516</a>    <span class="kw">if </span>count == <span class="number">0 </span>|| !count.is_power_of_two() {
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(count));
+<a href=#518 id=518 data-nosnippet>518</a>    }
+<a href=#519 id=519 data-nosnippet>519</a>    <span class="prelude-val">Ok</span>(devices
+<a href=#520 id=520 data-nosnippet>520</a>        .iter()
+<a href=#521 id=521 data-nosnippet>521</a>        .flat_map(|<span class="kw-2">&amp;</span>d| {
+<a href=#522 id=522 data-nosnippet>522</a>            std::iter::repeat_n(
+<a href=#523 id=523 data-nosnippet>523</a>                PartitionSlot {
+<a href=#524 id=524 data-nosnippet>524</a>                    cpus: <span class="prelude-val">None</span>,
+<a href=#525 id=525 data-nosnippet>525</a>                    node: <span class="prelude-val">None</span>,
+<a href=#526 id=526 data-nosnippet>526</a>                    threads: DEVICE_PARTITION_THREADS,
+<a href=#527 id=527 data-nosnippet>527</a>                    device: <span class="prelude-val">Some</span>(d),
+<a href=#528 id=528 data-nosnippet>528</a>                },
+<a href=#529 id=529 data-nosnippet>529</a>                per_device,
+<a href=#530 id=530 data-nosnippet>530</a>            )
+<a href=#531 id=531 data-nosnippet>531</a>        })
+<a href=#532 id=532 data-nosnippet>532</a>        .collect())
+<a href=#533 id=533 data-nosnippet>533</a>}
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a><span class="kw">fn </span>resolve_auto(max_partitions: <span class="prelude-ty">Option</span>&lt;usize&gt;) -&gt; Vec&lt;PartitionSlot&gt; {
+<a href=#536 id=536 data-nosnippet>536</a>    <span class="kw">let </span>nodes = numa_nodes();
+<a href=#537 id=537 data-nosnippet>537</a>    <span class="kw">let </span><span class="kw-2">mut </span>count = prev_power_of_two(nodes.len());
+<a href=#538 id=538 data-nosnippet>538</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(max) = max_partitions {
+<a href=#539 id=539 data-nosnippet>539</a>        count = prev_power_of_two(count.min(max));
+<a href=#540 id=540 data-nosnippet>540</a>    }
+<a href=#541 id=541 data-nosnippet>541</a>
+<a href=#542 id=542 data-nosnippet>542</a>    <span class="comment">// Merge adjacent nodes when the count was rounded down, so no allowed CPU is left out of the run: the first `nodes.len() % count` partitions take one node more than the rest.
+<a href=#543 id=543 data-nosnippet>543</a>    </span><span class="kw">let </span>(base, remainder) = (nodes.len() / count, nodes.len() % count);
+<a href=#544 id=544 data-nosnippet>544</a>    <span class="kw">let </span><span class="kw-2">mut </span>slots = Vec::with_capacity(count);
+<a href=#545 id=545 data-nosnippet>545</a>    <span class="kw">let </span><span class="kw-2">mut </span>rest = nodes.as_slice();
+<a href=#546 id=546 data-nosnippet>546</a>    <span class="kw">for </span>partition <span class="kw">in </span><span class="number">0</span>..count {
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">let </span>take = base + usize::from(partition &lt; remainder);
+<a href=#548 id=548 data-nosnippet>548</a>        <span class="kw">let </span>(group, tail) = rest.split_at(take);
+<a href=#549 id=549 data-nosnippet>549</a>        rest = tail;
+<a href=#550 id=550 data-nosnippet>550</a>        <span class="kw">let </span>cpus = group
+<a href=#551 id=551 data-nosnippet>551</a>            .iter()
+<a href=#552 id=552 data-nosnippet>552</a>            .fold(CpuSet(Vec::new()), |acc, (<span class="kw">_</span>, set)| acc.union(set));
+<a href=#553 id=553 data-nosnippet>553</a>        slots.push(PartitionSlot {
+<a href=#554 id=554 data-nosnippet>554</a>            node: (group.len() == <span class="number">1</span>).then(|| group[<span class="number">0</span>].<span class="number">0</span>),
+<a href=#555 id=555 data-nosnippet>555</a>            threads: cpus.len(),
+<a href=#556 id=556 data-nosnippet>556</a>            cpus: <span class="prelude-val">Some</span>(cpus),
+<a href=#557 id=557 data-nosnippet>557</a>            device: <span class="prelude-val">None</span>,
+<a href=#558 id=558 data-nosnippet>558</a>        });
+<a href=#559 id=559 data-nosnippet>559</a>    }
+<a href=#560 id=560 data-nosnippet>560</a>    slots
+<a href=#561 id=561 data-nosnippet>561</a>}
+<a href=#562 id=562 data-nosnippet>562</a>
+<a href=#563 id=563 data-nosnippet>563</a><span class="kw">fn </span>resolve_explicit(sets: <span class="kw-2">&amp;</span>[CpuSet]) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
+<a href=#564 id=564 data-nosnippet>564</a>    <span class="kw">if </span>!sets.len().is_power_of_two() {
+<a href=#565 id=565 data-nosnippet>565</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(sets.len()));
+<a href=#566 id=566 data-nosnippet>566</a>    }
+<a href=#567 id=567 data-nosnippet>567</a>    <span class="kw">let </span>allowed = allowed_cpus();
+<a href=#568 id=568 data-nosnippet>568</a>    <span class="kw">let </span>nodes = numa_nodes();
+<a href=#569 id=569 data-nosnippet>569</a>
+<a href=#570 id=570 data-nosnippet>570</a>    <span class="kw">let </span><span class="kw-2">mut </span>slots = Vec::with_capacity(sets.len());
+<a href=#571 id=571 data-nosnippet>571</a>    <span class="kw">for </span>set <span class="kw">in </span>sets {
+<a href=#572 id=572 data-nosnippet>572</a>        <span class="kw">if </span>set.is_empty() {
+<a href=#573 id=573 data-nosnippet>573</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::EmptySet);
+<a href=#574 id=574 data-nosnippet>574</a>        }
+<a href=#575 id=575 data-nosnippet>575</a>        <span class="kw">let </span>cpus = CpuSet(set.normalized());
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>cpu) = cpus.<span class="number">0</span>.iter().find(|cpu| !allowed.<span class="number">0</span>.contains(cpu)) {
+<a href=#577 id=577 data-nosnippet>577</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::CpuNotAllowed(cpu));
+<a href=#578 id=578 data-nosnippet>578</a>        }
+<a href=#579 id=579 data-nosnippet>579</a>        <span class="kw">let </span><span class="kw-2">mut </span>containing = nodes
+<a href=#580 id=580 data-nosnippet>580</a>            .iter()
+<a href=#581 id=581 data-nosnippet>581</a>            .filter(|(<span class="kw">_</span>, node)| cpus.is_subset_of(node))
+<a href=#582 id=582 data-nosnippet>582</a>            .map(|(id, <span class="kw">_</span>)| <span class="kw-2">*</span>id);
+<a href=#583 id=583 data-nosnippet>583</a>        <span class="kw">let </span>node = <span class="kw">match </span>(containing.next(), containing.next()) {
+<a href=#584 id=584 data-nosnippet>584</a>            (<span class="prelude-val">Some</span>(id), <span class="prelude-val">None</span>) =&gt; <span class="prelude-val">Some</span>(id),
+<a href=#585 id=585 data-nosnippet>585</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#586 id=586 data-nosnippet>586</a>        };
+<a href=#587 id=587 data-nosnippet>587</a>        slots.push(PartitionSlot {
+<a href=#588 id=588 data-nosnippet>588</a>            node,
+<a href=#589 id=589 data-nosnippet>589</a>            threads: cpus.len(),
+<a href=#590 id=590 data-nosnippet>590</a>            cpus: <span class="prelude-val">Some</span>(cpus),
+<a href=#591 id=591 data-nosnippet>591</a>            device: <span class="prelude-val">None</span>,
+<a href=#592 id=592 data-nosnippet>592</a>        });
+<a href=#593 id=593 data-nosnippet>593</a>    }
+<a href=#594 id=594 data-nosnippet>594</a>
+<a href=#595 id=595 data-nosnippet>595</a>    <span class="kw">for </span>(i, slot) <span class="kw">in </span>slots.iter().enumerate() {
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">for </span>other <span class="kw">in </span>slots.iter().skip(i + <span class="number">1</span>) {
+<a href=#597 id=597 data-nosnippet>597</a>            <span class="kw">let </span>(a, b) = (slot.cpus.as_ref(), other.cpus.as_ref());
+<a href=#598 id=598 data-nosnippet>598</a>            <span class="kw">if let </span>(<span class="prelude-val">Some</span>(a), <span class="prelude-val">Some</span>(b)) = (a, b) {
+<a href=#599 id=599 data-nosnippet>599</a>                <span class="kw">let </span>shared = a.intersect(b);
+<a href=#600 id=600 data-nosnippet>600</a>                <span class="kw">if </span>!shared.is_empty() {
+<a href=#601 id=601 data-nosnippet>601</a>                    <span class="macro">log::warn!</span>(
+<a href=#602 id=602 data-nosnippet>602</a>                        target: LOG_TARGET,
+<a href=#603 id=603 data-nosnippet>603</a>                        <span class="string">"explicit partitions {a} and {b} overlap on {shared}; \
+<a href=#604 id=604 data-nosnippet>604</a>                         their pools will contend for those CPUs"</span>,
+<a href=#605 id=605 data-nosnippet>605</a>                    );
+<a href=#606 id=606 data-nosnippet>606</a>                }
+<a href=#607 id=607 data-nosnippet>607</a>            }
+<a href=#608 id=608 data-nosnippet>608</a>        }
+<a href=#609 id=609 data-nosnippet>609</a>    }
+<a href=#610 id=610 data-nosnippet>610</a>    <span class="prelude-val">Ok</span>(slots)
+<a href=#611 id=611 data-nosnippet>611</a>}
+<a href=#612 id=612 data-nosnippet>612</a>
+<a href=#613 id=613 data-nosnippet>613</a><span class="kw">fn </span>resolve_unpinned(
+<a href=#614 id=614 data-nosnippet>614</a>    partitions: usize,
+<a href=#615 id=615 data-nosnippet>615</a>    threads_per_partition: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#616 id=616 data-nosnippet>616</a>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PartitionSlot&gt;, TopologyError&gt; {
+<a href=#617 id=617 data-nosnippet>617</a>    <span class="kw">if </span>!partitions.is_power_of_two() {
+<a href=#618 id=618 data-nosnippet>618</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(partitions));
+<a href=#619 id=619 data-nosnippet>619</a>    }
+<a href=#620 id=620 data-nosnippet>620</a>    <span class="kw">let </span>threads = threads_per_partition
+<a href=#621 id=621 data-nosnippet>621</a>        .unwrap_or(available_parallelism() / partitions)
+<a href=#622 id=622 data-nosnippet>622</a>        .max(<span class="number">1</span>);
+<a href=#623 id=623 data-nosnippet>623</a>    <span class="prelude-val">Ok</span>(<span class="macro">vec!</span>[
+<a href=#624 id=624 data-nosnippet>624</a>        PartitionSlot {
+<a href=#625 id=625 data-nosnippet>625</a>            cpus: <span class="prelude-val">None</span>,
+<a href=#626 id=626 data-nosnippet>626</a>            node: <span class="prelude-val">None</span>,
+<a href=#627 id=627 data-nosnippet>627</a>            threads,
+<a href=#628 id=628 data-nosnippet>628</a>            device: <span class="prelude-val">None</span>,
+<a href=#629 id=629 data-nosnippet>629</a>        };
+<a href=#630 id=630 data-nosnippet>630</a>        partitions
+<a href=#631 id=631 data-nosnippet>631</a>    ])
+<a href=#632 id=632 data-nosnippet>632</a>}
+<a href=#633 id=633 data-nosnippet>633</a>
+<a href=#634 id=634 data-nosnippet>634</a><span class="doccomment">/// The largest power of two `&lt;= n`, and 1 for `n == 0`.
+<a href=#635 id=635 data-nosnippet>635</a></span><span class="kw">fn </span>prev_power_of_two(n: usize) -&gt; usize {
+<a href=#636 id=636 data-nosnippet>636</a>    <span class="kw">if </span>n &lt;= <span class="number">1 </span>{
+<a href=#637 id=637 data-nosnippet>637</a>        <span class="number">1
+<a href=#638 id=638 data-nosnippet>638</a>    </span>} <span class="kw">else </span>{
+<a href=#639 id=639 data-nosnippet>639</a>        <span class="number">1 </span>&lt;&lt; (usize::BITS - <span class="number">1 </span>- n.leading_zeros())
+<a href=#640 id=640 data-nosnippet>640</a>    }
+<a href=#641 id=641 data-nosnippet>641</a>}
+<a href=#642 id=642 data-nosnippet>642</a>
+<a href=#643 id=643 data-nosnippet>643</a><span class="kw">fn </span>available_parallelism() -&gt; usize {
+<a href=#644 id=644 data-nosnippet>644</a>    std::thread::available_parallelism().map_or(<span class="number">1</span>, std::num::NonZeroUsize::get)
+<a href=#645 id=645 data-nosnippet>645</a>}
+<a href=#646 id=646 data-nosnippet>646</a>
+<a href=#647 id=647 data-nosnippet>647</a><span class="doccomment">/// What can go wrong discovering topology or resolving a [`PartitionConfig`].
+<a href=#648 id=648 data-nosnippet>648</a></span><span class="attr">#[derive(Debug)]
+<a href=#649 id=649 data-nosnippet>649</a></span><span class="kw">pub enum </span>TopologyError {
+<a href=#650 id=650 data-nosnippet>650</a>    <span class="doccomment">/// A cpulist string was not the `"0-7,16-23"` form.
+<a href=#651 id=651 data-nosnippet>651</a>    </span>InvalidCpuList(
+<a href=#652 id=652 data-nosnippet>652</a>        <span class="doccomment">/// The offending list, trimmed.
+<a href=#653 id=653 data-nosnippet>653</a>        </span>String,
+<a href=#654 id=654 data-nosnippet>654</a>    ),
+<a href=#655 id=655 data-nosnippet>655</a>    <span class="doccomment">/// A partition count was not a power of two.
+<a href=#656 id=656 data-nosnippet>656</a>    </span>NotPowerOfTwo(
+<a href=#657 id=657 data-nosnippet>657</a>        <span class="doccomment">/// The rejected count.
+<a href=#658 id=658 data-nosnippet>658</a>        </span>usize,
+<a href=#659 id=659 data-nosnippet>659</a>    ),
+<a href=#660 id=660 data-nosnippet>660</a>    <span class="doccomment">/// A CPU set was empty where a partition needs at least one CPU.
+<a href=#661 id=661 data-nosnippet>661</a>    </span>EmptySet,
+<a href=#662 id=662 data-nosnippet>662</a>    <span class="doccomment">/// A syscall or sysfs read failed, or a pool could not be built.
+<a href=#663 id=663 data-nosnippet>663</a>    </span>Io(
+<a href=#664 id=664 data-nosnippet>664</a>        <span class="doccomment">/// The underlying error.
+<a href=#665 id=665 data-nosnippet>665</a>        </span>io::Error,
+<a href=#666 id=666 data-nosnippet>666</a>    ),
+<a href=#667 id=667 data-nosnippet>667</a>    <span class="doccomment">/// An explicit set named a CPU outside the process's affinity mask.
+<a href=#668 id=668 data-nosnippet>668</a>    </span>CpuNotAllowed(
+<a href=#669 id=669 data-nosnippet>669</a>        <span class="doccomment">/// The CPU index that is outside the process's affinity mask.
+<a href=#670 id=670 data-nosnippet>670</a>        </span>usize,
+<a href=#671 id=671 data-nosnippet>671</a>    ),
+<a href=#672 id=672 data-nosnippet>672</a>}
+<a href=#673 id=673 data-nosnippet>673</a>
+<a href=#674 id=674 data-nosnippet>674</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>TopologyError {
+<a href=#675 id=675 data-nosnippet>675</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#676 id=676 data-nosnippet>676</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#677 id=677 data-nosnippet>677</a>            <span class="self">Self</span>::InvalidCpuList(list) =&gt; {
+<a href=#678 id=678 data-nosnippet>678</a>                <span class="macro">write!</span>(f, <span class="string">"{list:?} is not a cpulist of the form \"0-7,16-23\""</span>)
+<a href=#679 id=679 data-nosnippet>679</a>            }
+<a href=#680 id=680 data-nosnippet>680</a>            <span class="self">Self</span>::NotPowerOfTwo(count) =&gt; <span class="macro">write!</span>(
+<a href=#681 id=681 data-nosnippet>681</a>                f,
+<a href=#682 id=682 data-nosnippet>682</a>                <span class="string">"partition count {count} is not a power of two; a partition index is a fixed \
+<a href=#683 id=683 data-nosnippet>683</a>                 set of GF(2) hash rows"</span>,
+<a href=#684 id=684 data-nosnippet>684</a>            ),
+<a href=#685 id=685 data-nosnippet>685</a>            <span class="self">Self</span>::EmptySet =&gt; <span class="macro">write!</span>(f, <span class="string">"a partition needs a non-empty CPU set"</span>),
+<a href=#686 id=686 data-nosnippet>686</a>            <span class="self">Self</span>::Io(err) =&gt; <span class="macro">write!</span>(f, <span class="string">"topology I/O failed: {err}"</span>),
+<a href=#687 id=687 data-nosnippet>687</a>            <span class="self">Self</span>::CpuNotAllowed(cpu) =&gt; {
+<a href=#688 id=688 data-nosnippet>688</a>                <span class="macro">write!</span>(f, <span class="string">"CPU {cpu} is outside this process's affinity mask"</span>,)
+<a href=#689 id=689 data-nosnippet>689</a>            }
+<a href=#690 id=690 data-nosnippet>690</a>        }
+<a href=#691 id=691 data-nosnippet>691</a>    }
+<a href=#692 id=692 data-nosnippet>692</a>}
+<a href=#693 id=693 data-nosnippet>693</a>
+<a href=#694 id=694 data-nosnippet>694</a><span class="kw">impl </span>std::error::Error <span class="kw">for </span>TopologyError {
+<a href=#695 id=695 data-nosnippet>695</a>    <span class="kw">fn </span>source(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)&gt; {
+<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#697 id=697 data-nosnippet>697</a>            <span class="self">Self</span>::Io(err) =&gt; <span class="prelude-val">Some</span>(err),
+<a href=#698 id=698 data-nosnippet>698</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
 <a href=#699 id=699 data-nosnippet>699</a>        }
-<a href=#700 id=700 data-nosnippet>700</a>        <span class="kw">let </span>ids: Vec&lt;usize&gt; = nodes.iter().map(|(id, <span class="kw">_</span>)| <span class="kw-2">*</span>id).collect();
-<a href=#701 id=701 data-nosnippet>701</a>        <span class="kw">let </span><span class="kw-2">mut </span>sorted = ids.clone();
-<a href=#702 id=702 data-nosnippet>702</a>        sorted.sort_unstable();
-<a href=#703 id=703 data-nosnippet>703</a>        sorted.dedup();
-<a href=#704 id=704 data-nosnippet>704</a>        <span class="macro">assert_eq!</span>(ids, sorted);
-<a href=#705 id=705 data-nosnippet>705</a>    }
-<a href=#706 id=706 data-nosnippet>706</a>
-<a href=#707 id=707 data-nosnippet>707</a>    <span class="attr">#[test]
-<a href=#708 id=708 data-nosnippet>708</a>    </span><span class="kw">fn </span>unpinned_placement_requires_a_power_of_two() {
-<a href=#709 id=709 data-nosnippet>709</a>        <span class="kw">let </span>cfg = PartitionConfig {
-<a href=#710 id=710 data-nosnippet>710</a>            placement: Placement::Unpinned {
-<a href=#711 id=711 data-nosnippet>711</a>                partitions: <span class="number">3</span>,
-<a href=#712 id=712 data-nosnippet>712</a>                threads_per_partition: <span class="prelude-val">None</span>,
-<a href=#713 id=713 data-nosnippet>713</a>            },
-<a href=#714 id=714 data-nosnippet>714</a>            ..PartitionConfig::default()
-<a href=#715 id=715 data-nosnippet>715</a>        };
-<a href=#716 id=716 data-nosnippet>716</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#717 id=717 data-nosnippet>717</a>            cfg.resolve(),
-<a href=#718 id=718 data-nosnippet>718</a>            <span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(<span class="number">3</span>))
-<a href=#719 id=719 data-nosnippet>719</a>        ));
-<a href=#720 id=720 data-nosnippet>720</a>    }
-<a href=#721 id=721 data-nosnippet>721</a>
-<a href=#722 id=722 data-nosnippet>722</a>    <span class="attr">#[test]
-<a href=#723 id=723 data-nosnippet>723</a>    </span><span class="kw">fn </span>unpinned_placement_resolves_to_unpinned_slots() {
-<a href=#724 id=724 data-nosnippet>724</a>        <span class="kw">let </span>cfg = PartitionConfig {
-<a href=#725 id=725 data-nosnippet>725</a>            placement: Placement::Unpinned {
-<a href=#726 id=726 data-nosnippet>726</a>                partitions: <span class="number">4</span>,
-<a href=#727 id=727 data-nosnippet>727</a>                threads_per_partition: <span class="prelude-val">Some</span>(<span class="number">2</span>),
-<a href=#728 id=728 data-nosnippet>728</a>            },
-<a href=#729 id=729 data-nosnippet>729</a>            ..PartitionConfig::default()
-<a href=#730 id=730 data-nosnippet>730</a>        };
-<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">let </span>slots = cfg.resolve().unwrap();
-<a href=#732 id=732 data-nosnippet>732</a>        <span class="macro">assert_eq!</span>(slots.len(), <span class="number">4</span>);
-<a href=#733 id=733 data-nosnippet>733</a>        <span class="kw">for </span>slot <span class="kw">in </span><span class="kw-2">&amp;</span>slots {
-<a href=#734 id=734 data-nosnippet>734</a>            <span class="macro">assert_eq!</span>(slot.threads, <span class="number">2</span>);
-<a href=#735 id=735 data-nosnippet>735</a>            <span class="macro">assert!</span>(slot.cpus.is_none());
-<a href=#736 id=736 data-nosnippet>736</a>            <span class="macro">assert!</span>(slot.node.is_none());
-<a href=#737 id=737 data-nosnippet>737</a>        }
-<a href=#738 id=738 data-nosnippet>738</a>    }
-<a href=#739 id=739 data-nosnippet>739</a>
-<a href=#740 id=740 data-nosnippet>740</a>    <span class="attr">#[test]
-<a href=#741 id=741 data-nosnippet>741</a>    </span><span class="kw">fn </span>explicit_placement_validates_its_sets() {
-<a href=#742 id=742 data-nosnippet>742</a>        <span class="kw">let </span>one = CpuSet(<span class="macro">vec!</span>[allowed_cpus().<span class="number">0</span>[<span class="number">0</span>]]);
-<a href=#743 id=743 data-nosnippet>743</a>        <span class="kw">let </span>cfg = |sets: Vec&lt;CpuSet&gt;| PartitionConfig {
-<a href=#744 id=744 data-nosnippet>744</a>            placement: Placement::Explicit(sets),
-<a href=#745 id=745 data-nosnippet>745</a>            ..PartitionConfig::default()
-<a href=#746 id=746 data-nosnippet>746</a>        };
-<a href=#747 id=747 data-nosnippet>747</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#748 id=748 data-nosnippet>748</a>            cfg(<span class="macro">vec!</span>[one.clone(), one.clone(), one.clone()]).resolve(),
-<a href=#749 id=749 data-nosnippet>749</a>            <span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(<span class="number">3</span>))
-<a href=#750 id=750 data-nosnippet>750</a>        ));
-<a href=#751 id=751 data-nosnippet>751</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#752 id=752 data-nosnippet>752</a>            cfg(<span class="macro">vec!</span>[one.clone(), CpuSet(<span class="macro">vec!</span>[])]).resolve(),
-<a href=#753 id=753 data-nosnippet>753</a>            <span class="prelude-val">Err</span>(TopologyError::EmptySet)
-<a href=#754 id=754 data-nosnippet>754</a>        ));
-<a href=#755 id=755 data-nosnippet>755</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#756 id=756 data-nosnippet>756</a>            cfg(<span class="macro">vec!</span>[one, CpuSet(<span class="macro">vec!</span>[<span class="number">1_000_000</span>])]).resolve(),
-<a href=#757 id=757 data-nosnippet>757</a>            <span class="prelude-val">Err</span>(TopologyError::CpuNotAllowed(<span class="number">1_000_000</span>))
-<a href=#758 id=758 data-nosnippet>758</a>        ));
-<a href=#759 id=759 data-nosnippet>759</a>    }
-<a href=#760 id=760 data-nosnippet>760</a>
-<a href=#761 id=761 data-nosnippet>761</a>    <span class="attr">#[test]
-<a href=#762 id=762 data-nosnippet>762</a>    </span><span class="kw">fn </span>explicit_placement_resolves_disjoint_singletons() {
-<a href=#763 id=763 data-nosnippet>763</a>        <span class="kw">let </span>allowed = allowed_cpus();
-<a href=#764 id=764 data-nosnippet>764</a>        <span class="kw">if </span>allowed.len() &lt; <span class="number">2 </span>{
-<a href=#765 id=765 data-nosnippet>765</a>            <span class="macro">eprintln!</span>(<span class="string">"skipping: fewer than two allowed CPUs ({allowed})"</span>);
-<a href=#766 id=766 data-nosnippet>766</a>            <span class="kw">return</span>;
+<a href=#700 id=700 data-nosnippet>700</a>    }
+<a href=#701 id=701 data-nosnippet>701</a>}
+<a href=#702 id=702 data-nosnippet>702</a>
+<a href=#703 id=703 data-nosnippet>703</a><span class="kw">impl </span>From&lt;io::Error&gt; <span class="kw">for </span>TopologyError {
+<a href=#704 id=704 data-nosnippet>704</a>    <span class="kw">fn </span>from(err: io::Error) -&gt; <span class="self">Self </span>{
+<a href=#705 id=705 data-nosnippet>705</a>        <span class="self">Self</span>::Io(err)
+<a href=#706 id=706 data-nosnippet>706</a>    }
+<a href=#707 id=707 data-nosnippet>707</a>}
+<a href=#708 id=708 data-nosnippet>708</a>
+<a href=#709 id=709 data-nosnippet>709</a><span class="attr">#[cfg(test)]
+<a href=#710 id=710 data-nosnippet>710</a></span><span class="kw">mod </span>tests {
+<a href=#711 id=711 data-nosnippet>711</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#712 id=712 data-nosnippet>712</a>
+<a href=#713 id=713 data-nosnippet>713</a>    <span class="attr">#[test]
+<a href=#714 id=714 data-nosnippet>714</a>    </span><span class="kw">fn </span>parse_accepts_ranges_and_singletons() {
+<a href=#715 id=715 data-nosnippet>715</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap().<span class="number">0</span>, {
+<a href=#716 id=716 data-nosnippet>716</a>            <span class="kw">let </span><span class="kw-2">mut </span>v: Vec&lt;usize&gt; = (<span class="number">0</span>..<span class="number">8</span>).collect();
+<a href=#717 id=717 data-nosnippet>717</a>            v.extend(<span class="number">16</span>..<span class="number">24</span>);
+<a href=#718 id=718 data-nosnippet>718</a>            v
+<a href=#719 id=719 data-nosnippet>719</a>        });
+<a href=#720 id=720 data-nosnippet>720</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"3"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">3</span>]);
+<a href=#721 id=721 data-nosnippet>721</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"5-5"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">5</span>]);
+<a href=#722 id=722 data-nosnippet>722</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">" 0-1,\n"</span>).unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">1</span>]);
+<a href=#723 id=723 data-nosnippet>723</a>    }
+<a href=#724 id=724 data-nosnippet>724</a>
+<a href=#725 id=725 data-nosnippet>725</a>    <span class="attr">#[test]
+<a href=#726 id=726 data-nosnippet>726</a>    </span><span class="kw">fn </span>parse_rejects_malformed_lists() {
+<a href=#727 id=727 data-nosnippet>727</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(CpuSet::parse(<span class="string">""</span>), <span class="prelude-val">Err</span>(TopologyError::EmptySet)));
+<a href=#728 id=728 data-nosnippet>728</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#729 id=729 data-nosnippet>729</a>            CpuSet::parse(<span class="string">"a"</span>),
+<a href=#730 id=730 data-nosnippet>730</a>            <span class="prelude-val">Err</span>(TopologyError::InvalidCpuList(<span class="kw">_</span>))
+<a href=#731 id=731 data-nosnippet>731</a>        ));
+<a href=#732 id=732 data-nosnippet>732</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#733 id=733 data-nosnippet>733</a>            CpuSet::parse(<span class="string">"7-3"</span>),
+<a href=#734 id=734 data-nosnippet>734</a>            <span class="prelude-val">Err</span>(TopologyError::InvalidCpuList(<span class="kw">_</span>))
+<a href=#735 id=735 data-nosnippet>735</a>        ));
+<a href=#736 id=736 data-nosnippet>736</a>    }
+<a href=#737 id=737 data-nosnippet>737</a>
+<a href=#738 id=738 data-nosnippet>738</a>    <span class="attr">#[test]
+<a href=#739 id=739 data-nosnippet>739</a>    </span><span class="kw">fn </span>display_compresses_ranges_and_round_trips() {
+<a href=#740 id=740 data-nosnippet>740</a>        <span class="kw">let </span>set = CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap();
+<a href=#741 id=741 data-nosnippet>741</a>        <span class="macro">assert_eq!</span>(set.to_string(), <span class="string">"0-7,16-23"</span>);
+<a href=#742 id=742 data-nosnippet>742</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="kw-2">&amp;</span>set.to_string()).unwrap(), set);
+<a href=#743 id=743 data-nosnippet>743</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"3,1,2,2"</span>).unwrap().to_string(), <span class="string">"1-3"</span>);
+<a href=#744 id=744 data-nosnippet>744</a>        <span class="macro">assert_eq!</span>(CpuSet::parse(<span class="string">"1,3,5-6"</span>).unwrap().to_string(), <span class="string">"1,3,5-6"</span>);
+<a href=#745 id=745 data-nosnippet>745</a>    }
+<a href=#746 id=746 data-nosnippet>746</a>
+<a href=#747 id=747 data-nosnippet>747</a>    <span class="attr">#[test]
+<a href=#748 id=748 data-nosnippet>748</a>    </span><span class="kw">fn </span>intersect_keeps_common_cpus() {
+<a href=#749 id=749 data-nosnippet>749</a>        <span class="kw">let </span>a = CpuSet::parse(<span class="string">"0-7,16-23"</span>).unwrap();
+<a href=#750 id=750 data-nosnippet>750</a>        <span class="kw">let </span>b = CpuSet::parse(<span class="string">"4-18"</span>).unwrap();
+<a href=#751 id=751 data-nosnippet>751</a>        <span class="macro">assert_eq!</span>(a.intersect(<span class="kw-2">&amp;</span>b).to_string(), <span class="string">"4-7,16-18"</span>);
+<a href=#752 id=752 data-nosnippet>752</a>        <span class="macro">assert!</span>(a.intersect(<span class="kw-2">&amp;</span>CpuSet::parse(<span class="string">"100"</span>).unwrap()).is_empty());
+<a href=#753 id=753 data-nosnippet>753</a>        <span class="macro">assert_eq!</span>(a.len(), <span class="number">16</span>);
+<a href=#754 id=754 data-nosnippet>754</a>    }
+<a href=#755 id=755 data-nosnippet>755</a>
+<a href=#756 id=756 data-nosnippet>756</a>    <span class="attr">#[test]
+<a href=#757 id=757 data-nosnippet>757</a>    </span><span class="kw">fn </span>numa_nodes_are_disjoint_subsets_of_the_affinity_mask() {
+<a href=#758 id=758 data-nosnippet>758</a>        <span class="kw">let </span>allowed = allowed_cpus();
+<a href=#759 id=759 data-nosnippet>759</a>        <span class="kw">let </span>nodes = numa_nodes();
+<a href=#760 id=760 data-nosnippet>760</a>        <span class="macro">assert!</span>(!nodes.is_empty());
+<a href=#761 id=761 data-nosnippet>761</a>        <span class="kw">for </span>(i, (<span class="kw">_</span>, set)) <span class="kw">in </span>nodes.iter().enumerate() {
+<a href=#762 id=762 data-nosnippet>762</a>            <span class="macro">assert!</span>(!set.is_empty());
+<a href=#763 id=763 data-nosnippet>763</a>            <span class="macro">assert_eq!</span>(set.intersect(<span class="kw-2">&amp;</span>allowed), <span class="kw-2">*</span>set, <span class="string">"node cpus outside affinity"</span>);
+<a href=#764 id=764 data-nosnippet>764</a>            <span class="kw">for </span>(<span class="kw">_</span>, other) <span class="kw">in </span>nodes.iter().skip(i + <span class="number">1</span>) {
+<a href=#765 id=765 data-nosnippet>765</a>                <span class="macro">assert!</span>(set.intersect(other).is_empty(), <span class="string">"nodes overlap"</span>);
+<a href=#766 id=766 data-nosnippet>766</a>            }
 <a href=#767 id=767 data-nosnippet>767</a>        }
-<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span>cfg = PartitionConfig {
-<a href=#769 id=769 data-nosnippet>769</a>            placement: Placement::Explicit(<span class="macro">vec!</span>[
-<a href=#770 id=770 data-nosnippet>770</a>                CpuSet(<span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">0</span>]]),
-<a href=#771 id=771 data-nosnippet>771</a>                CpuSet(<span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">1</span>]]),
-<a href=#772 id=772 data-nosnippet>772</a>            ]),
-<a href=#773 id=773 data-nosnippet>773</a>            ..PartitionConfig::default()
-<a href=#774 id=774 data-nosnippet>774</a>        };
-<a href=#775 id=775 data-nosnippet>775</a>        <span class="kw">let </span>slots = cfg.resolve().unwrap();
-<a href=#776 id=776 data-nosnippet>776</a>        <span class="macro">assert_eq!</span>(slots.len(), <span class="number">2</span>);
-<a href=#777 id=777 data-nosnippet>777</a>        <span class="macro">assert_eq!</span>(slots[<span class="number">0</span>].cpus.as_ref().unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">0</span>]]);
-<a href=#778 id=778 data-nosnippet>778</a>        <span class="macro">assert_eq!</span>(slots[<span class="number">1</span>].cpus.as_ref().unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">1</span>]]);
-<a href=#779 id=779 data-nosnippet>779</a>        <span class="kw">for </span>slot <span class="kw">in </span><span class="kw-2">&amp;</span>slots {
-<a href=#780 id=780 data-nosnippet>780</a>            <span class="macro">assert_eq!</span>(slot.threads, <span class="number">1</span>);
-<a href=#781 id=781 data-nosnippet>781</a>        }
-<a href=#782 id=782 data-nosnippet>782</a>    }
-<a href=#783 id=783 data-nosnippet>783</a>
-<a href=#784 id=784 data-nosnippet>784</a>    <span class="attr">#[test]
-<a href=#785 id=785 data-nosnippet>785</a>    </span><span class="kw">fn </span>auto_placement_is_a_power_of_two_of_disjoint_sets() {
-<a href=#786 id=786 data-nosnippet>786</a>        <span class="kw">let </span>slots = PartitionConfig::default().resolve().unwrap();
-<a href=#787 id=787 data-nosnippet>787</a>        <span class="macro">assert!</span>(!slots.is_empty());
-<a href=#788 id=788 data-nosnippet>788</a>        <span class="macro">assert!</span>(slots.len().is_power_of_two());
-<a href=#789 id=789 data-nosnippet>789</a>        <span class="kw">for </span>(i, slot) <span class="kw">in </span>slots.iter().enumerate() {
-<a href=#790 id=790 data-nosnippet>790</a>            <span class="kw">let </span>cpus = slot.cpus.as_ref().expect(<span class="string">"auto slots are pinned"</span>);
-<a href=#791 id=791 data-nosnippet>791</a>            <span class="macro">assert!</span>(!cpus.is_empty());
-<a href=#792 id=792 data-nosnippet>792</a>            <span class="macro">assert_eq!</span>(slot.threads, cpus.len());
-<a href=#793 id=793 data-nosnippet>793</a>            <span class="kw">for </span>other <span class="kw">in </span>slots.iter().skip(i + <span class="number">1</span>) {
-<a href=#794 id=794 data-nosnippet>794</a>                <span class="kw">let </span>other = other.cpus.as_ref().unwrap();
-<a href=#795 id=795 data-nosnippet>795</a>                <span class="macro">assert!</span>(cpus.intersect(other).is_empty(), <span class="string">"partitions overlap"</span>);
-<a href=#796 id=796 data-nosnippet>796</a>            }
-<a href=#797 id=797 data-nosnippet>797</a>        }
-<a href=#798 id=798 data-nosnippet>798</a>    }
-<a href=#799 id=799 data-nosnippet>799</a>
-<a href=#800 id=800 data-nosnippet>800</a>    <span class="attr">#[test]
-<a href=#801 id=801 data-nosnippet>801</a>    </span><span class="kw">fn </span>auto_placement_honours_max_partitions() {
-<a href=#802 id=802 data-nosnippet>802</a>        <span class="kw">let </span>cfg = PartitionConfig {
-<a href=#803 id=803 data-nosnippet>803</a>            placement: Placement::Auto {
-<a href=#804 id=804 data-nosnippet>804</a>                max_partitions: <span class="prelude-val">Some</span>(<span class="number">1</span>),
-<a href=#805 id=805 data-nosnippet>805</a>            },
-<a href=#806 id=806 data-nosnippet>806</a>            ..PartitionConfig::default()
-<a href=#807 id=807 data-nosnippet>807</a>        };
-<a href=#808 id=808 data-nosnippet>808</a>        <span class="macro">assert_eq!</span>(cfg.resolve().unwrap().len(), <span class="number">1</span>);
-<a href=#809 id=809 data-nosnippet>809</a>    }
-<a href=#810 id=810 data-nosnippet>810</a>
-<a href=#811 id=811 data-nosnippet>811</a>    <span class="attr">#[test]
-<a href=#812 id=812 data-nosnippet>812</a>    </span><span class="kw">fn </span>a_pinned_pool_runs_every_worker_on_the_pinned_cpu() {
-<a href=#813 id=813 data-nosnippet>813</a>        <span class="kw">let </span>allowed = allowed_cpus();
-<a href=#814 id=814 data-nosnippet>814</a>        <span class="kw">if </span>allowed.len() &lt; <span class="number">2 </span>{
-<a href=#815 id=815 data-nosnippet>815</a>            <span class="macro">eprintln!</span>(<span class="string">"skipping: fewer than two allowed CPUs ({allowed})"</span>);
-<a href=#816 id=816 data-nosnippet>816</a>            <span class="kw">return</span>;
-<a href=#817 id=817 data-nosnippet>817</a>        }
-<a href=#818 id=818 data-nosnippet>818</a>        <span class="kw">let </span>cpu = allowed.<span class="number">0</span>[<span class="number">0</span>];
-<a href=#819 id=819 data-nosnippet>819</a>        <span class="kw">let </span>slot = PartitionSlot {
-<a href=#820 id=820 data-nosnippet>820</a>            cpus: <span class="prelude-val">Some</span>(CpuSet(<span class="macro">vec!</span>[cpu])),
-<a href=#821 id=821 data-nosnippet>821</a>            node: <span class="prelude-val">None</span>,
-<a href=#822 id=822 data-nosnippet>822</a>            threads: <span class="number">2</span>,
-<a href=#823 id=823 data-nosnippet>823</a>        };
-<a href=#824 id=824 data-nosnippet>824</a>        <span class="kw">let </span>pool = build_pool(<span class="kw-2">&amp;</span>slot, <span class="bool-val">false</span>, <span class="string">"test-pinned"</span>).unwrap();
-<a href=#825 id=825 data-nosnippet>825</a>        <span class="kw">let </span>seen: Vec&lt;<span class="prelude-ty">Option</span>&lt;usize&gt;&gt; = pool.broadcast(|<span class="kw">_</span>| current_cpu());
-<a href=#826 id=826 data-nosnippet>826</a>        <span class="macro">assert_eq!</span>(seen.len(), <span class="number">2</span>);
-<a href=#827 id=827 data-nosnippet>827</a>        <span class="kw">if </span><span class="macro">cfg!</span>(target_os = <span class="string">"linux"</span>) {
-<a href=#828 id=828 data-nosnippet>828</a>            <span class="kw">for </span>got <span class="kw">in </span>seen {
-<a href=#829 id=829 data-nosnippet>829</a>                <span class="macro">assert_eq!</span>(got, <span class="prelude-val">Some</span>(cpu));
-<a href=#830 id=830 data-nosnippet>830</a>            }
-<a href=#831 id=831 data-nosnippet>831</a>        }
-<a href=#832 id=832 data-nosnippet>832</a>    }
-<a href=#833 id=833 data-nosnippet>833</a>
-<a href=#834 id=834 data-nosnippet>834</a>    <span class="attr">#[test]
-<a href=#835 id=835 data-nosnippet>835</a>    </span><span class="kw">fn </span>an_unpinned_pool_builds_and_runs() {
-<a href=#836 id=836 data-nosnippet>836</a>        <span class="kw">let </span>slot = PartitionSlot {
-<a href=#837 id=837 data-nosnippet>837</a>            cpus: <span class="prelude-val">None</span>,
-<a href=#838 id=838 data-nosnippet>838</a>            node: <span class="prelude-val">None</span>,
-<a href=#839 id=839 data-nosnippet>839</a>            threads: <span class="number">2</span>,
-<a href=#840 id=840 data-nosnippet>840</a>        };
-<a href=#841 id=841 data-nosnippet>841</a>        <span class="kw">let </span>pool = build_pool(<span class="kw-2">&amp;</span>slot, <span class="bool-val">false</span>, <span class="string">"test-unpinned"</span>).unwrap();
-<a href=#842 id=842 data-nosnippet>842</a>        <span class="macro">assert_eq!</span>(pool.install(|| (<span class="number">0</span>..<span class="number">100</span>).sum::&lt;usize&gt;()), <span class="number">4950</span>);
-<a href=#843 id=843 data-nosnippet>843</a>    }
-<a href=#844 id=844 data-nosnippet>844</a>
-<a href=#845 id=845 data-nosnippet>845</a>    <span class="attr">#[test]
-<a href=#846 id=846 data-nosnippet>846</a>    </span><span class="kw">fn </span>memory_binding_round_trips_on_a_scratch_thread() {
-<a href=#847 id=847 data-nosnippet>847</a>        <span class="comment">// On a scratch thread so the test runner's own memory policy, which every other test in this process shares, is left alone.
-<a href=#848 id=848 data-nosnippet>848</a>        </span><span class="kw">let </span>node = numa_nodes()[<span class="number">0</span>].<span class="number">0</span>;
-<a href=#849 id=849 data-nosnippet>849</a>        std::thread::scope(|scope| {
-<a href=#850 id=850 data-nosnippet>850</a>            scope.spawn(|| <span class="kw">match </span>bind_current_thread_memory(<span class="prelude-val">Some</span>(node)) {
-<a href=#851 id=851 data-nosnippet>851</a>                <span class="prelude-val">Ok</span>(()) =&gt; bind_current_thread_memory(<span class="prelude-val">None</span>).unwrap(),
-<a href=#852 id=852 data-nosnippet>852</a>                <span class="comment">// A kernel built without NUMA has no `set_mempolicy`.
-<a href=#853 id=853 data-nosnippet>853</a>                </span><span class="prelude-val">Err</span>(err) <span class="kw">if </span>err.kind() == io::ErrorKind::Unsupported =&gt; {
-<a href=#854 id=854 data-nosnippet>854</a>                    <span class="macro">eprintln!</span>(<span class="string">"skipping: set_mempolicy unavailable ({err})"</span>);
-<a href=#855 id=855 data-nosnippet>855</a>                }
-<a href=#856 id=856 data-nosnippet>856</a>                <span class="prelude-val">Err</span>(err) =&gt; <span class="macro">panic!</span>(<span class="string">"binding to node {node} failed: {err}"</span>),
-<a href=#857 id=857 data-nosnippet>857</a>            });
-<a href=#858 id=858 data-nosnippet>858</a>        });
-<a href=#859 id=859 data-nosnippet>859</a>    }
-<a href=#860 id=860 data-nosnippet>860</a>}
+<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span>ids: Vec&lt;usize&gt; = nodes.iter().map(|(id, <span class="kw">_</span>)| <span class="kw-2">*</span>id).collect();
+<a href=#769 id=769 data-nosnippet>769</a>        <span class="kw">let </span><span class="kw-2">mut </span>sorted = ids.clone();
+<a href=#770 id=770 data-nosnippet>770</a>        sorted.sort_unstable();
+<a href=#771 id=771 data-nosnippet>771</a>        sorted.dedup();
+<a href=#772 id=772 data-nosnippet>772</a>        <span class="macro">assert_eq!</span>(ids, sorted);
+<a href=#773 id=773 data-nosnippet>773</a>    }
+<a href=#774 id=774 data-nosnippet>774</a>
+<a href=#775 id=775 data-nosnippet>775</a>    <span class="attr">#[test]
+<a href=#776 id=776 data-nosnippet>776</a>    </span><span class="kw">fn </span>unpinned_placement_requires_a_power_of_two() {
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="kw">let </span>cfg = PartitionConfig {
+<a href=#778 id=778 data-nosnippet>778</a>            placement: Placement::Unpinned {
+<a href=#779 id=779 data-nosnippet>779</a>                partitions: <span class="number">3</span>,
+<a href=#780 id=780 data-nosnippet>780</a>                threads_per_partition: <span class="prelude-val">None</span>,
+<a href=#781 id=781 data-nosnippet>781</a>            },
+<a href=#782 id=782 data-nosnippet>782</a>            ..PartitionConfig::default()
+<a href=#783 id=783 data-nosnippet>783</a>        };
+<a href=#784 id=784 data-nosnippet>784</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#785 id=785 data-nosnippet>785</a>            cfg.resolve(),
+<a href=#786 id=786 data-nosnippet>786</a>            <span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(<span class="number">3</span>))
+<a href=#787 id=787 data-nosnippet>787</a>        ));
+<a href=#788 id=788 data-nosnippet>788</a>    }
+<a href=#789 id=789 data-nosnippet>789</a>
+<a href=#790 id=790 data-nosnippet>790</a>    <span class="attr">#[test]
+<a href=#791 id=791 data-nosnippet>791</a>    </span><span class="kw">fn </span>unpinned_placement_resolves_to_unpinned_slots() {
+<a href=#792 id=792 data-nosnippet>792</a>        <span class="kw">let </span>cfg = PartitionConfig {
+<a href=#793 id=793 data-nosnippet>793</a>            placement: Placement::Unpinned {
+<a href=#794 id=794 data-nosnippet>794</a>                partitions: <span class="number">4</span>,
+<a href=#795 id=795 data-nosnippet>795</a>                threads_per_partition: <span class="prelude-val">Some</span>(<span class="number">2</span>),
+<a href=#796 id=796 data-nosnippet>796</a>            },
+<a href=#797 id=797 data-nosnippet>797</a>            ..PartitionConfig::default()
+<a href=#798 id=798 data-nosnippet>798</a>        };
+<a href=#799 id=799 data-nosnippet>799</a>        <span class="kw">let </span>slots = cfg.resolve().unwrap();
+<a href=#800 id=800 data-nosnippet>800</a>        <span class="macro">assert_eq!</span>(slots.len(), <span class="number">4</span>);
+<a href=#801 id=801 data-nosnippet>801</a>        <span class="kw">for </span>slot <span class="kw">in </span><span class="kw-2">&amp;</span>slots {
+<a href=#802 id=802 data-nosnippet>802</a>            <span class="macro">assert_eq!</span>(slot.threads, <span class="number">2</span>);
+<a href=#803 id=803 data-nosnippet>803</a>            <span class="macro">assert!</span>(slot.cpus.is_none());
+<a href=#804 id=804 data-nosnippet>804</a>            <span class="macro">assert!</span>(slot.node.is_none());
+<a href=#805 id=805 data-nosnippet>805</a>        }
+<a href=#806 id=806 data-nosnippet>806</a>    }
+<a href=#807 id=807 data-nosnippet>807</a>
+<a href=#808 id=808 data-nosnippet>808</a>    <span class="attr">#[test]
+<a href=#809 id=809 data-nosnippet>809</a>    </span><span class="kw">fn </span>explicit_placement_validates_its_sets() {
+<a href=#810 id=810 data-nosnippet>810</a>        <span class="kw">let </span>one = CpuSet(<span class="macro">vec!</span>[allowed_cpus().<span class="number">0</span>[<span class="number">0</span>]]);
+<a href=#811 id=811 data-nosnippet>811</a>        <span class="kw">let </span>cfg = |sets: Vec&lt;CpuSet&gt;| PartitionConfig {
+<a href=#812 id=812 data-nosnippet>812</a>            placement: Placement::Explicit(sets),
+<a href=#813 id=813 data-nosnippet>813</a>            ..PartitionConfig::default()
+<a href=#814 id=814 data-nosnippet>814</a>        };
+<a href=#815 id=815 data-nosnippet>815</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#816 id=816 data-nosnippet>816</a>            cfg(<span class="macro">vec!</span>[one.clone(), one.clone(), one.clone()]).resolve(),
+<a href=#817 id=817 data-nosnippet>817</a>            <span class="prelude-val">Err</span>(TopologyError::NotPowerOfTwo(<span class="number">3</span>))
+<a href=#818 id=818 data-nosnippet>818</a>        ));
+<a href=#819 id=819 data-nosnippet>819</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#820 id=820 data-nosnippet>820</a>            cfg(<span class="macro">vec!</span>[one.clone(), CpuSet(<span class="macro">vec!</span>[])]).resolve(),
+<a href=#821 id=821 data-nosnippet>821</a>            <span class="prelude-val">Err</span>(TopologyError::EmptySet)
+<a href=#822 id=822 data-nosnippet>822</a>        ));
+<a href=#823 id=823 data-nosnippet>823</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#824 id=824 data-nosnippet>824</a>            cfg(<span class="macro">vec!</span>[one, CpuSet(<span class="macro">vec!</span>[<span class="number">1_000_000</span>])]).resolve(),
+<a href=#825 id=825 data-nosnippet>825</a>            <span class="prelude-val">Err</span>(TopologyError::CpuNotAllowed(<span class="number">1_000_000</span>))
+<a href=#826 id=826 data-nosnippet>826</a>        ));
+<a href=#827 id=827 data-nosnippet>827</a>    }
+<a href=#828 id=828 data-nosnippet>828</a>
+<a href=#829 id=829 data-nosnippet>829</a>    <span class="attr">#[test]
+<a href=#830 id=830 data-nosnippet>830</a>    </span><span class="kw">fn </span>explicit_placement_resolves_disjoint_singletons() {
+<a href=#831 id=831 data-nosnippet>831</a>        <span class="kw">let </span>allowed = allowed_cpus();
+<a href=#832 id=832 data-nosnippet>832</a>        <span class="kw">if </span>allowed.len() &lt; <span class="number">2 </span>{
+<a href=#833 id=833 data-nosnippet>833</a>            <span class="macro">eprintln!</span>(<span class="string">"skipping: fewer than two allowed CPUs ({allowed})"</span>);
+<a href=#834 id=834 data-nosnippet>834</a>            <span class="kw">return</span>;
+<a href=#835 id=835 data-nosnippet>835</a>        }
+<a href=#836 id=836 data-nosnippet>836</a>        <span class="kw">let </span>cfg = PartitionConfig {
+<a href=#837 id=837 data-nosnippet>837</a>            placement: Placement::Explicit(<span class="macro">vec!</span>[
+<a href=#838 id=838 data-nosnippet>838</a>                CpuSet(<span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">0</span>]]),
+<a href=#839 id=839 data-nosnippet>839</a>                CpuSet(<span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">1</span>]]),
+<a href=#840 id=840 data-nosnippet>840</a>            ]),
+<a href=#841 id=841 data-nosnippet>841</a>            ..PartitionConfig::default()
+<a href=#842 id=842 data-nosnippet>842</a>        };
+<a href=#843 id=843 data-nosnippet>843</a>        <span class="kw">let </span>slots = cfg.resolve().unwrap();
+<a href=#844 id=844 data-nosnippet>844</a>        <span class="macro">assert_eq!</span>(slots.len(), <span class="number">2</span>);
+<a href=#845 id=845 data-nosnippet>845</a>        <span class="macro">assert_eq!</span>(slots[<span class="number">0</span>].cpus.as_ref().unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">0</span>]]);
+<a href=#846 id=846 data-nosnippet>846</a>        <span class="macro">assert_eq!</span>(slots[<span class="number">1</span>].cpus.as_ref().unwrap().<span class="number">0</span>, <span class="macro">vec!</span>[allowed.<span class="number">0</span>[<span class="number">1</span>]]);
+<a href=#847 id=847 data-nosnippet>847</a>        <span class="kw">for </span>slot <span class="kw">in </span><span class="kw-2">&amp;</span>slots {
+<a href=#848 id=848 data-nosnippet>848</a>            <span class="macro">assert_eq!</span>(slot.threads, <span class="number">1</span>);
+<a href=#849 id=849 data-nosnippet>849</a>        }
+<a href=#850 id=850 data-nosnippet>850</a>    }
+<a href=#851 id=851 data-nosnippet>851</a>
+<a href=#852 id=852 data-nosnippet>852</a>    <span class="attr">#[test]
+<a href=#853 id=853 data-nosnippet>853</a>    </span><span class="kw">fn </span>auto_placement_is_a_power_of_two_of_disjoint_sets() {
+<a href=#854 id=854 data-nosnippet>854</a>        <span class="kw">let </span>slots = PartitionConfig::default().resolve().unwrap();
+<a href=#855 id=855 data-nosnippet>855</a>        <span class="macro">assert!</span>(!slots.is_empty());
+<a href=#856 id=856 data-nosnippet>856</a>        <span class="macro">assert!</span>(slots.len().is_power_of_two());
+<a href=#857 id=857 data-nosnippet>857</a>        <span class="kw">for </span>(i, slot) <span class="kw">in </span>slots.iter().enumerate() {
+<a href=#858 id=858 data-nosnippet>858</a>            <span class="kw">let </span>cpus = slot.cpus.as_ref().expect(<span class="string">"auto slots are pinned"</span>);
+<a href=#859 id=859 data-nosnippet>859</a>            <span class="macro">assert!</span>(!cpus.is_empty());
+<a href=#860 id=860 data-nosnippet>860</a>            <span class="macro">assert_eq!</span>(slot.threads, cpus.len());
+<a href=#861 id=861 data-nosnippet>861</a>            <span class="kw">for </span>other <span class="kw">in </span>slots.iter().skip(i + <span class="number">1</span>) {
+<a href=#862 id=862 data-nosnippet>862</a>                <span class="kw">let </span>other = other.cpus.as_ref().unwrap();
+<a href=#863 id=863 data-nosnippet>863</a>                <span class="macro">assert!</span>(cpus.intersect(other).is_empty(), <span class="string">"partitions overlap"</span>);
+<a href=#864 id=864 data-nosnippet>864</a>            }
+<a href=#865 id=865 data-nosnippet>865</a>        }
+<a href=#866 id=866 data-nosnippet>866</a>    }
+<a href=#867 id=867 data-nosnippet>867</a>
+<a href=#868 id=868 data-nosnippet>868</a>    <span class="attr">#[test]
+<a href=#869 id=869 data-nosnippet>869</a>    </span><span class="kw">fn </span>auto_placement_honours_max_partitions() {
+<a href=#870 id=870 data-nosnippet>870</a>        <span class="kw">let </span>cfg = PartitionConfig {
+<a href=#871 id=871 data-nosnippet>871</a>            placement: Placement::Auto {
+<a href=#872 id=872 data-nosnippet>872</a>                max_partitions: <span class="prelude-val">Some</span>(<span class="number">1</span>),
+<a href=#873 id=873 data-nosnippet>873</a>            },
+<a href=#874 id=874 data-nosnippet>874</a>            ..PartitionConfig::default()
+<a href=#875 id=875 data-nosnippet>875</a>        };
+<a href=#876 id=876 data-nosnippet>876</a>        <span class="macro">assert_eq!</span>(cfg.resolve().unwrap().len(), <span class="number">1</span>);
+<a href=#877 id=877 data-nosnippet>877</a>    }
+<a href=#878 id=878 data-nosnippet>878</a>
+<a href=#879 id=879 data-nosnippet>879</a>    <span class="attr">#[test]
+<a href=#880 id=880 data-nosnippet>880</a>    </span><span class="kw">fn </span>a_pinned_pool_runs_every_worker_on_the_pinned_cpu() {
+<a href=#881 id=881 data-nosnippet>881</a>        <span class="kw">let </span>allowed = allowed_cpus();
+<a href=#882 id=882 data-nosnippet>882</a>        <span class="kw">if </span>allowed.len() &lt; <span class="number">2 </span>{
+<a href=#883 id=883 data-nosnippet>883</a>            <span class="macro">eprintln!</span>(<span class="string">"skipping: fewer than two allowed CPUs ({allowed})"</span>);
+<a href=#884 id=884 data-nosnippet>884</a>            <span class="kw">return</span>;
+<a href=#885 id=885 data-nosnippet>885</a>        }
+<a href=#886 id=886 data-nosnippet>886</a>        <span class="kw">let </span>cpu = allowed.<span class="number">0</span>[<span class="number">0</span>];
+<a href=#887 id=887 data-nosnippet>887</a>        <span class="kw">let </span>slot = PartitionSlot {
+<a href=#888 id=888 data-nosnippet>888</a>            cpus: <span class="prelude-val">Some</span>(CpuSet(<span class="macro">vec!</span>[cpu])),
+<a href=#889 id=889 data-nosnippet>889</a>            node: <span class="prelude-val">None</span>,
+<a href=#890 id=890 data-nosnippet>890</a>            threads: <span class="number">2</span>,
+<a href=#891 id=891 data-nosnippet>891</a>            device: <span class="prelude-val">None</span>,
+<a href=#892 id=892 data-nosnippet>892</a>        };
+<a href=#893 id=893 data-nosnippet>893</a>        <span class="kw">let </span>pool = build_pool(<span class="kw-2">&amp;</span>slot, <span class="bool-val">false</span>, <span class="string">"test-pinned"</span>).unwrap();
+<a href=#894 id=894 data-nosnippet>894</a>        <span class="kw">let </span>seen: Vec&lt;<span class="prelude-ty">Option</span>&lt;usize&gt;&gt; = pool.broadcast(|<span class="kw">_</span>| current_cpu());
+<a href=#895 id=895 data-nosnippet>895</a>        <span class="macro">assert_eq!</span>(seen.len(), <span class="number">2</span>);
+<a href=#896 id=896 data-nosnippet>896</a>        <span class="kw">if </span><span class="macro">cfg!</span>(target_os = <span class="string">"linux"</span>) {
+<a href=#897 id=897 data-nosnippet>897</a>            <span class="kw">for </span>got <span class="kw">in </span>seen {
+<a href=#898 id=898 data-nosnippet>898</a>                <span class="macro">assert_eq!</span>(got, <span class="prelude-val">Some</span>(cpu));
+<a href=#899 id=899 data-nosnippet>899</a>            }
+<a href=#900 id=900 data-nosnippet>900</a>        }
+<a href=#901 id=901 data-nosnippet>901</a>    }
+<a href=#902 id=902 data-nosnippet>902</a>
+<a href=#903 id=903 data-nosnippet>903</a>    <span class="attr">#[test]
+<a href=#904 id=904 data-nosnippet>904</a>    </span><span class="kw">fn </span>an_unpinned_pool_builds_and_runs() {
+<a href=#905 id=905 data-nosnippet>905</a>        <span class="kw">let </span>slot = PartitionSlot {
+<a href=#906 id=906 data-nosnippet>906</a>            cpus: <span class="prelude-val">None</span>,
+<a href=#907 id=907 data-nosnippet>907</a>            node: <span class="prelude-val">None</span>,
+<a href=#908 id=908 data-nosnippet>908</a>            threads: <span class="number">2</span>,
+<a href=#909 id=909 data-nosnippet>909</a>            device: <span class="prelude-val">None</span>,
+<a href=#910 id=910 data-nosnippet>910</a>        };
+<a href=#911 id=911 data-nosnippet>911</a>        <span class="kw">let </span>pool = build_pool(<span class="kw-2">&amp;</span>slot, <span class="bool-val">false</span>, <span class="string">"test-unpinned"</span>).unwrap();
+<a href=#912 id=912 data-nosnippet>912</a>        <span class="macro">assert_eq!</span>(pool.install(|| (<span class="number">0</span>..<span class="number">100</span>).sum::&lt;usize&gt;()), <span class="number">4950</span>);
+<a href=#913 id=913 data-nosnippet>913</a>    }
+<a href=#914 id=914 data-nosnippet>914</a>
+<a href=#915 id=915 data-nosnippet>915</a>    <span class="attr">#[test]
+<a href=#916 id=916 data-nosnippet>916</a>    </span><span class="kw">fn </span>memory_binding_round_trips_on_a_scratch_thread() {
+<a href=#917 id=917 data-nosnippet>917</a>        <span class="comment">// On a scratch thread so the test runner's own memory policy, which every other test in this process shares, is left alone.
+<a href=#918 id=918 data-nosnippet>918</a>        </span><span class="kw">let </span>node = numa_nodes()[<span class="number">0</span>].<span class="number">0</span>;
+<a href=#919 id=919 data-nosnippet>919</a>        std::thread::scope(|scope| {
+<a href=#920 id=920 data-nosnippet>920</a>            scope.spawn(|| <span class="kw">match </span>bind_current_thread_memory(<span class="prelude-val">Some</span>(node)) {
+<a href=#921 id=921 data-nosnippet>921</a>                <span class="prelude-val">Ok</span>(()) =&gt; bind_current_thread_memory(<span class="prelude-val">None</span>).unwrap(),
+<a href=#922 id=922 data-nosnippet>922</a>                <span class="comment">// A kernel built without NUMA has no `set_mempolicy`.
+<a href=#923 id=923 data-nosnippet>923</a>                </span><span class="prelude-val">Err</span>(err) <span class="kw">if </span>err.kind() == io::ErrorKind::Unsupported =&gt; {
+<a href=#924 id=924 data-nosnippet>924</a>                    <span class="macro">eprintln!</span>(<span class="string">"skipping: set_mempolicy unavailable ({err})"</span>);
+<a href=#925 id=925 data-nosnippet>925</a>                }
+<a href=#926 id=926 data-nosnippet>926</a>                <span class="prelude-val">Err</span>(err) =&gt; <span class="macro">panic!</span>(<span class="string">"binding to node {node} failed: {err}"</span>),
+<a href=#927 id=927 data-nosnippet>927</a>            });
+<a href=#928 id=928 data-nosnippet>928</a>        });
+<a href=#929 id=929 data-nosnippet>929</a>    }
+<a href=#930 id=930 data-nosnippet>930</a>}
 </code></pre></div></section></main></body></html>

@@ -428,7 +428,7 @@
 <a href=#428 id=428 data-nosnippet>428</a>
 <a href=#429 id=429 data-nosnippet>429</a>    <span class="comment">// ---- the coset dimension a real dense-PTM channel actually gets ----
 <a href=#430 id=430 data-nosnippet>430</a>
-<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="doccomment">/// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))` is a property of the *hash rows*, not of the channel — so the same Haar SU(4) block gets a 16-member coset at one width and an 8-member one at another under the same seed.
+<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="doccomment">/// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))` is a property of the *hash rows*, not of the channel — so the same Haar SU(4) block gets a 16-member coset on one support and an 8-member one on another under the same seed.
 <a href=#432 id=432 data-nosnippet>432</a>    ///
 <a href=#433 id=433 data-nosnippet>433</a>    /// This is the link between `bucket::hash`'s rank tests and the dense-PTM sort's cost (`engine::merge`): the per-run sort's comparison count sits at its `log2(fanout)` floor exactly when `r` is full, and `r` is what this pins.
 <a href=#434 id=434 data-nosnippet>434</a>    /// See `research/FINDINGS.md`.
@@ -452,7 +452,7 @@
 <a href=#452 id=452 data-nosnippet>452</a>                <span class="string">"W=2 at {bits} bits"
 <a href=#453 id=453 data-nosnippet>453</a>            </span>);
 <a href=#454 id=454 data-nosnippet>454</a>
-<a href=#455 id=455 data-nosnippet>455</a>            <span class="comment">// W = 1: one rank short at every bucket count this policy reaches.
+<a href=#455 id=455 data-nosnippet>455</a>            <span class="comment">// W = 1: the same rows in word 0, so the same rank.
 <a href=#456 id=456 data-nosnippet>456</a>            </span><span class="kw">let </span>h1 = Gf2Hash::&lt;<span class="number">1</span>&gt;::new(<span class="number">64</span>, bits, DEFAULT_HASH_SEED);
 <a href=#457 id=457 data-nosnippet>457</a>            <span class="kw">let </span>want1 = support_delta_rank(<span class="kw-2">&amp;</span>h1, <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>]).min(bits <span class="kw">as </span>usize);
 <a href=#458 id=458 data-nosnippet>458</a>            <span class="kw">let </span>prep1 = Channel::&lt;<span class="number">1</span>&gt;::prepare(<span class="kw-2">&amp;</span>ch, <span class="kw-2">&amp;</span>h1, <span class="bool-val">false</span>).expect(<span class="string">"prepare W=1"</span>);
@@ -463,24 +463,26 @@
 <a href=#463 id=463 data-nosnippet>463</a>            </span>);
 <a href=#464 id=464 data-nosnippet>464</a>        }
 <a href=#465 id=465 data-nosnippet>465</a>
-<a href=#466 id=466 data-nosnippet>466</a>        <span class="comment">// At the default bucket-count floor the two widths get different coset widths from the same gate — 16 members against 8.
-<a href=#467 id=467 data-nosnippet>467</a>        // That difference, not the key width, is behind the "W = 1 sort defect" observed elsewhere; see `research/FINDINGS.md`.
-<a href=#468 id=468 data-nosnippet>468</a>        </span><span class="kw">let </span>h2 = Gf2Hash::&lt;<span class="number">2</span>&gt;::new(<span class="number">128</span>, <span class="number">7</span>, DEFAULT_HASH_SEED);
-<a href=#469 id=469 data-nosnippet>469</a>        <span class="kw">let </span>h1 = Gf2Hash::&lt;<span class="number">1</span>&gt;::new(<span class="number">64</span>, <span class="number">7</span>, DEFAULT_HASH_SEED);
-<a href=#470 id=470 data-nosnippet>470</a>        <span class="kw">let </span>s2 = Gf2Span::new(
-<a href=#471 id=471 data-nosnippet>471</a>            <span class="kw-2">&amp;</span>Channel::&lt;<span class="number">2</span>&gt;::prepare(<span class="kw-2">&amp;</span>ch, <span class="kw-2">&amp;</span>h2, <span class="bool-val">false</span>)
-<a href=#472 id=472 data-nosnippet>472</a>                .unwrap()
-<a href=#473 id=473 data-nosnippet>473</a>                .bucket_deltas(),
-<a href=#474 id=474 data-nosnippet>474</a>            <span class="number">7</span>,
-<a href=#475 id=475 data-nosnippet>475</a>        );
-<a href=#476 id=476 data-nosnippet>476</a>        <span class="kw">let </span>s1 = Gf2Span::new(
-<a href=#477 id=477 data-nosnippet>477</a>            <span class="kw-2">&amp;</span>Channel::&lt;<span class="number">1</span>&gt;::prepare(<span class="kw-2">&amp;</span>ch, <span class="kw-2">&amp;</span>h1, <span class="bool-val">false</span>)
-<a href=#478 id=478 data-nosnippet>478</a>                .unwrap()
-<a href=#479 id=479 data-nosnippet>479</a>                .bucket_deltas(),
-<a href=#480 id=480 data-nosnippet>480</a>            <span class="number">7</span>,
-<a href=#481 id=481 data-nosnippet>481</a>        );
-<a href=#482 id=482 data-nosnippet>482</a>        <span class="macro">assert_eq!</span>((s2.coset_size(), s2.num_cosets()), (<span class="number">16</span>, <span class="number">8</span>));
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="macro">assert_eq!</span>((s1.coset_size(), s1.num_cosets()), (<span class="number">8</span>, <span class="number">16</span>));
-<a href=#484 id=484 data-nosnippet>484</a>    }
-<a href=#485 id=485 data-nosnippet>485</a>}
+<a href=#466 id=466 data-nosnippet>466</a>        <span class="comment">// At the default bucket-count floor two supports get different coset widths from the same gate — 16 members against 8.
+<a href=#467 id=467 data-nosnippet>467</a>        // A rank draw of this kind, not the key width, is behind the "W = 1 sort defect" observed elsewhere; see `research/FINDINGS.md`.
+<a href=#468 id=468 data-nosnippet>468</a>        // Regenerated for the splitmix64 row draw: the deficient support is now `(0, 7)` at both widths, where `(0, 1)` used to be deficient at `W = 1` only.
+<a href=#469 id=469 data-nosnippet>469</a>        </span><span class="kw">let </span>h2 = Gf2Hash::&lt;<span class="number">2</span>&gt;::new(<span class="number">128</span>, <span class="number">7</span>, DEFAULT_HASH_SEED);
+<a href=#470 id=470 data-nosnippet>470</a>        <span class="kw">let </span>h1 = Gf2Hash::&lt;<span class="number">1</span>&gt;::new(<span class="number">64</span>, <span class="number">7</span>, DEFAULT_HASH_SEED);
+<a href=#471 id=471 data-nosnippet>471</a>        <span class="kw">let </span>deficient = GeneralUnitary2Q::from_matrix(<span class="number">0</span>, <span class="number">7</span>, haar_su4_matrix());
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="kw">let </span>s2 = Gf2Span::new(
+<a href=#473 id=473 data-nosnippet>473</a>            <span class="kw-2">&amp;</span>Channel::&lt;<span class="number">2</span>&gt;::prepare(<span class="kw-2">&amp;</span>ch, <span class="kw-2">&amp;</span>h2, <span class="bool-val">false</span>)
+<a href=#474 id=474 data-nosnippet>474</a>                .unwrap()
+<a href=#475 id=475 data-nosnippet>475</a>                .bucket_deltas(),
+<a href=#476 id=476 data-nosnippet>476</a>            <span class="number">7</span>,
+<a href=#477 id=477 data-nosnippet>477</a>        );
+<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span>s1 = Gf2Span::new(
+<a href=#479 id=479 data-nosnippet>479</a>            <span class="kw-2">&amp;</span>Channel::&lt;<span class="number">1</span>&gt;::prepare(<span class="kw-2">&amp;</span>deficient, <span class="kw-2">&amp;</span>h1, <span class="bool-val">false</span>)
+<a href=#480 id=480 data-nosnippet>480</a>                .unwrap()
+<a href=#481 id=481 data-nosnippet>481</a>                .bucket_deltas(),
+<a href=#482 id=482 data-nosnippet>482</a>            <span class="number">7</span>,
+<a href=#483 id=483 data-nosnippet>483</a>        );
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="macro">assert_eq!</span>((s2.coset_size(), s2.num_cosets()), (<span class="number">16</span>, <span class="number">8</span>));
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="macro">assert_eq!</span>((s1.coset_size(), s1.num_cosets()), (<span class="number">8</span>, <span class="number">16</span>));
+<a href=#486 id=486 data-nosnippet>486</a>    }
+<a href=#487 id=487 data-nosnippet>487</a>}
 </code></pre></div></section></main></body></html>

@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3523c87e.js";
+            window.path_to_searchindex_js = "../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-0b5a9687.js"></script>
+        <script src="../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -192,6 +192,8 @@
 <tr><td><code>paulistrings.p(label)</code></td><td>a <a href="pauli-string.html"><code>PauliString</code></a> from its <code>IXYZ</code> label, shorthand for <code>PauliString.from_label</code></td></tr>
 <tr><td><code>paulistrings.numa_nodes()</code></td><td><code>list[list[int]]</code>, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process’s CPU affinity mask</td></tr>
 <tr><td><code>paulistrings.mpi_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(comm=...)</code> (compiled with the <code>mpi</code> feature)</td></tr>
+<tr><td><code>paulistrings.cuda_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(device=...)</code>: compiled with the <code>cuda</code> feature, <code>libcuda</code> and <code>libnvrtc</code> loadable, and a device visible</td></tr>
+<tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="propagate.html#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
 <tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
 <tr><td><code>paulistrings.diagonal_echo(hist, delta)</code></td><td><code>float</code>, the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code> of a <a href="measurement.html#anticommute_histogramsites-axisx-commnone"><code>PauliSum.anticommute_histogram</code></a> <code>w</code>; <code>nan</code> when it is all zero</td></tr>

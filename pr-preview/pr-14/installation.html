@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3523c87e.js";
+            window.path_to_searchindex_js = "searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-0b5a9687.js"></script>
+        <script src="toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -199,6 +199,19 @@ export LIBCLANG_PATH=$(llvm-config --libdir)
 pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features mpi"
 </code></pre>
+<p>The <code>cuda</code> feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.</p>
+<pre><code class="language-bash">pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features cuda"
+</code></pre>
+<p>At runtime it needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, or <code>pip install nvidia-cuda-nvrtc-cu12</code> with its <code>lib</code> directory on <code>LD_LIBRARY_PATH</code> elsewhere.
+Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works as in the default build.</p>
+<h3 id="gpu-and-mpi-features"><a class="header" href="#gpu-and-mpi-features">GPU and MPI features</a></h3>
+<p><code>cuda</code> and <code>mpi</code> together give one GPU per MPI rank (<a href="manual/propagation/mpi.html#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL, so both module sets plus the NCCL library; NCCL is <code>dlopen</code>ed like <code>libcuda</code>/<code>libnvrtc</code>, so it needs no toolkit to build either.</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features cuda,mpi"
+</code></pre>
 <p>Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates <code>./.venv</code> and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
@@ -224,7 +237,7 @@ pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 </code></pre>
 <p>With the package installed, the <a href="manual/index.html">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
 <a href="examples/first-propagation.html">First propagation</a> carries that same run further, into term inspection and a validation sweep.
-Building for MPI is covered separately in <a href="manual/propagation/mpi.html#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher.</p>
+Building for MPI is covered separately in <a href="manual/propagation/mpi.html#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher, and building for a GPU in <a href="manual/propagation/gpu.html#building-from-source">CUDA devices</a>.</p>
 
                     </main>
 

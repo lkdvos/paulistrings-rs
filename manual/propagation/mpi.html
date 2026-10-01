@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-34e3f3bf.js";
+            window.path_to_searchindex_js = "../../searchindex-6f8b7437.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-6d08c121.js"></script>
+        <script src="../../toc-b86f2ee9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -272,6 +272,34 @@ Each rank’s Rayon pool sizes itself from the CPUs the launcher left in its aff
 <code>RAYON_NUM_THREADS</code> is ignored, as in any partitioned run.</p>
 <p>On Rusty, <code>scripts/slurm/mpi-ranks.sbatch</code> does the arithmetic: it reads the node’s domain count, rounds <code>nodes × domains</code> down to a power of two, and runs the differential net and then the probe at that rank count.
 See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md"><code>scripts/slurm/README.md</code></a>.</p>
+<h2 id="gpu-per-rank"><a class="header" href="#gpu-per-rank">One GPU per rank</a></h2>
+<p>Built with both <code>mpi</code> and <code>cuda</code>, the Rust driver <code>gpu::MpiGpuSum</code> holds each rank’s share on one CUDA device, with the same contract as <code>MpiSum</code>: replicated input, collective calls, rank 0 gathers.
+<code>gpu::local_device_for_comm</code> picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to the rank’s node-local index modulo the visible devices:</p>
+<!-- doctest: skip -->
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use paulistrings::engine::partitioned::PartitionRowPolicy;
+use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+use paulistrings::mpi::{rsmpi, MpiTransport};
+
+let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
+let world = universe.world();
+let device = local_device_for_comm(&amp;world)?;
+let transport = MpiTransport::from_communicator(&amp;world);
+let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device, &amp;PartitionRowPolicy::Seeded(None))?;
+split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
+if let Some(evolved) = split.gather()? {
+    println!("{} terms", evolved.len());
+}
+<span class="boring">}</span></code></pre>
+<p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
+A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
+Launch with every node GPU visible to every task (<code>srun --gpus-per-node=&lt;k&gt; --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu.sbatch</code> does), where the locality pick matters.</p>
+<p>A remote layer’s columns move device to device over NCCL (<a href="gpu.html#exchange">CUDA devices</a>), which needs the NCCL library at run time (<a href="../../installation.html#gpu-and-mpi-features">Installation</a>).
+The communicator starts once, collectively, at the scatter that builds the split; a rank that cannot load NCCL, or two ranks sharing a device, fail the scatter on every rank.
+<code>--gpus-per-node</code> rather than <code>--gpus-per-task=1</code> is what lets NCCL find every rank’s device and use NVLink between them.</p>
+<p>From Python, <code>propagate(..., comm=comm, device="auto")</code> is the same run, in an extension built with <code>--features cuda,mpi</code>: <code>device=</code> takes this rank’s ordinal or <code>"auto"</code>, which is <code>local_device_for_comm</code>, and <code>result=</code>, <code>partition_row_seed=</code> and <code>partition_row_blocks=</code> keep their host meanings (<a href="gpu.html#comm-device">CUDA devices</a>).
+<code>scripts/mpi-test.sh --ranks 2,4 --python --cuda</code> builds that extension and runs <code>test_mpi.py</code>’s device cases, which skip on every rank unless every rank sees a device and, above one rank, the group can start NCCL.</p>
 <h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
 <p><strong>Thread level at least <code>MPI_THREAD_SERIALIZED</code>.</strong>
 The layer loop runs inside a pinned Rayon pool, so MPI is called from a pool worker rather than the process’s main thread — and not necessarily the same worker on every layer.
@@ -314,7 +342,7 @@ Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../../manual/measurements.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../manual/propagation/gpu.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -328,7 +356,7 @@ Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../../manual/measurements.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../manual/propagation/gpu.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

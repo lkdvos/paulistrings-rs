@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-34e3f3bf.js";
+            window.path_to_searchindex_js = "searchindex-6f8b7437.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-6d08c121.js"></script>
+        <script src="toc-b86f2ee9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -303,6 +303,19 @@ export LIBCLANG_PATH=$(llvm-config --libdir)
 pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features mpi"
 </code></pre>
+<p>The <code>cuda</code> feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.</p>
+<pre><code class="language-bash">pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features cuda"
+</code></pre>
+<p>At runtime it needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, or <code>pip install nvidia-cuda-nvrtc-cu12</code> with its <code>lib</code> directory on <code>LD_LIBRARY_PATH</code> elsewhere.
+Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works as in the default build.</p>
+<h3 id="gpu-and-mpi-features"><a class="header" href="#gpu-and-mpi-features">GPU and MPI features</a></h3>
+<p><code>cuda</code> and <code>mpi</code> together give one GPU per MPI rank (<a href="#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL, so both module sets plus the NCCL library; NCCL is <code>dlopen</code>ed like <code>libcuda</code>/<code>libnvrtc</code>, so it needs no toolkit to build either.</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+export LIBCLANG_PATH=$(llvm-config --libdir)
+pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+  --config-settings=build-args="--features cuda,mpi"
+</code></pre>
 <p>Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates <code>./.venv</code> and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
@@ -328,7 +341,7 @@ pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
 </code></pre>
 <p>With the package installed, the <a href="#manual">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
 <a href="#first-propagation">First propagation</a> carries that same run further, into term inspection and a validation sweep.
-Building for MPI is covered separately in <a href="#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher.</p>
+Building for MPI is covered separately in <a href="#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher, and building for a GPU in <a href="#building-from-source-1">CUDA devices</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="manual"><a class="header" href="#manual">Manual</a></h1>
 <p>The Manual is the reading path through the library: what each object is, how to use it, and where it bites.
@@ -763,7 +776,7 @@ print(len(observable), "-&gt;", len(evolved), "terms")
 <code>propagate</code> returns a <strong>new</strong> sum and leaves the input untouched, so the same observable can be propagated several ways and compared.
 The GIL is released for the duration of the call.</p>
 <p><code>propagate_with_stats</code> takes the same arguments and returns <code>(evolved, stats)</code>, where <code>stats</code> is a <code>PropagationStats</code> with per-layer term counts and timings; enabling it does not change the evolved sum — <a href="#stats">Stats, memory and logging</a>.
-The remaining keyword arguments (<code>engine</code>, <code>partitions</code>, <code>comm</code>, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the <a href="#engine-selection">settings</a>, <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a> pages.
+The remaining keyword arguments (<code>engine</code>, <code>partitions</code>, <code>comm</code>, <code>device</code>, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the <a href="#engine-selection">settings</a>, <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a> and <a href="#cuda-devices">CUDA devices</a> pages.
 The full signature is in the <a href="#propagate--propagate_with_stats">Library</a>.</p>
 <h2 id="the-loop"><a class="header" href="#the-loop">The loop</a></h2>
 <p>A <strong>layer</strong> is one applied channel, not a brickwork layer of parallel gates — <a href="#one-gate-one-channel">One gate, one truncation point</a> is the definition, and it is the sense the word carries throughout this book and in <code>PropagationStats</code>.</p>
@@ -797,6 +810,7 @@ A result computed in the wrong picture is a plausible number with no error raise
 <li><a href="#inside-the-engine">Inside the engine</a> — the bucketed layout, the GF(2) hash, and write-disjoint cosets.</li>
 <li><a href="#numa-partitions">NUMA partitions</a> — one pinned pool and one share of the sum per NUMA domain.</li>
 <li><a href="#mpi-ranks">MPI ranks</a> — the same split across processes, for capacity.</li>
+<li><a href="#cuda-devices">CUDA devices</a> — the whole sum on one GPU, and a resident <code>GpuPauliSum</code> for loops of short calls.</li>
 </ul>
 <p><a href="#first-propagation">First propagation</a> runs this whole chapter once on four qubits; <a href="#d--xxz-chain-scaling">Benchmark D</a> is the cost model measured, with term growth against depth and chain length.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
@@ -1450,6 +1464,34 @@ Each rank’s Rayon pool sizes itself from the CPUs the launcher left in its aff
 <code>RAYON_NUM_THREADS</code> is ignored, as in any partitioned run.</p>
 <p>On Rusty, <code>scripts/slurm/mpi-ranks.sbatch</code> does the arithmetic: it reads the node’s domain count, rounds <code>nodes × domains</code> down to a power of two, and runs the differential net and then the probe at that rank count.
 See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/README.md"><code>scripts/slurm/README.md</code></a>.</p>
+<h2 id="gpu-per-rank"><a class="header" href="#gpu-per-rank">One GPU per rank</a></h2>
+<p>Built with both <code>mpi</code> and <code>cuda</code>, the Rust driver <code>gpu::MpiGpuSum</code> holds each rank’s share on one CUDA device, with the same contract as <code>MpiSum</code>: replicated input, collective calls, rank 0 gathers.
+<code>gpu::local_device_for_comm</code> picks the device collectively over the ranks sharing a node: each rank gets a device on a NUMA node its CPUs are on where it can, ranks on one node get distinct devices while there are enough, and without readable NUMA facts it falls back to the rank’s node-local index modulo the visible devices:</p>
+<!-- doctest: skip -->
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use paulistrings::engine::partitioned::PartitionRowPolicy;
+use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+use paulistrings::mpi::{rsmpi, MpiTransport};
+
+let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
+let world = universe.world();
+let device = local_device_for_comm(&amp;world)?;
+let transport = MpiTransport::from_communicator(&amp;world);
+let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device, &amp;PartitionRowPolicy::Seeded(None))?;
+split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
+if let Some(evolved) = split.gather()? {
+    println!("{} terms", evolved.len());
+}
+<span class="boring">}</span></code></pre>
+<p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
+A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
+Launch with every node GPU visible to every task (<code>srun --gpus-per-node=&lt;k&gt; --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu.sbatch</code> does), where the locality pick matters.</p>
+<p>A remote layer’s columns move device to device over NCCL (<a href="#exchange">CUDA devices</a>), which needs the NCCL library at run time (<a href="#gpu-and-mpi-features">Installation</a>).
+The communicator starts once, collectively, at the scatter that builds the split; a rank that cannot load NCCL, or two ranks sharing a device, fail the scatter on every rank.
+<code>--gpus-per-node</code> rather than <code>--gpus-per-task=1</code> is what lets NCCL find every rank’s device and use NVLink between them.</p>
+<p>From Python, <code>propagate(..., comm=comm, device="auto")</code> is the same run, in an extension built with <code>--features cuda,mpi</code>: <code>device=</code> takes this rank’s ordinal or <code>"auto"</code>, which is <code>local_device_for_comm</code>, and <code>result=</code>, <code>partition_row_seed=</code> and <code>partition_row_blocks=</code> keep their host meanings (<a href="#comm-device">CUDA devices</a>).
+<code>scripts/mpi-test.sh --ranks 2,4 --python --cuda</code> builds that extension and runs <code>test_mpi.py</code>’s device cases, which skip on every rank unless every rank sees a device and, above one rank, the group can start NCCL.</p>
 <h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
 <p><strong>Thread level at least <code>MPI_THREAD_SERIALIZED</code>.</strong>
 The layer loop runs inside a pinned Rayon pool, so MPI is called from a pool worker rather than the process’s main thread — and not necessarily the same worker on every layer.
@@ -1483,6 +1525,150 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <a href="#distributed">Engine performance</a>.</li>
 <li><strong>The library never initializes MPI.</strong> The application owns <code>MPI_Init</code> and <code>MPI_Finalize</code>.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="cuda-devices"><a class="header" href="#cuda-devices">CUDA devices</a></h1>
+<p>A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a <a href="#numa-partitions">partitioned run</a>: one partition on one device, one partition per listed device, or one device per MPI rank.
+Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
+The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §GPU-Readiness; this page is when to reach for it and how.</p>
+<h2 id="when-it-pays-1"><a class="header" href="#when-it-pays-1">When a device pays</a></h2>
+<p><strong>Dense two-qubit layers at a million terms and up are where the device wins.</strong>
+On an RTX A6000 a saturated <code>su4</code> layer runs 11× faster on wall than the 16-thread host engine at 1.41e7 terms, and 15× at 5.65e7 (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> § ccqlin038 — GPU).
+Sparse layers (<code>cnot</code>, a Pauli rotation) gain 2–5×, because each output bucket receives few rows and a block’s fixed sort and synchronization cost weighs more.
+Every layer carries a fixed cost of a few launches and synchronizations that the host engine does not pay, so the advantage shrinks below about 1e4 terms.</p>
+<p>The upload and download are paid once per <code>propagate(device=...)</code> call.
+A loop of many short calls — a Trotter time series, a cutoff sweep over the same prefix — should hold the sum on the device with <a href="#resident-sums"><code>PauliSum.to_device</code></a> instead.</p>
+<p>The feature is off by default and the released wheels omit it.
+<a href="#module-helpers"><code>paulistrings.cuda_available()</code></a> says whether this build can run on a device and one is visible, and <code>device=</code> in a build without the feature raises <code>RuntimeError</code>.</p>
+<h2 id="building-from-source-1"><a class="header" href="#building-from-source-1">Building from source</a></h2>
+<p>The <code>cuda</code> feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.</p>
+<pre><code class="language-bash">maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+</code></pre>
+<p>At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
+On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; elsewhere <code>pip install nvidia-cuda-nvrtc-cu12</code> does, with its <code>lib</code> directory added to <code>LD_LIBRARY_PATH</code>:</p>
+<pre><code class="language-bash">pip install nvidia-cuda-nvrtc-cu12
+export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m.__path__)[0])')/lib:$LD_LIBRARY_PATH"
+</code></pre>
+<p>A missing library makes <code>cuda_available()</code> return <code>False</code> rather than fail at import.
+The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (<code>$PAULISTRINGS_KERNEL_CACHE</code>, default <code>~/.cache/paulistrings/kernels</code>, <code>off</code> to disable) makes the first call in a later process reuse them too.</p>
+<h2 id="python-2"><a class="header" href="#python-2">Python</a></h2>
+<p>The snippets on this page are skipped by the doc checker because they need a CUDA device.</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">import paulistrings
+from paulistrings import truncation
+
+if paulistrings.cuda_available():
+    evolved = observable.propagate(
+        circuit,
+        truncation.approx_topn(10_000_000),
+        direction="heisenberg",
+        device=0,
+    )
+</code></pre>
+<p><code>device</code> takes a device ordinal, a list of ordinals, or <code>"auto"</code>.
+<code>device=</code> is an alternative to <code>partitions=</code>, and passing both, or <code>result="local"</code> without <code>comm=</code>, is a <code>ValueError</code>.
+<code>target_bucket_len</code> and <code>min_buckets</code> still set the host-side bucket schedule the device refines on top of; <code>engine</code> is ignored.</p>
+<p><code>propagate_with_stats(..., device=0)</code> fills <code>PropagationStats.partition</code> as a one-partition run, and <code>PartitionStats.devices</code> names the device:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, device=0)
+print(stats.partition.devices)   # [0]
+print(stats.nanos)               # wall time per layer, on the device
+</code></pre>
+<h3 id="resident-sums"><a class="header" href="#resident-sums">Resident sums</a></h3>
+<p><code>PauliSum.to_device(device)</code> uploads a sum and returns a <code>GpuPauliSum</code>, which <code>propagate</code> steps <strong>in place</strong> and <code>to_host</code> copies back:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">resident = observable.to_device(0)
+values = []
+for _ in range(steps):
+    resident.propagate(trotter_step, policy, direction="heisenberg")
+    values.append(resident.to_host().expectation("z+"))
+</code></pre>
+<p><code>GpuPauliSum.propagate</code> and <code>propagate_with_stats</code> take <code>policy</code>, <code>direction</code>, <code>target_bucket_len</code> and <code>min_buckets</code> with the meanings above; <code>len()</code>, <code>num_qubits</code>, <code>device</code> and <code>num_buckets</code> read the resident sum without a download.
+A device error mid-run leaves the resident sum holding the last completed layer’s output, and a later call resumes from it.</p>
+<h3 id="multi-device"><a class="header" href="#multi-device">Several devices</a></h3>
+<p>A list places one partition on each entry, split by GF(2) partition rows and exchanged between layers as in a <a href="#numa-partitions">partitioned run</a>:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">evolved, stats = observable.propagate_with_stats(
+    circuit, truncation.approx_topn(10_000_000), direction="heisenberg", device=[0, 1, 2, 3]
+)
+print(stats.partition.devices)   # [0, 1, 2, 3]
+</code></pre>
+<p>The list length must be a power of two, since a partition is named by <code>log2(P)</code> rows; <code>device=[0, 1, 2]</code> is a <code>ValueError</code>.
+An ordinal may repeat, <code>device=[0, 0]</code> putting two partitions on device 0, which runs the exchange on one GPU.
+<code>"auto"</code> takes devices <code>0..k</code> for the largest power of two <code>k</code> visible, and is the one-device run when only one is.
+<code>partition_row_seed=</code> and <code>partition_row_blocks=</code> choose the rows as they do for <code>partitions=</code>, the block count equal to the list length.
+<code>stats.partition.partitions</code> is the list length, <code>devices</code> the list, and the per-layer lists carry one entry per partition.
+The call scatters, propagates and gathers every time; a resident multi-device sum is Rust-only (below).</p>
+<h3 id="comm-device"><a class="header" href="#comm-device">One device per MPI rank</a></h3>
+<p>With <code>comm=</code>, <code>device=</code> names this rank’s one device: an ordinal, or <code>"auto"</code> for a device near the rank’s CPUs, distinct per rank on a node while there are enough (see <a href="#gpu-per-rank">MPI ranks</a>):</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">evolved = observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
+</code></pre>
+<p>Everything else is the host <code>comm=</code> contract: replicated input, collective calls, <code>result="gather"</code> or <code>"local"</code>, and <code>stats.partition</code> holding this rank’s entry, with <code>devices</code> this rank’s device.
+It needs the extension built with both features (<code>maturin develop --release --features cuda,mpi</code>); a build lacking either raises <code>RuntimeError</code> naming it.
+A list of several ordinals under <code>comm=</code> is a <code>ValueError</code>.
+A rank that cannot use its device fails the call on every rank, the peers raising the same exception type naming it.</p>
+<h2 id="rust-multi-device"><a class="header" href="#rust-multi-device">Rust: several devices, and one device per MPI rank</a></h2>
+<p><code>GpuPartitionedSum</code> splits a sum across the device partitions of a <code>Placement::Devices</code> runtime, one partition per listed device, and holds it across calls; <code>GpuPauliSum</code> is its one-device form, built by <code>GpuPauliSum::from_host(&amp;sum, ordinal)</code>:</p>
+<!-- doctest: skip -->
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
+use paulistrings::gpu::GpuPartitionedSum;
+
+let config = PartitionConfig {
+    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
+    bind_memory: false,
+    partition_row_seed: None,
+};
+let runtime = PartitionRuntime::new(&amp;config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, runtime, &amp;config)?;
+split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
+let evolved = split.gather()?;
+<span class="boring">}</span></code></pre>
+<p>The exchanged columns move device to device.
+A device driver takes its policy as a <code>BuiltinTruncation</code>, which every builtin and combinator converts into (<code>ApproxTopN(n)</code> or <code>&amp;ApproxTopN(n)</code> alike).
+<code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
+With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code> is the <a href="#gpu-per-rank">MPI ranks</a> driver with each rank’s share on its own device.</p>
+<h2 id="exchange"><a class="header" href="#exchange">Exchange mode, merge and chunking</a></h2>
+<p>Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver’s device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (<code>gpu::MpiGpuSum</code>).
+The NCCL communicator starts <strong>once, collectively, at scatter</strong>: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
+<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
+Running it needs the <code>nccl/2.23.4-1</code> module alongside <code>cuda,mpi</code> — see <a href="#gpu-and-mpi-features">Installation</a> and <a href="#gpu-per-rank">MPI ranks</a>.</p>
+<p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>), so two remote deltas that land on the same receiver key ship as one row.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
+<p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
+The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>
+<p><strong>A Clifford layer whose deltas stay inside the partition skips the sort.</strong>
+A Clifford maps every key to exactly one key, so nothing can collide; the device counts and scatters such a layer directly (<code>GpuLayerOptions::clifford</code> off returns it to the fused layer).
+A Clifford layer that crosses a partition boundary keeps the fused layer, which merges the received rows.</p>
+<h2 id="peer-access"><a class="header" href="#peer-access">Peer access and NVLink</a></h2>
+<p>Before its first copy from device <code>src</code> into device <code>dst</code>, an in-process group (<code>GpuPartitionedSum</code>) lets <code>dst</code> reach <code>src</code>’s memory directly, so the copy goes over NVLink or PCIe peer-to-peer, granting both the driver’s peer-context access and the source’s memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+On a pair the driver reports as unsupported the copy stages through the host instead of faulting, and the outcome is logged.</p>
+<h2 id="what-changes-on-a-device"><a class="header" href="#what-changes-on-a-device">What changes on a device</a></h2>
+<p><strong>Results agree to floating-point tolerance, not bit for bit.</strong>
+The device sums equal keys in a different order from the host, as a different bucket count does (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Determinism).
+No reduction uses a floating-point atomic, so two runs on the same device give the same bits.</p>
+<p><strong>Storage order is the host’s canonical order, but for the device’s own bucket count.</strong>
+The download re-sorts each bucket to the host’s lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so <code>x_array()</code> of a device result can list the terms in a different order from a host run’s.
+Compare two results by key, never by position.</p>
+<p><strong>Device failures are exceptions, not aborts</strong>: an exhausted device raises <code>MemoryError</code>, a request the backend does not implement <code>NotImplementedError</code>, a device placement that does not resolve <code>ValueError</code>, and every other device failure <code>RuntimeError</code>.
+Under <code>comm=</code>, a failure on one rank’s device fails the call on every rank, its peers raising a <code>RuntimeError</code> that names the failing partition and layer.</p>
+<h2 id="limits-2"><a class="header" href="#limits-2">Limits</a></h2>
+<ul>
+<li><strong>The resident <code>GpuPauliSum</code> is one device.</strong> A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.</li>
+<li><strong>Exact <code>topn</code> runs only on one device.</strong> <code>truncation.topn</code> matches the host term for term on a lone <code>device=&lt;int&gt;</code>, <code>to_device</code>, or a <code>device=</code> that resolves to one ordinal; a device list of more than one entry or <code>comm=</code> with <code>device=</code> raises <code>NotImplementedError</code>, since the <code>n</code>-th largest of a split sum has no collective form — use <code>truncation.approx_topn(n)</code> there instead.</li>
+<li><strong>Only the built-in policies run on a device.</strong> Every <code>truncation</code> factory and its <code>&amp;</code>/<code>|</code> compositions run on the device; a custom Rust <code>TruncationPolicy</code> has no conversion to <code>BuiltinTruncation</code>, so passing one to a device driver does not compile.</li>
+<li><strong>Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits</strong>, since a layer holds its input, its output and a staging arena at once.</li>
+<li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>
+<li><strong>A multi-device or MPI group holds its exchange in device memory.</strong> One export volume and one receive volume stay resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.</li>
+<li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
+<li><strong>The sender-side merge (<code>premerge</code>) does not pay on a same-device exchange at low merge ratios.</strong> Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.</li>
+<li><strong>Multi-node runs are unmeasured.</strong> Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.</li>
+<li><strong>One chunk’s transfer does not overlap the fused layer of the chunk before it</strong>, and the chunked receive has not run over a real NCCL communicator.</li>
+</ul>
+<h2 id="see-it-in-use-3"><a class="header" href="#see-it-in-use-3">See it in use</a></h2>
+<p><code>python/paulistrings/tests/test_cuda.py</code> runs every policy against the host engine at three widths, and <code>crates/paulistrings/tests/propagate_gpu.rs</code> is the Rust differential net under the same channels.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="measurements"><a class="header" href="#measurements">Measurements</a></h1>
 <h2 id="product-states"><a class="header" href="#product-states">Product states</a></h2>
@@ -1580,7 +1766,7 @@ Both signatures are under <a href="#overlapother">Measurement</a>.</p>
 <p>A single expectation value at a single cutoff is a number, not a result.
 The truncation that made the sum tractable deleted terms carrying signs, so the value can sit on either side of the truth and need not move monotonically as the cutoff tightens — <a href="#no-variational-bound">No variational bound</a> is the statement and the measured cases.
 What turns the number into a result is <a href="#validating-a-result">Validating a result</a>: sweep the cutoff, read the retained norm alongside, apply the plateau criterion, and score against an exact reference wherever one is affordable.</p>
-<h2 id="see-it-in-use-3"><a class="header" href="#see-it-in-use-3">See it in use</a></h2>
+<h2 id="see-it-in-use-4"><a class="header" href="#see-it-in-use-4">See it in use</a></h2>
 <ul>
 <li><a href="#check-the-cutoff">First propagation</a> — <code>expectation("x+")</code> after a Heisenberg run, then the same value across three cutoffs with the retained norm alongside.</li>
 <li><a href="#b7--stabilizer-state-preparation">B7 — Stabilizer-state preparation</a> — <code>stabilizers_from_stim</code> on a 36-qubit cluster state, <code>expectation_stabilizer</code> on the propagated observable.</li>
@@ -4295,12 +4481,14 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, engine=None,
                small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, comm=None, result="gather") -&gt; PauliSum
+               partition_row_blocks=None, comm=None, result="gather",
+               device=None) -&gt; PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
                           small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                           partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, comm=None, result="gather")
+                          partition_row_blocks=None, comm=None, result="gather",
+                          device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -4325,6 +4513,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_blocks</code></td><td><code>list[list[int]] | None</code></td><td><code>None</code></td><td>explicit disjoint qubit blocks, one per partition, instead of a seeded draw</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
 <tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share</td></tr>
+<tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>
 </div>
@@ -4344,11 +4533,59 @@ The GIL is released for the duration of both calls.</p>
 </table>
 </div>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
-<p><code>partition_row_seed</code> and <code>partition_row_blocks</code> are mutually exclusive; either needs <code>partitions=</code> or <code>comm=</code>.
+<p><code>partition_row_seed</code> and <code>partition_row_blocks</code> are mutually exclusive; either needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
 <p>See <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a> for recipes.</p>
+<h2 id="device"><a class="header" href="#device"><code>device</code></a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Placement</th></tr>
+</thead>
+<tbody>
+<tr><td><code>None</code></td><td>the host engine</td></tr>
+<tr><td>an <code>int</code></td><td>the whole sum on that CUDA device ordinal; <code>ValueError</code> if this process cannot see it</td></tr>
+<tr><td><code>list[int]</code></td><td>one partition per entry, in partition order; a one-element list is that device</td></tr>
+<tr><td><code>"auto"</code></td><td>devices <code>0..k</code> for the largest power of two <code>k</code> visible, so device 0 alone on a one-GPU box</td></tr>
+</tbody>
+</table>
+</div>
+<p>A list’s length must be a power of two, at most 64, or it is a <code>ValueError</code>; an ordinal may repeat, putting several partitions on one device.
+Several devices split the sum like <code>partitions=</code>: <code>partition_row_seed</code> and <code>partition_row_blocks</code> pick the rows, the block count equal to the list length.
+<code>device=</code> is an alternative to <code>partitions=</code>; passing both, or <code>result="local"</code> without <code>comm=</code>, or <code>partition_row_blocks=</code> with a single device, is a <code>ValueError</code>.
+<code>engine</code> is ignored, <code>truncation.topn</code> runs on one device and raises <code>NotImplementedError</code> on several or under <code>comm=</code> (use <code>approx_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
+<p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (a device near the rank’s CPUs, <code>gpu::local_device_for_comm</code>), and a list of several ordinals is a <code>ValueError</code>.
+<code>result=</code> and the row kwargs mean what they mean on the host <code>comm=</code> path, and a rank that cannot use its device fails the call on every rank.
+The pair needs the extension built with both the <code>cuda</code> and <code>mpi</code> features, and raises <code>RuntimeError</code> naming the missing one otherwise.
+See <a href="#cuda-devices">CUDA devices</a>.</p>
+<h2 id="gpupaulisum"><a class="header" href="#gpupaulisum"><code>GpuPauliSum</code></a></h2>
+<pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
+
+resident.propagate(circuit, policy=None, direction=None,
+                   target_bucket_len=None, min_buckets=None) -&gt; None
+resident.propagate_with_stats(circuit, policy=None, direction=None,
+                              target_bucket_len=None, min_buckets=None) -&gt; PropagationStats
+resident.to_host() -&gt; PauliSum
+</code></pre>
+<p>A sum resident on one CUDA device: <code>propagate</code> steps it <strong>in place</strong>, <code>to_host</code> copies it back and leaves it resident.
+The class exists only in a build with the <code>cuda</code> feature; elsewhere <code>to_device</code> raises <code>RuntimeError</code>.
+The arguments mean what they mean on <code>PauliSum.propagate</code>, with the same errors.
+A device error mid-run leaves the sum holding the last completed layer’s output.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>len(resident)</code></td><td><code>int</code></td><td>terms on the device</td></tr>
+<tr><td><code>.num_qubits</code></td><td><code>int</code></td><td>the sum’s qubit count</td></tr>
+<tr><td><code>.device</code></td><td><code>int</code></td><td>the CUDA device ordinal</td></tr>
+<tr><td><code>.num_buckets</code></td><td><code>int</code></td><td>the device partition’s current bucket count, grow-only</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="propagationstats"><a class="header" href="#propagationstats"><code>PropagationStats</code></a></h2>
 <p>One entry per layer applied, in application order (reverse circuit order under <code>direction="heisenberg"</code>).</p>
 <p>A <strong>layer</strong> here is one applied channel — one gate, or one noise channel on one qubit — not a brickwork layer of parallel gates in the field-standard sense.
@@ -4368,7 +4605,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.application_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the propagation loop, <code>0..layers</code> regardless of <code>direction</code></td></tr>
 <tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
-<tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code> call, else <code>None</code></td></tr>
+<tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -4383,6 +4620,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.partitions</code></td><td><code>int</code></td><td>partition count (power of two); the MPI group size under <code>comm=</code></td></tr>
 <tr><td><code>.rank</code></td><td><code>int | None</code></td><td>this process’s rank under <code>comm=</code>, else <code>None</code></td></tr>
 <tr><td><code>.size</code></td><td><code>int | None</code></td><td>the <code>comm=</code> group size, else <code>None</code></td></tr>
+<tr><td><code>.devices</code></td><td><code>list[int] | None</code></td><td>the CUDA device of each partition for a <code>device=</code> run (this rank’s one device under <code>comm=</code>), else <code>None</code></td></tr>
 <tr><td><code>.local</code></td><td><code>list[bool]</code></td><td>whether each layer moved no row across a partition boundary (<code>rows_exported[k] == 0</code>)</td></tr>
 <tr><td><code>.rows_exported</code></td><td><code>list[int]</code></td><td>rows sent across partition boundaries per layer, summed over sender/receiver pairs</td></tr>
 <tr><td><code>.bytes_exported</code></td><td><code>list[int]</code></td><td>wire bytes behind <code>rows_exported</code>, including per-block headers</td></tr>
@@ -4501,6 +4739,8 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <tr><td><code>paulistrings.p(label)</code></td><td>a <a href="#paulistring"><code>PauliString</code></a> from its <code>IXYZ</code> label, shorthand for <code>PauliString.from_label</code></td></tr>
 <tr><td><code>paulistrings.numa_nodes()</code></td><td><code>list[list[int]]</code>, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process’s CPU affinity mask</td></tr>
 <tr><td><code>paulistrings.mpi_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(comm=...)</code> (compiled with the <code>mpi</code> feature)</td></tr>
+<tr><td><code>paulistrings.cuda_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(device=...)</code>: compiled with the <code>cuda</code> feature, <code>libcuda</code> and <code>libnvrtc</code> loadable, and a device visible</td></tr>
+<tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
 <tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
 </tbody>

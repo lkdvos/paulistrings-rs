@@ -65,27 +65,30 @@
 <a href=#65 id=65 data-nosnippet>65</a><span class="kw">pub use </span>channel::{Channel, OutputBuffer};
 <a href=#66 id=66 data-nosnippet>66</a><span class="kw">pub use </span>circuit::Circuit;
 <a href=#67 id=67 data-nosnippet>67</a><span class="kw">pub use </span>engine::bucketed::{GateTrace, LayerScratch, TermTrace};
-<a href=#68 id=68 data-nosnippet>68</a><span class="comment">// The MPI transport and its distributed driver, behind the `mpi` feature.
-<a href=#69 id=69 data-nosnippet>69</a></span><span class="attr">#[cfg(feature = <span class="string">"mpi"</span>)]
-<a href=#70 id=70 data-nosnippet>70</a></span><span class="kw">pub use </span>engine::partitioned::mpi;
-<a href=#71 id=71 data-nosnippet>71</a><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#72 id=72 data-nosnippet>72</a></span><span class="kw">pub use </span>engine::partitioned::PartitionPhaseStats;
-<a href=#73 id=73 data-nosnippet>73</a><span class="kw">pub use </span>engine::partitioned::{
-<a href=#74 id=74 data-nosnippet>74</a>    circuit_generators, count_remote_deltas, propagate_partitioned,
-<a href=#75 id=75 data-nosnippet>75</a>    propagate_partitioned_with_options, DistributedSum, GeneratorWeight, PartitionConfig,
-<a href=#76 id=76 data-nosnippet>76</a>    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
-<a href=#77 id=77 data-nosnippet>77</a>    PartitionedTruncation, Placement, TopologyError,
-<a href=#78 id=78 data-nosnippet>78</a>};
-<a href=#79 id=79 data-nosnippet>79</a><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
-<a href=#80 id=80 data-nosnippet>80</a></span><span class="kw">pub use </span>engine::stats::PhaseStats;
-<a href=#81 id=81 data-nosnippet>81</a><span class="kw">pub use </span>engine::{
-<a href=#82 id=82 data-nosnippet>82</a>    default_min_buckets, propagate, propagate_with_options, propagate_with_scratch,
-<a href=#83 id=83 data-nosnippet>83</a>    propagate_with_scratch_and_options, Direction, EngineSelection, PropagateOptions,
-<a href=#84 id=84 data-nosnippet>84</a>    DEFAULT_SMALL_SUM_THRESHOLD,
-<a href=#85 id=85 data-nosnippet>85</a>};
-<a href=#86 id=86 data-nosnippet>86</a><span class="kw">pub use </span>pauli_string::PauliString;
-<a href=#87 id=87 data-nosnippet>87</a><span class="kw">pub use </span>pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
-<a href=#88 id=88 data-nosnippet>88</a><span class="kw">pub use </span>phase::Phase;
-<a href=#89 id=89 data-nosnippet>89</a><span class="kw">pub use </span>stabilizer::{StabilizerError, StabilizerState};
-<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub use </span>truncation::TruncationPolicy;
+<a href=#68 id=68 data-nosnippet>68</a><span class="comment">// The CUDA backend, behind the `cuda` feature.
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="attr">#[cfg(feature = <span class="string">"cuda"</span>)]
+<a href=#70 id=70 data-nosnippet>70</a></span><span class="kw">pub use </span>engine::gpu;
+<a href=#71 id=71 data-nosnippet>71</a><span class="comment">// The MPI transport and its distributed driver, behind the `mpi` feature.
+<a href=#72 id=72 data-nosnippet>72</a></span><span class="attr">#[cfg(feature = <span class="string">"mpi"</span>)]
+<a href=#73 id=73 data-nosnippet>73</a></span><span class="kw">pub use </span>engine::partitioned::mpi;
+<a href=#74 id=74 data-nosnippet>74</a><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">pub use </span>engine::partitioned::PartitionPhaseStats;
+<a href=#76 id=76 data-nosnippet>76</a><span class="kw">pub use </span>engine::partitioned::{
+<a href=#77 id=77 data-nosnippet>77</a>    circuit_generators, count_remote_deltas, propagate_partitioned,
+<a href=#78 id=78 data-nosnippet>78</a>    propagate_partitioned_with_options, DistributedSum, GeneratorWeight, PartitionConfig,
+<a href=#79 id=79 data-nosnippet>79</a>    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
+<a href=#80 id=80 data-nosnippet>80</a>    PartitionedTruncation, Placement, TopologyError,
+<a href=#81 id=81 data-nosnippet>81</a>};
+<a href=#82 id=82 data-nosnippet>82</a><span class="attr">#[cfg(feature = <span class="string">"phase-timing"</span>)]
+<a href=#83 id=83 data-nosnippet>83</a></span><span class="kw">pub use </span>engine::stats::PhaseStats;
+<a href=#84 id=84 data-nosnippet>84</a><span class="kw">pub use </span>engine::{
+<a href=#85 id=85 data-nosnippet>85</a>    default_min_buckets, propagate, propagate_with_options, propagate_with_scratch,
+<a href=#86 id=86 data-nosnippet>86</a>    propagate_with_scratch_and_options, Direction, EngineSelection, PropagateOptions,
+<a href=#87 id=87 data-nosnippet>87</a>    DEFAULT_SMALL_SUM_THRESHOLD,
+<a href=#88 id=88 data-nosnippet>88</a>};
+<a href=#89 id=89 data-nosnippet>89</a><span class="kw">pub use </span>pauli_string::PauliString;
+<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub use </span>pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
+<a href=#91 id=91 data-nosnippet>91</a><span class="kw">pub use </span>phase::Phase;
+<a href=#92 id=92 data-nosnippet>92</a><span class="kw">pub use </span>stabilizer::{StabilizerError, StabilizerState};
+<a href=#93 id=93 data-nosnippet>93</a><span class="kw">pub use </span>truncation::TruncationPolicy;
 </code></pre></div></section></main></body></html>

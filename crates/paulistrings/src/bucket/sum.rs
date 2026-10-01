@@ -754,6 +754,34 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
+    /// Wrap per-bucket columns that already satisfy the invariant, one entry per bucket of `hash`.
+    /// The device download builds its buckets in parallel, which the single flat stream of [`Self::from_bucket_columns`] cannot.
+    ///
+    /// # Panics
+    ///
+    /// If `buckets` is not one entry per bucket of `hash`.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn from_buckets(
+        buckets: Vec<BucketCols<W>>,
+        hash: Gf2Hash<W>,
+        num_qubits: usize,
+    ) -> Self {
+        assert_eq!(
+            buckets.len(),
+            hash.num_buckets(),
+            "PauliSum::from_buckets: {} buckets for a hash with {} buckets",
+            buckets.len(),
+            hash.num_buckets(),
+        );
+        let len = buckets.iter().map(BucketCols::len).sum();
+        Self {
+            buckets,
+            hash,
+            num_qubits,
+            len,
+        }
+    }
+
     /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a mixed sum.
     /// Debug and test predicate for "this sum is one partition's share"; it scans every term, so it is not for the propagation loop.
     pub(crate) fn partition_rank_of_all(&self, rows: &PartitionRows<W>) -> Option<u32> {

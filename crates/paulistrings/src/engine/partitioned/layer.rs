@@ -181,7 +181,7 @@ pub(crate) struct LayerExchangeCounts {
 
 impl LayerExchangeCounts {
     /// The counts of a layer that exchanged nothing.
-    fn none(size: u32) -> Self {
+    pub(crate) fn none(size: u32) -> Self {
         Self {
             remote_deltas: 0,
             rows_sent: vec![0; size as usize],
@@ -369,7 +369,7 @@ mod tests {
     use crate::channel::clifford::Clifford1Q;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
-    use crate::engine::partitioned::transport::{Collectives, InProcessTransport, Payload};
+    use crate::engine::partitioned::transport::InProcessTransport;
     use crate::pauli_string::PauliString;
     use crate::phase::Phase;
     use crate::test_support::{
@@ -378,7 +378,6 @@ mod tests {
     };
     use crate::truncation::builtin::CoefficientThreshold;
     use num_complex::Complex64;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOL: f64 = 1e-11;
     const ZERO: Complex64 = Complex64::new(0.0, 0.0);
@@ -614,47 +613,6 @@ mod tests {
         }
     }
 
-    /// A transport that counts the exchanges it is asked for.
-    struct CountingTransport {
-        inner: InProcessTransport,
-        exchanges: AtomicUsize,
-    }
-
-    impl Collectives for CountingTransport {
-        fn rank(&self) -> u32 {
-            self.inner.rank()
-        }
-        fn size(&self) -> u32 {
-            self.inner.size()
-        }
-        fn allreduce_max_u8(&self, v: u8) -> u8 {
-            self.inner.allreduce_max_u8(v)
-        }
-        fn allreduce_sum_u64(&self, buf: &mut [u64]) {
-            self.inner.allreduce_sum_u64(buf)
-        }
-        fn barrier(&self) {
-            self.inner.barrier()
-        }
-    }
-
-    impl Transport for CountingTransport {
-        fn exchange_layer<P, F, R>(
-            &self,
-            send: Vec<Option<P>>,
-            spare: &mut Vec<P>,
-            map: &ChunkMap,
-            body: F,
-        ) -> (Vec<Option<P>>, R)
-        where
-            P: Payload,
-            F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
-        {
-            self.exchanges.fetch_add(1, Ordering::Relaxed);
-            self.inner.exchange_layer(send, spare, map, body)
-        }
-    }
-
     /// A layer whose every delta stays inside its partition issues **no** transport call, not an empty one.
     ///
     /// That is what lets a partitioned run skip the collective entirely on layers that do not cross: the verdict comes from the plan, which every partition computes identically.
@@ -673,13 +631,7 @@ mod tests {
             "fixture must have no remote delta",
         );
 
-        let transports: Vec<CountingTransport> = InProcessTransport::group(2)
-            .into_iter()
-            .map(|inner| CountingTransport {
-                inner,
-                exchanges: AtomicUsize::new(0),
-            })
-            .collect();
+        let transports = crate::test_support::LoggingTransport::group(2);
         let parts: Vec<PauliSum<1>> = (0..2).map(|r| whole.filter_partition(&rows, r)).collect();
         let prep = &prep;
         let rows = &rows;
@@ -698,7 +650,7 @@ mod tests {
                             &mut state,
                             &transport,
                         );
-                        let seen = transport.exchanges.load(Ordering::Relaxed);
+                        let seen = transport.log.count("exchange_layer");
                         (local, counts, seen)
                     })
                 })

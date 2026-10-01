@@ -4,9 +4,12 @@
 //! The adoption is collective (happens with the GIL held, before `allow_threads`, after every check that could raise), and the duplicate must not outlive `MPI_Finalize` — [`MpiRun`] drops both the transport and the `DistributedSum` before returning.
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
+#[cfg(feature = "cuda")]
+use paulistrings::gpu::first_failure;
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
+use paulistrings::truncation::BuiltinTruncation;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionTrace, PartitionedTruncation,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionTrace,
     PauliSum as CorePauliSum, PropagateOptions, TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
@@ -129,18 +132,17 @@ impl MpiRun {
         }
     }
 
-    /// Scatter, propagate, and take this rank's answer. **Collective.**
-    pub fn propagate<const W: usize, T>(
+    /// Scatter, propagate, and take this rank's answer, plus this rank's `(trace, rank, size)` when `traced`. **Collective.**
+    #[allow(clippy::type_complexity)]
+    pub fn propagate<const W: usize>(
         self,
         circuit: &CoreCircuit<W>,
         sum: &CorePauliSum<W>,
-        policy: &T,
+        policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
-    ) -> Result<CorePauliSum<W>, TopologyError>
-    where
-        T: PartitionedTruncation<W> + ?Sized,
-    {
+        traced: bool,
+    ) -> Result<(CorePauliSum<W>, Option<(PartitionTrace, u32, u32)>), TopologyError> {
         let Self {
             transport,
             rows,
@@ -148,41 +150,22 @@ impl MpiRun {
         } = self;
         let mut split =
             MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
+        if traced {
+            split.enable_trace();
+        }
         split.propagate_with_options(circuit, policy, direction, options);
+        // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
+        let trace = traced.then(|| {
+            (
+                split.take_trace().unwrap_or_default(),
+                split.rank(),
+                split.size(),
+            )
+        });
         let out = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
-        Ok(out)
-    }
-
-    /// [`propagate`](Self::propagate), also draining this rank's
-    /// [`PartitionTrace`]. Returns `(sum, trace, rank, size)`.
-    pub fn propagate_traced<const W: usize, T>(
-        self,
-        circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W>,
-        policy: &T,
-        direction: Direction,
-        options: PropagateOptions,
-    ) -> Result<(CorePauliSum<W>, PartitionTrace, u32, u32), TopologyError>
-    where
-        T: PartitionedTruncation<W> + ?Sized,
-    {
-        let Self {
-            transport,
-            rows,
-            gather,
-        } = self;
-        let mut split =
-            MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
-        split.enable_trace();
-        split.propagate_with_options(circuit, policy, direction, options);
-        let (rank, size) = (split.rank(), split.size());
-        // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
-        let trace = split.take_trace().unwrap_or_default();
-        let out = harvest(&split, gather);
-        drop(split);
-        Ok((out, trace, rank, size))
+        Ok((out, trace))
     }
 }
 
@@ -195,5 +178,117 @@ fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
             .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
     } else {
         split.local().clone()
+    }
+}
+
+/// This rank's device pick `local`, agreed over `transport`'s group, so a rank that cannot use its device fails the call on every rank. **Collective.**
+/// The failing rank raises its own exception; its peers raise one of the same type naming it.
+#[cfg(feature = "cuda")]
+pub fn agree_device(
+    py: Python<'_>,
+    transport: &MpiTransport,
+    local: PyResult<u32>,
+    shown: &str,
+) -> PyResult<u32> {
+    let code = match &local {
+        Ok(_) => 0,
+        Err(err) if err.is_instance_of::<PyValueError>(py) => 1,
+        Err(_) => 2,
+    };
+    match (local, first_failure(transport, code)) {
+        (Err(err), _) => Err(err),
+        (Ok(device), None) => Ok(device),
+        (Ok(_), Some((rank, code))) => {
+            let msg = format!(
+                "{shown}: rank {rank} cannot use its CUDA device, so no rank runs (rank {rank} \
+                 raises the reason)"
+            );
+            Err(if code == 1 {
+                PyValueError::new_err(msg)
+            } else {
+                PyRuntimeError::new_err(msg)
+            })
+        }
+    }
+}
+
+/// What can fail inside a one-GPU-per-rank run: a core error, already agreed over the group, or this rank's peer failing to download its `result="local"` share.
+#[cfg(feature = "cuda")]
+pub enum MpiGpuFailure {
+    Gpu(paulistrings::gpu::GpuError),
+    PeerDownload(usize),
+}
+
+/// One distributed propagate with one CUDA device per rank (`comm=` with `device=`), [`MpiRun`]'s twin over `MpiGpuSum`.
+#[cfg(feature = "cuda")]
+pub struct MpiGpuRun {
+    transport: MpiTransport,
+    rows: PartitionRowPolicy,
+    gather: bool,
+    device: u32,
+}
+
+#[cfg(feature = "cuda")]
+impl MpiGpuRun {
+    pub fn new(
+        transport: MpiTransport,
+        rows: PartitionRowPolicy,
+        gather: bool,
+        device: u32,
+    ) -> Self {
+        Self {
+            transport,
+            rows,
+            gather,
+            device,
+        }
+    }
+
+    /// Scatter, propagate and take this rank's answer, plus this rank's `(trace, rank, size, device)` when `traced`. **Collective**; every error is agreed over the group.
+    #[allow(clippy::type_complexity)]
+    pub fn propagate<const W: usize>(
+        self,
+        circuit: &CoreCircuit<W>,
+        sum: &CorePauliSum<W>,
+        policy: &BuiltinTruncation,
+        direction: Direction,
+        options: PropagateOptions,
+        traced: bool,
+    ) -> Result<(CorePauliSum<W>, Option<(PartitionTrace, u32, u32, u32)>), MpiGpuFailure> {
+        use paulistrings::gpu::MpiGpuSum;
+        let Self {
+            transport,
+            rows,
+            gather,
+            device,
+        } = self;
+        let mut split = MpiGpuSum::<W>::scatter_to_device(sum, transport, device, &rows)
+            .map_err(MpiGpuFailure::Gpu)?;
+        if traced {
+            split.enable_trace();
+        }
+        split
+            .propagate_with_options(circuit, policy, direction, options)
+            .map_err(MpiGpuFailure::Gpu)?;
+        let (rank, size) = (split.rank(), split.size());
+        let trace = traced.then(|| (split.take_trace().unwrap_or_default(), rank, size, device));
+        let out = if gather {
+            split
+                .gather()
+                .map_err(MpiGpuFailure::Gpu)?
+                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+        } else {
+            // A local download: agreed here so a rank whose download fails does not leave its peers a call ahead.
+            let share = split.local_to_host();
+            let failed = first_failure(split.transport(), u64::from(share.is_err()));
+            match (share, failed) {
+                (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
+                (Ok(_), Some((rank, _))) => return Err(MpiGpuFailure::PeerDownload(rank)),
+                (Ok(share), None) => share,
+            }
+        };
+        // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
+        drop(split);
+        Ok((out, trace))
     }
 }

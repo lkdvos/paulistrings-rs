@@ -15,6 +15,7 @@
     - [Inside the engine](manual/propagation/engine.md)
     - [NUMA partitions](manual/propagation/partitions.md)
     - [MPI ranks](manual/propagation/mpi.md)
+    - [CUDA devices](manual/propagation/gpu.md)
   - [Measurements](manual/measurements.md)
 - [Examples](examples/index.md)
   - [First propagation](examples/first-propagation.md)

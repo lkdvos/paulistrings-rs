@@ -20,8 +20,10 @@
 //! ```
 
 pub mod builtin;
+mod tree;
 
 pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
+pub use tree::BuiltinTruncation;
 
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;

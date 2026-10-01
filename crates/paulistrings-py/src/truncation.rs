@@ -3,17 +3,18 @@
 //!
 //! Python composition is via the `&` and `|` operators on the returned objects.
 
-use crate::truncation_spec::{PolicySpec, PyTruncation};
+use crate::truncation_spec::PyTruncation;
+use paulistrings::truncation::BuiltinTruncation;
 use pyo3::prelude::*;
 
 #[pyfunction]
 fn coeff(epsilon: f64) -> PyTruncation {
-    PyTruncation::new(PolicySpec::Coeff(epsilon))
+    PyTruncation::new(BuiltinTruncation::Coeff(epsilon))
 }
 
 #[pyfunction]
 fn weight(k: u32) -> PyTruncation {
-    PyTruncation::new(PolicySpec::Weight(k))
+    PyTruncation::new(BuiltinTruncation::Weight(k))
 }
 
 /// Keep at most ``n`` terms by coefficient magnitude after each layer.
@@ -22,7 +23,7 @@ fn weight(k: u32) -> PyTruncation {
 /// Degenerate case: if every candidate ties at the threshold, this keeps nothing. Combine with ``coeff`` via ``&``, or raise ``n``, if that matters.
 #[pyfunction]
 fn topn(n: usize) -> PyTruncation {
-    PyTruncation::new(PolicySpec::TopN(n))
+    PyTruncation::new(BuiltinTruncation::TopN(n))
 }
 
 /// Keep approximately ``n`` terms after each layer — the cheap sibling of ``topn``, opt-in and never a default.
@@ -32,7 +33,7 @@ fn topn(n: usize) -> PyTruncation {
 /// Degenerate case: if every magnitude lands in one octave and there are more than ``n`` terms, this keeps nothing. Combine with ``coeff`` via ``&``, or use ``topn``, if that matters.
 #[pyfunction]
 fn approx_topn(n: usize) -> PyTruncation {
-    PyTruncation::new(PolicySpec::ApproxTopN(n))
+    PyTruncation::new(BuiltinTruncation::ApproxTopN(n))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -11,9 +11,14 @@ re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 
 ``PauliSum.propagate`` also runs the sum split across partitions: ``partitions=``
 places one pinned thread pool per NUMA domain in this process, ``comm=`` takes
-an ``mpi4py`` communicator and places one partition per rank. ``numa_nodes()``
-reports what ``partitions="auto"`` has to place against, and
-``mpi_available()`` whether this build was compiled with the ``mpi`` feature.
+an ``mpi4py`` communicator and places one partition per rank. ``device=`` runs
+it on CUDA devices instead (one partition per listed device, or with ``comm=``
+one device per rank), and ``PauliSum.to_device`` returns a one-device
+``GpuPauliSum`` that stays resident there across calls (the class exists only
+in a build with the ``cuda`` feature). ``numa_nodes()``
+reports what ``partitions="auto"`` has to place against,
+``mpi_available()`` whether this build was compiled with the ``mpi`` feature, and
+``cuda_available()`` whether it was compiled with ``cuda`` *and* a CUDA device is visible.
 """
 
 from . import _paulistrings
@@ -24,6 +29,7 @@ from ._paulistrings import (
     PauliString,
     PauliSum,
     PropagationStats,
+    cuda_available,
     mpi_available,
     numa_nodes,
     p,
@@ -47,6 +53,11 @@ __all__ = [
     "interop",
     "io",
     "mpi_available",
+    "cuda_available",
     "numa_nodes",
     "reset_log_cache",
 ]
+
+if hasattr(_paulistrings, "GpuPauliSum"):
+    GpuPauliSum = _paulistrings.GpuPauliSum
+    __all__.append("GpuPauliSum")

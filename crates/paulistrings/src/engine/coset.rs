@@ -428,7 +428,7 @@ mod tests {
 
     // ---- the coset dimension a real dense-PTM channel actually gets ----
 
-    /// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))` is a property of the *hash rows*, not of the channel — so the same Haar SU(4) block gets a 16-member coset at one width and an 8-member one at another under the same seed.
+    /// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))` is a property of the *hash rows*, not of the channel — so the same Haar SU(4) block gets a 16-member coset on one support and an 8-member one on another under the same seed.
     ///
     /// This is the link between `bucket::hash`'s rank tests and the dense-PTM sort's cost (`engine::merge`): the per-run sort's comparison count sits at its `log2(fanout)` floor exactly when `r` is full, and `r` is what this pins.
     /// See `research/FINDINGS.md`.
@@ -452,7 +452,7 @@ mod tests {
                 "W=2 at {bits} bits"
             );
 
-            // W = 1: one rank short at every bucket count this policy reaches.
+            // W = 1: the same rows in word 0, so the same rank.
             let h1 = Gf2Hash::<1>::new(64, bits, DEFAULT_HASH_SEED);
             let want1 = support_delta_rank(&h1, &[0, 1]).min(bits as usize);
             let prep1 = Channel::<1>::prepare(&ch, &h1, false).expect("prepare W=1");
@@ -463,10 +463,12 @@ mod tests {
             );
         }
 
-        // At the default bucket-count floor the two widths get different coset widths from the same gate — 16 members against 8.
-        // That difference, not the key width, is behind the "W = 1 sort defect" observed elsewhere; see `research/FINDINGS.md`.
+        // At the default bucket-count floor two supports get different coset widths from the same gate — 16 members against 8.
+        // A rank draw of this kind, not the key width, is behind the "W = 1 sort defect" observed elsewhere; see `research/FINDINGS.md`.
+        // Regenerated for the splitmix64 row draw: the deficient support is now `(0, 7)` at both widths, where `(0, 1)` used to be deficient at `W = 1` only.
         let h2 = Gf2Hash::<2>::new(128, 7, DEFAULT_HASH_SEED);
         let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
+        let deficient = GeneralUnitary2Q::from_matrix(0, 7, haar_su4_matrix());
         let s2 = Gf2Span::new(
             &Channel::<2>::prepare(&ch, &h2, false)
                 .unwrap()
@@ -474,7 +476,7 @@ mod tests {
             7,
         );
         let s1 = Gf2Span::new(
-            &Channel::<1>::prepare(&ch, &h1, false)
+            &Channel::<1>::prepare(&deficient, &h1, false)
                 .unwrap()
                 .bucket_deltas(),
             7,

@@ -26,6 +26,7 @@ thread_local! {
 /// let policy = CoefficientThreshold(1e-9);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CoefficientThreshold(
     /// Magnitude threshold. Terms with `|coeff| <= epsilon` are dropped.
     pub f64,
@@ -55,6 +56,7 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
 /// let policy = WeightCutoff(4);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeightCutoff(
     /// Maximum allowed Pauli weight. Terms with weight `> k` are dropped.
     pub u32,
@@ -106,6 +108,7 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 /// let policy = TopN(1_000_000);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopN(
     /// Upper bound on the number of terms to retain. Terms below the
     /// magnitude threshold — and any tie group at the threshold that does not
@@ -221,6 +224,7 @@ pub(crate) const APPROX_BINS: usize = 2048;
 /// let policy = ApproxTopN(1_000_000);
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApproxTopN(
     /// Target term count, and a hard upper bound on what is retained. Terms
     /// below the chosen octave edge are dropped at layer finalization.
@@ -356,6 +360,7 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
 /// let policy = And(CoefficientThreshold(1e-6), WeightCutoff(4));
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct And<A, B>(
     /// First policy. `keep_term` and `finalize_layer` both consult this first.
     pub A,
@@ -399,6 +404,7 @@ where
 /// let policy = Or(CoefficientThreshold(0.1), WeightCutoff(0));
 /// # let _ = policy;
 /// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Or<A, B>(
     /// First policy.
     pub A,

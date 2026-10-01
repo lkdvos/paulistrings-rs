@@ -23,6 +23,10 @@
 //! Probing failures are `cargo:warning=` only — `rsmpi`'s own build script
 //! fails right after with the authoritative message, and duplicating it as a
 //! hard error here would just bury the useful one.
+//!
+//! The `cuda` feature needs no build-script support: `cudarc`'s
+//! `fallback-dynamic-loading` loads `libcuda`/`libnvrtc` at runtime, so there
+//! is nothing here for it to probe or link.
 
 use std::process::Command;
 

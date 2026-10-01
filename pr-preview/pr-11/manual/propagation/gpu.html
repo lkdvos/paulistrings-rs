@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ca6f5446.js";
+            window.path_to_searchindex_js = "../../searchindex-6f8b7437.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-b86f2ee9.js"></script>
@@ -264,7 +264,7 @@ It needs the extension built with both features (<code>maturin develop --release
 A list of several ordinals under <code>comm=</code> is a <code>ValueError</code>.
 A rank that cannot use its device fails the call on every rank, the peers raising the same exception type naming it.</p>
 <h2 id="rust-multi-device"><a class="header" href="#rust-multi-device">Rust: several devices, and one device per MPI rank</a></h2>
-<p><code>GpuPartitionedSum</code> splits a sum across the device partitions of a <code>Placement::Devices</code> runtime, one partition per listed device, and holds it across calls:</p>
+<p><code>GpuPartitionedSum</code> splits a sum across the device partitions of a <code>Placement::Devices</code> runtime, one partition per listed device, and holds it across calls; <code>GpuPauliSum</code> is its one-device form, built by <code>GpuPauliSum::from_host(&amp;sum, ordinal)</code>:</p>
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -277,44 +277,30 @@ let config = PartitionConfig {
     partition_row_seed: None,
 };
 let runtime = PartitionRuntime::new(&amp;config)?;
-let mut split = GpuPartitionedSum::scatter(observable, runtime, &amp;config)?;
-split.propagate(&amp;circuit, &amp;ApproxTopN(10_000_000), Direction::Heisenberg)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, runtime, &amp;config)?;
+split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 <span class="boring">}</span></code></pre>
-<p>An in-process group exchanges device-resident payloads: the columns move device to device (or, without peer access, staged through the host) rather than through the host wire format.
+<p>The exchanged columns move device to device.
+A device driver takes its policy as a <code>BuiltinTruncation</code>, which every builtin and combinator converts into (<code>ApproxTopN(n)</code> or <code>&amp;ApproxTopN(n)</code> alike).
 <code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
 With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code> is the <a href="mpi.html#gpu-per-rank">MPI ranks</a> driver with each rank’s share on its own device.</p>
 <h2 id="exchange"><a class="header" href="#exchange">Exchange mode, merge and chunking</a></h2>
-<p><code>PAULISTRINGS_GPU_EXCHANGE</code> picks how a remote layer’s rows travel, read once per process by an in-process group and at every scatter by an MPI group:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>value</th><th>in-process group (<code>GpuPartitionedSum</code>)</th><th>MPI group (<code>gpu::MpiGpuSum</code>)</th></tr>
-</thead>
-<tbody>
-<tr><td>unset</td><td>device-to-device (or peer) copy</td><td>NCCL if built with <code>nccl</code> and every rank can start it on a distinct device, else host</td></tr>
-<tr><td><code>host</code></td><td>staged through host <code>PartnerPayload</code> columns</td><td>staged through host <code>PartnerPayload</code> columns</td></tr>
-<tr><td><code>device</code></td><td>device-to-device (or peer) copy</td><td>same as unset (an MPI group reads <code>device</code> and <code>nccl</code> apart)</td></tr>
-<tr><td><code>nccl</code></td><td>same as unset (in-process peer copies are already device to device)</td><td>NCCL required — every rank errs if any rank cannot start it</td></tr>
-</tbody>
-</table>
-</div>
-<p>The MPI mode is agreed <strong>once, collectively, at scatter</strong>, never per layer: with the <code>nccl</code> feature, more than one rank, and every rank seeing a distinct CUDA device it can start a communicator on, the group moves columns straight into the receiver’s device memory over NCCL; a group with a host member, or ranks sharing a device, always uses the host format.
-<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the communicator; a timeout or an NCCL error aborts it and the split, surfacing as <code>GpuError::Timeout</code> / <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
-Building and running it needs the <code>nccl</code> feature and the <code>nccl/2.23.4-1</code> module — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
-<p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>, <code>PAULISTRINGS_GPU_PREMERGE=off</code>), so two remote deltas that land on the same receiver key ship as one row.
+<p>Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver’s device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (<code>gpu::MpiGpuSum</code>).
+The NCCL communicator starts <strong>once, collectively, at scatter</strong>: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
+<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
+Running it needs the <code>nccl/2.23.4-1</code> module alongside <code>cuda,mpi</code> — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
+<p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>), so two remote deltas that land on the same receiver key ship as one row.
 It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
 <p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
 The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>
 <p><strong>A Clifford layer whose deltas stay inside the partition skips the sort.</strong>
-A Clifford maps every key to exactly one key, so nothing can collide; the device counts and scatters such a layer directly (<code>GpuLayerOptions::clifford</code>, <code>PAULISTRINGS_GPU_CLIFFORD=off</code> returns it to the fused layer).
+A Clifford maps every key to exactly one key, so nothing can collide; the device counts and scatters such a layer directly (<code>GpuLayerOptions::clifford</code> off returns it to the fused layer).
 A Clifford layer that crosses a partition boundary keeps the fused layer, which merges the received rows.</p>
 <h2 id="peer-access"><a class="header" href="#peer-access">Peer access and NVLink</a></h2>
-<p><code>gpu::peer_access(dst, src)</code> lets device <code>dst</code> reach device <code>src</code>’s memory directly, so a copy from <code>src</code> into <code>dst</code> goes over NVLink or PCIe peer-to-peer, and reports the outcome (<code>PeerAccess::Enabled</code>, <code>Unsupported</code>, <code>Failed</code>, or <code>SameDevice</code>), granting both the driver’s peer-context access and the source’s memory-pool access list a pooled allocation needs to be reachable from a peer at all.
-A device exchange calls it before its first cross-device copy; without it, or on a pair the driver reports as unsupported, the copy stages through the host instead of faulting.
-<code>examples/gpu_peer.rs</code> times the same-device, peer and host-staged paths and reports the driver’s P2P attributes.
-<code>scripts/slurm/check-gpu-links.sh</code> fails a multi-GPU job unless every visible pair is joined by NVLink, so a measurement never silently falls back to PCIe.</p>
+<p>Before its first copy from device <code>src</code> into device <code>dst</code>, an in-process group (<code>GpuPartitionedSum</code>) lets <code>dst</code> reach <code>src</code>’s memory directly, so the copy goes over NVLink or PCIe peer-to-peer, granting both the driver’s peer-context access and the source’s memory-pool access list a pooled allocation needs to be reachable from a peer at all.
+On a pair the driver reports as unsupported the copy stages through the host instead of faulting, and the outcome is logged.</p>
 <h2 id="what-changes-on-a-device"><a class="header" href="#what-changes-on-a-device">What changes on a device</a></h2>
 <p><strong>Results agree to floating-point tolerance, not bit for bit.</strong>
 The device sums equal keys in a different order from the host, as a different bucket count does (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Determinism).
@@ -328,14 +314,14 @@ Under <code>comm=</code>, a failure on one rank’s device fails the call on eve
 <ul>
 <li><strong>The resident <code>GpuPauliSum</code> is one device.</strong> A multi-device or per-rank run from Python scatters and gathers on every call; the Rust API above keeps the split resident.</li>
 <li><strong>Exact <code>topn</code> runs only on one device.</strong> <code>truncation.topn</code> matches the host term for term on a lone <code>device=&lt;int&gt;</code>, <code>to_device</code>, or a <code>device=</code> that resolves to one ordinal; a device list of more than one entry or <code>comm=</code> with <code>device=</code> raises <code>NotImplementedError</code>, since the <code>n</code>-th largest of a split sum has no collective form — use <code>truncation.approx_topn(n)</code> there instead.</li>
-<li><strong>Only the built-in policies run on a device.</strong> Every <code>truncation</code> factory and its <code>&amp;</code>/<code>|</code> compositions lower to the device; a custom Rust <code>TruncationPolicy</code> without a <code>device_policy</code> is refused before the first layer.</li>
+<li><strong>Only the built-in policies run on a device.</strong> Every <code>truncation</code> factory and its <code>&amp;</code>/<code>|</code> compositions run on the device; a custom Rust <code>TruncationPolicy</code> has no conversion to <code>BuiltinTruncation</code>, so passing one to a device driver does not compile.</li>
 <li><strong>Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits</strong>, since a layer holds its input, its output and a staging arena at once.</li>
 <li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>
-<li><strong>A multi-device or MPI group trades staging time for device memory.</strong> Exchanging device-resident payloads keeps one export volume and one receive volume resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count the host-staged path (or a single device) still fits.</li>
+<li><strong>A multi-device or MPI group holds its exchange in device memory.</strong> One export volume and one receive volume stay resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.</li>
 <li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
 <li><strong>The sender-side merge (<code>premerge</code>) does not pay on a same-device exchange at low merge ratios.</strong> Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.</li>
 <li><strong>Multi-node runs are unmeasured.</strong> Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.</li>
-<li><strong>The chunked NCCL receive has run only over the in-process loopback test wire</strong>, not a real communicator, and one chunk’s transfer does not overlap the fused layer of the chunk before it.</li>
+<li><strong>One chunk’s transfer does not overlap the fused layer of the chunk before it</strong>, and the chunked receive has not run over a real NCCL communicator.</li>
 </ul>
 <h2 id="see-it-in-use"><a class="header" href="#see-it-in-use">See it in use</a></h2>
 <p><code>python/paulistrings/tests/test_cuda.py</code> runs every policy against the host engine at three widths, and <code>crates/paulistrings/tests/propagate_gpu.rs</code> is the Rust differential net under the same channels.</p>

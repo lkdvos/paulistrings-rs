@@ -352,7 +352,7 @@
 <a href=#352 id=352 data-nosnippet>352</a>/// Debug builds only, `O(exported rows)`.
 <a href=#353 id=353 data-nosnippet>353</a>/// A failure means either the plan misclassified a delta or the caller's `local` sum was not the pure partition it claims to be.
 <a href=#354 id=354 data-nosnippet>354</a></span><span class="attr">#[cfg(debug_assertions)]
-<a href=#355 id=355 data-nosnippet>355</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>debug_assert_exported_partitions&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#355 id=355 data-nosnippet>355</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>debug_assert_exported_partitions&lt;<span class="kw">const </span>W: usize&gt;(
 <a href=#356 id=356 data-nosnippet>356</a>    send: <span class="kw-2">&amp;</span>[<span class="prelude-ty">Option</span>&lt;PartnerPayload&lt;W&gt;&gt;],
 <a href=#357 id=357 data-nosnippet>357</a>    rows: <span class="kw-2">&amp;</span><span class="kw">crate</span>::bucket::hash::PartitionRows&lt;W&gt;,
 <a href=#358 id=358 data-nosnippet>358</a>) {

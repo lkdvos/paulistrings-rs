@@ -80,6 +80,18 @@ Both kwargs work the same way under `partitions=`, and the two are alternatives 
 The block count must equal the rank count, the blocks must be disjoint, and they must be identical on every rank — the split is a local filter each rank computes for itself.
 A term's rank is then the XOR of the blocks it has odd Z-weight in, so a term supported inside one block belongs to that block's rank.
 
+`partition_row_exclude=` keeps the random draw but forbids chosen coordinates, as a dict of `"x"` and `"z"` qubit lists:
+
+<!-- doctest: skip -->
+```python
+everything = list(range(observable.num_qubits))
+evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+```
+
+A gate that never changes the excluded bits never moves a string between ranks: CZ and `rz` leave x-bits alone, so rows drawn on x-bits only keep a CZ/`rz` circuit's exchange to its `rx` gates.
+The distributed [echo read-out](../measurements.md#echo) `rotated_overlap` requires rows that skip the coordinates it flips, the x-bits of its sites for `axis="x"`.
+It cannot be combined with `partition_row_blocks=`.
+
 ## result="gather" versus result="local"
 
 | `result` | what each rank gets back |

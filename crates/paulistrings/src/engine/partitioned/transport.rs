@@ -1,6 +1,6 @@
 //! Transport traits and the exchange wire format.
 //!
-//! A partition talks to the rest of the group only through [`Collectives`] (rank/size, the two reductions, the barrier) and [`Transport`] (the per-layer all-to-all [`Transport::exchange_layer`]); the sum is split across partitions by designated partition rows of the GF(2) hash (ARCHITECTURE.md §Bucketing gives the hash, §Partitioning the split), and the wire unit is one [`ExchangeBlock`] per remote delta, laid out in the receiver's destination-coset order (ARCHITECTURE.md §Engine) so a coset's rows are contiguous and can be sent in chunks while the rest is still in flight.
+//! A partition talks to the rest of the group only through [`Collectives`] (rank/size, the reductions, the barrier) and [`Transport`] (the per-layer all-to-all [`Transport::exchange_layer`]); the sum is split across partitions by designated partition rows of the GF(2) hash (ARCHITECTURE.md §Bucketing gives the hash, §Partitioning the split), and the wire unit is one [`ExchangeBlock`] per remote delta, laid out in the receiver's destination-coset order (ARCHITECTURE.md §Engine) so a coset's rows are contiguous and can be sent in chunks while the rest is still in flight.
 //!
 //! **Every partition issues the identical sequence of transport calls, in the same order, on every layer** — a call's `n`-th message pairs with the partner's `n`-th positionally, so empty is sent as `None`, never silence, and every rank stamps its calls with a generation counter so a violation of this invariant panics naming both partitions instead of hanging.
 //!
@@ -621,10 +621,10 @@ impl<const W: usize> Payload for PartnerPayload<W> {
     }
 }
 
-/// The collective operations a partition needs outside the exchange itself: its identity in the group, the two reductions a layer's truncation and bookkeeping need, and a barrier.
+/// The collective operations a partition needs outside the exchange itself: its identity in the group, the reductions a layer's truncation and bookkeeping need, and a barrier.
 ///
-/// Both reductions must return **the identical value on every partition** — callers use them to agree on a global decision (a truncation threshold, a term-count total), and a partition that computed a different answer would diverge silently.
-/// Both are exact and order-independent (a maximum, and a wrapping integer sum), so an implementation is free to combine in arrival order.
+/// Every reduction must return **the identical value on every partition** — callers use them to agree on a global decision (a truncation threshold, a term-count total), and a partition that computed a different answer would diverge silently.
+/// The integer reductions are exact and order-independent (a maximum, and a wrapping integer sum), so an implementation is free to combine in arrival order; [`allreduce_sum_f64`](Self::allreduce_sum_f64) is not, and must fix one combination order for the whole group.
 ///
 /// Every method obeys the collective-order invariant in the module docs: all partitions call them in the same order, the same number of times.
 pub trait Collectives: Send + Sync {
@@ -637,6 +637,9 @@ pub trait Collectives: Send + Sync {
     /// Element-wise sum of `buf` over the group, in place. Every partition passes the same length and gets the same values back.
     /// Sums wrap rather than panic on overflow, so debug and release agree.
     fn allreduce_sum_u64(&self, buf: &mut [u64]);
+    /// Element-wise sum of `buf` over the group, in place. Every partition passes the same length and gets **bitwise the same** values back.
+    /// The combination order is the implementation's, so the result may differ by rounding from a serial sum or from another group size; a slot only one partition fills is reduced exactly.
+    fn allreduce_sum_f64(&self, buf: &mut [f64]);
     /// Block until every partition has arrived.
     fn barrier(&self);
 
@@ -803,6 +806,7 @@ enum CallKind {
     MaxU8 = 2,
     SumU64 = 3,
     Exchange = 4,
+    SumF64 = 5,
 }
 
 impl CallKind {
@@ -814,6 +818,7 @@ impl CallKind {
             CallKind::MaxU8 => "allreduce_max_u8",
             CallKind::SumU64 => "allreduce_sum_u64",
             CallKind::Exchange => "exchange",
+            CallKind::SumF64 => "allreduce_sum_f64",
         }
     }
 
@@ -825,6 +830,7 @@ impl CallKind {
             2 => "allreduce_max_u8",
             3 => "allreduce_sum_u64",
             4 => "exchange",
+            5 => "allreduce_sum_f64",
             _ => "no call",
         }
     }
@@ -867,7 +873,7 @@ struct ValueSlot {
     tag: AtomicU64,
     /// Elements of `buf` that belong to this generation.
     len: AtomicUsize,
-    /// The `allreduce_sum_u64` contribution.
+    /// The `allreduce_sum_u64` contribution, or an `allreduce_sum_f64` one as `f64` bits.
     ///
     /// Written only by the owning rank and only while no partner can be reading it, which is what the parity split buys (see [`GroupState`]); the elements are atomics so that a *hypothetical* overlap is a stale read rather than undefined behaviour, and the `UnsafeCell` is there for the resize, which needs `&mut`.
     /// Allocated on first use and reused at the same length ever after.
@@ -1264,6 +1270,38 @@ impl Collectives for InProcessTransport {
             );
             for (a, v) in buf.iter_mut().zip(values) {
                 *a = a.wrapping_add(v.load(Ordering::Relaxed));
+            }
+        }
+    }
+
+    /// Every partition publishes its contribution as bits and then folds **all** of them, its own included, in rank order from zero, so each computes the same additions in the same order and gets the same bits.
+    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+        if self.size == 1 {
+            return;
+        }
+        let gen = self.next_gen();
+        let bits: Vec<u64> = buf.iter().map(|v| v.to_bits()).collect();
+        let slot = self.state.value_slot(self.rank, gen);
+        // SAFETY: as in `allreduce_sum_u64`.
+        unsafe { slot.write_buf(&bits) };
+        self.state.publish(self.rank, gen, CallKind::SumF64, 0);
+
+        buf.fill(0.0);
+        for src in 0..self.size {
+            if src != self.rank {
+                self.state.wait(self.rank, src, gen, CallKind::SumF64);
+            }
+            // SAFETY: as in `allreduce_sum_u64`; this rank's own slot is its own to read.
+            let values = unsafe { self.state.value_slot(src, gen).read_buf() };
+            assert_eq!(
+                values.len(),
+                buf.len(),
+                "allreduce_sum_f64: partition {src} contributed {} values, this partition {}",
+                values.len(),
+                buf.len(),
+            );
+            for (a, v) in buf.iter_mut().zip(values) {
+                *a += f64::from_bits(v.load(Ordering::Relaxed));
             }
         }
     }
@@ -1873,7 +1911,63 @@ mod tests {
         let mut buf = vec![3, 4];
         transport.allreduce_sum_u64(&mut buf);
         assert_eq!(buf, vec![3, 4]);
+        let mut buf = vec![-0.5, 1e300];
+        transport.allreduce_sum_f64(&mut buf);
+        assert_eq!(buf, vec![-0.5, 1e300]);
         transport.barrier();
+    }
+
+    /// Contributions chosen so that the sum depends on the order: `1e16 + 1 + 1 - 1e16` is `0` or `2` by association.
+    /// Every rank must return the same bits, namely the rank-order fold `((0 + 1e16) + 1) + 1) - 1e16 = 0`, and a one-rank slot comes back exactly.
+    #[test]
+    fn f64_sums_are_bitwise_identical_on_every_rank() {
+        let inputs = [
+            [1e16, 0.25, 0.1, 0.0, 0.0],
+            [1.0, 1.25, 0.0, 0.2, 0.0],
+            [1.0, 2.25, 0.0, 0.0, 0.3],
+            [-1e16, 3.25, 0.0, 0.0, 0.0],
+        ];
+        let results = on_every_rank(4, |transport| {
+            (0..50)
+                .map(|_| {
+                    let mut buf = inputs[transport.rank() as usize];
+                    transport.allreduce_sum_f64(&mut buf);
+                    buf
+                })
+                .collect::<Vec<_>>()
+        });
+        for (rank, rounds) in results.iter().enumerate() {
+            for round in rounds {
+                assert_eq!(round, &[0.0, 7.0, 0.1, 0.2, 0.3], "rank {rank}");
+            }
+        }
+    }
+
+    /// An integer sum on one rank against a float sum on the others is a collective-order violation, reported by name.
+    #[test]
+    #[should_panic(expected = "allreduce_sum_f64")]
+    fn mixing_integer_and_float_sums_is_detected() {
+        let group = InProcessTransport::group(2);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .into_iter()
+                .map(|transport| {
+                    scope.spawn(move || {
+                        if transport.rank() == 0 {
+                            transport.allreduce_sum_u64(&mut [1]);
+                        } else {
+                            transport.allreduce_sum_f64(&mut [1.0]);
+                        }
+                    })
+                })
+                .collect();
+            let joined: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
+            for result in joined {
+                if let Err(payload) = result {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        });
     }
 
     #[test]

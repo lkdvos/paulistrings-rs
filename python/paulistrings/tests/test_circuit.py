@@ -20,23 +20,6 @@ def coeffs_close(actual, expected, tol=TOL):
     return all(abs(a - e) <= tol for a, e in zip(actual, expected))
 
 
-def dominant_coeff(coefficients, tol=1e-10):
-    """Return the largest-magnitude coefficient and assert all others are < tol.
-
-    Pauli rotations at angles like ``pi`` leave ``sin(pi)`` residues on the
-    fan-out term — not exactly zero, so the merge keeps them when there is no
-    coefficient threshold policy. The hand-computed Pauli identities are still
-    correct up to the dominant term, which is what we check.
-    """
-    assert coefficients, "expected at least one coefficient"
-    dom = max(coefficients, key=lambda c: abs(c))
-    for c in coefficients:
-        if c is dom:
-            continue
-        assert abs(c) < tol, f"unexpected non-residue coefficient: {c}"
-    return dom
-
-
 def test_circuit_h_conjugates_z_to_x():
     # Heisenberg picture: H Z H = X.
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
@@ -84,24 +67,24 @@ def test_rz_pi_flips_x_to_minus_x():
     c = Circuit(1)
     c.rz(math.pi, 0)
     out = s.propagate(c)
-    dom = dominant_coeff(out.coefficients())
+    (dom,) = out.coefficients()
     assert abs(dom - (-1 + 0j)) < TOL
 
 
 def test_rx_and_ry_factories():
-    # rx(π) sends Z → -Z (with the second term having sin(π)≈0 residue).
+    # rx(π) sends Z → -Z.
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.append(gates.rx(math.pi, 0))
     out = s.propagate(c)
-    dom = dominant_coeff(out.coefficients())
+    (dom,) = out.coefficients()
     assert abs(dom - (-1 + 0j)) < TOL
 
     # ry(π) sends Z → -Z as well (R_y(π) Z R_y(-π) = -Z).
     c2 = Circuit(1)
     c2.append(gates.ry(math.pi, 0))
     out2 = s.propagate(c2)
-    dom2 = dominant_coeff(out2.coefficients())
+    (dom2,) = out2.coefficients()
     assert abs(dom2 - (-1 + 0j)) < TOL
 
 

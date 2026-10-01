@@ -1,6 +1,6 @@
 //! [`TruncationPolicy<W>`] — composable per-term and per-layer term filters.
 //!
-//! Built-ins: [`CoefficientThreshold`] drops terms below a magnitude, [`WeightCutoff`] drops terms above a Pauli weight, [`TopN`] keeps at most `n` largest-magnitude terms without splitting a tie group, and [`ApproxTopN`] trades the exact count for a cheaper histogram threshold.
+//! Built-ins: [`CoefficientThreshold`] drops terms below a magnitude, [`WeightCutoff`] drops terms above a Pauli weight, [`TopN`] keeps at most `n` largest-magnitude terms without splitting a tie group, [`ApproxTopN`] trades the exact count for a cheaper histogram threshold, and [`CollapseSample`] replaces an oversized sum by one string sampled by weight.
 //! Compose with [`And`] (both must accept) or [`Or`] (either accepts).
 //!
 //! # Examples
@@ -22,7 +22,7 @@
 pub mod builtin;
 mod tree;
 
-pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, TopN, WeightCutoff};
+pub use builtin::{And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff};
 pub use tree::BuiltinTruncation;
 
 use crate::pauli_sum::PauliSum;

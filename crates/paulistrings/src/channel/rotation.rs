@@ -106,8 +106,7 @@ impl<const W: usize> PauliRotation<W> {
             return;
         }
 
-        let cos_t = theta.cos();
-        let sin_t = theta.sin();
+        let (sin_t, cos_t) = sin_cos(theta);
 
         // Term 1: cos(theta) * Q
         out.push(*input_x, *input_z, coeff * cos_t);
@@ -117,6 +116,16 @@ impl<const W: usize> PauliRotation<W> {
         let phase = prod.mul_assign(&gen);
         let total_phase = Phase::I + phase;
         out.push(prod.x, prod.z, total_phase.apply(coeff) * sin_t);
+    }
+}
+
+/// `theta.sin_cos()` with a quarter-turn snapped to exact `0`/`±1`, so a rotation by `k·π/2` is a fanout-1 Clifford rather than a branch with a `6e-17` copy.
+fn sin_cos(theta: f64) -> (f64, f64) {
+    const SNAP: f64 = 1e-15;
+    match theta.sin_cos() {
+        (s, c) if s.abs() < SNAP => (0.0, c.signum()),
+        (s, c) if c.abs() < SNAP => (s.signum(), 0.0),
+        sc => sc,
     }
 }
 
@@ -158,12 +167,12 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         if self.weight() <= MAX_LOCAL_SUPPORT {
             return Prepared::derive_local(self, hash, adjoint);
         }
-        let theta = if adjoint { -self.theta } else { self.theta };
+        let (sin, cos) = sin_cos(if adjoint { -self.theta } else { self.theta });
         let gen = self.generator();
         Some(Prepared::Rotation(RotationPrep {
             gen,
-            cos: theta.cos(),
-            sin: theta.sin(),
+            cos,
+            sin,
             bucket_delta_identity: 0,
             bucket_delta_gen: hash.bucket_of_pauli(&gen),
         }))
@@ -492,6 +501,30 @@ mod tests {
         assert_eq!(bx[1][0], 0u64);
         assert_eq!(bz[1][0], 0u64);
         assert!(approx_eq(bc[1], Complex64::new(theta.sin(), 0.0), TOL));
+    }
+
+    /// A quarter-turn is an exact Clifford through both prepare paths: one output term, coefficient exactly `±1`.
+    #[test]
+    fn quarter_turns_are_fanout_one() {
+        use crate::test_support::KeepAll;
+        use crate::{propagate, Circuit, Direction, PauliSum};
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let (x0, z) = (PauliString::<1>::x(0), PauliString::<1>::z);
+        let mut zzz = z(0);
+        zzz.mul_assign(&z(1));
+        zzz.mul_assign(&z(2));
+        for gen in [z(0), zzz] {
+            let mut y = x0;
+            y.mul_assign(&gen);
+            for (theta, want, c) in [(FRAC_PI_2, y, 1.0), (PI, x0, -1.0), (-FRAC_PI_2, y, -1.0)] {
+                let mut circuit = Circuit::<1>::new(3);
+                circuit.push(PauliRotation::new(gen, theta));
+                let input = PauliSum::from_strings(&[("XII", Complex64::new(1.0, 0.0))]);
+                let out = propagate(&circuit, input, &KeepAll, Direction::Forward);
+                assert_eq!(out.len(), 1, "{gen:?} at {theta}");
+                assert_eq!(out.get(&want.x, &want.z), Some(Complex64::new(c, 0.0)));
+            }
+        }
     }
 
     /// The engine drives apply repeatedly against the same buffer; back-to-back calls must reuse storage without growing the backing vecs.

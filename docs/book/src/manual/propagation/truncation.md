@@ -34,6 +34,15 @@ It keeps at most `k` terms, largest `|c|` first, so the error is set by the disc
 **`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²` and keeps whole octaves from the top down while they fit in `n`, so at most `n` terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
 Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA partitions](partitions.md) and [MPI ranks](mpi.md).
 
+**`collapse_sample(cache, seed)` samples instead of filtering.**
+Whenever a gate leaves more than `cache` strings it draws one string with probability `|c|² / Σ|c|²` and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+It is unbiased only for weight-diagonal read-outs such as [`diagonal_echo`](../measurements.md#echo); average many seeds and report the standard error.
+`PropagationStats.collapses` counts the draws.
+
+```python
+sampler = truncation.collapse_sample(1_000, 7)
+```
+
 Policies compose with `&` (keep when both agree) and `|` (keep when either does):
 
 ```python
@@ -41,8 +50,7 @@ policy = truncation.weight(6) & truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) & truncation.topn(200_000)
 ```
 
-Keep a `coeff` threshold above roughly `1e-12` on deep circuits.
-`cos(π/2)` evaluates to `6.123233995736766e-17`, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch alongside the real one, and with no threshold — or one below the residual — those branches fan out without bound and the run pays for terms that carry no physics.
+A rotation by a multiple of `π/2` is an exact Clifford, one term with no residual branch, so a Clifford circuit needs no threshold.
 `policy=None` disables truncation entirely, dropping only exact zeros; it is the exact reference where the problem is small enough to afford it ([Untruncated runs](settings.md#untruncated-runs)).
 
 Whichever policy you pick, the cutoff is a guess until it has been swept.

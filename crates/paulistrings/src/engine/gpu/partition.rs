@@ -253,7 +253,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
         }
     }
 
-    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's; a group member (`group_size > 1`) reports exact `TopN` `Unsupported`.
+    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's; a group member (`group_size > 1`) reports exact `TopN` `Unsupported`, and every member reports `CollapseSample` so.
     fn finalize_layer(&mut self, policy: &BuiltinTruncation, coll: &dyn Collectives) {
         let single = self.group_size == 1;
         layer_pass_leaves(policy, &mut |leaf| {
@@ -273,6 +273,9 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
                         }
                         _ => Ok(()),
                     }
+                }
+                BuiltinTruncation::CollapseSample(_) => {
+                    Err(GpuError::Unsupported("CollapseSample on device"))
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };

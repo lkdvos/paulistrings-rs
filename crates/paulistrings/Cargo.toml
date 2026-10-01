@@ -50,7 +50,7 @@ bytemuck = { version = "1", features = ["derive"] }
 num-complex = { version = "0.4", features = ["bytemuck"] }
 hashbrown = "0.14"
 rustc-hash = "2"
-rayon = "1"
+rayon = "1.9"
 # Progress logging through the `log` facade. Deliberately a plain (not
 # optional, not feature-gated) dependency: with no logger installed the
 # per-layer sites cost one relaxed atomic load and allocate nothing, so there

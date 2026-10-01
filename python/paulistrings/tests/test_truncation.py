@@ -20,6 +20,8 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates, truncation
 
+from .test_from_arrays import _as_dict
+
 
 TOL = 1e-12
 
@@ -32,25 +34,17 @@ def _probe_circuit(num_qubits):
     return c
 
 
-def test_coefficient_threshold_drops_subthreshold_terms():
-    # rz(π/2) X = cos(π/2)·X + i sin(π/2)·X·Z = 0·X + Y. cos(π/2) is a small
-    # FP residue (~6e-17), so without a threshold both terms survive.
+def test_coefficient_threshold_drops_subthreshold_as_dict():
+    # rz(0.1) X = cos(0.1)·X + sin(0.1)·Y; only X clears coeff(0.5).
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
-    c.rz(math.pi / 2, 0)
-
-    no_policy = s.propagate(c)
-    # Both X (residue) and +Y (≈ +1) survive when no policy filters them.
-    assert len(no_policy.coefficients()) == 2
-
-    # With coeff(0.5), the X residue ≪ 0.5 is dropped; +Y is kept.
-    out = s.propagate(c, policy=truncation.coeff(0.5))
-    assert len(out.coefficients()) == 1
-    (only,) = out.coefficients()
-    assert abs(only - (1 + 0j)) < TOL
+    c.rz(0.1, 0)
+    assert len(s.propagate(c).coefficients()) == 2
+    (only,) = s.propagate(c, policy=truncation.coeff(0.5)).coefficients()
+    assert abs(only - math.cos(0.1)) < TOL
 
 
-def test_weight_cutoff_drops_higher_weight_terms():
+def test_weight_cutoff_drops_higher_weight_as_dict():
     # Build a 2-qubit sum with weights 0/1/2 mixed: II (w=0), XI (w=1),
     # XX (w=2). Cap weight at 1 → drop XX.
     s = PauliSum.from_strings(
@@ -247,3 +241,105 @@ def test_coeff_factory_is_a_truncation_object():
     # Should behave like a Truncation under further composition.
     deeper = composed | truncation.topn(5)
     assert deeper is not None
+
+
+# --------------------------------------------------------------------------
+# collapse_sample
+
+
+def _splitting_circuit(layers):
+    """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, ...)`` collapses on every layer."""
+    c = Circuit(1)
+    for _ in range(layers):
+        c.rx(0.7, 0)
+    return c
+
+
+def _fanout_case():
+    s = PauliSum.from_strings({"ZZZZ": 1.0, "XIZI": 0.5}, num_qubits=4)
+    c = Circuit(4)
+    for layer in range(3):
+        for q in range(4):
+            c.rx(0.3 + 0.1 * q + 0.05 * layer, q)
+        for q in range(3):
+            c.cnot(q, q + 1)
+    return s, c
+
+
+def test_collapse_sample_above_the_final_size_is_a_no_op():
+    s, c = _fanout_case()
+    want = s.propagate(c, direction="heisenberg")
+    got, stats = s.propagate_with_stats(c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
+    assert _as_dict(got) == _as_dict(want)
+    assert stats.collapses == 0
+
+
+def test_collapse_sample_collapses_on_every_oversized_layer():
+    s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
+    out, stats = s.propagate_with_stats(_splitting_circuit(6), truncation.collapse_sample(1, 3))
+    assert stats.collapses == 6
+    assert stats.terms_out == [1] * 6
+    (coeff,) = out.coefficients()
+    assert coeff == 1.0
+
+
+def test_collapse_sample_bounds_every_layer_by_the_cache():
+    s, c = _fanout_case()
+    _, stats = s.propagate_with_stats(c, truncation.collapse_sample(20, 1), direction="heisenberg")
+    assert stats.collapses >= 1
+    assert all(t <= 20 for t in stats.terms_out)
+    assert stats.terms_out.count(1) >= stats.collapses
+
+
+def test_collapse_sample_is_reproducible_per_seed():
+    s, c = _fanout_case()
+    runs = {
+        seed: [
+            _as_dict(s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg"))
+            for _ in range(2)
+        ]
+        for seed in range(6)
+    }
+    for seed, (first, second) in runs.items():
+        assert first == second, f"seed {seed}"
+    assert len({repr(sorted(r[0].items())) for r in runs.values()}) > 1, "seeds must draw differently"
+
+
+def test_collapse_sample_counts_per_call_and_continues_its_sequence():
+    """One object is one trajectory: a second call continues the draws, and `collapses` counts that call only."""
+    s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
+    circuit = _splitting_circuit(4)
+    policy = truncation.collapse_sample(1, 11)
+    _, first = s.propagate_with_stats(circuit, policy)
+    _, second = s.propagate_with_stats(circuit, policy)
+    assert first.collapses == second.collapses == 4
+    # Two four-layer calls on one object draw what one eight-layer call draws.
+    policy = truncation.collapse_sample(1, 11)
+    chained = s.propagate(circuit, policy).propagate(circuit, policy)
+    assert _as_dict(chained) == _as_dict(s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
+
+
+def test_collapse_sample_draws_by_squared_magnitude():
+    """One ``rx(theta)`` layer on ``Z`` gives ``cos(theta) Z`` and ``sin(theta) Y``; the survivor is ``Z`` with probability ``cos(theta)**2``."""
+    theta = 0.7
+    c = Circuit(1)
+    c.rx(theta, 0)
+    s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
+    seeds = 2000
+    kept_z = sum(
+        s.propagate(c, truncation.collapse_sample(1, seed)).x_array()[0, 0] == 0 for seed in range(seeds)
+    )
+    p = math.cos(theta) ** 2
+    assert abs(kept_z / seeds - p) < 5 * math.sqrt(p * (1 - p) / seeds)
+
+
+def test_collapse_sample_composes_and_reports_none_without_a_sampler():
+    s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
+    policy = truncation.collapse_sample(1, 0) & truncation.coeff(1e-12)
+    assert "CollapseSample" in repr(policy)
+    _, stats = s.propagate_with_stats(_splitting_circuit(3), policy)
+    assert stats.collapses == 3
+    _, stats = s.propagate_with_stats(_splitting_circuit(3), truncation.coeff(1e-12))
+    assert stats.collapses is None
+    _, stats = s.propagate_with_stats(_splitting_circuit(3))
+    assert stats.collapses is None

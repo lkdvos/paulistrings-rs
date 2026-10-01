@@ -141,5 +141,5 @@ print(len(exact), "terms untruncated")
 5 terms untruncated
 ```
 
-Afford it deliberately: term growth without a filter is exponential in depth for a generic circuit, and at a Clifford angle the numerically dead residual branches described under [Choosing a policy](truncation.md#choosing-a-policy) fan out without bound.
+Afford it deliberately: term growth without a filter is exponential in depth for a generic circuit.
 Estimate `peak_terms` from a prefix and the bytes-per-term arithmetic above before running a deep circuit untruncated, and expect the untruncated run to be the most expensive point of any sweep by a wide margin.

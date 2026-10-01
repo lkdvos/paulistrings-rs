@@ -77,3 +77,16 @@ Neither has been fetched into this repo.
 Benchmark C's reference is to be loaded through `examples/common/oracles.py::load_published_reference` with its own provenance header, or self-converged with documented convergence evidence — so nothing in `kim2023_observables.json` can be mistaken for a verified reference number.
 
 Also recorded in the file, from the same sources: θ_J = −π/2 ("such that the ZZ rotation requires only one CNOT"), the θ_h sweep range, the Trotter depths per figure, and the SI §VII B causal-cone sizes (≤31 / 37 / 68 qubits for the weight-1 / weight-10 / weight-17 observables).
+
+## `ole56/` — the 56-qubit operator Loschmidt echo circuits
+
+The six `operator_loschmidt_echo_56x1488_alpha_*.qasm` files of the Quantum Advantage Tracker, gzipped byte for byte.
+
+| | |
+|---|---|
+| Source | `quantum-advantage-tracker/quantum-advantage-tracker.github.io`, `data/observable-estimations/circuit-models/operator_loschmidt_echo/` |
+| Commit | `1db844f1540a198c5620af49247e09fc28e7f61b` |
+| Paper | arXiv:2607.25998, App. A 2 c; the tracker's α maps to the paper's η as η = 3πα/2 |
+| Structure | 156-qubit register, 56 used, 1488 CZ; first half, `V_δ` (`sdg·sxdg · rz(0.6) · sx·s` on 35 qubits), second half = inverse of the first |
+
+The observable support comes from the tracker README, and the other qubit sets are derived from the files; both are recorded in `examples/b8_ole/spec.json` and asserted by `examples/tests/test_showcase_b8.py`.

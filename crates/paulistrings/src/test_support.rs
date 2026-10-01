@@ -107,6 +107,10 @@ impl crate::engine::partitioned::Collectives for LoggingTransport {
         self.log.push("allreduce_sum_u64");
         self.inner.allreduce_sum_u64(buf);
     }
+    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+        self.log.push("allreduce_sum_f64");
+        self.inner.allreduce_sum_f64(buf);
+    }
     fn barrier(&self) {
         self.log.push("barrier");
         self.inner.barrier();
@@ -345,6 +349,35 @@ pub fn low_weight_sum<const W: usize>(
     acc.finalize()
 }
 
+/// `n` random terms whose support lies inside `qubits`, each of those an independent uniform `I/X/Y/Z`, with complex coefficients.
+/// A small window forces many keys to share everything but a few bits, which is what class-structured estimators need to be exercised.
+pub fn rand_sum_on<const W: usize>(
+    n: usize,
+    num_qubits: usize,
+    qubits: &[u32],
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for _ in 0..n {
+        let mut p = PauliString::<W>::identity();
+        for &q in qubits {
+            let r = rng.next_u64();
+            let (word, bit) = (q as usize / 64, 1u64 << (q % 64));
+            if r & 1 == 1 {
+                p.x[word] |= bit;
+            }
+            if r & 2 == 2 {
+                p.z[word] |= bit;
+            }
+        }
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+    }
+    acc.finalize()
+}
+
 /// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any cut through the sum lands inside a tie group spanning a quarter of it.
 /// Not contrived: lattice-symmetric Hamiltonians produce exactly-equal-coefficient terms this way, which is why `TopN` has a tie rule at all (ARCHITECTURE.md §Truncation).
 pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
@@ -485,6 +518,67 @@ pub fn assert_terms_close<const W: usize>(
             g.1,
             g.2,
             w.2,
+        );
+    }
+}
+
+/// The keys of [`weighted_four_term_sum`], in order: `X0`, `Z3 X5`, `Y2 Y7`, `X1 Z6`.
+pub fn four_term_keys<const W: usize>() -> [PauliString<W>; 4] {
+    let key = |x: u64, z: u64| {
+        let mut p = PauliString::<W>::identity();
+        p.x[0] = x;
+        p.z[0] = z;
+        p
+    };
+    [
+        key(1, 0),
+        key(1 << 5, 1 << 3),
+        key((1 << 2) | (1 << 7), (1 << 2) | (1 << 7)),
+        key(1 << 1, 1 << 6),
+    ]
+}
+
+/// Squared magnitudes of [`weighted_four_term_sum`]'s terms, which sum to one: each term's probability under a draw by weight.
+pub const FOUR_TERM_WEIGHTS: [f64; 4] = [0.1, 0.2, 0.3, 0.4];
+
+/// [`four_term_keys`] on `num_qubits >= 8` qubits with `|c|² =` [`FOUR_TERM_WEIGHTS`] and four different phases.
+pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
+    assert!(num_qubits >= 8, "the fixture's keys reach qubit 7");
+    let phases = [0.0f64, 1.0, 2.5, -2.0];
+    let mut acc = BuildAccumulator::<W>::new(num_qubits);
+    for ((p, w), phi) in four_term_keys::<W>()
+        .into_iter()
+        .zip(FOUR_TERM_WEIGHTS)
+        .zip(phases)
+    {
+        acc.add_term(p, Phase::ONE, Complex64::from_polar(w.sqrt(), phi));
+    }
+    acc.finalize()
+}
+
+/// Which of `keys` a collapsed sum holds, asserting it is one string with coefficient exactly `1`.
+pub fn collapsed_index<const W: usize>(sum: &PauliSum<W>, keys: &[PauliString<W>]) -> usize {
+    assert_eq!(sum.len(), 1, "a collapse leaves exactly one string");
+    let (x, z, c) = sum.iter().next().unwrap();
+    assert_eq!(
+        c,
+        Complex64::new(1.0, 0.0),
+        "the survivor's coefficient is 1"
+    );
+    keys.iter()
+        .position(|p| &p.x == x && &p.z == z)
+        .expect("the survivor is one of the input strings")
+}
+
+/// Assert each empirical frequency `counts[i] / trials` lies within 4σ of `probs[i]`, `σ² = p(1 − p) / trials`.
+pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
+    let trials: usize = counts.iter().sum();
+    for (i, (&k, &p)) in counts.iter().zip(probs).enumerate() {
+        let f = k as f64 / trials as f64;
+        let sigma = (p * (1.0 - p) / trials as f64).sqrt();
+        assert!(
+            (f - p).abs() < 4.0 * sigma,
+            "{what}: slot {i} drawn {k}/{trials} = {f:.4}, expected {p} ± {sigma:.4}",
         );
     }
 }
@@ -994,18 +1088,41 @@ pub fn zz_rotation<const W: usize>(
 /// One TFIM Trotter step: `num_qubits` periodic `ZZ` bond rotations, then that many transverse-field `X` rotations, all at angle `2 · theta`.
 /// `2 · num_qubits` layers, enough that the term count grows across the run.
 pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::Circuit<W> {
+    trotter_steps(num_qubits, theta, 1)
+}
+
+/// `steps` repetitions of [`trotter_circuit`].
+pub fn trotter_steps<const W: usize>(
+    num_qubits: usize,
+    theta: f64,
+    steps: usize,
+) -> crate::Circuit<W> {
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
-    for q in 0..num_qubits {
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        circuit.push(crate::channel::rotation::PauliRotation::new(
-            PauliString::<W>::x(q as u32),
-            2.0 * theta,
-        ));
+    for _ in 0..steps {
+        for q in 0..num_qubits {
+            let q1 = ((q + 1) % num_qubits) as u32;
+            circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+        }
+        for q in 0..num_qubits {
+            circuit.push(crate::channel::rotation::PauliRotation::new(
+                PauliString::<W>::x(q as u32),
+                2.0 * theta,
+            ));
+        }
     }
     circuit
+}
+
+/// Three [`trotter_steps`] on eight qubits at a large angle, enough to grow [`z0_sum`] past a cache of 6 several times.
+pub fn collapsing_circuit() -> crate::Circuit<1> {
+    trotter_steps(8, 0.3, 3)
+}
+
+/// `Z0` on eight qubits with coefficient 1.
+pub fn z0_sum() -> PauliSum<1> {
+    let mut acc = BuildAccumulator::<1>::new(8);
+    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.finalize()
 }
 
 /// A partitioned placement with no placement: `partitions` unpinned pools of `threads` workers each, drawing partition rows from `row_seed`.

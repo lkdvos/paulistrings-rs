@@ -560,3 +560,122 @@ def test_seed_and_blocks_are_mutually_exclusive():
             partition_row_seed=1,
             partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]],
         )
+
+
+# --------------------------------------------------------------------------
+# partition_row_exclude, the echo read-outs and collapse_sample
+
+
+_SITES = [0, 2, 3, 5]
+
+
+def _real_observable(num_qubits, terms=2_000, seed=20260926):
+    """``_observable`` with real coefficients, the Hermitian case the echo is defined for."""
+    s = _observable(num_qubits, terms=terms, seed=seed)
+    coeffs = np.random.default_rng(seed).normal(size=len(s))
+    return PauliSum.from_arrays(s.x_array(), s.z_array(), coeffs, num_qubits=num_qubits)
+
+
+@pytest.mark.parametrize("num_qubits", WIDTHS)
+@pytest.mark.parametrize("axis", ["x", "z"])
+def test_excluding_rows_match_unpartitioned_echo_read_outs(num_qubits, axis):
+    s, c = _real_observable(num_qubits), _mixed_circuit(num_qubits)
+    policy = truncation.coeff(1e-6)
+    want = s.propagate(c, policy, direction="heisenberg")
+    got = s.propagate(
+        c, policy, direction="heisenberg", partitions=_cpu_sets(), partition_row_exclude={axis: _SITES}
+    )
+    _assert_terms_close(got, want)
+    np.testing.assert_allclose(
+        got.anticommute_histogram(_SITES, axis=axis), want.anticommute_histogram(_SITES, axis=axis), rtol=1e-9
+    )
+    assert got.rotated_overlap(_SITES, 0.3, axis=axis) == pytest.approx(
+        want.rotated_overlap(_SITES, 0.3, axis=axis), rel=1e-9
+    )
+
+
+def test_excluded_coordinates_are_read_by_no_row():
+    """``rx`` only ever changes a string's x-bit, so with every x-bit excluded no term leaves its partition; the default rows do move some."""
+    n = WIDTHS[0]
+    s = PauliSum.from_strings({"Z" * n: 1.0}, num_qubits=n)
+    c = Circuit(n)
+    for q in range(n):
+        c.rx(0.4, q)
+    _, excluded = s.propagate_with_stats(c, partitions=_cpu_sets(), partition_row_exclude={"x": list(range(n))})
+    assert excluded.partition.rows_exported == [0] * n
+    _, default = s.propagate_with_stats(c, partitions=_cpu_sets())
+    assert sum(default.partition.rows_exported) > 0
+
+
+def test_partition_row_exclude_takes_the_seed():
+    s, c = _real_observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
+    policy = truncation.coeff(1e-6)
+    runs = [
+        s.propagate_with_stats(
+            c, policy, partitions=_cpu_sets(), partition_row_seed=seed, partition_row_exclude={"z": _SITES}
+        )
+        for seed in (1, 2)
+    ]
+    _assert_terms_close(runs[0][0], runs[1][0])
+    assert runs[0][1].partition.rows_exported != runs[1][1].partition.rows_exported
+
+
+@pytest.mark.parametrize(
+    "exclude, error, message",
+    [
+        ({"y": [0]}, ValueError, "keys are"),
+        ({"x": [99]}, ValueError, "out of range"),
+        ({"x": list(range(8)), "z": list(range(8))}, ValueError, "every coordinate"),
+        ([0, 1], TypeError, "must be None or a dict"),
+        ({"x": "01"}, TypeError, "must be None or a dict"),
+        ({"x": [0]}, ValueError, "needs partitions"),
+        ({"x": [0]}, ValueError, "alternatives"),
+    ],
+)
+def test_bad_partition_row_exclude(exclude, error, message):
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    kw = {"partitions": _cpu_sets()}
+    if message == "needs partitions":
+        kw = {}
+    elif message == "alternatives":
+        kw["partition_row_blocks"] = [[0, 1, 2, 3], [4, 5, 6, 7]]
+    with pytest.raises(error, match=message):
+        s.propagate(c, partition_row_exclude=exclude, **kw)
+
+
+def _collapse_case(num_qubits=WIDTHS[0]):
+    s = PauliSum.from_strings({"Z" * num_qubits: 1.0}, num_qubits=num_qubits)
+    c = Circuit(num_qubits)
+    for layer in range(3):
+        for q in range(_WINDOW):
+            c.rx(0.3 + 0.1 * q + 0.05 * layer, q)
+        for q in range(_WINDOW - 1):
+            c.cnot(q, q + 1)
+    return s, c
+
+
+def test_collapse_sample_at_one_partition_is_the_unpartitioned_trajectory():
+    s, c = _collapse_case()
+    for seed in range(4):
+        want, want_stats = s.propagate_with_stats(c, truncation.collapse_sample(8, seed), direction="heisenberg")
+        got, got_stats = s.propagate_with_stats(
+            c, truncation.collapse_sample(8, seed), direction="heisenberg", partitions=_cpu_sets(1)
+        )
+        assert _as_dict(got) == _as_dict(want), f"seed {seed}"
+        assert got_stats.collapses == want_stats.collapses >= 1
+
+
+def test_collapse_sample_across_partitions_keeps_one_string_per_collapse():
+    s, c = _collapse_case()
+    want = s.propagate(c, direction="heisenberg")
+    big, stats = s.propagate_with_stats(
+        c, truncation.collapse_sample(10**9, 0), direction="heisenberg", partitions=_cpu_sets()
+    )
+    _assert_terms_close(big, want)
+    assert stats.collapses == 0
+
+    policy = truncation.collapse_sample(8, 3) & truncation.coeff(1e-12)
+    _, stats = s.propagate_with_stats(c, policy, direction="heisenberg", partitions=_cpu_sets())
+    assert stats.collapses >= 1
+    assert all(t <= 8 for t in stats.terms_out)
+    assert stats.terms_out.count(1) >= stats.collapses

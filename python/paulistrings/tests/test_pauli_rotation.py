@@ -127,8 +127,7 @@ def test_zz_rotation_on_xi_is_hand_computed():
 def test_kicked_ising_bond_maps_xi_to_minus_yz():
     # The Clifford point of the kicked-Ising bond: exp(+iπ/4 · Z_iZ_j) is
     # theta = -π/2 in the exp(-i·θ·P/2) convention. cos(-π/2) = 0 and
-    # sin(-π/2) = -1, so XI ↦ -YZ exactly (up to the sin/cos floating-point
-    # residue on the XI term).
+    # sin(-π/2) = -1, so XI ↦ -YZ exactly.
     initial = _sum(2, {"XI": 1.0})
     c = Circuit(2)
     c.pauli_rotation("ZZ", [0, 1], -math.pi / 2)
@@ -137,7 +136,7 @@ def test_kicked_ising_bond_maps_xi_to_minus_yz():
     yz = ((1,), (3,))
     xi = ((1,), (0,))
     assert abs(got[yz] - (-1 + 0j)) < TOL
-    assert abs(got.get(xi, 0j)) < 1e-15
+    assert xi not in got
 
 
 def test_zz_rotation_matches_the_cnot_rz_cnot_decomposition():

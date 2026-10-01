@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["support_mask"],"mod":["clifford","identity","noise","prepared","rotation","unitary"],"struct":["OutputBuffer"],"trait":["Channel"]};

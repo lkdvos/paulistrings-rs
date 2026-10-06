@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8986b7f.js";
+            window.path_to_searchindex_js = "searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -229,7 +229,7 @@ benchmarks, and also cover <code>stim</code>/<code>qiskit</code>, which <code>in
 <code>interop.circuit_from_qiskit</code> and <code>interop.stabilizers_from_stim</code> import lazily
 on first use — install one of these extras before reaching for those:</p>
 <pre><code class="language-bash">uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-uv sync --extra examples --extra bench   # plus openfermion and pytest-benchmark
+uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
 </code></pre>
 <p><code>uv sync</code> removes whatever an extra it is not given had installed, so name every extra each time; <code>uv run</code> only adds.</p>
 <p>With the package installed, the <a href="manual/index.html">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.

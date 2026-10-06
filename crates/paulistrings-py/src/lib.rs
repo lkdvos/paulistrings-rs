@@ -87,6 +87,12 @@ fn cuda_available() -> bool {
     false
 }
 
+/// The diagonal echo `sum_n w[n] cos(2 delta)**n / sum_n w[n]` from a `PauliSum.anticommute_histogram` `w`; `nan` for an all-zero histogram.
+#[pyfunction]
+fn diagonal_echo(hist: Vec<f64>, delta: f64) -> f64 {
+    paulistrings::diagonal_echo(&hist, delta)
+}
+
 /// Shorthand for `PauliString.from_label(label)`, for writing one down by hand.
 ///
 /// ```python
@@ -109,6 +115,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(p, m)?)?;
+    m.add_function(wrap_pyfunction!(diagonal_echo, m)?)?;
 
     // Re-exported from the core so the Python default cannot drift from the Rust one.
     m.add(

@@ -307,9 +307,11 @@ impl PauliString {
                 "PauliString * x: x must be a complex or real number (scalar scaling)",
             )
         })?;
-        Ok(PauliSum {
-            inner: PauliSumImpl::from_single(&self.inner, self.num_qubits, factor),
-        })
+        Ok(PauliSum::plain(PauliSumImpl::from_single(
+            &self.inner,
+            self.num_qubits,
+            factor,
+        )))
     }
 
     /// `scalar * self`, identical to `self * scalar`.

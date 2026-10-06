@@ -13,9 +13,12 @@
 //! rejected at compile time rather than approximated — see the trait docs.
 
 use crate::pauli_sum::PauliSum;
-use crate::truncation::builtin::{octave_edge, octave_histogram, retain_at_or_above, APPROX_BINS};
+use crate::truncation::builtin::{
+    bucket_norms, collapse_to_target, octave_edge, octave_histogram, pick_slot, retain_at_or_above,
+    APPROX_BINS, LOG_TARGET,
+};
 use crate::truncation::{
-    And, ApproxTopN, CoefficientThreshold, Or, TruncationPolicy, WeightCutoff,
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TruncationPolicy, WeightCutoff,
 };
 
 use super::transport::Collectives;
@@ -32,6 +35,7 @@ use super::transport::Collectives;
 ///
 /// [`CoefficientThreshold`] and [`WeightCutoff`] are per-term filters with no layer pass, so they take the default no-op body.
 /// [`ApproxTopN`] all-reduces its octave histogram every layer, regardless of what the partition rows do.
+/// [`CollapseSample`] all-reduces the global length every layer, and the per-partition norms on a layer that collapses.
 /// [`And`] runs both sides in order, like [`And::finalize_layer`](TruncationPolicy::finalize_layer); [`Or`] runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
 ///
 /// ```
@@ -132,6 +136,44 @@ impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
         let total = packed[0] as usize;
         let edge = octave_edge(&packed[1..], total, self.0);
         retain_at_or_above(local, edge);
+    }
+}
+
+impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
+    /// Two reductions, then a pick every partition makes identically: `[len, pass]` as integers, where only rank 0 contributes the pass index, and the per-partition `Σ|c|²` as a vector in which each partition fills its own slot, so every partition holds the same exact weights.
+    /// The shared uniform picks a partition by weight and the offset left over picks within it, exactly as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
+        let rank = coll.rank() as usize;
+        let call = if rank == 0 { self.next_call() } else { 0 };
+        let mut head = [local.len() as u64, call];
+        coll.allreduce_sum_u64(&mut head);
+        let [len, call] = head;
+        if len as usize <= self.cache {
+            return;
+        }
+
+        let norms = bucket_norms(local);
+        let mut weights = vec![0.0f64; coll.size() as usize];
+        weights[rank] = norms.iter().sum();
+        coll.allreduce_sum_f64(&mut weights);
+        let total: f64 = weights.iter().sum();
+        let target = self.target(call, total, len as usize);
+        let (chosen, rest) = pick_slot(weights.iter().copied(), target)
+            .expect("CollapseSample: a positive total has a positive partition");
+        if rank == chosen {
+            collapse_to_target(local, &norms, rest);
+        } else {
+            local.clear();
+        }
+        if rank == 0 {
+            let n = self.count_collapse();
+            log::debug!(
+                target: LOG_TARGET,
+                "collapse_sample: {len} terms over {} partitions, sum |c|^2 = {total:.6e}, \
+                 collapsed to one on partition {chosen} (collapse {n})",
+                coll.size(),
+            );
+        }
     }
 }
 
@@ -335,6 +377,59 @@ mod tests {
 
         for pbits in [1u8, 2] {
             assert_matches_single_partition(&policy, &input, pbits, &format!("or P=2^{pbits}"));
+        }
+    }
+
+    /// At `P = 1` the collective pick is the unpartitioned one, seed for seed.
+    #[test]
+    fn collapse_sample_at_one_partition_is_the_unpartitioned_pick() {
+        let input = crate::test_support::rand_sum::<1>(3000, 16, 0xC0C0);
+        for seed in 0..20u64 {
+            let mut want = input.clone();
+            CollapseSample::new(50, seed).finalize_layer(&mut want);
+            let got = partitioned_finalize(&CollapseSample::new(50, seed), &input, 0);
+            assert_same_terms(&got, &want, &format!("seed {seed}"));
+        }
+    }
+
+    /// Below the cache every partition keeps its share, even where a partition alone is far below it.
+    #[test]
+    fn collapse_sample_partitioned_is_a_no_op_up_to_the_global_cache() {
+        let input = rand_sum_real::<1>(600, 32, 0xF00D);
+        for pbits in [1u8, 2] {
+            let policy = CollapseSample::new(input.len(), 3);
+            let got = partitioned_finalize(&policy, &input, pbits);
+            assert_same_terms(&got, &input, &format!("P=2^{pbits}"));
+            assert_eq!(policy.collapses(), 0);
+        }
+    }
+
+    /// Above the cache exactly one string survives across the group, counted once for the shared policy, and the picks over 3000 seeds match `|c|² / Σ|c|²`.
+    #[test]
+    fn collapse_sample_partitioned_draws_one_string_by_weight() {
+        use crate::test_support::{
+            assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
+            FOUR_TERM_WEIGHTS,
+        };
+        let keys = four_term_keys::<2>();
+        let input = weighted_four_term_sum::<2>(8);
+        for pbits in [1u8, 2] {
+            let rows = PartitionRows::<2>::from_seed(8, pbits, PSEED);
+            let owners: std::collections::HashSet<u32> =
+                keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
+            assert!(
+                owners.len() > 1,
+                "P=2^{pbits}: the fixture must span partitions"
+            );
+
+            let mut counts = [0usize; 4];
+            for seed in 0..3000u64 {
+                let policy = CollapseSample::new(3, seed);
+                let got = partitioned_finalize(&policy, &input, pbits);
+                counts[collapsed_index(&got, &keys)] += 1;
+                assert_eq!(policy.collapses(), 1, "one collapse, counted once");
+            }
+            assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("P=2^{pbits}"));
         }
     }
 

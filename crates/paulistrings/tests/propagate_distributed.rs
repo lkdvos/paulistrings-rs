@@ -18,13 +18,15 @@ use paulistrings::engine::partitioned::{
     DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy,
 };
 use paulistrings::test_support::{
-    assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
-    unpinned_partitions, zz_rotation, KeepAll,
+    assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
+    trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::truncation::{
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff,
+};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
-    Phase,
+    Phase, RotationAxis,
 };
 
 const TOL: f64 = 1e-11;
@@ -61,6 +63,21 @@ fn mixed_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
     circuit
 }
 
+/// `f` on every rank of a `size`-rank in-process group, one thread each, the results in rank order.
+fn on_ranks<T: Send>(size: u32, f: impl Fn(InProcessTransport) -> T + Sync) -> Vec<T> {
+    std::thread::scope(|scope| {
+        let f = &f;
+        let handles: Vec<_> = InProcessTransport::group(size)
+            .into_iter()
+            .map(|transport| scope.spawn(move || f(transport)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread panicked"))
+            .collect()
+    })
+}
+
 /// Run `circuit` on `size` in-process "ranks", each with its own replicated
 /// copy of `sum`, and return rank 0's gathered output.
 ///
@@ -77,28 +94,17 @@ fn distributed<const W: usize, T>(
 where
     T: PartitionedTruncation<W> + Sync,
 {
-    let gathered: Vec<Option<PauliSum<W>>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = InProcessTransport::group(size)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let mut split = DistributedSum::scatter(sum.clone(), transport, &config())
-                        .expect("topology resolves");
-                    split.assert_invariants();
-                    split.propagate(circuit, policy, direction);
-                    split.assert_invariants();
-                    let out = split.gather();
-                    // `local` is always this rank's share, whether or not the
-                    // rank gathers.
-                    assert!(split.local().len() <= split.len());
-                    out
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+    let gathered: Vec<Option<PauliSum<W>>> = on_ranks(size, |transport| {
+        let mut split =
+            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+        split.assert_invariants();
+        split.propagate(circuit, policy, direction);
+        split.assert_invariants();
+        let out = split.gather();
+        // `local` is always this rank's share, whether or not the
+        // rank gathers.
+        assert!(split.local().len() <= split.len());
+        out
     });
 
     assert!(gathered[0].is_some(), "rank 0 gathers");
@@ -205,28 +211,15 @@ fn gather_is_repeatable_and_non_destructive() {
     let want_once = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     let want_twice = propagate(&circuit, want_once.clone(), &KeepAll, Direction::Forward);
 
-    let (first, second) = std::thread::scope(|scope| {
-        let circuit = &circuit;
-        let sum = &sum;
-        let handles: Vec<_> = InProcessTransport::group(2)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let mut split = DistributedSum::scatter(sum.clone(), transport, &config())
-                        .expect("topology resolves");
-                    split.propagate(circuit, &KeepAll, Direction::Forward);
-                    let first = split.gather();
-                    split.propagate(circuit, &KeepAll, Direction::Forward);
-                    (first, split.gather())
-                })
-            })
-            .collect();
-        let mut out: Vec<_> = handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect();
-        out.remove(0)
-    });
+    let (first, second) = on_ranks(2, |transport| {
+        let mut split =
+            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
+        let first = split.gather();
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
+        (first, split.gather())
+    })
+    .remove(0);
 
     assert_terms_close(&first.expect("rank 0"), &want_once, TOL, "first gather");
     assert_terms_close(&second.expect("rank 0"), &want_twice, TOL, "second gather");
@@ -240,25 +233,12 @@ fn the_trace_is_this_ranks_view_of_every_layer() {
     let sum = rand_sum::<1>(200, 6, 0x0D1C);
     let layers = circuit.channels.len();
 
-    let traces = std::thread::scope(|scope| {
-        let circuit = &circuit;
-        let sum = &sum;
-        let handles: Vec<_> = InProcessTransport::group(2)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let mut split = DistributedSum::scatter(sum.clone(), transport, &config())
-                        .expect("topology resolves");
-                    split.enable_trace();
-                    split.propagate(circuit, &KeepAll, Direction::Forward);
-                    (split.rank(), split.take_trace().expect("tracing is on"))
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect::<Vec<_>>()
+    let traces = on_ranks(2, |transport| {
+        let mut split =
+            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+        split.enable_trace();
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
+        (split.rank(), split.take_trace().expect("tracing is on"))
     });
 
     let mut any_exchange = false;
@@ -342,22 +322,10 @@ fn len_is_collective_and_the_shares_add_up() {
     let sum = rand_sum::<1>(500, 6, 0x0D20);
     let want = sum.len();
 
-    let seen = std::thread::scope(|scope| {
-        let sum = &sum;
-        let handles: Vec<_> = InProcessTransport::group(4)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let split = DistributedSum::scatter(sum.clone(), transport, &config())
-                        .expect("topology resolves");
-                    (split.len(), split.len_local())
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect::<Vec<_>>()
+    let seen = on_ranks(4, |transport| {
+        let split =
+            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+        (split.len(), split.len_local())
     });
 
     for (rank, &(total, _)) in seen.iter().enumerate() {
@@ -400,28 +368,11 @@ fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
     let sum = single_z_sum::<1>(NQ);
     let policy = PartitionRowPolicy::Cut(vec![(0..4).collect(), (4..8).collect()]);
 
-    let held: Vec<Vec<u32>> = std::thread::scope(|scope| {
-        let (sum, policy) = (&sum, &policy);
-        let handles: Vec<_> = InProcessTransport::group(2)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let split = DistributedSum::scatter_with_policy(
-                        sum.clone(),
-                        transport,
-                        &config(),
-                        policy,
-                    )
-                    .expect("topology resolves");
-                    split.assert_invariants();
-                    local_z_qubits(&split)
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+    let held: Vec<Vec<u32>> = on_ranks(2, |transport| {
+        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
+            .expect("topology resolves");
+        split.assert_invariants();
+        local_z_qubits(&split)
     });
 
     assert_eq!(held[0], vec![0, 1, 2, 3], "block 0 is rank 0's");
@@ -478,24 +429,209 @@ fn local_expectations_sum_to_the_whole_sums() {
     let state = ProductState::ZPlus;
     let want = sum.expectation_product_state(state);
 
-    let parts: Vec<Complex64> = std::thread::scope(|scope| {
-        let sum = &sum;
-        let handles: Vec<_> = InProcessTransport::group(4)
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    DistributedSum::scatter(sum.clone(), transport, &config())
-                        .expect("topology resolves")
-                        .local_expectation_product_state(state)
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+    let parts: Vec<Complex64> = on_ranks(4, |transport| {
+        DistributedSum::scatter(sum.clone(), transport, &config())
+            .expect("topology resolves")
+            .local_expectation_product_state(state)
     });
 
     let got: Complex64 = parts.iter().sum();
     assert!((got - want).norm() < TOL, "{got} vs {want}");
+}
+
+// ---- CollapseSample ---------------------------------------------------------
+
+/// One rank is the unpartitioned trajectory; more ranks collapse the same way in kind: a bounded, unit-norm sum and a nonzero collapse count on the shared policy.
+#[test]
+fn collapse_sample_trajectories_over_ranks() {
+    const CACHE: usize = 6;
+    let (circuit, input) = (collapsing_circuit(), z0_sum());
+    for seed in 0..5u64 {
+        let want = propagate(
+            &circuit,
+            input.clone(),
+            &CollapseSample::new(CACHE, seed),
+            Direction::Heisenberg,
+        );
+        let one = distributed(
+            &circuit,
+            &input,
+            &CollapseSample::new(CACHE, seed),
+            Direction::Heisenberg,
+            1,
+        );
+        assert_terms_close(&one, &want, 1e-12, &format!("seed {seed} one rank"));
+
+        for size in [2u32, 4] {
+            let policy = CollapseSample::new(CACHE, seed);
+            let got = distributed(&circuit, &input, &policy, Direction::Heisenberg, size);
+            assert!(policy.collapses() >= 1, "seed {seed} ranks={size}");
+            assert!(
+                got.len() <= CACHE,
+                "seed {seed} ranks={size}: {} terms",
+                got.len()
+            );
+            let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+            assert!(
+                (norm - 1.0).abs() < 1e-12,
+                "seed {seed} ranks={size}: {norm}"
+            );
+        }
+    }
+}
+
+/// Over `InProcessTransport` ranks, one collapse keeps exactly one string in the whole group, drawn with probability `|c|² / Σ|c|²`.
+#[test]
+fn collapse_sample_distributed_picks_by_weight() {
+    use paulistrings::engine::partitioned::PartitionRuntime;
+    use paulistrings::test_support::{
+        assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
+        FOUR_TERM_WEIGHTS,
+    };
+    const ROW_SEED: u64 = 0x5EED_C0FF_EE00_4321;
+
+    let keys = four_term_keys::<1>();
+    let input = weighted_four_term_sum::<1>(8);
+    let mut circuit = Circuit::<1>::new(8);
+    circuit.push(Depolarizing {
+        support: [0],
+        p: 0.0,
+    });
+
+    for size in [2u32, 4] {
+        let rows =
+            paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
+        let owners: std::collections::HashSet<u32> =
+            keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
+        assert!(
+            owners.len() > 1,
+            "ranks={size}: the fixture must span ranks"
+        );
+
+        let runtimes: Vec<_> = (0..size)
+            .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1, ROW_SEED)).unwrap())
+            .collect();
+        let mut counts = [0usize; 4];
+        for seed in 0..2000u64 {
+            let policy = CollapseSample::new(3, seed);
+            let gathered = on_ranks(size, |transport| {
+                use paulistrings::engine::partitioned::Collectives;
+                let runtime = runtimes[transport.rank() as usize].clone();
+                let mut split = DistributedSum::scatter_with_rows(
+                    input.clone(),
+                    transport,
+                    runtime,
+                    rows.clone(),
+                );
+                split.propagate(&circuit, &policy, Direction::Forward);
+                assert!(split.len_local() <= 1);
+                split.gather()
+            });
+            let got = gathered.into_iter().next().unwrap().unwrap();
+            counts[collapsed_index(&got, &keys)] += 1;
+            assert_eq!(policy.collapses(), 1);
+        }
+        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
+    }
+}
+
+// ---- echo read-outs -----------------------------------------------------------
+
+/// Every rank's `(rotated_overlap, anticommute_histogram, len_local)` after a Heisenberg run on `size` ranks scattered by `policy`.
+fn distributed_echo<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &PartitionRowPolicy,
+    size: u32,
+    sites: &[usize],
+    axis: RotationAxis,
+) -> Vec<(f64, Vec<f64>, usize)> {
+    on_ranks(size, |transport| {
+        let mut split =
+            DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), policy)
+                .expect("topology resolves");
+        split.propagate(circuit, &KeepAll, Direction::Heisenberg);
+        (
+            split.rotated_overlap(sites, 0.3, axis),
+            split.anticommute_histogram(sites, axis),
+            split.len_local(),
+        )
+    })
+}
+
+/// With rows excluding the coordinates `V` flips, the gather-free echo equals the single-process one on every rank, for both axes and both widths.
+fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[u32], sites: &[usize]) {
+    let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for pair in window.windows(2) {
+        circuit.push(Clifford2Q::cnot(pair[0], pair[1]));
+    }
+    circuit.push(GeneralUnitary2Q::from_matrix(
+        window[0],
+        window[1],
+        haar_su4_matrix(),
+    ));
+    circuit.push(zz_rotation::<W>(window[1], window[3], 0.31));
+    let evolved = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
+    let flipped: Vec<u32> = sites.iter().map(|&q| q as u32).collect();
+
+    for axis in [RotationAxis::Z, RotationAxis::X] {
+        let want = evolved.rotated_overlap(sites, 0.3, axis);
+        let want_hist = evolved.anticommute_histogram(sites, axis);
+        let (exclude_x, exclude_z) = match axis {
+            RotationAxis::Z => (vec![], flipped.clone()),
+            RotationAxis::X => (flipped.clone(), vec![]),
+        };
+        let policy = PartitionRowPolicy::SeededExcluding {
+            seed: Some(0x5EED_0E40),
+            exclude_x,
+            exclude_z,
+        };
+        for size in [2u32, 4] {
+            let ranks = distributed_echo(&circuit, &sum, &policy, size, sites, axis);
+            assert!(
+                ranks.iter().filter(|r| r.2 > 0).count() > 1,
+                "W={W} {axis:?} ranks={size}: the split must be nontrivial",
+            );
+            for (rank, (got, hist, _)) in ranks.iter().enumerate() {
+                let what = format!("W={W} {axis:?} ranks={size} rank {rank}");
+                assert!((got - want).abs() < 1e-10, "{what}: {got} vs {want}");
+                assert_eq!(got.to_bits(), ranks[0].0.to_bits(), "{what}: ranks agree");
+                for (h, w) in hist.iter().zip(&want_hist) {
+                    assert!((h - w).abs() < 1e-10, "{what}: {hist:?} vs {want_hist:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn distributed_echo_read_outs_match_the_single_process_ones_w1() {
+    check_distributed_echo::<1>(10, &[0, 2, 3, 5, 6, 9], &[2, 3, 6]);
+}
+
+#[test]
+fn distributed_echo_read_outs_match_the_single_process_ones_w2() {
+    check_distributed_echo::<2>(70, &[61, 62, 63, 64, 65, 68], &[62, 63, 64]);
+}
+
+/// Rows that read a flipped coordinate would split a class across ranks, so every rank refuses before communicating.
+#[test]
+fn distributed_rotated_overlap_rejects_rows_that_split_classes() {
+    let sum = rand_sum_on::<1>(200, 10, &[0, 2, 3, 5, 6, 9], 0xEC41);
+    let sites = [2usize, 3, 6];
+    let policy = PartitionRowPolicy::Seeded(Some(0x5EED_0E40));
+    let results: Vec<_> = on_ranks(2, |transport| {
+        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
+            .expect("topology resolves");
+        assert!(
+            !split.rows().keeps_flip_classes(&sites, RotationAxis::Z),
+            "the fixture rows must read a flip"
+        );
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            split.rotated_overlap(&sites, 0.3, RotationAxis::Z)
+        }))
+        .is_err()
+    });
+    assert_eq!(results, vec![true, true], "every rank must refuse");
 }

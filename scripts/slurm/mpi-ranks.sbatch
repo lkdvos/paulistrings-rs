@@ -50,18 +50,7 @@ echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 
 echo "== job ${SLURM_JOB_ID:-?} on $SLURM_JOB_NODELIST, $(date -Is)"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
-numa=$(ls -d /sys/devices/system/node/node* | wc -l)
-cpus_per_numa=$(( SLURM_CPUS_ON_NODE / numa ))
-nodes=${SLURM_JOB_NUM_NODES:-1}
-echo "numa domains per node: $numa, cpus per domain: $cpus_per_numa, nodes: $nodes"
-
-# Round the total rank count down to a power of two, then spread it evenly over the nodes.
-total=$(( nodes * numa ))
-ranks=1
-while [ $(( ranks * 2 )) -le "$total" ]; do ranks=$(( ranks * 2 )); done
-per_node=$(( ranks / nodes ))
-[ "$per_node" -lt 1 ] && { per_node=1; ranks=$nodes; }
-echo "== running $ranks ranks ($per_node per node, D=1), from $total available domains"
+source scripts/slurm/ranks.sh
 
 # Build first with stderr visible (a failure here used to vanish into /dev/null), then query the path.
 cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run

@@ -1,0 +1,110 @@
+{
+  "provenance": {
+    "paper": "S. V. Barron et al., Observable Estimation in the Absence of Classical Verification, arXiv:2607.25998v1 (2026)",
+    "circuits": "Quantum Advantage Tracker, data/observable-estimations/circuit-models/operator_loschmidt_echo/operator_loschmidt_echo_56x1488_alpha_*.qasm, commit 1db844f1540a198c5620af49247e09fc28e7f61b; vendored gzipped under examples/data/ole56/",
+    "qubit_sets": "derived from the QASM files by examples/b8_ole/ole.py and asserted against them in examples/tests/test_showcase_b8.py",
+    "observable": "tracker README for operator_loschmidt_echo_56x1488",
+    "parameters": "arXiv:2607.25998 App. A 2 c (Eq. A13, eta list), App. C 5 (delta, generator, cache), Table I (reference values)"
+  },
+  "device_qubits": [69, 70, 71, 72, 73, 78, 79, 87, 88, 89, 90, 91, 92, 93, 94, 95, 97, 98, 99, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 117, 118, 119, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 137, 138, 139, 147, 148, 149, 150, 151, 152, 153, 154, 155],
+  "observable_qubits": [131, 132, 133, 134, 135, 138, 139, 151, 152, 153, 154, 155],
+  "perturbation_qubits": [69, 71, 72, 73, 78, 87, 88, 89, 91, 92, 93, 94, 95, 98, 99, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 117, 118, 125, 126, 127, 128, 129, 147, 148, 149],
+  "scattering_qubits": [72, 78, 92, 99, 106, 112, 118, 126, 132, 139, 152],
+  "slow_qubits": [70, 79, 90, 97, 110, 119, 130, 137, 150],
+  "perturbation_axis": "x",
+  "rx_fast": "3*pi/16",
+  "rx_slow": 0.25,
+  "eta_per_alpha": "3*pi/2",
+  "tracker_alphas": [0.0, 0.05, 0.1, 0.15, 0.2, 0.25],
+  "paper_etas": ["0", "3*pi/40", "3*pi/20", "9*pi/40", "3*pi/10", "3*pi/8"],
+  "delta": 0.3,
+  "floquet_layers_L": [1, 2, 3, 4, 5, 6],
+  "tracker_L": 6,
+  "ppmc": {
+    "rule": "exact Pauli propagation with light coefficient truncation; after any gate that leaves more than `cache` strings, normalize and draw one string with probability b_P^2 / sum b^2, restart from it with coefficient 1; keep the full sum at the end",
+    "estimator": "S_diag = sum_P b_P^2 cos(2 delta)^{n_P} / sum_P b_P^2, n_P = number of perturbation sites whose X anticommutes with P; one trajectory per seed; mean and standard error over trajectories",
+    "paper_cache": 500000000,
+    "paper_trajectories": 800,
+    "paper_cost": "about 25 min on 32 cores and 65-102 GB peak RSS per trajectory at cache 5e8 (Table VI)"
+  },
+  "references": {
+    "table_I": {
+      "source": "arXiv:2607.25998 Table I: eta = 9*pi/40 (tracker alpha 0.15), delta = 0.3",
+      "columns": ["L", "experiment", "bp_extrap_inv_chi", "bp_extrap_fidelity", "bp_chi_max", "bp_fidelity_chi_max"],
+      "rows": [
+        [
+          2,
+          [0.875, 0.001],
+          [0.88, 0.041],
+          [0.8775, null],
+          [0.88, 0.004],
+          1.0
+        ],
+        [
+          3,
+          [0.616, 0.002],
+          [0.569, 0.0618],
+          [0.5945, 0.0141],
+          [0.589, 0.006],
+          1.0
+        ],
+        [
+          4,
+          [0.429, 0.002],
+          [0.3824, 0.0507],
+          [0.3893, 0.024],
+          [0.397, 0.005],
+          0.974
+        ],
+        [
+          5,
+          null,
+          [0.252, 0.0418],
+          [0.1864, 0.0642],
+          [0.344, 0.004],
+          0.574
+        ],
+        [
+          6,
+          [0.236, 0.005],
+          [0.3317, 0.0918],
+          [-0.106, 0.4441],
+          [0.434, 0.006],
+          0.233
+        ]
+      ]
+    },
+    "full_scrambling": {
+      "source": "arXiv:2607.25998 App. C 1 c: S_f.s.(delta = 0.3, |V_P| = 35)",
+      "value": 0.04083
+    },
+    "fig21": {
+      "source": "arXiv:2607.25998 Fig. 21 (p. 48), L = 6, delta = 0.3, read from the PDF's vector paths: marker centres and error-bar half-lengths against the gridlines (calibration residual < 0.003 plot units)",
+      "columns": ["eta", "S", "err"],
+      "experiment_ibm_boston_96ns": [
+        ["0", 0.9902, 0.0119],
+        ["3pi/40", 0.475, 0.0102],
+        ["3pi/20", 0.2683, 0.0104],
+        ["9pi/40", 0.2363, 0.0107],
+        ["3pi/10", 0.171, 0.0118],
+        ["3pi/8", 0.1493, 0.0122]
+      ],
+      "ppmc_cache_5e8": [
+        ["0", 0.1527, 0.0062],
+        ["3pi/40", 0.164, 0.0062],
+        ["3pi/20", 0.2006, 0.0064],
+        ["9pi/40", 0.1923, 0.006],
+        ["3pi/10", 0.1507, 0.0051],
+        ["3pi/8", 0.1281, 0.0048]
+      ],
+      "single_path_mc": [
+        ["0", 0.1439, 0.0001],
+        ["3pi/40", 0.1639, 0.0001],
+        ["3pi/20", 0.2135, 0.0001],
+        ["9pi/40", 0.2084, 0.0001],
+        ["3pi/10", 0.1581, 0.0001],
+        ["3pi/8", 0.1387, 0.0001]
+      ]
+    }
+  }
+}

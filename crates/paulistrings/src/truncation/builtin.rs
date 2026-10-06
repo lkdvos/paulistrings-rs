@@ -2,9 +2,11 @@
 
 use super::TruncationPolicy;
 use crate::pauli_sum::PauliSum;
+use crate::rng::Rng;
 use num_complex::Complex64;
 use rayon::prelude::*;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 thread_local! {
     /// Reusable squared-magnitude scratch buffer for [`TopN::finalize_layer`], pooled per thread to avoid a per-layer allocation.
@@ -348,6 +350,168 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
         if let EdgeDecision::AtOrAbove { kept, .. } = edge {
             debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
         }
+    }
+}
+
+/// `log` target for the sampling policies' per-collapse records, shared with [`propagate`](crate::propagate).
+pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
+
+/// Replace the sum by **one** Pauli string, drawn with probability `|c|² / Σ|c|²`, whenever it holds more than `cache` terms.
+///
+/// The survivor's coefficient is set to `1`: the sum is normalized before the draw and only the survivor's string is carried forward, so each collapse restarts growth from a single term.
+/// One seed is one Monte Carlo trajectory; statistics come from many seeds.
+///
+/// # Reproducibility
+///
+/// The draw at the `k`-th layer pass is a pure function of `(seed, k)`, so a trajectory is reproducible and does not depend on the thread count.
+/// The pass counter lives in the policy, so reusing one policy object across runs continues its sequence rather than repeating it.
+///
+/// # Partitioned
+///
+/// Every partition enters two reductions per collapse (the global length, then the per-partition norms), all draw the same uniform, and the one partition owning the chosen string keeps it while the rest clear.
+/// At `P = 1` the pick is the unpartitioned one; across partition counts the cumulative order differs, so trajectories agree in distribution, not string for string.
+/// The pass and [`collapses`](Self::collapses) counters advance on rank 0's policy object only.
+///
+/// # Examples
+///
+/// ```
+/// use paulistrings::truncation::CollapseSample;
+/// use paulistrings::TruncationPolicy;
+/// use paulistrings::{BuildAccumulator, PauliString, Phase};
+/// use num_complex::Complex64;
+///
+/// let mut acc = BuildAccumulator::<1>::new(2);
+/// acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.6, 0.0));
+/// acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(0.8, 0.0));
+/// let mut sum = acc.finalize();
+///
+/// let policy = CollapseSample::new(1, 42);
+/// policy.finalize_layer(&mut sum);
+/// assert_eq!(sum.len(), 1);
+/// assert_eq!(sum.iter().next().unwrap().2, Complex64::new(1.0, 0.0));
+/// assert_eq!(policy.collapses(), 1);
+/// ```
+#[derive(Debug)]
+pub struct CollapseSample {
+    /// Largest sum left untouched; one more term triggers a collapse.
+    pub cache: usize,
+    /// Trajectory seed.
+    pub seed: u64,
+    /// Layer passes seen, the second key word of each draw.
+    calls: AtomicU64,
+    /// Collapses performed.
+    collapses: AtomicU64,
+}
+
+impl CollapseSample {
+    /// A fresh trajectory: collapse above `cache` terms, draws keyed by `seed`.
+    pub fn new(cache: usize, seed: u64) -> Self {
+        Self {
+            cache,
+            seed,
+            calls: AtomicU64::new(0),
+            collapses: AtomicU64::new(0),
+        }
+    }
+
+    /// Collapses performed so far (rank 0's count in partitioned mode).
+    pub fn collapses(&self) -> u64 {
+        self.collapses.load(Ordering::Relaxed)
+    }
+
+    /// Claim the next pass index.
+    pub(crate) fn next_call(&self) -> u64 {
+        self.calls.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(crate) fn count_collapse(&self) -> u64 {
+        self.collapses.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// `u · Σ|c|²` for pass `call`, the point of the cumulative weight the pick lands on.
+    ///
+    /// # Panics
+    ///
+    /// If the total is zero or not finite, since no string can then be drawn by weight.
+    pub(crate) fn target(&self, call: u64, total: f64, len: usize) -> f64 {
+        assert!(
+            total.is_finite() && total > 0.0,
+            "CollapseSample: cannot draw by weight from {len} terms with Σ|c|² = {total}",
+        );
+        Rng::from_key(&[self.seed, call]).uniform() * total
+    }
+}
+
+/// `Σ|c|²` of each bucket, in bucket order.
+pub(crate) fn bucket_norms<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
+    (0..sum.num_buckets())
+        .into_par_iter()
+        .map(|b| sum.bucket(b).2.iter().map(|c| c.norm_sqr()).sum())
+        .collect()
+}
+
+/// The slot whose stretch of the running total contains `target`, and `target`'s offset into that stretch.
+/// A `target` that rounding carries past the end lands on the last positive slot; `None` only when no slot is positive.
+pub(crate) fn pick_slot(
+    weights: impl IntoIterator<Item = f64>,
+    target: f64,
+) -> Option<(usize, f64)> {
+    let mut cum = 0.0f64;
+    let mut last = None;
+    for (i, w) in weights.into_iter().enumerate() {
+        if w > 0.0 {
+            if target < cum + w {
+                return Some((i, target - cum));
+            }
+            last = Some((i, target - cum));
+        }
+        cum += w;
+    }
+    last
+}
+
+/// Reduce `sum` to the single string at `target` of its cumulative weight, with coefficient `1`; `norms` is [`bucket_norms`] of `sum`.
+pub(crate) fn collapse_to_target<const W: usize>(
+    sum: &mut PauliSum<W>,
+    norms: &[f64],
+    target: f64,
+) {
+    let (b, rest) = pick_slot(norms.iter().copied(), target)
+        .expect("collapse_to_target: no bucket has positive weight");
+    let (pos, _) = pick_slot(sum.bucket(b).2.iter().map(|c| c.norm_sqr()), rest)
+        .expect("collapse_to_target: a positive bucket has a positive term");
+    let (x, z) = (sum.bucket(b).0[pos], sum.bucket(b).1[pos]);
+    sum.clear();
+    sum.buckets_mut()[b].push(x, z, Complex64::new(1.0, 0.0));
+    sum.recount();
+}
+
+/// Equal when the same trajectory stands at the same pass: same `cache`, `seed` and counters.
+impl PartialEq for CollapseSample {
+    fn eq(&self, other: &Self) -> bool {
+        self.cache == other.cache
+            && self.seed == other.seed
+            && self.calls.load(Ordering::Relaxed) == other.calls.load(Ordering::Relaxed)
+            && self.collapses() == other.collapses()
+    }
+}
+
+impl<const W: usize> TruncationPolicy<W> for CollapseSample {
+    /// One norms pass and one uniform: pick the bucket by its share of `Σ|c|²`, then the term within it.
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        let call = self.next_call();
+        let len = sum.len();
+        if len <= self.cache {
+            return;
+        }
+        let norms = bucket_norms(sum);
+        let total: f64 = norms.iter().sum();
+        collapse_to_target(sum, &norms, self.target(call, total, len));
+        let n = self.count_collapse();
+        log::debug!(
+            target: LOG_TARGET,
+            "collapse_sample: {len} terms, sum |c|^2 = {total:.6e}, collapsed to one (collapse {n})",
+        );
     }
 }
 
@@ -1201,6 +1365,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // CollapseSample
+    // -----------------------------------------------------------------
+
+    use crate::bucket::Gf2Hash;
+    use crate::test_support::{
+        assert_frequencies, collapsed_index, four_term_keys, rand_sum, weighted_four_term_sum,
+        FOUR_TERM_WEIGHTS,
+    };
+
+    /// Weights `[0, 1, 0, 2]`: slot 1 owns `[0, 1)`, slot 3 owns `[1, 3)`, and a target at or past 3 falls back to slot 3.
+    #[test]
+    fn pick_slot_walks_the_running_total() {
+        let w = [0.0, 1.0, 0.0, 2.0];
+        assert_eq!(pick_slot(w, 0.0), Some((1, 0.0)));
+        assert_eq!(pick_slot(w, 0.75), Some((1, 0.75)));
+        assert_eq!(pick_slot(w, 1.0), Some((3, 0.0)));
+        assert_eq!(pick_slot(w, 2.5), Some((3, 1.5)));
+        assert_eq!(pick_slot(w, 3.0), Some((3, 2.0)));
+        assert_eq!(pick_slot([0.0, 0.0], 0.0), None);
+    }
+
+    #[test]
+    fn collapse_sample_is_a_no_op_up_to_the_cache() {
+        let input = weighted_four_term_sum::<1>(8);
+        for cache in [4usize, 5, 100] {
+            let policy = CollapseSample::new(cache, 7);
+            let mut sum = input.clone();
+            policy.finalize_layer(&mut sum);
+            assert_eq!(sum.to_arrays(), input.to_arrays(), "cache {cache}");
+            assert_eq!(policy.collapses(), 0);
+        }
+        assert!(<_ as TruncationPolicy<1>>::finalizes_layer(
+            &CollapseSample::new(4, 7)
+        ));
+    }
+
+    #[test]
+    fn collapse_sample_leaves_one_input_string_with_unit_coefficient() {
+        let keys = four_term_keys::<1>();
+        let policy = CollapseSample::new(3, 11);
+        for pass in 1..=5u64 {
+            let mut sum = weighted_four_term_sum::<1>(8);
+            policy.finalize_layer(&mut sum);
+            sum.assert_invariants();
+            collapsed_index(&sum, &keys);
+            assert_eq!(policy.collapses(), pass);
+        }
+    }
+
+    /// Picks over 5000 seeds match `|c|² / Σ|c|²`, in one bucket and spread over four, at both widths.
+    fn check_pick_frequencies<const W: usize>(bits: u8) {
+        let keys = four_term_keys::<W>();
+        let input = weighted_four_term_sum::<W>(8).with_hash(Gf2Hash::new(8, bits, 0xB0C4));
+        if bits > 0 {
+            let used = (0..input.num_buckets())
+                .filter(|&b| input.bucket_len(b) > 0)
+                .count();
+            assert!(used > 1, "the fixture must span several buckets");
+        }
+        let mut counts = [0usize; 4];
+        for seed in 0..5000u64 {
+            let mut sum = input.clone();
+            CollapseSample::new(3, seed).finalize_layer(&mut sum);
+            counts[collapsed_index(&sum, &keys)] += 1;
+        }
+        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("W={W} bits={bits}"));
+    }
+
+    #[test]
+    fn collapse_sample_draws_by_squared_magnitude() {
+        check_pick_frequencies::<1>(0);
+        check_pick_frequencies::<1>(2);
+        check_pick_frequencies::<2>(0);
+        check_pick_frequencies::<2>(2);
+    }
+
+    /// The draw is keyed by `(seed, pass)`, so a trajectory repeats from its seed, and a local pool of one or eight threads picks the same string.
+    #[test]
+    fn collapse_sample_is_reproducible_and_thread_count_independent() {
+        let input = rand_sum::<1>(4000, 16, 0xC011).with_hash(Gf2Hash::new(16, 5, 0x1234));
+        let pick = |threads: usize, seed: u64| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let policy = CollapseSample::new(100, seed);
+                (0..3)
+                    .map(|_| {
+                        let mut sum = input.clone();
+                        policy.finalize_layer(&mut sum);
+                        sum.to_arrays()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let mut distinct = std::collections::HashSet::new();
+        for seed in 0..8u64 {
+            let one = pick(1, seed);
+            assert_eq!(one, pick(8, seed), "seed {seed}");
+            assert_eq!(one, pick(1, seed), "seed {seed} repeats");
+            for arrays in &one {
+                distinct.insert(arrays.0[0]);
+            }
+        }
+        assert!(distinct.len() > 4, "passes and seeds must draw differently");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot draw by weight")]
+    fn collapse_sample_rejects_an_all_zero_sum() {
+        let mut sum = PauliSum::<1>::from_sorted_columns(
+            vec![[1], [2]],
+            vec![[0], [0]],
+            vec![Complex64::new(0.0, 0.0); 2],
+            4,
+        );
+        CollapseSample::new(1, 0).finalize_layer(&mut sum);
     }
 
     /// `And` requires both policies to accept. Pair a coeff threshold with

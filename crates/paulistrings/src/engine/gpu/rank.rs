@@ -9,7 +9,7 @@ use super::partition::DevicePartition;
 use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
 use crate::engine::partitioned::backend::PartitionStorage;
-use crate::engine::partitioned::distributed::gather_share;
+use crate::engine::partitioned::distributed::{gather_share, group_bits};
 use crate::engine::partitioned::transport::{Collectives, Transport};
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
@@ -104,7 +104,11 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         device: u32,
         policy: &PartitionRowPolicy,
     ) -> Result<Self, GpuError> {
-        let rows = policy.rows(sum, transport.size());
+        let rows = policy.rows(
+            sum.num_qubits(),
+            group_bits(transport.size()),
+            sum.hash().seed(),
+        );
         Self::scatter_to_device_with_rows(sum, transport, device, rows)
     }
 

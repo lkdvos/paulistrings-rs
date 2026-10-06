@@ -1,6 +1,8 @@
 //! The GF(2)-linear bucket function `h(v) = H·v`. See ARCHITECTURE.md §Hash.
 
+use crate::echo::RotationAxis;
 use crate::pauli_string::PauliString;
+use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Maximum number of bucket bits, i.e. `B ≤ 2^22 = 4_194_304` buckets.
 /// Rows for all `B_MAX_BITS` bits are generated up front so that [`Gf2Hash::refine`] is free: the active hash is always a prefix of the same fixed matrix, so refinement is a single parity pass rather than a re-hash.
@@ -14,17 +16,6 @@ pub const P_MAX_BITS: u8 = 6;
 /// Without it, `PartitionRows::from_seed(n, p, s)` and `Gf2Hash::new(n, b, s)` would draw from the same stream and the partition rows would be the hash's first `p` rows — dependent by construction, and the global bucket `(part(v), loc(v))` would only have `max(p, b)` bits of entropy instead of `p + b`.
 /// The seed is mixed through a splitmix64 finalizer before the salt so no particular seed value can cancel it (see `research/FINDINGS.md`).
 const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
-
-/// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
-#[inline]
-pub(crate) fn mix64(mut z: u64) -> u64 {
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-/// splitmix64's increment, the odd constant `⌊2^64/φ⌋`.
-pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`: splitmix64's output at the stream position encoding that tuple.
 /// Row words must not be successive outputs of a GF(2)-linear generator such as xorshift (ARCHITECTURE.md §Hash).
@@ -55,6 +46,8 @@ fn draw_rows<const W: usize>(
     num_qubits: usize,
     n_rows: usize,
     seed: u64,
+    exclude_x: &[u64; W],
+    exclude_z: &[u64; W],
 ) -> (Vec<[u64; W]>, Vec<[u64; W]>) {
     let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(n_rows);
     let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(n_rows);
@@ -67,8 +60,8 @@ fn draw_rows<const W: usize>(
             let mut any = false;
             for w in 0..W {
                 let mask = word_mask(num_qubits, w);
-                rx[w] = row_word(seed, row, attempt, w, 0) & mask;
-                rz[w] = row_word(seed, row, attempt, w, 1) & mask;
+                rx[w] = row_word(seed, row, attempt, w, 0) & mask & !exclude_x[w];
+                rz[w] = row_word(seed, row, attempt, w, 1) & mask & !exclude_z[w];
                 any |= (rx[w] | rz[w]) != 0;
             }
             if any || !has_live_columns {
@@ -135,7 +128,8 @@ impl<const W: usize> Gf2Hash<W> {
         );
         debug_assert!(num_qubits <= 64 * W);
 
-        let (rows_x, rows_z) = draw_rows::<W>(num_qubits, B_MAX_BITS as usize, seed);
+        let (rows_x, rows_z) =
+            draw_rows::<W>(num_qubits, B_MAX_BITS as usize, seed, &[0; W], &[0; W]);
 
         Self {
             rows_x,
@@ -315,14 +309,45 @@ impl<const W: usize> PartitionRows<W> {
     ///
     /// Panics if `bits > P_MAX_BITS`, or in debug builds if `num_qubits > 64 · W`.
     pub fn from_seed(num_qubits: usize, bits: u8, seed: u64) -> Self {
+        Self::from_seed_excluding(num_qubits, bits, seed, &[0; W], &[0; W])
+    }
+
+    /// [`Self::from_seed`] with the key coordinates in `(exclude_x, exclude_z)` cleared from every row, so no partition label reads them.
+    /// Two keys differing only there always share a partition, which is what keeps [`PauliSum::rotated_overlap`](crate::PauliSum::rotated_overlap)'s classes on one rank: pass [`RotationAxis::flip_mask`](crate::RotationAxis::flip_mask).
+    /// With nothing excluded the rows are exactly [`Self::from_seed`]'s.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::from_seed`], and if `bits > 0` while the exclusion covers every live column.
+    pub fn from_seed_excluding(
+        num_qubits: usize,
+        bits: u8,
+        seed: u64,
+        exclude_x: &[u64; W],
+        exclude_z: &[u64; W],
+    ) -> Self {
         assert!(
             bits <= P_MAX_BITS,
             "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
         );
         debug_assert!(num_qubits <= 64 * W);
 
-        let (rows_x, rows_z) =
-            draw_rows::<W>(num_qubits, bits as usize, mix64(seed) ^ PARTITION_ROW_SALT);
+        // As in `Gf2Hash::new`: `num_qubits == 0` has a single key, so every row is legitimately zero and the retry must not spin.
+        let keeps_a_column = (0..W).any(|w| {
+            let mask = word_mask(num_qubits, w);
+            (mask & !exclude_x[w]) | (mask & !exclude_z[w]) != 0
+        });
+        assert!(
+            bits == 0 || num_qubits == 0 || keeps_a_column,
+            "PartitionRows::from_seed_excluding: the exclusion covers every column",
+        );
+        let (rows_x, rows_z) = draw_rows::<W>(
+            num_qubits,
+            bits as usize,
+            mix64(seed) ^ PARTITION_ROW_SALT,
+            exclude_x,
+            exclude_z,
+        );
 
         Self {
             rows_x,
@@ -512,6 +537,20 @@ impl<const W: usize> PartitionRows<W> {
     #[inline]
     pub fn rows(&self) -> (&[[u64; W]], &[[u64; W]]) {
         (&self.rows_x, &self.rows_z)
+    }
+
+    /// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.
+    pub fn avoids(&self, mask_x: &[u64; W], mask_z: &[u64; W]) -> bool {
+        self.rows_x
+            .iter()
+            .zip(&self.rows_z)
+            .all(|(rx, rz)| (0..W).all(|w| rx[w] & mask_x[w] == 0 && rz[w] & mask_z[w] == 0))
+    }
+
+    /// `true` if no row reads a coordinate [`RotationAxis::flip_mask`] of `sites` names, so every [`PauliSum::rotated_overlap`](crate::PauliSum::rotated_overlap) class lies in one partition.
+    pub fn keeps_flip_classes(&self, sites: &[usize], axis: RotationAxis) -> bool {
+        let (mask_x, mask_z) = axis.flip_mask(sites);
+        self.avoids(&mask_x, &mask_z)
     }
 
     /// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent over the `2·num_qubits` key columns.
@@ -970,7 +1009,7 @@ mod tests {
     /// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
     #[test]
     fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
-        let (rx, rz) = draw_rows::<1>(64, 64, crate::bucket::sum::DEFAULT_HASH_SEED);
+        let (rx, rz) = draw_rows::<1>(64, 64, crate::bucket::sum::DEFAULT_HASH_SEED, &[0], &[0]);
         let image = |x: u64, z: u64| {
             (0..64).fold(0u64, |acc, i| {
                 acc | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
@@ -1287,6 +1326,42 @@ mod tests {
         let b = PartitionRows::<2>::from_seed(128, 4, 0x5EED);
         assert_eq!(a, b);
         assert_ne!(a, PartitionRows::<2>::from_seed(128, 4, 0x5EEE));
+    }
+
+    #[test]
+    fn excluding_nothing_is_from_seed_and_excluding_avoids() {
+        for seed in [0x1u64, 0x5EED] {
+            let plain = PartitionRows::<2>::from_seed(100, 4, seed);
+            assert_eq!(
+                PartitionRows::<2>::from_seed_excluding(100, 4, seed, &[0; 2], &[0; 2]),
+                plain
+            );
+            let (mx, mz) = ([0xFFFF_0000_0000_FFFF, 0b1011], [!0u64, 0]);
+            assert!(!plain.avoids(&mx, &mz), "random rows read these columns");
+            let rows = PartitionRows::<2>::from_seed_excluding(100, 4, seed, &mx, &mz);
+            assert!(rows.avoids(&mx, &mz));
+            assert_eq!(rows.bits(), 4);
+            // Keys differing only in excluded coordinates share a partition.
+            assert_eq!(
+                rows.partition_of(&[0x3, 1 << 30], &[0x5, 0]),
+                rows.partition_of(&[0x3 ^ (1 << 63), (1 << 30) ^ 0b1000], &[0x5 ^ 0xABCD, 0]),
+            );
+        }
+    }
+
+    #[test]
+    fn avoids_reads_both_halves() {
+        let rows = PartitionRows::<1>::from_rows(8, vec![[0b0100]], vec![[0b0001]]);
+        assert!(rows.avoids(&[0b1011], &[0b1110]));
+        assert!(!rows.avoids(&[0b0100], &[0]));
+        assert!(!rows.avoids(&[0], &[0b0001]));
+        assert!(PartitionRows::<1>::none(8).avoids(&[!0], &[!0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "covers every column")]
+    fn excluding_every_column_is_rejected() {
+        PartitionRows::<1>::from_seed_excluding(8, 1, 7, &[0xFF], &[0xFF]);
     }
 
     #[test]

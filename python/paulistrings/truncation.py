@@ -6,5 +6,6 @@ coeff = _truncation.coeff
 weight = _truncation.weight
 topn = _truncation.topn
 approx_topn = _truncation.approx_topn
+collapse_sample = _truncation.collapse_sample
 
-__all__ = ["coeff", "weight", "topn", "approx_topn"]
+__all__ = ["coeff", "weight", "topn", "approx_topn", "collapse_sample"]

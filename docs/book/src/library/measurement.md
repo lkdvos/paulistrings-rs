@@ -31,6 +31,33 @@ Hilbert–Schmidt overlap `tr(self* . other) / 2^n`, i.e. `sum(conj(a_i) * b_i)`
 
 Coefficient of the `I...I` term, i.e. `tr(O) / 2^n`.
 
+## `anticommute_histogram(sites, axis="x", comm=None)`
+
+`w[n]`, the total `|c|**2` of the strings that anticommute with exactly `n` of the generators `G_q`, `q in sites`, with `G = X` (`axis="x"`) or `Z` (`axis="z"`); `len(sites) + 1` entries summing to `sum(|c|**2)`.
+`paulistrings.diagonal_echo(w, delta)` turns it into the diagonal echo `sum_n w[n] cos(2 delta)**n / sum_n w[n]`.
+
+## `rotated_overlap(sites, delta, axis="x", comm=None)`
+
+The exact operator Loschmidt echo `2**-n Tr(A V^dag A V)`, `V = prod_{q in sites} exp(-i delta G_q)`, without materializing `V^dag A V`; `sum(|c|**2)` at `delta = 0`.
+Cost is dominated by the largest class of strings equal away from the flipped bits on `sites`.
+
+Both read-outs raise `ValueError` for an axis other than `"x"`/`"z"` or a repeated or out-of-range site.
+
+### Under `comm=`
+
+On a `propagate(..., comm=comm)` result both are collective and return the whole distributed sum's value on every rank.
+`rotated_overlap` also needs the result's partition rows to read none of the coordinates `V` flips (x-bits of `sites` for `axis="x"`, z-bits for `"z"`), and raises `ValueError` on every rank otherwise:
+
+| Propagated with | `axis="x"` | `axis="z"` |
+|---|---|---|
+| `partition_row_exclude={"x": sites}` | yes | if the rows happen to avoid |
+| `partition_row_exclude={"z": sites}` | if the rows happen to avoid | yes |
+| `partition_row_blocks=...` | yes (cut rows read only z-bits) | if the rows happen to avoid |
+| `result="gather"` | yes | yes |
+| default seeded rows | if the rows happen to avoid | if the rows happen to avoid |
+
+A sum that was not a `comm=` result, or was since added to another, raises `ValueError` under `comm=`; scaling keeps the split.
+
 ## `propagate_with_stats`
 
 `propagate_with_stats(...)` returns `(evolved, PropagationStats)`; see [propagate / propagate_with_stats](propagate.md) for the full signature and stats fields.

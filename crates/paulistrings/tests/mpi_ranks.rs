@@ -33,8 +33,8 @@ use paulistrings::channel::{
     Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
 use paulistrings::engine::partitioned::{
-    count_remote_deltas, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
-    BITS_AGREE_EVERY,
+    count_remote_deltas, Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy,
+    PartitionRuntime, BITS_AGREE_EVERY,
 };
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
@@ -361,6 +361,7 @@ fn main() {
         failures: 0,
         cases: 0,
     };
+    run_collectives(&mut r);
     run_matrix(&mut r, Backend::Host);
     run_host_cases(&mut r);
     #[cfg(feature = "cuda")]
@@ -378,6 +379,40 @@ fn main() {
     if failures > 0 {
         std::process::exit(1);
     }
+}
+
+/// The collectives every backend shares, once per run.
+fn run_collectives(r: &mut Runner) {
+    r.case("allreduce_sum_f64 agrees bitwise on every rank", |r| {
+        let transport = MpiTransport::from_communicator(r.world);
+        let (rank, size) = (r.rank as usize, r.size as usize);
+        // Slot 0 is order-sensitive, slot `1 + rank` is filled by this rank alone.
+        let mut buf = vec![0.0f64; 1 + size];
+        buf[0] = 0.1 * (rank + 1) as f64;
+        buf[1 + rank] = rank as f64 + 0.5;
+        transport.allreduce_sum_f64(&mut buf);
+
+        let want0 = 0.1 * (size * (size + 1) / 2) as f64;
+        assert!(
+            (buf[0] - want0).abs() < 1e-12,
+            "slot 0: {} vs {want0}",
+            buf[0]
+        );
+        for (q, v) in buf[1..].iter().enumerate() {
+            assert_eq!(*v, q as f64 + 0.5, "slot {q} is one rank's and exact");
+        }
+        // Equal bits everywhere iff each word's sum is `size` copies of this rank's.
+        let mut bits: Vec<u64> = buf.iter().map(|v| v.to_bits()).collect();
+        let mine = bits.clone();
+        transport.allreduce_sum_u64(&mut bits);
+        for (got, own) in bits.iter().zip(&mine) {
+            assert_eq!(
+                *got,
+                own.wrapping_mul(size as u64),
+                "ranks disagree on the bits"
+            );
+        }
+    });
 }
 
 /// The layer shapes every backend runs, both directions; case names carry `tag`.
@@ -777,6 +812,82 @@ fn run_host_cases(r: &mut Runner) {
         );
     });
 
+    // ---- sampling truncation ------------------------------------------------
+    r.case(
+        "collapse sample keeps one bounded unit-norm trajectory",
+        |r| {
+            use paulistrings::test_support::{collapsing_circuit, z0_sum};
+            use paulistrings::truncation::CollapseSample;
+            const CACHE: usize = 6;
+            let (circuit, input) = (collapsing_circuit(), z0_sum());
+
+            for seed in 0..4u64 {
+                // One policy per process, as a launcher gives each rank its own.
+                let policy = CollapseSample::new(CACHE, seed);
+                let transport = MpiTransport::from_communicator(r.world);
+                let mut split = DistributedSum::scatter(input.clone(), transport, &r.config(SEED))
+                    .expect("topology resolves");
+                split.propagate(&circuit, &policy, Direction::Heisenberg);
+                assert!(split.len() <= CACHE, "seed {seed}: {} terms", split.len());
+                let got = split.gather();
+                if r.rank == 0 {
+                    assert!(
+                        policy.collapses() >= 1,
+                        "seed {seed}: rank 0 counts collapses"
+                    );
+                    let got = got.expect("rank 0 gathers");
+                    let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+                    assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: {norm}");
+                    if r.size == 1 {
+                        let want = propagate(
+                            &circuit,
+                            input.clone(),
+                            &CollapseSample::new(CACHE, seed),
+                            Direction::Heisenberg,
+                        );
+                        assert_terms_close(&got, &want, 1e-12, "one rank is propagate");
+                    }
+                } else {
+                    assert_eq!(policy.collapses(), 0, "only rank 0 counts");
+                }
+            }
+        },
+    );
+
+    // ---- echo read-outs --------------------------------------------------
+    r.case("echo read-outs over excluded rows match the oracle", |r| {
+        use paulistrings::test_support::rand_sum_on;
+        use paulistrings::RotationAxis;
+
+        let circuit = cnot_ring::<1>(10);
+        let sum = rand_sum_on::<1>(400, 10, &[0, 2, 3, 5, 6, 9], 0xA060);
+        let oracle = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
+        let sites = [2usize, 3, 6];
+        for axis in [RotationAxis::Z, RotationAxis::X] {
+            let policy = PartitionRowPolicy::SeededExcluding {
+                seed: Some(SEED),
+                exclude_x: vec![2, 3, 6],
+                exclude_z: vec![2, 3, 6],
+            };
+            let transport = MpiTransport::from_communicator(r.world);
+            let mut split = DistributedSum::scatter_with_policy(
+                sum.clone(),
+                transport,
+                &r.config(SEED),
+                &policy,
+            )
+            .expect("topology resolves");
+            split.propagate(&circuit, &KeepAll, Direction::Heisenberg);
+            let got = split.rotated_overlap(&sites, 0.3, axis);
+            let want = oracle.rotated_overlap(&sites, 0.3, axis);
+            assert!((got - want).abs() < 1e-10, "{axis:?}: {got} vs {want}");
+            let hist = split.anticommute_histogram(&sites, axis);
+            for (h, w) in hist.iter().zip(oracle.anticommute_histogram(&sites, axis)) {
+                assert!((h - w).abs() < 1e-10, "{axis:?}: histogram");
+            }
+        }
+    });
+
     // ---- expectation values, read out without a gather --------------------
     r.case("local expectations sum to the whole sum's", |r| {
         use paulistrings::ProductState;
@@ -790,9 +901,8 @@ fn run_host_cases(r: &mut Runner) {
         split.propagate(&circuit, &KeepAll, Direction::Forward);
 
         let mine = split.local_expectation_product_state(ProductState::ZPlus);
-        // `Collectives` reduces integers only, so the scalar goes through the
-        // communicator directly — the pattern a caller uses for its own
-        // observables.
+        // The scalar goes through the communicator directly — the pattern a
+        // caller uses for its own observables.
         let send = [mine.re, mine.im];
         let mut total = [0.0f64; 2];
         r.world

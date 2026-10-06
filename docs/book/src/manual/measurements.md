@@ -120,6 +120,30 @@ print(evolved.identity_coefficient())
 A `num_qubits` mismatch between the two sums is a `ValueError`; there is no implicit padding.
 Both signatures are under [Measurement](../library/measurement.md#overlapother).
 
+## Echo read-outs {#echo}
+
+An echo experiment perturbs the evolved observable `A` by `V = ⊗_q exp(-iδ G_q)`, one single-qubit Pauli generator `G_q` per site, and reads `2^-n tr(A V† A V)`.
+`rotated_overlap(sites, delta, axis)` computes it exactly without building `V† A V`, whose size grows as `2^k` in the number of sites a string anticommutes with.
+`anticommute_histogram(sites, axis)` is the cheaper read-out: `w[n]` is the weight `Σ|c|²` of the strings that anticommute with exactly `n` of the generators, and `diagonal_echo(w, delta) = Σ_n w[n] cos(2δ)^n / Σ_n w[n]` is the echo with every cross term between distinct strings dropped.
+
+```python
+from paulistrings import PauliSum, diagonal_echo
+
+a = PauliSum.from_strings({"XX": 0.6, "YY": 0.8}, num_qubits=2)
+print(diagonal_echo(a.anticommute_histogram([0, 1], axis="z"), 0.3))
+print(a.rotated_overlap([0, 1], 0.3, axis="z"))
+```
+
+```text
+0.6811788772383368
+0.9872471550895336
+```
+
+The gap is the `XX`–`YY` cross term, `2 · 0.6 · 0.8 · sin²(0.6)`, which the diagonal read-out omits by construction.
+`axis` is `"x"` or `"z"`; both methods take `comm=` for a sum split over MPI ranks and return the global value on every rank.
+The distributed `rotated_overlap` needs partition rows that never read a flipped coordinate, which [`partition_row_exclude`](propagation/mpi.md#partition-row-selection) arranges.
+[Showcase B8](../examples/showcases/b8-operator-loschmidt-echo.md) uses both on a 56-qubit Loschmidt echo.
+
 ## From a number to a result
 
 A single expectation value at a single cutoff is a number, not a result.

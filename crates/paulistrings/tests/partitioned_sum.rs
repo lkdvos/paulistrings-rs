@@ -148,3 +148,40 @@ fn an_empty_sum_is_a_valid_partitioned_sum() {
     ps.assert_invariants();
     assert!(ps.gather().is_empty());
 }
+
+/// The echo read-outs over partitions: gather-free when the rows exclude the coordinates `V` flips, through a gather otherwise, and the same answer either way.
+#[test]
+fn echo_read_outs_agree_with_or_without_excluded_rows() {
+    use paulistrings::test_support::rand_sum_on;
+    use paulistrings::RotationAxis;
+
+    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
+    let sum = rand_sum_on::<1>(500, NQ, &[0, 1, 2, 3, 5, 6], 0xEC42);
+    let evolved = propagate(&circuit(), sum.clone(), &KeepAll, Direction::Heisenberg);
+    let sites = [1usize, 2, 5];
+    for axis in [RotationAxis::Z, RotationAxis::X] {
+        let want = evolved.rotated_overlap(&sites, 0.3, axis);
+        let want_hist = evolved.anticommute_histogram(&sites, axis);
+        let (mx, mz) = axis.flip_mask::<1>(&sites);
+        for rows in [
+            PartitionRows::<1>::from_seed_excluding(NQ, 2, 0xEC43, &mx, &mz),
+            PartitionRows::<1>::from_seed(NQ, 2, 0xEC43),
+        ] {
+            let excluded = rows.avoids(&mx, &mz);
+            let mut ps = PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime.clone());
+            ps.propagate(&circuit(), &KeepAll, Direction::Heisenberg);
+            let got = ps.rotated_overlap(&sites, 0.3, axis);
+            assert!(
+                (got - want).abs() < 1e-10,
+                "{axis:?} excluded={excluded}: {got} vs {want}"
+            );
+            for (h, w) in ps
+                .anticommute_histogram(&sites, axis)
+                .iter()
+                .zip(&want_hist)
+            {
+                assert!((h - w).abs() < 1e-10, "{axis:?} excluded={excluded}");
+            }
+        }
+    }
+}

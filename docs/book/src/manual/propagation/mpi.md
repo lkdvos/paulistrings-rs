@@ -19,20 +19,19 @@ It is an off-by-default build option the released wheel omits, so the default wh
 The `mpi` feature needs an MPI installation (for `mpicc`, which rsmpi's build script probes) and a `libclang` for its bindgen; the pip build against a cluster's loaded MPI module is in [Installation](../../installation.md).
 
 `mpi4py` must be built against the *same* MPI the extension links; the boundary checks the width of `MPI_Comm` and refuses a mismatch rather than corrupting a handle.
-On a Flatiron host the `python-mpi` module provides a matching `mpi4py`, so a venv created with `--system-site-packages` from that interpreter sees it:
+In a checkout, `scripts/sync-mpi-venv.sh` builds a venv `./.venv-mpi` with uv: the extension with `--features mpi`, and `mpi4py` compiled from source against the loaded MPI.
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 
-python3 -m venv --system-site-packages .venv-mpi   # so the module's mpi4py is visible
-.venv-mpi/bin/pip install maturin pytest numpy
-VIRTUAL_ENV=$PWD/.venv-mpi .venv-mpi/bin/maturin develop --release --features mpi \
-    -m crates/paulistrings-py/Cargo.toml
+scripts/sync-mpi-venv.sh          # re-run after any change; --cuda adds the cuda feature
+source .venv-mpi/bin/activate
 ```
 
+The install is non-editable, so the venv keeps the build it was synced from.
 The built extension carries an rpath to that MPI's library directory, so `import paulistrings` works from a shell with no modules loaded.
-`scripts/mpi-test.sh --ranks 2,4 --python` builds the extension into that venv and runs `python/paulistrings/tests/test_mpi.py` under `mpirun` at each rank count.
+`scripts/mpi-test.sh --ranks 2,4 --python` syncs that venv and runs its installed `test_mpi.py` under `mpirun` at each rank count.
 
 ## Python
 

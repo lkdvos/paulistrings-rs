@@ -62,8 +62,7 @@ re-implementing it, and a test asserts it is the same object.
 
 ```bash
 ./scripts/setup.sh && source .venv/bin/activate
-pip install -e ".[examples,bench]"
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples --extra bench   # also rebuilds the extension after a Rust change
 
 RAYON_NUM_THREADS=1 pytest benchmarks/python/bench_a_clifford.py --benchmark-only
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_b_theta_sweep.py --validate-convergence

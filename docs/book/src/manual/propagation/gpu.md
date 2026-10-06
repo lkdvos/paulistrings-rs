@@ -22,8 +22,11 @@ The feature is off by default and the released wheels omit it.
 The `cuda` feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.
 
 ```bash
-maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
 ```
+
+Outside a checkout, the `pip install` in [Installation](../../installation.md) does the same.
 
 At runtime the process needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path.
 On a Flatiron host `module load cuda/12.8.0` provides the latter; elsewhere `pip install nvidia-cuda-nvrtc-cu12` does, with its `lib` directory added to `LD_LIBRARY_PATH`:

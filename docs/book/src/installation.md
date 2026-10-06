@@ -46,23 +46,17 @@ pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" 
   --config-settings=build-args="--features cuda,mpi"
 ```
 
-Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates `./.venv` and builds the extension into it:
+Building from source (for contributors, or platforms without a release wheel) uses [uv](https://docs.astral.sh/uv/), which creates `./.venv` from the locked dependencies and builds the extension into it:
 
 ```bash
 git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
-./scripts/setup.sh
-source .venv/bin/activate
+./scripts/setup.sh                        # uv sync, plus the examples extra
+uv run pytest python/paulistrings/tests
 ```
 
-`scripts/setup.sh` expects a Python 3.11 at `/usr/bin/python3.11`; point it
-elsewhere with `PYTHON=$(which python3.11) ./scripts/setup.sh`. The Rust
-toolchain is pinned in `rust-toolchain.toml` (1.94.0), so no toolchain choice is
-needed. After any change to the Rust sources, rebuild:
-
-```bash
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
-```
+The Python version comes from `.python-version` and the Rust toolchain is pinned in `rust-toolchain.toml` (1.94.0), so neither needs choosing.
+`uv run` rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated `.venv`, `uv sync` does the same.
 
 Build `--release`. The release profile uses `lto = "fat"` and
 `codegen-units = 1`; a debug build of this workload is dramatically slower, and
@@ -75,9 +69,11 @@ benchmarks, and also cover `stim`/`qiskit`, which `interop.circuit_from_stim`,
 on first use — install one of these extras before reaching for those:
 
 ```bash
-pip install -e ".[examples]"   # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
+uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
+uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
 ```
+
+`uv sync` removes whatever an extra it is not given had installed, so name every extra each time; `uv run` only adds.
 
 With the package installed, the [Manual](manual/index.md) is where to go next; it opens with a four-line run and explains each part in turn.
 [First propagation](examples/first-propagation.md) carries that same run further, into term inspection and a validation sweep.

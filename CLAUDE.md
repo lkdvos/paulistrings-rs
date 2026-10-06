@@ -35,21 +35,24 @@ These rules are binding on every file, including markdown.
 End users install a released wheel from GitHub Releases (README's Python quickstart) — no Rust toolchain needed.
 Everything below is the from-source / contributor path.
 
-Setup creates `./.venv` and builds the PyO3 extension; the toolchain is pinned in `rust-toolchain.toml`.
-`PYTHON` defaults to `/usr/bin/python3.11`, which is absent on most Flatiron hosts — take one from Lmod instead.
+Python tooling is uv: `uv sync` creates `./.venv` (Python from `.python-version`, dependencies resolved from `pyproject.toml`; the resulting `uv.lock` is local and gitignored) and builds the extension in release mode as an editable install; the Rust toolchain is pinned in `rust-toolchain.toml`.
+`uv run` re-syncs first and rebuilds the extension whenever a Rust source, the build config or `MATURIN_PEP517_ARGS` changed (`[tool.uv] cache-keys`), so prefer it to a bare `python`/`pytest` from an activated venv.
+On Flatiron, `module load uv` gives 0.7.13 under `modules/2.4-20250724` and 0.12.7 under `modules/2.5-20261005`; `scripts/setup.sh` works with either, a bare first `uv sync` needs uv ≥ 0.8.
+Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, with `UV_LINK_MODE=copy`) to keep the cache off the `/mnt/home` inode quota.
 
 ```bash
-module load modules/2.4-20250724 python/3.11.11   # only if /usr/bin/python3.11 is missing
-PYTHON=$(which python3.11) ./scripts/setup.sh
-source .venv/bin/activate
+module load uv
+scripts/setup.sh                              # once: uv sync plus the examples extra (best-effort)
 ```
 
 ```bash
 cargo test --workspace                                           # must be green at every commit
 cargo clippy --workspace --all-targets -- -D warnings
-maturin develop --release -m crates/paulistrings-py/Cargo.toml   # rebuild after any Rust change
-pytest python/paulistrings/tests
+uv run pytest python/paulistrings/tests                          # rebuilds the extension first if Rust changed
+MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # a debug build; every uv command on that venv must then set it
 ```
+
+The editable install writes the extension into `python/paulistrings/`, so a checkout holds one editable build at a time; a second editable venv in the same checkout would overwrite it unseen by the first.
 
 The release profile uses `lto = "fat"` and `codegen-units = 1`; debug builds are dramatically slower for this workload, so benchmark `--release` only.
 
@@ -71,22 +74,16 @@ scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
 scripts/mpi-test.sh --ranks 2,4 --python         # and the bindings' net
 ```
 
-`mpi` is never bundled into a released wheel — no MPI implementation is portable across cluster/vendor combinations — so it stays a pip-driven source build against the loaded modules:
+`mpi` is never bundled into a released wheel — no MPI implementation is portable across cluster/vendor combinations — so it stays a source build against the loaded modules, into its own non-editable venv `./.venv-mpi` (gitignored), which `--python` re-syncs and the Slurm templates activate:
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install ".[dev]" --config-settings=build-args="--features mpi"
+scripts/sync-mpi-venv.sh [--cuda] [--debug]      # .venv-mpi: --features mpi, mpi4py compiled against this MPI
 ```
 
-`--python` needs a second venv, because `./.venv` has no mpi4py and mpi4py must come from the same interpreter and MPI the modules provide.
-Build it once and `--python` reuses it (`$VIRTUAL_ENV` overrides the path):
-
-```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
-python3 -m venv --system-site-packages .venv-mpi   # gitignored
-.venv-mpi/bin/pip install maturin pytest numpy
-```
+That is `UV_PROJECT_ENVIRONMENT=.venv-mpi MATURIN_PEP517_ARGS="--features mpi" uv sync --no-editable --extra mpi --python $(which python3)`; never `uv run` against `.venv-mpi`, which would re-sync it as an editable default build.
+Outside uv, `pip install ".[dev]" --config-settings=build-args="--features mpi"` still works.
 
 Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:rustc-link-arg` is not inherited from a dependency, so without the py crate's copy the cdylib cannot find `libmpi.so.40` at import time.
 
@@ -97,8 +94,7 @@ NVRTC's PTX output is cached on disk (`$PAULISTRINGS_KERNEL_CACHE`, default `~/.
 module load cuda/12.8.0                                          # libnvrtc at runtime
 cargo test -p paulistrings --features cuda                       # unit nets + tests/propagate_gpu.rs; pass without a device
 cargo clippy -p paulistrings-py --features cuda -- -D warnings
-maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
-pytest python/paulistrings/tests/test_cuda.py                    # skipped unless cuda_available()
+MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/test_cuda.py   # skipped unless cuda_available()
 ```
 
 One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets plus the NCCL library its exchange runs over (ARCHITECTURE.md §Partitioning); NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so building needs no toolkit, and every rank above one needs a device of its own:

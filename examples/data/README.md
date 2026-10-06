@@ -19,10 +19,8 @@ Generated, never hand-typed, by `generate_heavy_hex.py` in this directory.
 Regenerate with:
 
 ```bash
-source .venv/bin/activate
-pip install qiskit-ibm-runtime        # dev dep; nothing in examples/common/ imports it
-python examples/data/generate_heavy_hex.py            # rewrite
-python examples/data/generate_heavy_hex.py --check     # exit 1 if stale
+uv run --with qiskit-ibm-runtime python examples/data/generate_heavy_hex.py            # rewrite
+uv run --with qiskit-ibm-runtime python examples/data/generate_heavy_hex.py --check     # exit 1 if stale
 ```
 
 `qiskit-ibm-runtime` is a **development** dependency.

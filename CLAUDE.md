@@ -35,7 +35,7 @@ These rules are binding on every file, including markdown.
 End users install a released wheel from GitHub Releases (README's Python quickstart) — no Rust toolchain needed.
 Everything below is the from-source / contributor path.
 
-Python tooling is uv: `uv sync` creates `./.venv` (Python from `.python-version`, dependencies from `uv.lock`) and builds the extension in release mode as an editable install; the Rust toolchain is pinned in `rust-toolchain.toml`.
+Python tooling is uv: `uv sync` creates `./.venv` (Python from `.python-version`, dependencies resolved from `pyproject.toml`; the resulting `uv.lock` is local and gitignored) and builds the extension in release mode as an editable install; the Rust toolchain is pinned in `rust-toolchain.toml`.
 `uv run` re-syncs first and rebuilds the extension whenever a Rust source, the build config or `MATURIN_PEP517_ARGS` changed (`[tool.uv] cache-keys`), so prefer it to a bare `python`/`pytest` from an activated venv.
 On Flatiron, `module load uv` gives 0.7.13 under `modules/2.4-20250724` and 0.12.7 under `modules/2.5-20261005`; `scripts/setup.sh` works with either, a bare first `uv sync` needs uv ≥ 0.8.
 Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, with `UV_LINK_MODE=copy`) to keep the cache off the `/mnt/home` inode quota.
@@ -115,7 +115,7 @@ Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 
 ## Releasing
 
-Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version`, `pyproject.toml`'s `[project] version` and the project's entry in `uv.lock` in one step; commit all three together, never separately.
+Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in one step; commit both together, never separately.
 CI's `version-sync` job fails a PR if the two ever disagree.
 Before tagging: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, the `mpi` CI job, and `python` CI job must all be green on `main`; also check `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils`, which mirrors what docs.rs builds and is not covered by `cargo test`.
 Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag, to catch a wheel-matrix failure before it's user-visible.

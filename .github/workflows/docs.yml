@@ -123,7 +123,7 @@ jobs:
       - name: Build the Python extension
         env:
           MATURIN_PEP517_ARGS: --profile dev
-        run: uv sync --locked --extra examples
+        run: uv sync --extra examples
 
       # Every ```python fence in the book runs for real against the built
       # extension, except ones marked `<!-- doctest: skip -->` (MPI/NUMA
@@ -132,7 +132,7 @@ jobs:
       - name: Run the doc snippets
         env:
           MATURIN_PEP517_ARGS: --profile dev
-        run: uv run --locked --extra examples python scripts/test-doc-snippets.py
+        run: uv run --extra examples python scripts/test-doc-snippets.py
 
       - uses: actions/upload-artifact@v4
         with:

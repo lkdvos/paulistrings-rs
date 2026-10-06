@@ -31,3 +31,6 @@ docs/book/site/
 .DS_Store
 .idea/
 .vscode/
+
+# uv's resolution is local; dependencies are declared in pyproject.toml.
+uv.lock

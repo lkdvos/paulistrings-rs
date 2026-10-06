@@ -51,7 +51,7 @@ cache-keys = [
   # Features and profile (`--features mpi`, `--profile dev`), so changing them rebuilds too.
   { env = "MATURIN_PEP517_ARGS" },
 ]
-# Lock only for the interpreters and platforms development uses; end users install wheels, not this lock.
+# Resolve only for the interpreters and platforms development uses; end users install wheels.
 environments = [
   "python_version >= '3.11' and sys_platform == 'linux'",
   "python_version >= '3.11' and sys_platform == 'darwin'",

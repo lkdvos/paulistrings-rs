@@ -119,7 +119,7 @@ Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 
 ## Releasing
 
-Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in one step; commit both together, never separately.
+Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version`, `pyproject.toml`'s `[project] version` and the project's entry in `uv.lock` in one step; commit all three together, never separately.
 CI's `version-sync` job fails a PR if the two ever disagree.
 Before tagging: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, the `mpi` CI job, and `python` CI job must all be green on `main`; also check `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils`, which mirrors what docs.rs builds and is not covered by `cargo test`.
 Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag, to catch a wheel-matrix failure before it's user-visible.

@@ -17,6 +17,8 @@ fi
 
 sed -i -E "0,/^version = /s/^version = \".*\"/version = \"$version\"/" Cargo.toml
 sed -i -E "0,/^version = /s/^version = \".*\"/version = \"$version\"/" pyproject.toml
+# uv.lock records the project's own version, and CI's `uv sync --locked` fails if it lags pyproject.toml.
+sed -i -E "/^name = \"paulistrings\"$/{n;s/^version = \".*\"/version = \"$version\"/}" uv.lock
 
-echo "bumped Cargo.toml and pyproject.toml to $version"
-git diff --stat -- Cargo.toml pyproject.toml
+echo "bumped Cargo.toml, pyproject.toml and uv.lock to $version"
+git diff --stat -- Cargo.toml pyproject.toml uv.lock

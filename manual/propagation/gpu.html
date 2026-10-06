@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
+            window.path_to_searchindex_js = "../../searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -197,8 +197,10 @@ A loop of many short calls — a Trotter time series, a cutoff sweep over the sa
 <a href="../../library/module-helpers.html"><code>paulistrings.cuda_available()</code></a> says whether this build can run on a device and one is visible, and <code>device=</code> in a build without the feature raises <code>RuntimeError</code>.</p>
 <h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
 <p>The <code>cuda</code> feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.</p>
-<pre><code class="language-bash">maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
 </code></pre>
+<p>Outside a checkout, the <code>pip install</code> in <a href="../../installation.html">Installation</a> does the same.</p>
 <p>At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
 On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; elsewhere <code>pip install nvidia-cuda-nvrtc-cu12</code> does, with its <code>lib</code> directory added to <code>LD_LIBRARY_PATH</code>:</p>
 <pre><code class="language-bash">pip install nvidia-cuda-nvrtc-cu12

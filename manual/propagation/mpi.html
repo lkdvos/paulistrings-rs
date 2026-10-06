@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
+            window.path_to_searchindex_js = "../../searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -196,17 +196,16 @@ A remote layer is <strong>transfer-bound</strong>, so the lever is fewer bytes (
 <h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
 <p>The <code>mpi</code> feature needs an MPI installation (for <code>mpicc</code>, which rsmpi’s build script probes) and a <code>libclang</code> for its bindgen; the pip build against a cluster’s loaded MPI module is in <a href="../../installation.html">Installation</a>.</p>
 <p><code>mpi4py</code> must be built against the <em>same</em> MPI the extension links; the boundary checks the width of <code>MPI_Comm</code> and refuses a mismatch rather than corrupting a handle.
-On a Flatiron host the <code>python-mpi</code> module provides a matching <code>mpi4py</code>, so a venv created with <code>--system-site-packages</code> from that interpreter sees it:</p>
-<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+In a checkout, <code>scripts/sync-mpi-venv.sh</code> builds a venv <code>./.venv-mpi</code> with uv: the extension with <code>--features mpi</code>, and <code>mpi4py</code> compiled from source against the loaded MPI.</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 
-python3 -m venv --system-site-packages .venv-mpi   # so the module's mpi4py is visible
-.venv-mpi/bin/pip install maturin pytest numpy
-VIRTUAL_ENV=$PWD/.venv-mpi .venv-mpi/bin/maturin develop --release --features mpi \
-    -m crates/paulistrings-py/Cargo.toml
+scripts/sync-mpi-venv.sh          # re-run after any change; --cuda adds the cuda feature
+source .venv-mpi/bin/activate
 </code></pre>
-<p>The built extension carries an rpath to that MPI’s library directory, so <code>import paulistrings</code> works from a shell with no modules loaded.
-<code>scripts/mpi-test.sh --ranks 2,4 --python</code> builds the extension into that venv and runs <code>python/paulistrings/tests/test_mpi.py</code> under <code>mpirun</code> at each rank count.</p>
+<p>The install is non-editable, so the venv keeps the build it was synced from.
+The built extension carries an rpath to that MPI’s library directory, so <code>import paulistrings</code> works from a shell with no modules loaded.
+<code>scripts/mpi-test.sh --ranks 2,4 --python</code> syncs that venv and runs its installed <code>test_mpi.py</code> under <code>mpirun</code> at each rank count.</p>
 <h2 id="python"><a class="header" href="#python">Python</a></h2>
 <p>The snippets on this page are skipped by the doc checker because they need an <code>mpi</code> build and an MPI launcher.</p>
 <!-- doctest: skip -->

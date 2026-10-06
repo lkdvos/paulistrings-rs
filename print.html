@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-533b9f81.js";
+            window.path_to_searchindex_js = "searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -316,18 +316,14 @@ export LIBCLANG_PATH=$(llvm-config --libdir)
 pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda,mpi"
 </code></pre>
-<p>Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates <code>./.venv</code> and builds the extension into it:</p>
+<p>Building from source (for contributors, or platforms without a release wheel) uses <a href="https://docs.astral.sh/uv/">uv</a>, which creates <code>./.venv</code> from the locked dependencies and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
-./scripts/setup.sh
-source .venv/bin/activate
+./scripts/setup.sh                        # uv sync, plus the examples extra
+uv run pytest python/paulistrings/tests
 </code></pre>
-<p><code>scripts/setup.sh</code> expects a Python 3.11 at <code>/usr/bin/python3.11</code>; point it
-elsewhere with <code>PYTHON=$(which python3.11) ./scripts/setup.sh</code>. The Rust
-toolchain is pinned in <code>rust-toolchain.toml</code> (1.94.0), so no toolchain choice is
-needed. After any change to the Rust sources, rebuild:</p>
-<pre><code class="language-bash">maturin develop --release -m crates/paulistrings-py/Cargo.toml
-</code></pre>
+<p>The Python version comes from <code>.python-version</code> and the Rust toolchain is pinned in <code>rust-toolchain.toml</code> (1.94.0), so neither needs choosing.
+<code>uv run</code> rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated <code>.venv</code>, <code>uv sync</code> does the same.</p>
 <p>Build <code>--release</code>. The release profile uses <code>lto = "fat"</code> and
 <code>codegen-units = 1</code>; a debug build of this workload is dramatically slower, and
 never worth benchmarking.</p>
@@ -336,9 +332,10 @@ The optional extras matter for the example suite and the cross-library
 benchmarks, and also cover <code>stim</code>/<code>qiskit</code>, which <code>interop.circuit_from_stim</code>,
 <code>interop.circuit_from_qiskit</code> and <code>interop.stabilizers_from_stim</code> import lazily
 on first use — install one of these extras before reaching for those:</p>
-<pre><code class="language-bash">pip install -e ".[examples]"   # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
+<pre><code class="language-bash">uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
+uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
 </code></pre>
+<p><code>uv sync</code> removes whatever an extra it is not given had installed, so name every extra each time; <code>uv run</code> only adds.</p>
 <p>With the package installed, the <a href="#manual">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
 <a href="#first-propagation">First propagation</a> carries that same run further, into term inspection and a validation sweep.
 Building for MPI is covered separately in <a href="#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher, and building for a GPU in <a href="#building-from-source-1">CUDA devices</a>.</p>
@@ -1393,17 +1390,16 @@ A remote layer is <strong>transfer-bound</strong>, so the lever is fewer bytes (
 <h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
 <p>The <code>mpi</code> feature needs an MPI installation (for <code>mpicc</code>, which rsmpi’s build script probes) and a <code>libclang</code> for its bindgen; the pip build against a cluster’s loaded MPI module is in <a href="#installation">Installation</a>.</p>
 <p><code>mpi4py</code> must be built against the <em>same</em> MPI the extension links; the boundary checks the width of <code>MPI_Comm</code> and refuses a mismatch rather than corrupting a handle.
-On a Flatiron host the <code>python-mpi</code> module provides a matching <code>mpi4py</code>, so a venv created with <code>--system-site-packages</code> from that interpreter sees it:</p>
-<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+In a checkout, <code>scripts/sync-mpi-venv.sh</code> builds a venv <code>./.venv-mpi</code> with uv: the extension with <code>--features mpi</code>, and <code>mpi4py</code> compiled from source against the loaded MPI.</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 
-python3 -m venv --system-site-packages .venv-mpi   # so the module's mpi4py is visible
-.venv-mpi/bin/pip install maturin pytest numpy
-VIRTUAL_ENV=$PWD/.venv-mpi .venv-mpi/bin/maturin develop --release --features mpi \
-    -m crates/paulistrings-py/Cargo.toml
+scripts/sync-mpi-venv.sh          # re-run after any change; --cuda adds the cuda feature
+source .venv-mpi/bin/activate
 </code></pre>
-<p>The built extension carries an rpath to that MPI’s library directory, so <code>import paulistrings</code> works from a shell with no modules loaded.
-<code>scripts/mpi-test.sh --ranks 2,4 --python</code> builds the extension into that venv and runs <code>python/paulistrings/tests/test_mpi.py</code> under <code>mpirun</code> at each rank count.</p>
+<p>The install is non-editable, so the venv keeps the build it was synced from.
+The built extension carries an rpath to that MPI’s library directory, so <code>import paulistrings</code> works from a shell with no modules loaded.
+<code>scripts/mpi-test.sh --ranks 2,4 --python</code> syncs that venv and runs its installed <code>test_mpi.py</code> under <code>mpirun</code> at each rank count.</p>
 <h2 id="python-1"><a class="header" href="#python-1">Python</a></h2>
 <p>The snippets on this page are skipped by the doc checker because they need an <code>mpi</code> build and an MPI launcher.</p>
 <!-- doctest: skip -->
@@ -1554,8 +1550,10 @@ A loop of many short calls — a Trotter time series, a cutoff sweep over the sa
 <a href="#module-helpers"><code>paulistrings.cuda_available()</code></a> says whether this build can run on a device and one is visible, and <code>device=</code> in a build without the feature raises <code>RuntimeError</code>.</p>
 <h2 id="building-from-source-1"><a class="header" href="#building-from-source-1">Building from source</a></h2>
 <p>The <code>cuda</code> feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.</p>
-<pre><code class="language-bash">maturin develop --release --features cuda -m crates/paulistrings-py/Cargo.toml
+<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
 </code></pre>
+<p>Outside a checkout, the <code>pip install</code> in <a href="#installation">Installation</a> does the same.</p>
 <p>At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
 On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; elsewhere <code>pip install nvidia-cuda-nvrtc-cu12</code> does, with its <code>lib</code> directory added to <code>LD_LIBRARY_PATH</code>:</p>
 <pre><code class="language-bash">pip install nvidia-cuda-nvrtc-cu12
@@ -1947,10 +1945,9 @@ under truncation. Named dependencies rather than silent approximations: where
 a reference was not reachable, the page says so and what it would cost.
 <a href="#validating-a-result">Validating a result</a> is that panel as a recipe, for your own runs.</p>
 <h2 id="reproducing-a-showcase"><a class="header" href="#reproducing-a-showcase">Reproducing a showcase</a></h2>
-<pre><code class="language-bash">./scripts/setup.sh
+<pre><code class="language-bash">./scripts/setup.sh                # .venv with the examples extra
 source .venv/bin/activate
-pip install -e ".[examples]"
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples          # after any Rust change: rebuilds the extension
 
 RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py
@@ -2798,8 +2795,7 @@ re-implementing it, and a test asserts it is the same object.
 <a href="#apply-the-plateau-criterion">Validating a result</a> states it as user guidance, with the sweep that feeds it.</p>
 <h2 id="reproducing-a-benchmark"><a class="header" href="#reproducing-a-benchmark">Reproducing a benchmark</a></h2>
 <pre><code class="language-bash">./scripts/setup.sh &amp;&amp; source .venv/bin/activate
-pip install -e ".[examples,bench]"
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples --extra bench   # also rebuilds the extension after a Rust change
 
 RAYON_NUM_THREADS=1 pytest benchmarks/python/bench_a_clifford.py --benchmark-only
 RAYON_NUM_THREADS=1 python benchmarks/python/bench_b_theta_sweep.py --validate-convergence

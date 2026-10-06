@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-533b9f81.js";
+            window.path_to_searchindex_js = "searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -212,18 +212,14 @@ export LIBCLANG_PATH=$(llvm-config --libdir)
 pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda,mpi"
 </code></pre>
-<p>Building from source (for contributors, or platforms without a release wheel) uses a setup script that creates <code>./.venv</code> and builds the extension into it:</p>
+<p>Building from source (for contributors, or platforms without a release wheel) uses <a href="https://docs.astral.sh/uv/">uv</a>, which creates <code>./.venv</code> from the locked dependencies and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
-./scripts/setup.sh
-source .venv/bin/activate
+./scripts/setup.sh                        # uv sync, plus the examples extra
+uv run pytest python/paulistrings/tests
 </code></pre>
-<p><code>scripts/setup.sh</code> expects a Python 3.11 at <code>/usr/bin/python3.11</code>; point it
-elsewhere with <code>PYTHON=$(which python3.11) ./scripts/setup.sh</code>. The Rust
-toolchain is pinned in <code>rust-toolchain.toml</code> (1.94.0), so no toolchain choice is
-needed. After any change to the Rust sources, rebuild:</p>
-<pre><code class="language-bash">maturin develop --release -m crates/paulistrings-py/Cargo.toml
-</code></pre>
+<p>The Python version comes from <code>.python-version</code> and the Rust toolchain is pinned in <code>rust-toolchain.toml</code> (1.94.0), so neither needs choosing.
+<code>uv run</code> rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated <code>.venv</code>, <code>uv sync</code> does the same.</p>
 <p>Build <code>--release</code>. The release profile uses <code>lto = "fat"</code> and
 <code>codegen-units = 1</code>; a debug build of this workload is dramatically slower, and
 never worth benchmarking.</p>
@@ -232,9 +228,10 @@ The optional extras matter for the example suite and the cross-library
 benchmarks, and also cover <code>stim</code>/<code>qiskit</code>, which <code>interop.circuit_from_stim</code>,
 <code>interop.circuit_from_qiskit</code> and <code>interop.stabilizers_from_stim</code> import lazily
 on first use — install one of these extras before reaching for those:</p>
-<pre><code class="language-bash">pip install -e ".[examples]"   # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-pip install -e ".[bench]"      # pytest-benchmark, qiskit, openfermion, stim
+<pre><code class="language-bash">uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
+uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
 </code></pre>
+<p><code>uv sync</code> removes whatever an extra it is not given had installed, so name every extra each time; <code>uv run</code> only adds.</p>
 <p>With the package installed, the <a href="manual/index.html">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
 <a href="examples/first-propagation.html">First propagation</a> carries that same run further, into term inspection and a validation sweep.
 Building for MPI is covered separately in <a href="manual/propagation/mpi.html#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher, and building for a GPU in <a href="manual/propagation/gpu.html#building-from-source">CUDA devices</a>.</p>

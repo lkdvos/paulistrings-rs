@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
+            window.path_to_searchindex_js = "../../searchindex-22929a63.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -209,10 +209,9 @@ under truncation. Named dependencies rather than silent approximations: where
 a reference was not reachable, the page says so and what it would cost.
 <a href="../../manual/propagation/validation.html">Validating a result</a> is that panel as a recipe, for your own runs.</p>
 <h2 id="reproducing-a-showcase"><a class="header" href="#reproducing-a-showcase">Reproducing a showcase</a></h2>
-<pre><code class="language-bash">./scripts/setup.sh
+<pre><code class="language-bash">./scripts/setup.sh                # .venv with the examples extra
 source .venv/bin/activate
-pip install -e ".[examples]"
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples          # after any Rust change: rebuilds the extension
 
 RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py

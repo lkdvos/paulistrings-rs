@@ -114,27 +114,25 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
 
       # Debug-profile build, same as the `python` CI job: these snippets check
-      # correctness, not performance. `stim`/`qiskit` cover the interop how-to.
+      # correctness, not performance. The examples extra brings the
+      # `stim`/`qiskit` the interop how-to needs. MATURIN_PEP517_ARGS is one of
+      # uv's cache keys, so both steps set it.
       - name: Build the Python extension
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install 'maturin>=1.5,<2.0' 'numpy>=1.24' stim qiskit
-          maturin develop -m crates/paulistrings-py/Cargo.toml
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
+        run: uv sync --locked --extra examples
 
       # Every ```python fence in the book runs for real against the built
       # extension, except ones marked `<!-- doctest: skip -->` (MPI/NUMA
       # snippets this runner has no hardware for, and case-study excerpts
       # already covered by `pytest examples/tests`).
       - name: Run the doc snippets
-        run: |
-          source .venv/bin/activate
-          python scripts/test-doc-snippets.py
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
+        run: uv run --locked --extra examples python scripts/test-doc-snippets.py
 
       - uses: actions/upload-artifact@v4
         with:

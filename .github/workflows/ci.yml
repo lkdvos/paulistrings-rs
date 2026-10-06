@@ -80,22 +80,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # mpi4py has no wheel for the runner's Open MPI, so it compiles against
-      # the libopenmpi-dev installed above (~1-2 min). `continue-on-error`
+      - uses: astral-sh/setup-uv@v6
+      # mpi4py is never taken as a wheel (`no-binary-package`), so it compiles
+      # against the libopenmpi-dev installed above (~1-2 min). `continue-on-error`
       # plus the `outcome` guard below: a broken mpi4py build skips the Python
       # leg with a visible red X on this step rather than failing the job,
       # because the Rust net above already covers the transport.
       - id: mpi4py
-        name: build the MPI venv (mpi4py compiles here)
+        name: build the MPI venv's dependencies (mpi4py compiles here)
         continue-on-error: true
         run: |
-          python -m venv .venv-mpi
-          .venv-mpi/bin/pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'numpy>=1.24' 'mpi4py>=4,<5'
+          UV_PROJECT_ENVIRONMENT=.venv-mpi uv sync --locked --extra mpi --no-install-project --python "$(command -v python3)"
           .venv-mpi/bin/python -c 'import mpi4py; print(mpi4py.__version__)'
+      # Builds the extension into ./.venv-mpi through scripts/sync-mpi-venv.sh, in the dev profile.
       - name: the bindings' MPI net, at 2 and 4 ranks
         if: steps.mpi4py.outcome == 'success'
-        env:
-          VIRTUAL_ENV: ${{ github.workspace }}/.venv-mpi
         run: scripts/mpi-test.sh --ranks 2,4 --oversubscribe --python --no-rust
       - name: say so when the Python leg was skipped
         if: steps.mpi4py.outcome != 'success'
@@ -150,15 +149,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # The interpreter is the one `.python-version` names; `--locked` also fails the job if uv.lock is stale.
+      - uses: astral-sh/setup-uv@v6
       # Debug-profile build: the tests check correctness, not performance, and skipping the release link keeps the job fast.
       # The release codegen path is covered by the Rust test job.
-      - run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install 'maturin>=1.5,<2.0' 'pytest>=7' 'numpy>=1.24'
-          maturin develop -m crates/paulistrings-py/Cargo.toml
-          pytest python/paulistrings/tests -q
-          pytest examples/tests benchmarks/python/tests -q
+      # MATURIN_PEP517_ARGS is one of uv's cache keys, so it must be the same for every uv command in the job.
+      - env:
+          MATURIN_PEP517_ARGS: --profile dev
+        run: |
+          uv sync --locked
+          uv run --locked pytest python/paulistrings/tests -q
+          uv run --locked pytest examples/tests benchmarks/python/tests -q

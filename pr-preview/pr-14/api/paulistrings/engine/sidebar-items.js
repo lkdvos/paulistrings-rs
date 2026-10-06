@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_SMALL_SUM_THRESHOLD"],"enum":["Direction","EngineSelection"],"fn":["default_min_buckets","propagate","propagate_with_options","propagate_with_scratch","propagate_with_scratch_and_options"],"mod":["bucketed","partitioned"],"struct":["PropagateOptions"]};

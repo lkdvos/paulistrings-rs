@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-b86f2ee9.js"></script>
+        <script src="../../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,12 +207,17 @@ It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the er
 <code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within <code>k</code>, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
 <strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code> and keeps whole octaves from the top down while they fit in <code>n</code>, so at most <code>n</code> terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="partitions.html">NUMA partitions</a> and <a href="mpi.html">MPI ranks</a>.</p>
+<p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
+Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+It is unbiased only for weight-diagonal read-outs such as <a href="../measurements.html#echo"><code>diagonal_echo</code></a>; average many seeds and report the standard error.
+<code>PropagationStats.collapses</code> counts the draws.</p>
+<pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
+</code></pre>
 <p>Policies compose with <code>&amp;</code> (keep when both agree) and <code>|</code> (keep when either does):</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>
-<p>Keep a <code>coeff</code> threshold above roughly <code>1e-12</code> on deep circuits.
-<code>cos(π/2)</code> evaluates to <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch alongside the real one, and with no threshold — or one below the residual — those branches fan out without bound and the run pays for terms that carry no physics.
+<p>A rotation by a multiple of <code>π/2</code> is an exact Clifford, one term with no residual branch, so a Clifford circuit needs no threshold.
 <code>policy=None</code> disables truncation entirely, dropping only exact zeros; it is the exact reference where the problem is small enough to afford it (<a href="settings.html#untruncated-runs">Untruncated runs</a>).</p>
 <p>Whichever policy you pick, the cutoff is a guess until it has been swept.
 The full policy table is in the <a href="../../library/truncation.html">Library</a>.</p>

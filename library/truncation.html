@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-b86f2ee9.js"></script>
+        <script src="../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation-policies"><a class="header" href="#truncation-policies">Truncation policies</a></h1>
-<p>All four live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
+<p>All five live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -194,6 +194,7 @@
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
 <tr><td><code>truncation.topn(k)</code></td><td>at most <code>k</code> terms, largest <code>|c|</code> first; exact, no partitioned form</td></tr>
 <tr><td><code>truncation.approx_topn(k)</code></td><td>approximately <code>k</code> terms; partition/comm-safe</td></tr>
+<tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
 </div>
@@ -214,6 +215,11 @@
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="../manual/propagation/truncation.html#choosing-a-policy">Truncation</a> for guidance and <a href="../manual/propagation/truncation.html">Truncation</a> for the mechanism.</p>
+<h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>
+<p><code>collapse_sample(cache, seed)</code> is one Monte Carlo trajectory: the draw at the <code>k</code>-th layer pass is a pure function of <code>(seed, k)</code>, independent of the thread count, so the same arguments repeat a trajectory.
+The returned object carries the trajectory’s position, so propagating with it again (or with a policy composed from it) continues the sequence; call the factory again to restart.
+At one partition the trajectory is the unpartitioned one; across partition counts only its distribution agrees.
+<code>PropagationStats.collapses</code> counts one call’s collapses.</p>
 
                     </main>
 

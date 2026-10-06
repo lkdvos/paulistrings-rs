@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-b86f2ee9.js"></script>
+        <script src="../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -196,6 +196,7 @@
 <tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="propagate.html#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
 <tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
+<tr><td><code>paulistrings.diagonal_echo(hist, delta)</code></td><td><code>float</code>, the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code> of a <a href="measurement.html#anticommute_histogramsites-axisx-commnone"><code>PauliSum.anticommute_histogram</code></a> <code>w</code>; <code>nan</code> when it is all zero</td></tr>
 </tbody>
 </table>
 </div>

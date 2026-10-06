@@ -37,10 +37,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-b86f2ee9.js"></script>
+        <script src="toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -907,12 +907,17 @@ It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the er
 <code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within <code>k</code>, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
 <strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code> and keeps whole octaves from the top down while they fit in <code>n</code>, so at most <code>n</code> terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a>.</p>
+<p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
+Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+It is unbiased only for weight-diagonal read-outs such as <a href="#echo"><code>diagonal_echo</code></a>; average many seeds and report the standard error.
+<code>PropagationStats.collapses</code> counts the draws.</p>
+<pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
+</code></pre>
 <p>Policies compose with <code>&amp;</code> (keep when both agree) and <code>|</code> (keep when either does):</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>
-<p>Keep a <code>coeff</code> threshold above roughly <code>1e-12</code> on deep circuits.
-<code>cos(π/2)</code> evaluates to <code>6.123233995736766e-17</code>, not zero, so at a Clifford angle every rotation leaves a numerically dead residual branch alongside the real one, and with no threshold — or one below the residual — those branches fan out without bound and the run pays for terms that carry no physics.
+<p>A rotation by a multiple of <code>π/2</code> is an exact Clifford, one term with no residual branch, so a Clifford circuit needs no threshold.
 <code>policy=None</code> disables truncation entirely, dropping only exact zeros; it is the exact reference where the problem is small enough to afford it (<a href="#untruncated-runs">Untruncated runs</a>).</p>
 <p>Whichever policy you pick, the cutoff is a guess until it has been swept.
 The full policy table is in the <a href="#truncation-policies">Library</a>.</p>
@@ -1242,7 +1247,7 @@ print(len(exact), "terms untruncated")
 </code></pre>
 <pre><code class="language-text">5 terms untruncated
 </code></pre>
-<p>Afford it deliberately: term growth without a filter is exponential in depth for a generic circuit, and at a Clifford angle the numerically dead residual branches described under <a href="#choosing-a-policy">Choosing a policy</a> fan out without bound.
+<p>Afford it deliberately: term growth without a filter is exponential in depth for a generic circuit.
 Estimate <code>peak_terms</code> from a prefix and the bytes-per-term arithmetic above before running a deep circuit untruncated, and expect the untruncated run to be the most expensive point of any sweep by a wide margin.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="inside-the-engine"><a class="header" href="#inside-the-engine">Inside the engine</a></h1>
@@ -1435,6 +1440,14 @@ evolved = observable.propagate(circuit, policy, comm=comm, partition_row_blocks=
 <p>Both kwargs work the same way under <code>partitions=</code>, and the two are alternatives to each other.
 The block count must equal the rank count, the blocks must be disjoint, and they must be identical on every rank — the split is a local filter each rank computes for itself.
 A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term supported inside one block belongs to that block’s rank.</p>
+<p><code>partition_row_exclude=</code> keeps the random draw but forbids chosen coordinates, as a dict of <code>"x"</code> and <code>"z"</code> qubit lists:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">everything = list(range(observable.num_qubits))
+evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+</code></pre>
+<p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
+The distributed <a href="#echo">echo read-out</a> <code>rotated_overlap</code> requires rows that skip the coordinates it flips, the x-bits of its sites for <code>axis="x"</code>.
+It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
 <table>
@@ -1762,6 +1775,23 @@ print(evolved.identity_coefficient())
 </code></pre>
 <p>A <code>num_qubits</code> mismatch between the two sums is a <code>ValueError</code>; there is no implicit padding.
 Both signatures are under <a href="#overlapother">Measurement</a>.</p>
+<h2 id="echo"><a class="header" href="#echo">Echo read-outs</a></h2>
+<p>An echo experiment perturbs the evolved observable <code>A</code> by <code>V = ⊗_q exp(-iδ G_q)</code>, one single-qubit Pauli generator <code>G_q</code> per site, and reads <code>2^-n tr(A V† A V)</code>.
+<code>rotated_overlap(sites, delta, axis)</code> computes it exactly without building <code>V† A V</code>, whose size grows as <code>2^k</code> in the number of sites a string anticommutes with.
+<code>anticommute_histogram(sites, axis)</code> is the cheaper read-out: <code>w[n]</code> is the weight <code>Σ|c|²</code> of the strings that anticommute with exactly <code>n</code> of the generators, and <code>diagonal_echo(w, delta) = Σ_n w[n] cos(2δ)^n / Σ_n w[n]</code> is the echo with every cross term between distinct strings dropped.</p>
+<pre><code class="language-python">from paulistrings import PauliSum, diagonal_echo
+
+a = PauliSum.from_strings({"XX": 0.6, "YY": 0.8}, num_qubits=2)
+print(diagonal_echo(a.anticommute_histogram([0, 1], axis="z"), 0.3))
+print(a.rotated_overlap([0, 1], 0.3, axis="z"))
+</code></pre>
+<pre><code class="language-text">0.6811788772383368
+0.9872471550895336
+</code></pre>
+<p>The gap is the <code>XX</code>–<code>YY</code> cross term, <code>2 · 0.6 · 0.8 · sin²(0.6)</code>, which the diagonal read-out omits by construction.
+<code>axis</code> is <code>"x"</code> or <code>"z"</code>; both methods take <code>comm=</code> for a sum split over MPI ranks and return the global value on every rank.
+The distributed <code>rotated_overlap</code> needs partition rows that never read a flipped coordinate, which <a href="#partition-row-selection"><code>partition_row_exclude</code></a> arranges.
+<a href="#b8--operator-loschmidt-echo">Showcase B8</a> uses both on a 56-qubit Loschmidt echo.</p>
 <h2 id="from-a-number-to-a-result"><a class="header" href="#from-a-number-to-a-result">From a number to a result</a></h2>
 <p>A single expectation value at a single cutoff is a number, not a result.
 The truncation that made the sum tractable deleted terms carrying signs, so the value can sit on either side of the truth and need not move monotonically as the cutoff tightens — <a href="#no-variational-bound">No variational bound</a> is the statement and the measured cases.
@@ -1903,6 +1933,7 @@ A flat answer over a <em>changing</em> sum is not evidence of convergence, and o
 <tr><td><a href="#b5--hybrid-depth-reduction">B5 Operator backpropagation</a></td><td>hybrid depth reduction: back-propagate the tail classically, hand a QPU the shorter front circuit and an evolved observable</td><td>qiskit-Aer statevector, gap 1.7·10⁻¹⁶; task file round-trip gap exactly <code>0.0</code></td><td>~3 s</td></tr>
 <tr><td><a href="#b6--resource-probes">B6 Resource probes</a></td><td>difficulty of the evolved operator: Pauli-spectrum entropy (the cost model for <em>this</em> engine) against operator entanglement (the cost model for MPO methods)</td><td>brute force over all <code>4ⁿ</code> traces and a dense SVD; every gap ≤ 8.9·10⁻¹⁶</td><td>under a minute</td></tr>
 <tr><td><a href="#b7--stabilizer-state-preparation">B7 Stabilizer-prep</a></td><td>stim prepares a 36-qubit 2D cluster state, a non-Clifford tail is propagated, and the expectation is contracted against the stabilizer state in <code>O(m·n²/64)</code>, avoiding a 1.0 TiB state vector</td><td>dense statevector and a projector from the generators alone at <code>n ≤ 12</code>, plus qiskit Aer; worst gap 2.2·10⁻¹⁵</td><td>116 s, 10.2 GiB peak RSS (<code>--quick</code>: 40 s, 1.5 GiB)</td></tr>
+<tr><td><a href="#b8--operator-loschmidt-echo">B8 Operator Loschmidt echo</a></td><td>the 56-qubit ibm_boston echo of arXiv:2607.25998 by collapse-to-one PP-MC, single-node and over MPI ranks</td><td>the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10</td><td>one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB</td></tr>
 </tbody>
 </table>
 </div>
@@ -1926,6 +1957,7 @@ RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py
 RAYON_NUM_THREADS=1 python examples/b5_operator_backpropagation/run_b5.py
 RAYON_NUM_THREADS=1 python examples/b6_resource_probes/run_b6.py
 RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py
+RAYON_NUM_THREADS=8 python examples/b8_ole/run_b8.py --alpha 0.15 --L 6 --cache 5e6 --seeds 0:4 --out results/b8
 </code></pre>
 <p>Each script rewrites every figure and JSON file next to itself. Each showcase
 also has a CI-visible correctness gate under <code>examples/tests/</code> that
@@ -2665,6 +2697,46 @@ every artifact in the showcase directory.</p>
 and its committed artifacts — <code>theta_sweep.csv</code>, <code>scaling.csv</code>,
 <code>prep_depth.csv</code>, <code>validation_b7.json</code>, <code>results_b7.json</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="b8--operator-loschmidt-echo"><a class="header" href="#b8--operator-loschmidt-echo">B8 — Operator Loschmidt echo</a></h1>
+<p><em>Source: <code>examples/b8_ole/</code></em></p>
+<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by the paper's hybrid Pauli-propagation Monte Carlo (PP-MC), with caches that extend past one node through the MPI engine.</p>
+
+<h2 id="the-circuit"><a class="header" href="#the-circuit">The circuit</a></h2>
+<p>The circuit is the Quantum Advantage Tracker’s <code>operator_loschmidt_echo_56x1488</code>: a CZ kicked-Ising Floquet echo <code>U V_δ U†</code> on a heavy-hex patch.
+Its 11 scattering qubits carry an <code>rx</code> angle shifted by <code>η = 3πα/2</code>.
+<code>echo_half(L, η)</code> rebuilds the measured half <code>C</code> for any depth and reproduces the six vendored tracker files gate for gate.
+The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C†OC</code>, <code>O = Z^{⊗12}</code>, and <code>V_δ = ⊗ e^{-iδX}</code> on 35 qubits with <code>δ = 0.3</code>.</p>
+<h2 id="pp-mc"><a class="header" href="#pp-mc">PP-MC</a></h2>
+<!-- doctest: skip -->
+<pre><code class="language-python">from paulistrings import truncation
+policy = truncation.collapse_sample(cache=500_000_000, seed=s)
+A = O.propagate(C, policy, direction="heisenberg")
+S = diagonal_echo(A.anticommute_histogram(sites, axis="x"), 0.3)
+</code></pre>
+<ul>
+<li><code>collapse_sample</code> propagates exactly until a gate leaves more than <code>cache</code> strings.</li>
+<li>It then draws one string with probability <code>b_P²/Σb²</code> and restarts from it.</li>
+<li>The last block is kept whole.</li>
+<li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
+<li><code>rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
+<li>Under <code>comm=</code> both read-outs are collective, and <code>collapse_sample</code> draws the same string whatever the thread count.</li>
+</ul>
+<h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
+<p>One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>cache</th><th>wall</th><th>peak RSS</th></tr>
+</thead>
+<tbody>
+<tr><td>5e6</td><td>13 s</td><td>1.0 GB</td></tr>
+<tr><td>5e7</td><td>131 s</td><td>3.9 GB</td></tr>
+</tbody>
+</table>
+</div>
+<p>For comparison, the paper’s Table VI reports about 8 minutes on 10 cores and 8–10 GB at cache 5e7.
+<code>scripts/slurm/ole-ppmc-disbatch.sbatch</code> runs the 800-trajectory sweep, and <code>scripts/slurm/ole-mpi.sbatch</code> runs caches beyond one node’s memory.</p>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
 <p>Five benchmarks, each with a setup, an oracle, and a result.
 Two of the five results are negative.</p>
@@ -2766,11 +2838,9 @@ seeded fixtures built outside the timed region.</p>
 <p>The cutoff is <code>1e-8</code>, not a dyadic value. This engine drops <code>|c| &lt;= eps</code>
 while <code>PauliPropagation.jl</code> keeps <code>|c| == eps</code> — a genuine, measured
 <a href="#the-one-real-divergence">cross-engine divergence</a>. Clifford
-angles produce exact dyadic coefficients (<code>sin(π/2) == 1.0</code>, and <code>cos(π/2)</code> is
-the tiny residual), so a dyadic cutoff is exactly where that boundary is likely
-to be hit bit-for-bit. <code>1e-8</code> is far from any dyadic value and nine orders of
-magnitude above the <code>~6.1e-17</code> residual being truncated away, so it changes
-nothing about which branch survives.</p>
+angles produce exact dyadic coefficients, so a dyadic cutoff is exactly where
+that boundary is likely to be hit bit-for-bit. <code>1e-8</code> is far from any dyadic
+value, so it changes nothing about which branch survives.</p>
 <h2 id="oracle"><a class="header" href="#oracle">Oracle</a></h2>
 <p><code>stim</code>, at the Clifford point, exact: the tableau simulation gives the ±1
 integer directly. Every <code>paulistrings</code> entry also asserts the Clifford invariant
@@ -3005,9 +3075,7 @@ buy the cutoff reach that reached 1.0·10⁸ terms at θ_h = 0.2.</li>
 <li>Timings were taken on a shared workstation with other work running: the
 same weight-10 configuration measured 13.8 s and 28.6 s minutes apart.
 Term counts, expectation values and parity outcomes are load-independent.</li>
-<li><a href="#choosing-a-policy"><code>min_abs_coeff ≥ 1e-12</code></a> everywhere: <code>cos(π/2) == 6.123233995736766e-17</code>,
-not zero, so a Clifford-angle rotation leaves a numerically dead residual
-branch, and below that floor an untruncated propagation fans out unbounded.</li>
+<li><a href="#choosing-a-policy"><code>min_abs_coeff ≥ 1e-12</code></a> everywhere.</li>
 <li>Two derived fields in the committed <code>summary.json</code> were recomputed from
 the recorded measurements; that file’s <code>notes</code> field says so.</li>
 </ul>
@@ -4226,10 +4294,10 @@ and its committed <code>results.json</code>.</p>
 <tr><td><a href="#paulisum">PauliSum</a></td><td>constructors, accessors, save/load/import pointers</td></tr>
 <tr><td><a href="#circuit">Circuit</a></td><td>gate/noise methods, composition, one-gate-per-channel and rotation-angle conventions</td></tr>
 <tr><td><a href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></td><td>full signatures, engine/bucket/partition knobs, stats field tables</td></tr>
-<tr><td><a href="#truncation-policies">Truncation policies</a></td><td><code>coeff</code>/<code>weight</code>/<code>topn</code>/<code>approx_topn</code>, <code>&amp;</code>/<code>|</code> combinators</td></tr>
+<tr><td><a href="#truncation-policies">Truncation policies</a></td><td><code>coeff</code>/<code>weight</code>/<code>topn</code>/<code>approx_topn</code>/<code>collapse_sample</code>, <code>&amp;</code>/<code>|</code> combinators</td></tr>
 <tr><td><a href="#direction-semantics">Direction semantics</a></td><td><code>"forward"</code>/<code>"heisenberg"</code>, push-order note</td></tr>
-<tr><td><a href="#measurement">Measurement</a></td><td><code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>, <code>identity_coefficient</code></td></tr>
-<tr><td><a href="#module-helpers">Module helpers</a></td><td><code>numa_nodes</code>, <code>mpi_available</code>, <code>DEFAULT_SMALL_SUM_THRESHOLD</code>, <code>reset_log_cache</code></td></tr>
+<tr><td><a href="#measurement">Measurement</a></td><td><code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>, <code>identity_coefficient</code>, <code>anticommute_histogram</code>, <code>rotated_overlap</code></td></tr>
+<tr><td><a href="#module-helpers">Module helpers</a></td><td><code>numa_nodes</code>, <code>mpi_available</code>, <code>DEFAULT_SMALL_SUM_THRESHOLD</code>, <code>reset_log_cache</code>, <code>diagonal_echo</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -4481,14 +4549,14 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, engine=None,
                small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, comm=None, result="gather",
-               device=None) -&gt; PauliSum
+               partition_row_blocks=None, partition_row_exclude=None, comm=None,
+               result="gather", device=None) -&gt; PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
                           small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
                           partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, comm=None, result="gather",
-                          device=None)
+                          partition_row_blocks=None, partition_row_exclude=None, comm=None,
+                          result="gather", device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -4511,8 +4579,9 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>pin_memory</code></td><td><code>bool</code></td><td><code>True</code></td><td>binds each partition’s allocations to its node</td></tr>
 <tr><td><code>partition_row_seed</code></td><td><code>int | None</code></td><td><code>None</code> = the sum’s own hash seed</td><td>which GF(2) rows decide a term’s partition</td></tr>
 <tr><td><code>partition_row_blocks</code></td><td><code>list[list[int]] | None</code></td><td><code>None</code></td><td>explicit disjoint qubit blocks, one per partition, instead of a seeded draw</td></tr>
+<tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
-<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share</td></tr>
+<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, which remembers its rows for the <code>comm=</code> <a href="#under-comm">echo read-outs</a></td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>
@@ -4533,7 +4602,8 @@ The GIL is released for the duration of both calls.</p>
 </table>
 </div>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
-<p><code>partition_row_seed</code> and <code>partition_row_blocks</code> are mutually exclusive; either needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
+<p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
+<code>partition_row_exclude={"x": sites}</code> keeps every class <code>rotated_overlap(sites, axis="x")</code> groups on one rank; <code>{"z": sites}</code> does the same for <code>axis="z"</code>.
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
@@ -4606,6 +4676,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
 <tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
+<tr><td><code>.collapses</code></td><td><code>int | None</code></td><td>collapses a <code>truncation.collapse_sample</code> made during this call, <code>None</code> without one; under <code>comm=</code> rank 0’s count, all-reduced so every rank reports it</td></tr>
 </tbody>
 </table>
 </div>
@@ -4634,7 +4705,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <p>Under <code>comm=</code>, a distributed run’s per-layer lists (<code>terms_in</code>, <code>terms_out</code>, <code>rows_exported</code>, <code>bytes_exported</code>, <code>nanos</code>) hold this rank’s own entry only — nothing gathers the group’s counters, since that would add a collective per layer for a diagnostic. Reduce over <code>comm</code> for the group’s picture; <code>imbalance</code> is always <code>1.0</code> in that case.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation-policies"><a class="header" href="#truncation-policies">Truncation policies</a></h1>
-<p>All four live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
+<p>All five live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -4645,6 +4716,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
 <tr><td><code>truncation.topn(k)</code></td><td>at most <code>k</code> terms, largest <code>|c|</code> first; exact, no partitioned form</td></tr>
 <tr><td><code>truncation.approx_topn(k)</code></td><td>approximately <code>k</code> terms; partition/comm-safe</td></tr>
+<tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
 </div>
@@ -4665,6 +4737,11 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="#choosing-a-policy">Truncation</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
+<h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>
+<p><code>collapse_sample(cache, seed)</code> is one Monte Carlo trajectory: the draw at the <code>k</code>-th layer pass is a pure function of <code>(seed, k)</code>, independent of the thread count, so the same arguments repeat a trajectory.
+The returned object carries the trajectory’s position, so propagating with it again (or with a policy composed from it) continues the sequence; call the factory again to restart.
+At one partition the trajectory is the unpartitioned one; across partition counts only its distribution agrees.
+<code>PropagationStats.collapses</code> counts one call’s collapses.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="direction-semantics"><a class="header" href="#direction-semantics">Direction semantics</a></h1>
 <p><code>direction=</code> selects which conjugation <code>propagate</code>/<code>propagate_with_stats</code> performs.</p>
@@ -4726,6 +4803,31 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <p>Hilbert–Schmidt overlap <code>tr(self* . other) / 2^n</code>, i.e. <code>sum(conj(a_i) * b_i)</code> over shared keys. Both sums must share <code>num_qubits</code>.</p>
 <h2 id="identity_coefficient"><a class="header" href="#identity_coefficient"><code>identity_coefficient()</code></a></h2>
 <p>Coefficient of the <code>I...I</code> term, i.e. <code>tr(O) / 2^n</code>.</p>
+<h2 id="anticommute_histogramsites-axisx-commnone"><a class="header" href="#anticommute_histogramsites-axisx-commnone"><code>anticommute_histogram(sites, axis="x", comm=None)</code></a></h2>
+<p><code>w[n]</code>, the total <code>|c|**2</code> of the strings that anticommute with exactly <code>n</code> of the generators <code>G_q</code>, <code>q in sites</code>, with <code>G = X</code> (<code>axis="x"</code>) or <code>Z</code> (<code>axis="z"</code>); <code>len(sites) + 1</code> entries summing to <code>sum(|c|**2)</code>.
+<code>paulistrings.diagonal_echo(w, delta)</code> turns it into the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code>.</p>
+<h2 id="rotated_overlapsites-delta-axisx-commnone"><a class="header" href="#rotated_overlapsites-delta-axisx-commnone"><code>rotated_overlap(sites, delta, axis="x", comm=None)</code></a></h2>
+<p>The exact operator Loschmidt echo <code>2**-n Tr(A V^dag A V)</code>, <code>V = prod_{q in sites} exp(-i delta G_q)</code>, without materializing <code>V^dag A V</code>; <code>sum(|c|**2)</code> at <code>delta = 0</code>.
+Cost is dominated by the largest class of strings equal away from the flipped bits on <code>sites</code>.</p>
+<p>Both read-outs raise <code>ValueError</code> for an axis other than <code>"x"</code>/<code>"z"</code> or a repeated or out-of-range site.</p>
+<h3 id="under-comm"><a class="header" href="#under-comm">Under <code>comm=</code></a></h3>
+<p>On a <code>propagate(..., comm=comm)</code> result both are collective and return the whole distributed sum’s value on every rank.
+<code>rotated_overlap</code> also needs the result’s partition rows to read none of the coordinates <code>V</code> flips (x-bits of <code>sites</code> for <code>axis="x"</code>, z-bits for <code>"z"</code>), and raises <code>ValueError</code> on every rank otherwise:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Propagated with</th><th><code>axis="x"</code></th><th><code>axis="z"</code></th></tr>
+</thead>
+<tbody>
+<tr><td><code>partition_row_exclude={"x": sites}</code></td><td>yes</td><td>if the rows happen to avoid</td></tr>
+<tr><td><code>partition_row_exclude={"z": sites}</code></td><td>if the rows happen to avoid</td><td>yes</td></tr>
+<tr><td><code>partition_row_blocks=...</code></td><td>yes (cut rows read only z-bits)</td><td>if the rows happen to avoid</td></tr>
+<tr><td><code>result="gather"</code></td><td>yes</td><td>yes</td></tr>
+<tr><td>default seeded rows</td><td>if the rows happen to avoid</td><td>if the rows happen to avoid</td></tr>
+</tbody>
+</table>
+</div>
+<p>A sum that was not a <code>comm=</code> result, or was since added to another, raises <code>ValueError</code> under <code>comm=</code>; scaling keeps the split.</p>
 <h2 id="propagate_with_stats"><a class="header" href="#propagate_with_stats"><code>propagate_with_stats</code></a></h2>
 <p><code>propagate_with_stats(...)</code> returns <code>(evolved, PropagationStats)</code>; see <a href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a> for the full signature and stats fields.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
@@ -4743,6 +4845,7 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
 <tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
+<tr><td><code>paulistrings.diagonal_echo(hist, delta)</code></td><td><code>float</code>, the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code> of a <a href="#anticommute_histogramsites-axisx-commnone"><code>PauliSum.anticommute_histogram</code></a> <code>w</code>; <code>nan</code> when it is all zero</td></tr>
 </tbody>
 </table>
 </div>

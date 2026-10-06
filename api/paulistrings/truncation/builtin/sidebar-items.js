@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["And","ApproxTopN","CoefficientThreshold","Or","TopN","WeightCutoff"]};
+window.SIDEBAR_ITEMS = {"struct":["And","ApproxTopN","CoefficientThreshold","CollapseSample","Or","TopN","WeightCutoff"]};

@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-b86f2ee9.js"></script>
+        <script src="../../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -243,6 +243,14 @@ evolved = observable.propagate(circuit, policy, comm=comm, partition_row_blocks=
 <p>Both kwargs work the same way under <code>partitions=</code>, and the two are alternatives to each other.
 The block count must equal the rank count, the blocks must be disjoint, and they must be identical on every rank — the split is a local filter each rank computes for itself.
 A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term supported inside one block belongs to that block’s rank.</p>
+<p><code>partition_row_exclude=</code> keeps the random draw but forbids chosen coordinates, as a dict of <code>"x"</code> and <code>"z"</code> qubit lists:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">everything = list(range(observable.num_qubits))
+evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+</code></pre>
+<p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
+The distributed <a href="../measurements.html#echo">echo read-out</a> <code>rotated_overlap</code> requires rows that skip the coordinates it flips, the x-bits of its sites for <code>axis="x"</code>.
+It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
 <table>

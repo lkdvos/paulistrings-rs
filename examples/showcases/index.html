@@ -36,10 +36,10 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-b86f2ee9.js"></script>
+        <script src="../../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,6 +195,7 @@
 <tr><td><a href="b5-operator-backpropagation.html">B5 Operator backpropagation</a></td><td>hybrid depth reduction: back-propagate the tail classically, hand a QPU the shorter front circuit and an evolved observable</td><td>qiskit-Aer statevector, gap 1.7·10⁻¹⁶; task file round-trip gap exactly <code>0.0</code></td><td>~3 s</td></tr>
 <tr><td><a href="b6-resource-probes.html">B6 Resource probes</a></td><td>difficulty of the evolved operator: Pauli-spectrum entropy (the cost model for <em>this</em> engine) against operator entanglement (the cost model for MPO methods)</td><td>brute force over all <code>4ⁿ</code> traces and a dense SVD; every gap ≤ 8.9·10⁻¹⁶</td><td>under a minute</td></tr>
 <tr><td><a href="b7-stabilizer-prep.html">B7 Stabilizer-prep</a></td><td>stim prepares a 36-qubit 2D cluster state, a non-Clifford tail is propagated, and the expectation is contracted against the stabilizer state in <code>O(m·n²/64)</code>, avoiding a 1.0 TiB state vector</td><td>dense statevector and a projector from the generators alone at <code>n ≤ 12</code>, plus qiskit Aer; worst gap 2.2·10⁻¹⁵</td><td>116 s, 10.2 GiB peak RSS (<code>--quick</code>: 40 s, 1.5 GiB)</td></tr>
+<tr><td><a href="b8-operator-loschmidt-echo.html">B8 Operator Loschmidt echo</a></td><td>the 56-qubit ibm_boston echo of arXiv:2607.25998 by collapse-to-one PP-MC, single-node and over MPI ranks</td><td>the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10</td><td>one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB</td></tr>
 </tbody>
 </table>
 </div>
@@ -218,6 +219,7 @@ RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py
 RAYON_NUM_THREADS=1 python examples/b5_operator_backpropagation/run_b5.py
 RAYON_NUM_THREADS=1 python examples/b6_resource_probes/run_b6.py
 RAYON_NUM_THREADS=1 python examples/b7_stabilizer_prep/run_b7.py
+RAYON_NUM_THREADS=8 python examples/b8_ole/run_b8.py --alpha 0.15 --L 6 --cache 5e6 --seeds 0:4 --out results/b8
 </code></pre>
 <p>Each script rewrites every figure and JSON file next to itself. Each showcase
 also has a CI-visible correctness gate under <code>examples/tests/</code> that

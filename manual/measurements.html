@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6f8b7437.js";
+            window.path_to_searchindex_js = "../searchindex-533b9f81.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-b86f2ee9.js"></script>
+        <script src="../toc-4f8281a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -274,6 +274,23 @@ print(evolved.identity_coefficient())
 </code></pre>
 <p>A <code>num_qubits</code> mismatch between the two sums is a <code>ValueError</code>; there is no implicit padding.
 Both signatures are under <a href="../library/measurement.html#overlapother">Measurement</a>.</p>
+<h2 id="echo"><a class="header" href="#echo">Echo read-outs</a></h2>
+<p>An echo experiment perturbs the evolved observable <code>A</code> by <code>V = ⊗_q exp(-iδ G_q)</code>, one single-qubit Pauli generator <code>G_q</code> per site, and reads <code>2^-n tr(A V† A V)</code>.
+<code>rotated_overlap(sites, delta, axis)</code> computes it exactly without building <code>V† A V</code>, whose size grows as <code>2^k</code> in the number of sites a string anticommutes with.
+<code>anticommute_histogram(sites, axis)</code> is the cheaper read-out: <code>w[n]</code> is the weight <code>Σ|c|²</code> of the strings that anticommute with exactly <code>n</code> of the generators, and <code>diagonal_echo(w, delta) = Σ_n w[n] cos(2δ)^n / Σ_n w[n]</code> is the echo with every cross term between distinct strings dropped.</p>
+<pre><code class="language-python">from paulistrings import PauliSum, diagonal_echo
+
+a = PauliSum.from_strings({"XX": 0.6, "YY": 0.8}, num_qubits=2)
+print(diagonal_echo(a.anticommute_histogram([0, 1], axis="z"), 0.3))
+print(a.rotated_overlap([0, 1], 0.3, axis="z"))
+</code></pre>
+<pre><code class="language-text">0.6811788772383368
+0.9872471550895336
+</code></pre>
+<p>The gap is the <code>XX</code>–<code>YY</code> cross term, <code>2 · 0.6 · 0.8 · sin²(0.6)</code>, which the diagonal read-out omits by construction.
+<code>axis</code> is <code>"x"</code> or <code>"z"</code>; both methods take <code>comm=</code> for a sum split over MPI ranks and return the global value on every rank.
+The distributed <code>rotated_overlap</code> needs partition rows that never read a flipped coordinate, which <a href="propagation/mpi.html#partition-row-selection"><code>partition_row_exclude</code></a> arranges.
+<a href="../examples/showcases/b8-operator-loschmidt-echo.html">Showcase B8</a> uses both on a 56-qubit Loschmidt echo.</p>
 <h2 id="from-a-number-to-a-result"><a class="header" href="#from-a-number-to-a-result">From a number to a result</a></h2>
 <p>A single expectation value at a single cutoff is a number, not a result.
 The truncation that made the sum tractable deleted terms carrying signs, so the value can sit on either side of the truth and need not move monotonically as the cutoff tightens — <a href="propagation/truncation.html#no-variational-bound">No variational bound</a> is the statement and the measured cases.

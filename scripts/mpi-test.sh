@@ -27,12 +27,10 @@
 # rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
 # else with exit 2.
 #
-# --python builds `_paulistrings` with `--features mpi` (`mpi,cuda` under --cuda) into $VIRTUAL_ENV, or
-# ./.venv-mpi if that is unset, and runs pytest under mpirun. That venv needs
-# maturin, pytest, numpy and an importable mpi4py built against the *same* MPI:
-#
-#   python3 -m venv --system-site-packages .venv-mpi   # from an interpreter with mpi4py
-#   .venv-mpi/bin/pip install maturin pytest numpy
+# --python syncs $VIRTUAL_ENV, or ./.venv-mpi if that is unset, through
+# `scripts/sync-mpi-venv.sh` (`--features mpi`, `mpi,cuda` under --cuda, and the
+# dev profile unless --release), then runs the installed copy of test_mpi.py
+# under mpirun. That needs uv on PATH and `python3` from the MPI modules.
 #
 # This script loads no modules. It needs `mpicc` (for rsmpi's build probe),
 # `LIBCLANG_PATH` (for its bindgen) and `mpirun` on PATH, and says how to get
@@ -56,7 +54,7 @@ while [ $# -gt 0 ]; do
         --python) python_net=1; shift ;;
         --no-rust) rust_net=0; shift ;;
         --cuda) features="mpi,cuda"; shift ;;
-        -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
@@ -129,28 +127,10 @@ fi
 
 if [ "$python_net" -eq 1 ]; then
     venv="${VIRTUAL_ENV:-$PWD/.venv-mpi}"
-    if [ ! -x "$venv/bin/python" ]; then
-        echo "no virtualenv at $venv (set VIRTUAL_ENV, or create ./.venv-mpi)" >&2
-        sed -n '27,32p' "$0" >&2
-        exit 2
-    fi
-    if ! "$venv/bin/python" -c 'import mpi4py' 2>/dev/null; then
-        echo "$venv has no importable mpi4py; the Python net needs one built against this MPI" >&2
-        exit 2
-    fi
-    maturin="$venv/bin/maturin"
-    if [ ! -x "$maturin" ]; then
-        maturin=$(command -v maturin || true)
-    fi
-    if [ -z "$maturin" ]; then
-        echo "no maturin in $venv (or on PATH): pip install maturin into it" >&2
-        exit 2
-    fi
-    echo "== building _paulistrings --features $features into $venv"
-    # `maturin develop` installs into the *active* venv, so name it explicitly
-    # rather than relying on the caller's shell.
-    VIRTUAL_ENV="$venv" "$maturin" develop ${profile:+$profile} \
-        --features "$features" -m crates/paulistrings-py/Cargo.toml
+    sync_args=(--venv "$venv")
+    [ "$features" = "mpi,cuda" ] && sync_args+=(--cuda)
+    [ -z "$profile" ] && sync_args+=(--debug)
+    scripts/sync-mpi-venv.sh "${sync_args[@]}"
 fi
 
 # Shared-memory and oversubscription knobs. `vader_single_copy_mechanism=none`
@@ -195,8 +175,9 @@ for n in ${ranks//,/ }; do
         # `-p no:cacheprovider` because every rank would write the same
         # .pytest_cache.
         echo "== mpirun -n $n $flags (test_mpi.py)"
+        # `--pyargs` imports the venv's non-editable install; the in-tree path would put python/ and its extension first on sys.path.
         if mpirun -n "$n" $flags $cuda_x "$venv/bin/python" -m pytest \
-                python/paulistrings/tests/test_mpi.py -q \
+                --pyargs paulistrings.tests.test_mpi -q \
                 -p no:cacheprovider -p no:randomly; then
             echo "== $n ranks, test_mpi.py: ok"
         else

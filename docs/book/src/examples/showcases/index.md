@@ -26,10 +26,9 @@ a reference was not reachable, the page says so and what it would cost.
 ## Reproducing a showcase
 
 ```bash
-./scripts/setup.sh
+./scripts/setup.sh                # .venv with the examples extra
 source .venv/bin/activate
-pip install -e ".[examples]"
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples          # after any Rust change: rebuilds the extension
 
 RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py

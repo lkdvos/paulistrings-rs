@@ -16,7 +16,7 @@ Output: `target/criterion/` (HTML reports).
 ```bash
 ./scripts/setup.sh
 source .venv/bin/activate
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
+uv sync --extra examples --extra bench   # the cross-library deps; also rebuilds the extension after a Rust change
 pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py.json
 ```
 

@@ -6,10 +6,9 @@ build an observable in one fence and use it in the next. A `<!-- doctest: skip
 -->` line immediately before a fence excludes it (MPI/NUMA snippets that need
 hardware this runner does not have).
 
-    source .venv/bin/activate
-    python scripts/test-doc-snippets.py            # run every page
-    python scripts/test-doc-snippets.py --list      # show run/skip without executing
-    python scripts/test-doc-snippets.py FILE ...    # only these pages
+    uv run --extra examples python scripts/test-doc-snippets.py            # run every page
+    uv run --extra examples python scripts/test-doc-snippets.py --list      # show run/skip without executing
+    uv run --extra examples python scripts/test-doc-snippets.py FILE ...    # only these pages
 """
 
 import argparse

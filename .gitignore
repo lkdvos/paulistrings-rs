@@ -6,7 +6,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-# The MPI venv `scripts/mpi-test.sh --python` builds into; mpi4py must come from the same interpreter the MPI modules provide.
+# The MPI venv `scripts/sync-mpi-venv.sh` builds against the loaded MPI modules.
 .venv-mpi/
 .pytest_cache/
 .ruff_cache/

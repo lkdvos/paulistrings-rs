@@ -5,10 +5,9 @@ Part A benchmarks A–E live under [`../benchmarks/`](../benchmarks/README.md); 
 Rust examples live under `crates/paulistrings/examples/`; this tree is Python-only.
 
 ```bash
-./scripts/setup.sh                                            # one-time: creates .venv, builds the extension
+./scripts/setup.sh                # one-time: .venv with the examples extra (matplotlib, stim, qiskit, qiskit-aer)
 source .venv/bin/activate
-pip install -e ".[examples]"                                  # matplotlib, stim, qiskit, qiskit-aer, numpy
-maturin develop --release -m crates/paulistrings-py/Cargo.toml # rebuild after any Rust change
+uv sync --extra examples          # after any Rust change: rebuilds the extension
 
 RAYON_NUM_THREADS=1 python examples/b1_operator_scrambling/run_b1_1d.py
 RAYON_NUM_THREADS=1 python examples/b2_noisy_verification/run_b2.py --quick   # full run: drop --quick

@@ -40,7 +40,7 @@ These wheels cover the default engine only; the `mpi` feature is never bundled i
 Building from source (for contributors, or platforms without a release wheel):
 
 ```bash
-./scripts/setup.sh          # one-time: creates .venv, builds the extension
+./scripts/setup.sh          # one-time, with uv: creates .venv, builds the extension
 source .venv/bin/activate
 ```
 
@@ -138,15 +138,13 @@ research/
 ## Development
 
 ```bash
-./scripts/setup.sh                # one-time: creates .venv, builds the extension
-source .venv/bin/activate
+module load uv                    # Flatiron; elsewhere see https://docs.astral.sh/uv/
+./scripts/setup.sh                # one-time: uv sync into .venv, builds the extension
 
 cargo test                        # workspace tests (Rust toolchain pinned in rust-toolchain.toml)
 cargo bench -p paulistrings        # criterion microbenchmarks (release-only)
 
-# after Rust changes, rebuild the extension before running Python tests:
-maturin develop --release -m crates/paulistrings-py/Cargo.toml
-pytest python/paulistrings/tests
+uv run pytest python/paulistrings/tests   # rebuilds the extension first after any Rust change
 ```
 
 ## License

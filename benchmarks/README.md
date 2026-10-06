@@ -20,7 +20,7 @@ uv sync --extra examples --extra bench   # the cross-library deps; also rebuilds
 pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py.json
 ```
 
-Manual, not run in CI: `bench_baseline.py` (vs qiskit/openfermion containers, see [`python/baseline_comparison/README.md`](python/baseline_comparison/README.md)) plus the five Part A benchmarks below.
+Manual, not run in CI: `bench_baseline.py` (vs qiskit/openfermion containers; `uv run --with openfermion` for the latter, see [`python/baseline_comparison/README.md`](python/baseline_comparison/README.md)) plus the five Part A benchmarks below.
 None of the Part A benchmarks run in CI; each has a CI-safe correctness gate at smaller scale in `benchmarks/python/tests/`.
 
 | | driver | results | oracle |

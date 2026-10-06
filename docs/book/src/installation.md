@@ -70,7 +70,7 @@ on first use — install one of these extras before reaching for those:
 
 ```bash
 uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-uv sync --extra examples --extra bench   # plus openfermion and pytest-benchmark
+uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
 ```
 
 `uv sync` removes whatever an extra it is not given had installed, so name every extra each time; `uv run` only adds.

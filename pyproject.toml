@@ -23,12 +23,39 @@ bench = ["pytest-benchmark>=4", "qiskit", "openfermion", "numpy", "stim"]
 # CI-visible test importorskips these, so the numpy-only CI job stays green
 # without them.
 examples = ["matplotlib", "stim", "qiskit", "qiskit-aer", "qiskit-ibm-runtime", "numpy"]
+# The bindings' MPI net (`scripts/mpi-test.sh --python`); mpi4py must compile against the loaded MPI.
+mpi = ["mpi4py>=4,<5"]
 
 [tool.maturin]
 manifest-path = "crates/paulistrings-py/Cargo.toml"
 module-name = "paulistrings._paulistrings"
 python-source = "python"
 features = ["pyo3/extension-module"]
+
+# What a bare `uv sync`/`uv run` installs, and the venv's maturin builds the extension; keep it in step with the `dev` extra.
+# Not `paulistrings[dev]`: outside uv (`maturin develop` installs this group) that name resolves to an unrelated PyPI package.
+[dependency-groups]
+dev = ["pytest>=7", "pytest-benchmark>=4", "ruff", "maturin>=1.5,<2.0"]
+
+[tool.uv]
+# uv reuses a built extension until one of these changes, so any Rust edit rebuilds it on the next `uv sync`/`uv run`.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "rust-toolchain.toml" },
+  { file = ".cargo/config.toml" },
+  { file = "crates/paulistrings/Cargo.toml" },
+  { file = "crates/paulistrings/build.rs" },
+  { file = "crates/paulistrings/src/**/*" },
+  { file = "crates/paulistrings-py/Cargo.toml" },
+  { file = "crates/paulistrings-py/build.rs" },
+  { file = "crates/paulistrings-py/src/**/*" },
+  # Features and profile (`--features mpi`, `--profile dev`), so changing them rebuilds too.
+  { env = "MATURIN_PEP517_ARGS" },
+]
+no-binary-package = ["mpi4py"]
+# An isolated build hands maturin a fresh interpreter path each time, which dirties pyo3 and relinks the whole LTO build even when no Rust changed.
+no-build-isolation-package = ["paulistrings"]
 
 [tool.pytest.ini_options]
 # Discover `test_*.py` (library unit tests in `python/paulistrings/tests/`, the

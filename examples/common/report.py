@@ -201,7 +201,7 @@ def _paulistrings_version() -> str | None:
     try:
         import importlib.metadata as _metadata
 
-        return _metadata.version("paulistrings")
+        return _metadata.version("paulistrings-rs")
     except Exception:
         return None
 

@@ -3,9 +3,9 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "paulistrings"
+name = "paulistrings-rs"
 version = "0.1.0"
-description = "Pauli propagation: classical simulation of quantum circuits in the Pauli basis, with a parallel Rust engine"
+description = "Classical simulation of quantum circuits in the Pauli basis, with a parallel Rust engine"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
@@ -31,7 +31,7 @@ python-source = "python"
 features = ["pyo3/extension-module"]
 
 # What a bare `uv sync`/`uv run` installs, and the venv's maturin builds the extension; keep it in step with the `dev` extra.
-# Not `paulistrings[dev]`: outside uv (`maturin develop` installs this group) that name resolves to an unrelated PyPI package.
+# Not `paulistrings-rs[dev]`: outside uv (`maturin develop` installs this group) a self-referencing extra resolves against PyPI, where this project is not published.
 [dependency-groups]
 dev = ["pytest>=7", "pytest-benchmark>=4", "ruff", "maturin>=1.5,<2.0"]
 

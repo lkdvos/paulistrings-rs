@@ -1,19 +1,19 @@
 # Installation
 
-**`paulistrings` is not published to PyPI**, so `pip install paulistrings` will not find it.
+The distribution is `paulistrings-rs` and the import is `import paulistrings`; it is not published to PyPI, where `paulistrings` is an unrelated project.
 Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) instead — no Rust toolchain needed.
 
 With the [GitHub CLI](https://cli.github.com/), which resolves the latest release for you:
 
 ```bash
 gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
-pip install ./paulistrings-*.whl
+pip install ./paulistrings_rs-*.whl
 ```
 
 Substitute the platform tag for your machine: `manylinux_2_28_x86_64` (Linux, including Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac).
 One abi3 wheel per platform serves every Python >= 3.9.
 
-Without `gh`, take the `.whl` asset for your platform from the [latest release](https://github.com/lkdvos/paulistrings-rs/releases/latest) and `pip install ./paulistrings-*.whl`.
+Without `gh`, take the `.whl` asset for your platform from the [latest release](https://github.com/lkdvos/paulistrings-rs/releases/latest) and `pip install ./paulistrings_rs-*.whl`.
 
 These wheels cover the default engine only.
 The `mpi` feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster's loaded MPI module:
@@ -21,14 +21,14 @@ The `mpi` feature is never bundled into a wheel — no MPI implementation is por
 ```bash
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features mpi"
 ```
 
 The `cuda` feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.
 
 ```bash
-pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda"
 ```
 
@@ -42,7 +42,7 @@ Without them `paulistrings.cuda_available()` is `False` and everything else work
 ```bash
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda,mpi"
 ```
 

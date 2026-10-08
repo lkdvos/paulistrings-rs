@@ -40,4 +40,4 @@ echo "== syncing $venv: --features $features ${profile:-(release)}, $python"
 export UV_PROJECT_ENVIRONMENT="$venv" MATURIN_PEP517_ARGS="--features $features${profile:+ $profile}"
 # Two steps because the extension builds without isolation against the venv's maturin, which uv before 0.8 does not install first.
 uv sync --no-editable --extra mpi --python "$python" --no-install-project
-uv sync --no-editable --extra mpi --python "$python" --reinstall-package paulistrings
+uv sync --no-editable --extra mpi --python "$python" --reinstall-package paulistrings-rs

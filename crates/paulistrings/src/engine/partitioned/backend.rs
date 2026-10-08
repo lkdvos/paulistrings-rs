@@ -5,11 +5,11 @@ use super::layer::{apply_layer_partitioned_with_plan, LayerExchangeCounts, Parti
 use super::plan::PartitionPlan;
 use super::transport::{Collectives, Transport};
 use super::truncation::PartitionedTruncation;
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
-use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::Prepared;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
+use crate::pauli_sum::storage::PauliSum;
 
 /// The policy-independent half of a partition: what the layer loop reads and reshapes between layers.
 ///
@@ -29,7 +29,7 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
         min_buckets: usize,
     ) -> u8 {
         let _ = prep;
-        crate::bucket::sum::desired_bits(self.len(), target_bucket_len, min_buckets)
+        crate::pauli_sum::storage::desired_bits(self.len(), target_bucket_len, min_buckets)
             .max(self.hash().bits())
     }
     /// Move the partition out, leaving a valid empty partition under the same hash behind.

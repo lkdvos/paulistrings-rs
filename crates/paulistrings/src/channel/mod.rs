@@ -53,7 +53,7 @@ pub use noise::{AmplitudeDamping, Dephasing, Depolarizing, Depolarizing2Q, Pauli
 pub use rotation::PauliRotation;
 pub use unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
 
-use crate::bucket::hash::Gf2Hash;
+use crate::pauli_sum::hash::Gf2Hash;
 use num_complex::Complex64;
 use prepared::Prepared;
 

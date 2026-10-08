@@ -392,7 +392,7 @@ mod tests {
     /// Bucketing is invisible to both read-outs, at both widths.
     #[test]
     fn read_outs_are_partition_independent() {
-        use crate::bucket::Gf2Hash;
+        use crate::pauli_sum::Gf2Hash;
         let a = rand_sum_on::<2>(400, 70, &[0, 5, 63, 64, 66], 9);
         let sites = [5usize, 63, 64];
         let spread = a.clone().with_hash(Gf2Hash::new(70, 4, 0xABC));

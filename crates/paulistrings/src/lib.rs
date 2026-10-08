@@ -46,8 +46,6 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-pub mod accumulator;
-pub mod bucket;
 pub mod channel;
 pub mod circuit;
 pub mod echo;
@@ -63,8 +61,6 @@ pub mod stabilizer;
 pub mod test_support;
 pub mod truncation;
 
-pub use accumulator::BuildAccumulator;
-pub use bucket::{Gf2Hash, PartitionRows};
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
 pub use echo::{diagonal_echo, RotationAxis};
@@ -91,6 +87,8 @@ pub use engine::{
     DEFAULT_SMALL_SUM_THRESHOLD,
 };
 pub use pauli_string::PauliString;
+pub use pauli_sum::accumulator::BuildAccumulator;
+pub use pauli_sum::{Gf2Hash, PartitionRows};
 pub use pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
 pub use phase::Phase;
 pub use stabilizer::{StabilizerError, StabilizerState};

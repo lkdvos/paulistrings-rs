@@ -7,9 +7,9 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-use crate::accumulator::BuildAccumulator;
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
@@ -658,7 +658,10 @@ pub fn gf2_rank(vs: &[u32]) -> usize {
 ///
 /// A channel on `qubits` can only change those qubits' `x`/`z` bits, so its key-delta set lies in `span{X_q, Z_q : q ∈ qubits}` (dimension `2·|qubits|`); this returns the dimension of that space's image under `h`.
 /// Full rank means `h` separates every local delta; anything less means two distinct local deltas share one bucket delta.
-pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits: &[u32]) -> usize {
+pub fn support_delta_rank<const W: usize>(
+    h: &crate::pauli_sum::Gf2Hash<W>,
+    qubits: &[u32],
+) -> usize {
     let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
     for &q in qubits {
         imgs.push(h.bucket_of_pauli(&PauliString::<W>::x(q)));
@@ -956,7 +959,7 @@ pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -
     let buckets = (0..sum.num_buckets())
         .map(|b| {
             let (x, z, c) = sum.bucket(b);
-            let mut cols = crate::bucket::sum::BucketCols::<W>::default();
+            let mut cols = crate::pauli_sum::storage::BucketCols::<W>::default();
             cols.x.extend_from_slice(x);
             cols.z.extend_from_slice(z);
             for &c in c {
@@ -1052,8 +1055,8 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
 }
 
 /// Partition rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every [`x0_terms_identity_on_q63`] term sits on rank 0.
-pub fn rows_reading_z63() -> crate::bucket::hash::PartitionRows<1> {
-    crate::bucket::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
+pub fn rows_reading_z63() -> crate::pauli_sum::hash::PartitionRows<1> {
+    crate::pauli_sum::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
 }
 
 /// Haar SU(4) layers on `(0, 1)`, `(1, 2)` and `(0, 1)` of `num_qubits` qubits: dense and overlapping, so one partner's remote rows collide at every partition count.

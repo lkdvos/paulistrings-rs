@@ -349,9 +349,9 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::prepared::Prepared;
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::phase::Phase;
     use crate::test_support::{alloc_bufs, approx_eq};
 

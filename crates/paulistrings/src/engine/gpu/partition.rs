@@ -8,8 +8,6 @@ use super::layer::{
 };
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
-use crate::bucket::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
-use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::partitioned::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
@@ -17,6 +15,8 @@ use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::{Collectives, Transport};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
+use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
 
 /// A partition whose sum lives on a device.

@@ -2,7 +2,7 @@
 //!
 //! `Gf2Span` is the engine's coset index algebra (ARCHITECTURE.md §Engine): `engine::bucketed` uses it to enumerate `span(h(D))`'s cosets, the parallel unit each layer gathers, sorts and merges in place.
 
-use crate::bucket::hash::B_MAX_BITS;
+use crate::pauli_sum::hash::B_MAX_BITS;
 
 /// Highest set bit of a nonzero word.
 #[inline]
@@ -430,13 +430,13 @@ mod tests {
 
     /// `r` is `min(rank(h(D)), bits)`, and for a two-qubit channel `rank(h(D))` is a property of the *hash rows*, not of the channel — so the same Haar SU(4) block gets a 16-member coset on one support and an 8-member one on another under the same seed.
     ///
-    /// This is the link between `bucket::hash`'s rank tests and the dense-PTM sort's cost (`engine::merge`): the per-run sort's comparison count sits at its `log2(fanout)` floor exactly when `r` is full, and `r` is what this pins.
+    /// This is the link between `pauli_sum::hash`'s rank tests and the dense-PTM sort's cost (`engine::merge`): the per-run sort's comparison count sits at its `log2(fanout)` floor exactly when `r` is full, and `r` is what this pins.
     /// See `research/FINDINGS.md`.
     #[test]
     fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
-        use crate::bucket::sum::DEFAULT_HASH_SEED;
-        use crate::bucket::Gf2Hash;
         use crate::channel::{Channel, GeneralUnitary2Q};
+        use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
+        use crate::pauli_sum::Gf2Hash;
         use crate::test_support::{haar_su4_matrix, support_delta_rank};
 
         let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());

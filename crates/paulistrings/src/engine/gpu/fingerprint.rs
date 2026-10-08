@@ -62,7 +62,7 @@ impl<const W: usize> FingerprintRows<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::sum::DEFAULT_HASH_SEED;
+    use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
     use crate::test_support::Xs64;
 
     fn rand_key<const W: usize>(rng: &mut Xs64) -> ([u64; W], [u64; W]) {

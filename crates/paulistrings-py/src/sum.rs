@@ -6,9 +6,9 @@ use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
 use crate::truncation_spec::{collapse_count, collapses_since, PyTruncation, TOPN_PARTITIONED_MSG};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
-use paulistrings::accumulator::BuildAccumulator;
 use paulistrings::engine::partitioned::{numa_nodes, CpuSet};
 use paulistrings::pauli_string::PauliString;
+use paulistrings::pauli_sum::accumulator::BuildAccumulator;
 use paulistrings::phase::Phase;
 use paulistrings::truncation::BuiltinTruncation;
 use paulistrings::{

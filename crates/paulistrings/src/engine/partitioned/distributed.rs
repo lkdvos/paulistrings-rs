@@ -25,10 +25,10 @@ use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
 use super::truncation::PartitionedTruncation;
-use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
 use crate::echo::{qubit_mask, RotationAxis};
 use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::{PauliSum, ProductState};
 
 #[cfg(feature = "phase-timing")]
@@ -745,7 +745,7 @@ fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u6
 /// If the parts are not the four the gather encodes, or their lengths contradict each other — either means the ranks are not running the same build.
 fn decode_rank<const W: usize>(
     parts: &[Vec<u8>],
-    hash: crate::bucket::hash::Gf2Hash<W>,
+    hash: crate::pauli_sum::hash::Gf2Hash<W>,
     num_qubits: usize,
     rank: usize,
 ) -> PauliSum<W> {

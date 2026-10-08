@@ -88,7 +88,7 @@ fn draw_rows<const W: usize>(
 /// # Examples
 ///
 /// ```
-/// use paulistrings::bucket::Gf2Hash;
+/// use paulistrings::pauli_sum::Gf2Hash;
 /// use paulistrings::PauliString;
 ///
 /// let h = Gf2Hash::<1>::new(64, 6, 0xC0FFEE);
@@ -256,7 +256,7 @@ impl<const W: usize> Gf2Hash<W> {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::bucket::PartitionRows;
+/// use paulistrings::pauli_sum::PartitionRows;
 /// use paulistrings::PauliString;
 ///
 /// let p = PartitionRows::<1>::from_seed(64, 2, 0xC0FFEE);
@@ -417,7 +417,7 @@ impl<const W: usize> PartitionRows<W> {
     /// # Examples
     ///
     /// ```
-    /// use paulistrings::bucket::PartitionRows;
+    /// use paulistrings::pauli_sum::PartitionRows;
     /// use paulistrings::PauliString;
     ///
     /// // A chain of four qubits bisected: {0,1} | {2,3}.
@@ -965,7 +965,7 @@ mod tests {
     /// Consecutive outputs of a linear generator satisfy `rows_z = M·rows_x` word for word under every seed.
     #[test]
     fn row_words_are_not_one_xorshift_step_apart() {
-        for seed in [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED] {
+        for seed in [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
             let h = Gf2Hash::<2>::new(128, B_MAX_BITS, seed);
             let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
             let (px, pz) = p.rows();
@@ -999,7 +999,7 @@ mod tests {
             }
             n
         }
-        let seeds = [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED];
+        let seeds = [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED];
         let w1: usize = seeds.iter().map(|&s| zeros::<1>(s)).sum();
         let w2: usize = seeds.iter().map(|&s| zeros::<2>(s)).sum();
         assert!(w1 <= 1, "{w1}/192 kernel deltas hash to 0 at W=1");
@@ -1009,7 +1009,13 @@ mod tests {
     /// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
     #[test]
     fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
-        let (rx, rz) = draw_rows::<1>(64, 64, crate::bucket::sum::DEFAULT_HASH_SEED, &[0], &[0]);
+        let (rx, rz) = draw_rows::<1>(
+            64,
+            64,
+            crate::pauli_sum::storage::DEFAULT_HASH_SEED,
+            &[0],
+            &[0],
+        );
         let image = |x: u64, z: u64| {
             (0..64).fold(0u64, |acc, i| {
                 acc | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
@@ -1041,7 +1047,7 @@ mod tests {
     /// Row word `w` depends on `(seed, row, w, x-or-z)` alone, so the same `(num_qubits, seed)` gives the same rows at every width.
     #[test]
     fn rows_do_not_depend_on_the_width() {
-        let seed = crate::bucket::sum::DEFAULT_HASH_SEED;
+        let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
         for n in [1usize, 5, 64] {
             let h1 = Gf2Hash::<1>::new(n, 8, seed);
             let h2 = Gf2Hash::<2>::new(n, 8, seed);
@@ -1103,7 +1109,7 @@ mod tests {
     #[test]
     fn support_delta_rank_is_usually_full_but_not_always() {
         // Deterministic given the seed, so these counts are not flaky.
-        let h = Gf2Hash::<2>::new(128, 7, crate::bucket::sum::DEFAULT_HASH_SEED);
+        let h = Gf2Hash::<2>::new(128, 7, crate::pauli_sum::storage::DEFAULT_HASH_SEED);
         let mut deficient = 0usize;
         let mut total = 0usize;
         for i in 0..128u32 {
@@ -1125,7 +1131,7 @@ mod tests {
     /// Rank is monotone in the number of active bucket bits, since the active hash is a prefix of one fixed matrix: refining can only separate deltas that were colliding, never merge separated ones.
     #[test]
     fn support_delta_rank_is_monotone_in_bits() {
-        for seed in [0x1u64, 0xBEEF, crate::bucket::sum::DEFAULT_HASH_SEED] {
+        for seed in [0x1u64, 0xBEEF, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
             let mut last = 0usize;
             for bits in 0..=12u8 {
                 let h = Gf2Hash::<2>::new(128, bits, seed);
@@ -1146,7 +1152,7 @@ mod tests {
     #[test]
     fn support_delta_rank_is_width_independent_at_the_default_seed() {
         use crate::test_support::support_delta_rank as rank;
-        let seed = crate::bucket::sum::DEFAULT_HASH_SEED;
+        let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
         for bits in 7..=9u8 {
             let w1 = Gf2Hash::<1>::new(64, bits, seed);
             let w2 = Gf2Hash::<2>::new(65, bits, seed);
@@ -1175,7 +1181,11 @@ mod tests {
         bits: u8,
         support: &[u32],
     ) -> bool {
-        let h = Gf2Hash::<W>::new(num_qubits, bits, crate::bucket::sum::DEFAULT_HASH_SEED);
+        let h = Gf2Hash::<W>::new(
+            num_qubits,
+            bits,
+            crate::pauli_sum::storage::DEFAULT_HASH_SEED,
+        );
         // Enumerate the support's delta space: one bit per (qubit, x-or-z).
         let gens: Vec<PauliString<W>> = support
             .iter()
@@ -1367,7 +1377,7 @@ mod tests {
     #[test]
     fn partition_rows_are_salted_away_from_the_hash_rows() {
         // Drawn from the same seed, the partition rows must not simply be the hash's first rows — otherwise they would be dependent on `h` at every bucket count and `is_independent_of` could never hold.
-        for seed in [0x1u64, 0x5EED, crate::bucket::sum::DEFAULT_HASH_SEED] {
+        for seed in [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
             let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
             let h = Gf2Hash::<2>::new(128, P_MAX_BITS, seed);
             let (px, pz) = p.rows();
@@ -1578,7 +1588,7 @@ mod tests {
             0x1u64,
             0x5EED,
             0xBEEF,
-            crate::bucket::sum::DEFAULT_HASH_SEED,
+            crate::pauli_sum::storage::DEFAULT_HASH_SEED,
         ] {
             let h = Gf2Hash::<2>::new(128, 7, seed);
             let p = PartitionRows::<2>::from_seed(128, 3, seed);

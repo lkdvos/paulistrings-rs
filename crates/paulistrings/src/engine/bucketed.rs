@@ -12,9 +12,9 @@ use super::merge::{
     merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
     RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
 };
-use crate::bucket::sum::{BucketCols, PauliSum};
 use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::storage::{BucketCols, PauliSum};
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
@@ -1026,13 +1026,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::identity::IdentityChannel;
     use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
     use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
 
@@ -2236,11 +2236,11 @@ mod tests {
 mod extra_rows_tests {
     use super::tests::{assert_terms_close, bucketed_layer, AlwaysKeep};
     use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
     use crate::test_support::{naive_apply_layer, rand_sum};
     use crate::truncation::builtin::CoefficientThreshold;
@@ -2499,10 +2499,10 @@ mod extra_rows_tests {
 mod finalize_tests {
     use super::tests::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
     use super::*;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::Clifford1Q;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
     use crate::truncation::builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
 
@@ -2754,7 +2754,7 @@ mod tie_tests {
 
     use super::tests::{assert_same_terms, canonical_triples};
     use super::*;
-    use crate::bucket::hash::Gf2Hash;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
     use crate::test_support::{rand_sum, tie_heavy_sum};
     use crate::truncation::builtin::TopN;

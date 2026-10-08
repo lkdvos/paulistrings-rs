@@ -7,11 +7,11 @@
 //! [`PauliSum`]: crate::PauliSum
 //! [`engine`]: crate::engine
 
-use crate::bucket::hash::Gf2Hash;
-use crate::bucket::sum::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
-use crate::bucket::DEFAULT_TARGET_BUCKET_LEN;
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::storage::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
 use crate::pauli_sum::PauliSum;
+use crate::pauli_sum::DEFAULT_TARGET_BUCKET_LEN;
 use crate::phase::Phase;
 use hashbrown::HashMap;
 use num_complex::Complex64;
@@ -233,8 +233,8 @@ mod tests {
 
     #[test]
     fn finalize_picks_desired_bits_above() {
-        use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS};
-        use crate::bucket::DEFAULT_TARGET_BUCKET_LEN;
+        use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS};
+        use crate::pauli_sum::DEFAULT_TARGET_BUCKET_LEN;
         let mut acc = BuildAccumulator::<1>::new(12);
         for k in 1..=1500u64 {
             acc.add_term(

@@ -15,13 +15,13 @@ use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
-use crate::bucket::hash::B_MAX_BITS;
-use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::Gf2Span;
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
+use crate::pauli_sum::hash::B_MAX_BITS;
+use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::builtin::APPROX_BINS;
 
 /// Records per fused block the default bucket policy aims for.
@@ -1242,9 +1242,9 @@ fn permute_device<const W: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::{Channel, GeneralUnitary2Q};
     use crate::engine::partitioned::transport::InProcessTransport;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::test_support::{
         assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,
     };
@@ -1270,7 +1270,7 @@ mod tests {
     ) -> Result<GpuLayerCounters, GpuError> {
         let mut input = rand_sum::<2>(n, 128, 0x4096 + n as u64);
         if x0 {
-            let mut acc = crate::accumulator::BuildAccumulator::<2>::new(128);
+            let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<2>::new(128);
             for (x, z, c) in input.iter() {
                 let mut x = *x;
                 x[0] |= 1;
@@ -1282,12 +1282,16 @@ mod tests {
             }
             input = acc.finalize();
         }
-        let input = input.with_hash(Gf2Hash::new(128, 0, crate::bucket::sum::DEFAULT_HASH_SEED));
+        let input = input.with_hash(Gf2Hash::new(
+            128,
+            0,
+            crate::pauli_sum::storage::DEFAULT_HASH_SEED,
+        ));
         assert_eq!(input.len(), n);
         let mut sum = GpuSum::from_host(&input, 0)?;
         let mut scratch = LayerScratch::new(&sum, opts)?;
         let prep = ch.prepare(sum.hash(), false).expect("prepared");
-        let rows = crate::bucket::hash::PartitionRows::<2>::none(128);
+        let rows = crate::pauli_sum::hash::PartitionRows::<2>::none(128);
         let plan = PartitionPlan::new(&prep, &rows, 0);
         let solo = InProcessTransport::group(1);
         apply_layer_device(

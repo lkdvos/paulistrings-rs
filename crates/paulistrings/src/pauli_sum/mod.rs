@@ -3,7 +3,7 @@
 //! # Canonical order
 //!
 //! Terms are ordered by bucket index `h(x, z)` ascending, then lexicographic `(x, z)` key within a bucket; [`PauliSum::iter`] and [`PauliSum::to_arrays`] produce exactly this order, and no two entries share a key.
-//! A single-bucket sum's order is plain lexicographic `(x, z)`; sums of at most [`DEFAULT_TARGET_BUCKET_LEN`](crate::bucket::DEFAULT_TARGET_BUCKET_LEN) terms built through [`BuildAccumulator`] are single-bucket, so small sums come out lex-sorted. Larger sums interleave buckets in an `H`-dependent order — compare by key ([`PauliSum::get`], [`PauliSum::iter`]), not by position.
+//! A single-bucket sum's order is plain lexicographic `(x, z)`; sums of at most [`DEFAULT_TARGET_BUCKET_LEN`](crate::pauli_sum::DEFAULT_TARGET_BUCKET_LEN) terms built through [`BuildAccumulator`] are single-bucket, so small sums come out lex-sorted. Larger sums interleave buckets in an `H`-dependent order — compare by key ([`PauliSum::get`], [`PauliSum::iter`]), not by position.
 //!
 //! Build a [`PauliSum`] from unsorted inputs via [`BuildAccumulator`]; once built, combine sums with [`PauliSum::add`] or scale with [`PauliSum::scale`].
 //!
@@ -30,15 +30,47 @@
 //! assert_eq!(merged.len(), 2); // Z₀ + 0.25·X₁
 //! ```
 //!
+//! # Bucketing
+//!
+//! GF(2)-linear bucket partitioning of a Pauli sum. See ARCHITECTURE.md §Bucketing.
+//!
+//! The propagation engine does not maintain one global sorted order. Instead
+//! the sum is partitioned by a GF(2)-linear hash `h(v) = H·v` of the Pauli key.
+//! Two properties make that partition useful, and both follow from linearity:
+//!
+//! * A channel maps an input key to `v ⊕ d` for `d` in a small **delta set**, so
+//!   `h(v ⊕ d) = h(v) ⊕ h(d)` — output buckets are predictable from input
+//!   buckets, and because `⊕` is an involution the relation inverts: each
+//!   *output* bucket gathers from a statically-known handful of input buckets
+//!   (1, 2, 4 or 16 for the built-in channels).
+//! * `h` is a function, so equal keys always land in the same bucket.
+//!   Deduplication is therefore bucket-local, and **there is no global sort**.
+//!
+//! [`hash`] defines the hash `Gf2Hash<W>` itself — the linear map, its delta
+//! set, and the bit-count policy (`desired_bits`) that ties bucket count to
+//! term count. [`storage`] holds the bucketed storage: `PauliSum<W>`'s
+//! column layout and the `refine`/`coarsen`/`rebucket` operations that keep
+//! the bucket count matched to the sum as it grows or shrinks. There is one
+//! `PauliSum` type, not a separate flat and bucketed form — a sum small
+//! enough to live in a single bucket is, by construction, plain lex-sorted.
+//!
 //! [`BuildAccumulator`]: crate::BuildAccumulator
+
+pub mod accumulator;
+pub mod hash;
+pub mod storage;
+
+pub use hash::{Gf2Hash, PartitionRows, B_MAX_BITS, P_MAX_BITS};
+pub use storage::{
+    desired_bits, PauliSum, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    MIN_TERMS_PER_TASK,
+};
 
 #[cfg(test)]
 use num_complex::Complex64;
 
 #[cfg(test)]
 use crate::pauli_string::PauliString;
-
-pub use crate::bucket::sum::PauliSum;
 
 /// A uniform single-qubit product state, for [`PauliSum::expectation_product_state`].
 ///
@@ -182,7 +214,7 @@ impl<const W: usize> PauliSum<W> {
         assert!(!terms.is_empty(), "from_strings requires at least one term");
         let num_qubits = terms[0].0.len();
         assert!(num_qubits <= 64 * W, "num_qubits must fit in W*64 bits");
-        let mut acc = crate::accumulator::BuildAccumulator::<W>::new(num_qubits);
+        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<W>::new(num_qubits);
         for (s, c) in terms {
             assert_eq!(
                 s.len(),

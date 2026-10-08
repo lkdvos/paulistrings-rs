@@ -14,11 +14,11 @@
 use num_complex::Complex64;
 use proptest::prelude::*;
 
-use paulistrings::bucket::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{
     AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Depolarizing, Depolarizing2Q,
     GeneralUnitary2Q, PauliRotation,
 };
+use paulistrings::pauli_sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
 use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{

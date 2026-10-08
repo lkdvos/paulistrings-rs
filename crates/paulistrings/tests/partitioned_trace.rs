@@ -1,8 +1,8 @@
 //! `PartitionTrace`: the opt-in per-layer record of a partitioned run.
 
-use paulistrings::bucket::desired_bits;
 use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
 use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::pauli_sum::desired_bits;
 use paulistrings::test_support::{low_weight_sum, rand_sum, unpinned_partitions, KeepAll};
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
 

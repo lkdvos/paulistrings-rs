@@ -6,8 +6,8 @@
 use num_complex::Complex64;
 
 use super::{Channel, OutputBuffer};
-use crate::bucket::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::hash::Gf2Hash;
 use crate::phase::Phase;
 
 /// Largest support size handled by [`Prepared::Local`].

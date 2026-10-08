@@ -90,8 +90,8 @@ impl PyTruncation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paulistrings::accumulator::BuildAccumulator;
     use paulistrings::pauli_string::PauliString;
+    use paulistrings::pauli_sum::accumulator::BuildAccumulator;
     use paulistrings::phase::Phase;
     use paulistrings::TruncationPolicy;
 

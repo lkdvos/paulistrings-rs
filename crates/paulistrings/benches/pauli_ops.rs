@@ -11,8 +11,6 @@ use criterion::{
     PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
-use paulistrings::accumulator::BuildAccumulator;
-use paulistrings::bucket::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
@@ -20,7 +18,9 @@ use paulistrings::circuit::Circuit;
 use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
 use paulistrings::engine::{propagate, Direction};
 use paulistrings::pauli_string::PauliString;
+use paulistrings::pauli_sum::accumulator::BuildAccumulator;
 use paulistrings::pauli_sum::PauliSum;
+use paulistrings::pauli_sum::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::phase::Phase;
 // `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
 // the committed criterion baselines are pinned to them specifically.
@@ -193,7 +193,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
 
 /// Bucket count the engine would pick for `n` terms.
 fn bits_for(n: usize) -> u8 {
-    paulistrings::bucket::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
+    paulistrings::pauli_sum::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
 }
 
 /// One `apply_layer_bucketed` case, on an already-bucketed sum.

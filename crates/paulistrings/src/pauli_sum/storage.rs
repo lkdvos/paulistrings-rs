@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::accumulator::BuildAccumulator;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::phase::Phase;
     // `Xs64` and `rand_sum` are the canonical fixtures from
     // `crate::test_support` — this module's copies were byte-identical.
@@ -2008,8 +2008,10 @@ mod tests {
         num_qubits: usize,
         terms: &[(PauliString<W>, Complex64)],
     ) -> PauliSum<W> {
-        let mut acc =
-            crate::accumulator::BuildAccumulator::<W>::with_capacity(num_qubits, terms.len());
+        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<W>::with_capacity(
+            num_qubits,
+            terms.len(),
+        );
         for &(pp, c) in terms {
             acc.add_term(pp, crate::phase::Phase::ONE, c);
         }
@@ -2174,7 +2176,7 @@ mod tests {
             rng ^= rng << 17;
             rng
         };
-        let mut acc = crate::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
+        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
         for _ in 0..500 {
             let pp = PauliString::<1> {
                 x: [next() & 0xFFFF],

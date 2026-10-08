@@ -12,10 +12,6 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::bucket::hash::B_MAX_BITS;
-use paulistrings::bucket::sum::{
-    DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
-};
 use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::engine::partitioned::{
     circuit_generators, count_remote_deltas, CpuSet, GeneratorWeight, PartitionConfig,
@@ -23,6 +19,10 @@ use paulistrings::engine::partitioned::{
     Placement, BITS_AGREE_EVERY,
 };
 use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
+use paulistrings::pauli_sum::hash::B_MAX_BITS;
+use paulistrings::pauli_sum::storage::{
+    DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+};
 use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 #[cfg(feature = "cuda")]
 use paulistrings::truncation::BuiltinTruncation;

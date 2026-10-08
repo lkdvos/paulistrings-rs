@@ -27,10 +27,10 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-use crate::bucket::hash::Gf2Hash;
-use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 
@@ -282,11 +282,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accumulator::BuildAccumulator;
     use crate::channel::{
         support_mask, AmplitudeDamping, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q,
         PauliRotation,
     };
+    use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::phase::Phase;
     use crate::test_support::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
 

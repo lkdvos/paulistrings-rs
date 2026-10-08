@@ -19,8 +19,6 @@ use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
 use super::transport::{Collectives, Transport};
 use super::truncation::PartitionedTruncation;
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
-use crate::bucket::sum::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
@@ -28,6 +26,8 @@ use crate::echo::RotationAxis;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::{PhaseStats, Stamp};
 use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
+use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::{PauliSum, ProductState};
 
 /// `log` target for the partitioned engine's progress events — the same target

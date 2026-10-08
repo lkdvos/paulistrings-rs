@@ -10,9 +10,9 @@ use rayon::prelude::*;
 
 use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload};
-use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, RotationPrep};
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::storage::PauliSum;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
@@ -354,7 +354,7 @@ impl<'a, const W: usize> BlockCols<'a, W> {
 #[cfg(debug_assertions)]
 pub(super) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],
-    rows: &crate::bucket::hash::PartitionRows<W>,
+    rows: &crate::pauli_sum::hash::PartitionRows<W>,
 ) {
     for (q, payload) in send.iter().enumerate() {
         let Some(payload) = payload else { continue };
@@ -375,11 +375,11 @@ pub(super) fn debug_assert_exported_partitions<const W: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::{Gf2Hash, PartitionRows};
     use crate::channel::clifford::Clifford1Q;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::{Channel, OutputBuffer};
+    use crate::pauli_sum::accumulator::BuildAccumulator;
+    use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
     use crate::phase::Phase;
     use crate::test_support::{
         differential_channels_w1, differential_channels_w2, rand_sum, rand_sum_real,

@@ -15,9 +15,9 @@
 
 use std::collections::HashMap;
 
-use crate::bucket::hash::Gf2Hash;
 use crate::channel::prepared::Prepared;
 use crate::circuit::Circuit;
+use crate::pauli_sum::hash::Gf2Hash;
 
 /// One key delta mask the circuit produces, with how much of the circuit carries it.
 ///

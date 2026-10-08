@@ -16,10 +16,10 @@ pub mod partitioned;
 #[cfg(feature = "phase-timing")]
 pub mod stats;
 
-use crate::bucket::sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
+use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 use bucketed::{apply_layer_bucketed, LayerScratch};
@@ -97,7 +97,7 @@ pub struct PropagateOptions {
     /// A measurement lever, not a tuning parameter: the default is the measured optimum (ARCHITECTURE.md §Bucket-Policy).
     /// What has to stay resident is the *gather run*, not the bucket, so the headroom is not the bucket size alone.
     ///
-    /// Raising this alone does nothing above the `min_buckets` floor: with `len >= min_buckets * MIN_TERMS_PER_TASK`, [`desired_bits`](crate::bucket::desired_bits) clamps the bucket count below at `min_buckets` whatever the target says.
+    /// Raising this alone does nothing above the `min_buckets` floor: with `len >= min_buckets * MIN_TERMS_PER_TASK`, [`desired_bits`](crate::pauli_sum::desired_bits) clamps the bucket count below at `min_buckets` whatever the target says.
     /// Both fields have to move together to get *fewer* buckets, and [`PauliSum::rebucket`](crate::PauliSum::rebucket) is grow-only, so lowering either mid-run never coarsens a partition already grown.
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
@@ -140,7 +140,7 @@ impl PropagateOptions {
 /// Iterates the circuit's channels — in order for [`Direction::Forward`], in reverse for [`Direction::Heisenberg`], calling [`Channel::apply_adjoint`] in the latter case (default = self-adjoint; overridden on [`PauliRotation`](crate::channel::PauliRotation) and [`Clifford1Q`](crate::channel::Clifford1Q)).
 ///
 /// The sum is propagated in its bucketed form throughout — there is no conversion at either end, so calling this repeatedly on the same sum (a Trotter driver stepping an observable) costs nothing beyond the layers themselves; per-bucket storage capacity is retained inside the returned sum across calls.
-/// The bucket count is re-normalized against [`desired_bits`](crate::bucket::desired_bits) before every layer.
+/// The bucket count is re-normalized against [`desired_bits`](crate::pauli_sum::desired_bits) before every layer.
 ///
 /// # Progress logging
 ///
@@ -474,21 +474,21 @@ fn record_gate_trace<const W: usize>(
 
 /// Bucket-count floor: enough buckets that Rayon has slack to load-balance.
 ///
-/// Fixed, not derived from `rayon::current_num_threads`: see [`crate::bucket::sum::DEFAULT_MIN_BUCKETS`] for why a thread-independent floor is what we want here (ARCHITECTURE.md §Bucket-Policy).
+/// Fixed, not derived from `rayon::current_num_threads`: see [`crate::pauli_sum::storage::DEFAULT_MIN_BUCKETS`] for why a thread-independent floor is what we want here (ARCHITECTURE.md §Bucket-Policy).
 /// Combined with the grow-only `rebucket` policy, this floor is a lower bound on `B` throughout a `propagate` call, not just at the layer where it was first crossed.
 pub fn default_min_buckets() -> usize {
-    crate::bucket::sum::DEFAULT_MIN_BUCKETS
+    crate::pauli_sum::storage::DEFAULT_MIN_BUCKETS
 }
 
 #[cfg(test)]
 mod tests {
     use num_complex::Complex64;
 
-    use crate::accumulator::BuildAccumulator;
     use crate::channel::{support_mask, Channel, Clifford1Q, OutputBuffer};
     use crate::circuit::Circuit;
     use crate::engine::bucketed::LayerScratch;
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::phase::Phase;
     use crate::truncation::TruncationPolicy;
 

@@ -9,7 +9,6 @@ use super::partition::DevicePartition;
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
 use super::wire::PeerWire;
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
 use crate::circuit::Circuit;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::driver::scatter_local;
@@ -18,6 +17,7 @@ use crate::engine::partitioned::transport::Collectives;
 use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum, Placement};
 use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::BuiltinTruncation;
 

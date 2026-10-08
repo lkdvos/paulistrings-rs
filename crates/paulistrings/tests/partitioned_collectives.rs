@@ -14,11 +14,11 @@
 //! affordable.
 
 use num_complex::Complex64;
-use paulistrings::bucket::desired_bits;
 use paulistrings::channel::PauliRotation;
 use paulistrings::engine::partitioned::{
     PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum, BITS_AGREE_EVERY,
 };
+use paulistrings::pauli_sum::desired_bits;
 use paulistrings::test_support::{
     assert_terms_close, rand_sum_real, unpinned_partitions, zz_rotation,
 };

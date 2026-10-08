@@ -1371,7 +1371,7 @@ mod tests {
     // CollapseSample
     // -----------------------------------------------------------------
 
-    use crate::bucket::Gf2Hash;
+    use crate::pauli_sum::Gf2Hash;
     use crate::test_support::{
         assert_frequencies, collapsed_index, four_term_keys, rand_sum, weighted_four_term_sum,
         FOUR_TERM_WEIGHTS,

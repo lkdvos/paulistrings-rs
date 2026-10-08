@@ -13,8 +13,8 @@ use super::fingerprint::FingerprintRows;
 use super::module::{self, thread_per, warp_per_bucket, KernelSet};
 use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
-use crate::bucket::hash::{Gf2Hash, B_MAX_BITS};
-use crate::bucket::sum::BucketCols;
+use crate::pauli_sum::hash::{Gf2Hash, B_MAX_BITS};
+use crate::pauli_sum::storage::BucketCols;
 use crate::pauli_sum::PauliSum;
 
 /// Hash bits one refine pass adds at most; must match `REFINE_MAX_DELTA` in `kernels/refine.cu`.
@@ -470,9 +470,9 @@ fn gather_sorted<const W: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::sum::DEFAULT_HASH_SEED;
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
+    use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
     use crate::phase::Phase;
     use crate::test_support::{assert_same_terms, low_weight_sum, rand_sum};
 

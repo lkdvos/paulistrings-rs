@@ -206,7 +206,7 @@ It records what was measured and rejected, including several ideas that look obv
 
 ```
 crates/paulistrings/      pure Rust core, no Python deps
-  src/                    pauli_string, phase, pauli_sum, bucket/{hash,sum}, accumulator, circuit,
+  src/                    pauli_string, phase, pauli_sum/{hash,storage,accumulator}, circuit,
                           channel/{clifford,rotation,unitary,noise,identity,prepared},
                           truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
                           engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,

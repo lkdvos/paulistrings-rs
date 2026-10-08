@@ -8,14 +8,14 @@
 use super::export::{export_layer, ExportScratch};
 use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ChunkWait, ExchangeBlock, PartnerPayload, Transport};
-use crate::bucket::hash::PartitionRows;
-use crate::bucket::sum::PauliSum;
 use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
     apply_layer_bucketed, apply_layer_bucketed_with, rest_rows_per_key, ExtraRows, LayerKnobs,
     LayerScratch,
 };
 use crate::engine::coset::Gf2Span;
+use crate::pauli_sum::hash::PartitionRows;
+use crate::pauli_sum::storage::PauliSum;
 use crate::truncation::TruncationPolicy;
 use num_complex::Complex64;
 
@@ -364,13 +364,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::Clifford1Q;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
     use crate::engine::partitioned::transport::InProcessTransport;
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::accumulator::BuildAccumulator;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::phase::Phase;
     use crate::test_support::{
         assert_terms_close, differential_channels_w1, differential_channels_w2, naive_apply_layer,

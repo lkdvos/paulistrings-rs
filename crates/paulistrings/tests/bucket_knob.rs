@@ -9,8 +9,8 @@
 //! floating-point tolerance (ARCHITECTURE.md §Bucket-Policy,
 //! `research/FINDINGS.md` §1.4).
 
-use paulistrings::bucket::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::channel::PauliRotation;
+use paulistrings::pauli_sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
 use paulistrings::{
     propagate, propagate_with_options, Circuit, Direction, PauliString, PauliSum, PropagateOptions,

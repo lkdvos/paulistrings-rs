@@ -6,7 +6,6 @@ use super::driver::{device_runtime, first_failure, lower_for_run, upload_share};
 use super::error::GpuError;
 use super::layer::{GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
-use crate::bucket::hash::PartitionRows;
 use crate::circuit::Circuit;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
@@ -15,6 +14,7 @@ use crate::engine::partitioned::transport::{Collectives, Transport};
 use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy};
 use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::truncation::BuiltinTruncation;
 
@@ -798,7 +798,7 @@ mod tests {
             let mut c = Circuit::<1>::new(64);
             c.push(zz_rotation::<1>(0, 63, 0.3));
             let one_segment = |n: usize| {
-                let mut acc = crate::accumulator::BuildAccumulator::<1>::new(64);
+                let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(64);
                 for (x, z, coeff) in x0_terms_identity_on_q63(n, 0xF1 + n as u64).iter() {
                     let p = crate::pauli_string::PauliString::<1> {
                         x: *x,
@@ -808,7 +808,7 @@ mod tests {
                 }
                 let input = acc
                     .finalize()
-                    .with_hash(crate::bucket::hash::Gf2Hash::new(64, 0, 0xF0));
+                    .with_hash(crate::pauli_sum::hash::Gf2Hash::new(64, 0, 0xF0));
                 let run = Run {
                     options: PropagateOptions {
                         target_bucket_len: 1 << 20,

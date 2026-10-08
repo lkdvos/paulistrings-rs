@@ -345,10 +345,10 @@ impl<const W: usize> Channel<W> for GeneralUnitary2Q {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::hash::Gf2Hash;
     use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::prepared::Prepared;
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::hash::Gf2Hash;
     use crate::test_support::outputs;
 
     const TOL: f64 = 1e-12;

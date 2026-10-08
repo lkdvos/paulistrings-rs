@@ -180,8 +180,8 @@ impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::PartitionRows;
     use crate::engine::partitioned::transport::InProcessTransport;
+    use crate::pauli_sum::PartitionRows;
     use crate::test_support::{assert_same_terms, rand_sum_real, tie_heavy_sum};
     use num_complex::Complex64;
 

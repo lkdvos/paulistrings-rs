@@ -2,8 +2,8 @@
 
 use super::prepared::{Prepared, RotationPrep, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
-use crate::bucket::hash::Gf2Hash;
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::hash::Gf2Hash;
 use crate::phase::Phase;
 use num_complex::Complex64;
 

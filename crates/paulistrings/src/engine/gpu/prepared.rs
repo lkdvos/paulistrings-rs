@@ -3,9 +3,9 @@
 use num_complex::Complex64;
 
 use super::fingerprint::FingerprintRows;
-use crate::bucket::hash::Gf2Hash;
 use crate::channel::prepared::{Prepared, LOCAL_DIM};
 use crate::engine::partitioned::plan::RemoteDelta;
+use crate::pauli_sum::hash::Gf2Hash;
 
 /// `rem[e]` of an entry sourced from a local bucket; matches `NO_REMOTE` in `kernels/prelude.cuh`.
 pub(crate) const NO_REMOTE: u32 = u32::MAX;
@@ -247,12 +247,12 @@ impl<const W: usize> DevicePrepared<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::sum::DEFAULT_HASH_SEED;
     use crate::channel::clifford::Clifford2Q;
     use crate::channel::noise::Depolarizing;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::{Channel, GeneralUnitary2Q};
     use crate::pauli_string::PauliString;
+    use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
     use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, zz_rotation};
 
     fn table<const W: usize>(ch: &dyn Channel<W>, nq: usize) -> DevicePrepared<W> {
@@ -299,8 +299,8 @@ mod tests {
     /// An identity-only retained table with received entries must not take the K5 path, and its position map spans the local deltas only.
     #[test]
     fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
-        use crate::bucket::hash::PartitionRows;
         use crate::engine::partitioned::plan::PartitionPlan;
+        use crate::pauli_sum::hash::PartitionRows;
         let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
         let fp = FingerprintRows::new(hash.seed());
         // `H` has the deltas `{0, X₁Z₁}`; a row reading qubit 1's x-bit makes the one non-identity entry remote.
@@ -404,8 +404,8 @@ mod tests {
 
     #[test]
     fn a_received_entry_disables_the_permutation_path() {
-        use crate::bucket::hash::PartitionRows;
         use crate::engine::partitioned::plan::PartitionPlan;
+        use crate::pauli_sum::hash::PartitionRows;
         let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
         let fp = FingerprintRows::new(hash.seed());
         let ch = crate::channel::clifford::Clifford1Q::h(1);

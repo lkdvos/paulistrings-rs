@@ -12,9 +12,9 @@
 //!
 //! The identity delta has mask `0` and `part(0) = 0`, so it is always local: a partition never has to ship a term to itself.
 
-use crate::bucket::hash::{Gf2Hash, PartitionRows};
 use crate::channel::prepared::Prepared;
 use crate::circuit::Circuit;
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 
 /// One delta of a prepared channel that crosses a partition boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]

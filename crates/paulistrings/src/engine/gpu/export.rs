@@ -1147,13 +1147,13 @@ pub(crate) const MAX_RECV_SEGMENT: usize = MAX_BUCKET_LEN;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
     use crate::channel::clifford::Clifford2Q;
     use crate::channel::{Channel, GeneralUnitary2Q};
     use crate::engine::gpu::layer::GpuLayerOptions;
     use crate::engine::gpu::DEFAULT_ARENA_BYTES;
     use crate::engine::partitioned::export::{export_layer, ExportScratch};
     use crate::engine::partitioned::transport::{ExchangeBlock, PartnerPayload};
+    use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
     use crate::pauli_sum::PauliSum;
     use crate::test_support::{haar_su4_matrix, rand_sum, zz_rotation};
     use num_complex::Complex64;
@@ -1176,7 +1176,7 @@ mod tests {
 
     /// Every support pattern of qubits 0 and 1 under each of `base`'s keys, so an SU(4) on `(0, 1)` makes one partner's remote rows collide.
     fn dense_on_01<const W: usize>(base: &PauliSum<W>) -> PauliSum<W> {
-        let mut acc = crate::accumulator::BuildAccumulator::<W>::new(base.num_qubits());
+        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<W>::new(base.num_qubits());
         for (x, z, c) in base.iter() {
             for s in 0..16u64 {
                 let (mut x, mut z) = (*x, *z);
@@ -1602,7 +1602,7 @@ mod tests {
         use crate::channel::prepared::Prepared;
         use crate::test_support::sqrt_swap_matrix;
         let nq = 8;
-        let hash = crate::bucket::hash::Gf2Hash::<1>::new(nq, 2, 0xCA);
+        let hash = crate::pauli_sum::hash::Gf2Hash::<1>::new(nq, 2, 0xCA);
         // The row reads x on qubit 0, so a delta flipping qubit 0's x-bit is remote.
         let rows = PartitionRows::<1>::from_rows(nq, vec![[0b1u64]], vec![[0u64]]);
         let ch = GeneralUnitary2Q::from_matrix(0, 1, sqrt_swap_matrix());
@@ -1636,7 +1636,7 @@ mod tests {
         };
         let (aa, ab) = (d[ea].amp[sa], d[eb].amp[sb]);
         let cb = if aa == ab { -1.0 } else { 1.0 };
-        let mut acc = crate::accumulator::BuildAccumulator::<1>::new(nq);
+        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(nq);
         acc.add_term(key(sa), crate::phase::Phase::ONE, Complex64::new(1.0, 0.0));
         acc.add_term(key(sb), crate::phase::Phase::ONE, Complex64::new(cb, 0.0));
         let local = acc.finalize().with_hash(hash.clone());

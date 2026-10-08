@@ -4,11 +4,10 @@
 [![crates.io](https://img.shields.io/crates/v/paulistrings)](https://crates.io/crates/paulistrings)
 
 <!-- Pitch paragraph is single-sourced with the repo-root README.md — keep the two word-identical. -->
-Classical simulation of quantum circuits by Pauli propagation — evolving
-operators in the Pauli basis under gates and noise channels, in either
-the forward or Heisenberg picture. Aimed at workloads where state-vector
-or tensor-network simulators are infeasible (10⁶–10⁸ terms) but the
-operator stays sparse in the Pauli basis.
+Library for Pauli propagation built to scale across threads, processes and nodes.
+Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
+As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
+Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.
 
 This crate is the pure-Rust core. Python bindings live in the
 [`paulistrings-rs`](https://github.com/lkdvos/paulistrings-rs) workspace.

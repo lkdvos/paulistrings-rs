@@ -30,11 +30,11 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) — no Rust toolchain needed:
 
 ```bash
-pip install "paulistrings @ https://github.com/lkdvos/paulistrings-rs/releases/download/vX.Y.Z/paulistrings-X.Y.Z-cp39-abi3-<platform-tag>.whl"
+pip install "paulistrings-rs @ https://github.com/lkdvos/paulistrings-rs/releases/download/vX.Y.Z/paulistrings_rs-X.Y.Z-cp39-abi3-<platform-tag>.whl"
 ```
 
 where `<platform-tag>` is `manylinux_2_28_x86_64` (Linux, incl. Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac); one abi3 wheel per platform serves every Python >= 3.9.
-Or download the `.whl` asset for your platform and `pip install ./paulistrings-*.whl`.
+Or download the `.whl` asset for your platform and `pip install ./paulistrings_rs-*.whl`.
 These wheels cover the default engine only; the `mpi` feature is never bundled into a wheel (no MPI implementation is portable across clusters) — see `CLAUDE.md` for the from-source `mpi` install.
 
 Building from source (for contributors, or platforms without a release wheel):

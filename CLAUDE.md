@@ -206,14 +206,17 @@ It records what was measured and rejected, including several ideas that look obv
 
 ```
 crates/paulistrings/      pure Rust core, no Python deps
-  src/                    pauli_string, phase, pauli_sum/{hash,storage,partition,accumulator}, circuit,
-                          channel/{clifford,rotation,unitary,noise,identity,prepared},
-                          truncation/builtin, engine/{bucketed{,/coset_fill},coset,merge,direct,stats,cuda_context},
-                          engine/partitioned/{*,transport/{exchange_block,in_process},mpi/pipeline}, engine/gpu/{columns,device,driver,error,export,
-                          finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
-                          rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
-                          behind `cuda` and `mpi`),
-                          readout/{product_state,stabilizer,echo}, rng, test_support
+  src/                    lib.rs (private modules, user API re-exported flat), pauli_string, phase, rng,
+                          pauli_sum/{storage,partition,hash,accumulator}, readout/{product_state,stabilizer,echo},
+                          channel/{clifford,rotation,unitary,noise,identity,prepared}, circuit,
+                          truncation/{builtin,tree}, engine/{bucketed{,/coset_fill},coset,merge,direct,stats,cuda_context},
+                          engine/partitioned/{driver,sum,distributed,layer,export,plan,rows,runtime,topology,trace,
+                          truncation,backend,transport{,/exchange_block,/in_process},mpi{,/pipeline}},
+                          engine/gpu/{columns,device,driver,error,export{,/premerge,/receive},finalize,fingerprint,
+                          kernel_cache,kernels,layer{,/options,/fused,/fast_paths},module,partition,payload,prepared,
+                          rank{,/affinity},scan,staging,sum,truncation,wire{,/peer}} (CUDA, behind `cuda`; `nccl`
+                          behind `cuda` and `mpi`), examples (docs only), test_support;
+                          each module's unit tests in a sibling `<module>/tests.rs`
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

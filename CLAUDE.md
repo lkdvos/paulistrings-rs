@@ -209,7 +209,7 @@ crates/paulistrings/      pure Rust core, no Python deps
   src/                    pauli_string, phase, pauli_sum/{hash,storage,partition,accumulator}, circuit,
                           channel/{clifford,rotation,unitary,noise,identity,prepared},
                           truncation/builtin, engine/{bucketed{,/coset_fill},coset,merge,direct,stats,cuda_context},
-                          engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
+                          engine/partitioned/{*,transport/{exchange_block,in_process}}, engine/gpu/{columns,device,driver,error,export,
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
                           rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
                           behind `cuda` and `mpi`),

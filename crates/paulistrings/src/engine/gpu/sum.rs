@@ -50,8 +50,8 @@ pub struct GpuSum<const W: usize> {
     /// All `B_MAX_BITS` rows of `hash`, so a refine uploads nothing.
     pub(super) hash_rows: CudaSlice<u64>,
     /// `FingerprintRows::new(hash.seed())`, and its rows in device layout.
-    pub(super) fp: FingerprintRows<W>,
-    pub(super) fp_rows: CudaSlice<u64>,
+    pub(super) fingerprints: FingerprintRows<W>,
+    pub(super) fingerprint_rows: CudaSlice<u64>,
     /// The refine's scan buffers and `[total, max]`.
     scan: (ScanScratch, CudaSlice<u32>),
     /// Page-locked download staging, allocated on first [`Self::to_host`] and reused.
@@ -61,8 +61,8 @@ pub struct GpuSum<const W: usize> {
 /// K0: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
 pub(super) fn launch_fingerprint(
     stream: &Arc<CudaStream>,
-    k: &KernelSet,
-    fp_rows: &CudaSlice<u64>,
+    kernels: &KernelSet,
+    fingerprint_rows: &CudaSlice<u64>,
     (x, z): (&CudaSlice<u64>, &CudaSlice<u64>),
     g: &mut CudaSlice<u64>,
     n: usize,
@@ -74,11 +74,11 @@ pub(super) fn launch_fingerprint(
     // SAFETY: arguments match `k_fingerprint` in fingerprint.cu; every column holds `n` rows.
     unsafe {
         stream
-            .launch_builder(&k.fingerprint)
+            .launch_builder(&kernels.fingerprint)
             .arg(x)
             .arg(z)
             .arg(&n32)
-            .arg(fp_rows)
+            .arg(fingerprint_rows)
             .arg(g)
             .launch(thread_per(n, 256))?;
     }
@@ -118,12 +118,12 @@ impl<const W: usize> GpuSum<W> {
         let mut start = Vec::with_capacity(b + 1);
         let mut lens = Vec::with_capacity(b);
         for bucket in 0..b {
-            let (bx, bz, bc) = sum.bucket(bucket);
+            let (bucket_x, bucket_z, bucket_coeff) = sum.bucket(bucket);
             start.push((x.len() / W) as u32);
-            lens.push(bc.len() as u32);
-            x.extend_from_slice(bx.as_flattened());
-            z.extend_from_slice(bz.as_flattened());
-            c.extend_from_slice(bytemuck::cast_slice::<Complex64, f64>(bc));
+            lens.push(bucket_coeff.len() as u32);
+            x.extend_from_slice(bucket_x.as_flattened());
+            z.extend_from_slice(bucket_z.as_flattened());
+            c.extend_from_slice(bytemuck::cast_slice::<Complex64, f64>(bucket_coeff));
         }
         start.push(n as u32);
         if n > 0 {
@@ -139,12 +139,12 @@ impl<const W: usize> GpuSum<W> {
         let hash_rows = stream.clone_htod(&flat_rows::<W>(
             (0..B_MAX_BITS as usize).map(|i| hash.row(i)),
         ))?;
-        let fp = FingerprintRows::<W>::new(hash.seed());
-        let fp_rows = stream.clone_htod(&fp.flat())?;
+        let fingerprints = FingerprintRows::<W>::new(hash.seed());
+        let fingerprint_rows = stream.clone_htod(&fingerprints.flat())?;
         launch_fingerprint(
             &stream,
             &kernels,
-            &fp_rows,
+            &fingerprint_rows,
             (&cols.x, &cols.z),
             &mut cols.g,
             n,
@@ -152,7 +152,7 @@ impl<const W: usize> GpuSum<W> {
         let scan = (ScanScratch::new(&stream)?, stream.alloc_zeros::<u32>(2)?);
         stream.synchronize()?;
         let staging = Mutex::new(HostStaging::new(&ctx));
-        let s = Self {
+        let uploaded = Self {
             ctx,
             stream,
             kernels,
@@ -161,13 +161,13 @@ impl<const W: usize> GpuSum<W> {
             cols,
             spare: None,
             hash_rows,
-            fp,
-            fp_rows,
+            fingerprints,
+            fingerprint_rows,
             scan,
             staging,
         };
-        s.debug_check();
-        Ok(s)
+        uploaded.debug_check();
+        Ok(uploaded)
     }
 
     /// Download into a host [`PauliSum`] under the same hash and bucket count, re-sorting each bucket to the host's lexicographic order.
@@ -180,26 +180,26 @@ impl<const W: usize> GpuSum<W> {
         let extent = start
             .iter()
             .zip(&lens)
-            .map(|(&s, &l)| s as usize + l as usize)
+            .map(|(&first, &len)| first as usize + len as usize)
             .max()
             .unwrap_or(0);
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
         staging.ensure(extent, W)?;
         if extent > 0 {
-            let s = &self.stream;
-            s.memcpy_dtoh(
+            let stream = &self.stream;
+            stream.memcpy_dtoh(
                 &self.cols.x.slice(0..extent * W),
                 staging.x.slice_mut(extent * W),
             )?;
-            s.memcpy_dtoh(
+            stream.memcpy_dtoh(
                 &self.cols.z.slice(0..extent * W),
                 staging.z.slice_mut(extent * W),
             )?;
-            s.memcpy_dtoh(
+            stream.memcpy_dtoh(
                 &self.cols.coeff.slice(0..2 * extent),
                 staging.coeff.slice_mut(2 * extent),
             )?;
-            s.synchronize()?;
+            stream.synchronize()?;
         }
         let buckets = gather_sorted::<W>(
             &start,
@@ -281,10 +281,11 @@ impl<const W: usize> GpuSum<W> {
         out.buckets = 0;
         out.reserve(n, b_new)?;
         let (b_old32, bits32, delta32) = (b_old as u32, u32::from(bits_old), u32::from(delta));
-        let (k, s, cols) = (&self.kernels, &self.stream, &self.cols);
+        let (kernels, stream, cols) = (&self.kernels, &self.stream, &self.cols);
         // SAFETY: arguments match `k_refine_count` in refine.cu; `out.lens` holds `b_new` entries.
         unsafe {
-            s.launch_builder(&k.refine_count)
+            stream
+                .launch_builder(&kernels.refine_count)
                 .arg(&cols.x)
                 .arg(&cols.z)
                 .arg(&cols.start)
@@ -296,19 +297,20 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&mut out.lens)
                 .launch(warp_per_bucket(b_old))?;
         }
-        let (scan, tot) = &mut self.scan;
+        let (scan, totals) = &mut self.scan;
         exclusive_scan(
-            s,
-            k,
+            stream,
+            kernels,
             &out.lens.slice(0..b_new),
             &mut out.start.slice_mut(0..b_new + 1),
             b_new,
             scan,
-            tot,
+            totals,
         )?;
         // SAFETY: arguments match `k_refine_scatter`; `out` holds `n` terms, the scan's total.
         unsafe {
-            s.launch_builder(&k.refine_scatter)
+            stream
+                .launch_builder(&kernels.refine_scatter)
                 .arg(&cols.x)
                 .arg(&cols.z)
                 .arg(&cols.coeff)
@@ -349,8 +351,8 @@ impl<const W: usize> GpuSum<W> {
                 self.cols.buckets
             )));
         }
-        let s = &self.stream;
-        let mut bad = s.clone_htod(&[0u32, 0, 0, 0, u32::MAX])?;
+        let stream = &self.stream;
+        let mut bad = stream.clone_htod(&[0u32, 0, 0, 0, u32::MAX])?;
         let (bits32, b32, nq32) = (
             u32::from(self.hash.bits()),
             b as u32,
@@ -359,7 +361,8 @@ impl<const W: usize> GpuSum<W> {
         let cols = &self.cols;
         // SAFETY: arguments match `k_check_invariants` in invariants.cu.
         unsafe {
-            s.launch_builder(&self.kernels.check_invariants)
+            stream
+                .launch_builder(&self.kernels.check_invariants)
                 .arg(&cols.x)
                 .arg(&cols.z)
                 .arg(&cols.g)
@@ -368,15 +371,15 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&self.hash_rows)
                 .arg(&bits32)
                 .arg(&b32)
-                .arg(&self.fp_rows)
+                .arg(&self.fingerprint_rows)
                 .arg(&nq32)
                 .arg(&mut bad)
                 .launch(warp_per_bucket(b))?;
         }
-        let bad = s.clone_dtoh(&bad)?;
-        let start = s.clone_dtoh(&cols.start.slice(0..b))?;
-        let lens = s.clone_dtoh(&cols.lens.slice(0..b))?;
-        s.synchronize()?;
+        let bad = stream.clone_dtoh(&bad)?;
+        let start = stream.clone_dtoh(&cols.start.slice(0..b))?;
+        let lens = stream.clone_dtoh(&cols.lens.slice(0..b))?;
+        stream.synchronize()?;
         if bad[..4].iter().any(|&v| v != 0) {
             return Ok(Err(format!(
                 "GpuSum: {} misplaced, {} duplicate keys, {} beyond num_qubits, {} stale fingerprints (first in bucket {})",
@@ -403,11 +406,11 @@ impl<const W: usize> GpuSum<W> {
                 )));
             }
         }
-        if let Some(&(s0, l0, i)) = spans.last() {
-            if s0 + l0 > cols.term_capacity() {
+        if let Some(&(first, len, i)) = spans.last() {
+            if first + len > cols.term_capacity() {
                 return Ok(Err(format!(
                     "GpuSum: bucket {i} ends at {} beyond capacity {}",
-                    s0 + l0,
+                    first + len,
                     cols.term_capacity()
                 )));
             }
@@ -428,36 +431,38 @@ impl<const W: usize> GpuSum<W> {
 fn gather_sorted<const W: usize>(
     start: &[u32],
     lens: &[u32],
-    sx: &[u64],
-    sz: &[u64],
-    sc: &[f64],
+    staged_x: &[u64],
+    staged_z: &[u64],
+    staged_coeff: &[f64],
 ) -> Vec<BucketCols<W>> {
     (0..lens.len())
         .into_par_iter()
         .map(|bucket| {
-            let (s, l) = (start[bucket] as usize, lens[bucket] as usize);
-            let key =
-                |col: &[u64], r: usize| -> [u64; W] { std::array::from_fn(|w| col[r * W + w]) };
-            let coeff = |r: usize| Complex64::new(sc[2 * r], sc[2 * r + 1]);
-            let ascending =
-                (s + 1..s + l).all(|r| (key(sx, r - 1), key(sz, r - 1)) < (key(sx, r), key(sz, r)));
+            let (first, len) = (start[bucket] as usize, lens[bucket] as usize);
+            let key = |column: &[u64], r: usize| -> [u64; W] {
+                std::array::from_fn(|w| column[r * W + w])
+            };
+            let coeff = |r: usize| Complex64::new(staged_coeff[2 * r], staged_coeff[2 * r + 1]);
+            let ascending = (first + 1..first + len).all(|r| {
+                (key(staged_x, r - 1), key(staged_z, r - 1)) < (key(staged_x, r), key(staged_z, r))
+            });
             let build = |rows: &mut dyn Iterator<Item = usize>| {
                 let mut cols = BucketCols::<W>::default();
-                cols.x.reserve_exact(l);
-                cols.z.reserve_exact(l);
-                cols.coeff.reserve_exact(l);
+                cols.x.reserve_exact(len);
+                cols.z.reserve_exact(len);
+                cols.coeff.reserve_exact(len);
                 for r in rows {
-                    cols.x.push(key(sx, r));
-                    cols.z.push(key(sz, r));
+                    cols.x.push(key(staged_x, r));
+                    cols.z.push(key(staged_z, r));
                     cols.coeff.push(coeff(r));
                 }
                 cols
             };
             if ascending {
-                build(&mut (s..s + l))
+                build(&mut (first..first + len))
             } else {
-                let mut rows: Vec<usize> = (s..s + l).collect();
-                rows.sort_unstable_by_key(|&r| (key(sx, r), key(sz, r)));
+                let mut rows: Vec<usize> = (first..first + len).collect();
+                rows.sort_unstable_by_key(|&r| (key(staged_x, r), key(staged_z, r)));
                 build(&mut rows.into_iter())
             }
         })

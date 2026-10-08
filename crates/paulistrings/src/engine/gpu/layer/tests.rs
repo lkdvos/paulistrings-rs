@@ -24,22 +24,22 @@ fn sixteen_delta_permutation() -> GeneralUnitary2Q {
 fn single_bucket_layer(
     n: usize,
     x0: bool,
-    ch: &dyn Channel<2>,
-    opts: GpuLayerOptions,
+    channel: &dyn Channel<2>,
+    options: GpuLayerOptions,
 ) -> Result<GpuLayerCounters, GpuError> {
     let mut input = rand_sum::<2>(n, 128, 0x4096 + n as u64);
     if x0 {
-        let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<2>::new(128);
+        let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<2>::new(128);
         for (x, z, c) in input.iter() {
             let mut x = *x;
             x[0] |= 1;
-            acc.add_term(
+            accumulator.add_term(
                 crate::pauli_string::PauliString::<2> { x, z: *z },
                 crate::phase::Phase::ONE,
                 c,
             );
         }
-        input = acc.finalize();
+        input = accumulator.finalize();
     }
     let input = input.with_hash(Gf2Hash::new(
         128,
@@ -48,21 +48,21 @@ fn single_bucket_layer(
     ));
     assert_eq!(input.len(), n);
     let mut sum = GpuSum::from_host(&input, 0)?;
-    let mut scratch = LayerScratch::new(&sum, opts)?;
-    let prep = ch.prepare(sum.hash(), false).expect("prepared");
+    let mut scratch = LayerScratch::new(&sum, options)?;
+    let prepared = channel.prepare(sum.hash(), false).expect("prepared");
     let rows = crate::pauli_sum::hash::PartitionRows::<2>::none(128);
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     let solo = InProcessTransport::group(1);
     apply_layer_device(
         &mut sum,
-        &prep,
+        &prepared,
         &plan,
         &KeepProgram::KEEP,
         &mut scratch,
         0,
         &solo[0],
     )?;
-    let want = naive_apply_layer(&input, ch, &KeepAll, false);
+    let want = naive_apply_layer(&input, channel, &KeepAll, false);
     assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
     Ok(scratch.counters)
 }
@@ -71,26 +71,26 @@ fn single_bucket_layer(
 fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     crate::require_cuda!();
     // The limits under test are the fused layer's, which a permutation table only reaches with the scatter path off.
-    let opts = GpuLayerOptions {
+    let options = GpuLayerOptions {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         clifford: false,
         ..GpuLayerOptions::default()
     };
     let perm = sixteen_delta_permutation();
-    let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, opts).unwrap();
+    let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, options).unwrap();
     assert_eq!(
         (c.bits, c.refine_passes, c.records, c.records_max),
         (0, 0, 4096, 4096)
     );
-    let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, opts).unwrap();
+    let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, options).unwrap();
     assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
 
     // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
     let su4 = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-    let cap = crate::engine::gpu::module::kernel_set(0, 2)
+    let record_cap = crate::engine::gpu::module::kernel_set(0, 2)
         .unwrap()
         .layer_cap();
-    let c = single_bucket_layer(cap / 15, true, &su4, opts).unwrap();
+    let c = single_bucket_layer(record_cap / 15, true, &su4, options).unwrap();
     assert_eq!(
         (
             c.bits,
@@ -98,16 +98,16 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
             c.records_max as usize,
             c.n_cap as usize
         ),
-        (0, 0, 15 * (cap / 15), cap)
+        (0, 0, 15 * (record_cap / 15), record_cap)
     );
-    let c = single_bucket_layer(cap / 15 + 1, true, &su4, opts).unwrap();
+    let c = single_bucket_layer(record_cap / 15 + 1, true, &su4, options).unwrap();
     assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
     let capped = GpuLayerOptions {
         max_bits: 0,
-        ..opts
+        ..options
     };
     assert!(matches!(
-        single_bucket_layer(cap / 15 + 1, true, &su4, capped),
+        single_bucket_layer(record_cap / 15 + 1, true, &su4, capped),
         Err(GpuError::Unsupported(_))
     ));
 }
@@ -137,18 +137,18 @@ fn the_exchange_cap_parses_bytes_with_binary_suffixes() {
 /// Eight positions of ten rows under an arena of thirty: batches of three, and a new batch at every chunk start.
 #[test]
 fn arena_batches_start_anew_at_every_chunk_start() {
-    let seg: Vec<u32> = (0..=8).map(|p| 10 * p).collect();
+    let segment_start: Vec<u32> = (0..=8).map(|p| 10 * p).collect();
     let bytes = 30 * DeviceColumns::<1>::BYTES_PER_TERM;
     assert_eq!(
-        arena_batches::<1>(&seg, bytes, 1, &[]),
+        arena_batches::<1>(&segment_start, bytes, 1, &[]),
         (vec![(0, 3), (3, 6), (6, 8)], 30)
     );
     assert_eq!(
-        arena_batches::<1>(&seg, bytes, 1, &[0, 4, 6]),
+        arena_batches::<1>(&segment_start, bytes, 1, &[0, 4, 6]),
         (vec![(0, 3), (3, 4), (4, 6), (6, 8)], 30)
     );
     assert_eq!(
-        arena_batches::<1>(&seg, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
+        arena_batches::<1>(&segment_start, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
         ((0..8).map(|p| (p, p + 1)).collect(), 10)
     );
 }

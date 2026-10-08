@@ -8,7 +8,7 @@ use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::layer::{
     arena_batches, fused_variant, launch_fused, xfer, FusedOut, FusedRecv, FusedTable,
-    LayerScratch, TableBufs, Xfer,
+    LayerScratch, TableBuffers, Xfer,
 };
 use crate::engine::gpu::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use crate::engine::gpu::payload::DeviceBlock;
@@ -22,35 +22,35 @@ use super::DeviceExport;
 
 /// Grow-only buffers of the sender-side merge: one partner's sub-table, its counts and CSR, and the split of its merged rows over the partner's blocks.
 pub(super) struct PremergeScratch {
-    table: TableBufs,
-    sel: CudaSlice<u32>,
-    cnt: CudaSlice<u32>,
+    table: TableBuffers,
+    selected: CudaSlice<u32>,
+    counts: CudaSlice<u32>,
     rows: CudaSlice<u32>,
     start: CudaSlice<u32>,
     out_len_pos: CudaSlice<u32>,
     lens: CudaSlice<u32>,
-    loff: CudaSlice<u32>,
+    split_offsets: CudaSlice<u32>,
     fallback: CudaSlice<u32>,
-    tot: CudaSlice<u32>,
+    totals: CudaSlice<u32>,
     start_host: Vec<u32>,
-    loff_host: Vec<u32>,
+    split_offsets_host: Vec<u32>,
 }
 
 impl PremergeScratch {
-    pub(super) fn new(s: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
+    pub(super) fn new(stream: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
         Ok(Self {
-            table: TableBufs::new(s, w)?,
-            sel: s.alloc_zeros(16)?,
-            cnt: s.alloc_zeros(1)?,
-            rows: s.alloc_zeros(1)?,
-            start: s.alloc_zeros(2)?,
-            out_len_pos: s.alloc_zeros(1)?,
-            lens: s.alloc_zeros(1)?,
-            loff: s.alloc_zeros(2)?,
-            fallback: s.alloc_zeros(2)?,
-            tot: s.alloc_zeros(2)?,
+            table: TableBuffers::new(stream, w)?,
+            selected: stream.alloc_zeros(16)?,
+            counts: stream.alloc_zeros(1)?,
+            rows: stream.alloc_zeros(1)?,
+            start: stream.alloc_zeros(2)?,
+            out_len_pos: stream.alloc_zeros(1)?,
+            lens: stream.alloc_zeros(1)?,
+            split_offsets: stream.alloc_zeros(2)?,
+            fallback: stream.alloc_zeros(2)?,
+            totals: stream.alloc_zeros(2)?,
             start_host: Vec::new(),
-            loff_host: Vec::new(),
+            split_offsets_host: Vec::new(),
         })
     }
 }
@@ -97,101 +97,104 @@ pub(super) fn premerge_partner<const W: usize>(
     scratch: &mut LayerScratch<W>,
     blocks: &mut [DeviceBlock<W>],
 ) -> Result<Option<u64>, GpuError> {
-    let s: Arc<CudaStream> = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
+    let stream: Arc<CudaStream> = sum.stream.clone();
+    let kernels = sum.kernels.clone();
+    let ordinal = sum.device();
     let b = sum.hash.num_buckets();
     let nk = entries.len();
     let sub = table.restrict(entries);
-    let mut sel = [0u32; 16];
+    let mut selected = [0u32; 16];
     for (j, &e) in entries.iter().enumerate() {
-        sel[j] = e as u32;
+        selected[j] = e as u32;
     }
     let (b32, k32, e32) = (b as u32, nk as u32, table.entries as u32);
     let t0 = scratch.event(sum)?;
     {
-        let pm = &mut scratch.export.premerge;
-        grow(&s, &mut pm.cnt, b * nk, o)?;
-        grow(&s, &mut pm.rows, b, o)?;
-        grow(&s, &mut pm.start, b + 1, o)?;
-        grow(&s, &mut pm.out_len_pos, b, o)?;
+        let premerge = &mut scratch.export.premerge;
+        grow(&stream, &mut premerge.counts, b * nk, ordinal)?;
+        grow(&stream, &mut premerge.rows, b, ordinal)?;
+        grow(&stream, &mut premerge.start, b + 1, ordinal)?;
+        grow(&stream, &mut premerge.out_len_pos, b, ordinal)?;
         #[cfg(feature = "phase-timing")]
-        s.synchronize()?;
+        stream.synchronize()?;
         xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-            pm.table.upload(&s, &sub)?;
-            s.memcpy_htod(&sel[..], &mut pm.sel)?;
+            premerge.table.upload(&stream, &sub)?;
+            stream.memcpy_htod(&selected[..], &mut premerge.selected)?;
             Ok(())
         })?;
-        // SAFETY: arguments match `k_premerge_counts` in export.cu; `cnt` holds the layer's `b × E` counts and `pm.cnt` room for `b × K`.
+        // SAFETY: arguments match `k_premerge_counts` in export.cu; `scratch.counts` holds the layer's `b × E` counts and `premerge.counts` room for `b × K`.
         unsafe {
-            s.launch_builder(&k.premerge_counts)
-                .arg(&scratch.cnt)
+            stream
+                .launch_builder(&kernels.premerge_counts)
+                .arg(&scratch.counts)
                 .arg(&e32)
-                .arg(&pm.sel)
+                .arg(&premerge.selected)
                 .arg(&k32)
                 .arg(&b32)
-                .arg(&mut pm.cnt)
+                .arg(&mut premerge.counts)
                 .launch(thread_per(b * nk, 256))?;
         }
         // SAFETY: arguments match `k_rows` in count.cu; every `rem` entry is `NO_REMOTE`, so `recv_off` is never read.
         unsafe {
-            s.launch_builder(&k.rows)
-                .arg(&pm.cnt)
+            stream
+                .launch_builder(&kernels.rows)
+                .arg(&premerge.counts)
                 .arg(&scratch.bucket_at)
-                .arg(&pm.table.bd)
-                .arg(&pm.table.rem)
+                .arg(&premerge.table.bucket_delta)
+                .arg(&premerge.table.rem)
                 .arg(&scratch.export.recv_off)
-                .arg(&mut pm.rows)
+                .arg(&mut premerge.rows)
                 .arg(&b32)
                 .arg(&k32)
                 .launch(thread_per(b, 1024))?;
         }
         exclusive_scan(
-            &s,
-            &k,
-            &pm.rows.slice(0..b),
-            &mut pm.start.slice_mut(0..b + 1),
+            &stream,
+            &kernels,
+            &premerge.rows.slice(0..b),
+            &mut premerge.start.slice_mut(0..b + 1),
             b,
             &mut scratch.scan,
-            &mut pm.tot,
+            &mut premerge.totals,
         )?;
     }
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     let (total, most) = {
-        let pm = &mut scratch.export.premerge;
-        pm.start_host.resize(b + 1, 0);
-        let (start, start_host, tot) = (&pm.start, &mut pm.start_host, &pm.tot);
+        let premerge = &mut scratch.export.premerge;
+        premerge.start_host.resize(b + 1, 0);
+        let (start, start_host, totals) =
+            (&premerge.start, &mut premerge.start_host, &premerge.totals);
         xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-            let v = s.clone_dtoh(tot)?;
-            s.memcpy_dtoh(&start.slice(0..b + 1), &mut start_host[..])?;
-            s.synchronize()?;
+            let v = stream.clone_dtoh(totals)?;
+            stream.memcpy_dtoh(&start.slice(0..b + 1), &mut start_host[..])?;
+            stream.synchronize()?;
             Ok((v[0] as u64, v[1] as usize))
         })?
     };
-    let cap = k.layer_cap();
-    if most > cap {
+    let record_cap = kernels.layer_cap();
+    if most > record_cap {
         scratch.lap(sum, t0, |m| &mut m.export)?;
         return Ok(None);
     }
-    let (func, _, smem) = fused_variant(&k, W, most, sub.dense);
+    let (func, _, smem) = fused_variant(&kernels, W, most, sub.dense);
     let (batches, max_batch_rows) = arena_batches::<W>(
         &scratch.export.premerge.start_host,
         scratch.options.arena_bytes,
-        cap,
+        record_cap,
         &[],
     );
     let mut arena = match scratch.arena.take() {
         Some(a) => a,
-        None => DeviceColumns::<W>::with_capacity(&s, o, max_batch_rows, 1)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
     };
     arena.len = 0;
     arena.buckets = 0;
     arena.reserve(max_batch_rows, 1)?;
     let mut running = vec![0u32; nk];
-    for bl in blocks.iter_mut() {
-        bl.offsets.clear();
-        bl.offsets.resize(b + 1, 0);
+    for block in blocks.iter_mut() {
+        block.offsets.clear();
+        block.offsets.resize(b + 1, 0);
     }
     let r = premerge_batches(
         sum,
@@ -212,10 +215,10 @@ pub(super) fn premerge_partner<const W: usize>(
         blocks[j].offsets[b] = rows;
         blocks[j].set_header(e as u32, b);
     }
-    let fb = s.clone_dtoh(&scratch.export.premerge.fallback)?;
-    s.synchronize()?;
-    scratch.counters.fallback_hi += fb[0];
-    scratch.counters.fallback_key += fb[1];
+    let fallbacks = stream.clone_dtoh(&scratch.export.premerge.fallback)?;
+    stream.synchronize()?;
+    scratch.counters.fallback_hi += fallbacks[0];
+    scratch.counters.fallback_key += fallbacks[1];
     scratch.counters.rows_premerged += total - merged;
     scratch.lap(sum, t0, |m| &mut m.export)?;
     Ok(Some(merged))
@@ -233,9 +236,9 @@ fn premerge_batches<const W: usize>(
     running: &mut [u32],
     blocks: &mut [DeviceBlock<W>],
 ) -> Result<(), GpuError> {
-    let s = &sum.stream;
-    let k = &sum.kernels;
-    let o = sum.device();
+    let stream = &sum.stream;
+    let kernels = &sum.kernels;
+    let ordinal = sum.device();
     let nk = running.len();
     let k32 = nk as u32;
     let LayerScratch {
@@ -246,7 +249,7 @@ fn premerge_batches<const W: usize>(
         ..
     } = scratch;
     let DeviceExport {
-        premerge: pm,
+        premerge,
         recv_off,
         recv_base,
         recv_x,
@@ -255,17 +258,17 @@ fn premerge_batches<const W: usize>(
         recv_g,
         ..
     } = export;
-    s.memset_zeros(&mut pm.fallback)?;
+    stream.memset_zeros(&mut premerge.fallback)?;
     for &(p0, p1) in batches {
         let n = p1 - p0;
         let (p0u, n32) = (p0 as u32, n as u32);
         let fused = FusedTable {
-            cnt: &pm.cnt,
-            seg_start: &pm.start,
-            table: &pm.table,
+            counts: &premerge.counts,
+            segment_start: &premerge.start,
+            table: &premerge.table,
         };
         let recv = FusedRecv {
-            off: recv_off,
+            offsets: recv_off,
             base: recv_base,
             x: recv_x,
             z: recv_z,
@@ -274,8 +277,8 @@ fn premerge_batches<const W: usize>(
         };
         let written = FusedOut {
             arena: &mut *arena,
-            out_len_pos: &mut pm.out_len_pos,
-            fallback: &mut pm.fallback,
+            out_len_pos: &mut premerge.out_len_pos,
+            fallback: &mut premerge.fallback,
         };
         launch_fused(
             sum,
@@ -288,46 +291,56 @@ fn premerge_batches<const W: usize>(
             (p0u, n32),
             written,
         )?;
-        grow(s, &mut pm.lens, nk * n, o)?;
-        grow(s, &mut pm.loff, nk * n + 1, o)?;
+        grow(stream, &mut premerge.lens, nk * n, ordinal)?;
+        grow(stream, &mut premerge.split_offsets, nk * n + 1, ordinal)?;
         // SAFETY: arguments match `k_premerge_split` in export.cu; `lens` holds `K × n` entries.
         unsafe {
-            s.launch_builder(&k.premerge_split)
-                .arg(&pm.out_len_pos)
-                .arg(&pm.cnt)
+            stream
+                .launch_builder(&kernels.premerge_split)
+                .arg(&premerge.out_len_pos)
+                .arg(&premerge.counts)
                 .arg(&*bucket_at)
-                .arg(&pm.table.bd)
+                .arg(&premerge.table.bucket_delta)
                 .arg(&k32)
                 .arg(&p0u)
                 .arg(&n32)
-                .arg(&mut pm.lens)
+                .arg(&mut premerge.lens)
                 .launch(thread_per(n, 256))?;
         }
         exclusive_scan(
-            s,
-            k,
-            &pm.lens.slice(0..nk * n),
-            &mut pm.loff.slice_mut(0..nk * n + 1),
+            stream,
+            kernels,
+            &premerge.lens.slice(0..nk * n),
+            &mut premerge.split_offsets.slice_mut(0..nk * n + 1),
             nk * n,
             scan,
-            &mut pm.tot,
+            &mut premerge.totals,
         )?;
         #[cfg(feature = "phase-timing")]
-        s.synchronize()?;
-        pm.loff_host.resize(nk * n + 1, 0);
+        stream.synchronize()?;
+        premerge.split_offsets_host.resize(nk * n + 1, 0);
         {
-            let (loff, loff_host) = (&pm.loff, &mut pm.loff_host);
+            let (split_offsets, split_offsets_host) =
+                (&premerge.split_offsets, &mut premerge.split_offsets_host);
             xfer(xfer_ns, Xfer::D2h, || {
-                s.memcpy_dtoh(&loff.slice(0..nk * n + 1), &mut loff_host[..])?;
-                s.synchronize()?;
+                stream.memcpy_dtoh(
+                    &split_offsets.slice(0..nk * n + 1),
+                    &mut split_offsets_host[..],
+                )?;
+                stream.synchronize()?;
                 Ok(())
             })?;
         }
-        let lo = &pm.loff_host;
-        let share = |j: usize| (lo[j * n] as usize, (lo[(j + 1) * n] - lo[j * n]) as usize);
-        let set_offsets = |off: &mut [u32], j: usize, run: u32| {
+        let split = &premerge.split_offsets_host;
+        let share = |j: usize| {
+            (
+                split[j * n] as usize,
+                (split[(j + 1) * n] - split[j * n]) as usize,
+            )
+        };
+        let set_offsets = |block_offsets: &mut [u32], j: usize, run: u32| {
             for i in 0..n {
-                off[p0 + i] = run + lo[j * n + i] - lo[j * n];
+                block_offsets[p0 + i] = run + split[j * n + i] - split[j * n];
             }
         };
         let copy = |j: usize,
@@ -341,13 +354,14 @@ fn premerge_batches<const W: usize>(
             let j32 = j as u32;
             // SAFETY: arguments match `k_premerge_copy` in export.cu; the destination holds `dst0` plus block `j`'s share of the batch.
             unsafe {
-                s.launch_builder(&k.premerge_copy)
+                stream
+                    .launch_builder(&kernels.premerge_copy)
                     .arg(&arena.x)
                     .arg(&arena.z)
                     .arg(&arena.coeff)
-                    .arg(&pm.start)
-                    .arg(&pm.lens)
-                    .arg(&pm.loff)
+                    .arg(&premerge.start)
+                    .arg(&premerge.lens)
+                    .arg(&premerge.split_offsets)
                     .arg(&j32)
                     .arg(&p0u)
                     .arg(&n32)
@@ -359,13 +373,13 @@ fn premerge_batches<const W: usize>(
             }
             Ok(())
         };
-        for (j, bl) in blocks.iter_mut().enumerate() {
+        for (j, block) in blocks.iter_mut().enumerate() {
             let (_, rows) = share(j);
-            set_offsets(&mut bl.offsets, j, running[j]);
+            set_offsets(&mut block.offsets, j, running[j]);
             if rows > 0 {
                 let live = running[j] as usize;
-                bl.reserve_keep(s, live, live + rows, o)?;
-                let DeviceBlock { x, z, c, .. } = bl;
+                block.reserve_keep(stream, live, live + rows, ordinal)?;
+                let DeviceBlock { x, z, c, .. } = block;
                 copy(j, running[j], (x, z, c))?;
             }
             running[j] += rows as u32;

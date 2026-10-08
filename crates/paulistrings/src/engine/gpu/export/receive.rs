@@ -22,11 +22,11 @@ pub(super) fn stage_receive<const W: usize>(
     lay_out(
         export,
         b,
-        blocks.iter().map(|bl| {
+        blocks.iter().map(|block| {
             (
-                bl.header.num_buckets,
-                &bl.offsets[..],
-                bl.header.rows as usize,
+                block.header.num_buckets,
+                &block.offsets[..],
+                block.header.rows as usize,
             )
         }),
     );
@@ -42,7 +42,7 @@ pub(super) fn stage_receive<const W: usize>(
             bytes: (export.recv_rows * recv_row_bytes::<W>()) as u64,
         });
     }
-    let (log2, most) = recv_chunks(&export.off_host, b, cap_rows);
+    let (log2, most) = recv_chunks(&export.offsets_host, b, cap_rows);
     size_receive(sum, export, most, xfer_ns)?;
     Ok(log2)
 }
@@ -64,7 +64,7 @@ pub(super) fn wire_ready<const W: usize>(export: &DeviceExport<W>) -> Result<(),
 pub(super) fn discard_received<const W: usize>(
     export: &mut DeviceExport<W>,
 ) -> Result<u64, GpuError> {
-    let n = export.off_host.len();
+    let n = export.offsets_host.len();
     export
         .stream
         .memset_zeros(&mut export.recv_off.slice_mut(0..n))?;
@@ -85,48 +85,49 @@ fn lay_out<'a, const W: usize>(
     blocks: impl Iterator<Item = (u32, &'a [u32], usize)>,
 ) {
     let mut total = 0usize;
-    let mut max_seg = 0usize;
-    export.off_host.clear();
+    let mut max_segment = 0usize;
+    export.offsets_host.clear();
     for (num_buckets, offsets, rows) in blocks {
         assert_eq!(
             num_buckets as usize, b,
             "a partner sent a block indexed by {num_buckets} buckets where this partition has {b}"
         );
-        export.off_host.extend_from_slice(&offsets[..b + 1]);
-        max_seg = offsets[..b + 1]
+        export.offsets_host.extend_from_slice(&offsets[..b + 1]);
+        max_segment = offsets[..b + 1]
             .windows(2)
             .map(|w| (w[1] - w[0]) as usize)
             .max()
             .unwrap_or(0)
-            .max(max_seg);
+            .max(max_segment);
         total += rows;
     }
-    export.recv_max_segment = max_seg;
+    export.recv_max_segment = max_segment;
     export.recv_rows = total;
 }
 
 /// Received rows over every block in positions `lo..hi` of the concatenated `K × (b + 1)` offsets.
-pub(super) fn rows_between(off: &[u32], b: usize, lo: usize, hi: usize) -> usize {
-    off.chunks_exact(b + 1)
-        .map(|o| (o[hi] - o[lo]) as usize)
+pub(super) fn rows_between(offsets: &[u32], b: usize, lo: usize, hi: usize) -> usize {
+    offsets
+        .chunks_exact(b + 1)
+        .map(|block| (block[hi] - block[lo]) as usize)
         .sum()
 }
 
 /// The largest chunk's received rows when `b` positions are cut into `2^log2` equal chunks.
-pub(super) fn chunk_max(off: &[u32], b: usize, log2: u8) -> usize {
+pub(super) fn chunk_max(offsets: &[u32], b: usize, log2: u8) -> usize {
     let step = b >> log2;
     (0..1usize << log2)
-        .map(|c| rows_between(off, b, c * step, (c + 1) * step))
+        .map(|c| rows_between(offsets, b, c * step, (c + 1) * step))
         .max()
         .unwrap_or(0)
 }
 
 /// The fewest power-of-two chunks, at most one per position, whose received rows each fit `cap_rows`, as `(log2 chunks, rows of the largest)`.
 // A power of two because such a cut refines every coarser one, so the group's agreed maximum never grows anyone's chunk.
-pub(super) fn recv_chunks(off: &[u32], b: usize, cap_rows: usize) -> (u8, usize) {
+pub(super) fn recv_chunks(offsets: &[u32], b: usize, cap_rows: usize) -> (u8, usize) {
     let mut log2 = 0u8;
     loop {
-        let most = chunk_max(off, b, log2);
+        let most = chunk_max(offsets, b, log2);
         if most <= cap_rows || 1usize << log2 >= b {
             return (log2, most);
         }
@@ -149,33 +150,36 @@ fn size_receive<const W: usize>(
     rows: usize,
     xfer_ns: &mut XferNs,
 ) -> Result<(), GpuError> {
-    let s = &sum.stream;
-    let o = sum.device();
+    let stream = &sum.stream;
+    let ordinal = sum.device();
     let DeviceExport {
         recv_off,
         recv_x,
         recv_z,
         recv_c,
         recv_g,
-        off_host,
+        offsets_host,
         ..
     } = export;
-    grow(s, recv_off, off_host.len().max(2), o)?;
-    grow(s, recv_x, rows.max(1) * W, o)?;
-    grow(s, recv_z, rows.max(1) * W, o)?;
-    grow(s, recv_c, 2 * rows.max(1), o)?;
-    grow(s, recv_g, rows.max(1), o)?;
+    grow(stream, recv_off, offsets_host.len().max(2), ordinal)?;
+    grow(stream, recv_x, rows.max(1) * W, ordinal)?;
+    grow(stream, recv_z, rows.max(1) * W, ordinal)?;
+    grow(stream, recv_c, 2 * rows.max(1), ordinal)?;
+    grow(stream, recv_g, rows.max(1), ordinal)?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     xfer(xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&off_host[..], &mut recv_off.slice_mut(0..off_host.len()))?;
+        stream.memcpy_htod(
+            &offsets_host[..],
+            &mut recv_off.slice_mut(0..offsets_host.len()),
+        )?;
         Ok(())
     })
 }
 
 /// Positions `lo..hi` of every received block laid end to end from row 0, returning their rows, with `base[k]` the wrapping `start - off[k][lo]` the kernel's own `u32` sum `base[k] + off[k][p]` undoes.
 pub(super) fn chunk_layout(
-    off: &[u32],
+    offsets: &[u32],
     b: usize,
     lo: usize,
     hi: usize,
@@ -184,9 +188,9 @@ pub(super) fn chunk_layout(
     base.clear();
     base.resize(16, 0);
     let mut at = 0usize;
-    for (k, o) in off.chunks_exact(b + 1).enumerate() {
-        base[k] = (at as u32).wrapping_sub(o[lo]);
-        at += (o[hi] - o[lo]) as usize;
+    for (k, block) in offsets.chunks_exact(b + 1).enumerate() {
+        base[k] = (at as u32).wrapping_sub(block[lo]);
+        at += (block[hi] - block[lo]) as usize;
     }
     at
 }
@@ -229,12 +233,12 @@ fn move_chunk<const W: usize>(
     xfer_ns: &mut XferNs,
 ) -> Result<usize, GpuError> {
     let b = sum.hash.num_buckets();
-    let s = &sum.stream;
+    let stream = &sum.stream;
     let (lo, hi) = (
         pending.map.bound(c) as usize,
         pending.map.bound(c + 1) as usize,
     );
-    let n = chunk_layout(&export.off_host, b, lo, hi, &mut export.base_host);
+    let n = chunk_layout(&export.offsets_host, b, lo, hi, &mut export.base_host);
     let wire = export.wire.clone().ok_or(GpuError::Unsupported(
         "a remote layer on a partition without a device wire",
     ))?;
@@ -264,9 +268,9 @@ fn move_chunk<const W: usize>(
         let (r0, r1) = op.rows;
         let e = op.column.elems_per_row::<W>();
         match op.column {
-            WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, s),
-            WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, s),
-            WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, s),
+            WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, stream),
+            WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, stream),
+            WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, stream),
         }
     }
     let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
@@ -277,14 +281,22 @@ fn move_chunk<const W: usize>(
             .map(|op| ((op.rows.1 - op.rows.0) * e, op.peer))
             .collect()
     };
-    group.recv_parts(recv_x.slice_mut(0..n * W), &recv_parts(WireColumn::X), s);
-    group.recv_parts(recv_z.slice_mut(0..n * W), &recv_parts(WireColumn::Z), s);
+    group.recv_parts(
+        recv_x.slice_mut(0..n * W),
+        &recv_parts(WireColumn::X),
+        stream,
+    );
+    group.recv_parts(
+        recv_z.slice_mut(0..n * W),
+        &recv_parts(WireColumn::Z),
+        stream,
+    );
     group.recv_parts(
         recv_c.slice_mut(0..2 * n),
         &recv_parts(WireColumn::Coeff),
-        s,
+        stream,
     );
-    if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(s)) {
+    if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(stream)) {
         pending.failed = true;
         return Err(e);
     }
@@ -293,17 +305,17 @@ fn move_chunk<const W: usize>(
         return Ok(n);
     }
     launch_fingerprint(
-        s,
+        stream,
         &sum.kernels,
-        &sum.fp_rows,
+        &sum.fingerprint_rows,
         (&*recv_x, &*recv_z),
         recv_g,
         n,
     )?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     xfer(xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&base_host[..], recv_base)?;
+        stream.memcpy_htod(&base_host[..], recv_base)?;
         Ok(())
     })?;
     Ok(n)

@@ -39,11 +39,11 @@ impl<const W: usize> FingerprintRows<W> {
     pub(crate) fn fingerprint(&self, x: &[u64; W], z: &[u64; W]) -> u64 {
         let mut out = 0u64;
         for r in 0..FP_ROWS {
-            let mut acc = 0u64;
+            let mut parity = 0u64;
             for w in 0..W {
-                acc ^= (x[w] & self.rows_x[r][w]) ^ (z[w] & self.rows_z[r][w]);
+                parity ^= (x[w] & self.rows_x[r][w]) ^ (z[w] & self.rows_z[r][w]);
             }
-            out |= u64::from(acc.count_ones() & 1) << r;
+            out |= u64::from(parity.count_ones() & 1) << r;
         }
         out
     }

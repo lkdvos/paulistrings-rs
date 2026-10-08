@@ -105,9 +105,9 @@ pub(crate) fn gpu_desired_bits(
         .min(B_MAX_BITS)
 }
 
-/// The entries `prep` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
-pub(crate) fn prepared_fanout<const W: usize>(prep: &Prepared<W>) -> usize {
-    match prep {
+/// The entries `prepared` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
+pub(crate) fn prepared_fanout<const W: usize>(prepared: &Prepared<W>) -> usize {
+    match prepared {
         Prepared::Local(ptm) => ptm
             .deltas()
             .iter()

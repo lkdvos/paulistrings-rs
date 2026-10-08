@@ -62,13 +62,13 @@ fn round_trip<const W: usize>(sum: &PauliSum<W>, what: &str) {
 }
 
 fn one_term<const W: usize>(num_qubits: usize) -> PauliSum<W> {
-    let mut acc = BuildAccumulator::<W>::new(num_qubits);
-    acc.add_term(
+    let mut accumulator = BuildAccumulator::<W>::new(num_qubits);
+    accumulator.add_term(
         PauliString::<W>::y(num_qubits as u32 - 1),
         Phase::ONE,
         Complex64::new(0.5, -0.25),
     );
-    acc.finalize()
+    accumulator.finalize()
 }
 
 fn single_bucket<const W: usize>(num_qubits: usize) -> PauliSum<W> {
@@ -116,11 +116,11 @@ fn to_host_twice_reuses_the_staging_and_agrees() {
 fn check_fingerprints<const W: usize>(sum: &PauliSum<W>, mask: u64, dev: &GpuSum<W>) {
     let raw = dev.download_raw();
     assert_eq!(raw.g.len(), sum.len());
-    let fp = FingerprintRows::<W>::new(sum.hash().seed());
+    let fingerprints = FingerprintRows::<W>::new(sum.hash().seed());
     for i in 0..raw.g.len() {
         assert_eq!(
             raw.g[i],
-            fp.fingerprint(&raw.x[i], &raw.z[i]) & mask,
+            fingerprints.fingerprint(&raw.x[i], &raw.z[i]) & mask,
             "term {i}"
         );
     }
@@ -208,9 +208,9 @@ fn refine_to_beyond_b_max_bits_is_unsupported() {
 #[test]
 fn eight_bit_fingerprints_still_round_trip_and_refine() {
     crate::require_cuda!();
-    let opts = ["-DFP_BITS=8".to_string()];
+    let options = ["-DFP_BITS=8".to_string()];
     let sum = rand_sum::<2>(50_000, 128, 0x88);
-    let mut dev = GpuSum::from_host_with_options(&sum, 0, &opts).expect("upload");
+    let mut dev = GpuSum::from_host_with_options(&sum, 0, &options).expect("upload");
     check_fingerprints(&sum, 0xFF, &dev);
     dev.assert_invariants_device().expect("invariants");
     assert_same_buckets(&dev.to_host().unwrap(), &sum, "FP_BITS=8 round trip");
@@ -245,10 +245,10 @@ fn to_host_re_sorts_a_bucket_out_of_lex_order() {
         .unwrap();
     s.memcpy_htod(&c, &mut dev.cols.coeff.slice_mut(2 * r0..2 * (r0 + l)))
         .unwrap();
-    let fp = FingerprintRows::<2>::new(sum.hash().seed());
+    let fingerprints = FingerprintRows::<2>::new(sum.hash().seed());
     let g: Vec<u64> = (0..l)
         .rev()
-        .map(|i| fp.fingerprint(&bx[i], &bz[i]))
+        .map(|i| fingerprints.fingerprint(&bx[i], &bz[i]))
         .collect();
     s.memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0..r0 + l))
         .unwrap();
@@ -276,8 +276,8 @@ fn invariants_kernel_reports_corruption() {
     dev.stream
         .memcpy_htod(&bz[0], &mut dev.cols.z.slice_mut(r0 + 1..r0 + 2))
         .unwrap();
-    let fp = FingerprintRows::<1>::new(sum.hash().seed());
-    let g = [fp.fingerprint(&bx[0], &bz[0])];
+    let fingerprints = FingerprintRows::<1>::new(sum.hash().seed());
+    let g = [fingerprints.fingerprint(&bx[0], &bz[0])];
     dev.stream
         .memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0 + 1..r0 + 2))
         .unwrap();

@@ -32,20 +32,21 @@ fn su4<const W: usize>() -> GeneralUnitary2Q {
 
 /// Every support pattern of qubits 0 and 1 under each of `base`'s keys, so an SU(4) on `(0, 1)` makes one partner's remote rows collide.
 fn dense_on_01<const W: usize>(base: &PauliSum<W>) -> PauliSum<W> {
-    let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<W>::new(base.num_qubits());
+    let mut accumulator =
+        crate::pauli_sum::accumulator::BuildAccumulator::<W>::new(base.num_qubits());
     for (x, z, c) in base.iter() {
         for s in 0..16u64 {
             let (mut x, mut z) = (*x, *z);
             x[0] = (x[0] & !0b11) | (s & 0b11);
             z[0] = (z[0] & !0b11) | (s >> 2);
-            acc.add_term(
+            accumulator.add_term(
                 crate::pauli_string::PauliString::<W> { x, z },
                 crate::phase::Phase::ONE,
                 c * (1.0 + s as f64),
             );
         }
     }
-    acc.finalize()
+    accumulator.finalize()
 }
 
 /// One rank's layer: the host's `export_layer` and the device's `export_blocks_device` of the same share.
@@ -64,14 +65,14 @@ struct Exported<const W: usize> {
 fn export_rank<const W: usize>(
     input: &PauliSum<W>,
     rows: &PartitionRows<W>,
-    ch: &dyn Channel<W>,
+    channel: &dyn Channel<W>,
     rank: u32,
     (premerge, arena_bytes, nvrtc): (bool, usize, &[String]),
 ) -> Option<Exported<W>> {
     let size = rows.num_partitions() as u32;
     let local = input.filter_partition(rows, rank);
-    let prep = ch.prepare(local.hash(), false).expect("prepared");
-    let plan = PartitionPlan::new(&prep, rows, rank);
+    let prepared = channel.prepare(local.hash(), false).expect("prepared");
+    let plan = PartitionPlan::new(&prepared, rows, rank);
     if !plan.has_remote() {
         return None;
     }
@@ -84,7 +85,7 @@ fn export_rank<const W: usize>(
     );
     let (want, want_counts) = export_layer(
         &local,
-        &prep,
+        &prepared,
         &plan,
         size,
         &map,
@@ -97,7 +98,7 @@ fn export_rank<const W: usize>(
         ..GpuLayerOptions::default()
     };
     let mut scratch = LayerScratch::new(&dev, options).expect("scratch");
-    let table = DevicePrepared::new(&prep, dev.hash(), &dev.fp, &plan.remote);
+    let table = DevicePrepared::new(&prepared, dev.hash(), &dev.fingerprints, &plan.remote);
     scratch.upload_table(&dev, &table).expect("table");
     scratch.count_local(&dev, &table).expect("count");
     let (got, got_counts) =
@@ -160,10 +161,10 @@ fn device_export_matches_host<const W: usize>(num_qubits: usize, seed: u64, pbit
     let input = rand_sum::<W>(6000, num_qubits, seed);
     let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
     let (mut exported, mut multi_block_payloads) = (0usize, 0);
-    for (name, ch) in &fixture_channels::<W>() {
+    for (name, channel) in &fixture_channels::<W>() {
         for rank in 0..rows.num_partitions() as u32 {
             let off = (false, DEFAULT_ARENA_BYTES, &[][..]);
-            let Some(e) = export_rank(&input, &rows, ch.as_ref(), rank, off) else {
+            let Some(e) = export_rank(&input, &rows, channel.as_ref(), rank, off) else {
                 continue;
             };
             assert_payloads_eq(&e, &format!("W={W} {name} rank {rank}"));
@@ -331,11 +332,11 @@ fn premerge_matches_host_by_key<const W: usize>(
     nvrtc: &[String],
 ) -> Vec<(&'static str, u64, u64, (u32, u32))> {
     let mut totals = Vec::new();
-    for (name, ch) in &fixture_channels::<W>() {
+    for (name, channel) in &fixture_channels::<W>() {
         let (mut sent, mut unmerged, mut fallbacks) = (0u64, 0u64, (0u32, 0u32));
         for rank in 0..rows.num_partitions() as u32 {
             let on = (true, arena_bytes, nvrtc);
-            let Some(e) = export_rank(input, rows, ch.as_ref(), rank, on) else {
+            let Some(e) = export_rank(input, rows, channel.as_ref(), rank, on) else {
                 continue;
             };
             let (nb, what) = (
@@ -458,12 +459,12 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     let hash = crate::pauli_sum::hash::Gf2Hash::<1>::new(nq, 2, 0xCA);
     // The row reads x on qubit 0, so a delta flipping qubit 0's x-bit is remote.
     let rows = PartitionRows::<1>::from_rows(nq, vec![[0b1u64]], vec![[0u64]]);
-    let ch = GeneralUnitary2Q::from_matrix(0, 1, sqrt_swap_matrix());
-    let prep = ch.prepare(&hash, false).expect("prepared");
-    let Prepared::Local(ptm) = &prep else {
+    let channel = GeneralUnitary2Q::from_matrix(0, 1, sqrt_swap_matrix());
+    let prepared = channel.prepare(&hash, false).expect("prepared");
+    let Prepared::Local(ptm) = &prepared else {
         unreachable!()
     };
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     let d = ptm.deltas();
     let zero = Complex64::new(0.0, 0.0);
     let mut pick = None;
@@ -489,10 +490,10 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     };
     let (aa, ab) = (d[ea].amp[sa], d[eb].amp[sb]);
     let cb = if aa == ab { -1.0 } else { 1.0 };
-    let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(nq);
-    acc.add_term(key(sa), crate::phase::Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(key(sb), crate::phase::Phase::ONE, Complex64::new(cb, 0.0));
-    let local = acc.finalize().with_hash(hash.clone());
+    let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(nq);
+    accumulator.add_term(key(sa), crate::phase::Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(key(sb), crate::phase::Phase::ONE, Complex64::new(cb, 0.0));
+    let local = accumulator.finalize().with_hash(hash.clone());
     let (ka, kb) = (key(sa), key(sb));
     assert_eq!(rows.partition_of(&ka.x, &ka.z), 0);
     assert_eq!(rows.partition_of(&kb.x, &kb.z), 0);
@@ -502,7 +503,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
         (kb.x[0] ^ d[eb].mask_x[0], kb.z[0] ^ d[eb].mask_z[0])
     );
     let dev = GpuSum::from_host(&local, 0).expect("upload");
-    let table = DevicePrepared::new(&prep, &hash, &dev.fp, &plan.remote);
+    let table = DevicePrepared::new(&prepared, &hash, &dev.fingerprints, &plan.remote);
     let shipped = |premerge: bool| {
         let options = GpuLayerOptions {
             premerge,

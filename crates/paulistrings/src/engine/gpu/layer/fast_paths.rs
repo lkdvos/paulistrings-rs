@@ -18,31 +18,32 @@ pub(super) fn rescale_device<const W: usize>(
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
 ) -> Result<(), GpuError> {
-    let s = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
+    let stream = sum.stream.clone();
+    let kernels = sum.kernels.clone();
+    let ordinal = sum.device();
     let b = sum.hash.num_buckets();
     let extent = scratch.extent.max(sum.len());
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, extent, b)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, b)?,
     };
     out.len = 0;
     out.buckets = 0;
     out.reserve(extent, b)?;
-    grow(&s, &mut scratch.dst_off, b + 1, o)?;
+    grow(&stream, &mut scratch.dst_off, b + 1, ordinal)?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     let amp = &mut scratch.table.amp;
     xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&table.amp, amp)?;
+        stream.memcpy_htod(&table.amp, amp)?;
         Ok(())
     })?;
     let b32 = b as u32;
     let t0 = scratch.event(sum)?;
     // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
     unsafe {
-        s.launch_builder(&k.rescale)
+        stream
+            .launch_builder(&kernels.rescale)
             .arg(&sum.cols.x)
             .arg(&sum.cols.z)
             .arg(&sum.cols.coeff)
@@ -64,8 +65,8 @@ pub(super) fn rescale_device<const W: usize>(
             .launch(warp_per_bucket(b))?;
     }
     exclusive_scan(
-        &s,
-        &k,
+        &stream,
+        &kernels,
         &out.lens.slice(0..b),
         &mut scratch.dst_off.slice_mut(0..b + 1),
         b,
@@ -74,11 +75,11 @@ pub(super) fn rescale_device<const W: usize>(
     )?;
     scratch.lap(sum, t0, |m| &mut m.rescale)?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let tot = &scratch.tot_a;
+    stream.synchronize()?;
+    let totals = &scratch.tot_a;
     let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        let v = s.clone_dtoh(tot)?;
-        s.synchronize()?;
+        let v = stream.clone_dtoh(totals)?;
+        stream.synchronize()?;
         Ok(v[0])
     })?;
     out.len = total as usize;
@@ -102,29 +103,29 @@ pub(super) fn permute_device<const W: usize>(
     keep: &KeepProgram,
     scratch: &mut LayerScratch<W>,
 ) -> Result<(), GpuError> {
-    let s = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
+    let stream = sum.stream.clone();
+    let kernels = sum.kernels.clone();
+    let ordinal = sum.device();
     let b = sum.hash.num_buckets();
     let n_in = sum.len();
     let (b32, e32) = (b as u32, table.entries as u32);
-    grow(&s, &mut scratch.cnt, b * table.entries, o)?;
+    grow(&stream, &mut scratch.counts, b * table.entries, ordinal)?;
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, n_in, b)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, n_in, b)?,
     };
     out.len = 0;
     out.buckets = 0;
     out.reserve(n_in, b)?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let (bufs, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
+    stream.synchronize()?;
+    let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
     xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&table.amp, &mut bufs.amp)?;
-        s.memcpy_htod(&table.mask, &mut bufs.mask)?;
-        s.memcpy_htod(&table.bucket_delta, &mut bufs.bd)?;
-        s.memcpy_htod(&table.gm, &mut bufs.gm)?;
-        s.memcpy_htod(&table.entry_of, entry_of)?;
+        stream.memcpy_htod(&table.amp, &mut buffers.amp)?;
+        stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
+        stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
+        stream.memcpy_htod(&table.gm, &mut buffers.gm)?;
+        stream.memcpy_htod(&table.entry_of, entry_of)?;
         Ok(())
     })?;
     let block_per_bucket = LaunchConfig {
@@ -133,9 +134,10 @@ pub(super) fn permute_device<const W: usize>(
         shared_mem_bytes: 0,
     };
     let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_count` in permute.cu; `cnt` holds `b * e` entries.
+    // SAFETY: arguments match `k_perm_count` in permute.cu; `counts` holds `b * e` entries.
     unsafe {
-        s.launch_builder(&k.perm_count)
+        stream
+            .launch_builder(&kernels.perm_count)
             .arg(&sum.cols.x)
             .arg(&sum.cols.z)
             .arg(&sum.cols.coeff)
@@ -153,24 +155,25 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&scratch.table.nz)
             .arg(&scratch.entry_of)
             .arg(keep)
-            .arg(&mut scratch.cnt)
+            .arg(&mut scratch.counts)
             .launch(block_per_bucket)?;
     }
     scratch.lap(sum, t0, |m| &mut m.count)?;
     let t1 = scratch.event(sum)?;
     // SAFETY: arguments match `k_perm_lens`; `out.lens` holds `b` entries.
     unsafe {
-        s.launch_builder(&k.perm_lens)
-            .arg(&scratch.cnt)
-            .arg(&scratch.table.bd)
+        stream
+            .launch_builder(&kernels.perm_lens)
+            .arg(&scratch.counts)
+            .arg(&scratch.table.bucket_delta)
             .arg(&b32)
             .arg(&e32)
             .arg(&mut out.lens)
             .launch(thread_per(b, 256))?;
     }
     exclusive_scan(
-        &s,
-        &k,
+        &stream,
+        &kernels,
         &out.lens.slice(0..b),
         &mut out.start.slice_mut(0..b + 1),
         b,
@@ -181,7 +184,8 @@ pub(super) fn permute_device<const W: usize>(
     let t2 = scratch.event(sum)?;
     // SAFETY: arguments match `k_perm_scatter`; `out` has room for every input row, the scan's total at most.
     unsafe {
-        s.launch_builder(&k.perm_scatter)
+        stream
+            .launch_builder(&kernels.perm_scatter)
             .arg(&sum.cols.x)
             .arg(&sum.cols.z)
             .arg(&sum.cols.coeff)
@@ -199,9 +203,9 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&scratch.table.mask)
             .arg(&scratch.table.nz)
             .arg(&scratch.entry_of)
-            .arg(&scratch.table.bd)
+            .arg(&scratch.table.bucket_delta)
             .arg(&scratch.table.gm)
-            .arg(&scratch.cnt)
+            .arg(&scratch.counts)
             .arg(&out.start)
             .arg(keep)
             .arg(&mut out.x)
@@ -212,11 +216,11 @@ pub(super) fn permute_device<const W: usize>(
     }
     scratch.lap(sum, t2, |m| &mut m.permute)?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let tot = &scratch.tot_a;
+    stream.synchronize()?;
+    let totals = &scratch.tot_a;
     let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        let v = s.clone_dtoh(tot)?;
-        s.synchronize()?;
+        let v = stream.clone_dtoh(totals)?;
+        stream.synchronize()?;
         Ok(v[0])
     })?;
     out.len = total as usize;

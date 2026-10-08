@@ -7,10 +7,10 @@ use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, zz_rotation};
 
-fn table<const W: usize>(ch: &dyn Channel<W>, nq: usize) -> DevicePrepared<W> {
+fn table<const W: usize>(channel: &dyn Channel<W>, nq: usize) -> DevicePrepared<W> {
     let hash = Gf2Hash::<W>::new(nq, 6, DEFAULT_HASH_SEED);
-    let prep = ch.prepare(&hash, false).expect("prepared");
-    DevicePrepared::new(&prep, &hash, &FingerprintRows::new(hash.seed()), &[])
+    let prepared = channel.prepare(&hash, false).expect("prepared");
+    DevicePrepared::new(&prepared, &hash, &FingerprintRows::new(hash.seed()), &[])
 }
 
 #[test]
@@ -54,13 +54,13 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
     use crate::engine::partitioned::plan::PartitionPlan;
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
-    let fp = FingerprintRows::new(hash.seed());
+    let fingerprints = FingerprintRows::new(hash.seed());
     // `H` has the deltas `{0, X₁Z₁}`; a row reading qubit 1's x-bit makes the one non-identity entry remote.
-    let ch = crate::channel::clifford::Clifford1Q::h(1);
-    let prep = ch.prepare(&hash, false).unwrap();
+    let channel = crate::channel::clifford::Clifford1Q::h(1);
+    let prepared = channel.prepare(&hash, false).unwrap();
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
-    let plan = PartitionPlan::new(&prep, &rows, 0);
-    let Prepared::Local(ptm) = &prep else {
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
+    let Prepared::Local(ptm) = &prepared else {
         unreachable!()
     };
     let retained = ptm.retain_entries(&plan.local_entries);
@@ -68,7 +68,7 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
         retained.is_key_preserving() || plan.remote.is_empty(),
         "fixture: the retained table must be identity-only"
     );
-    let t = DevicePrepared::new(&prep, &hash, &fp, &plan.remote);
+    let t = DevicePrepared::new(&prepared, &hash, &fingerprints, &plan.remote);
     assert!(!plan.remote.is_empty());
     assert!(!t.key_preserving, "received rows force the full path");
     assert_eq!(t.n_remote, plan.remote.len());
@@ -76,7 +76,7 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
         assert_ne!(t.rem[r.entry], NO_REMOTE);
     }
     assert_eq!(t.bucket_deltas(), plan.local_bucket_deltas);
-    let local = DevicePrepared::new(&prep, &hash, &fp, &[]);
+    let local = DevicePrepared::new(&prepared, &hash, &fingerprints, &[]);
     assert!(!local.key_preserving && local.n_remote == 0);
 }
 
@@ -114,8 +114,8 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
         ("cz", Box::new(Clifford2Q::cz(1, 3))),
         ("swap", Box::new(Clifford2Q::swap(1, 3))),
     ];
-    for (name, ch) in &cliffords {
-        let t = table::<1>(ch.as_ref(), 8);
+    for (name, channel) in &cliffords {
+        let t = table::<1>(channel.as_ref(), 8);
         assert!(t.permutation && !t.key_preserving, "{name}");
         let dim = 1usize << (2 * t.kq);
         for s in 0..LOCAL_DIM {
@@ -159,14 +159,14 @@ fn a_received_entry_disables_the_permutation_path() {
     use crate::engine::partitioned::plan::PartitionPlan;
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
-    let fp = FingerprintRows::new(hash.seed());
-    let ch = crate::channel::clifford::Clifford1Q::h(1);
-    let prep = ch.prepare(&hash, false).unwrap();
+    let fingerprints = FingerprintRows::new(hash.seed());
+    let channel = crate::channel::clifford::Clifford1Q::h(1);
+    let prepared = channel.prepare(&hash, false).unwrap();
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     assert!(!plan.remote.is_empty());
-    assert!(!DevicePrepared::new(&prep, &hash, &fp, &plan.remote).permutation);
-    assert!(DevicePrepared::new(&prep, &hash, &fp, &[]).permutation);
+    assert!(!DevicePrepared::new(&prepared, &hash, &fingerprints, &plan.remote).permutation);
+    assert!(DevicePrepared::new(&prepared, &hash, &fingerprints, &[]).permutation);
 }
 
 #[test]
@@ -196,27 +196,27 @@ fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
 #[test]
 fn rehash_tracks_the_hash_and_gm_is_the_fingerprint_of_the_mask() {
     let hash = Gf2Hash::<1>::new(8, 3, DEFAULT_HASH_SEED);
-    let ch = Clifford2Q::cnot(1, 3);
-    let prep = ch.prepare(&hash, false).unwrap();
-    let fp = FingerprintRows::new(hash.seed());
-    let mut t = DevicePrepared::new(&prep, &hash, &fp, &[]);
-    let Prepared::Local(ptm) = &prep else {
+    let channel = Clifford2Q::cnot(1, 3);
+    let prepared = channel.prepare(&hash, false).unwrap();
+    let fingerprints = FingerprintRows::new(hash.seed());
+    let mut t = DevicePrepared::new(&prepared, &hash, &fingerprints, &[]);
+    let Prepared::Local(ptm) = &prepared else {
         unreachable!()
     };
     for (e, d) in ptm.deltas().iter().enumerate() {
         assert_eq!(t.bucket_delta[e], d.bucket_delta);
-        assert_eq!(t.gm[e], fp.fingerprint(&d.mask_x, &d.mask_z));
+        assert_eq!(t.gm[e], fingerprints.fingerprint(&d.mask_x, &d.mask_z));
     }
     let mut refined = hash.clone();
     refined.refine();
     refined.refine();
     t.rehash(&refined);
-    let prep2 = ch.prepare(&refined, false).unwrap();
-    let Prepared::Local(ptm2) = &prep2 else {
+    let refined_prepared = channel.prepare(&refined, false).unwrap();
+    let Prepared::Local(refined_ptm) = &refined_prepared else {
         unreachable!()
     };
-    for (e, d) in ptm2.deltas().iter().enumerate() {
+    for (e, d) in refined_ptm.deltas().iter().enumerate() {
         assert_eq!(t.bucket_delta[e], d.bucket_delta);
     }
-    assert_eq!(t.bucket_deltas(), ptm2.bucket_deltas());
+    assert_eq!(t.bucket_deltas(), refined_ptm.bucket_deltas());
 }

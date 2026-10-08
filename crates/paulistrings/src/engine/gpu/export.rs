@@ -6,7 +6,7 @@ use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::grow;
 use super::error::GpuError;
-use super::layer::{xfer, LayerScratch, TableBufs, Xfer};
+use super::layer::{xfer, LayerScratch, TableBuffers, Xfer};
 use super::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use super::payload::DevicePayload;
 use super::prepared::DevicePrepared;
@@ -27,15 +27,15 @@ pub(crate) use receive::{finish_receive, receive_chunk};
 /// Grow-only device and host buffers of the export and receive passes, kept between layers.
 pub(crate) struct DeviceExport<const W: usize> {
     counts: CudaSlice<u32>,
-    off: CudaSlice<u32>,
-    /// Received blocks, concatenated: `off` is `K × (B + 1)` CSR offsets, `base[k]` the first row of block `k`.
+    offsets: CudaSlice<u32>,
+    /// Received blocks, concatenated: `recv_off` is `K × (B + 1)` CSR offsets, `recv_base[k]` block `k`'s row base.
     pub(crate) recv_off: CudaSlice<u32>,
     pub(crate) recv_base: CudaSlice<u32>,
     pub(crate) recv_x: CudaSlice<u64>,
     pub(crate) recv_z: CudaSlice<u64>,
     pub(crate) recv_c: CudaSlice<f64>,
     pub(crate) recv_g: CudaSlice<u64>,
-    off_host: Vec<u32>,
+    offsets_host: Vec<u32>,
     base_host: Vec<u32>,
     /// The longest received segment of the current layer; must fit the tag's offset field.
     pub(crate) recv_max_segment: usize,
@@ -73,22 +73,22 @@ pub(crate) struct PendingRecv<const W: usize> {
 
 impl<const W: usize> DeviceExport<W> {
     pub(crate) fn new(sum: &GpuSum<W>) -> Result<Self, GpuError> {
-        let s = &sum.stream;
+        let stream = &sum.stream;
         Ok(Self {
-            counts: s.alloc_zeros(1)?,
-            off: s.alloc_zeros(2)?,
-            recv_off: s.alloc_zeros(2)?,
-            recv_base: s.alloc_zeros(16)?,
-            recv_x: s.alloc_zeros(W)?,
-            recv_z: s.alloc_zeros(W)?,
-            recv_c: s.alloc_zeros(2)?,
-            recv_g: s.alloc_zeros(1)?,
-            off_host: Vec::new(),
+            counts: stream.alloc_zeros(1)?,
+            offsets: stream.alloc_zeros(2)?,
+            recv_off: stream.alloc_zeros(2)?,
+            recv_base: stream.alloc_zeros(16)?,
+            recv_x: stream.alloc_zeros(W)?,
+            recv_z: stream.alloc_zeros(W)?,
+            recv_c: stream.alloc_zeros(2)?,
+            recv_g: stream.alloc_zeros(1)?,
+            offsets_host: Vec::new(),
             base_host: Vec::new(),
             recv_max_segment: 0,
             recv_rows: 0,
-            premerge: PremergeScratch::new(s, W)?,
-            stream: s.clone(),
+            premerge: PremergeScratch::new(stream, W)?,
+            stream: stream.clone(),
             wire: None,
             sends: Vec::new(),
             skeletons: Vec::new(),
@@ -102,9 +102,9 @@ impl<const W: usize> DeviceExport<W> {
 
     /// A pooled skeleton payload, emptied.
     fn skeleton(&mut self) -> BlockSkeletons<W> {
-        let mut s = self.skeletons.pop().unwrap_or_default();
-        s.blocks.clear();
-        s
+        let mut skeleton = self.skeletons.pop().unwrap_or_default();
+        skeleton.blocks.clear();
+        skeleton
     }
 }
 
@@ -173,11 +173,11 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let t_exchange = std::time::Instant::now();
     let skeletons: Vec<Option<BlockSkeletons<W>>> = send
         .iter()
-        .map(|p| {
-            p.as_ref().map(|p| {
-                let mut s = export.skeleton();
-                s.fill_from(&p.blocks);
-                s
+        .map(|slot| {
+            slot.as_ref().map(|payload| {
+                let mut skeleton = export.skeleton();
+                skeleton.fill_from(&payload.blocks);
+                skeleton
             })
         })
         .collect();
@@ -280,7 +280,7 @@ fn paired_blocks<'a, const W: usize>(
         .collect()
 }
 
-/// K10's count and scan for entry `e` at bucket delta `bd`, leaving the CSR offsets in `scratch.export.off` and their copy in `offsets`; returns the block's rows.
+/// K10's count and scan for entry `e` at bucket delta `bd`, leaving the CSR offsets in `scratch.export.offsets` and their copy in `offsets`; returns the block's rows.
 fn export_offsets<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -289,14 +289,15 @@ fn export_offsets<const W: usize>(
     e: u32,
     offsets: &mut Vec<u32>,
 ) -> Result<usize, GpuError> {
-    let s = &sum.stream;
-    let k = &sum.kernels;
+    let stream = &sum.stream;
+    let kernels = &sum.kernels;
     let b = sum.hash.num_buckets();
     let (e32, b32) = (table.entries as u32, b as u32);
     // SAFETY: arguments match `k_export_counts` in export.cu; `counts` holds `b` entries.
     unsafe {
-        s.launch_builder(&k.export_counts)
-            .arg(&scratch.cnt)
+        stream
+            .launch_builder(&kernels.export_counts)
+            .arg(&scratch.counts)
             .arg(&scratch.bucket_at)
             .arg(&bd)
             .arg(&e)
@@ -306,58 +307,59 @@ fn export_offsets<const W: usize>(
             .launch(thread_per(b, 1024))?;
     }
     exclusive_scan(
-        s,
-        k,
+        stream,
+        kernels,
         &scratch.export.counts.slice(0..b),
-        &mut scratch.export.off.slice_mut(0..b + 1),
+        &mut scratch.export.offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
         &mut scratch.tot_a,
     )?;
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     offsets.clear();
     offsets.resize(b + 1, 0);
-    let off = &scratch.export.off;
+    let device_offsets = &scratch.export.offsets;
     xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        s.memcpy_dtoh(&off.slice(0..b + 1), &mut offsets[..])?;
-        s.synchronize()?;
+        stream.memcpy_dtoh(&device_offsets.slice(0..b + 1), &mut offsets[..])?;
+        stream.synchronize()?;
         Ok(())
     })?;
     Ok(offsets[b] as usize)
 }
 
 /// The scratch buffers K10's fill reads, borrowed apart from the columns it writes.
-struct FillCtx<'a> {
+struct FillContext<'a> {
     bucket_at: &'a CudaSlice<u32>,
-    table: &'a TableBufs,
-    off: &'a CudaSlice<u32>,
+    table: &'a TableBuffers,
+    offsets: &'a CudaSlice<u32>,
 }
 
-/// K10's fill of entry `e` at bucket delta `bd` into `(x, z, c)`, which hold the rows `ctx.off` names.
+/// K10's fill of entry `e` at bucket delta `bd` into `(x, z, c)`, which hold the rows `context.offsets` names.
 #[allow(clippy::too_many_arguments)]
 fn export_fill<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
-    ctx: FillCtx<'_>,
+    context: FillContext<'_>,
     bd: u32,
     e: u32,
     x: &mut CudaSlice<u64>,
     z: &mut CudaSlice<u64>,
     c: &mut CudaSlice<f64>,
 ) -> Result<(), GpuError> {
-    let s = &sum.stream;
+    let stream = &sum.stream;
     let b = sum.hash.num_buckets();
     let (e32, b32) = (table.entries as u32, b as u32);
-    // SAFETY: arguments match `k_export_fill` in export.cu; the columns hold the block's rows and `off` its offsets.
+    // SAFETY: arguments match `k_export_fill` in export.cu; the columns hold the block's rows and `context.offsets` its CSR.
     unsafe {
-        s.launch_builder(&sum.kernels.export_fill)
+        stream
+            .launch_builder(&sum.kernels.export_fill)
             .arg(&sum.cols.x)
             .arg(&sum.cols.z)
             .arg(&sum.cols.coeff)
             .arg(&sum.cols.start)
             .arg(&sum.cols.lens)
-            .arg(ctx.bucket_at)
+            .arg(context.bucket_at)
             .arg(&table.mode)
             .arg(&e32)
             .arg(&table.kq)
@@ -365,13 +367,13 @@ fn export_fill<const W: usize>(
             .arg(&table.q1)
             .arg(&table.rot_cos)
             .arg(&table.rot_sin)
-            .arg(&ctx.table.amp)
-            .arg(&ctx.table.mask)
-            .arg(&ctx.table.nz)
+            .arg(&context.table.amp)
+            .arg(&context.table.mask)
+            .arg(&context.table.nz)
             .arg(&bd)
             .arg(&e)
             .arg(&b32)
-            .arg(ctx.off)
+            .arg(context.offsets)
             .arg(x)
             .arg(z)
             .arg(c)
@@ -391,10 +393,10 @@ pub(crate) fn export_blocks_device<const W: usize>(
     let mut send: Vec<Option<DevicePayload<W>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
     let b = sum.hash.num_buckets();
-    let s: Arc<CudaStream> = sum.stream.clone();
-    let o = sum.device();
-    grow(&s, &mut scratch.export.counts, b, o)?;
-    grow(&s, &mut scratch.export.off, b + 1, o)?;
+    let stream: Arc<CudaStream> = sum.stream.clone();
+    let ordinal = sum.device();
+    grow(&stream, &mut scratch.export.counts, b, ordinal)?;
+    grow(&stream, &mut scratch.export.offsets, b + 1, ordinal)?;
     for r in &plan.remote {
         let q = r.partner as usize;
         if send[q].is_none() {
@@ -408,7 +410,7 @@ pub(crate) fn export_blocks_device<const W: usize>(
             continue;
         }
         let payload = send[q].as_mut().expect("a payload for every partner");
-        payload.block_mut(entries.len() - 1, &s)?;
+        payload.block_mut(entries.len() - 1, &stream)?;
         let blocks = &mut payload.blocks[..entries.len()];
         if let Some(rows) = premerge_partner(sum, table, entries, scratch, blocks)? {
             merged[q] = true;
@@ -425,22 +427,22 @@ pub(crate) fn export_blocks_device<const W: usize>(
         if merged[q] {
             continue;
         }
-        let block = payload.block_mut(j, &s)?;
+        let block = payload.block_mut(j, &stream)?;
         let (bd, e) = (r.bucket_delta, r.entry as u32);
         let t0 = scratch.event(sum)?;
         let rows = export_offsets(sum, table, scratch, bd, e, &mut block.offsets)?;
         block.set_header(e, b);
         if rows > 0 {
-            block.grow(&s, rows, o)?;
-            let ctx = FillCtx {
+            block.grow(&stream, rows, ordinal)?;
+            let context = FillContext {
                 bucket_at: &scratch.bucket_at,
                 table: &scratch.table,
-                off: &scratch.export.off,
+                offsets: &scratch.export.offsets,
             };
             export_fill(
                 sum,
                 table,
-                ctx,
+                context,
                 bd,
                 e,
                 &mut block.x,
@@ -458,7 +460,7 @@ pub(crate) fn export_blocks_device<const W: usize>(
         }
     }
     #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
+    stream.synchronize()?;
     Ok((send, counts))
 }
 

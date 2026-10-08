@@ -7,7 +7,7 @@ fn rand_key<const W: usize>(rng: &mut Xs64) -> ([u64; W], [u64; W]) {
 }
 
 fn check_linear<const W: usize>(seed: u64) {
-    let fp = FingerprintRows::<W>::new(seed);
+    let fingerprints = FingerprintRows::<W>::new(seed);
     let mut rng = Xs64::new(seed ^ 0x5EED);
     for _ in 0..1000 {
         let (ax, az) = rand_key::<W>(&mut rng);
@@ -15,8 +15,8 @@ fn check_linear<const W: usize>(seed: u64) {
         let cx: [u64; W] = std::array::from_fn(|w| ax[w] ^ bx[w]);
         let cz: [u64; W] = std::array::from_fn(|w| az[w] ^ bz[w]);
         assert_eq!(
-            fp.fingerprint(&cx, &cz),
-            fp.fingerprint(&ax, &az) ^ fp.fingerprint(&bx, &bz),
+            fingerprints.fingerprint(&cx, &cz),
+            fingerprints.fingerprint(&ax, &az) ^ fingerprints.fingerprint(&bx, &bz),
             "W={W}"
         );
     }
@@ -31,20 +31,28 @@ fn fingerprint_is_gf2_linear_on_random_pairs() {
 
 #[test]
 fn a_single_bit_key_reads_one_column_of_g() {
-    let fp = FingerprintRows::<2>::new(DEFAULT_HASH_SEED);
-    assert_eq!(fp.fingerprint(&[0, 0], &[0, 0]), 0);
+    let fingerprints = FingerprintRows::<2>::new(DEFAULT_HASH_SEED);
+    assert_eq!(fingerprints.fingerprint(&[0, 0], &[0, 0]), 0);
     for q in [0usize, 5, 63, 64, 100, 127] {
         let (w, b) = (q / 64, q % 64);
         let mut x = [0u64; 2];
         x[w] = 1 << b;
         let want_x: u64 = (0..FP_ROWS)
-            .map(|r| ((fp.rows_x[r][w] >> b) & 1) << r)
+            .map(|r| ((fingerprints.rows_x[r][w] >> b) & 1) << r)
             .sum();
-        assert_eq!(fp.fingerprint(&x, &[0, 0]), want_x, "x on qubit {q}");
+        assert_eq!(
+            fingerprints.fingerprint(&x, &[0, 0]),
+            want_x,
+            "x on qubit {q}"
+        );
         let want_z: u64 = (0..FP_ROWS)
-            .map(|r| ((fp.rows_z[r][w] >> b) & 1) << r)
+            .map(|r| ((fingerprints.rows_z[r][w] >> b) & 1) << r)
             .sum();
-        assert_eq!(fp.fingerprint(&[0, 0], &x), want_z, "z on qubit {q}");
+        assert_eq!(
+            fingerprints.fingerprint(&[0, 0], &x),
+            want_z,
+            "z on qubit {q}"
+        );
     }
 }
 
@@ -68,8 +76,11 @@ fn fingerprint_is_injective_on_weight_two_keys_at_64_qubits() {
     }
     assert_eq!(keys.len(), 1 + 64 * 3 + 2016 * 9);
     for seed in [DEFAULT_HASH_SEED, 0, 1, 0xF00D, 0xC0FFEE] {
-        let fp = FingerprintRows::<1>::new(seed);
-        let mut g: Vec<u64> = keys.iter().map(|(x, z)| fp.fingerprint(x, z)).collect();
+        let fingerprints = FingerprintRows::<1>::new(seed);
+        let mut g: Vec<u64> = keys
+            .iter()
+            .map(|(x, z)| fingerprints.fingerprint(x, z))
+            .collect();
         g.sort_unstable();
         g.dedup();
         assert_eq!(g.len(), keys.len(), "seed {seed:#x}: fingerprint collision");

@@ -57,9 +57,9 @@ pub(crate) struct DevicePrepared<const W: usize> {
 impl<const W: usize> DevicePrepared<W> {
     /// `remote` names the entries whose rows arrive from a partner instead of a local bucket, in the plan's order.
     pub(crate) fn new(
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         hash: &Gf2Hash<W>,
-        fp: &FingerprintRows<W>,
+        fingerprints: &FingerprintRows<W>,
         remote: &[RemoteDelta],
     ) -> Self {
         let mut amp = vec![0f64; 16 * LOCAL_DIM * 2];
@@ -68,7 +68,7 @@ impl<const W: usize> DevicePrepared<W> {
         let mut entry_of = vec![NO_ENTRY; LOCAL_DIM];
         let mut one_entry_per_pattern = false;
         let (mode, kq, q0, q1, rot_cos, rot_sin, dense, key_preserving);
-        match prep {
+        match prepared {
             Prepared::Local(ptm) => {
                 let dim = 1usize << (2 * ptm.k());
                 let mut rows = 0usize;
@@ -123,7 +123,7 @@ impl<const W: usize> DevicePrepared<W> {
         for (e, (mx, mz)) in masks.iter().enumerate() {
             mask[(e * 2) * W..(e * 2 + 1) * W].copy_from_slice(mx);
             mask[(e * 2 + 1) * W..(e * 2 + 2) * W].copy_from_slice(mz);
-            gm[e] = fp.fingerprint(mx, mz);
+            gm[e] = fingerprints.fingerprint(mx, mz);
         }
         let mut rem = vec![NO_REMOTE; 16];
         for (k, r) in remote.iter().enumerate() {
@@ -179,16 +179,16 @@ impl<const W: usize> DevicePrepared<W> {
         }
         let bit = |v: &[u64; W], q: u32| ((v[(q / 64) as usize] >> (q % 64)) & 1) as usize;
         let (mx, mz) = &self.masks[e];
-        let mut ld = 0usize;
+        let mut local_delta = 0usize;
         if self.kq > 0 {
-            ld |= bit(mx, self.q0) | bit(mz, self.q0) << 1;
+            local_delta |= bit(mx, self.q0) | bit(mz, self.q0) << 1;
         }
         if self.kq > 1 {
-            ld |= bit(mx, self.q1) << 2 | bit(mz, self.q1) << 3;
+            local_delta |= bit(mx, self.q1) << 2 | bit(mz, self.q1) << 3;
         }
         (0..LOCAL_DIM)
             .filter(|&s| (self.nz[e] >> s) & 1 != 0)
-            .fold(0, |acc, s| acc | 1 << (s ^ ld))
+            .fold(0, |patterns, s| patterns | 1 << (s ^ local_delta))
     }
 
     /// Whether two of `entries` can emit one key: they must reach a common output pattern, since `v ⊕ d_a = w ⊕ d_b` puts both rows on one pattern.

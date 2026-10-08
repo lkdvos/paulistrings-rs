@@ -21,8 +21,8 @@ pub(crate) struct DeviceColumns<const W: usize> {
     pub(crate) len: usize,
     /// Live CSR entries.
     pub(crate) buckets: usize,
-    term_cap: usize,
-    bucket_cap: usize,
+    term_capacity: usize,
+    bucket_capacity: usize,
     stream: Arc<CudaStream>,
     ordinal: u32,
 }
@@ -38,36 +38,36 @@ fn alloc<T: DeviceRepr>(
     unsafe { stream.alloc::<T>(n.max(1)) }.map_err(|e| GpuError::from_alloc(e, ordinal, bytes))
 }
 
-/// Room for `n` elements in `s`, keeping its first `keep`, `s` untouched on failure; `bytes` is what an out-of-memory error reports.
+/// Room for `n` elements in `slice`, keeping its first `keep`, `slice` untouched on failure; `bytes` is what an out-of-memory error reports.
 pub(crate) fn grow_keep<T: DeviceRepr>(
     stream: &Arc<CudaStream>,
-    s: &mut CudaSlice<T>,
+    slice: &mut CudaSlice<T>,
     n: usize,
     keep: usize,
     ordinal: u32,
     bytes: u64,
 ) -> Result<(), GpuError> {
-    if s.len() >= n {
+    if slice.len() >= n {
         return Ok(());
     }
     let mut next = alloc(stream, n, ordinal, bytes)?;
     if keep > 0 {
-        stream.memcpy_dtod(&s.slice(0..keep), &mut next.slice_mut(0..keep))?;
+        stream.memcpy_dtod(&slice.slice(0..keep), &mut next.slice_mut(0..keep))?;
     }
-    *s = next;
+    *slice = next;
     Ok(())
 }
 
-/// Room for `n` elements in `s`, discarding its contents.
+/// Room for `n` elements in `slice`, discarding its contents.
 pub(crate) fn grow<T: DeviceRepr>(
     stream: &Arc<CudaStream>,
-    s: &mut CudaSlice<T>,
+    slice: &mut CudaSlice<T>,
     n: usize,
     ordinal: u32,
 ) -> Result<(), GpuError> {
     grow_keep(
         stream,
-        s,
+        slice,
         n,
         0,
         ordinal,
@@ -96,15 +96,15 @@ impl<const W: usize> DeviceColumns<W> {
             lens: alloc(stream, buckets, ordinal, bytes)?,
             len: 0,
             buckets: 0,
-            term_cap: terms,
-            bucket_cap: buckets,
+            term_capacity: terms,
+            bucket_capacity: buckets,
             stream: stream.clone(),
             ordinal,
         })
     }
 
     pub(crate) fn term_capacity(&self) -> usize {
-        self.term_cap
+        self.term_capacity
     }
 
     /// Bytes a `(terms, buckets)` allocation needs, or `Unsupported` past the `u32` index range.
@@ -124,29 +124,29 @@ impl<const W: usize> DeviceColumns<W> {
 
     /// Grow to hold `terms` terms and `buckets` buckets, keeping the live rows; the term columns and the CSR grow independently, and a failure reports the whole request's bytes with the capacities unchanged.
     pub(crate) fn reserve(&mut self, terms: usize, buckets: usize) -> Result<(), GpuError> {
-        let grow_terms = terms > self.term_cap;
-        let grow_buckets = buckets > self.bucket_cap;
+        let grow_terms = terms > self.term_capacity;
+        let grow_buckets = buckets > self.bucket_capacity;
         if !grow_terms && !grow_buckets {
             return Ok(());
         }
-        let (st, o) = (&self.stream, self.ordinal);
+        let (stream, ordinal) = (&self.stream, self.ordinal);
         let bytes = Self::request_bytes(
             if grow_terms { terms } else { 0 },
             if grow_buckets { buckets } else { 0 },
         )?;
         let (n, b) = (self.len, self.buckets);
         if grow_terms {
-            grow_keep(st, &mut self.x, terms * W, n * W, o, bytes)?;
-            grow_keep(st, &mut self.z, terms * W, n * W, o, bytes)?;
-            grow_keep(st, &mut self.coeff, 2 * terms, 2 * n, o, bytes)?;
-            grow_keep(st, &mut self.g, terms, n, o, bytes)?;
-            self.term_cap = terms;
+            grow_keep(stream, &mut self.x, terms * W, n * W, ordinal, bytes)?;
+            grow_keep(stream, &mut self.z, terms * W, n * W, ordinal, bytes)?;
+            grow_keep(stream, &mut self.coeff, 2 * terms, 2 * n, ordinal, bytes)?;
+            grow_keep(stream, &mut self.g, terms, n, ordinal, bytes)?;
+            self.term_capacity = terms;
         }
         if grow_buckets {
             let live = if b > 0 { b + 1 } else { 0 };
-            grow_keep(st, &mut self.start, buckets + 1, live, o, bytes)?;
-            grow_keep(st, &mut self.lens, buckets, b, o, bytes)?;
-            self.bucket_cap = buckets;
+            grow_keep(stream, &mut self.start, buckets + 1, live, ordinal, bytes)?;
+            grow_keep(stream, &mut self.lens, buckets, b, ordinal, bytes)?;
+            self.bucket_capacity = buckets;
         }
         Ok(())
     }

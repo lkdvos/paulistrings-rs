@@ -100,6 +100,11 @@ Left in source: `cfg(test)` fields woven into `gpu/wire/peer.rs`, `nccl.rs`, `Ex
 Verified: workspace fmt/test/clippy per commit, clippy across py `cuda`/`cuda,mpi`, `cuda` tests on the A6000, pytest 523/101, `mpi-test.sh --ranks 2,4` Rust and `--python`; Python API unchanged.
 Follow-ups folded into stage B: `PartitionedSum::scatter_with_rows` and the GPU `scatter_to_device(s)_with_rows` pairs renamed to the `scatter`/`scatter_with` shape (cross-folder, so in B8); the `DistributedSum` doc example removed per D3; `ChunkMap`'s unreachable `pub` methods narrowed.
 
+### As applied, stage C (D9)
+
+`538b7b0` CLAUDE.md 232 → 189 lines (new "Code organisation" section, testing policy for sibling `tests.rs`, repo layout current; dropped architecture detail, uv version facts, some MPI/CUDA recipe variants, perf numbers now pointing at HARDWARE.md), `9a7b417` FINDINGS.md 487 → 300 (all headings kept; shipped/superseded GPU items relabelled), `2060f53` HARDWARE.md 299 → 284 (tables kept; host-staged GPU numbers labelled as such).
+Found: Python-side code cites `FINDINGS.md §A3/§A5/§A7/§A8-ii`, labels that match no heading (pre-existing). SIMD entry's "build is SSE2" still holds (no `target-cpu` in `.cargo/config.toml`).
+
 ## Possible improvements
 
 ## Open items

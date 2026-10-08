@@ -58,15 +58,16 @@ pub(crate) struct DeviceExport<const W: usize> {
     pub(crate) fail_after_chunk: Option<usize>,
 }
 
-/// A remote layer's transfers not yet made: chunk `c`, positions `map.bound(c)..map.bound(c + 1)`, moves just before the fused layer reaches it, so `recv_*` holds one chunk at a time (ARCHITECTURE.md §Partitioning).
-/// `send` holds this partition's blocks, its block for remote delta `k` at `own[k]`; `failed` once a group failed to post or complete, after which none posts.
+/// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it (ARCHITECTURE.md §Partitioning).
 pub(crate) struct PendingRecv<const W: usize> {
     pub(crate) map: ChunkMap,
     /// The first chunk not yet moved.
     next: usize,
     send: Vec<Option<DevicePayload<W>>>,
+    /// This partition's block for remote delta `k` is `send[own[k].0].blocks[own[k].1]`.
     own: Vec<(usize, usize)>,
     ops: Vec<ScheduledOp>,
+    /// Set once a group failed to post or complete, after which none posts.
     failed: bool,
 }
 
@@ -130,8 +131,7 @@ pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
     vote(transport, None);
 }
 
-/// The exchange's go/no-go and chunk count: `ready` is `Some(log2 chunks)` when this rank can receive in that many, and the result the largest such count when every rank of the group can, which fits every rank's buffers since a finer power-of-two cut never grows a chunk.
-/// **Collective**: one `allreduce_sum_u64` of `2 × size` words, rank `r`'s slot `r` set when it is not ready and slot `size + r` its count.
+/// **Collective** go/no-go and chunk count: `ready` is this rank's `Some(log2 chunks)`, the result the largest such count when every rank is ready, which fits every rank since a finer power-of-two cut never grows a chunk.
 fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     let (rank, size) = (transport.rank() as usize, transport.size() as usize);
     let mut votes = vec![0u64; 2 * size];
@@ -142,8 +142,7 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// One remote layer's exchange (ARCHITECTURE.md §Partitioning): K10's blocks, their skeletons over `transport` and the vote; on a yes the pending receive that [`receive_chunk`] moves chunk by chunk.
-/// Runs after K1 has filled `cnt` at the agreed bucket count; a rank that cannot receive votes no and returns its error, and on any no nobody posts and a ready rank takes every received block as empty.
+/// One remote layer's exchange after K1 (ARCHITECTURE.md §Partitioning): K10's blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,

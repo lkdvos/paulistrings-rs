@@ -13,8 +13,7 @@ pub(crate) const NO_REMOTE: u32 = u32::MAX;
 /// `entry_of[s]` of a support pattern no entry emits for; matches `NO_ENTRY` in `kernels/prelude.cuh`.
 pub(crate) const NO_ENTRY: u32 = u32::MAX;
 
-/// Entries with any nonzero amplitude per pattern, averaged over the active patterns, at or above which a table counts as dense.
-/// Dense tables reduce by the block-wide segmented scan, sparse ones by the head-serial walk.
+/// Emitting entries per active pattern at or above which a table reduces by the segmented scan rather than the head-serial walk.
 pub(crate) const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
 
 /// A prepared channel's tables as the kernels take them; `bucket_delta` is recomputed from the masks for the current hash, so a refine between `prepare` and the layer costs no second `prepare`.
@@ -48,8 +47,7 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) dense: bool,
     /// One identity entry and no received entry: the K5 rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
     pub(crate) key_preserving: bool,
-    /// Every support pattern has at most one emitting entry, no two entries reach one output pattern, and no entry is received: the scatter path (`kernels/permute.cu`), since no two input keys can emit one output key.
-    /// A key-preserving table is one too; K5 takes precedence.
+    /// At most one emitting entry per pattern, no two entries reaching one output pattern, no received entry: the scatter path (`kernels/permute.cu`), after K5.
     pub(crate) permutation: bool,
     /// Per support pattern, the one entry that emits for it or [`NO_ENTRY`]; meaningful only when `permutation`.
     pub(crate) entry_of: Vec<u32>,

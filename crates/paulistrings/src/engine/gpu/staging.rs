@@ -6,8 +6,7 @@ use cudarc::driver::{result, CudaContext};
 
 use super::error::GpuError;
 
-/// A page-locked host buffer of `T`, allocated cached rather than write-combined.
-/// cudarc's `alloc_pinned` is write-combined, which makes every host read of a download uncached.
+/// A page-locked host buffer of `T`, allocated cached: cudarc's write-combined `alloc_pinned` makes every host read of a download uncached.
 pub(crate) struct PinnedBuf<T: Copy> {
     ctx: Arc<CudaContext>,
     ptr: *mut T,

@@ -19,7 +19,7 @@ pub(crate) struct FingerprintRows<const W: usize> {
 
 impl<const W: usize> FingerprintRows<W> {
     /// Rows drawn by splitmix64 from `hash_seed ^ FINGERPRINT_SALT`.
-    /// Not the crate's xorshift: its consecutive outputs are GF(2)-linear in one state, so `rows_z = M·rows_x` and low-weight keys collide.
+    // Not xorshift: research/FINDINGS.md §`Gf2Hash` rows are splitmix64, not xorshift successors
     pub(crate) fn new(hash_seed: u64) -> Self {
         let mut state = hash_seed ^ FINGERPRINT_SALT;
         let mut next = || {

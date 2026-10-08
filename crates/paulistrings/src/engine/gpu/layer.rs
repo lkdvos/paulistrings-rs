@@ -257,7 +257,6 @@ impl<const W: usize> LayerScratch<W> {
         })
     }
 
-    /// Whether kernel events are recorded: under `phase-timing` only.
     fn timing(&self) -> bool {
         cfg!(feature = "phase-timing")
     }
@@ -317,7 +316,6 @@ impl<const W: usize> LayerScratch<W> {
         let b = sum.hash.num_buckets();
         let e = table.entries;
         let key = (sum.hash.bits(), table.bucket_deltas());
-        // The position map depends on the bucket count and the deltas alone, so a steady-state layer reuses the resident one.
         let map_stale = self.bucket_at_key.as_ref() != Some(&key);
         if map_stale {
             let span = Gf2Span::new(&key.1, key.0);
@@ -474,9 +472,7 @@ impl<const W: usize> LayerScratch<W> {
     }
 }
 
-/// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
-/// `target_bits` is the bucket count the group settled on; a lone partition refines to it and to its bucket policy in one pass, a partition of a group runs at exactly `target_bits` and reports `Unsupported` rather than refine off-schedule.
-/// A layer with remote deltas exports through K10, exchanges over `transport`, and merges the received rows in the fused layer.
+/// Apply `prep` to `sum` on its device under `keep` at the group's agreed `target_bits`, leaving the previous columns as `sum.spare`; remote deltas exchange over `transport`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
@@ -559,7 +555,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             "more than 2^32 pre-dedup records in one layer",
         ));
     }
-    // In a group every layer runs at exactly the agreed count and nobody refines off-schedule (ARCHITECTURE.md §Partitioning); the device steers the count through `proposed_bits` alone.
+    // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (ARCHITECTURE.md §Partitioning).
     let max_bits = if solo {
         scratch.options.max_bits.min(B_MAX_BITS)
     } else {
@@ -725,7 +721,6 @@ fn apply_layer_body<const W: usize, X: Transport>(
         out.len = running as usize;
         let need = (running + batch_out) as usize;
         if need > out.term_capacity() {
-            // Geometric growth, capped by the pre-dedup total no output can exceed.
             let grown = (2 * out.term_capacity())
                 .max(need)
                 .min((records as usize).max(need));

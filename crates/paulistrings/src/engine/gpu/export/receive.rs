@@ -121,8 +121,8 @@ pub(super) fn chunk_max(off: &[u32], b: usize, log2: u8) -> usize {
         .unwrap_or(0)
 }
 
-/// The fewest chunks, a power of two up to one per position, whose received rows each fit `cap_rows`, as `(log2 chunks, rows of the largest)`.
-/// A power of two because such a cut refines every coarser one, so a group agreeing on the largest count its members asked for never grows anyone's chunk.
+/// The fewest power-of-two chunks, at most one per position, whose received rows each fit `cap_rows`, as `(log2 chunks, rows of the largest)`.
+// A power of two because such a cut refines every coarser one, so the group's agreed maximum never grows anyone's chunk.
 pub(super) fn recv_chunks(off: &[u32], b: usize, cap_rows: usize) -> (u8, usize) {
     let mut log2 = 0u8;
     loop {
@@ -173,8 +173,7 @@ fn size_receive<const W: usize>(
     })
 }
 
-/// Positions `lo..hi` of every received block laid end to end from row 0 of `recv_*` in plan order, returning their rows, with in `base` the value that makes the fused layer's `base[k] + off[k][p]` land there.
-/// That base is `start - off[k][lo]` in wrapping `u32` arithmetic, which the kernel's own `u32` sum undoes for every `p` in the chunk.
+/// Positions `lo..hi` of every received block laid end to end from row 0, returning their rows, with `base[k]` the wrapping `start - off[k][lo]` the kernel's own `u32` sum `base[k] + off[k][p]` undoes.
 pub(super) fn chunk_layout(
     off: &[u32],
     b: usize,
@@ -192,8 +191,7 @@ pub(super) fn chunk_layout(
     at
 }
 
-/// Move chunk `c` of the pending receive into `recv_*`, fingerprinted, with its bases in `recv_base`; returns its rows.
-/// Called in chunk order before the fused layer's first batch in the chunk.
+/// Move chunk `c` of the pending receive into `recv_*`, fingerprinted, with its bases in `recv_base`; called in chunk order before the chunk's first batch.
 pub(crate) fn receive_chunk<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,

@@ -7,8 +7,8 @@ use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
 use super::error::GpuError;
 
 /// Term columns and bucket CSR on one device, grow-only.
-/// Term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `g[i]`.
-/// Bucket `β` owns terms `start[β]..start[β] + lens[β]`; buckets need not be contiguous or in index order.
+// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `g[i]`.
+// Bucket `β` owns terms `start[β]..start[β] + lens[β]`; buckets need not be contiguous or in index order.
 pub(crate) struct DeviceColumns<const W: usize> {
     pub(crate) x: CudaSlice<u64>,
     pub(crate) z: CudaSlice<u64>,
@@ -38,8 +38,7 @@ fn alloc<T: DeviceRepr>(
     unsafe { stream.alloc::<T>(n.max(1)) }.map_err(|e| GpuError::from_alloc(e, ordinal, bytes))
 }
 
-/// Room for `n` elements in `s`, keeping its first `keep`; a no-op when it already has room, and `s` untouched on failure.
-/// `bytes` is what an out-of-memory error reports.
+/// Room for `n` elements in `s`, keeping its first `keep`, `s` untouched on failure; `bytes` is what an out-of-memory error reports.
 pub(crate) fn grow_keep<T: DeviceRepr>(
     stream: &Arc<CudaStream>,
     s: &mut CudaSlice<T>,
@@ -123,9 +122,7 @@ impl<const W: usize> DeviceColumns<W> {
         Ok(terms as u64 * Self::BYTES_PER_TERM as u64 + csr)
     }
 
-    /// Grow to hold at least `terms` terms and `buckets` buckets, keeping the live terms and CSR entries.
-    /// The term columns and the CSR grow independently, so a refine that only adds buckets never copies a term.
-    /// An allocation failure reports `OutOfMemory` with the bytes of the whole request, the capacities unchanged.
+    /// Grow to hold `terms` terms and `buckets` buckets, keeping the live rows; the term columns and the CSR grow independently, and a failure reports the whole request's bytes with the capacities unchanged.
     pub(crate) fn reserve(&mut self, terms: usize, buckets: usize) -> Result<(), GpuError> {
         let grow_terms = terms > self.term_cap;
         let grow_buckets = buckets > self.bucket_cap;

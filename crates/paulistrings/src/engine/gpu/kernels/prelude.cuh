@@ -19,7 +19,7 @@ typedef unsigned char u8;
 #define FP_ROWS 64
 #define WARP 32
 
-// Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in layer.rs mirrors it.
+// Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in module.rs mirrors it.
 #if W <= 2
 #define THREADS 1024
 #elif W == 4
@@ -129,7 +129,7 @@ __device__ __forceinline__ u64 fp_mask() {
 #endif
 }
 
-// Live-qubit mask of word w, as `word_mask` in bucket/hash.rs.
+// Live-qubit mask of word w, as `word_mask` in pauli_sum/hash.rs.
 __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     const u32 lo = 64u * (u32)w;
     if (num_qubits >= lo + 64u) return ~0ull;

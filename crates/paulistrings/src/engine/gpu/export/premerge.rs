@@ -89,8 +89,7 @@ pub(super) fn premerge_groups<const W: usize>(
     Ok(groups)
 }
 
-/// The sender-side merge of one partner's blocks (ARCHITECTURE.md §Partitioning): K3 over the partner's sub-table under the keep-everything program, each position's rows split back over the blocks within their unmerged counts so every segment still fits the receiver's tag.
-/// `blocks` are the partner's in its remote-delta order; returns the rows written, or `None` having written nothing when a position's records exceed the fused kernel's cap.
+/// K3 over one partner's sub-table, each position's rows split back over its `blocks` within their unmerged counts so every segment still fits the receiver's tag; `None`, having written nothing, when a position exceeds the fused kernel's cap.
 pub(super) fn premerge_partner<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,

@@ -35,11 +35,9 @@ fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -
 
 /// A bucketed Pauli sum resident on one CUDA device.
 ///
-/// Built from a host [`PauliSum`] by [`Self::from_host`] and read back by [`Self::to_host`]; the round trip is bitwise, bucket by bucket.
-/// On the device a bucket holds unique keys under the same [`Gf2Hash`] partition as the host sum, and every term carries a 64-bit GF(2)-linear fingerprint used only for ordering. See ARCHITECTURE.md §GPU-Readiness.
-///
-/// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run, since the sum keeps the previous columns as the next refine's target.
-/// Every fallible operation returns a [`GpuError`], including device allocation failure as [`GpuError::OutOfMemory`].
+/// [`Self::from_host`] and [`Self::to_host`] round-trip bitwise, bucket by bucket, under the host sum's [`Gf2Hash`].
+/// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run.
+/// Every fallible operation returns a [`GpuError`], device allocation failure as [`GpuError::OutOfMemory`].
 pub struct GpuSum<const W: usize> {
     pub(super) ctx: Arc<CudaContext>,
     pub(super) stream: Arc<CudaStream>,
@@ -257,7 +255,8 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass; a no-op at or above it.
-    /// The result is the one repeated [`Self::refine`] gives. Returns [`GpuError::Unsupported`] past `B_MAX_BITS`, leaving the sum unchanged.
+    /// The result is the one repeated [`Self::refine`] gives.
+    /// Returns [`GpuError::Unsupported`] past `B_MAX_BITS`, leaving the sum unchanged.
     pub fn refine_to(&mut self, bits: u8) -> Result<(), GpuError> {
         if bits > B_MAX_BITS {
             return Err(GpuError::Unsupported("refine_to beyond B_MAX_BITS"));
@@ -337,9 +336,7 @@ impl<const W: usize> GpuSum<W> {
         Ok(())
     }
 
-    /// Check the device-side invariant, the analogue of [`PauliSum::assert_invariants`]: every term in its hash bucket, every key unique within its bucket, every key within `num_qubits`, every fingerprint current, and the bucket table consistent with [`Self::len`].
-    /// Order within a bucket is free on the device; [`Self::to_host`] restores the host's lexicographic order.
-    /// Returns a description of the first class of violation, or of the device error that stopped the check.
+    /// Check the device-side analogue of [`PauliSum::assert_invariants`], with order within a bucket free; the error describes the first class of violation, or the device error that stopped the check.
     pub fn assert_invariants_device(&self) -> Result<(), String> {
         self.check_invariants().map_err(|e| e.to_string())?
     }

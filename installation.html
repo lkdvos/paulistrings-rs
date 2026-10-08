@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-22929a63.js";
+            window.path_to_searchindex_js = "searchindex-2c8eb2a1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -183,24 +183,24 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
-<p><strong><code>paulistrings</code> is not published to PyPI</strong>, so <code>pip install paulistrings</code> will not find it.
+<p>The distribution is <code>paulistrings-rs</code> and the import is <code>import paulistrings</code>; it is not published to PyPI, where <code>paulistrings</code> is an unrelated project.
 Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to <a href="https://github.com/lkdvos/paulistrings-rs/releases">GitHub Releases</a> instead — no Rust toolchain needed.</p>
 <p>With the <a href="https://cli.github.com/">GitHub CLI</a>, which resolves the latest release for you:</p>
 <pre><code class="language-bash">gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
-pip install ./paulistrings-*.whl
+pip install ./paulistrings_rs-*.whl
 </code></pre>
 <p>Substitute the platform tag for your machine: <code>manylinux_2_28_x86_64</code> (Linux, including Rusty/Popeye), <code>macosx_11_0_arm64</code> (Apple silicon) or <code>macosx_10_12_x86_64</code> (Intel Mac).
 One abi3 wheel per platform serves every Python &gt;= 3.9.</p>
-<p>Without <code>gh</code>, take the <code>.whl</code> asset for your platform from the <a href="https://github.com/lkdvos/paulistrings-rs/releases/latest">latest release</a> and <code>pip install ./paulistrings-*.whl</code>.</p>
+<p>Without <code>gh</code>, take the <code>.whl</code> asset for your platform from the <a href="https://github.com/lkdvos/paulistrings-rs/releases/latest">latest release</a> and <code>pip install ./paulistrings_rs-*.whl</code>.</p>
 <p>These wheels cover the default engine only.
 The <code>mpi</code> feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster’s loaded MPI module:</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features mpi"
 </code></pre>
 <p>The <code>cuda</code> feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.</p>
-<pre><code class="language-bash">pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+<pre><code class="language-bash">pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda"
 </code></pre>
 <p>At runtime it needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, or <code>pip install nvidia-cuda-nvrtc-cu12</code> with its <code>lib</code> directory on <code>LD_LIBRARY_PATH</code> elsewhere.
@@ -209,7 +209,7 @@ Without them <code>paulistrings.cuda_available()</code> is <code>False</code> an
 <p><code>cuda</code> and <code>mpi</code> together give one GPU per MPI rank (<a href="manual/propagation/mpi.html#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL, so both module sets plus the NCCL library; NCCL is <code>dlopen</code>ed like <code>libcuda</code>/<code>libnvrtc</code>, so it needs no toolkit to build either.</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
+pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
   --config-settings=build-args="--features cuda,mpi"
 </code></pre>
 <p>Building from source (for contributors, or platforms without a release wheel) uses <a href="https://docs.astral.sh/uv/">uv</a>, which creates <code>./.venv</code> from the locked dependencies and builds the extension into it:</p>

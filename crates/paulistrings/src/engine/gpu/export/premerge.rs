@@ -115,9 +115,7 @@ pub(super) fn premerge_partner<const W: usize>(
         grow(&stream, &mut premerge.rows, b, ordinal)?;
         grow(&stream, &mut premerge.start, b + 1, ordinal)?;
         grow(&stream, &mut premerge.out_len_pos, b, ordinal)?;
-        #[cfg(feature = "phase-timing")]
-        stream.synchronize()?;
-        xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
+        xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
             premerge.table.upload(&stream, &sub)?;
             stream.memcpy_htod(&selected[..], &mut premerge.selected)?;
             Ok(())
@@ -158,14 +156,12 @@ pub(super) fn premerge_partner<const W: usize>(
             &mut premerge.totals,
         )?;
     }
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     let (total, most) = {
         let premerge = &mut scratch.export.premerge;
         premerge.start_host.resize(b + 1, 0);
         let (start, start_host, totals) =
             (&premerge.start, &mut premerge.start_host, &premerge.totals);
-        xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+        xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.memcpy_dtoh(&start.slice(0..b + 1), &mut start_host[..])?;
             stream.synchronize()?;
@@ -316,13 +312,11 @@ fn premerge_batches<const W: usize>(
             scan,
             &mut premerge.totals,
         )?;
-        #[cfg(feature = "phase-timing")]
-        stream.synchronize()?;
         premerge.split_offsets_host.resize(nk * n + 1, 0);
         {
             let (split_offsets, split_offsets_host) =
                 (&premerge.split_offsets, &mut premerge.split_offsets_host);
-            xfer(xfer_ns, Xfer::D2h, || {
+            xfer(stream, xfer_ns, Xfer::D2h, || {
                 stream.memcpy_dtoh(
                     &split_offsets.slice(0..nk * n + 1),
                     &mut split_offsets_host[..],

@@ -14,7 +14,7 @@ pub(crate) const NO_REMOTE: u32 = u32::MAX;
 pub(crate) const NO_ENTRY: u32 = u32::MAX;
 
 /// Emitting entries per active pattern at or above which a table reduces by the segmented scan rather than the head-serial walk.
-pub(crate) const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
+const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
 
 /// A prepared channel's tables as the kernels take them; `bucket_delta` is recomputed from the masks for the current hash, so a refine between `prepare` and the layer costs no second `prepare`.
 #[derive(Clone, Debug)]

@@ -166,9 +166,7 @@ fn size_receive<const W: usize>(
     grow(stream, recv_z, rows.max(1) * W, ordinal)?;
     grow(stream, recv_c, 2 * rows.max(1), ordinal)?;
     grow(stream, recv_g, rows.max(1), ordinal)?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
-    xfer(xfer_ns, Xfer::H2d, || {
+    xfer(stream, xfer_ns, Xfer::H2d, || {
         stream.memcpy_htod(
             &offsets_host[..],
             &mut recv_off.slice_mut(0..offsets_host.len()),
@@ -312,9 +310,7 @@ fn move_chunk<const W: usize>(
         recv_g,
         n,
     )?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
-    xfer(xfer_ns, Xfer::H2d, || {
+    xfer(stream, xfer_ns, Xfer::H2d, || {
         stream.memcpy_htod(&base_host[..], recv_base)?;
         Ok(())
     })?;

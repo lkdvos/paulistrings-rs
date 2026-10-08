@@ -5,7 +5,7 @@
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Mixed into the hash seed before drawing the fingerprint rows, so `G` is unrelated to the `Gf2Hash` and `PartitionRows` rows of the same seed.
-pub(crate) const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
+const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 
 /// Rows of `G`, one bit of `g` each.
 pub(crate) const FP_ROWS: usize = 64;

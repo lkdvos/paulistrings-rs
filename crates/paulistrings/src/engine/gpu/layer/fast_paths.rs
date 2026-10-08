@@ -31,10 +31,8 @@ pub(super) fn rescale_device<const W: usize>(
     out.buckets = 0;
     out.reserve(extent, b)?;
     grow(&stream, &mut scratch.dst_off, b + 1, ordinal)?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     let amp = &mut scratch.table.amp;
-    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
+    xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
         stream.memcpy_htod(&table.amp, amp)?;
         Ok(())
     })?;
@@ -74,10 +72,8 @@ pub(super) fn rescale_device<const W: usize>(
         &mut scratch.tot_a,
     )?;
     scratch.lap(sum, t0, |m| &mut m.rescale)?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     let totals = &scratch.tot_a;
-    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+    let total = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])
@@ -117,10 +113,8 @@ pub(super) fn permute_device<const W: usize>(
     out.len = 0;
     out.buckets = 0;
     out.reserve(n_in, b)?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
-    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
+    xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
         stream.memcpy_htod(&table.amp, &mut buffers.amp)?;
         stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
         stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
@@ -215,10 +209,8 @@ pub(super) fn permute_device<const W: usize>(
             .launch(block_per_bucket)?;
     }
     scratch.lap(sum, t2, |m| &mut m.permute)?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     let totals = &scratch.tot_a;
-    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+    let total = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])

@@ -198,15 +198,18 @@ pub(super) enum Xfer {
     D2h,
 }
 
-/// Run `f`, a synchronous host<->device copy, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
+/// Run `f`, a synchronous host<->device copy on `stream`, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
 #[inline]
 pub(super) fn xfer<T>(
+    stream: &CudaStream,
     ns: &mut XferNs,
     dir: Xfer,
     f: impl FnOnce() -> Result<T, GpuError>,
 ) -> Result<T, GpuError> {
     #[cfg(feature = "phase-timing")]
     {
+        // The copy would otherwise absorb the wait for queued kernels, so the timed region starts after its own sync.
+        stream.synchronize()?;
         let t0 = std::time::Instant::now();
         let r = f();
         ns[dir as usize] += t0.elapsed().as_nanos() as u64;
@@ -214,7 +217,7 @@ pub(super) fn xfer<T>(
     }
     #[cfg(not(feature = "phase-timing"))]
     {
-        let _ = (ns, dir);
+        let _ = (stream, ns, dir);
         f()
     }
 }
@@ -257,12 +260,8 @@ impl<const W: usize> LayerScratch<W> {
         })
     }
 
-    fn timing(&self) -> bool {
-        cfg!(feature = "phase-timing")
-    }
-
     pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
-        if !self.timing() {
+        if !cfg!(feature = "phase-timing") {
             return Ok(None);
         }
         if self.next_event == self.events.len() {
@@ -330,12 +329,9 @@ impl<const W: usize> LayerScratch<W> {
         grow(stream, &mut self.rows, b, ordinal)?;
         grow(stream, &mut self.segment_start, b + 1, ordinal)?;
         grow(stream, &mut self.dst_off, b + 1, ordinal)?;
-        // A pageable upload synchronizes the stream first, so the copy's wall includes any refine still running; the timed region starts after its own sync.
-        #[cfg(feature = "phase-timing")]
-        stream.synchronize()?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
         let buffers = &mut self.table;
-        xfer(&mut self.xfer_ns, Xfer::H2d, || {
+        xfer(stream, &mut self.xfer_ns, Xfer::H2d, || {
             if map_stale {
                 stream.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
             }
@@ -388,10 +384,8 @@ impl<const W: usize> LayerScratch<W> {
             return Ok(l);
         }
         self.scan_lens(sum)?;
-        #[cfg(feature = "phase-timing")]
-        sum.stream.synchronize()?;
         let (stream, tot_b) = (&sum.stream, &self.tot_b);
-        let l = xfer(&mut self.xfer_ns, Xfer::D2h, || {
+        let l = xfer(stream, &mut self.xfer_ns, Xfer::D2h, || {
             let v = stream.clone_dtoh(tot_b)?;
             stream.synchronize()?;
             Ok(v[1])
@@ -453,14 +447,11 @@ impl<const W: usize> LayerScratch<W> {
             self.scan_lens(sum)?;
         }
         self.lap(sum, t1, |m| &mut m.sizes)?;
-        // Downloads wait for the scans, so the timed region again starts after its own sync.
-        #[cfg(feature = "phase-timing")]
-        stream.synchronize()?;
         self.segment_start_host.resize(b + 1, 0);
         let (segment_start, segment_start_host) =
             (&self.segment_start, &mut self.segment_start_host);
         let (tot_a, tot_b) = (&self.tot_a, &self.tot_b);
-        let (tm, longest) = xfer(&mut self.xfer_ns, Xfer::D2h, || {
+        let (tm, longest) = xfer(stream, &mut self.xfer_ns, Xfer::D2h, || {
             let tm = stream.clone_dtoh(tot_a)?;
             let longest = match known {
                 Some(l) => l,
@@ -712,11 +703,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
             &mut scratch.scan,
             &mut scratch.tot_a,
         )?;
-        // The download would otherwise absorb the wait for the fused kernel.
-        #[cfg(feature = "phase-timing")]
-        stream.synchronize()?;
         let totals = &scratch.tot_a;
-        let batch_out = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+        let batch_out = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.synchronize()?;
             Ok(v[0])

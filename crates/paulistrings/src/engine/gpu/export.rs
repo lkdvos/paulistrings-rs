@@ -315,12 +315,10 @@ fn export_offsets<const W: usize>(
         &mut scratch.scan,
         &mut scratch.tot_a,
     )?;
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
     offsets.clear();
     offsets.resize(b + 1, 0);
     let device_offsets = &scratch.export.offsets;
-    xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
+    xfer(stream, &mut scratch.xfer_ns, Xfer::D2h, || {
         stream.memcpy_dtoh(&device_offsets.slice(0..b + 1), &mut offsets[..])?;
         stream.synchronize()?;
         Ok(())
@@ -383,7 +381,7 @@ fn export_fill<const W: usize>(
 }
 
 /// K10 for every remote delta into device blocks: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
-pub(crate) fn export_blocks_device<const W: usize>(
+fn export_blocks_device<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
     plan: &PartitionPlan,

@@ -58,6 +58,7 @@
 
 pub mod accumulator;
 pub mod hash;
+mod partition;
 pub mod storage;
 
 pub use hash::{Gf2Hash, PartitionRows, B_MAX_BITS, P_MAX_BITS};

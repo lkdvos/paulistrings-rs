@@ -246,3 +246,15 @@ fn count_remote_deltas_without_rows_is_all_local() {
         vec![(4, 0), (2, 0)],
     );
 }
+
+impl PartitionPlan {
+    /// The partitions this layer exports to, distinct and ascending.
+    ///
+    /// The engine routes by [`Self::remote`] directly; this is the tests' way of asking the same question as a set.
+    fn partners(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter()
+    }
+}

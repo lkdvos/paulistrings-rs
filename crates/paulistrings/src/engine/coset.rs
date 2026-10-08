@@ -140,13 +140,6 @@ impl Gf2Span {
         (1usize << self.bits) >> self.basis.len()
     }
 
-    /// The reduced echelon basis, ascending by pivot bit.
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn basis(&self) -> &[u32] {
-        &self.basis
-    }
-
     /// Is `beta` the canonical representative of its coset?
     ///
     /// # The theorem
@@ -178,25 +171,6 @@ impl Gf2Span {
         // Pivot bits are disjoint across basis vectors, so one pass in any order clears them all.
         for &b in &self.basis {
             if v & (1 << highest_bit(b)) != 0 {
-                v ^= b;
-            }
-        }
-        v
-    }
-
-    /// Member `i` of the coset with representative `rep`.
-    ///
-    /// Bit `j` of `i` selects `basis[j]` (ascending pivot significance), so `i = 0` is `rep` itself and `i` ranges over `0..coset_size()`.
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn member(&self, rep: u32, i: u32) -> u32 {
-        debug_assert!(
-            (i as usize) < self.coset_size(),
-            "Gf2Span::member: index {i} beyond coset size"
-        );
-        let mut v = rep;
-        for (j, &b) in self.basis.iter().enumerate() {
-            if (i >> j) & 1 == 1 {
                 v ^= b;
             }
         }

@@ -217,3 +217,20 @@ fn memory_binding_round_trips_on_a_scratch_thread() {
         });
     });
 }
+
+/// The CPU the calling thread is running on right now, if the platform can say. `None` on non-Linux targets.
+///
+/// Only [`build_pool`]'s own test asks; the engine pins and then trusts the kernel.
+fn current_cpu() -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `sched_getcpu` takes no arguments and cannot fail beyond
+        // returning a negative value.
+        let cpu = unsafe { libc::sched_getcpu() };
+        usize::try_from(cpu).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}

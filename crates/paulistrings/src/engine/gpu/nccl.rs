@@ -131,18 +131,6 @@ impl NcclComm {
         Ok(this)
     }
 
-    /// Replace the wait bound, so a test can force a timeout without waiting out the default.
-    #[cfg(test)]
-    pub(crate) fn set_timeout(&self, timeout: Duration) {
-        self.lock().timeout = timeout;
-    }
-
-    /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
-    #[cfg(test)]
-    pub(crate) fn force_timeout(&self) {
-        self.lock().force_timeout = true;
-    }
-
     /// Whether the communicator has not been aborted.
     pub(crate) fn is_healthy(&self) -> bool {
         !self.lock().aborted

@@ -541,3 +541,24 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
         }
     }
 }
+
+/// Apply one prepared channel to this partition's share of a sum.
+///
+/// `local` must hold exactly the terms with `rows.partition_of(v) == transport.rank()`, under a hash and bucket count every partition agrees on; it comes back holding this partition's share of the layer's output, merged, deduplicated and filtered through `policy`'s `keep_term`.
+/// Neither rebuckets nor calls `finalize_layer`: both are collective decisions the driver makes with the counts this returns.
+/// Classifies `prep`'s deltas itself; the driver needs that classification before it decides whether the layer takes a collective, so it holds the plan and calls [`apply_layer_partitioned_with_plan`] instead.
+pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
+    local: &mut PauliSum<W>,
+    prep: &Prepared<W>,
+    rows: &PartitionRows<W>,
+    policy: &T,
+    state: &mut PartitionState<W>,
+    transport: &X,
+) -> LayerExchangeCounts
+where
+    T: TruncationPolicy<W> + ?Sized,
+    X: Transport,
+{
+    let plan = PartitionPlan::new(prep, rows, transport.rank());
+    apply_layer_partitioned_with_plan(local, prep, &plan, rows, policy, state, transport)
+}

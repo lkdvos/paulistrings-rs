@@ -557,3 +557,16 @@ fn merge2_policy_sees_summed_coefficient() {
     assert_eq!(ox, vec![[3u64]]);
     assert!(approx_eq(oc[0], Complex64::new(0.12, 0.0), TOL));
 }
+
+impl<const W: usize> SortScratch<W> {
+    /// Total heap capacity held across this scratch's buffers.
+    /// Exposed only for `bucketed::tests::capacity_stabilizes_across_repeated_layers`.
+    pub(crate) fn total_capacity(&self) -> usize {
+        self.perm.capacity()
+            + self.packed.capacity()
+            + self.aux.capacity()
+            + self.tmp_x.capacity()
+            + self.tmp_z.capacity()
+            + self.tmp_c.capacity()
+    }
+}

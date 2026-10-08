@@ -2239,3 +2239,22 @@ mod props {
         }
     }
 }
+
+impl<const W: usize> PauliSum<W> {
+    /// Test/oracle constructor: wrap globally key-sorted columns as a single-bucket sum (zero hash bits, default seed), whose canonical order is therefore exactly the given column order.
+    pub(crate) fn from_sorted_columns(
+        x: Vec<[u64; W]>,
+        z: Vec<[u64; W]>,
+        coeff: Vec<Complex64>,
+        num_qubits: usize,
+    ) -> Self {
+        let n = coeff.len();
+        let hash = Gf2Hash::new(num_qubits, 0, DEFAULT_HASH_SEED);
+        Self {
+            buckets: vec![BucketCols { x, z, coeff }],
+            hash,
+            num_qubits,
+            len: n,
+        }
+    }
+}

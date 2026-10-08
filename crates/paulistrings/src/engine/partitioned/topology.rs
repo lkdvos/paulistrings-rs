@@ -305,24 +305,6 @@ pub(crate) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> 
     Ok(())
 }
 
-/// The CPU the calling thread is running on right now, if the platform can say. `None` on non-Linux targets.
-///
-/// Only [`build_pool`]'s own test asks; the engine pins and then trusts the kernel.
-#[cfg(test)]
-fn current_cpu() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: `sched_getcpu` takes no arguments and cannot fail beyond
-        // returning a negative value.
-        let cpu = unsafe { libc::sched_getcpu() };
-        usize::try_from(cpu).ok()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
-}
-
 /// One resolved partition: where its pool's workers run and how many there
 /// are.
 #[derive(Clone, Debug)]

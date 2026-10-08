@@ -334,3 +334,15 @@ fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
     assert!(matches!(group.post(&wire), Err(GpuError::Nccl { .. })));
     assert!(wire.comm().is_healthy());
 }
+
+impl NcclComm {
+    /// Replace the wait bound, so a test can force a timeout without waiting out the default.
+    pub(crate) fn set_timeout(&self, timeout: Duration) {
+        self.lock().timeout = timeout;
+    }
+
+    /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
+    pub(crate) fn force_timeout(&self) {
+        self.lock().force_timeout = true;
+    }
+}

@@ -28,19 +28,7 @@ pub(crate) struct SortScratch<const W: usize> {
     tmp_c: Vec<Complex64>,
 }
 
-impl<const W: usize> SortScratch<W> {
-    /// Total heap capacity held across this scratch's buffers.
-    /// Exposed only for `bucketed::tests::capacity_stabilizes_across_repeated_layers`.
-    #[cfg(test)]
-    pub(crate) fn total_capacity(&self) -> usize {
-        self.perm.capacity()
-            + self.packed.capacity()
-            + self.aux.capacity()
-            + self.tmp_x.capacity()
-            + self.tmp_z.capacity()
-            + self.tmp_c.capacity()
-    }
-}
+impl<const W: usize> SortScratch<W> {}
 
 /// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as reusable scratch.
 ///

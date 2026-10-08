@@ -622,3 +622,24 @@ mod protocol {
         }
     }
 }
+
+impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
+    /// [`scatter_to_device_with_rows`](Self::scatter_to_device_with_rows) exchanging over `wire`, this rank's of an in-process group, instead of NCCL (test hook).
+    pub(crate) fn scatter_with_wire(
+        sum: &PauliSum<W>,
+        transport: X,
+        device: u32,
+        rows: PartitionRows<W>,
+        wire: crate::engine::gpu::wire::PeerWire,
+    ) -> Result<Self, GpuError> {
+        use crate::engine::gpu::wire::DeviceWire;
+        assert_eq!(
+            (wire.rank(), wire.size()),
+            (transport.rank(), transport.size())
+        );
+        Self::scatter_then(sum, transport, device, rows, move |_, part| {
+            part.scratch_mut().export.wire = Some(std::sync::Arc::new(wire));
+            Ok(())
+        })
+    }
+}

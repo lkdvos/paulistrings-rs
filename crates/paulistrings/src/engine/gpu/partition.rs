@@ -108,7 +108,11 @@ impl<const W: usize> DevicePartition<W> {
     /// Refuse every later call after the group's first failure, `(rank, layer)`, dropping the wire now rather than at a finalize against failed peers.
     pub(crate) fn poison(&mut self, rank: usize, layer: usize) {
         self.poison = Some((rank, layer));
-        if let Some(wire) = self.scratch.as_ref().and_then(|s| s.export.wire.as_ref()) {
+        if let Some(wire) = self
+            .scratch
+            .as_ref()
+            .and_then(|scratch| scratch.export.wire.as_ref())
+        {
             wire.abort();
         }
     }
@@ -120,8 +124,8 @@ impl<const W: usize> DevicePartition<W> {
         }
     }
 
-    fn record(&mut self, r: Result<(), GpuError>) {
-        if let Err(e) = r {
+    fn record(&mut self, result: Result<(), GpuError>) {
+        if let Err(e) = result {
             if self.error.is_none() {
                 self.error = Some(e);
                 self.failed_layer = Some(self.layers_applied.saturating_sub(1));
@@ -147,7 +151,7 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
     /// The host formula raised to the device bucket policy's wish, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
     fn proposed_bits(
         &self,
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
@@ -157,16 +161,21 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
         };
         // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
         let policy = match scratch.options.bucket_policy {
-            p if self.group_size == 1 => p,
-            super::layer::GpuBucketPolicy::RecordsPerBlock(t) => {
-                super::layer::GpuBucketPolicy::RecordsPerBlock((t / 2).max(1))
+            policy if self.group_size == 1 => policy,
+            super::layer::GpuBucketPolicy::RecordsPerBlock(target) => {
+                super::layer::GpuBucketPolicy::RecordsPerBlock((target / 2).max(1))
             }
-            super::layer::GpuBucketPolicy::TermsPerBucket(t) => {
-                super::layer::GpuBucketPolicy::TermsPerBucket((t / 2).max(1))
+            super::layer::GpuBucketPolicy::TermsPerBucket(target) => {
+                super::layer::GpuBucketPolicy::TermsPerBucket((target / 2).max(1))
             }
         };
-        let device = gpu_desired_bits(self.len(), prepared_fanout(prep), policy, self.hash.bits())
-            .min(scratch.options.max_bits.min(B_MAX_BITS));
+        let device = gpu_desired_bits(
+            self.len(),
+            prepared_fanout(prepared),
+            policy,
+            self.hash.bits(),
+        )
+        .min(scratch.options.max_bits.min(B_MAX_BITS));
         host.max(device)
     }
 
@@ -197,7 +206,7 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
 impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<W> {
     fn apply_layer<X: Transport>(
         &mut self,
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         plan: &PartitionPlan,
         _rows: &PartitionRows<W>,
         _policy: &BuiltinTruncation,
@@ -226,10 +235,10 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             return LayerExchangeCounts::none(size);
         }
         #[cfg(feature = "phase-timing")]
-        let (t0, before) = (std::time::Instant::now(), scratch.kernel_ms);
-        let r = apply_layer_device(
+        let (started, before) = (std::time::Instant::now(), scratch.kernel_ms);
+        let result = apply_layer_device(
             sum,
-            prep,
+            prepared,
             plan,
             &self.keep,
             scratch,
@@ -241,10 +250,10 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             &mut self.stats,
             scratch,
             before,
-            t0.elapsed().as_nanos() as u64,
+            started.elapsed().as_nanos() as u64,
         );
         self.hash = sum.hash().clone();
-        match r {
+        match result {
             Ok(counts) => counts,
             Err(e) => {
                 self.record(Err(e));
@@ -254,17 +263,17 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
     }
 
     /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's; a group member (`group_size > 1`) reports exact `TopN` `Unsupported`, and every member reports `CollapseSample` so.
-    fn finalize_layer(&mut self, policy: &BuiltinTruncation, coll: &dyn Collectives) {
+    fn finalize_layer(&mut self, policy: &BuiltinTruncation, collectives: &dyn Collectives) {
         let single = self.group_size == 1;
         layer_pass_leaves(policy, &mut |leaf| {
-            let r = match leaf {
+            let result = match leaf {
                 BuiltinTruncation::ApproxTopN(n) => {
                     let healthy = self.error.is_none();
                     let parts = match (self.sum.as_mut(), self.scratch.as_mut()) {
                         (Some(sum), Some(scratch)) if healthy => Some((sum, scratch)),
                         _ => None,
                     };
-                    approx_top_n_device(parts, *n, coll)
+                    approx_top_n_device(parts, *n, collectives)
                 }
                 BuiltinTruncation::TopN(n) if single => {
                     match (self.sum.as_mut(), self.scratch.as_mut()) {
@@ -279,12 +288,12 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };
-            self.record(r);
+            self.record(result);
         });
         // The driver's `finalize_ns` lap is the wall of this pass; the events only need reading so the kernel counters stay complete.
         if let (Some(sum), Some(scratch)) = (self.sum.as_ref(), self.scratch.as_mut()) {
-            let r = scratch.resolve(sum);
-            self.record(r);
+            let result = scratch.resolve(sum);
+            self.record(result);
         }
     }
 }
@@ -316,17 +325,17 @@ fn fold_layer_stats<const W: usize>(
     let [h2d, d2h] = std::mem::take(&mut scratch.xfer_ns);
     stats.h2d_ns += h2d;
     stats.d2h_ns += d2h;
-    let c = scratch.counters;
-    if c.permuted {
+    let counters = scratch.counters;
+    if counters.permuted {
         stats.cosets += 1;
-        stats.runs += 1u64 << c.bits;
-        stats.rows_gathered += c.records;
-    } else if !c.rescaled {
+        stats.runs += 1u64 << counters.bits;
+        stats.rows_gathered += counters.records;
+    } else if !counters.rescaled {
         // Every pre-dedup record is gathered and sorted on the device; nothing takes the identity stream's shortcut.
-        stats.cosets += u64::from(c.batches);
-        stats.runs += 1u64 << c.bits;
-        stats.rows_gathered += c.records;
-        stats.rows_sorted += c.records;
+        stats.cosets += u64::from(counters.batches);
+        stats.runs += 1u64 << counters.bits;
+        stats.rows_gathered += counters.records;
+        stats.rows_sorted += counters.records;
     }
 }
 

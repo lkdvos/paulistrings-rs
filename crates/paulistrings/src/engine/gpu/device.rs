@@ -37,7 +37,7 @@ pub fn device_count() -> usize {
         return 0;
     }
     CudaContext::device_count()
-        .map(|n| n.max(0) as usize)
+        .map(|count| count.max(0) as usize)
         .unwrap_or(0)
 }
 
@@ -59,12 +59,12 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libcuda"));
     }
-    let n = CudaContext::device_count().map_err(GpuError::from)?;
-    if n <= 0 {
+    let count = CudaContext::device_count().map_err(GpuError::from)?;
+    if count <= 0 {
         return Err(GpuError::NoDevice);
     }
-    let mut out = Vec::with_capacity(n as usize);
-    for ordinal in 0..n as u32 {
+    let mut out = Vec::with_capacity(count as usize);
+    for ordinal in 0..count as u32 {
         let ctx = context(ordinal)?;
         let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
         out.push(DeviceInfo {

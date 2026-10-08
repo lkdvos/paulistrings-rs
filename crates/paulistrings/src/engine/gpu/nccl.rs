@@ -76,30 +76,33 @@ pub(crate) struct NcclComm {
 const WARM_UP_BYTES: usize = 8;
 
 impl NcclComm {
-    /// This rank's non-blocking communicator over `coll`'s group on `ctx`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
+    /// This rank's non-blocking communicator over `collectives`'s group on `ctx`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
     /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
-    pub(crate) fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
+    pub(crate) fn init(
+        collectives: &dyn Collectives,
+        ctx: &Arc<CudaContext>,
+    ) -> Result<Self, GpuError> {
         let timeout = wire_timeout();
-        let (rank, size) = (coll.rank(), coll.size());
+        let (rank, size) = (collectives.rank(), collectives.size());
         let local = local_readiness();
         let id = match (&local, rank) {
             (Ok(()), 0) => nccl::get_uniqueid().map_err(|e| nccl_error(e, "ncclGetUniqueId")),
             _ => Ok(sys::ncclUniqueId { internal: [0; 128] }),
         };
-        let mut buf = [0u64; ID_WORDS + 1];
+        let mut buffer = [0u64; ID_WORDS + 1];
         match &id {
-            Ok(id) if local.is_ok() => pack_id(id, &mut buf[..ID_WORDS]),
-            _ => buf[ID_WORDS] = 1,
+            Ok(id) if local.is_ok() => pack_id(id, &mut buffer[..ID_WORDS]),
+            _ => buffer[ID_WORDS] = 1,
         }
-        coll.allreduce_sum_u64(&mut buf);
+        collectives.allreduce_sum_u64(&mut buffer);
         local?;
         id?;
-        if buf[ID_WORDS] != 0 {
+        if buffer[ID_WORDS] != 0 {
             return Err(GpuError::Unsupported(
                 "a peer rank cannot start NCCL (libnccl missing, older than 2.22, or no unique id)",
             ));
         }
-        let id = unpack_id(&buf[..ID_WORDS]);
+        let id = unpack_id(&buffer[..ID_WORDS]);
         ctx.bind_to_thread()?;
         let mut config = default_config();
         config.blocking = 0;
@@ -138,23 +141,23 @@ impl NcclComm {
     /// Pay NCCL's lazy connection setup now: one small send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
-        let (me, n) = (self.rank, self.size);
-        let peers: Vec<u32> = if n == 1 {
+        let (me, size) = (self.rank, self.size);
+        let peers: Vec<u32> = if size == 1 {
             vec![0]
         } else {
-            (0..n).filter(|&q| q != me).collect()
+            (0..size).filter(|&peer| peer != me).collect()
         };
         let out = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut back = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut group = WireGroup::new();
-        for (i, &q) in peers.iter().enumerate() {
+        for (i, &peer) in peers.iter().enumerate() {
             group.send(
                 out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES),
-                q,
+                peer,
                 stream,
             );
         }
-        let parts: Vec<(usize, u32)> = peers.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
+        let parts: Vec<(usize, u32)> = peers.iter().map(|&peer| (WARM_UP_BYTES, peer)).collect();
         group.recv_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)
@@ -488,16 +491,16 @@ fn default_config() -> sys::ncclConfig_t {
 }
 
 fn pack_id(id: &sys::ncclUniqueId, words: &mut [u64]) {
-    for (w, chunk) in words.iter_mut().zip(id.internal.chunks_exact(8)) {
-        *w = u64::from_ne_bytes(std::array::from_fn(|i| chunk[i] as u8));
+    for (word, chunk) in words.iter_mut().zip(id.internal.chunks_exact(8)) {
+        *word = u64::from_ne_bytes(std::array::from_fn(|i| chunk[i] as u8));
     }
 }
 
 fn unpack_id(words: &[u64]) -> sys::ncclUniqueId {
     let mut id = sys::ncclUniqueId { internal: [0; 128] };
-    for (chunk, w) in id.internal.chunks_exact_mut(8).zip(words) {
-        for (c, b) in chunk.iter_mut().zip(w.to_ne_bytes()) {
-            *c = b as std::ffi::c_char;
+    for (chunk, word) in id.internal.chunks_exact_mut(8).zip(words) {
+        for (target, byte) in chunk.iter_mut().zip(word.to_ne_bytes()) {
+            *target = byte as std::ffi::c_char;
         }
     }
     id
@@ -544,21 +547,21 @@ impl DeviceWire for NcclWire {
 
 /// Whether the group can start NCCL, the same verdict on every rank: every rank `can` (libnccl 2.22+ loads) and no two `device` UUIDs coincide, which NCCL refuses (**collective**: one `allreduce_sum_u64` of `1 + 2 × size` words).
 pub(crate) fn agree_start(
-    coll: &dyn Collectives,
+    collectives: &dyn Collectives,
     can: bool,
     device: [u64; 2],
 ) -> Result<(), GpuError> {
-    let (rank, size) = (coll.rank() as usize, coll.size() as usize);
-    let mut buf = vec![0u64; 1 + 2 * size];
-    buf[0] = u64::from(!can);
-    buf[1 + 2 * rank..3 + 2 * rank].copy_from_slice(&device);
-    coll.allreduce_sum_u64(&mut buf);
-    if buf[0] > 0 {
+    let (rank, size) = (collectives.rank() as usize, collectives.size() as usize);
+    let mut buffer = vec![0u64; 1 + 2 * size];
+    buffer[0] = u64::from(!can);
+    buffer[1 + 2 * rank..3 + 2 * rank].copy_from_slice(&device);
+    collectives.allreduce_sum_u64(&mut buffer);
+    if buffer[0] > 0 {
         return Err(GpuError::Unsupported(
             "an MPI device group exchanges over NCCL, and a rank cannot load libnccl 2.22 or newer",
         ));
     }
-    let ids: Vec<[u64; 2]> = buf[1..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
+    let ids: Vec<[u64; 2]> = buffer[1..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
     if (0..size).any(|i| ids[i + 1..].contains(&ids[i])) {
         return Err(GpuError::Unsupported(
             "two ranks of an MPI device group share a device, which NCCL refuses; give every rank its own GPU",
@@ -570,10 +573,10 @@ pub(crate) fn agree_start(
 /// A device's UUID as the two words [`agree_start`] compares.
 pub(crate) fn device_uuid(ctx: &CudaContext) -> Result<[u64; 2], GpuError> {
     let id = ctx.uuid()?;
-    let b: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
+    let bytes: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
     Ok([
-        u64::from_ne_bytes(b[..8].try_into().expect("eight bytes")),
-        u64::from_ne_bytes(b[8..].try_into().expect("eight bytes")),
+        u64::from_ne_bytes(bytes[..8].try_into().expect("eight bytes")),
+        u64::from_ne_bytes(bytes[8..].try_into().expect("eight bytes")),
     ])
 }
 

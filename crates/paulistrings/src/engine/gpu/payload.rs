@@ -65,11 +65,11 @@ impl<const W: usize> DeviceBlock<W> {
         need: usize,
         ordinal: u32,
     ) -> Result<(), GpuError> {
-        let cap = self.c.len() / 2;
-        if need <= cap {
+        let capacity = self.c.len() / 2;
+        if need <= capacity {
             return Ok(());
         }
-        let rows = need.max(2 * cap);
+        let rows = need.max(2 * capacity);
         let bytes = (rows * (2 * W + 2) * 8) as u64;
         grow_keep(stream, &mut self.x, rows * W, live * W, ordinal, bytes)?;
         grow_keep(stream, &mut self.z, rows * W, live * W, ordinal, bytes)?;
@@ -95,15 +95,15 @@ pub(crate) struct DevicePayload<const W: usize> {
 }
 
 impl<const W: usize> DevicePayload<W> {
-    /// Block `j`, allocating on `stream` up to it.
+    /// Block `index`, allocating on `stream` up to it.
     pub(crate) fn block_mut(
         &mut self,
-        j: usize,
+        index: usize,
         stream: &Arc<CudaStream>,
     ) -> Result<&mut DeviceBlock<W>, GpuError> {
-        while self.blocks.len() <= j {
+        while self.blocks.len() <= index {
             self.blocks.push(DeviceBlock::new(stream)?);
         }
-        Ok(&mut self.blocks[j])
+        Ok(&mut self.blocks[index])
     }
 }

@@ -109,18 +109,18 @@ impl<'a> WireGroup<'a> {
             "recv_parts: {total} elements into a view of {}",
             dst.len()
         );
-        let elem = std::mem::size_of::<T>();
+        let elem_bytes = std::mem::size_of::<T>();
         let (base, guard) = dst.view_ptr(stream);
-        let mut at = 0usize;
+        let mut offset = 0usize;
         for &(len, peer) in parts {
             self.ops.push(WireOp {
                 kind: WireOpKind::Recv,
                 peer,
-                ptr: base + (at * elem) as u64,
-                bytes: len * elem,
+                ptr: base + (offset * elem_bytes) as u64,
+                bytes: len * elem_bytes,
                 stream,
             });
-            at += len;
+            offset += len;
         }
         self.guards.push(guard);
     }
@@ -205,10 +205,10 @@ impl<const W: usize> BlockSkeletons<W> {
     pub(crate) fn fill_from(&mut self, blocks: &[DeviceBlock<W>]) {
         self.blocks.truncate(blocks.len());
         self.blocks.resize_with(blocks.len(), Skeleton::default);
-        for (s, b) in self.blocks.iter_mut().zip(blocks) {
-            s.header = b.header;
-            s.offsets.clear();
-            s.offsets.extend_from_slice(&b.offsets);
+        for (skeleton, block) in self.blocks.iter_mut().zip(blocks) {
+            skeleton.header = block.header;
+            skeleton.offsets.clear();
+            skeleton.offsets.extend_from_slice(&block.offsets);
         }
     }
 
@@ -229,9 +229,9 @@ impl<const W: usize> BlockSkeletons<W> {
 impl<const W: usize> Payload for BlockSkeletons<W> {
     fn byte_parts(&self) -> Vec<&[u8]> {
         let mut parts = Vec::with_capacity(2 * self.blocks.len());
-        for s in &self.blocks {
-            parts.push(bytemuck::bytes_of(&s.header));
-            parts.push(bytemuck::cast_slice(&s.offsets));
+        for skeleton in &self.blocks {
+            parts.push(bytemuck::bytes_of(&skeleton.header));
+            parts.push(bytemuck::cast_slice(&skeleton.offsets));
         }
         parts
     }
@@ -243,11 +243,11 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
             "block skeletons: {} parts is not a whole number of two-part blocks",
             lens.len()
         );
-        let n = lens.len() / 2;
-        self.blocks.truncate(n);
-        self.blocks.resize_with(n, Skeleton::default);
+        let num_blocks = lens.len() / 2;
+        self.blocks.truncate(num_blocks);
+        self.blocks.resize_with(num_blocks, Skeleton::default);
         let mut parts = Vec::with_capacity(lens.len());
-        for (s, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(2)) {
+        for (skeleton, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(2)) {
             assert_eq!(
                 lens[0],
                 std::mem::size_of::<BlockHeader>(),
@@ -260,9 +260,9 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
                 "block skeletons: {} offset bytes is not a whole number of u32",
                 lens[1]
             );
-            s.offsets.clear();
-            s.offsets.resize(lens[1] / 4, 0);
-            let Skeleton { header, offsets } = s;
+            skeleton.offsets.clear();
+            skeleton.offsets.resize(lens[1] / 4, 0);
+            let Skeleton { header, offsets } = skeleton;
             parts.push(bytemuck::bytes_of_mut(header));
             parts.push(bytemuck::cast_slice_mut(&mut offsets[..]));
         }
@@ -271,28 +271,28 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
 
     /// The receive sizes itself from these offsets, so each must be a CSR index that ends at the header's row count.
     fn finish_recv(&mut self) {
-        for s in &self.blocks {
-            let h = &s.header;
+        for skeleton in &self.blocks {
+            let header = &skeleton.header;
             assert_eq!(
-                h.w as usize, W,
+                header.w as usize, W,
                 "block skeletons: a block encoded at W={} decoded at W={W}",
-                h.w
+                header.w
             );
             assert_eq!(
-                s.offsets.len(),
-                h.num_buckets as usize + 1,
+                skeleton.offsets.len(),
+                header.num_buckets as usize + 1,
                 "block skeletons: a block of {} buckets arrived with {} offsets",
-                h.num_buckets,
-                s.offsets.len()
+                header.num_buckets,
+                skeleton.offsets.len()
             );
             assert!(
-                s.offsets[0] == 0 && s.offsets.windows(2).all(|w| w[0] <= w[1]),
+                skeleton.offsets[0] == 0 && skeleton.offsets.windows(2).all(|w| w[0] <= w[1]),
                 "block skeletons: offsets that are not a CSR index"
             );
             assert_eq!(
-                s.offsets[h.num_buckets as usize], h.rows,
+                skeleton.offsets[header.num_buckets as usize], header.rows,
                 "block skeletons: offsets end at {}, the header names {} rows",
-                s.offsets[h.num_buckets as usize], h.rows
+                skeleton.offsets[header.num_buckets as usize], header.rows
             );
         }
     }
@@ -339,21 +339,31 @@ pub(crate) fn schedule(
 ) -> Vec<ScheduledOp> {
     assert_eq!(partners.len(), own.len());
     assert_eq!(partners.len(), recv.len());
-    let own_rows: Vec<Vec<usize>> = own.iter().map(|o| chunk_rows_of(o, map)).collect();
-    let recv_rows: Vec<Vec<usize>> = recv.iter().map(|o| chunk_rows_of(o, map)).collect();
+    let own_rows: Vec<Vec<usize>> = own
+        .iter()
+        .map(|offsets| chunk_rows_of(offsets, map))
+        .collect();
+    let recv_rows: Vec<Vec<usize>> = recv
+        .iter()
+        .map(|offsets| chunk_rows_of(offsets, map))
+        .collect();
     let mut peers: Vec<u32> = partners.to_vec();
     peers.sort_unstable();
     peers.dedup();
     let mut ops = Vec::new();
     for chunk in 0..map.chunks() {
-        for &q in &peers {
+        for &peer in &peers {
             for column in WireColumn::ALL {
-                for (k, _) in partners.iter().enumerate().filter(|&(_, &p)| p == q) {
+                for (k, _) in partners
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &partner)| partner == peer)
+                {
                     let rows = (own_rows[k][chunk], own_rows[k][chunk + 1]);
                     if rows.1 > rows.0 {
                         ops.push(ScheduledOp {
                             kind: WireOpKind::Send,
-                            peer: q,
+                            peer,
                             chunk,
                             column,
                             k,
@@ -366,12 +376,12 @@ pub(crate) fn schedule(
     }
     for chunk in 0..map.chunks() {
         for column in WireColumn::ALL {
-            for (k, &q) in partners.iter().enumerate() {
+            for (k, &peer) in partners.iter().enumerate() {
                 let rows = (recv_rows[k][chunk], recv_rows[k][chunk + 1]);
                 if rows.1 > rows.0 {
                     ops.push(ScheduledOp {
                         kind: WireOpKind::Recv,
-                        peer: q,
+                        peer,
                         chunk,
                         column,
                         k,

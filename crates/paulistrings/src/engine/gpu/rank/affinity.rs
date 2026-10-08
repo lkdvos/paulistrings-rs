@@ -40,21 +40,22 @@ pub fn local_device_for_comm(comm: &impl Communicator) -> Result<u32, GpuError> 
     let pick = pick_for(local, &reports);
     let me = &reports[local];
     let device_numa = me.numa.get(pick as usize).copied().flatten();
-    let where_ = |numa: Option<u32>| numa.map_or_else(|| "unknown".to_string(), |n| n.to_string());
+    let numa_name =
+        |numa: Option<u32>| numa.map_or_else(|| "unknown".to_string(), |n| n.to_string());
     log::info!(
         target: LOG_TARGET,
         "gpu device pick: rank {} (node-local {local} of {}, CPU NUMA {}) drives device {pick} (NUMA {})",
         comm.rank(),
         node.size(),
         mask_list(me.cpu_numa),
-        where_(device_numa),
+        numa_name(device_numa),
     );
     if device_numa.is_some_and(|n| me.cpu_numa != 0 && !on_node(me.cpu_numa, n)) {
         log::warn!(
             target: LOG_TARGET,
             "gpu device pick: rank {} drives device {pick} on NUMA node {}, but its CPUs are on NUMA {}, so its host staging crosses sockets",
             comm.rank(),
-            where_(device_numa),
+            numa_name(device_numa),
             mask_list(me.cpu_numa),
         );
     }
@@ -89,14 +90,17 @@ impl Report {
     fn decode(record: &[u64]) -> Self {
         let count = record[1] as usize;
         let shown = count.min(MAX_DEVICES);
-        let opt = |v: u64| v.checked_sub(1);
+        let decode = |value: u64| value.checked_sub(1);
         Self {
             cpu_numa: record[0],
             count,
-            pci: record[2..2 + shown].iter().map(|&v| opt(v)).collect(),
+            pci: record[2..2 + shown]
+                .iter()
+                .map(|&value| decode(value))
+                .collect(),
             numa: record[2 + MAX_DEVICES..2 + MAX_DEVICES + shown]
                 .iter()
-                .map(|&v| opt(v).and_then(|n| u32::try_from(n).ok()))
+                .map(|&value| decode(value).and_then(|n| u32::try_from(n).ok()))
                 .collect(),
         }
     }
@@ -164,11 +168,12 @@ fn mask_list(mask: u64) -> String {
 
 /// Each rank's device from each rank's CPU NUMA mask (`0` unknown) and each device's NUMA node: a maximum matching onto `ceil(ranks / devices)` slots per device on the rank's own nodes, every other rank on the least-loaded device, lowest ordinal first.
 fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
-    let k = devices.len();
-    assert!(k > 0, "assign_devices needs a device");
-    let slots = k * ranks.len().div_ceil(k).max(1);
-    let local =
-        |rank: usize, slot: usize| devices[slot % k].is_some_and(|n| on_node(ranks[rank], n));
+    let num_devices = devices.len();
+    assert!(num_devices > 0, "assign_devices needs a device");
+    let slots = num_devices * ranks.len().div_ceil(num_devices).max(1);
+    let local = |rank: usize, slot: usize| {
+        devices[slot % num_devices].is_some_and(|n| on_node(ranks[rank], n))
+    };
     let mut owner: Vec<Option<usize>> = vec![None; slots];
 
     fn augment(
@@ -191,7 +196,7 @@ fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
     }
 
     for rank in 0..ranks.len() {
-        if let Some(slot) = (0..slots).find(|&s| owner[s].is_none() && local(rank, s)) {
+        if let Some(slot) = (0..slots).find(|&slot| owner[slot].is_none() && local(rank, slot)) {
             owner[slot] = Some(rank);
         } else {
             augment(rank, &mut vec![false; slots], &mut owner, &local);
@@ -201,24 +206,24 @@ fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
     let mut pick: Vec<Option<u32>> = vec![None; ranks.len()];
     for (slot, rank) in owner.iter().enumerate() {
         if let Some(rank) = *rank {
-            pick[rank] = Some((slot % k) as u32);
+            pick[rank] = Some((slot % num_devices) as u32);
         }
     }
-    let cap = slots / k;
-    let mut load = vec![0usize; k];
-    for &d in pick.iter().flatten() {
-        load[d as usize] += 1;
+    let cap = slots / num_devices;
+    let mut load = vec![0usize; num_devices];
+    for &device in pick.iter().flatten() {
+        load[device as usize] += 1;
     }
-    for p in pick.iter_mut().filter(|p| p.is_none()) {
-        let d = (0..k)
+    for unplaced in pick.iter_mut().filter(|p| p.is_none()) {
+        let device = (0..num_devices)
             .filter(|&d| load[d] < cap)
             .min_by_key(|&d| load[d])
             .expect("the slots cover every rank");
-        load[d] += 1;
-        *p = Some(d as u32);
+        load[device] += 1;
+        *unplaced = Some(device as u32);
     }
     pick.into_iter()
-        .map(|p| p.expect("every rank placed"))
+        .map(|placed| placed.expect("every rank placed"))
         .collect()
 }
 

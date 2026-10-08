@@ -62,9 +62,9 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
     }
 }
 
-/// Dynamic shared bytes the fused layer needs for `n_cap` records, the `carve` layout in `kernels/layer.cu`.
-pub(crate) fn layer_shared_bytes(n_cap: usize, w: usize) -> u32 {
-    (11 * n_cap + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
+/// Dynamic shared bytes the fused layer needs for `capacity` records, the `carve` layout in `kernels/layer.cu`.
+pub(crate) fn layer_shared_bytes(capacity: usize, w: usize) -> u32 {
+    (11 * capacity + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
 }
 
 /// One warp per bucket over `b` buckets, eight warps a block.
@@ -141,25 +141,27 @@ pub(crate) fn compile_ptx(
     if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libnvrtc"));
     }
-    let src = KERNEL_SOURCES.concat();
+    let source = KERNEL_SOURCES.concat();
     let mut options = vec![format!("-DW={w}"), "--std=c++17".to_string()];
     options.extend_from_slice(extra_options);
-    let opts = CompileOptions {
+    let compile_options = CompileOptions {
         arch: Some(arch_static(arch)),
         fmad: Some(false),
         options,
         ..Default::default()
     };
-    if let Some(ptx) = kernel_cache::lookup(&src, &opts) {
+    if let Some(ptx) = kernel_cache::lookup(&source, &compile_options) {
         return Ok(ptx);
     }
     #[cfg(any(test, feature = "test-utils"))]
-    NVRTC_COMPILES.with(|c| c.set(c.get() + 1));
-    let ptx = compile_ptx_with_opts(src.clone(), opts.clone()).map_err(|e| GpuError::Compile {
-        w,
-        log: e.to_string(),
+    NVRTC_COMPILES.with(|count| count.set(count.get() + 1));
+    let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone()).map_err(|e| {
+        GpuError::Compile {
+            w,
+            log: e.to_string(),
+        }
     })?;
-    kernel_cache::store(&src, &opts, &ptx.to_src());
+    kernel_cache::store(&source, &compile_options, &ptx.to_src());
     Ok(ptx)
 }
 
@@ -204,7 +206,7 @@ pub(crate) fn kernel_set_with_options(
     let arch = format!("compute_{major}{minor}");
     let ptx = compile_ptx(w, &arch, extra_options)?;
     let module = ctx.load_module(ptx).map_err(GpuError::from)?;
-    let f = |name: &str| module.load_function(name).map_err(GpuError::from);
+    let load = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;
     let mut limit = ctx
         .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
@@ -212,22 +214,22 @@ pub(crate) fn kernel_set_with_options(
         .max(0) as usize;
     if let Some(cap) = extra_options
         .iter()
-        .find_map(|o| o.strip_prefix(TEST_SHARED_LIMIT))
-        .and_then(|v| v.parse::<usize>().ok())
+        .find_map(|option| option.strip_prefix(TEST_SHARED_LIMIT))
+        .and_then(|value| value.parse::<usize>().ok())
     {
         limit = limit.min(cap);
     }
     let mut layer = Vec::new();
     let mut items = 1usize;
     while items * threads <= LAYER_CAP && layer_shared_bytes(items * threads, w) as usize <= limit {
-        let smem = layer_shared_bytes(items * threads, w) as i32;
-        let serial = f(&format!("k_layer_serial_{items}"))?;
-        let segscan = f(&format!("k_layer_segscan_{items}"))?;
+        let shared_bytes = layer_shared_bytes(items * threads, w) as i32;
+        let serial = load(&format!("k_layer_serial_{items}"))?;
+        let segscan = load(&format!("k_layer_segscan_{items}"))?;
         // Opt-in shared memory above the 48 KB default; the attribute is per function.
         for func in [&serial, &segscan] {
             func.set_attribute(
                 CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                smem,
+                shared_bytes,
             )
             .map_err(GpuError::from)?;
         }
@@ -244,30 +246,30 @@ pub(crate) fn kernel_set_with_options(
         ));
     }
     let set = Arc::new(KernelSet {
-        fingerprint: f("k_fingerprint")?,
-        scan_block: f("k_scan_block")?,
-        scan_single: f("k_scan_single")?,
-        scan_add: f("k_scan_add")?,
-        refine_count: f("k_refine_count")?,
-        refine_scatter: f("k_refine_scatter")?,
-        check_invariants: f("k_check_invariants")?,
-        count: f("k_count")?,
-        rows: f("k_rows")?,
-        export_counts: f("k_export_counts")?,
-        export_fill: f("k_export_fill")?,
-        premerge_counts: f("k_premerge_counts")?,
-        premerge_split: f("k_premerge_split")?,
-        premerge_copy: f("k_premerge_copy")?,
-        compact: f("k_compact")?,
-        rescale: f("k_rescale")?,
-        perm_count: f("k_perm_count")?,
-        perm_lens: f("k_perm_lens")?,
-        perm_scatter: f("k_perm_scatter")?,
-        octave_hist: f("k_octave_hist")?,
-        radix_hist: f("k_radix_hist")?,
-        radix_extract: f("k_radix_extract")?,
-        topn_counts: f("k_topn_counts")?,
-        retain: f("k_retain")?,
+        fingerprint: load("k_fingerprint")?,
+        scan_block: load("k_scan_block")?,
+        scan_single: load("k_scan_single")?,
+        scan_add: load("k_scan_add")?,
+        refine_count: load("k_refine_count")?,
+        refine_scatter: load("k_refine_scatter")?,
+        check_invariants: load("k_check_invariants")?,
+        count: load("k_count")?,
+        rows: load("k_rows")?,
+        export_counts: load("k_export_counts")?,
+        export_fill: load("k_export_fill")?,
+        premerge_counts: load("k_premerge_counts")?,
+        premerge_split: load("k_premerge_split")?,
+        premerge_copy: load("k_premerge_copy")?,
+        compact: load("k_compact")?,
+        rescale: load("k_rescale")?,
+        perm_count: load("k_perm_count")?,
+        perm_lens: load("k_perm_lens")?,
+        perm_scatter: load("k_perm_scatter")?,
+        octave_hist: load("k_octave_hist")?,
+        radix_hist: load("k_radix_hist")?,
+        radix_extract: load("k_radix_extract")?,
+        topn_counts: load("k_topn_counts")?,
+        retain: load("k_retain")?,
         layer,
         threads,
     });

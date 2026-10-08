@@ -65,18 +65,18 @@ pub(super) fn lower_for_run<const W: usize>(
     Ok(keep)
 }
 
-/// `(rank, code)` of the first rank of `coll`'s group whose `code` is non-zero: every rank's failure agreed in one all-reduce of `size` words. **Collective.**
-pub fn first_failure(coll: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
-    let mut codes = vec![0u64; coll.size() as usize];
-    codes[coll.rank() as usize] = code;
-    coll.allreduce_sum_u64(&mut codes);
+/// `(rank, code)` of the first rank of `collectives`'s group whose `code` is non-zero: every rank's failure agreed in one all-reduce of `size` words. **Collective.**
+pub fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
+    let mut codes = vec![0u64; collectives.size() as usize];
+    codes[collectives.rank() as usize] = code;
+    collectives.allreduce_sum_u64(&mut codes);
     first_nonzero(&codes)
 }
 
 pub(super) fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
     codes
         .iter()
-        .position(|&c| c != 0)
+        .position(|&code| code != 0)
         .map(|rank| (rank, codes[rank]))
 }
 
@@ -84,7 +84,7 @@ pub(super) fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
 pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuError> {
     static RUNTIMES: Mutex<Vec<(u32, Arc<PartitionRuntime>)>> = Mutex::new(Vec::new());
     let mut cache = RUNTIMES.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, runtime)) = cache.iter().find(|(d, _)| *d == device) {
+    if let Some((_, runtime)) = cache.iter().find(|(cached, _)| *cached == device) {
         return Ok(runtime.clone());
     }
     let config = PartitionConfig {
@@ -106,18 +106,18 @@ pub(super) fn upload_share<const W: usize>(
     rows: &PartitionRows<W>,
     (rank, size): (u32, u32),
     device: u32,
-    coll: &dyn Collectives,
+    collectives: &dyn Collectives,
     extra_options: &[String],
 ) -> Result<DevicePartition<W>, GpuError> {
-    let dev = if size == 1 {
+    let device_sum = if size == 1 {
         GpuSum::from_host_with_options(sum, device, extra_options)?
     } else {
-        let local = scatter_local(sum, rows, rank, coll);
+        let local = scatter_local(sum, rows, rank, collectives);
         GpuSum::from_host_with_options(&local, device, extra_options)?
     };
-    let mut part = DevicePartition::new(dev, GpuLayerOptions::default())?;
-    part.group_size = size;
-    Ok(part)
+    let mut partition = DevicePartition::new(device_sum, GpuLayerOptions::default())?;
+    partition.group_size = size;
+    Ok(partition)
 }
 
 impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
@@ -140,9 +140,18 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         Self::one_device(sum, ordinal, extra_options)
     }
 
-    fn one_device(sum: &PauliSum<W>, ordinal: u32, extra: &[String]) -> Result<Self, GpuError> {
+    fn one_device(
+        sum: &PauliSum<W>,
+        ordinal: u32,
+        extra_options: &[String],
+    ) -> Result<Self, GpuError> {
         let runtime = device_runtime(ordinal)?;
-        Self::upload(sum, PartitionRows::none(sum.num_qubits()), runtime, extra)
+        Self::upload(
+            sum,
+            PartitionRows::none(sum.num_qubits()),
+            runtime,
+            extra_options,
+        )
     }
 
     /// Splits `sum` across `runtime`'s device partitions, deriving the partition rows from `config` as [`PartitionedSum::scatter`] does.
@@ -183,7 +192,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         sum: &PauliSum<W>,
         rows: PartitionRows<W>,
         runtime: Arc<PartitionRuntime>,
-        extra: &[String],
+        extra_options: &[String],
     ) -> Result<Self, GpuError> {
         let size = runtime.num_partitions();
         rows.assert_splits(sum.hash(), sum.num_qubits(), size);
@@ -197,27 +206,28 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
             })
             .collect::<Result<_, _>>()?;
         let started = Instant::now();
-        let parts: Vec<Result<DevicePartition<W>, GpuError>> = {
+        let partitions: Vec<Result<DevicePartition<W>, GpuError>> = {
             let (rows, devices) = (&rows, &devices);
             let wires = PeerWire::group(size as u32);
             runtime.map_partitions(wires, |rank, wire, transport| {
                 let ids = (rank as u32, size as u32);
-                let mut part = upload_share(sum, rows, ids, devices[rank], transport, extra)?;
-                part.scratch_mut().export.wire = Some(Arc::new(wire));
-                Ok(part)
+                let mut partition =
+                    upload_share(sum, rows, ids, devices[rank], transport, extra_options)?;
+                partition.scratch_mut().export.wire = Some(Arc::new(wire));
+                Ok(partition)
             })
         };
-        let parts = parts.into_iter().collect::<Result<Vec<_>, _>>()?;
+        let partitions = partitions.into_iter().collect::<Result<Vec<_>, _>>()?;
         log::info!(
             target: LOG_TARGET,
             "scatter_gpu: {} terms over {size} device partitions [{}], {} bucket bits, {:.3} s",
             sum.len(),
             runtime.placement_summary(),
-            parts[0].hash().bits(),
+            partitions[0].hash().bits(),
             started.elapsed().as_secs_f64(),
         );
         let scatter_ns = started.elapsed().as_nanos() as u64;
-        Ok(Self::from_backend(parts, rows, runtime, scatter_ns))
+        Ok(Self::from_backend(partitions, rows, runtime, scatter_ns))
     }
 
     /// Propagate through `circuit` with the default [`PropagateOptions`].
@@ -246,24 +256,26 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         options: PropagateOptions,
     ) -> Result<(), GpuError> {
         let policy = policy.into();
-        let parts = self.backends_mut();
-        parts[0].check_poison()?;
-        let single = parts.len() == 1;
-        let keep = lower_for_run(circuit, &policy, direction, parts[0].hash(), single)?;
-        for part in parts.iter_mut() {
-            part.take_error()?;
-            part.keep = keep;
+        let partitions = self.backends_mut();
+        partitions[0].check_poison()?;
+        let single = partitions.len() == 1;
+        let keep = lower_for_run(circuit, &policy, direction, partitions[0].hash(), single)?;
+        for partition in partitions.iter_mut() {
+            partition.take_error()?;
+            partition.keep = keep;
         }
         self.propagate_on_backend(circuit, &policy, direction, options);
-        let parts = self.backends_mut();
-        let (mut outcomes, codes): (Vec<_>, Vec<u64>) =
-            parts.iter_mut().map(DevicePartition::take_failure).unzip();
+        let partitions = self.backends_mut();
+        let (mut outcomes, codes): (Vec<_>, Vec<u64>) = partitions
+            .iter_mut()
+            .map(DevicePartition::take_failure)
+            .unzip();
         let Some((rank, code)) = first_nonzero(&codes) else {
             return Ok(());
         };
         if !single {
-            for part in parts.iter_mut() {
-                part.poison(rank, code as usize - 1);
+            for partition in partitions.iter_mut() {
+                partition.poison(rank, code as usize - 1);
             }
         }
         std::mem::replace(&mut outcomes[rank], Ok(()))
@@ -290,18 +302,18 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     ///
     /// [`GpuError::Poisoned`] after a failed call, otherwise any download error.
     pub fn gather(&self) -> Result<PauliSum<W>, GpuError> {
-        let parts = self.backends();
-        parts[0].check_poison()?;
+        let partitions = self.backends();
+        partitions[0].check_poison()?;
         #[cfg(feature = "phase-timing")]
         let started = Instant::now();
-        let shares = std::thread::scope(|s| {
-            let downloads: Vec<_> = parts
+        let shares = std::thread::scope(|scope| {
+            let downloads: Vec<_> = partitions
                 .iter()
-                .map(|p| s.spawn(|| p.sum().to_host()))
+                .map(|partition| scope.spawn(|| partition.sum().to_host()))
                 .collect();
             downloads
                 .into_iter()
-                .map(|h| h.join().expect("a download thread panicked"))
+                .map(|download| download.join().expect("a download thread panicked"))
                 .collect::<Result<Vec<_>, _>>()
         })?;
         let out = PauliSum::merge_partitions(shares);
@@ -312,13 +324,16 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 
     /// Each partition's device ordinal, in rank order.
     pub fn devices(&self) -> Vec<u32> {
-        self.backends().iter().map(|p| p.sum().device()).collect()
+        self.backends()
+            .iter()
+            .map(|partition| partition.sum().device())
+            .collect()
     }
 
     /// The device layer's knobs on every partition; takes effect from the next layer.
     pub fn set_layer_options(&mut self, options: GpuLayerOptions) {
-        for part in self.backends_mut() {
-            part.scratch_mut().options = options;
+        for partition in self.backends_mut() {
+            partition.scratch_mut().options = options;
         }
     }
 
@@ -335,7 +350,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         let per_partition = self
             .backends_mut()
             .iter_mut()
-            .map(|part| std::mem::take(part.stats()))
+            .map(|partition| std::mem::take(partition.stats()))
             .collect();
         let (scatter_ns, gather_ns, layers) = self.take_driver_laps();
         PartitionPhaseStats {
@@ -357,9 +372,9 @@ pub fn propagate_gpu<const W: usize>(
     direction: Direction,
     device: u32,
 ) -> Result<PauliSum<W>, GpuError> {
-    let mut dev = GpuPauliSum::from_host(sum, device)?;
-    dev.propagate(circuit, policy, direction)?;
-    dev.gather()
+    let mut resident = GpuPauliSum::from_host(sum, device)?;
+    resident.propagate(circuit, policy, direction)?;
+    resident.gather()
 }
 
 /// Propagate `sum` through `circuit` on the device partitions `config` places, and gather the result.

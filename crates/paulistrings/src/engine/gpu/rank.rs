@@ -28,24 +28,27 @@ mod affinity;
 #[cfg(feature = "mpi")]
 pub use affinity::local_device_for_comm;
 
-/// `r` agreed over the group: this rank's own error, [`GpuError::Poisoned`] naming the first failing peer (after handing this rank's value to `discard`), or `r`'s value when every rank succeeded. **Collective.**
+/// `result` agreed over the group: this rank's own error, [`GpuError::Poisoned`] naming the first failing peer (after handing this rank's value to `discard`), or its value when every rank succeeded. **Collective.**
 fn agree_with<T>(
-    coll: &dyn Collectives,
-    r: Result<T, GpuError>,
+    collectives: &dyn Collectives,
+    result: Result<T, GpuError>,
     discard: impl FnOnce(T),
 ) -> Result<T, GpuError> {
-    match (first_failure(coll, u64::from(r.is_err())), r) {
+    match (
+        first_failure(collectives, u64::from(result.is_err())),
+        result,
+    ) {
         (_, Err(e)) => Err(e),
-        (None, Ok(v)) => Ok(v),
-        (Some((rank, _)), Ok(v)) => {
-            discard(v);
+        (None, Ok(value)) => Ok(value),
+        (Some((rank, _)), Ok(value)) => {
+            discard(value);
             Err(GpuError::Poisoned { rank, layer: 0 })
         }
     }
 }
 
-fn agree<T>(coll: &dyn Collectives, r: Result<T, GpuError>) -> Result<T, GpuError> {
-    agree_with(coll, r, drop)
+fn agree<T>(collectives: &dyn Collectives, result: Result<T, GpuError>) -> Result<T, GpuError> {
+    agree_with(collectives, result, drop)
 }
 
 /// One process's partition of a sum split across a [`Transport`]'s group, held on one CUDA device: [`DistributedSum`] over the device backend of [`GpuPartitionedSum`](super::GpuPartitionedSum).
@@ -115,23 +118,23 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         rows.assert_splits(sum.hash(), sum.num_qubits(), size as usize);
         let started = Instant::now();
         let runtime = agree(&transport, device_runtime(device))?;
-        let part = {
+        let partition = {
             let (rows, transport) = (&rows, &transport);
             runtime.install(move || upload_share(sum, rows, (rank, size), device, transport, &[]))
         };
-        let mut part = agree(&transport, part)?;
-        start(&transport, &mut part)?;
+        let mut partition = agree(&transport, partition)?;
+        start(&transport, &mut partition)?;
         log::info!(
             target: LOG_TARGET,
             "scatter_gpu: rank {rank}/{size} on device {device}, {} terms in, {} kept locally, {} bucket bits, {:.3} s",
             sum.len(),
-            part.len(),
-            part.hash().bits(),
+            partition.len(),
+            partition.hash().bits(),
             started.elapsed().as_secs_f64(),
         );
         let scatter_ns = started.elapsed().as_nanos() as u64;
         Ok(Self::from_backend(
-            part, rows, runtime, transport, scatter_ns,
+            partition, rows, runtime, transport, scatter_ns,
         ))
     }
 
@@ -164,12 +167,12 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ) -> Result<(), GpuError> {
         let policy = policy.into();
         let single = self.size() == 1;
-        let part = self.backend_mut();
-        part.check_poison()?;
-        let keep = lower_for_run(circuit, &policy, direction, part.hash(), single)?;
-        let stale = part.take_error();
+        let partition = self.backend_mut();
+        partition.check_poison()?;
+        let keep = lower_for_run(circuit, &policy, direction, partition.hash(), single)?;
+        let stale = partition.take_error();
         debug_assert!(stale.is_ok(), "a device error survived the previous call");
-        part.keep = keep;
+        partition.keep = keep;
 
         self.propagate_on_backend(circuit, &policy, direction, options);
 
@@ -260,16 +263,16 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
 /// Nothing at one rank; above it, start NCCL for the group (feature `mpi`), which is the only exchange a device group over a transport has. **Collective.**
 fn start_exchange<const W: usize, X: Transport>(
     transport: &X,
-    part: &mut DevicePartition<W>,
+    partition: &mut DevicePartition<W>,
 ) -> Result<(), GpuError> {
     if transport.size() == 1 {
         return Ok(());
     }
     #[cfg(feature = "mpi")]
-    return start_nccl(transport, part);
+    return start_nccl(transport, partition);
     #[cfg(not(feature = "mpi"))]
     {
-        let _ = part;
+        let _ = partition;
         Err(GpuError::Unsupported(
             "a device group of more than one rank exchanges over NCCL, which needs the mpi feature",
         ))
@@ -279,47 +282,47 @@ fn start_exchange<const W: usize, X: Transport>(
 /// Agree that the group can start NCCL, then bootstrap and warm up the communicator. **Collective.**
 #[cfg(feature = "mpi")]
 fn start_nccl<const W: usize>(
-    coll: &dyn Collectives,
-    part: &mut DevicePartition<W>,
+    collectives: &dyn Collectives,
+    partition: &mut DevicePartition<W>,
 ) -> Result<(), GpuError> {
     use super::nccl::{self, NcclComm, NcclWire};
-    let ctx = part.sum().ctx.clone();
+    let ctx = partition.sum().ctx.clone();
     let device = if super::device::nccl_available() {
         nccl::device_uuid(&ctx).ok()
     } else {
         None
     };
-    nccl::agree_start(coll, device.is_some(), device.unwrap_or_default())?;
-    let stream = part.sum().stream.clone();
+    nccl::agree_start(collectives, device.is_some(), device.unwrap_or_default())?;
+    let stream = partition.sum().stream.clone();
     let comm = bootstrap(
-        coll,
-        || NcclComm::init(coll, &ctx),
+        collectives,
+        || NcclComm::init(collectives, &ctx),
         |comm| comm.warm_up(&stream),
         NcclComm::abort,
     )?;
-    part.scratch_mut().export.wire = Some(std::sync::Arc::new(NcclWire::new(std::sync::Arc::new(
-        comm,
-    ))));
+    partition.scratch_mut().export.wire = Some(std::sync::Arc::new(NcclWire::new(
+        std::sync::Arc::new(comm),
+    )));
     Ok(())
 }
 
 /// Start a communicator with `init` and warm it up with `warm`, each step agreed over the group (**collective**: two `allreduce_sum_u64`); on any failure every rank errs and its communicator is aborted, not finalized against dead peers.
 #[cfg(feature = "mpi")]
 fn bootstrap<C>(
-    coll: &dyn Collectives,
+    collectives: &dyn Collectives,
     init: impl FnOnce() -> Result<C, GpuError>,
     warm: impl FnOnce(&C) -> Result<(), GpuError>,
     abort: impl Fn(&C),
 ) -> Result<C, GpuError> {
-    agree_with(coll, init(), |c| abort(&c)).and_then(|c| {
-        let warmed = match warm(&c) {
-            Ok(()) => Ok(c),
+    agree_with(collectives, init(), |comm| abort(&comm)).and_then(|comm| {
+        let warmed = match warm(&comm) {
+            Ok(()) => Ok(comm),
             Err(e) => {
-                abort(&c);
+                abort(&comm);
                 Err(e)
             }
         };
-        agree_with(coll, warmed, |c| abort(&c))
+        agree_with(collectives, warmed, |comm| abort(&comm))
     })
 }
 
@@ -344,7 +347,7 @@ pub fn propagate_mpi_gpu<const W: usize>(
 ) -> Result<Option<PauliSum<W>>, GpuError> {
     let transport = MpiTransport::from_communicator(comm);
     let picked = match device {
-        Some(d) => Ok(d),
+        Some(ordinal) => Ok(ordinal),
         None => local_device_for_comm(comm),
     };
     let device = agree(&transport, picked)?;

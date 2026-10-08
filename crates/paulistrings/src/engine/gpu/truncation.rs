@@ -29,10 +29,10 @@ pub(crate) struct KeepProgram {
 // SAFETY: plain `repr(C)` data with the field order, types and padding of `KeepProg` in kernels/prelude.cuh.
 unsafe impl DeviceRepr for KeepProgram {}
 
-/// `t` with its layer passes replaced by `Keep` and every `Keep` operand folded.
-fn per_term(t: &BuiltinTruncation) -> BuiltinTruncation {
+/// `tree` with its layer passes replaced by `Keep` and every `Keep` operand folded.
+fn per_term(tree: &BuiltinTruncation) -> BuiltinTruncation {
     use BuiltinTruncation as T;
-    match t {
+    match tree {
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => T::Keep,
         T::Coeff(eps) => T::Coeff(*eps),
         T::Weight(k) => T::Weight(*k),
@@ -47,16 +47,16 @@ fn per_term(t: &BuiltinTruncation) -> BuiltinTruncation {
     }
 }
 
-fn emit(t: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
+fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
     use BuiltinTruncation as T;
-    match t {
+    match tree {
         T::Coeff(eps) => out.push((OP_COEFF, eps.to_bits())),
         T::Weight(k) => out.push((OP_WEIGHT, u64::from(*k))),
         T::And(a, b) | T::Or(a, b) => {
             emit(a, out);
             emit(b, out);
             out.push((
-                if matches!(t, T::And(..)) {
+                if matches!(tree, T::And(..)) {
                     OP_AND
                 } else {
                     OP_OR
@@ -85,16 +85,16 @@ impl KeepProgram {
                 "a per-term truncation program longer than 15 nodes",
             ));
         }
-        let mut p = Self {
+        let mut program = Self {
             len: nodes.len() as u32,
             op: [OP_KEEP; KEEP_NODES],
             arg: [0; KEEP_NODES],
         };
         for (i, (op, arg)) in nodes.into_iter().enumerate() {
-            p.op[i] = op;
-            p.arg[i] = arg;
+            program.op[i] = op;
+            program.arg[i] = arg;
         }
-        Ok(p)
+        Ok(program)
     }
 }
 

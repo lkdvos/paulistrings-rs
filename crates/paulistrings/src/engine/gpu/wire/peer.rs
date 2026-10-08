@@ -52,7 +52,7 @@ struct State {
 struct Shared {
     size: u32,
     state: Mutex<State>,
-    cv: Condvar,
+    condvar: Condvar,
     timeout: Duration,
     /// Groups posted by every rank so far.
     #[cfg(test)]
@@ -79,7 +79,7 @@ pub(crate) struct PeerWire {
     rank: u32,
     shared: Arc<Shared>,
     /// This rank's next generation and the one it posted but has not waited on.
-    gen: Mutex<(u64, Option<u64>)>,
+    generation: Mutex<(u64, Option<u64>)>,
     /// Set once this wire failed or timed out; every later call fails.
     dead: AtomicBool,
 }
@@ -117,7 +117,7 @@ impl PeerWire {
                 rounds: BTreeMap::new(),
                 poisoned: None,
             }),
-            cv: Condvar::new(),
+            condvar: Condvar::new(),
             timeout,
             #[cfg(test)]
             posted: AtomicU64::new(0),
@@ -128,7 +128,7 @@ impl PeerWire {
             .map(|rank| PeerWire {
                 rank,
                 shared: shared.clone(),
-                gen: Mutex::new((0, None)),
+                generation: Mutex::new((0, None)),
                 dead: AtomicBool::new(false),
             })
             .collect()
@@ -153,34 +153,34 @@ impl PeerWire {
     }
 
     /// Record `msg` for the group and panic with it.
-    fn fail(&self, mut st: MutexGuard<'_, State>, msg: String) -> ! {
-        st.poisoned.get_or_insert_with(|| msg.clone());
-        drop(st);
-        self.shared.cv.notify_all();
+    fn fail(&self, mut state: MutexGuard<'_, State>, msg: String) -> ! {
+        state.poisoned.get_or_insert_with(|| msg.clone());
+        drop(state);
+        self.shared.condvar.notify_all();
         panic!("{msg}");
     }
 
-    /// Block until `ready` holds for generation `g`, re-raising a peer's failure; a timeout kills the wire.
+    /// Block until `ready` holds for `generation`, re-raising a peer's failure; a timeout kills the wire.
     fn wait_for<'s>(
         &'s self,
-        mut st: MutexGuard<'s, State>,
-        g: u64,
+        mut state: MutexGuard<'s, State>,
+        generation: u64,
         what: &str,
         ready: impl Fn(&Round) -> bool,
     ) -> Result<MutexGuard<'s, State>, GpuError> {
         let start = Instant::now();
         loop {
-            if let Some(msg) = &st.poisoned {
+            if let Some(msg) = &state.poisoned {
                 let msg = format!("peer wire, rank {}: a peer failed: {msg}", self.rank);
-                drop(st);
+                drop(state);
                 panic!("{msg}");
             }
-            let round = st
+            let round = state
                 .rounds
-                .get(&g)
+                .get(&generation)
                 .expect("a posted round stays until every rank left");
             if ready(round) {
-                return Ok(st);
+                return Ok(state);
             }
             let elapsed = start.elapsed();
             if elapsed >= self.shared.timeout {
@@ -188,7 +188,7 @@ impl PeerWire {
                     .filter(|&r| round.posted[r].is_none())
                     .collect();
                 log::warn!(
-                    "gpu: peer wire rank {}: group {g} timed out waiting for {what} (ranks not posted: {missing:?})",
+                    "gpu: peer wire rank {}: group {generation} timed out waiting for {what} (ranks not posted: {missing:?})",
                     self.rank
                 );
                 self.dead.store(true, Ordering::Relaxed);
@@ -196,11 +196,11 @@ impl PeerWire {
                     what: "a peer wire group",
                 });
             }
-            st = self
+            state = self
                 .shared
-                .cv
+                .condvar
                 .wait_timeout(
-                    st,
+                    state,
                     (self.shared.timeout - elapsed).min(Duration::from_millis(50)),
                 )
                 .unwrap_or_else(PoisonError::into_inner)
@@ -226,12 +226,13 @@ impl PeerWire {
 impl Drop for PeerWire {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            let mut st = self.lock();
+            let mut state = self.lock();
             let rank = self.rank;
-            st.poisoned
+            state
+                .poisoned
                 .get_or_insert_with(|| format!("rank {rank} panicked"));
-            drop(st);
-            self.shared.cv.notify_all();
+            drop(state);
+            self.shared.condvar.notify_all();
         }
     }
 }
@@ -288,64 +289,69 @@ impl DeviceWire for PeerWire {
                 ready,
             });
         }
-        let g = {
-            let mut gen = self.gen.lock().unwrap_or_else(PoisonError::into_inner);
+        let generation = {
+            let mut counter = self
+                .generation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             assert!(
-                gen.1.is_none(),
+                counter.1.is_none(),
                 "peer wire, rank {}: a second group posted before the first was waited on",
                 self.rank
             );
-            let g = gen.0;
-            *gen = (g + 1, Some(g));
-            g
+            let generation = counter.0;
+            *counter = (generation + 1, Some(generation));
+            generation
         };
-        let mut st = self.lock();
-        let round = st.rounds.entry(g).or_insert_with(|| Round {
+        let mut state = self.lock();
+        let round = state.rounds.entry(generation).or_insert_with(|| Round {
             posted: (0..size).map(|_| None).collect(),
             done: 0,
             left: 0,
         });
         round.posted[self.rank as usize] = Some(posted);
-        drop(st);
+        drop(state);
         #[cfg(test)]
         self.shared.posted.fetch_add(1, Ordering::Relaxed);
-        self.shared.cv.notify_all();
+        self.shared.condvar.notify_all();
         Ok(())
     }
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         self.alive()?;
         let pending = self
-            .gen
+            .generation
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .1
             .take();
-        let Some(g) = pending else {
+        let Some(generation) = pending else {
             stream.synchronize()?;
             return Ok(());
         };
         let (me, size) = (self.rank as usize, self.shared.size);
-        let st = self.lock();
-        let st = self.wait_for(st, g, "every rank's group", |r| {
+        let state = self.lock();
+        let state = self.wait_for(state, generation, "every rank's group", |r| {
             r.posted.iter().all(Option::is_some)
         })?;
         #[cfg(test)]
         if self.faulty(PeerFault::Wait) {
             // The peers' copies read this rank's buffers, which its caller reuses as soon as this returns.
-            drop(self.wait_for(st, g, "the peers' copies", |r| r.done + 1 >= size)?);
+            drop(self.wait_for(state, generation, "the peers' copies", |r| {
+                r.done + 1 >= size
+            })?);
             return Err(self.die("an injected peer wire wait failure"));
         }
         let copies = match check_round(
-            &st.rounds[&g],
+            &state.rounds[&generation],
             me,
             size as usize,
             stream.cu_stream() as usize,
         ) {
             Ok(copies) => copies,
-            Err(msg) => self.fail(st, msg),
+            Err(msg) => self.fail(state, msg),
         };
-        drop(st);
+        drop(state);
         let enqueued: Result<(), GpuError> = (|| {
             let ctx = stream.context();
             ctx.bind_to_thread()?;
@@ -373,14 +379,22 @@ impl DeviceWire for PeerWire {
             Ok(())
         })();
         let synced = enqueued.and_then(|()| Ok(stream.synchronize()?));
-        let mut st = self.lock();
-        st.rounds.get_mut(&g).expect("the round is live").done += 1;
-        self.shared.cv.notify_all();
-        let mut st = self.wait_for(st, g, "every rank's copies", |r| r.done == size)?;
-        let round = st.rounds.get_mut(&g).expect("the round is live");
+        let mut state = self.lock();
+        state
+            .rounds
+            .get_mut(&generation)
+            .expect("the round is live")
+            .done += 1;
+        self.shared.condvar.notify_all();
+        let mut state =
+            self.wait_for(state, generation, "every rank's copies", |r| r.done == size)?;
+        let round = state
+            .rounds
+            .get_mut(&generation)
+            .expect("the round is live");
         round.left += 1;
         if round.left == size {
-            st.rounds.remove(&g);
+            state.rounds.remove(&generation);
         }
         synced
     }

@@ -65,10 +65,10 @@ struct ValueSlot {
     tag: AtomicU64,
     len: AtomicUsize,
     /// A sum contribution (`f64`s as bits); written only by the owner while no partner reads it, atomic elements so a hypothetical overlap is a stale read rather than UB.
-    buf: UnsafeCell<Vec<AtomicU64>>,
+    buffer: UnsafeCell<Vec<AtomicU64>>,
 }
 
-/// SAFETY: `buf`'s exclusivity is established by the generation protocol documented on [`GroupState`], not by Rust's borrow checker.
+/// SAFETY: `buffer`'s exclusivity is established by the generation protocol documented on [`GroupState`], not by Rust's borrow checker.
 unsafe impl Sync for ValueSlot {}
 
 impl ValueSlot {
@@ -77,13 +77,13 @@ impl ValueSlot {
     /// # Safety
     ///
     /// The caller must be the rank that owns this slot, and no partner may be reading it — [`GroupState`]'s parity argument.
-    unsafe fn write_buf(&self, values: &[u64]) {
-        let buf = &mut *self.buf.get();
-        if buf.len() != values.len() {
-            buf.clear();
-            buf.resize_with(values.len(), AtomicU64::default);
+    unsafe fn write_buffer(&self, values: &[u64]) {
+        let buffer = &mut *self.buffer.get();
+        if buffer.len() != values.len() {
+            buffer.clear();
+            buffer.resize_with(values.len(), AtomicU64::default);
         }
-        for (slot, &v) in buf.iter().zip(values) {
+        for (slot, &v) in buffer.iter().zip(values) {
             slot.store(v, Ordering::Relaxed);
         }
         self.len.store(values.len(), Ordering::Relaxed);
@@ -94,9 +94,9 @@ impl ValueSlot {
     /// # Safety
     ///
     /// The caller must have observed the owner's `Release` of the generation it is reading (so the elements are visible) and must be inside the window in which the owner cannot be writing — [`GroupState`]'s parity argument.
-    unsafe fn read_buf(&self) -> &[AtomicU64] {
-        let buf: &Vec<AtomicU64> = &*self.buf.get();
-        &buf[..]
+    unsafe fn read_buffer(&self) -> &[AtomicU64] {
+        let buffer: &Vec<AtomicU64> = &*self.buffer.get();
+        &buffer[..]
     }
 }
 
@@ -131,37 +131,37 @@ impl GroupState {
         }
     }
 
-    fn value_slot(&self, rank: u32, gen: u64) -> &ValueSlot {
-        &self.slots[rank as usize].values[(gen & 1) as usize]
+    fn value_slot(&self, rank: u32, generation: u64) -> &ValueSlot {
+        &self.slots[rank as usize].values[(generation & 1) as usize]
     }
 
-    /// Publish generation `gen` of `kind` carrying `payload`; the caller has already written the buffer, if its call carries one.
-    fn publish(&self, rank: u32, gen: u64, kind: CallKind, payload: u8) {
+    /// Publish `generation` of `kind` carrying `payload`; the caller has already written the buffer, if its call carries one.
+    fn publish(&self, rank: u32, generation: u64, kind: CallKind, payload: u8) {
         let k = kind as u64;
-        self.value_slot(rank, gen).tag.store(
-            (gen << 16) | (k << 8) | u64::from(payload),
+        self.value_slot(rank, generation).tag.store(
+            (generation << 16) | (k << 8) | u64::from(payload),
             Ordering::Release,
         );
         self.slots[rank as usize]
             .progress
-            .store((gen << 8) | k, Ordering::Release);
+            .store((generation << 8) | k, Ordering::Release);
     }
 
-    /// Wait for rank `src` to publish generation `gen` of `kind` and return its tag word; panics on a different call, a departed partner, or the timeout.
-    fn wait(&self, waiter: u32, src: u32, gen: u64, kind: CallKind) -> u64 {
+    /// Wait for rank `src` to publish `generation` of `kind` and return its tag word; panics on a different call, a departed partner, or the timeout.
+    fn wait(&self, waiter: u32, src: u32, generation: u64, kind: CallKind) -> u64 {
         let slot = &self.slots[src as usize];
-        let value = &slot.values[(gen & 1) as usize];
+        let value = &slot.values[(generation & 1) as usize];
         let mut spins: u32 = 0;
         let mut waiting_since: Option<Instant> = None;
         loop {
             let progress = slot.progress.load(Ordering::Acquire);
-            if progress >> 8 >= gen {
+            if progress >> 8 >= generation {
                 let tag = value.tag.load(Ordering::Acquire);
-                if tag >> 16 == gen && (tag >> 8) & 0xff == kind as u64 {
+                if tag >> 16 == generation && (tag >> 8) & 0xff == kind as u64 {
                     return tag;
                 }
                 panic!(
-                    "collective order mismatch: partition {waiter} is at transport call {gen} \
+                    "collective order mismatch: partition {waiter} is at transport call {generation} \
                      ({}) but partition {src} published {} at call {} — every partition must \
                      issue the identical sequence of transport calls per layer",
                     kind.name(),
@@ -173,8 +173,8 @@ impl GroupState {
             spins = spins.saturating_add(1);
             if spins >= SPINS_BEFORE_YIELD || spins.is_multiple_of(CHECKS_EVERY) {
                 if self.departed.load(Ordering::Acquire) & (1u64 << src) != 0
-                    // Re-read: a partner that published `gen` and then left is not dead.
-                    && slot.progress.load(Ordering::Acquire) >> 8 < gen
+                    // Re-read: a partner that published `generation` and then left is not dead.
+                    && slot.progress.load(Ordering::Acquire) >> 8 < generation
                 {
                     panic!(
                         "partition {src} terminated before completing the {} (it panicked)",
@@ -185,7 +185,7 @@ impl GroupState {
                 if since.elapsed() > self.timeout {
                     panic!(
                         "partition {src} terminated before completing the {}: no response in \
-                         {} s (this partition is at transport call {gen}, that one at {})",
+                         {} s (this partition is at transport call {generation}, that one at {})",
                         kind.name(),
                         self.timeout.as_secs(),
                         slot.progress.load(Ordering::Acquire) >> 8,
@@ -203,10 +203,10 @@ impl GroupState {
     }
 
     /// [`Self::wait`] on every partner, folding their tag words in rank order.
-    fn wait_all(&self, rank: u32, gen: u64, kind: CallKind, mut fold: impl FnMut(u32, u64)) {
+    fn wait_all(&self, rank: u32, generation: u64, kind: CallKind, mut fold: impl FnMut(u32, u64)) {
         for src in 0..self.size {
             if src != rank {
-                fold(src, self.wait(rank, src, gen, kind));
+                fold(src, self.wait(rank, src, generation, kind));
             }
         }
     }
@@ -251,7 +251,7 @@ pub struct InProcessTransport {
     /// Outlives every endpoint, so a partner can read a slot while its owner is leaving.
     state: Arc<GroupState>,
     /// This rank's transport-call counter, touched only by its driving thread.
-    gen: AtomicU64,
+    generation: AtomicU64,
     /// Sender to partition `q`, `None` in the self slot.
     outbox: Vec<Option<std::sync::mpsc::Sender<Message>>>,
     /// Receiver from partition `q`; the uncontended `Mutex` only makes the transport `Sync`.
@@ -298,7 +298,7 @@ impl InProcessTransport {
                 rank: rank as u32,
                 size,
                 state: Arc::clone(&state),
-                gen: AtomicU64::new(0),
+                generation: AtomicU64::new(0),
                 outbox: std::mem::take(&mut senders[rank]),
                 inbox: (0..n)
                     .map(|src| receivers[src][rank].take().map(std::sync::Mutex::new))
@@ -308,14 +308,14 @@ impl InProcessTransport {
     }
 
     /// The generation of the call starting now, never zero.
-    fn next_gen(&self) -> u64 {
-        self.gen.fetch_add(1, Ordering::Relaxed) + 1
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Pretend one extra collective was issued, to test the order check.
     #[cfg(test)]
     pub(super) fn skip_sequence_for_test(&self) {
-        self.gen.fetch_add(1, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     fn send_to(&self, dst: usize, seq: u64, body: Box<dyn std::any::Any + Send>, op: &str) {
@@ -369,76 +369,81 @@ impl Collectives for InProcessTransport {
         if self.size == 1 {
             return v;
         }
-        let gen = self.next_gen();
-        self.state.publish(self.rank, gen, CallKind::MaxU8, v);
-
-        let mut acc = v;
+        let generation = self.next_generation();
         self.state
-            .wait_all(self.rank, gen, CallKind::MaxU8, |_, tag| {
-                acc = acc.max((tag & 0xff) as u8);
+            .publish(self.rank, generation, CallKind::MaxU8, v);
+
+        let mut maximum = v;
+        self.state
+            .wait_all(self.rank, generation, CallKind::MaxU8, |_, tag| {
+                maximum = maximum.max((tag & 0xff) as u8);
             });
-        acc
+        maximum
     }
 
-    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+    fn allreduce_sum_u64(&self, buffer: &mut [u64]) {
         if self.size == 1 {
             return;
         }
-        let gen = self.next_gen();
-        let slot = self.state.value_slot(self.rank, gen);
+        let generation = self.next_generation();
+        let slot = self.state.value_slot(self.rank, generation);
         // SAFETY: this rank owns the slot and the generation parity keeps every partner out of it (`GroupState`); the publish below makes the write visible.
-        unsafe { slot.write_buf(buf) };
-        self.state.publish(self.rank, gen, CallKind::SumU64, 0);
+        unsafe { slot.write_buffer(buffer) };
+        self.state
+            .publish(self.rank, generation, CallKind::SumU64, 0);
 
         let n = self.size;
         for src in 0..n {
             if src == self.rank {
                 continue;
             }
-            self.state.wait(self.rank, src, gen, CallKind::SumU64);
-            let theirs = self.state.value_slot(src, gen);
+            self.state
+                .wait(self.rank, src, generation, CallKind::SumU64);
+            let theirs = self.state.value_slot(src, generation);
             // SAFETY: `wait` returned, so this rank has observed `src`'s `Release` of this generation — its buffer and length are visible — and by the parity argument `src` cannot write the slot again before this rank publishes its next generation.
-            let values = unsafe { theirs.read_buf() };
+            let values = unsafe { theirs.read_buffer() };
             assert_eq!(
                 values.len(),
-                buf.len(),
+                buffer.len(),
                 "allreduce_sum_u64: partition {src} contributed {} values, this partition {}",
                 values.len(),
-                buf.len(),
+                buffer.len(),
             );
-            for (a, v) in buf.iter_mut().zip(values) {
+            for (a, v) in buffer.iter_mut().zip(values) {
                 *a = a.wrapping_add(v.load(Ordering::Relaxed));
             }
         }
     }
 
     /// Every partition folds all contributions, its own included, in rank order from zero, so all get the same bits.
-    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+    fn allreduce_sum_f64(&self, buffer: &mut [f64]) {
         if self.size == 1 {
             return;
         }
-        let gen = self.next_gen();
-        let bits: Vec<u64> = buf.iter().map(|v| v.to_bits()).collect();
-        let slot = self.state.value_slot(self.rank, gen);
+        let generation = self.next_generation();
+        let bits: Vec<u64> = buffer.iter().map(|v| v.to_bits()).collect();
+        let slot = self.state.value_slot(self.rank, generation);
         // SAFETY: as in `allreduce_sum_u64`.
-        unsafe { slot.write_buf(&bits) };
-        self.state.publish(self.rank, gen, CallKind::SumF64, 0);
+        unsafe { slot.write_buffer(&bits) };
+        self.state
+            .publish(self.rank, generation, CallKind::SumF64, 0);
 
-        buf.fill(0.0);
+        buffer.fill(0.0);
         for src in 0..self.size {
             if src != self.rank {
-                self.state.wait(self.rank, src, gen, CallKind::SumF64);
+                self.state
+                    .wait(self.rank, src, generation, CallKind::SumF64);
             }
             // SAFETY: as in `allreduce_sum_u64`; this rank's own slot is its own to read.
-            let values = unsafe { self.state.value_slot(src, gen).read_buf() };
+            let values = unsafe { self.state.value_slot(src, generation).read_buffer() };
             assert_eq!(
                 values.len(),
-                buf.len(),
+                buffer.len(),
                 "allreduce_sum_f64: partition {src} contributed {} values, this partition {}",
                 values.len(),
-                buf.len(),
+                buffer.len(),
             );
-            for (a, v) in buf.iter_mut().zip(values) {
+            for (a, v) in buffer.iter_mut().zip(values) {
                 *a += f64::from_bits(v.load(Ordering::Relaxed));
             }
         }
@@ -448,10 +453,11 @@ impl Collectives for InProcessTransport {
         if self.size == 1 {
             return;
         }
-        let gen = self.next_gen();
-        self.state.publish(self.rank, gen, CallKind::Barrier, 0);
+        let generation = self.next_generation();
         self.state
-            .wait_all(self.rank, gen, CallKind::Barrier, |_, _| {});
+            .publish(self.rank, generation, CallKind::Barrier, 0);
+        self.state
+            .wait_all(self.rank, generation, CallKind::Barrier, |_, _| {});
     }
 }
 
@@ -483,7 +489,7 @@ impl Transport for InProcessTransport {
         let recv: Vec<Option<P>> = if n == 1 {
             vec![None]
         } else {
-            let seq = self.next_gen();
+            let seq = self.next_generation();
             // Published although it waits on the channels, so a partner in a collective at this generation sees the kind mismatch.
             self.state.publish(self.rank, seq, CallKind::Exchange, 0);
             for (dst, payload) in send.into_iter().enumerate() {

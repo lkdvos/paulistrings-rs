@@ -97,15 +97,15 @@ impl ChunkMap {
     /// The first position of chunk `k`, a multiple of the coset size; `bound(chunks())` is the position count.
     pub fn bound(&self, k: usize) -> u32 {
         assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
-        let c = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
-        c << self.r
+        let coset = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
+        coset << self.r
     }
 
     /// The `k` with `bound(k) <= p < bound(k + 1)`.
     #[inline]
     pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
-        let c = u64::from(p >> self.r);
-        ((c * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
+        let coset = u64::from(p >> self.r);
+        ((coset * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
     }
 }
 
@@ -175,12 +175,12 @@ pub trait Collectives: sealed::Sealed + Send + Sync {
     fn size(&self) -> u32;
     /// Maximum of `v` over the group.
     fn allreduce_max_u8(&self, v: u8) -> u8;
-    /// Element-wise wrapping sum of `buf` over the group, in place; every partition passes the same length.
-    fn allreduce_sum_u64(&self, buf: &mut [u64]);
-    /// Element-wise sum of `buf` over the group, in place, bitwise identical on every partition.
+    /// Element-wise wrapping sum of `buffer` over the group, in place; every partition passes the same length.
+    fn allreduce_sum_u64(&self, buffer: &mut [u64]);
+    /// Element-wise sum of `buffer` over the group, in place, bitwise identical on every partition.
     ///
     /// The combination order is the implementation's, so the result may differ by rounding from a serial sum; a slot only one partition fills is exact.
-    fn allreduce_sum_f64(&self, buf: &mut [f64]);
+    fn allreduce_sum_f64(&self, buffer: &mut [f64]);
     /// Block until every partition has arrived.
     fn barrier(&self);
 
@@ -188,8 +188,8 @@ pub trait Collectives: sealed::Sealed + Send + Sync {
     fn check_consistency(&self, fingerprint: u64) {
         // Per bit, how many partitions set it: an agreeing group answers 0 or `size` for every bit.
         let mut counts = [0u64; 64];
-        for (i, c) in counts.iter_mut().enumerate() {
-            *c = (fingerprint >> i) & 1;
+        for (i, count) in counts.iter_mut().enumerate() {
+            *count = (fingerprint >> i) & 1;
         }
         self.allreduce_sum_u64(&mut counts);
         let size = u64::from(self.size());
@@ -238,10 +238,10 @@ pub trait Transport: Collectives {
     /// A transport that infers its partner set from the `Some` positions, as the MPI one does, must override this asymmetric call.
     fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
         let n = self.size() as usize;
-        let me = self.rank() as usize;
+        let this_rank = self.rank() as usize;
         let mine = ByteParts(parts.iter().map(|p| p.to_vec()).collect());
 
-        if me != ROOT {
+        if this_rank != ROOT {
             let mut send: Vec<Option<ByteParts>> = (0..n).map(|_| None).collect();
             send[ROOT] = Some(mine);
             self.exchange(send, &mut Vec::new());

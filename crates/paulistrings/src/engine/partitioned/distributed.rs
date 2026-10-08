@@ -229,43 +229,45 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         T: PartitionedTruncation<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
-        let n = circuit.channels.len();
+        let layer_count = circuit.channels.len();
         let rank = self.transport.rank() as usize;
         let size = self.transport.size() as usize;
         let terms_in = self.local.len();
         let started = Instant::now();
         log::info!(
             target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {terms_in} local terms through {n} \
+            "propagate_distributed: rank {rank}/{size}, {terms_in} local terms through {layer_count} \
              channels ({direction:?}) [{}]",
             self.runtime.placement_summary(),
         );
 
         self.transport.check_consistency(run_fingerprint(
-            n,
+            layer_count,
             direction,
             options,
             self.rows.num_qubits(),
             W,
         ));
 
-        if n > 0 {
+        if layer_count > 0 {
             let tracing = self.trace.is_some();
-            let mut work = PartitionWork::take(&mut self.local, n, tracing);
+            let mut work = PartitionWork::take(&mut self.local, layer_count, tracing);
 
             {
                 let runtime = Arc::clone(&self.runtime);
                 let rows = &self.rows;
                 let transport = &self.transport;
                 let work = &mut work;
-                let ctx = PartitionCtx {
+                let context = PartitionCtx {
                     rows,
                     rank,
                     size,
                     tracing,
                 };
                 runtime.install(move || {
-                    run_layers(circuit, policy, direction, options, ctx, work, transport);
+                    run_layers(
+                        circuit, policy, direction, options, context, work, transport,
+                    );
                 });
             }
 
@@ -275,13 +277,13 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             }
             #[cfg(feature = "phase-timing")]
             {
-                self.layers += n as u64;
+                self.layers += layer_count as u64;
             }
         }
 
         log::info!(
             target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {n} layers applied, {terms_in} -> {} \
+            "propagate_distributed: rank {rank}/{size}, {layer_count} layers applied, {terms_in} -> {} \
              local terms, {:.3} s",
             self.local.len(),
             started.elapsed().as_secs_f64(),
@@ -297,9 +299,9 @@ impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, 
 
     /// Terms in the whole sum. **Collective.**
     pub fn len(&self) -> usize {
-        let mut buf = [self.local.len() as u64];
-        self.transport.allreduce_sum_u64(&mut buf);
-        buf[0] as usize
+        let mut total = [self.local.len() as u64];
+        self.transport.allreduce_sum_u64(&mut total);
+        total[0] as usize
     }
 
     /// Whether the whole sum is empty. **Collective**, via [`len`](Self::len).
@@ -455,11 +457,11 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// [`PauliSum::anticommute_histogram`] of the whole sum. **Collective.**
     pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
         let local = &self.local.sum;
-        let mut hist = self
+        let mut histogram = self
             .runtime
             .install(move || local.anticommute_histogram(sites, axis));
-        self.transport.allreduce_sum_f64(&mut hist);
-        hist
+        self.transport.allreduce_sum_f64(&mut histogram);
+        histogram
     }
 
     /// [`PauliSum::rotated_overlap`] of the whole sum without a gather. **Collective.**
@@ -547,10 +549,10 @@ fn run_fingerprint(
     w: usize,
 ) -> u64 {
     // FNV-1a over the fields, in a fixed order.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let mut mix = |v: u64| {
-        h ^= v;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        hash ^= v;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     };
     mix(channels as u64);
     mix(matches!(direction, Direction::Heisenberg) as u64);
@@ -558,7 +560,7 @@ fn run_fingerprint(
     mix(options.min_buckets as u64);
     mix(num_qubits as u64);
     mix(w as u64);
-    h
+    hash
 }
 
 /// Copy `len` values of `T` out of a possibly unaligned byte view.

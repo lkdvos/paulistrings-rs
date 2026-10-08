@@ -150,13 +150,13 @@ impl MpiTransport {
         if raw == ::mpi::ffi::RSMPI_COMM_NULL {
             return Err(MpiError::NullCommunicator);
         }
-        let mut dup: ::mpi::ffi::MPI_Comm = ::mpi::ffi::RSMPI_COMM_NULL;
+        let mut duplicate: ::mpi::ffi::MPI_Comm = ::mpi::ffi::RSMPI_COMM_NULL;
         // MPI_SUCCESS is 0 by the standard.
-        let code = ::mpi::ffi::MPI_Comm_dup(raw, &mut dup);
+        let code = ::mpi::ffi::MPI_Comm_dup(raw, &mut duplicate);
         if code != 0 {
             return Err(MpiError::DuplicateFailed(code));
         }
-        Self::adopt(SimpleCommunicator::from_raw(dup))
+        Self::adopt(SimpleCommunicator::from_raw(duplicate))
     }
 
     /// Take ownership of an already duplicated communicator.
@@ -228,7 +228,7 @@ impl MpiTransport {
     }
 
     /// Send this rank's gather contribution to the root and wait it out.
-    fn send_gather(&self, parts: &[&[u8]], hdr_tag: Rank, part_tag: Rank) {
+    fn send_gather(&self, parts: &[&[u8]], header_tag: Rank, part_tag: Rank) {
         let header = encode_header(self.rank, parts);
         let header: &[u8] = bytemuck::cast_slice(&header);
         let sends = 1 + parts
@@ -236,15 +236,15 @@ impl MpiTransport {
             .map(|p| chunk_count(p.len(), self.chunk))
             .sum::<usize>();
         let peer = self.comm.process_at_rank(ROOT as Rank);
-        ::mpi::request::multiple_scope(sends, |scope, coll| {
-            coll.add(peer.immediate_send_with_tag(scope, header, hdr_tag));
+        ::mpi::request::multiple_scope(sends, |scope, requests| {
+            requests.add(peer.immediate_send_with_tag(scope, header, header_tag));
             for part in parts {
                 for chunk in part.chunks(self.chunk) {
-                    coll.add(peer.immediate_send_with_tag(scope, chunk, part_tag));
+                    requests.add(peer.immediate_send_with_tag(scope, chunk, part_tag));
                 }
             }
             let mut done = Vec::with_capacity(sends);
-            coll.wait_all(&mut done);
+            requests.wait_all(&mut done);
         });
     }
 
@@ -259,14 +259,14 @@ impl MpiTransport {
         chunks: usize,
         tags: Tags,
         scope: Sc,
-        coll: &mut RequestCollection<'a, [u8]>,
+        requests: &mut RequestCollection<'a, [u8]>,
         slot_of: &mut Vec<usize>,
     ) where
         Sc: Scope<'a> + Copy,
     {
         let peer = self.comm.process_at_rank(dst as Rank);
         let mut post = |req, slot_of: &mut Vec<usize>| {
-            let i = coll.add(req);
+            let i = requests.add(req);
             note_slot(slot_of, i, SLOT_SEND);
         };
         post(
@@ -294,9 +294,9 @@ impl MpiTransport {
     }
 
     /// Blocking receive of one framing header from `src`, returning the declared part lengths.
-    fn recv_header(&self, src: usize, hdr_tag: Rank) -> Vec<usize> {
+    fn recv_header(&self, src: usize, header_tag: Rank) -> Vec<usize> {
         let peer = self.comm.process_at_rank(src as Rank);
-        let (bytes, _status) = peer.receive_vec_with_tag::<u8>(hdr_tag);
+        let (bytes, _status) = peer.receive_vec_with_tag::<u8>(header_tag);
         decode_header(&bytes, src as u32, self.rank)
     }
 
@@ -313,16 +313,16 @@ impl MpiTransport {
         }
 
         let n = chunks.len();
-        ::mpi::request::multiple_scope(n, |scope, coll| {
+        ::mpi::request::multiple_scope(n, |scope, requests| {
             for (src, chunk) in chunks {
-                coll.add(
+                requests.add(
                     self.comm
                         .process_at_rank(src as Rank)
                         .immediate_receive_into_with_tag(scope, chunk, part_tag),
                 );
             }
             let mut done = Vec::with_capacity(n);
-            coll.wait_all(&mut done);
+            requests.wait_all(&mut done);
         });
     }
 }
@@ -361,10 +361,10 @@ fn encode_header(src: u32, parts: &[&[u8]]) -> Vec<u64> {
 }
 
 /// The part lengths [`encode_header`] declared; panics on a malformed header, another wire version, or a source other than `expected_src`.
-fn decode_header(bytes: &[u8], expected_src: u32, me: u32) -> Vec<usize> {
+fn decode_header(bytes: &[u8], expected_src: u32, this_rank: u32) -> Vec<usize> {
     assert!(
         bytes.len() >= 2 * size_of::<u64>() && bytes.len().is_multiple_of(size_of::<u64>()),
-        "rank {me}: framing header from rank {expected_src} is {} bytes, expected a whole number \
+        "rank {this_rank}: framing header from rank {expected_src} is {} bytes, expected a whole number \
          of u64 words, at least two",
         bytes.len(),
     );
@@ -376,20 +376,20 @@ fn decode_header(bytes: &[u8], expected_src: u32, me: u32) -> Vec<usize> {
     let version = (words[0] & 0xffff_ffff) as u32;
     assert_eq!(
         version, WIRE_VERSION,
-        "rank {me}: rank {expected_src} speaks exchange wire version {version}, this rank speaks \
+        "rank {this_rank}: rank {expected_src} speaks exchange wire version {version}, this rank speaks \
          {WIRE_VERSION} — the ranks are not running the same build",
     );
     let src = (words[0] >> 32) as u32;
     assert_eq!(
         src, expected_src,
-        "rank {me}: a framing header tagged for this layer came from rank {src}, not the expected \
+        "rank {this_rank}: a framing header tagged for this layer came from rank {src}, not the expected \
          rank {expected_src}",
     );
     let n_parts = words[1] as usize;
     assert_eq!(
         words.len(),
         n_parts + 2,
-        "rank {me}: rank {expected_src} declared {n_parts} parts in a {}-word header",
+        "rank {this_rank}: rank {expected_src} declared {n_parts} parts in a {}-word header",
         words.len(),
     );
     words[2..].iter().map(|&len| len as usize).collect()
@@ -422,7 +422,7 @@ impl Collectives for MpiTransport {
         recv[0]
     }
 
-    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+    fn allreduce_sum_u64(&self, buffer: &mut [u64]) {
         if self.size == 1 {
             return;
         }
@@ -431,24 +431,24 @@ impl Collectives for MpiTransport {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         scratch.clear();
-        scratch.extend_from_slice(buf);
+        scratch.extend_from_slice(buffer);
         self.comm
-            .all_reduce_into(&scratch[..], buf, SystemOperation::sum());
+            .all_reduce_into(&scratch[..], buffer, SystemOperation::sum());
     }
 
     /// Not `MPI_Allreduce`, which does not promise every rank the same bits: reduce to the root and broadcast.
-    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+    fn allreduce_sum_f64(&self, buffer: &mut [f64]) {
         if self.size == 1 {
             return;
         }
         let root = self.comm.process_at_rank(ROOT as Rank);
         if self.rank as usize == ROOT {
-            let send = buf.to_vec();
-            root.reduce_into_root(&send[..], buf, SystemOperation::sum());
+            let send = buffer.to_vec();
+            root.reduce_into_root(&send[..], buffer, SystemOperation::sum());
         } else {
-            root.reduce_into(&buf[..], SystemOperation::sum());
+            root.reduce_into(&buffer[..], SystemOperation::sum());
         }
-        root.broadcast_into(buf);
+        root.broadcast_into(buffer);
     }
 
     fn barrier(&self) {
@@ -525,7 +525,7 @@ impl Transport for MpiTransport {
         let recv_cell = std::cell::UnsafeCell::new(recv);
 
         let out =
-            ::mpi::request::multiple_scope(partners.len() * (2 + 3 * chunks), |scope, coll| {
+            ::mpi::request::multiple_scope(partners.len() * (2 + 3 * chunks), |scope, requests| {
                 let mut slot_of: Vec<usize> = Vec::new();
                 for (i, &dst) in partners.iter().enumerate() {
                     self.post_layer_send(
@@ -536,7 +536,7 @@ impl Transport for MpiTransport {
                         chunks,
                         tags,
                         scope,
-                        coll,
+                        requests,
                         &mut slot_of,
                     );
                 }
@@ -562,7 +562,7 @@ impl Transport for MpiTransport {
                     let peer = self.comm.process_at_rank(q as Rank);
                     for view in payload.early_recv_into(&lens) {
                         for piece in view.chunks_mut(self.chunk) {
-                            let i = coll.add(
+                            let i = requests.add(
                                 peer.immediate_receive_into_with_tag(scope, piece, tags.early),
                             );
                             note_slot(&mut slot_of, i, SLOT_EARLY);
@@ -573,7 +573,7 @@ impl Transport for MpiTransport {
 
                 let mut done = Vec::new();
                 while early_left > 0 {
-                    coll.wait_some(&mut done);
+                    requests.wait_some(&mut done);
                     for &(i, _, _) in &done {
                         if slot_of[i] == SLOT_EARLY {
                             early_left -= 1;
@@ -601,7 +601,7 @@ impl Transport for MpiTransport {
                         for part in parts.iter_mut() {
                             let piece = part[k].take().expect("one view per chunk");
                             for piece in piece.chunks_mut(self.chunk) {
-                                let i = coll.add(
+                                let i = requests.add(
                                     peer.immediate_receive_into_with_tag(scope, piece, tags.part),
                                 );
                                 note_slot(&mut slot_of, i, k);
@@ -610,7 +610,7 @@ impl Transport for MpiTransport {
                     }
                 }
 
-                let mut pipeline = ChunkPipeline::new(coll, slot_of, chunks.max(1));
+                let mut pipeline = ChunkPipeline::new(requests, slot_of, chunks.max(1));
                 // SAFETY: see `recv_cell`.
                 let out = body(unsafe { &*recv_cell.get() }, &pipeline);
                 pipeline.finish();
@@ -624,25 +624,25 @@ impl Transport for MpiTransport {
     /// Overridden because this transport infers its partner set from the `Some` positions.
     fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
         let n = self.size as usize;
-        let me = self.rank as usize;
+        let this_rank = self.rank as usize;
         if n == 1 {
             return Some(vec![parts.iter().map(|p| p.to_vec()).collect()]);
         }
 
         let epoch = self.next_epoch();
-        let (hdr_tag, part_tag) = (
+        let (header_tag, part_tag) = (
             Self::tag(KIND_GATHER_HEADER, epoch),
             Self::tag(KIND_GATHER_PART, epoch),
         );
 
-        if me != ROOT {
-            self.send_gather(&parts, hdr_tag, part_tag);
+        if this_rank != ROOT {
+            self.send_gather(&parts, header_tag, part_tag);
             return None;
         }
 
         let mut buffers: Vec<Vec<Vec<u8>>> = (1..n)
             .map(|src| {
-                self.recv_header(src, hdr_tag)
+                self.recv_header(src, header_tag)
                     .into_iter()
                     .map(|len| vec![0u8; len])
                     .collect()

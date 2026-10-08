@@ -61,9 +61,9 @@ impl<const W: usize> ExchangeBlock<W> {
         self.offsets.reserve(counts.len() + 1);
         self.offsets.push(0u32);
         let mut rows = 0u32;
-        for &c in counts {
+        for &count in counts {
             rows = rows
-                .checked_add(c)
+                .checked_add(count)
                 .expect("exchange block exceeds u32::MAX rows");
             self.offsets.push(rows);
         }
@@ -195,11 +195,12 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             "partner payload: {} parts is not a whole number of {PARTS_PER_BLOCK}-part blocks",
             lens.len(),
         );
-        let n = lens.len() / PARTS_PER_BLOCK;
+        let block_count = lens.len() / PARTS_PER_BLOCK;
         let key_stride = W * size_of::<u64>();
-        self.blocks.truncate(n);
-        if self.blocks.len() < n {
-            self.blocks.resize_with(n, ExchangeBlock::<W>::default);
+        self.blocks.truncate(block_count);
+        if self.blocks.len() < block_count {
+            self.blocks
+                .resize_with(block_count, ExchangeBlock::<W>::default);
         }
         let mut parts = Vec::with_capacity(lens.len());
         for (block, lens) in self

@@ -40,7 +40,7 @@ pub(super) struct ChunkPipeline<'a, 'c> {
 }
 
 struct PipelineInner<'a, 'c> {
-    coll: &'c mut RequestCollection<'a, [u8]>,
+    requests: &'c mut RequestCollection<'a, [u8]>,
     /// Slot per request index.
     slot_of: Vec<usize>,
     done: Vec<(usize, ::mpi::point_to_point::Status, &'a [u8])>,
@@ -52,9 +52,9 @@ unsafe impl Send for ChunkPipeline<'_, '_> {}
 unsafe impl Sync for ChunkPipeline<'_, '_> {}
 
 impl<'a, 'c> ChunkPipeline<'a, 'c> {
-    /// Wrap `coll`, whose request `i` belongs to chunk `slot_of[i]`, with `chunks` chunk counters.
+    /// Wrap `requests`, whose request `i` belongs to chunk `slot_of[i]`, with `chunks` chunk counters.
     pub(super) fn new(
-        coll: &'c mut RequestCollection<'a, [u8]>,
+        requests: &'c mut RequestCollection<'a, [u8]>,
         slot_of: Vec<usize>,
         chunks: usize,
     ) -> Self {
@@ -68,7 +68,7 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
         }
         Self {
             inner: Mutex::new(PipelineInner {
-                coll,
+                requests,
                 slot_of,
                 done: Vec::new(),
             }),
@@ -84,14 +84,14 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
         let PipelineInner {
-            coll,
+            requests,
             slot_of,
             done,
         } = &mut *inner;
-        if coll.incomplete() == 0 {
+        if requests.incomplete() == 0 {
             return Some(false);
         }
-        coll.wait_some(done);
+        requests.wait_some(done);
         for &(index, _, _) in done.iter() {
             let slot = slot_of[index];
             if slot < self.remaining.len() {
@@ -127,7 +127,7 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
     /// Wait out every outstanding request, sends included.
     pub(super) fn finish(&mut self) {
         let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
-        inner.coll.wait_all(&mut inner.done);
+        inner.requests.wait_all(&mut inner.done);
         for slot in &self.remaining {
             slot.store(0, std::sync::atomic::Ordering::Release);
         }

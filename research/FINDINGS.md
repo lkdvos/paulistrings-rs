@@ -1,487 +1,300 @@
 # Findings
 
-One entry per experiment: the question, the verdict, the number that matters.
-Full write-ups — protocols, raw A/B tables, reproduction commands — are in git history under the deleted `research/README.md`, `research/notes/YYYY-MM-DD-*.md` and `research/plans/YYYY-MM-DD-*.md`; recover them with `git log --diff-filter=D -- research/`.
-Measured host facts live in `HARDWARE.md`.
+One entry per experiment: the idea, the verdict, the number that matters, and when to revisit.
+Full write-ups are in git history (`git log --diff-filter=D -- research/`); host facts are in `HARDWARE.md`.
+Unless stated, CPU numbers are from ccqlin038 at `W = 2` and GPU numbers from its RTX A6000 at 1800 MHz SM / 7601 MHz memory.
 
 ## Rejected
 
 ### Support-bit bucket concatenation
 
-Asked whether a sorted input stays sorted after bucketing on a gate's support bits, so concatenation could replace the sort.
-It cannot: a four-term `H(0)` counterexample at `W = 1` produces buckets that interleave, because a support qubit's key bits are never the most-significant field of `(x[0..W], z[0..W])`.
-This is why the engine partitions with a GF(2)-linear hash instead.
+Idea: bucket on a gate's support bits so concatenation replaces the sort.
+Impossible: a four-term `H(0)` counterexample at `W = 1` interleaves buckets, since support bits are never the most-significant key field.
+This is why the engine partitions with a GF(2)-linear hash.
 
 ### Static coset→worker placement
 
-Asked whether a stable coset→worker assignment would recover page locality that Rayon work-stealing loses.
-It measured **1.25–1.9× slower** than work-stealing in 7 of 8 probe cells at 16/32 threads; stragglers with no stealing cost far more than locality returns.
-Never landed; revisit only with work-stealing within a socket plus NUMA-aware first touch.
+Idea: a stable coset→worker assignment to recover page locality lost to work-stealing.
+Rejected: **1.25–1.9× slower** in 7 of 8 cells at 16/32 threads; stragglers cost more than locality returns.
+Revisit only with work-stealing within a socket plus NUMA-aware first touch.
 
 ### Recompute-in-merge gather borrow
 
-Asked whether dropping the materialized identity stream and recomputing each row's coefficient inside the merge would cut DRAM traffic.
-The borrowed stream is unfiltered, so `cnot`'s merge a-scan went 248,810 → 1,000,000 rows/layer and wall rose **+23.7%** at one thread; the traffic cut only appears where the identity stream is already dense.
-Superseded by coefficient-only materialization for dense identity streams, which kept the gather structure and landed.
+Idea: drop the materialized identity stream and recompute coefficients inside the merge.
+Rejected: the borrowed stream is unfiltered, so `cnot`'s merge scan grew 248,810 → 1,000,000 rows/layer, **+23.7%** wall single-threaded.
+Coefficient-only materialization for dense identity streams shipped instead.
 
 ### Segment-copy merge
 
-Asked whether galloping to the next rest key and bulk-copying the identity segment between beats the per-row compare loop.
-Real workloads' id/rest row ratios (rotation ~1.5, cnot ~1.3, gu2q ~0.4) make the average segment one or two rows, so the gallop calls cost more than the compares they avoid: **+36.3%** wall on `cnot`.
-Reverted; only a workload whose rest stream is far sparser than trotter's would change this.
+Idea: gallop to the next rest key and bulk-copy the identity segment in `merge2_into`.
+Rejected: id/rest ratios (rotation ~1.5, cnot ~1.3, gu2q ~0.4) make segments one or two rows, **+36.3%** wall on `cnot`.
+Revisit only for a workload whose rest stream is far sparser.
 
 ### Interleaved transient key layout
 
-Asked whether storing the run's rest keys as one contiguous `[[u64; W]; 2]` instead of separate `x`/`z` columns speeds the sort.
-It did the opposite on the gate cell — `gu2q` **+1.9%** at one thread with its sort +8.4% busy, because the SoA comparator usually decides on the x words alone — and regressed `rotation_zz` +17.1% at 16 threads where the merge straddles both layouts.
-Not landed.
+Idea: store rest keys as one `[[u64; W]; 2]` instead of separate `x`/`z` columns.
+Rejected: `gu2q` **+1.9%** single-threaded (the SoA comparator usually decides on `x` alone), `rotation_zz` +17.1% at 16 threads.
 
 ### Reserving a safe upper bound in the merge
 
-Asked whether reserving `an + bn` in `merge2_into` and the exact split size in `refine_bucket` removes `Vec`-doubling slack from peak RSS.
-The bound is loose exactly where the merge deduplicates heavily, and `Vec` capacity never shrinks, so `su4` peak RSS went **2.55–2.62× worse** (27,368 → 71,908 kB) while `rotation_zz` gained nothing.
-Reverted; this rules out reserving any correctness-safe upper bound before a reduction in that path.
+Idea: reserve `an + bn` in `merge2_into` and the exact split in `refine_bucket` to remove `Vec`-doubling slack.
+Rejected: the bound is loose exactly where the merge deduplicates, so `su4` peak RSS went **2.55–2.62× worse**; no correctness-safe upper bound may be reserved before a reduction in that path.
 
 ### SIMD kernels and `target-cpu=x86-64-v3`
 
-Asked whether the instruction set, and then hand-written vector kernels, buy anything in the engine kernels — the shipped build turned out to be plain SSE2, with **0 `popcnt` instructions** in the release binary.
-Enabling AVX2 was net negative on two of three priority layers (`cnot` −3.56%, `rotation_zz` +3.31%, `trotter` +4.53%), and isolating the one win with `#[target_feature]` dispatch made an **untouched sort 34.66% slower**.
-Both halves were later shown to be JCC-erratum layout artifacts, so the ISA question is reopened; what stands is that a second kernel path costs more in fat-LTO layout than the arithmetic buys.
+Idea: AVX2, then hand-written vector kernels, for the engine (the shipped build is SSE2).
+Rejected: AVX2 was net negative on two of three priority layers, and a `#[target_feature]` second path made an **untouched sort 34.66% slower** through fat-LTO layout.
+Both results predate JCC padding, so the ISA question is open; a second kernel path still costs more in layout than it buys (§Word-planar layout, and kernels outside fat LTO).
 
 ### Presortedness as the radix gate's predictor
 
-Asked whether the number of ascending runs a gather run arrives as explains why `cnot` and `gu2q` want opposite sort kernels at the same rest-stream count.
-It does not vary at all: every built-in `Local` layer arrives as exactly `k` ascending runs for `k` rest streams, zero inversions, with comparisons per row equal (2.65) on the two 3-stream layers.
-The separating quantity is nanoseconds per comparison (4.23 on `cnot` against 2.74 on `gu2q`), readable at plan time as `rest_rows_per_key`.
+Idea: ascending-run count explains why `cnot` and `gu2q` want opposite sort kernels.
+Rejected: every built-in layer arrives as exactly `k` runs for `k` rest streams; the separator is ns per comparison (4.23 `cnot` vs 2.74 `gu2q`), read at plan time as `rest_rows_per_key`.
 
 ### The `engine/merge.rs` `#[inline]` folklore
 
-Asked whether the recorded `#[inline]` constraints in the merge survive re-measurement on the branch-padded build.
-Three of the four are codegen no-ops — adding or removing the hint leaves `.text` **byte-identical** under `lto = "fat"` + `codegen-units = 1` — and the fourth shrank: `sort_unstable_by` costs **+44%** on `cnot` (not the recorded +77%) and is neutral on `rotation_zz`.
-Attribute changes in that file are no longer a performance hazard; the sort *algorithm* choice still is.
+Idea: the merge's recorded `#[inline]` constraints matter.
+Rejected on the padded build: three of four are codegen no-ops (`.text` byte-identical); `sort_unstable_by` still costs **+44%** on `cnot`.
+Attributes in that file are not a performance hazard; the sort algorithm choice is.
 
 ### Branchless `merge2_into`
 
-Asked whether replacing the merge's `take_a` compare with a `cmov` select removes its mispredicts.
-Conditional branches fell 18% but `br_misp_retired` did not move (56.7M → 58.4M) — 97.9% of the misses relocated to the equal-key drain test at the same ~35% rate — and the cmov chain lengthened the loop-carried dependency: **+4.83%** wall on `rotation_zz`, +4.64% on `trotter`.
-Third confirmation that branchless pays only when the branch genuinely misses *and* nothing downstream re-asks the same bit.
+Idea: a `cmov` select for the merge's `take_a` compare.
+Rejected: mispredicts relocated to the equal-key drain (56.7M → 58.4M) and the dependency chain lengthened, **+4.83%** on `rotation_zz`, +4.64% on `trotter`.
+Branchless pays only when the branch genuinely misses and nothing downstream re-asks the same bit.
 
 ### Greedy partition-row selector
 
-Asked whether a greedy search over circuit generators can choose partition rows automatically, replacing a hand-drawn lattice cut.
-On the primary heavy-hex workload it buys two remote layers per step instead of four but at **1.30 imbalance** against `cut`'s 1.085, and on the chain its tie order once left a partition empty.
-Removed from the crate; `PartitionRows::cut` is the recommendation wherever the lattice is known.
+Idea: choose partition rows by greedy search over circuit generators.
+Rejected and removed: on heavy-hex it halved remote layers but at **1.30 imbalance** against `cut`'s 1.085, and once left a partition empty.
+`PartitionRows::cut` is the recommendation wherever the lattice is known.
 
 ### Carried key in the fused layer's collision check
 
-Asked whether the equal-`g32` collision check, which gathers both keys of every adjacent pair, gets cheaper when each thread walks a contiguous chunk and carries the previous key in registers (one gather per record instead of two).
-5 `abab` pairs, wall per layer: `su4` at 1.41e7 **+4.18% (5/5 slower)**, `rotation_zz` −0.57% (5/5), `cnot` no consistent change.
-The strided loop issues its `C` independent gathers at once; the carried-key walk chains them through the register, and on a saturated sum the lost memory-level parallelism outweighs the halved gather count.
-Redundant key gathers remain the fused kernel's largest known cost (`product` and `write_row` gather again), but the shape that removes them must keep the gathers independent.
+Idea: walk contiguous chunks carrying the previous key in registers, halving key gathers in the equal-`g32` check.
+Rejected: `su4` at 1.41e7 **+4.18% (5/5)**; chaining the gathers loses more memory-level parallelism than halving them saves.
+Redundant key gathers are still the fused kernel's largest known cost; a fix must keep the gathers independent.
 
 ## Shipped
 
 ### Direct-apply path for small sums
 
-Asked whether the small-`m` regime, where the engine loses outright to PauliPropagation.jl, is limited by the bucketed serial pipeline.
-It is not — that pipeline is 0.19 µs/layer, flat across five channel types and six decades of `m`; the fixed cost is `Channel::prepare`, 4.19–5.71 µs per gate for a dense two-qubit PTM.
-A direct-apply path gains **2.28–2.36×** on kicked-Ising at 2⁻⁴ and 1.55–1.68× on XXZ; the default threshold moved 512 → 2048 and `EngineSelection::Auto` stays off by default.
+Small-`m` cost is `Channel::prepare` (4.19–5.71 µs per dense two-qubit gate), not the bucketed pipeline (0.19 µs/layer).
+A direct-apply path gains **2.28–2.36×** on kicked-Ising at 2⁻⁴; threshold 2048, behind the opt-in `EngineSelection::Auto`.
 
 ### Radix sort kernel for dense PTMs
 
-Asked whether a run-oblivious radix sort can beat a comparison sort already at its comparison-count floor (4.9 comparisons per row at full delta-span rank).
-It can, because the floor is on comparison *count* and each comparison is a dependent indexed load of ~10–13 cycles against ~2 for a radix pass: **sort −25.4%, layer −15.2%, 3/3 pairs** at `W = 2`, `m = 9.9e5`, and −10.5% to −33.8% across dense-PTM layers.
-Gated to dense two-qubit PTMs; the kernel also erases the `W = 1` comparator pathology, inverting the width penalty from 1.36× to 0.92×.
+A radix sort beats a comparison sort at its count floor because each comparison is a ~10–13-cycle dependent load: **sort −25.4%, layer −15.2%** at `m = 9.9e5`, −10.5% to −33.8% across dense-PTM layers.
+Gated to dense two-qubit PTMs; it also removes the `W = 1` comparator penalty (1.36× → 0.92×).
 
 ### The dense-PTM bucket cliff is a delta-span rank effect
 
-Asked why a one-qubit flip of the probe's support switches the `W = 2` bucket-count cliff on and off.
-It is the GF(2) rank of the partitioning hash restricted to the layer's key-delta space, not a width or word-occupancy effect: flipping only the hash seed at fixed `W = 1` recovers **−29.6%** of the sort and −22.5% of the layer.
-This dissolved the recorded "`W = 1` sort is 1.9× slower per row" finding down to a ≈1.35× per-comparison residual, and no default bucket-count constant was changed.
+The `W = 2` bucket-count cliff is the hash's GF(2) rank on the layer's delta space, not a width effect: re-drawing only the hash seed recovers **−29.6%** of the sort.
+The "`W = 1` sort is 1.9× slower" finding reduces to a ≈1.35× per-comparison residual; no default changed.
 
 ### Truncation finalize path
 
-Asked what the `TopN` and `CoefficientThreshold` paths cost beyond the arithmetic they need.
-Replacing `norm()` with `norm_sqr()` and pooling the magnitude array (12 MB/layer at `m` = 1.5e6) is worth **−44 to −45%** wall on `TopN` layers and **−26%** on `CoefficientThreshold`, both 3/3 pairs.
-Tie semantics are exactly preserved for symmetry multiplets; an exponent-histogram selector shipped as an opt-in policy, with exact `TopN` unchanged and still the default.
+`norm_sqr()` for `norm()` plus a pooled magnitude array: **−44 to −45%** wall on `TopN` layers, **−26%** on `CoefficientThreshold`.
+Ties are preserved exactly; the exponent-histogram selector (`ApproxTopN`) shipped alongside.
 
 ### JCC branch padding, opt-in
 
-Asked whether the engine's 45.8% DSB residency — blamed on hot-path code size — is recoverable.
-The cause was the JCC erratum (SKX102), and `-Cllvm-args=-x86-branches-within-32B-boundaries` takes DSB residency to **97.9%** for **−7.5..−12.6% wall** on all three priority layers at bit-identical work counters.
-It is a tax on parts without the erratum, so the shipped default is portable and `scripts/jcc-rustflags.sh` detects the CPU and opts measurement hosts in.
+The engine's 45.8% DSB residency was the JCC erratum (SKX102); `-Cllvm-args=-x86-branches-within-32B-boundaries` gives **97.9%** DSB and **−7.5 to −12.6%** wall.
+It taxes parts without the erratum (`HARDWARE.md §JCC branch-padding cost off Skylake`), so `scripts/jcc-rustflags.sh` opts affected measurement hosts in.
 
 ### Branch misprediction: merge loop split and branchless gather filter
 
-Asked how much bad speculation costs and whether it is addressable — the honest conversion is **7–16% of cycles**, most likely near the low end, with two source lines carrying 78% of `rotation_zz`'s misses.
-Splitting `merge2_into` into a both-live walk plus two drains, and replacing the gather's `if a == ZERO { continue }` with a store-then-conditional-length `push_if`, removed ~40% of the misses for **−14.68%** wall on `rotation_zz`, −9.65% on `cnot` and −2.77% on `trotter`.
-The filter is the counter-intuitive half: `cnot` retires 22% more instructions and is 7.9% faster.
+Bad speculation is 7–16% of cycles.
+Splitting `merge2_into` into a both-live walk plus two drains, and a store-then-conditional-length `push_if` gather filter: **−14.68%** `rotation_zz`, −9.65% `cnot`, −2.77% `trotter`.
+The filter retires 22% more instructions on `cnot` and is still 7.9% faster.
 
 ### Constant recalibration and the radix gate's second arm
 
-Asked whether `RADIX_MIN_REST_STREAMS = 8` and `GATHER_OUTPUT_MAJOR_MIN_R = 3`, both tuned before the padding fix, survive re-measurement — both keep their values.
-The structural finding was cheaper than the sweeps: every built-in plan realizes 1, 3 or 15 rest streams, so each constant has **four** distinct settings, not fourteen.
-Converting the output-major gather to the same `push_if` filter fell out of the setup and is worth **−4.22% wall / −10.68% gather on `su4`, 11/11 pairs**; a second gate arm (`rest_streams >= 3` and `rest_rows_per_key < 2`) moves `cnot` to the radix kernel for **−5.26% wall / −21.67% sort, 14/14**.
+`RADIX_MIN_REST_STREAMS = 8` and `GATHER_OUTPUT_MAJOR_MIN_R = 3` keep their values after re-measurement; built-in plans realize only 1, 3 or 15 rest streams.
+`push_if` in the output-major gather: **−4.22%** wall on `su4`; a second gate arm (`rest_streams >= 3`, `rest_rows_per_key < 2`) puts `cnot` on radix for **−5.26%** wall.
 
 ### Partitioned engine
 
-Asked whether splitting the sum across NUMA domains, and later MPI ranks, by designated GF(2) partition rows pays.
-Locality is the whole result: an exchange-free dense layer is **−4.1% to −18.2%** at P=2 across four hosts, while any layer with remote deltas costs **2–8×** its local time under the push exchange; three optimization passes took a remote rotation layer from 19× a local one to 10×, 4.6×, then 3.8×.
-Shipped as the in-process partitioned engine plus `DistributedSum` over an MPI transport, with weak scaling flat from 4 to 8 ranks (48.3 → 48.6 ms for the remote rotation layer).
+Locality is the whole result: an exchange-free dense layer is **−4.1% to −18.2%** at P=2 across four hosts, while a remote layer costs **2–8×** its local time.
+MPI weak scaling is flat from 4 to 8 ranks (48.3 → 48.6 ms remote rotation layer).
 
 ### Cut partition rows
 
-Asked whether partition rows drawn as a cut of the gate graph, rather than at random, reduce the exchange enough to make P > 1 a win.
-On the heavy-hex kicked-Ising step cut rows leave 4 of 271 layers remote instead of 139 and export 10× fewer rows, making P=2 **15–21% faster per step** than the single-process engine.
-Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and moving the bucket-bits all-reduce to a 16-layer schedule took the 4- and 8-rank steps from flat to scaling (125 → 86 → 81 ms), for **3.4× / 3.2×** over random rows.
+Rows drawn as a cut of the gate graph leave 4 of 271 heavy-hex layers remote instead of 139: P=2 is **15–21% faster per step** than one process.
+Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and **3.4× / 3.2×** at 4 / 8 ranks with a 16-layer bucket-bits all-reduce schedule.
 
 ### Collapse-to-one sampling (hybrid PP-MC)
 
-Asked whether the engine reproduces the hybrid Pauli-propagation Monte Carlo of arXiv:2607.25998 and how far past its 5e8 cache it goes.
-`CollapseSample` draws one string by `|c|²` whenever a gate leaves more than the cache, collectively over partitions and ranks.
-On the tracker's 56-qubit echo a trajectory at cache 5e7 is 131 s on 8 threads and 3.9 GB, against the paper's ~8 min on 10 cores and 8–10 GB.
-Cache 3e10 over 16 ranks is 22–27 min per trajectory and moves no η value outside its standard error of 5e8.
-Single-path MC on the tracker's 49-qubit circuits reproduces the collaboration's submitted values (0.815 vs 0.808, 0.621 vs 0.619).
+`CollapseSample` reproduces arXiv:2607.25998's hybrid PP-MC, collectively over partitions and ranks.
+56-qubit echo at cache 5e7: **131 s on 8 threads, 3.9 GB** against the paper's ~8 min on 10 cores; cache 3e10 over 16 ranks moves no η outside its standard error.
 
 ### Partition rows on x-bits for CZ and `rz` circuits
 
-CZ and `rz` never change a string's x-bits, so rows drawn on x-coordinates alone (`partition_row_exclude={"z": all}`) leave only `rx` gates exchanging.
-On the 56-qubit echo at 4 ranks this took non-local layers from 77% to 34%, peak RSS per rank from 1.73 to 0.75 GB, and wall time from 103–136 s to 66 s.
+Rows on x-coordinates only (`partition_row_exclude={"z": all}`) leave only `rx` exchanging: on the 56-qubit echo at 4 ranks, non-local layers 77% → 34%, peak RSS/rank 1.73 → 0.75 GB, wall 103–136 → 66 s.
 
 ### Python API extensions
 
-The capability register designed for the examples and benchmarks suite is implemented and shipped.
-The Python docstrings are canonical for those signatures and semantics.
+The examples-suite capability register is shipped; the Python docstrings are canonical for its signatures.
 
 ### GPU layer vs host, first table
 
-Asked how one A6000 compares with the 16- and 32-thread host on the probe's cells under one protocol (`phase_breakdown --device 0` against `--threads 16,32`, steady-state sum, five timed applications), and whether the fused kernel's 77.8 ms on `su4` at 1.41e7 terms against the spike's 58.8 ms was real.
-The dense layer is **11.0× the 16-thread host at 1.41e7 terms (4.65 ns/term) and 15.9× at 5.65e7**; the sparse layers run at 1.0–1.2 ns/term, 2–4.7× the host; `heavyhex_step` at `2^-13` is 1.9×; `trotter`'s 64 layers on a ≤ 6.7e4-term sum are 0.9× (slower than the host).
-The alarm was three shipped costs, not one: padding in the radix passes, per-layer allocation and re-upload, and the amplitude-table load, together −14.7% on the layer (76.8 → 65.7 ms wall); K3 is now 62.0 ms against the spike's 58.8, the remainder within the two harnesses' bucket-count difference.
-The full table, clocks and load are in `research/HARDWARE.md` § ccqlin038 — GPU.
+One A6000 against the 16-thread host: dense `su4` **11.0× at 1.41e7 terms, 15.9× at 5.65e7**; sparse layers 2–4.7×; `heavyhex_step` 1.9×; `trotter` on ≤ 6.7e4 terms 0.9×.
+Table: `HARDWARE.md § ccqlin038 — GPU`.
 
 ### Fused layer: block-uniform chunk early-out
 
-Asked whether the fused kernel's launch-wide `n_cap = next_pow2(records_max)` costs the average block real work, since under the records-per-block policy a 2048–4096-record block pads to 8192 and runs its eight radix passes over the padding.
-Each radix pass now skips whole item chunks past `ceil(n_rows / THREADS)` (block-uniform), with the `n_it == C` case a separate instantiation so a block with nothing to skip pays no test.
-`scripts/ab-report.py` over 5 `abab` pairs on the A6000, wall per layer: `su4` at 1.41e7 **−11.45% (5/5)**, `cnot` at 1e6 −2.14% (5/5), `rotation_zz` +0.16% with pairs disagreeing in sign; the runtime-test-only form cost `rotation_zz` a consistent +1.49%, which the specialization removed.
+Radix passes skip item chunks past `ceil(n_rows / THREADS)`, with a no-skip specialization: `su4` **−11.45% (5/5)**, `cnot` −2.14%.
 
 ### Fused layer: no allocation and no re-upload in steady state
 
-Asked what the layer's host side costs when nothing changes between layers: every device scan allocated three buffers, and the count rebuilt and re-uploaded the position map every layer.
-The scan buffers are grow-only scratch and the position map is cached on `(bits, bucket deltas)`.
-5 `abab` pairs, wall per layer: `su4` −1.43%, `rotation_zz` −2.52%, `cnot` −3.14%, all 5/5.
+Grow-only scan scratch and a position map cached on `(bits, bucket deltas)`: −1.4% to −3.1% wall per layer, all 5/5.
 
 ### Fused layer: table load and count-table registers
 
-Asked whether the 4 KB amplitude table loaded per block in rotation mode, and K1's `c[MAX_ENTRIES]` indexed by a runtime entry (local memory), cost anything.
-The load is skipped for a rotation table and the K1 loop is unrolled over `MAX_ENTRIES` with the entry test inside.
-5 `abab` pairs, wall per layer: `su4` −2.17% (5/5), `rotation_zz` −1.12% (5/5), `cnot` −0.83% with pairs disagreeing in sign.
+Skipping the amplitude-table load for rotations and unrolling K1 over `MAX_ENTRIES`: `su4` −2.17%, `rotation_zz` −1.12% (5/5).
 
 ### Rule: a direction-consistent phase delta is not an effect if the total is flat
 
-Seen twice in one campaign: `gather_ns` +1.04% at 7/7 against `merge_ns` −2.33% with instruction counts flat.
-Let instruction count settle it before claiming a phase moved.
+`gather_ns` +1.04% (7/7) against `merge_ns` −2.33% with instruction counts flat; let instruction count settle it.
 
 ### Rule: suspect any constant tuned by wall-clock A/B before 2026-09-10
 
-Four separately recorded conclusions dissolved on re-measurement once branch padding was applied, all the same 32-byte-alignment artifact.
-Re-derive rather than inherit any pre-padding tuning verdict.
+Four recorded conclusions dissolved once JCC padding was applied, all the same 32-byte-alignment artifact.
+Re-derive any tuning verdict measured on an unpadded build.
 
 ### Resolved: the Y-phase convention conflict
 
-The first execution of the Python test suite exposed the parsers disagreeing with the core on the phase of `Y`.
-Resolved: every parser now uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no phase factor.
+Every parser uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no phase.
 
 ### Resolved: `AmplitudeDamping` was transposed
 
-The PauliPropagation.jl cross-engine baseline caught `apply`/`apply_adjoint` swapped relative to every other channel, so `direction="heisenberg"` applied `Φ` instead of its dual `Φ†`.
-The two bodies were swapped; the Heisenberg fixture is now bit-exact against jl on all 9 terms, and a unit test pins the orientation from both sides.
+`apply`/`apply_adjoint` were swapped; caught by the PauliPropagation.jl baseline, now pinned from both sides.
 
 ### `Gf2Hash` rows are splitmix64, not xorshift successors
 
-Asked whether rows drawn as consecutive xorshift64 outputs cost load balance: they satisfy `rows_z[r] = M·rows_x[r]` word for word, so the 64 deltas `d_j = (row_j(M), e_j)`, mean Pauli weight 6.1, hashed to 0 under every seed and bucket count (192/192 at 20 bits over three seeds) and a 64-row fingerprint collided on 1258 of 18 337 weight-≤2 keys.
-Every row word is now splitmix64 of `(seed, row, word, x-or-z)`, for `Gf2Hash` and `PartitionRows` alike: 0/192 kernel deltas hash to 0 and the fingerprint is injective.
-On a sum closed under ten of the `d_j` (1024 weight-4 bases × 2^10, `B` = 1024) the old rows left **371 buckets empty and a max of 6144** against a median of 1024; the new rows leave none empty, max 1084.
-The probe's layers never contain the family, so their occupancy is unchanged: `su4` median/p95/max 862/913/985 → 861/915/970, `heavyhex_step` 682/692/692 → 695/725/725 at 8 buckets, no empty buckets either way.
+Consecutive xorshift64 rows satisfy `rows_z = M·rows_x`, so 64 weight-~6 deltas hashed to 0 under every seed.
+Rows are splitmix64 of `(seed, row, word, x-or-z)` for `Gf2Hash` and `PartitionRows`: on a sum closed under those deltas, **371 empty buckets and max 6144 → none empty, max 1084**; probe layers unchanged.
 
 ## GPU spike
 
-Measured on ccqlin038 (RTX A6000, sm_86, 48 GB, shared box, clocks unlocked at 1800 MHz SM / 7601 MHz memory) with a throwaway `gpu_spike` example; CPU references from `phase_breakdown` at 16 threads with `scripts/jcc-rustflags.sh` sourced.
-Every GPU number is the second application of the gate on the saturated sum, CUDA events per kernel, 5 warm repetitions, medians.
+Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.
 
 ### GPU fused layer clears the spike gate at the threshold
 
-Asked whether one A6000 runs a saturated dense two-qubit layer ten times faster than the 16-thread host at 5e7 terms, under 30 GB, with no oversize segment.
-`su4` at 5.65e7 steady terms takes **318 ms of kernels (5.6 ns/term) against 3293 ms on the host, 10.4× (10.1× on wall)**, peak 22.6 GB, zero fallbacks and zero oversize segments; at 1.41e7 terms it is 12.2×.
-The margin is one measurement's noise wide, so the verdict is "go, at the threshold", and the two levers below are what would widen it.
+`su4` at 5.65e7 terms: **318 ms of kernels against 3293 ms on the host, 10.4×**, peak 22.6 GB; go, at the threshold.
 
 ### Segmented sum must be a block scan, not a head-serial walk
 
-Asked whether the per-run reduction in the fused layer kernel could be one thread per run head walking its duplicates.
-On a saturated `su4` sum every key arrives 16 times, so the walk leaves 15 of 16 lanes idle and the kernel costs 0.70 ns per record; a warp-shuffle segmented scan brings it to 0.29 ns and the layer from **604 ms to 318 ms (1.9×)**.
-On sparse layers, whose runs have length one, the scan is 15–20% slower than the walk, so the reduction should be chosen per prepared table.
+A head-serial walk idles 15 of 16 lanes on `su4`; a warp-shuffle segmented scan takes the layer **604 → 318 ms**.
+On length-one runs the scan is 15–20% slower, so the reduction could be chosen per prepared table.
 
 ### Records are index-sorted, not record-sorted
 
-Asked whether 8-byte `(g, tag)` records could be radix-sorted in a shared-memory ping-pong at `CAP = 8192`.
-Two 64 KB buffers exceed the 99 KB sm_86 block limit; sorting a 16-bit index over `(g_lo32, tag16)` records costs 11 bytes per record and fits at 95 KB with `CAP = 8192`.
-The 12-bit tag offset caps a source bucket at 4096 rows, which the device refine enforces.
+Two 64 KB record buffers exceed sm_86's 99 KB block limit; a 16-bit index sort over 11-byte records fits at 95 KB with `CAP = 8192`.
+The 12-bit tag caps a source bucket at 4096 rows, which the device refine enforces.
 
 ### Device refine is one multi-bit pass
 
-Asked what a second layer costs when the sum has grown 14× since its partition was chosen.
-Without a device `rebucket` every segment overflows `CAP` (43,108 records at 2^9 buckets for 1.4e6 terms); a four-bit refine in one counting pass costs **12.4 ms at 1.41e7 terms and 53 ms at 5.65e7**, bitwise the host's term set.
-The steady-state layer then pays nothing, since the bucket count is grow-only.
+A four-bit refine in one counting pass: **12.4 ms at 1.41e7 terms, 53 ms at 5.65e7**; steady layers pay nothing since the bucket count is grow-only.
 
 ### Compaction stays; the loose CSR is rejected
 
-Asked whether skipping compaction and keeping the pre-dedup arena as the next layer's `start/len` sum would pay for its memory.
-Compaction is **2.5 ms of a 144 ms layer (1.7%)** while the loose sum is 11.8 GB resident against 0.8 GB compact and its peak 34 GB against 11.8.
-Not worth a 15× memory footprint; arena batching over contiguous positions at 4 GiB (12 batches at the gate cell) is the design.
+Compaction is **2.5 ms of a 144 ms layer**; skipping it holds 11.8 GB resident against 0.8 GB, peak 34 GB.
 
 ### Occupancy is not the fused kernel's lever
 
-Asked whether 512-thread blocks or `--maxrregcount=32` (two blocks per SM instead of one) speed the saturated `su4` layer.
-All four variants land within 3% (136.7–140.8 ms at 1.41e7 terms).
-The 64-register, one-block-per-SM configuration is fine; the time is in the reduction and the per-record global loads.
+512-thread blocks or `--maxrregcount=32`: all variants within 3%; the time is in the reduction and global loads.
 
 ### Pinned staging is 4.8× the pageable download
 
-Asked what the 0.8 GB saturated sum costs to bring back and re-sort.
-Pinned D2H runs at **12.9 GB/s (61 ms)** against 2.7 GB/s pageable including the `Vec` allocation; the host per-bucket lex re-sort is 77 ms (5.4 ns/term at 16 threads); allocating the pinned buffer itself took 4.8 s, so it must be pooled.
+Pinned D2H **12.9 GB/s** against 2.7 GB/s pageable; allocating the pinned buffer took 4.8 s, so it is pooled.
 
 ### Exported blocks stage through a pinned pool
 
-Asked how an exported block's columns should reach the pooled `PartnerPayload` `Vec`s: a D2H copy straight into pageable memory, or a page-locked pool allocated once plus one `memcpy`.
-`cuMemHostRegister` of the pool was not tried: the pooled `Vec`s circulate through the partners and reallocate on growth, so a registration has no owner to unregister it.
-Two virtual partitions on one RTX A6000, medians of 5 runs, 1e6 initial terms, 3 layers: `su4` (1.05e8 exported rows, 4.8 GB per layer) runs **1689 ms/layer pinned against 2189 ms pageable (−23%)**, D2H at 4.0 GB/s against 2.6 GB/s per partition; `rotation_remote` (1e6 rows, 48 MB per layer) 21.9 against 26.6 ms (−18%).
-Pinned won; the host-staged exchange itself was later removed (NCCL verdict below).
+A pinned pool beat pageable D2H by **−23%** on `su4` remote layers; superseded by device payloads and NCCL, which never stage through the host.
 
 ### A dense remote layer on device partitions is staging-bound
 
-Asked what a remote layer costs at `P = 2` virtual partitions on one device against `P = 1`, a runtime-knob A/B on one binary (`--device 0` against `--device 0 --gpu-partitions 2`, medians of 5 runs).
-`su4` at 1.4e7 steady-state terms: **68.5 ms/layer at `P = 1` against 1760 ms at `P = 2`**, of which export 728 ms (D2H 700 ms per partition), the received rows' upload 710 ms per partition inside the coset loop's 893 ms, exchange 23 ms, the kernels about 200 ms.
-`rotation_zz` 1.85 ms against `rotation_remote` 20.9 ms (export 8.6 ms, upload 7.9 ms per partition).
-Host staging is about 80% of a dense remote layer, above the 50% replan trigger: two copies move 4.8 GB per layer at 3.6–4.0 GB/s for 0.2 s of device work.
-`chunk_wait_ns` is zero, the in-process transport having nothing to wait on.
-Between agreements a device partition cannot refine, so a remote or off-schedule layer whose block or received segment exceeds the fused kernel's cap is `Unsupported` at `P > 1`, never a wrong answer; the proposal carries a factor of two of headroom for that.
-The receive waits for the whole transfer before one upload; a chunked upload overlapping the tail is the cheap next step, a device-direct transport (peer copy or CUDA-aware MPI) the one the numbers ask for.
-The virtual shape is a correctness net and shares the host wire format.
+Host-staged `su4` at P=2 on one device was **1760 ms/layer against 68.5 ms at P=1**, ~80% of it host copies.
+Led to device-resident payloads (next entry).
 
 ### Device-resident payloads remove the staging
 
-Asked what a remote layer costs when the in-process transport moves device-resident blocks instead of host-staged ones: K10 fills each block's own device columns and fingerprints them on the sender, the `DevicePayload` moves through the `mpsc` channel untouched, and the receiver copies the blocks device-to-device into its pooled `recv_*` columns (`cuMemcpyPeerAsync` across devices), so no row touches the host and the receiver's fingerprint pass is gone.
-Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory throughout, shared box) as a runtime-knob A/B on one binary, `PAULISTRINGS_GPU_EXCHANGE=host` against `device`, abab 5 pairs, `--reps 5`, medians of the per-layer phases, every pair agreeing in sign.
-
-| cell | layer | host ms/layer | device ms/layer | export | exchange | h2d | d2h |
-|:-|:-|-:|-:|-:|-:|-:|-:|
-| `P = 2`, 1e6 | `su4` (1.41e7 terms) | 1784 | **127 (−92%)** | 726 → 35 | 24 → 19 | 1520 → 1.2 | 1396 → 2.1 |
-| `P = 2`, 1e6 | `rotation_remote` | 21.8 | **2.6 (−85%)** | 9.4 → 0.4 | 1.8 → 0.3 | 16.7 → 0.1 | 16.1 → 0.1 |
-| `P = 4`, 1e6 | `su4` | 2194 | **155 (−93%)** | 708 → 55 | 58 → 39 | 3708 → 2.7 | 2313 → 21 |
-| `P = 4`, 1e6 | `rotation_remote` | 21.7 | **2.9 (−86%)** | 7.5 → 0.4 | 2.5 → 0.3 | 35 → 0.4 | 22 → 0.4 |
-
-The remote-layer penalty against `P = 1` on the same device (`--device 0` against `--gpu-partitions 2`, device payloads, 5 pairs at 1e6 and 3 at 2e6, all pairs agreeing in sign): `su4` **67.7 → 125.9 ms (+86%) at 1.41e7 terms** where the host-staged form was 1760 (+2500%), and 136.9 → 251.9 ms (+84%) at 2.83e7 terms; `rotation_zz` 1.85 → 2.03 ms (+10%) against `rotation_remote` at 2.6 ms where the staged form was 20.9; at 4e6 `rotation_remote` is 8.9 ms against `rotation_zz` 6.9.
-What remains of a dense remote layer at `P = 2` is 34 ms of K10 plus fingerprint over 1.05e8 exported rows, 19 ms of device copies and syncs, and two partitions' kernels sharing one device.
-On the device path `h2d_ns`/`d2h_ns` carry only the CSR offsets and `exchange_ns` includes the receiver's copies (`benchmarks/PROFILING.md`).
-The price is device memory: every block of a layer is resident at once on the sender's device, so a partition holds one export volume plus one receive volume on top of its sum, where the staged form kept the export volume in host RAM.
-On one 48 GB card two virtual partitions at 4e6 initial terms (5.65e7 steady, 2.1e8 exported rows per layer) are out of memory under device payloads and run at 6710 ms/layer under host ones (`P = 1`: 274 ms); on a multi-GPU node each device holds one partition's share.
-Device payloads became the only form of `GpuPartitionedSum`; the host form was later removed.
-The receiver adopts with a copy rather than pointing the fused kernel at the payload's memory, so the kernels and the concatenated `recv_*` layout are unchanged and the same call serves one device and several; a zero-copy adoption for the one-partner case is unmeasured.
-Payloads recycle through a process-wide per-device bin, so a two-device group also allocates nothing at steady state; the cross-device branch has not run on a real multi-GPU node.
+Blocks stay on the device and move device-to-device: `su4` at P=2 **1784 → 127 ms/layer (−92%)**, `rotation_remote` −85%; the remote penalty against P=1 is +86% instead of +2500%.
+Cost: a partition holds one export plus one receive volume on its device.
+Open: zero-copy adoption for the one-partner case is unmeasured.
 
 ### Sender-side merge of a partner's exported rows
 
-Asked whether a device sender should sum one partner's exported rows by key before the exchange, since the receiver dedups them anyway: K3 over the partner's sub-table under the keep-everything program, the merged rows split greedily over the partner's blocks so the wire format and receive path are unchanged (ARCHITECTURE.md §Partitioning).
-Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory, shared with another agent's jobs at up to 66% utilization, so indicative), two virtual partitions, `--reps 5`, a runtime-knob A/B on one binary (`PAULISTRINGS_GPU_PREMERGE=off` against on), medians over 3 pairs at 1e6 and 2 at 2e6, one run at 4e6, ms per layer.
-
-| cell | layer (terms) | exchange | off | on | rows exported/layer, both partitions | export | exchange_ns |
-|:-|:-|:-|-:|-:|-:|-:|-:|
-| 1e6 | `su4` (1.41e7) | device | 126.6 | **108.0 (−15%)** | 1.05e8 → 1.41e7 | 34.5 → 50.9 | 19.3 → 3.9 |
-| 1e6 | `su4` | host | 2157 | **405 (−81%)** | 1.05e8 → 1.41e7 | 909 → 198 | 97 → 16 |
-| 1e6 | `gu2q` (3.25e6) | device | 6.70 | 8.17 (+22%) | 4.2e6 → 1.5e6 | 1.5 → 3.7 | 0.85 → 0.36 |
-| 1e6 | `gu2q` | host | 88.0 | **40.9 (−54%)** | 4.2e6 → 1.5e6 | 41.1 → 20.8 | 2.5 → 3.8 |
-| 2e6 | `su4` (2.83e7) | device | 252.4 | **214.6 (−15%)** | 2.1e8 → 2.81e7 | 69.0 → 101.3 | 38.2 → 7.1 |
-| 2e6 | `su4` | host | 3338 | **673 (−80%)** | 2.1e8 → 2.81e7 | 1560 → 317 | 51 → 30 |
-| 2e6 | `gu2q` (6.5e6) | device | 13.2 | 15.5 (+18%) | 8.4e6 → 3.0e6 | 3.0 → 7.1 | 1.6 → 0.7 |
-| 2e6 | `gu2q` | host | 139 | **67 (−52%)** | 8.4e6 → 3.0e6 | 70 → 32 | 8.3 → 4.3 |
-| 4e6 | `su4` (5.65e7) | host | 7722 | **1308 (−83%)** | 4.2e8 → 5.63e7 | 2976 → 582 | 65 → 23 |
-| 4e6 | `su4` | device | out of memory | **428**, peak 24.5 GB | 5.63e7 | 202 | 15 |
-
-`su4` ships 7.5× fewer rows and `gu2q` (`sqrt(SWAP)`) 2.8× fewer; `cnot` and `rotation_remote` have no two remote entries sharing an output pattern, never merge, and show no consistent change (pairs disagree in sign under host staging's variance).
-On one device the exchange is a same-device copy, so the merge's second K3 is paid in full and repaid only through the receiver's smaller K3: a win at `su4`'s merge ratio and a loss at `gu2q`'s; every path that moves bytes (host staging, and by extension a real link or MPI) wins at both.
-Two virtual partitions at 5.65e7 terms now fit a 48 GB card under device payloads, at 428 ms/layer against the 274 ms of `P = 1`, where the unmerged export needed a full export volume resident on each sender.
-The merge stays on for every qualifying partner; a gate on the expected merge ratio for same-device groups is unmeasured.
+Summing a partner's rows by key before the exchange ships `su4` **7.5× fewer rows** (`gu2q` 2.8×): −15% wall same-device, −80% wherever bytes really move; `gu2q` same-device is +18–22%.
+Two partitions at 5.65e7 terms now fit a 48 GB card (428 ms/layer against 274 at P=1).
+Revisit: a gate on the expected merge ratio for same-device groups is unmeasured.
 
 ### Chunked device receive
 
-Asked whether capping the received rows a remote layer holds on the device lowers peak memory without costing wall: `GpuLayerOptions::exchange_bytes` cuts the receive into power-of-two chunks of destination positions, each moved (peer copy in-process, one wire group per chunk under NCCL) just before the fused layer reaches it (ARCHITECTURE.md §Partitioning).
-Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory for most samples, no other process on the card), `su4` at `--n 4000000` on two virtual partitions (`--device 0 --gpu-partitions 2`, 5.65e7 terms, device payloads, sender-side merge on, 5.63e7 exported rows per layer), `--reps 5`, three abc rounds of the pre-change binary, the new binary uncapped and the new binary under `PAULISTRINGS_GPU_EXCHANGE_BYTES=450M` (about 1.6 GB received per partition per layer, so four chunks), peak device memory as the maximum of `nvidia-smi` `memory.used` sampled every 100 ms.
-
-| binary | cap | ms/layer (3 runs) | peak device MiB (3 runs) |
-|:-|:-|-:|-:|
-| pre-change | — | 429, 426, 428 | 26854, 28102, 29126 |
-| chunked | unbounded (one chunk) | 429, 430, 428 | 27974, 28006, 28038 |
-| chunked | 450M (four chunks) | 432, 430, 427 | **23334, 22502, 22502** |
-
-The cap takes about 5.5 GB (−20%) off the peak at unchanged wall; the uncapped build is the pre-change one within the sampling noise.
-`exchange_ns` rises and `merge_ns` falls by about as much in both chunked rows, since the receive now runs after the partition's count and overlaps its partner's fused kernels on the shared card; their sum and the wall are flat.
-The send side is not chunked: after the merge its export volume is the receive volume's size (1.6 GB per partition here), the in-process path's received payload *is* the sender's export, so chunking it would need a per-chunk hand-off between partitions inside the exchange, and at this cell the two 4 GB loose arenas and the sum's two column sets outweigh it.
-The cap stays unbounded by default; a group whose peak is the receive sets it, and the NCCL form is covered by the loopback nets only, not by a two-rank measurement.
+`exchange_bytes` cuts the receive into power-of-two position chunks: four chunks take **~5.5 GB (−20%)** off peak device memory at unchanged wall (`su4`, 5.65e7 terms, P=2).
+The send side stays whole, the default is unbounded, and the NCCL form is unmeasured at two ranks.
 
 ### GPU single-device profile
 
-Asked what one A6000 leaves on the table for Pauli rotations and Clifford gates, from 1e4 to 2.4e7 terms, with `su4` as a reference point only.
-Measured on ccqlin038 (RTX A6000, 1800 MHz SM / 7601 MHz memory in every `nvidia-smi` sample under load, brief 1875–1890 MHz boosts, no other process on the card), release build with `scripts/jcc-rustflags.sh` sourced, `W = 2`, 128 qubits, truncation keep unless stated.
-Timelines are Nsight Systems 2024.6.2 (`-t cuda,osrt`) over a driver without `phase-timing`, so the probe's extra synchronizations are absent; a layer is the second application on the saturated sum.
-Kernel counters are Nsight Compute 2025.1.0 on the 13th fused launch, which runs at ncu's base clock control, so its durations read about 18% above the timeline's (886 against 750 µs for `cnot`).
-
-Wall per layer without a profiler, medians of 3 runs of 20 layers (10 for the sweep):
-
-| layer | 1e4 | 1e5 | 1e6 | 4e6 | 1.6e7 |
-|:-|-:|-:|-:|-:|-:|
-| `cnot` | 0.149 | 0.240 | 1.10 | 4.60 | 15.3 |
-| `h`, `cz`, `swap` | 0.15–0.27 | 0.24–0.27 | 1.11 | 3.94 | 15.1–15.3 |
-| `rotation_zz` (m = 1.5 × n) | 0.156 | 0.333 | 1.83 | 6.90 | 26.4 |
-| weight-8 `PauliRotation` (m = 1.5 × n) | 0.158 | 0.296 | 1.61 | 5.99 | 23.1 |
-| `Depolarizing` (key-preserving, K5) | 0.033 | 0.076 | 0.240 | 0.945 | 3.67 |
-
-ms; columns are the initial `n`, the steady term count `m` equal to it except where stated; `su4` at 1.41e7 terms is 67 ms per layer with K3 at 94% of it.
-
-The steady local layer is 13 launches (K1, K2, three three-kernel scans, K3, K4), 6 pageable H2D table copies, 5 blocking D2H reads, 1 memset and 3 `cuStreamSynchronize`, plus 97 `cuEventRecord` and 139 `cuStreamWaitEvent` that cudarc's per-buffer event tracking issues on the one stream.
-At 1e6 terms the card is busy 80% (`cnot`) and 88% (`rotation_zz`) of the layer's window, of which K3 is 0.750 of 1.020 ms and 1.360 of 1.754 ms, K4 0.173 and 0.256 ms, K1 0.057 and 0.098 ms, and every scan kernel 4–11 µs.
-At 1e4 `cnot` the kernels are 0.066 ms of a 0.149 ms layer, so about 0.08 ms per layer is host issue and round trips.
-There is no H2D or D2H of rows inside a local layer: the copies are 5.5–13 KB of table, CSR offsets and scalars.
-
-The fused kernel on the sparse layers at 1e6 (`k_layer_serial_2`, one 1024-thread block per SM, 64 registers, 28.5 KB shared, achieved occupancy 65% of a 66.7% theoretical):
-
-| counter | `cnot` (1024 blocks, 1e6 records) | `rotation_zz` (2048 blocks, 2.5e6 records) |
-|:-|-:|-:|
-| DRAM throughput | 26% (190 GB/s, 168 MB) | 22% (162 GB/s, 266 MB) |
-| L2 throughput | 31% | 18% |
-| SM throughput | 18% | 23% |
-| FP64 pipe | 5.2% | 12.1% |
-| cycles between issues | 50.6 | 42.8 |
-| barrier stall share | 53.6% | 49.3% |
-| short / long scoreboard | 10.2% / 9.0% | 13.5% / 5.2% |
-| shared bank-conflict wavefronts | 8.2e6 of 15.5e6 (53%) | 17.2e6 of 35.3e6 (49%) |
-
-Neither memory nor compute is the limit: the kernel waits at `__syncthreads`, about 40 of them in the eight radix passes of 4 bits over a block that holds one or two records per thread, with half of its shared-memory wavefronts replayed by bank conflicts.
-A Clifford layer emits exactly one record per input row and no two rows of a block share a key, and a rotation emits at most two, the duplicates only ever pairing an entry-0 row with an entry-1 row, so the sort does no work the output needs beyond finding those pairs.
-A two-stream merge of sorted runs does not apply as it stands, since the entry-1 rows arrive with `g ^ gm[e]` and an XOR by a constant does not preserve their order.
-
-The heavy-hex kicked-Ising circuit (`heavyhex_step`, 5 steps under `coeff:2^-13`, 1355 rotation layers at 4.1–11.6e5 terms) runs 2.12 ms per layer; under the profiler the GPU is busy 83% of the timed call, K3 1964 of 2615 ms of kernels.
-The `trotter` cell's timed call is not a small sum: it grows from 6.7e4 to 1.42e7 terms over its 64 layers, the GPU is busy 172 of 557 ms (31%), and the last layers each spend about 34 ms in `cuStreamSynchronize` against 12 ms of kernels with 8 `cuMemAllocAsync` per layer, which points at growing the arena and output columns every layer rather than at launch overhead (the attribution is inferred, not traced).
-
-Outside the layer loop: the first `from_host` per process takes 4.6–8.1 s, of which `cuModuleLoadData` is 12 ms (the driver's JIT cache in `~/.nv/ComputeCache` hits), so the whole first-use cost is NVRTC generating PTX on the host every process.
-`to_host` at 2.4e7 terms is 979 ms on the first call and 200 ms on the second, and 604 against 137 ms for `cnot` at 1.6e7, the difference being the whole-sum `cuMemHostAlloc` (275 ms at 1.42e7 terms) and first touch; `from_host` of an already-compiled set is 402 ms at 2.4e7 through pageable copies.
-Each steady layer also issues 8 `cuMemAllocAsync` and 8 `cuMemFreeAsync` (about 15 µs of API) whose source is untraced.
-
-Disabling cudarc's event tracking on the context (a throwaway environment knob, 3 runs each way, 20 layers) moves wall per layer by −15 to −18% at 1e4 (`cnot` 0.155 → 0.129 ms, `rotation_zz` 0.161 → 0.138 ms), −3 to −9% at 1e5, −1.5% at 1e6 (`rotation_zz` 2 of 3 runs) and −1.7% on `heavyhex_step`, all other pairs agreeing in sign; whether the multi-stream paths (peer copies, NCCL) rely on the tracking is unaudited.
-
-| rank | opportunity | evidence | estimated gain | effort | in FINDINGS already |
-|-:|:-|:-|:-|:-|:-|
-| 1 | Clifford layers as a pure permutation: K1 count, scatter each row to `β ^ bd[e]` with `g ^ gm[e]` and its sign, no sort, no arena, no K4 | K3 + K4 are 0.92 of 1.02 ms busy at 1e6; one read and one write of 56 B per term is 112 MB, 0.17 ms at 650 GB/s | 3–4× on every Clifford layer at ≥ 1e6 (`cnot` 1.1 → ~0.3 ms at 1e6, 15.3 → ~4 ms at 1.6e7); overhead-bound below 1e5 | medium; relies on nothing reading the device's in-bucket order, which `assert_invariants_device` already leaves free | no; the loose-CSR rejection keeps K4 for dedup, which a permutation does not need |
-| 2 | Rotation dedup as a shared-memory hash join of entry-1 rows against entry-0 rows instead of eight radix passes | barrier stall 49%, DRAM 22%, SM 23%; 266 MB per layer is 0.41 ms at 650 GB/s against K3's 1.36 ms | K3 −50–65%, rotation layer −35–45% at ≥ 1e6, `heavyhex_step` −30% (K3 is 75% of its kernel time) | medium–high; the collision fallback needs a hash-table form | the open lever "a shorter sort for short runs" names the symptom; this form is untried |
-| 3 | Cache NVRTC output on disk (PTX, or a cubin from `nvrtcGetCUBIN` at `sm_86`) keyed by source hash, options and NVRTC version | `cuModuleLoadData` 12 ms of a 4.6–8.1 s first upload | ~4.7 s per process, every process | small | no |
-| 4 | Fewer host round trips per layer, then a captured graph for the remainder | 5 blocking D2H + 3 syncs, 13 launches, 0.08 ms of host per 0.15 ms layer at 1e4; `heavyhex_step` idle ~0.19 ms per 2.12 ms layer | up to ~2× at 1e4, 5–10% on `heavyhex_step`, ≤ 3% at 1e6; a graph alone recovers only launch cost (~40 µs of `cuLaunchKernel` per layer), since the variant and batches are chosen from the downloaded offsets | medium–high | "crossover below 1e4" measured the overhead, never reduced it |
-| 5 | Disable cudarc event tracking for the single-stream sum | measured above | −15–18% at 1e4, −3–9% at 1e5, −1.7% `heavyhex_step` | trivial, after an audit of the multi-stream paths | no |
-| 6 | Geometric over-reservation of the arena and output columns on growth | `trotter`: 31% busy, ~34 ms sync against 12 ms kernels in its last layers, 8 allocations per layer | `trotter` timed call 596 → ~250 ms if the attribution holds (unmeasured) | small | no; "no allocation in steady state" covers the saturated sum only |
-| 7 | Chunked pinned download overlapping the host re-sort, instead of a whole-sum `cuMemHostAlloc` on first `to_host`; pinned or chunked upload | first `to_host` 979 against 200 ms at 2.4e7; `from_host` 402 ms at 2.4e7 pageable | ~0.6–0.8 s on the first download at 1.6–2.4e7, ~2–3× on upload (unmeasured) | small–medium | pinned staging and its pooling are shipped; the first-call cost is not addressed |
-| 8 | K3 shared-memory bank conflicts in the radix scatter and `scnt` layout | 49–53% of shared wavefronts are conflicts | secondary to rank 1–2; unmeasured, likely ≤ 10% of K3 | medium | occupancy was rejected as a lever; conflicts were not examined |
-| 9 | Untraced per-layer `cuMemAllocAsync`/`cuMemFreeAsync` pairs | 8 + 8 per steady layer, ~15 µs of API | ≤ 10% at 1e4 | small | no |
+Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
+At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
+Shipped from this profile: the Clifford permutation path and the on-disk NVRTC cache.
+Open levers, by estimated gain: rotation dedup as a shared-memory hash join instead of eight radix passes (K3 −50–65%); fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; K3 bank conflicts.
 
 ### GPU Clifford permutation path
 
-Rank 1 of the table above, shipped as K12–K14 (`kernels/permute.cu`, ARCHITECTURE.md §GPU-Readiness).
-The gate is a property of the prepared table, not of the channel type: at most one emitting entry per support pattern, no two entries reaching one output pattern (`entries_can_collide`), and no received entry (`DevicePrepared::permutation`); every Clifford passes, a fanout-2 `T`, `sqrt(SWAP)`, a Haar SU(4) and a rotation do not, and a key-preserving table goes to K5 first.
-K12 counts the survivors per (source bucket, entry) under the same product and keep test as the fused layer's `survives`, K13 sizes a tight CSR in bucket order, and K14 scatters each row to `β ⊕ bd[e]` with `g ⊕ gm[e]`, one block per source bucket at a width set by the average bucket, ranks from a warp match and a per-entry prefix over the warps, no atomics.
-It refines only to the agreed bucket count, since it has no record cap and no source-bucket length limit, and issues no K3, K4 or arena.
-Nothing downstream reads a bucket's device order: `to_host` re-sorts, K11 checks uniqueness, refine, the truncation kernels, K10 and the receive path are order-free, and a Clifford has one product per output key, so the two paths agree bit for bit (`clifford_layers_take_the_permutation_path_*`).
-A layer with received entries keeps the fused path, whose receive merges by position; under random rows about half of a two-qubit Clifford's layers cross at `P = 2`, so the partitioned gain is a property of the row choice.
-
-Runtime-knob A/B on one release binary (`scripts/jcc-rustflags.sh` sourced), `PAULISTRINGS_GPU_CLIFFORD=off` as side A, five alternating pairs per cell, `--threads 1 --qubits 128`, ccqlin038 with no other process on the card, `nvidia-smi` 1800 MHz SM and 8001 MHz memory in 36 of 40 samples under load and 7601 MHz memory in the rest:
-
-| cell | n | layers per run | fused ms/layer | scatter ms/layer | median Δ% | pairs |
-|:-|-:|-:|-:|-:|-:|:-|
-| `cnot` | 1e5 | 20 | 0.263 | 0.097 | −62.7 | 5/5 lower |
-| `cnot` | 1e6 | 20 | 1.120 | 0.386 | −65.6 | 5/5 lower |
-| `cnot` | 1.6e7 | 10 | 15.3 | 5.07 | −66.9 | 5/5 lower |
-| `heavyhex_step` (5 steps, `coeff:2^-13`, 1355 layers) | 1.16e6 | 1355 | 2.138 | 2.145 | +0.3 | 2/5 lower, no consistent change |
-
-`heavyhex_step` holds only rotations, so its flat cell is the control that the gate never fires off a permutation table.
-Kernel time per layer (`phase-timing` events) at 1e6: K12 + K13 0.125 ms and K14 0.221 ms of a 0.382 ms layer, against K1 + K2 0.087 ms and K3 0.761 ms of the fused 1.118 ms; at 1.6e7, 1.52 + 3.51 of 5.07 ms against 1.12 + 11.14 of 15.1 ms.
-K14 moves 112 MB per 1e6 rows in 0.221 ms (510 GB/s), so the scatter is near the 0.17 ms floor the estimate assumed; the gain is 3× rather than 3–4× because K12 counts survivors rather than emitters, which means the count pass reads the coefficient column too and evaluates the product and the keep program per row.
-
-Open: a Clifford layer with received entries, and whether an emitter count plus a gapless write can replace K12's survivor pass without reintroducing compaction.
+A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (K12–K14), with no sort, arena or K4.
+**−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
+Open: Clifford layers with received entries, and an emitter count replacing K12's survivor pass.
 
 ### NCCL exchange between MPI ranks
 
-Asked whether `GpuExchange::Nccl` should be `gpu::MpiGpuSum`'s default over host staging.
-Measured on one A100-SXM4-80GB node (workergpu070, job 7125331, rev 466b4a4) at two ranks as a runtime-knob A/B on one binary, five alternating pairs, every pair agreeing in sign (`research/HARDWARE.md` § `gpu` cluster nodes — NCCL exchange between MPI ranks): `su4` at 5.65e7 terms per rank 1250 → 357 ms per layer (3.5×), `cnot` 43.6 → 6.9 (6.3×), `rotation_remote` 72.4 → 10.7 (6.8×), and `rotation_zz`, which exchanges nothing, flat.
-NCCL chose `P2P/CUMEM/read` between the ranks, which is why the template makes every node GPU visible to every task.
-The `su4` exchange phase moves 2.72e9 bytes per rank in 57.5 ms, a lower bound on the link rate since the phase also holds the skeleton exchange, the vote and the receiver's fingerprints.
-**Verdict: NCCL is the exchange of every MPI device group; the host-staged exchange was removed, so a group that cannot start NCCL fails its scatter.**
-
-A four-rank run on workergpu047 (job 7125332) timed out in the scatter's warm-up group on one rank while its three peers completed, with the peers' writes into that rank's GPU never becoming visible to it, and `ncclCommAbort` then never returned on any rank.
-The same four-rank bring-up on workergpu063 (job 7127220) passed every variant of `scripts/slurm/nccl-probe.sbatch`, including the engine's own communicator, warm-up and CPU placement, all six device pairs and the P2P, CUMEM, protocol, blocking and warm-up-shape variants, so the failure is attributed to that node; the probe pinned to workergpu047 is what confirms it.
-Every job step is now bounded (`scripts/slurm/bounded.sh`) and a failed `mpi_ranks` ends its processes within 15 s, so a wedged node costs one step rather than the allocation.
-
-NCCL could open only `mlx5_0` of the node's three HCAs and reports GPU Direct RDMA disabled on it; neither touches a one-node run, and a two-node run is not measured.
+NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).
+Verdict: NCCL is the only exchange of an MPI device group; host staging was removed.
+A four-rank hang on workergpu047 is attributed to that node; every job step is bounded by `scripts/slurm/bounded.sh`; two-node NCCL is unmeasured.
 
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 
-A channel with support on more than two qubits — other than `PauliRotation`, which overrides `prepare` — makes `propagate` panic, with no fallback path.
-The design sketch moves `DeltaEntry::amp` to a heap variant for `k > 2` and leaves the `k ≤ 2` hot path untouched; probe cost is `O(16^k)` per layer, putting the practical ceiling at `k ≈ 4–5`.
-Raising the constant is also what first exercises `GATHER_OUTPUT_MAJOR_MIN_R`'s output-major branch, which no built-in reaches and which has never been measured on a real workload.
+Non-rotation channels on more than two qubits panic in `propagate`.
+Sketch: a heap `DeltaEntry::amp` variant for `k > 2`, `O(16^k)` probe cost, practical ceiling `k ≈ 4–5`; it would also first exercise `GATHER_OUTPUT_MAJOR_MIN_R`'s output-major branch.
 
 ### Partition rows without a known lattice
 
-`cut` needs a lattice the caller can bisect by hand, and the automatic alternative was removed for imbalance.
-A row choice that scores balance as well as remote weight is open research, as is exchange volume for circuits with no obvious geometry.
+`cut` needs a hand-bisectable lattice and the greedy selector was removed for imbalance; a choice scoring balance and remote weight together is open.
 
 ### The small per-rank distributed regime
 
-At ~1e5 terms per rank the cut-crossing layers are latency-bound 16 MB exchanges and the export pass runs 10× slower per term (14 ns/term) than at 6e6 terms per rank.
-Fewer, larger pipeline chunks when a layer is small, and export parallelism with few buckets, are unmeasured.
+At ~1e5 terms per rank remote layers are latency-bound and export runs 10× slower per term than at 6e6; fewer, larger chunks and export parallelism with few buckets are unmeasured.
 
 ### A post-hoc memory trim
 
-`shrink_to_fit` once `m` has stabilized never over-reserves, so it does not inherit the reservation experiment's failure mode.
-Never attempted.
-A returned sum keeps its peak bucket capacity: a caller that held one PP-MC result across the next `propagate` doubled that run's peak RSS (34 → 67 GB at cache 5e8).
+`shrink_to_fit` once `m` stabilizes is untried; a returned sum keeps its peak bucket capacity (holding one PP-MC result doubled the next run's peak, 34 → 67 GB).
 
 ### Partitioned memory overhead
 
-At cache 2e7 on the 56-qubit echo a single process peaks at 97 B per cached term, four in-process partitions at 221 B, and four MPI ranks with random rows at 345 B.
-Ranks are balanced to 1%, so imbalance is ruled out; the grow-only exchange pools account for about 64 B, and the rest is unattributed.
-Peak RSS also ratchets upward across collapses and across trajectories in one process.
+At cache 2e7 on the 56-qubit echo: one process 97 B per term, four partitions 221 B, four MPI ranks 345 B; grow-only exchange pools account for ~64 B, the rest is unattributed, and peak RSS ratchets across collapses.
 
 ### Word-planar layout, and kernels outside fat LTO
 
-The decisive gate for a planar layout (`merge2_into` within +2% at `W = 2`) was never reached, and the whole SIMD evaluation rests on measurements taken in the unpadded regime.
-The prior question is whether the kernels can live outside the fat-LTO unit without losing more than they gain.
+The planar-layout gate (`merge2_into` within +2% at `W = 2`) was never reached; first establish whether kernels can live outside the fat-LTO unit.
 
 ### The merge's irreducible per-row decision
 
-About one bit of real entropy per output row survives both the branchy and the branchless form — ≈22M misses, ≈4% of cycles on `rotation_zz`.
-Only algorithmic shapes remain: emit both candidate rows and compact, or change the stream layout so the interleaving stops being random.
+About one bit of entropy per output row survives both merge forms (≈4% of cycles on `rotation_zz`); only algorithmic changes remain (emit both and compact, or a non-random stream layout).
 
 ### Multi-thread confirmation of the front-end campaign
 
-Every result in the front-end campaign is single-threaded on a shared box; the 16-thread arms are "no consistent change" on wall while their phase deltas hold direction.
-The radix kernel's scratch grows 16 B/row and its win shrinks toward the write ceiling (−30.3% at `m` = 9884 down to −10.5% at `m` = 9.9e5 at 8 threads), so the second gate arm in particular wants a quiet-box multi-thread cell.
+The front-end campaign is single-threaded; its 16-thread arms are "no consistent change", and the radix gate's second arm wants a quiet-box multi-thread cell (its win shrinks from −30.3% to −10.5% with `m` at 8 threads).
 
 ### Sparse layers are per-block-overhead bound at a 256-term bucket target
 
-Asked how the GPU does on `cnot`, `gu2q` and `rotation_zz` at steady state.
-1.3–2.0 ns per steady term, only **1.3–3.6× the 16-thread host**, because a position holds ~300 records padded to a 1024-record block whose eight radix passes and syncs dominate (1.1–1.4 ns per record against 0.26 on dense layers).
-Under the shipped records-per-block policy (4096) they run at 1.0–1.2 ns per steady term, 2–4.7× the host, at 0.34–0.76 ns per record against 0.29 on `su4` (`research/HARDWARE.md` § ccqlin038 — GPU); the per-block floor is now the eight passes over a ~1000-record block, and merging positions into one block or a shorter sort for short runs is the open lever.
+Under the 4096 records-per-block policy sparse layers run at 1.0–1.2 ns per term, 2–4.7× the host; the floor is eight radix passes over a ~1000-record block.
+Levers: merging positions into one block, or a shorter sort for short runs.
 
 ### CPU/GPU crossover is below 1e4 terms for a second layer
 
-Asked at what size a device layer stops paying for its launches and syncs.
-With pooled buffers a layer carries 0.08–0.4 ms of host time over its kernels (5 syncs), and the GPU wins at every measured size: `cnot` 2.3× at 1e4, 7.5× at 1e5, 12.4× at 1e6 against in-process `propagate_with_scratch` on the same partition.
-In-process `propagate` ran 1.6–2.9× slower than the probe on the same cell even after re-partitioning to the CPU policy; unexplained.
+The GPU wins at every measured size: `cnot` 2.3× at 1e4, 7.5× at 1e5, 12.4× at 1e6 against in-process `propagate_with`.
+Unexplained: in-process `propagate` ran 1.6–2.9× slower than the probe on the same cell.

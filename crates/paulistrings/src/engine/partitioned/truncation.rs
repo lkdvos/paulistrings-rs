@@ -18,7 +18,8 @@ use crate::truncation::builtin::{
     APPROX_BINS, LOG_TARGET,
 };
 use crate::truncation::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TruncationPolicy, WeightCutoff,
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, CollapseSample, Or, TruncationPolicy,
+    WeightCutoff,
 };
 
 use super::transport::Collectives;
@@ -173,6 +174,32 @@ impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
                  collapsed to one on partition {chosen} (collapse {n})",
                 coll.size(),
             );
+        }
+    }
+}
+
+impl<const W: usize> PartitionedTruncation<W> for BuiltinTruncation {
+    /// Arm for arm the host [`finalize_layer`](TruncationPolicy::finalize_layer), through each builtin's own collective form.
+    ///
+    /// # Panics
+    ///
+    /// On a `TopN` that is reached, which has no collective form.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
+        match self {
+            Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer_partitioned(local, coll),
+            Self::CollapseSample(s) => {
+                <CollapseSample as PartitionedTruncation<W>>::finalize_layer_partitioned(
+                    s, local, coll,
+                )
+            }
+            Self::And(a, b) => {
+                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(a, local, coll);
+                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(b, local, coll);
+            }
+            Self::TopN(_) => panic!(
+                "BuiltinTruncation::TopN has no partitioned layer pass: exact top-n is a distributed k-th selection; use ApproxTopN"
+            ),
+            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => {}
         }
     }
 }

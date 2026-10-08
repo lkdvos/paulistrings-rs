@@ -4,8 +4,6 @@ use super::builtin::{
     And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
 };
 use super::TruncationPolicy;
-use crate::engine::partitioned::transport::Collectives;
-use crate::engine::partitioned::truncation::PartitionedTruncation;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use std::sync::Arc;
@@ -16,7 +14,7 @@ use std::sync::Arc;
 /// Every builtin and combinator converts into one with [`From`], which is how the CUDA backend takes a policy; a custom [`TruncationPolicy`] has no conversion, so it cannot reach a device.
 ///
 /// `Or` combines per-term filters only and runs neither side's layer pass, matching [`Or`](super::Or); `And` runs both, first then second.
-/// In partitioned mode an exact `TopN` whose layer pass would run panics, since it has no collective form (see [`PartitionedTruncation`]).
+/// In partitioned mode an exact `TopN` whose layer pass would run panics, since it has no collective form (see [`PartitionedTruncation`](crate::PartitionedTruncation)).
 /// A [`CollapseSample`] is shared, not copied, by `Clone`: its pass counter is the trajectory's state, so every tree holding one handle continues the same sequence. No device backend runs it.
 ///
 /// ```
@@ -177,37 +175,12 @@ impl<P: Clone + Into<BuiltinTruncation>> From<&P> for BuiltinTruncation {
     }
 }
 
-impl<const W: usize> PartitionedTruncation<W> for BuiltinTruncation {
-    /// Arm for arm the host [`finalize_layer`](TruncationPolicy::finalize_layer), through each builtin's own collective form.
-    ///
-    /// # Panics
-    ///
-    /// On a `TopN` that is reached, which has no collective form.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
-        match self {
-            Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer_partitioned(local, coll),
-            Self::CollapseSample(s) => {
-                <CollapseSample as PartitionedTruncation<W>>::finalize_layer_partitioned(
-                    s, local, coll,
-                )
-            }
-            Self::And(a, b) => {
-                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(a, local, coll);
-                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(b, local, coll);
-            }
-            Self::TopN(_) => panic!(
-                "BuiltinTruncation::TopN has no partitioned layer pass: exact top-n is a distributed k-th selection; use ApproxTopN"
-            ),
-            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::BuiltinTruncation as T;
     use super::*;
     use crate::engine::partitioned::transport::InProcessTransport;
+    use crate::engine::partitioned::truncation::PartitionedTruncation;
     use crate::test_support::{and, assert_same_terms, or, rand_sum_real, KeepAll};
     use crate::truncation::{And, Or};
 

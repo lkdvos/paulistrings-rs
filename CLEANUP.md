@@ -94,10 +94,16 @@ Verified: 799 workspace tests (warm wall 42.5 s → 30.3 s), pytest 523 passed /
 Deviation: the out-of-memory warning at CUDA context creation now prints the driver error text rather than `GpuError`'s.
 Left in source: `cfg(test)` fields woven into `gpu/wire/peer.rs`, `nccl.rs`, `ExchangeBlock::with_counts`, `skip_sequence_for_test`.
 
+### As applied, stage B0 (D11–D14)
+
+`533c666` D11 (`Collectives: sealed::Sealed`, which seals `Transport` too; `Payload`/`ChunkMap`/`ChunkWait`/`InProcessTransport` unnameable outside, `InProcessTransport` via `test_support`), `d371565` D12, `feda6c5` D13 (`PartitionRuntime::wait_timeout` and `DistributedSum::scatter_with_runtime` removed as dead), `67bbebb` D14 (`propagate_with` on every sum type; `DistributedSum::scatter` + `scatter_with(sum, transport, ScatterOptions { runtime, rows: ScatterRows::{Policy, Explicit} })`).
+Verified: workspace fmt/test/clippy per commit, clippy across py `cuda`/`cuda,mpi`, `cuda` tests on the A6000, pytest 523/101, `mpi-test.sh --ranks 2,4` Rust and `--python`; Python API unchanged.
+Follow-ups folded into stage B: `PartitionedSum::scatter_with_rows` and the GPU `scatter_to_device(s)_with_rows` pairs renamed to the `scatter`/`scatter_with` shape (cross-folder, so in B8); the `DistributedSum` doc example removed per D3; `ChunkMap`'s unreachable `pub` methods narrowed.
+
 ## Possible improvements
 
 ## Open items
 
 ## Resume here
 
-Stage A done; D11–D14 agreed. Stage B0 (D11–D14, one agent) then B1–B6 (comments/naming/mechanical cuts per folder, parallel worktrees). Preparatory pass: (stage A: organisation, test extraction, pub surface; stage B: comments, naming, mechanical cuts by folder; stage C: CLAUDE.md and research docs). Chunk 0 tour after it lands.
+Stages A and B0 done. B1–B7 running in parallel worktrees under `/home/ldevos/review-worktrees/b{1..7}` (branches `review-b1`..`review-b7`), then B8 applies the collected cross-folder renames; then stage C. B1–B7 (comments/naming/mechanical cuts per folder, parallel worktrees). Preparatory pass: (stage A: organisation, test extraction, pub surface; stage B: comments, naming, mechanical cuts by folder; stage C: CLAUDE.md and research docs). Chunk 0 tour after it lands.

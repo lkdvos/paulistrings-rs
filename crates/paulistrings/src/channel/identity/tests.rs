@@ -1,0 +1,70 @@
+use super::*;
+use crate::pauli_string::PauliString;
+
+#[test]
+fn max_fanout_is_one() {
+    let id = IdentityChannel::new();
+    assert_eq!(<IdentityChannel as Channel<1>>::max_fanout(&id), 1);
+    assert_eq!(<IdentityChannel as Channel<2>>::max_fanout(&id), 1);
+}
+
+#[test]
+fn support_is_empty() {
+    let id = IdentityChannel::new();
+    assert_eq!(<IdentityChannel as Channel<1>>::support(&id), [0u64; 1]);
+    assert_eq!(<IdentityChannel as Channel<2>>::support(&id), [0u64; 2]);
+}
+
+#[test]
+fn apply_emits_input_unchanged_w1() {
+    let id = IdentityChannel::new();
+    // Build XYZ on qubits 0,1,2 by composition.
+    let mut input = PauliString::<1>::x(0);
+    let _ = input.mul_assign(&PauliString::<1>::y(1));
+    let _ = input.mul_assign(&PauliString::<1>::z(2));
+
+    let mut x = vec![[0u64; 1]; 1];
+    let mut z = vec![[0u64; 1]; 1];
+    let mut c = vec![Complex64::new(0.0, 0.0); 1];
+    let mut len = 0usize;
+    let coeff = Complex64::new(2.0, 3.0);
+    {
+        let mut out = OutputBuffer::<1> {
+            x: &mut x,
+            z: &mut z,
+            coeff: &mut c,
+            len: &mut len,
+        };
+        id.apply(&input.x, &input.z, coeff, &mut out);
+        assert_eq!(*out.len, 1);
+    }
+    assert_eq!(x[0], input.x);
+    assert_eq!(z[0], input.z);
+    assert_eq!(c[0], coeff);
+}
+
+#[test]
+fn apply_emits_input_unchanged_w2() {
+    let id = IdentityChannel::new();
+    // X on qubit 70 lands in word 1 — exercises the multi-word case.
+    let input = PauliString::<2>::x(70);
+
+    let mut x = vec![[0u64; 2]; 1];
+    let mut z = vec![[0u64; 2]; 1];
+    let mut c = vec![Complex64::new(0.0, 0.0); 1];
+    let mut len = 0usize;
+    let coeff = Complex64::new(-1.5, 0.25);
+    {
+        let mut out = OutputBuffer::<2> {
+            x: &mut x,
+            z: &mut z,
+            coeff: &mut c,
+            len: &mut len,
+        };
+        id.apply(&input.x, &input.z, coeff, &mut out);
+        assert_eq!(*out.len, 1);
+    }
+    assert_eq!(x[0], input.x);
+    assert_eq!(z[0], input.z);
+    assert_eq!(c[0], coeff);
+}

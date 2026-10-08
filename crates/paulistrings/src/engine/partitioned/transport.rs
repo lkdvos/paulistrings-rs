@@ -67,7 +67,7 @@ impl ChunkMap {
 
     /// Bucket `beta`'s destination position.
     #[inline]
-    pub fn position_of(&self, beta: u32) -> u32 {
+    pub(crate) fn position_of(&self, beta: u32) -> u32 {
         if self.perm.is_empty() {
             beta
         } else {
@@ -77,7 +77,7 @@ impl ChunkMap {
 
     /// The bucket at destination position `p`, the inverse of `position_of`.
     #[inline]
-    pub fn bucket_at(&self, p: u32) -> u32 {
+    pub(crate) fn bucket_at(&self, p: u32) -> u32 {
         if self.inv.is_empty() {
             p
         } else {
@@ -86,16 +86,16 @@ impl ChunkMap {
     }
 
     /// Positions, i.e. buckets.
-    pub fn positions(&self) -> usize {
+    pub(crate) fn positions(&self) -> usize {
         self.positions as usize
     }
 
-    pub fn chunks(&self) -> usize {
+    pub(crate) fn chunks(&self) -> usize {
         self.chunks as usize
     }
 
     /// The first position of chunk `k`, a multiple of the coset size; `bound(chunks())` is the position count.
-    pub fn bound(&self, k: usize) -> u32 {
+    pub(crate) fn bound(&self, k: usize) -> u32 {
         assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
         let coset = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
         coset << self.r
@@ -158,7 +158,7 @@ pub trait ChunkWait: Sync {
 }
 
 /// The [`ChunkWait`] of a transport whose exchange already completed.
-pub(crate) struct AlreadyHere;
+pub(super) struct AlreadyHere;
 
 impl ChunkWait for AlreadyHere {
     fn wait_chunk(&self, _k: usize) {}
@@ -275,11 +275,11 @@ pub trait Transport: Collectives {
 }
 
 /// The partition every gather lands on.
-pub(crate) const ROOT: usize = 0;
+pub(super) const ROOT: usize = 0;
 
 /// A [`Payload`] that is already bytes, the default gather's wire form.
 #[derive(Default)]
-pub(crate) struct ByteParts(pub(crate) Vec<Vec<u8>>);
+struct ByteParts(Vec<Vec<u8>>);
 
 impl Payload for ByteParts {
     fn byte_parts(&self) -> Vec<&[u8]> {

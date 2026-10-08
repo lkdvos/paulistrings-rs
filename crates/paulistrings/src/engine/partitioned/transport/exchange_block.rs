@@ -97,11 +97,6 @@ impl<const W: usize> ExchangeBlock<W> {
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
     }
 
-    /// The row index at each of `map`'s chunk boundaries, `chunks + 1` entries.
-    pub(crate) fn chunk_rows(&self, map: &ChunkMap) -> Vec<usize> {
-        chunk_rows_of(&self.offsets, map)
-    }
-
     /// Live rows.
     pub(crate) fn rows(&self) -> usize {
         self.header.rows as usize
@@ -299,7 +294,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         for block in &self.blocks {
             let rows = block.rows();
             let (x, z, coeff) = (&block.x[..rows], &block.z[..rows], &block.coeff[..rows]);
-            let bounds = block.chunk_rows(map);
+            let bounds = chunk_rows_of(&block.offsets, map);
             parts.push(chunk_slices(x, &bounds, |s| {
                 bytemuck::cast_slice(s.as_flattened())
             }));

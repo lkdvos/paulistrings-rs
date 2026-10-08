@@ -118,14 +118,52 @@ pub struct DistributedSum<const W: usize, X: Transport, B = HostPartition<W>> {
     runtime: Arc<PartitionRuntime>,
     transport: X,
     trace: Option<PartitionTrace>,
+    laps: DriverLaps,
+}
+
+/// The driver's own laps since they were last drained; empty without `phase-timing`.
+struct DriverLaps {
     #[cfg(feature = "phase-timing")]
     scatter_ns: u64,
     /// Atomic because `gather` takes `&self`.
     #[cfg(feature = "phase-timing")]
     gather_ns: std::sync::atomic::AtomicU64,
-    /// Layers driven since the counters were drained.
     #[cfg(feature = "phase-timing")]
     layers: u64,
+}
+
+impl DriverLaps {
+    fn new(scatter_ns: u64) -> Self {
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = scatter_ns;
+        Self {
+            #[cfg(feature = "phase-timing")]
+            scatter_ns,
+            #[cfg(feature = "phase-timing")]
+            gather_ns: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "phase-timing")]
+            layers: 0,
+        }
+    }
+
+    fn add_layers(&mut self, layers: usize) {
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = layers;
+        #[cfg(feature = "phase-timing")]
+        {
+            self.layers += layers as u64;
+        }
+    }
+
+    /// Drain scatter time, gather time and layers driven.
+    #[cfg(feature = "phase-timing")]
+    fn take(&mut self) -> (u64, u64, u64) {
+        (
+            std::mem::take(&mut self.scatter_ns),
+            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
+            std::mem::take(&mut self.layers),
+        )
+    }
 }
 
 impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
@@ -175,20 +213,13 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         transport: X,
         scatter_ns: u64,
     ) -> Self {
-        #[cfg(not(feature = "phase-timing"))]
-        let _ = scatter_ns;
         Self {
             local,
             rows,
             runtime,
             transport,
             trace: None,
-            #[cfg(feature = "phase-timing")]
-            scatter_ns,
-            #[cfg(feature = "phase-timing")]
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "phase-timing")]
-            layers: 0,
+            laps: DriverLaps::new(scatter_ns),
         }
     }
 
@@ -205,16 +236,13 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
     /// Drain scatter time, gather time and layers driven.
     #[cfg(all(feature = "cuda", feature = "phase-timing"))]
     pub(crate) fn take_driver_laps(&mut self) -> (u64, u64, u64) {
-        (
-            std::mem::take(&mut self.scatter_ns),
-            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            std::mem::take(&mut self.layers),
-        )
+        self.laps.take()
     }
 
     #[cfg(feature = "phase-timing")]
     pub(crate) fn lap_gather(&self, ns: u64) {
-        self.gather_ns
+        self.laps
+            .gather_ns
             .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -275,10 +303,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             if let Some(trace) = self.trace.as_mut() {
                 assemble(trace, vec![work.rows]);
             }
-            #[cfg(feature = "phase-timing")]
-            {
-                self.layers += layer_count as u64;
-            }
+            self.laps.add_layers(layer_count);
         }
 
         log::info!(
@@ -397,12 +422,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
             runtime,
             transport,
             trace: None,
-            #[cfg(feature = "phase-timing")]
-            scatter_ns: started.elapsed().as_nanos() as u64,
-            #[cfg(feature = "phase-timing")]
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "phase-timing")]
-            layers: 0,
+            laps: DriverLaps::new(started.elapsed().as_nanos() as u64),
         }
     }
 
@@ -489,11 +509,12 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// Drain this rank's phase counters; `per_partition` has one entry.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
+        let (scatter_ns, gather_ns, layers) = self.laps.take();
         PartitionPhaseStats {
             per_partition: vec![self.local.state.layer.take_stats()],
-            scatter_ns: std::mem::take(&mut self.scatter_ns),
-            gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            layers: std::mem::take(&mut self.layers),
+            scatter_ns,
+            gather_ns,
+            layers,
         }
     }
 

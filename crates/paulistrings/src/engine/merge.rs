@@ -19,8 +19,6 @@ pub(crate) struct SortScratch<const W: usize> {
     staging_c: Vec<Complex64>,
 }
 
-impl<const W: usize> SortScratch<W> {}
-
 /// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore

@@ -1,7 +1,7 @@
 //! The opt-in small-sum layer path: the sum held in a hash map across layers, one `Channel::apply` per term, no `prepare` and no sort.
 //!
 //! It is the algorithm of `test_support::naive_apply_layer`, and it applies channels of any support width.
-//! Research/FINDINGS.md §Direct-apply path for small sums.
+//! See research/FINDINGS.md §Direct-apply path for small sums.
 
 use hashbrown::HashMap;
 use num_complex::Complex64;
@@ -17,7 +17,7 @@ use crate::truncation::TruncationPolicy;
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// A Pauli sum held as a hash map, carrying the entering hash so [`Self::to_sum`] hands back the same rows at no fewer bits.
-pub(crate) struct DirectSum<const W: usize> {
+struct DirectSum<const W: usize> {
     /// The resident terms, never an exact zero.
     live: HashMap<PauliString<W>, Complex64, FxBuildHasher>,
     /// The layer's output; output keys can collide with unvisited input keys, so it cannot be done in place.
@@ -32,7 +32,7 @@ pub(crate) struct DirectSum<const W: usize> {
 
 impl<const W: usize> DirectSum<W> {
     /// Ingest a bucketed sum.
-    pub(crate) fn from_sum(sum: PauliSum<W>) -> Self {
+    fn from_sum(sum: PauliSum<W>) -> Self {
         let len = sum.len();
         let mut live = HashMap::with_capacity_and_hasher(len, FxBuildHasher);
         for (x, z, c) in sum.iter() {
@@ -50,12 +50,12 @@ impl<const W: usize> DirectSum<W> {
     }
 
     /// Resident term count.
-    pub(crate) fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.live.len()
     }
 
     /// Apply one channel layer, then drop exact-zero sums and apply `keep_term` to each summed coefficient, as the merge does.
-    pub(crate) fn apply_layer<T>(&mut self, channel: &dyn Channel<W>, policy: &T, adjoint: bool)
+    fn apply_layer<T>(&mut self, channel: &dyn Channel<W>, policy: &T, adjoint: bool)
     where
         T: TruncationPolicy<W> + ?Sized,
     {
@@ -107,7 +107,7 @@ impl<const W: usize> DirectSum<W> {
     }
 
     /// Materialize a [`PauliSum`] under the entering hash, grown as [`PauliSum::rebucket`] would, leaving the map intact.
-    pub(crate) fn to_sum(&self) -> PauliSum<W> {
+    fn to_sum(&self) -> PauliSum<W> {
         let mut entries: Vec<(PauliString<W>, Complex64)> = self
             .live
             .iter()
@@ -134,7 +134,7 @@ impl<const W: usize> DirectSum<W> {
     }
 
     /// Re-ingest a sum after the `finalize_layer` round trip, keeping the carried hash.
-    pub(crate) fn reload(&mut self, sum: &PauliSum<W>) {
+    fn reload(&mut self, sum: &PauliSum<W>) {
         self.live.clear();
         self.live.reserve(sum.len());
         for (x, z, c) in sum.iter() {
@@ -147,7 +147,7 @@ impl<const W: usize> DirectSum<W> {
 // Out of line so it stays out of `propagate_with`'s inlined layer loop (CLAUDE.md §Performance discipline).
 // The trace records and the `DEBUG` line must match the sorting loop's exactly, since tooling parses them.
 #[inline(never)]
-pub(crate) fn run_direct_prefix<const W: usize, T>(
+pub(super) fn run_direct_prefix<const W: usize, T>(
     circuit: &crate::circuit::Circuit<W>,
     sum: PauliSum<W>,
     policy: &T,

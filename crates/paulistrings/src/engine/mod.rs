@@ -3,13 +3,13 @@
 //! See ARCHITECTURE.md §Engine.
 
 pub(crate) mod bucketed;
-pub(crate) mod coset;
+mod coset;
 #[cfg(feature = "cuda")]
-pub(crate) mod cuda_context;
-pub(crate) mod direct;
+mod cuda_context;
+mod direct;
 #[cfg(feature = "cuda")]
 pub mod gpu;
-pub(crate) mod merge;
+mod merge;
 pub(crate) mod partitioned;
 #[cfg(feature = "phase-timing")]
 pub(crate) mod stats;

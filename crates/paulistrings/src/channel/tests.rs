@@ -68,8 +68,8 @@ fn debug_name_through_dyn_trims_path_and_generics() {
         ),
         (Box::new(IdentityChannel), "IdentityChannel"),
     ];
-    for (ch, expected) in &channels {
-        assert_eq!(ch.debug_name(), *expected);
+    for (channel, expected) in &channels {
+        assert_eq!(channel.debug_name(), *expected);
     }
 }
 
@@ -83,15 +83,15 @@ fn support_mask_of_empty_is_zero() {
 fn push_writes_at_cursor_w1() {
     let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(4);
     {
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut x,
             z: &mut z,
             coeff: &mut c,
             len: &mut len,
         };
-        buf.push([0xAA], [0xBB], Complex64::new(1.0, 2.0));
-        buf.push([0xCC], [0xDD], Complex64::new(3.0, 4.0));
-        assert_eq!(*buf.len, 2);
+        buffer.push([0xAA], [0xBB], Complex64::new(1.0, 2.0));
+        buffer.push([0xCC], [0xDD], Complex64::new(3.0, 4.0));
+        assert_eq!(*buffer.len, 2);
     }
     assert_eq!(x[0], [0xAA]);
     assert_eq!(z[0], [0xBB]);
@@ -109,14 +109,14 @@ fn push_writes_at_cursor_w1() {
 fn push_writes_at_cursor_w2() {
     let (mut x, mut z, mut c, mut len) = alloc_bufs::<2>(3);
     {
-        let mut buf = OutputBuffer::<2> {
+        let mut buffer = OutputBuffer::<2> {
             x: &mut x,
             z: &mut z,
             coeff: &mut c,
             len: &mut len,
         };
-        buf.push([0x11, 0x22], [0x33, 0x44], Complex64::new(5.0, 6.0));
-        assert_eq!(*buf.len, 1);
+        buffer.push([0x11, 0x22], [0x33, 0x44], Complex64::new(5.0, 6.0));
+        assert_eq!(*buffer.len, 1);
     }
     assert_eq!(x[0], [0x11, 0x22]);
     assert_eq!(z[0], [0x33, 0x44]);
@@ -127,34 +127,34 @@ fn push_writes_at_cursor_w2() {
 #[should_panic]
 fn push_panics_when_full() {
     let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut x,
         z: &mut z,
         coeff: &mut c,
         len: &mut len,
     };
-    buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
-    buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
-    buf.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+    buffer.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+    buffer.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
+    buffer.push([0; 1], [0; 1], Complex64::new(1.0, 0.0));
 }
 
 #[test]
 fn clear_resets_cursor() {
     let (mut x, mut z, mut c, mut len) = alloc_bufs::<1>(4);
     {
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut x,
             z: &mut z,
             coeff: &mut c,
             len: &mut len,
         };
-        buf.push([0xAA], [0xBB], Complex64::new(1.0, 0.0));
-        buf.push([0xCC], [0xDD], Complex64::new(2.0, 0.0));
-        assert_eq!(*buf.len, 2);
-        buf.clear();
-        assert_eq!(*buf.len, 0);
-        buf.push([0xEE], [0xFF], Complex64::new(3.0, 0.0));
-        assert_eq!(*buf.len, 1);
+        buffer.push([0xAA], [0xBB], Complex64::new(1.0, 0.0));
+        buffer.push([0xCC], [0xDD], Complex64::new(2.0, 0.0));
+        assert_eq!(*buffer.len, 2);
+        buffer.clear();
+        assert_eq!(*buffer.len, 0);
+        buffer.push([0xEE], [0xFF], Complex64::new(3.0, 0.0));
+        assert_eq!(*buffer.len, 1);
     }
     // The post-clear push lands at slot 0, overwriting the prior contents.
     assert_eq!(x[0], [0xEE]);
@@ -177,14 +177,14 @@ fn reuse_does_not_grow_backing_vecs() {
     let mut len: usize;
     for i in 0..100u64 {
         len = 0;
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut x,
             z: &mut z,
             coeff: &mut c,
             len: &mut len,
         };
-        buf.push([i], [0], Complex64::new(i as f64, 0.0));
-        buf.push([i + 1], [0], Complex64::new((i + 1) as f64, 0.0));
+        buffer.push([i], [0], Complex64::new(i as f64, 0.0));
+        buffer.push([i + 1], [0], Complex64::new((i + 1) as f64, 0.0));
     }
     assert_eq!(x.capacity(), cap);
     assert_eq!(z.capacity(), cap);

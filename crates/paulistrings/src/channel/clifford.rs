@@ -67,10 +67,10 @@ impl Clifford1Q {
     pub fn adjoint(&self) -> Self {
         let mut out_pauli = [0u8; 4];
         let mut phase = [Phase::ONE; 4];
-        for input_idx in 0u8..4 {
-            let f_a = self.out_pauli[input_idx as usize] as usize;
-            let c_a = self.phase[input_idx as usize];
-            out_pauli[f_a] = input_idx;
+        for input_index in 0u8..4 {
+            let f_a = self.out_pauli[input_index as usize] as usize;
+            let c_a = self.phase[input_index as usize];
+            out_pauli[f_a] = input_index;
             phase[f_a] = Phase::new((4 - c_a.exponent()) & 3);
         }
         Self {
@@ -96,12 +96,12 @@ impl Clifford1Q {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
-        let idx = read_pauli(input_x, input_z, word, bit);
-        let op = out_pauli[idx] as usize;
-        let mut nx = *input_x;
-        let mut nz = *input_z;
-        write_pauli(&mut nx, &mut nz, word, bit, mask, op);
-        out.push(nx, nz, phase[idx].apply(coeff));
+        let index = read_pauli(input_x, input_z, word, bit);
+        let output = out_pauli[index] as usize;
+        let mut new_x = *input_x;
+        let mut new_z = *input_z;
+        write_pauli(&mut new_x, &mut new_z, word, bit, mask, output);
+        out.push(new_x, new_z, phase[index].apply(coeff));
     }
 }
 
@@ -135,8 +135,15 @@ impl<const W: usize> Channel<W> for Clifford1Q {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let adj = self.adjoint();
-        self.apply_table(&adj.out_pauli, &adj.phase, input_x, input_z, coeff, out);
+        let adjoint = self.adjoint();
+        self.apply_table(
+            &adjoint.out_pauli,
+            &adjoint.phase,
+            input_x,
+            input_z,
+            coeff,
+            out,
+        );
     }
 }
 
@@ -195,36 +202,42 @@ impl Clifford2Q {
         x1_image: (u8, Phase),
         z1_image: (u8, Phase),
     ) -> Self {
-        let gens = [x0_image, z0_image, x1_image, z1_image];
+        let generators = [x0_image, z0_image, x1_image, z1_image];
         let mut out_pauli = [0u8; 16];
         let mut phase = [Phase::ONE; 16];
-        for idx in 0..16usize {
+        for index in 0..16usize {
             let bits = [
-                (idx & 1) as u8,
-                ((idx >> 1) & 1) as u8,
-                ((idx >> 2) & 1) as u8,
-                ((idx >> 3) & 1) as u8,
+                (index & 1) as u8,
+                ((index >> 1) & 1) as u8,
+                ((index >> 2) & 1) as u8,
+                ((index >> 3) & 1) as u8,
             ];
 
             // The product is the image of `X^{x0} Z^{z0} X^{x1} Z^{z1}`; each input `Y = i · X · Z` adds an `i` below.
-            let mut acc_x = [0u64; 1];
-            let mut acc_z = [0u64; 1];
-            let mut acc_phase = Phase::ONE;
-            for (b, (img, ph)) in bits.iter().zip(gens.iter()) {
+            let mut product_x = [0u64; 1];
+            let mut product_z = [0u64; 1];
+            let mut product_phase = Phase::ONE;
+            for (b, (image, image_phase)) in bits.iter().zip(generators.iter()) {
                 if *b == 1 {
-                    let (gx, gz) = unpack4_to_word(*img);
-                    let mut acc = crate::pauli_string::PauliString::<1> { x: acc_x, z: acc_z };
-                    let other = crate::pauli_string::PauliString::<1> { x: gx, z: gz };
-                    let mul_phase = acc.mul_assign(&other);
-                    acc_x = acc.x;
-                    acc_z = acc.z;
-                    acc_phase = acc_phase + mul_phase + *ph;
+                    let (generator_x, generator_z) = unpack4_to_word(*image);
+                    let mut product = crate::pauli_string::PauliString::<1> {
+                        x: product_x,
+                        z: product_z,
+                    };
+                    let other = crate::pauli_string::PauliString::<1> {
+                        x: generator_x,
+                        z: generator_z,
+                    };
+                    let mul_phase = product.mul_assign(&other);
+                    product_x = product.x;
+                    product_z = product.z;
+                    product_phase = product_phase + mul_phase + *image_phase;
                 }
             }
             let y_count = (bits[0] & bits[1]) + (bits[2] & bits[3]);
-            acc_phase += Phase::new(y_count);
-            out_pauli[idx] = pack4_from_word(acc_x, acc_z);
-            phase[idx] = acc_phase;
+            product_phase += Phase::new(y_count);
+            out_pauli[index] = pack4_from_word(product_x, product_z);
+            phase[index] = product_phase;
         }
         Self {
             support,
@@ -280,19 +293,26 @@ impl<const W: usize> Channel<W> for Clifford2Q {
         debug_assert!(q1 < 64 * W);
         debug_assert!(q0 != q1);
 
-        let (w0, b0, m0) = qubit_loc(q0);
-        let (w1, b1, m1) = qubit_loc(q1);
-        let idx =
-            read_pauli(input_x, input_z, w0, b0) | (read_pauli(input_x, input_z, w1, b1) << 2);
+        let (word0, bit0, mask0) = qubit_loc(q0);
+        let (word1, bit1, mask1) = qubit_loc(q1);
+        let index = read_pauli(input_x, input_z, word0, bit0)
+            | (read_pauli(input_x, input_z, word1, bit1) << 2);
 
-        let op = self.out_pauli[idx] as usize;
+        let output = self.out_pauli[index] as usize;
 
-        let mut nx = *input_x;
-        let mut nz = *input_z;
-        write_pauli(&mut nx, &mut nz, w0, b0, m0, op & 3);
-        write_pauli(&mut nx, &mut nz, w1, b1, m1, (op >> 2) & 3);
+        let mut new_x = *input_x;
+        let mut new_z = *input_z;
+        write_pauli(&mut new_x, &mut new_z, word0, bit0, mask0, output & 3);
+        write_pauli(
+            &mut new_x,
+            &mut new_z,
+            word1,
+            bit1,
+            mask1,
+            (output >> 2) & 3,
+        );
 
-        out.push(nx, nz, self.phase[idx].apply(coeff));
+        out.push(new_x, new_z, self.phase[index].apply(coeff));
     }
 }
 

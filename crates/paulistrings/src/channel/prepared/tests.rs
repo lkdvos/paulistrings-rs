@@ -13,13 +13,13 @@ type Term<const W: usize> = ([u64; W], [u64; W], Complex64);
 
 /// Outputs of `apply` / `apply_adjoint`, with exact zeros dropped and equal keys summed — the same normalization the merge phase performs.
 fn via_apply<const W: usize, C: Channel<W> + ?Sized>(
-    ch: &C,
+    channel: &C,
     adjoint: bool,
     x: &[u64; W],
     z: &[u64; W],
     coeff: Complex64,
 ) -> Vec<Term<W>> {
-    let f = ch.max_fanout().max(1);
+    let f = channel.max_fanout().max(1);
     let mut bx = vec![[0u64; W]; f];
     let mut bz = vec![[0u64; W]; f];
     let mut bc = vec![ZERO; f];
@@ -32,9 +32,9 @@ fn via_apply<const W: usize, C: Channel<W> + ?Sized>(
             len: &mut len,
         };
         if adjoint {
-            ch.apply_adjoint(x, z, coeff, &mut out);
+            channel.apply_adjoint(x, z, coeff, &mut out);
         } else {
-            ch.apply(x, z, coeff, &mut out);
+            channel.apply(x, z, coeff, &mut out);
         }
     }
     normalize((0..len).map(|i| (bx[i], bz[i], bc[i])).collect())
@@ -42,13 +42,13 @@ fn via_apply<const W: usize, C: Channel<W> + ?Sized>(
 
 /// The same outputs, reconstructed from the prepared table.
 fn via_prepared<const W: usize>(
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     x: &[u64; W],
     z: &[u64; W],
     coeff: Complex64,
 ) -> Vec<Term<W>> {
     let mut out: Vec<Term<W>> = Vec::new();
-    match prep {
+    match prepared {
         Prepared::Local(p) => {
             let s = p.support_bits(x, z);
             for m in p.deltas() {
@@ -105,13 +105,13 @@ fn assert_terms_eq<const W: usize>(a: &[Term<W>], b: &[Term<W>], what: &str) {
 
 /// The derived table reproduces `apply` on randomized full-width inputs, not just the basis probes.
 fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
-    ch: &C,
+    channel: &C,
     num_qubits: usize,
     label: &str,
 ) {
     let hash = Gf2Hash::<W>::new(num_qubits, 10, 0xD00D);
     for &adjoint in &[false, true] {
-        let prep = ch
+        let prepared = channel
             .prepare(&hash, adjoint)
             .unwrap_or_else(|| panic!("{label}: prepare returned None"));
         let mut rng = Xs64::new(0x5EED ^ (adjoint as u64));
@@ -126,8 +126,8 @@ fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
                 (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
                 (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
             );
-            let direct = via_apply(ch, adjoint, &x, &z, coeff);
-            let table = via_prepared(&prep, &x, &z, coeff);
+            let direct = via_apply(channel, adjoint, &x, &z, coeff);
+            let table = via_prepared(&prepared, &x, &z, coeff);
             assert_terms_eq(&direct, &table, &format!("{label} adjoint={adjoint}"));
         }
     }
@@ -140,14 +140,14 @@ fn derived_table_matches_apply_identity() {
 
 #[test]
 fn derived_table_matches_apply_clifford1q() {
-    for (name, ch) in [
+    for (name, channel) in [
         ("h", Clifford1Q::h(3)),
         ("s", Clifford1Q::s(3)),
         ("x", Clifford1Q::x(3)),
         ("y", Clifford1Q::y(3)),
         ("z", Clifford1Q::z(3)),
     ] {
-        check_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
     // Also across a word boundary.
     check_agrees_on_random_inputs::<2, _>(&Clifford1Q::h(70), 128, "h@70");
@@ -155,12 +155,12 @@ fn derived_table_matches_apply_clifford1q() {
 
 #[test]
 fn derived_table_matches_apply_clifford2q() {
-    for (name, ch) in [
+    for (name, channel) in [
         ("cnot", Clifford2Q::cnot(1, 4)),
         ("cz", Clifford2Q::cz(1, 4)),
         ("swap", Clifford2Q::swap(1, 4)),
     ] {
-        check_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
     // Straddling the word boundary.
     check_agrees_on_random_inputs::<2, _>(&Clifford2Q::cnot(60, 70), 128, "cnot@60,70");
@@ -226,13 +226,13 @@ fn functional_form_matches_apply_for_a_wide_rotation() {
 /// The same outputs, reconstructed one entry at a time through the emitters.
 /// Mirrors `via_prepared`, but routes every row through [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
 fn via_emit<const W: usize>(
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     x: &[u64; W],
     z: &[u64; W],
     coeff: Complex64,
 ) -> Vec<Term<W>> {
     let mut out: Vec<Term<W>> = Vec::new();
-    match prep {
+    match prepared {
         Prepared::Local(p) => {
             let s = p.support_bits(x, z);
             for m in p.deltas() {
@@ -261,13 +261,13 @@ fn via_emit<const W: usize>(
 }
 
 fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
-    ch: &C,
+    channel: &C,
     num_qubits: usize,
     label: &str,
 ) {
     let hash = Gf2Hash::<W>::new(num_qubits, 10, 0xD00D);
     for &adjoint in &[false, true] {
-        let prep = ch
+        let prepared = channel
             .prepare(&hash, adjoint)
             .unwrap_or_else(|| panic!("{label}: prepare returned None"));
         let mut rng = Xs64::new(0x5EED ^ (adjoint as u64));
@@ -282,8 +282,8 @@ fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
                 (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
                 (rng.next_u64() as i64 as f64) / (i64::MAX as f64),
             );
-            let direct = via_apply(ch, adjoint, &x, &z, coeff);
-            let emitted = via_emit(&prep, &x, &z, coeff);
+            let direct = via_apply(channel, adjoint, &x, &z, coeff);
+            let emitted = via_emit(&prepared, &x, &z, coeff);
             assert_terms_eq(&direct, &emitted, &format!("{label} adjoint={adjoint}"));
         }
     }
@@ -291,19 +291,19 @@ fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
 
 #[test]
 fn emit_matches_apply_for_cliffords() {
-    for (name, ch) in [
+    for (name, channel) in [
         ("h", Clifford1Q::h(3)),
         ("s", Clifford1Q::s(3)),
         ("x", Clifford1Q::x(3)),
     ] {
-        check_emit_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
-    for (name, ch) in [
+    for (name, channel) in [
         ("cnot", Clifford2Q::cnot(1, 4)),
         ("cz", Clifford2Q::cz(1, 4)),
         ("swap", Clifford2Q::swap(1, 4)),
     ] {
-        check_emit_agrees_on_random_inputs::<2, _>(&ch, 128, name);
+        check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
 }
 
@@ -478,10 +478,14 @@ fn retain_entries_keeping_everything_is_the_original() {
     );
 }
 
-fn n_bucket_deltas<const W: usize, C: Channel<W>>(ch: &C, adjoint: bool) -> usize {
+fn n_bucket_deltas<const W: usize, C: Channel<W>>(channel: &C, adjoint: bool) -> usize {
     // Plenty of bucket bits, so distinct key deltas do not collide.
     let hash = Gf2Hash::<W>::new(128, 16, 0xBEEF);
-    ch.prepare(&hash, adjoint).unwrap().bucket_deltas().len()
+    channel
+        .prepare(&hash, adjoint)
+        .unwrap()
+        .bucket_deltas()
+        .len()
 }
 
 #[test]
@@ -578,7 +582,7 @@ fn a_rotation_reads_two_buckets_at_any_generator_weight() {
 #[test]
 fn adjoint_preparations_have_the_same_fanin() {
     // Conjugating by G^-1 has delta set im(S^-1 ^ I), a different subspace of the same dimension, so the bucket count must not change.
-    for (name, fwd, adj) in [
+    for (name, forward, adjoint) in [
         (
             "s",
             n_bucket_deltas::<2, _>(&Clifford1Q::s(5), false),
@@ -612,7 +616,10 @@ fn adjoint_preparations_have_the_same_fanin() {
             ),
         ),
     ] {
-        assert_eq!(fwd, adj, "{name}: adjoint fan-in differs from forward");
+        assert_eq!(
+            forward, adjoint,
+            "{name}: adjoint fan-in differs from forward"
+        );
     }
 }
 
@@ -633,8 +640,8 @@ fn key_preserving_channels_are_detected() {
         Box::new(Clifford1Q::y(5)),
         Box::new(Clifford1Q::z(5)),
     ];
-    for ch in &yes {
-        match ch.prepare(&hash, false).unwrap() {
+    for channel in &yes {
+        match channel.prepare(&hash, false).unwrap() {
             Prepared::Local(p) => assert!(p.is_key_preserving()),
             _ => panic!("expected a Local preparation"),
         }
@@ -645,8 +652,8 @@ fn key_preserving_channels_are_detected() {
         Box::new(Clifford2Q::cnot(1, 4)),
         Box::new(PauliRotation::new(PauliString::<2>::z(5), 0.3)),
     ];
-    for ch in &no {
-        match ch.prepare(&hash, false).unwrap() {
+    for channel in &no {
+        match channel.prepare(&hash, false).unwrap() {
             Prepared::Local(p) => assert!(!p.is_key_preserving()),
             _ => panic!("expected a Local preparation"),
         }
@@ -656,8 +663,8 @@ fn key_preserving_channels_are_detected() {
 #[test]
 fn support_bits_use_the_clifford2q_packing() {
     let hash = Gf2Hash::<1>::new(64, 8, 0x1);
-    let prep = Clifford2Q::cnot(2, 7).prepare(&hash, false).unwrap();
-    let Prepared::Local(p) = prep else {
+    let prepared = Clifford2Q::cnot(2, 7).prepare(&hash, false).unwrap();
+    let Prepared::Local(p) = prepared else {
         panic!("expected Local")
     };
     assert_eq!(p.qubits(), &[2, 7]);
@@ -680,8 +687,8 @@ fn support_bits_use_the_clifford2q_packing() {
 fn colliding_deltas_share_a_group_rather_than_being_lost() {
     // With 1 bucket bit, CNOT's four key deltas collide on bucket deltas.
     let hash = Gf2Hash::<2>::new(128, 1, 0xC011);
-    let prep = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
-    let Prepared::Local(p) = prep else {
+    let prepared = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
+    let Prepared::Local(p) = prepared else {
         panic!("expected Local")
     };
     assert!(
@@ -699,8 +706,8 @@ fn deltas_are_ascending_by_local_delta() {
     // Entries ascend by `local_delta` even when bucket deltas collide.
     for bits in [1u8, 4, 16] {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
-        let prep = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
-        let Prepared::Local(p) = prep else {
+        let prepared = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
+        let Prepared::Local(p) = prepared else {
             panic!("expected Local")
         };
         for pair in p.deltas().windows(2) {
@@ -717,8 +724,8 @@ fn delta_iteration_order_is_independent_of_bucket_count() {
     // Changing `bits` must not reorder the entries.
     let order = |bits: u8| -> Vec<u8> {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC013);
-        let prep = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
-        let Prepared::Local(p) = prep else {
+        let prepared = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
+        let Prepared::Local(p) = prepared else {
             panic!("expected Local")
         };
         p.deltas().iter().map(|m| m.local_delta).collect()

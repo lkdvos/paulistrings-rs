@@ -181,8 +181,8 @@ fn top_n_keeps_largest_three_of_ten() {
     // Survivors: original magnitudes 10, 9, 8 → x = [1], [2], [3].
     let (x, _, c) = sum.to_arrays();
     assert_eq!(x, vec![[1u64], [2u64], [3u64]]);
-    let mags: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    assert_eq!(mags, vec![10.0, 9.0, 8.0]);
+    let magnitudes: Vec<f64> = c.iter().map(|c| c.norm()).collect();
+    assert_eq!(magnitudes, vec![10.0, 9.0, 8.0]);
     sum.assert_invariants();
 }
 
@@ -223,11 +223,11 @@ fn top_n_at_or_above_len_is_a_no_op() {
 /// With all magnitudes distinct, the tie group at rank `n` has size one and always fits, so `TopN(n)` retains exactly `n`.
 #[test]
 fn top_n_all_distinct_retains_exactly_n() {
-    let mags = [7.0f64, 1.0, 5.0, 3.0, 9.0, 2.0, 8.0, 4.0];
+    let magnitudes = [7.0f64, 1.0, 5.0, 3.0, 9.0, 2.0, 8.0, 4.0];
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..8).map(|i| [i]).collect(),
         vec![[0u64]; 8],
-        mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
+        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
         3,
     );
     sum.assert_invariants();
@@ -243,11 +243,11 @@ fn top_n_all_distinct_retains_exactly_n() {
 /// A tie group straddling the cut is discarded whole: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps only 5 and 4, since the three-member group at 3 does not fit in the one remaining slot.
 #[test]
 fn top_n_discards_a_straddling_tie_group_entirely() {
-    let mags = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
+    let magnitudes = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
-        mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
+        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
         3,
     );
     sum.assert_invariants();
@@ -267,11 +267,11 @@ fn top_n_discards_a_straddling_tie_group_entirely() {
 /// A tie group that ends exactly at rank `n` fits and is kept whole: magnitudes 5, 4, 3, 3, 2, 1 with `n = 4` keeps all four of 5, 4, 3, 3.
 #[test]
 fn top_n_keeps_a_tie_group_that_fits_exactly() {
-    let mags = [5.0f64, 4.0, 3.0, 3.0, 2.0, 1.0];
+    let magnitudes = [5.0f64, 4.0, 3.0, 3.0, 2.0, 1.0];
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
-        mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
+        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
         3,
     );
     sum.assert_invariants();
@@ -467,12 +467,12 @@ fn top_n_preserves_sort_order() {
     sum.assert_invariants();
 }
 
-/// A `W = 1` sum of `mags.len()` distinct keys (`x = i`, `z = 0`) with the given real coefficients, single-bucket and already in key order.
-fn sum_of_mags(mags: &[f64]) -> PauliSum<1> {
+/// A `W = 1` sum of `magnitudes.len()` distinct keys (`x = i`, `z = 0`) with the given real coefficients, single-bucket and already in key order.
+fn sum_of_mags(magnitudes: &[f64]) -> PauliSum<1> {
     PauliSum::<1>::from_sorted_columns(
-        (0u64..mags.len() as u64).map(|i| [i]).collect(),
-        vec![[0u64]; mags.len()],
-        mags.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
+        (0u64..magnitudes.len() as u64).map(|i| [i]).collect(),
+        vec![[0u64]; magnitudes.len()],
+        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
         32,
     )
 }
@@ -490,7 +490,7 @@ fn octave(c: Complex64) -> usize {
 /// The threshold can only land on an octave boundary of `|c|²`, so the retained count is a cumulative octave population, not `n` — hand-tabulated here for the four-octave fixture below (populations 1, 2, 3, 4; cumulative 1, 3, 6, 10 from the top).
 #[test]
 fn approx_top_n_keeps_a_cumulative_octave_population() {
-    let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
+    let magnitudes = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
     for (n, want) in [
         (1usize, 1usize),
         (2, 1),
@@ -502,19 +502,19 @@ fn approx_top_n_keeps_a_cumulative_octave_population() {
         (8, 6),
         (9, 6),
     ] {
-        let mut sum = sum_of_mags(&mags);
+        let mut sum = sum_of_mags(&magnitudes);
         ApproxTopN(n).finalize_layer(&mut sum);
         sum.assert_invariants();
         assert_eq!(sum.len(), want, "n={n}");
         // Whatever survives is the largest `want` magnitudes.
         let mut got = kept_mags(&sum);
         got.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let mut all = mags.to_vec();
+        let mut all = magnitudes.to_vec();
         all.sort_by(|a, b| b.partial_cmp(a).unwrap());
         assert_eq!(got, all[..want].to_vec(), "n={n}");
     }
     // `n >= len` is a no-op, like every other policy's.
-    let mut sum = sum_of_mags(&mags);
+    let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(10).finalize_layer(&mut sum);
     assert_eq!(sum.len(), 10);
 }
@@ -522,11 +522,11 @@ fn approx_top_n_keeps_a_cumulative_octave_population() {
 /// When the cut lands exactly on an octave boundary (`n` = 1, 3, or 6, the fixture's cumulative populations), the approximation is no approximation: both policies return the same top `n`.
 #[test]
 fn approx_top_n_matches_top_n_when_the_histogram_resolves_exactly() {
-    let mags = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
+    let magnitudes = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
     for n in [1usize, 3, 6] {
-        let mut approx = sum_of_mags(&mags);
+        let mut approx = sum_of_mags(&magnitudes);
         ApproxTopN(n).finalize_layer(&mut approx);
-        let mut exact = sum_of_mags(&mags);
+        let mut exact = sum_of_mags(&magnitudes);
         TopN(n).finalize_layer(&mut exact);
         assert_eq!(exact.len(), n, "n={n}: TopN must resolve exactly here");
         assert_eq!(
@@ -613,8 +613,8 @@ fn approx_top_n_never_splits_a_tie_group() {
 /// One octave holding everything resolves like [`TopN`]'s all-tied sum: the bound wins and the sum is wiped.
 #[test]
 fn approx_top_n_wipes_a_single_octave_sum() {
-    let mags = [1.0f64, 1.125, 1.25, 1.375];
-    let mut sum = sum_of_mags(&mags);
+    let magnitudes = [1.0f64, 1.125, 1.25, 1.375];
+    let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(3).finalize_layer(&mut sum);
     assert!(
         sum.is_empty(),
@@ -622,7 +622,7 @@ fn approx_top_n_wipes_a_single_octave_sum() {
     );
     sum.assert_invariants();
     // …and it is a no-op at n >= len, as always.
-    let mut sum = sum_of_mags(&mags);
+    let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(4).finalize_layer(&mut sum);
     assert_eq!(sum.len(), 4);
 }
@@ -701,29 +701,29 @@ proptest! {
         values in proptest::collection::vec(1u32..40u32, 1..48),
         n in 1usize..48,
     ) {
-        let mags: Vec<f64> = values.iter().map(|&v| f64::from(v)).collect();
-        let mut sum = sum_of_mags(&mags);
+        let magnitudes: Vec<f64> = values.iter().map(|&v| f64::from(v)).collect();
+        let mut sum = sum_of_mags(&magnitudes);
         ApproxTopN(n).finalize_layer(&mut sum);
 
-        // Key `i` carries `mags[i]`, so a key identifies its magnitude.
+        // Key `i` carries `magnitudes[i]`, so a key identifies its magnitude.
         let survivors: std::collections::HashSet<u64> =
             sum.iter().map(|(x, _, _)| x[0]).collect();
         let oct = |m: f64| (m * m).to_bits() >> 52;
 
-        if mags.len() <= n {
-            prop_assert_eq!(survivors.len(), mags.len(), "n >= len must be a no-op");
+        if magnitudes.len() <= n {
+            prop_assert_eq!(survivors.len(), magnitudes.len(), "n >= len must be a no-op");
             return Ok(());
         }
         prop_assert!(survivors.len() <= n, "kept {} > n {}", survivors.len(), n);
 
         // Every kept octave is kept whole and outranks every dropped one.
-        let dropped_top = mags
+        let dropped_top = magnitudes
             .iter()
             .enumerate()
             .filter(|(i, _)| !survivors.contains(&(*i as u64)))
             .map(|(_, &m)| oct(m))
             .max();
-        let kept_low = mags
+        let kept_low = magnitudes
             .iter()
             .enumerate()
             .filter(|(i, _)| survivors.contains(&(*i as u64)))
@@ -735,7 +735,7 @@ proptest! {
 
         // Shortfall bound: including the next octave down would overshoot.
         if let Some(d) = dropped_top {
-            let p = mags.iter().filter(|&&m| oct(m) == d).count();
+            let p = magnitudes.iter().filter(|&&m| oct(m) == d).count();
             prop_assert!(
                 survivors.len() + p > n,
                 "kept {} + octave {} must exceed n {}",

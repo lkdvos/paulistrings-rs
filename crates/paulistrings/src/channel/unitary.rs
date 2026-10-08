@@ -7,9 +7,9 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 const ONE: Complex64 = Complex64::new(1.0, 0.0);
 
 /// The four single-qubit Pauli matrices, in `I, X, Z, Y` index order.
-fn pauli_matrix(idx: usize) -> [[Complex64; 2]; 2] {
+fn pauli_matrix(index: usize) -> [[Complex64; 2]; 2] {
     let i = Complex64::new(0.0, 1.0);
-    match idx {
+    match index {
         0 => [[ONE, ZERO], [ZERO, ONE]],
         1 => [[ZERO, ONE], [ONE, ZERO]],
         2 => [[ONE, ZERO], [ZERO, -ONE]],
@@ -100,14 +100,14 @@ pub struct GeneralUnitary1Q {
 impl GeneralUnitary1Q {
     /// From a 2x2 unitary `u`: `table[s][t] = tr(P_t · U P_s U†) / 2`.
     pub fn from_matrix(qubit: u32, u: [[Complex64; 2]; 2]) -> Self {
-        let ud = dagger(&u);
+        let u_dagger = dagger(&u);
         let mut table = [[ZERO; 4]; 4];
         for (s, row) in table.iter_mut().enumerate() {
             let ps = pauli_matrix(s);
-            let conj = matmul(&matmul(&u, &ps), &ud);
+            let conjugated = matmul(&matmul(&u, &ps), &u_dagger);
             for (t, slot) in row.iter_mut().enumerate() {
                 let pt = pauli_matrix(t);
-                let v = trace(&matmul(&pt, &conj)) / Complex64::new(2.0, 0.0);
+                let v = trace(&matmul(&pt, &conjugated)) / Complex64::new(2.0, 0.0);
                 *slot = clean(v, PTM_EPS);
             }
         }
@@ -140,10 +140,10 @@ fn apply_1q<const W: usize>(
         if c == ZERO {
             continue;
         }
-        let mut nx = *input_x;
-        let mut nz = *input_z;
-        write_pauli(&mut nx, &mut nz, word, bit, mask, t);
-        out.push(nx, nz, coeff * c);
+        let mut new_x = *input_x;
+        let mut new_z = *input_z;
+        write_pauli(&mut new_x, &mut new_z, word, bit, mask, t);
+        out.push(new_x, new_z, coeff * c);
     }
 }
 
@@ -209,19 +209,19 @@ pub struct GeneralUnitary2Q {
 impl GeneralUnitary2Q {
     /// From a 4x4 unitary `u` on `|q0 q1⟩`: `table[s][t] = tr(P_t · U P_s U†) / 4`.
     pub fn from_matrix(q0: u32, q1: u32, u: [[Complex64; 4]; 4]) -> Self {
-        let ud = dagger(&u);
-        let two_q = |s: usize| -> [[Complex64; 4]; 4] {
+        let u_dagger = dagger(&u);
+        let two_qubit_pauli = |s: usize| -> [[Complex64; 4]; 4] {
             let a = pauli_matrix((s & 1) | ((s >> 1) & 1) << 1);
             let b = pauli_matrix(((s >> 2) & 1) | ((s >> 3) & 1) << 1);
             kron2(&a, &b)
         };
         let mut table = Box::new([[ZERO; 16]; 16]);
         for (s, row) in table.iter_mut().enumerate() {
-            let ps = two_q(s);
-            let conj = matmul(&matmul(&u, &ps), &ud);
+            let ps = two_qubit_pauli(s);
+            let conjugated = matmul(&matmul(&u, &ps), &u_dagger);
             for (t, slot) in row.iter_mut().enumerate() {
-                let pt = two_q(t);
-                let v = trace(&matmul(&pt, &conj)) / Complex64::new(4.0, 0.0);
+                let pt = two_qubit_pauli(t);
+                let v = trace(&matmul(&pt, &conjugated)) / Complex64::new(4.0, 0.0);
                 *slot = clean(v, PTM_EPS);
             }
         }
@@ -247,10 +247,11 @@ fn apply_2q<const W: usize>(
     let q0 = support[0] as usize;
     let q1 = support[1] as usize;
     debug_assert!(q0 < 64 * W && q1 < 64 * W);
-    let (w0, b0, m0) = qubit_loc(q0);
-    let (w1, b1, m1) = qubit_loc(q1);
+    let (word0, bit0, mask0) = qubit_loc(q0);
+    let (word1, bit1, mask1) = qubit_loc(q1);
 
-    let s = read_pauli(input_x, input_z, w0, b0) | (read_pauli(input_x, input_z, w1, b1) << 2);
+    let s = read_pauli(input_x, input_z, word0, bit0)
+        | (read_pauli(input_x, input_z, word1, bit1) << 2);
 
     let row = effective_row(table, transpose, s);
 
@@ -258,11 +259,11 @@ fn apply_2q<const W: usize>(
         if c == ZERO {
             continue;
         }
-        let mut nx = *input_x;
-        let mut nz = *input_z;
-        write_pauli(&mut nx, &mut nz, w0, b0, m0, t & 3);
-        write_pauli(&mut nx, &mut nz, w1, b1, m1, (t >> 2) & 3);
-        out.push(nx, nz, coeff * c);
+        let mut new_x = *input_x;
+        let mut new_z = *input_z;
+        write_pauli(&mut new_x, &mut new_z, word0, bit0, mask0, t & 3);
+        write_pauli(&mut new_x, &mut new_z, word1, bit1, mask1, (t >> 2) & 3);
+        out.push(new_x, new_z, coeff * c);
     }
 }
 

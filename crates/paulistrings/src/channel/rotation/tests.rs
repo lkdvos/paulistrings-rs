@@ -55,7 +55,7 @@ fn an_identity_generator_has_empty_support() {
     assert_eq!(rot.weight(), 0);
 }
 
-/// The mask form directly: bit `q` set in `support()` iff qubit `q` is non-identity in the generator (`gen_x[w] | gen_z[w]` per word).
+/// The mask form directly: bit `q` set in `support()` iff qubit `q` is non-identity in the generator (`generator_x[w] | generator_z[w]` per word).
 #[test]
 fn rotation_support_is_generator_mask() {
     let mut gen = PauliString::<2>::z(3);
@@ -104,14 +104,14 @@ fn theta_zero_anticommuting_w1() {
     let rot = PauliRotation::new(p, 0.0);
     let c = Complex64::new(2.0, 3.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], c, TOL));
@@ -130,14 +130,14 @@ fn theta_zero_commuting_w1() {
     let rot = PauliRotation::new(p, 0.0);
     let c = Complex64::new(2.0, 3.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 1);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 1);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert_eq!(bc[0], c);
@@ -151,14 +151,14 @@ fn pi_z_flips_x_to_minus_x_w1() {
     let rot = PauliRotation::new(p, std::f64::consts::PI);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], Complex64::new(-1.0, 0.0), TOL));
@@ -176,14 +176,14 @@ fn commuting_case_is_fanout_one_w1() {
     let rot = PauliRotation::new(p, std::f64::consts::FRAC_PI_4);
     let c = Complex64::new(0.5, 0.25);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 1);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 1);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert_eq!(bc[0], c);
@@ -198,14 +198,14 @@ fn anticommuting_case_is_fanout_two_w1() {
     let rot = PauliRotation::new(p, theta);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], Complex64::new(theta.cos(), 0.0), TOL));
@@ -223,14 +223,14 @@ fn pi_over_two_x_rotates_z_to_minus_y_w1() {
     let rot = PauliRotation::new(p, std::f64::consts::FRAC_PI_2);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], Complex64::new(0.0, 0.0), TOL));
@@ -248,14 +248,14 @@ fn phase_from_mul_assign_is_folded_w1() {
     let rot = PauliRotation::new(p, std::f64::consts::FRAC_PI_2);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], Complex64::new(0.0, 0.0), TOL));
@@ -273,14 +273,14 @@ fn multi_word_disjoint_support_commutes_w2() {
     let rot = PauliRotation::new(p, std::f64::consts::FRAC_PI_4);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(2);
-    let mut buf = OutputBuffer::<2> {
+    let mut buffer = OutputBuffer::<2> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 1);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 1);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert_eq!(bc[0], c);
@@ -295,14 +295,14 @@ fn multi_word_anticommute_in_word_1_w2() {
     let rot = PauliRotation::new(p, theta);
     let c = Complex64::new(1.0, 0.0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(2);
-    let mut buf = OutputBuffer::<2> {
+    let mut buffer = OutputBuffer::<2> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    rot.apply(&q.x, &q.z, c, &mut buf);
-    assert_eq!(*buf.len, 2);
+    rot.apply(&q.x, &q.z, c, &mut buffer);
+    assert_eq!(*buffer.len, 2);
     assert_eq!(bx[0], q.x);
     assert_eq!(bz[0], q.z);
     assert!(approx_eq(bc[0], Complex64::new(theta.cos(), 0.0), TOL));
@@ -350,14 +350,14 @@ fn reuse_buffer_across_calls() {
     let q = PauliString::<1>::x(0);
     for _ in 0..3 {
         let mut len = 0usize;
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
             coeff: &mut bc,
             len: &mut len,
         };
-        rot.apply(&q.x, &q.z, Complex64::new(1.0, 0.0), &mut buf);
-        assert_eq!(*buf.len, 2);
+        rot.apply(&q.x, &q.z, Complex64::new(1.0, 0.0), &mut buffer);
+        assert_eq!(*buffer.len, 2);
     }
     assert_eq!(bx.capacity(), cap);
     assert_eq!(bz.capacity(), cap);

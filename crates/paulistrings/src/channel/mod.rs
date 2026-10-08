@@ -88,26 +88,26 @@ fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usiz
 /// Overwrite the qubit at `(word, bit, mask)` with the packed Pauli index `p`.
 #[inline(always)]
 fn write_pauli<const W: usize>(
-    nx: &mut [u64; W],
-    nz: &mut [u64; W],
+    x: &mut [u64; W],
+    z: &mut [u64; W],
     word: usize,
     bit: usize,
     mask: u64,
     p: usize,
 ) {
-    let ox = (p & 1) as u64;
-    let oz = ((p >> 1) & 1) as u64;
-    nx[word] = (nx[word] & !mask) | (ox << bit);
-    nz[word] = (nz[word] & !mask) | (oz << bit);
+    let x_bit = (p & 1) as u64;
+    let z_bit = ((p >> 1) & 1) as u64;
+    x[word] = (x[word] & !mask) | (x_bit << bit);
+    z[word] = (z[word] & !mask) | (z_bit << bit);
 }
 
 /// Set or clear the bit at `(word, mask)` of one bit-plane.
 #[inline(always)]
-fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bool) {
+fn set_bit<const W: usize>(plane: &mut [u64; W], word: usize, mask: u64, value: bool) {
     if value {
-        arr[word] |= mask;
+        plane[word] |= mask;
     } else {
-        arr[word] &= !mask;
+        plane[word] &= !mask;
     }
 }
 
@@ -139,10 +139,10 @@ fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bo
 ///     }
 /// }
 ///
-/// let ch = GlobalPhase {
+/// let channel = GlobalPhase {
 ///     factor: Complex64::new(0.0, 1.0),
 /// };
-/// let _: Box<dyn Channel<1>> = Box::new(ch);
+/// let _: Box<dyn Channel<1>> = Box::new(channel);
 /// ```
 pub trait Channel<const W: usize>: Send + Sync {
     /// Upper bound on the output terms per input term.

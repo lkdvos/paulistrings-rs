@@ -14,14 +14,14 @@ fn apply_1q<const W: usize>(
     input: &PauliString<W>,
 ) -> (PauliString<W>, Complex64) {
     let (mut x, mut z, mut c, mut len) = alloc_buf::<W>();
-    let mut buf = OutputBuffer::<W> {
+    let mut buffer = OutputBuffer::<W> {
         x: &mut x,
         z: &mut z,
         coeff: &mut c,
         len: &mut len,
     };
-    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buf);
-    assert_eq!(*buf.len, 1);
+    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buffer);
+    assert_eq!(*buffer.len, 1);
     let out = PauliString::<W> { x: x[0], z: z[0] };
     (out, c[0])
 }
@@ -31,14 +31,14 @@ fn apply_2q<const W: usize>(
     input: &PauliString<W>,
 ) -> (PauliString<W>, Complex64) {
     let (mut x, mut z, mut c, mut len) = alloc_buf::<W>();
-    let mut buf = OutputBuffer::<W> {
+    let mut buffer = OutputBuffer::<W> {
         x: &mut x,
         z: &mut z,
         coeff: &mut c,
         len: &mut len,
     };
-    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buf);
-    assert_eq!(*buf.len, 1);
+    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buffer);
+    assert_eq!(*buffer.len, 1);
     let out = PauliString::<W> { x: x[0], z: z[0] };
     (out, c[0])
 }
@@ -187,9 +187,9 @@ fn h_x_y_z_are_self_adjoint() {
         Clifford1Q::y(0),
         Clifford1Q::z(0),
     ] {
-        let adj = gate.adjoint();
-        assert_eq!(adj.out_pauli, gate.out_pauli);
-        assert_eq!(adj.phase, gate.phase);
+        let adjoint = gate.adjoint();
+        assert_eq!(adjoint.out_pauli, gate.out_pauli);
+        assert_eq!(adjoint.phase, gate.phase);
     }
 }
 
@@ -218,14 +218,14 @@ fn s_apply_then_apply_adjoint_round_trips() {
     let (mid, c1) = apply_1q::<1>(&s, &x_in);
     // mid = Y. Now apply S†.
     let (mut bx, mut bz, mut bc, mut len) = alloc_buf::<1>();
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    s.apply_adjoint(&mid.x, &mid.z, c1, &mut buf);
-    assert_eq!(*buf.len, 1);
+    s.apply_adjoint(&mid.x, &mid.z, c1, &mut buffer);
+    assert_eq!(*buffer.len, 1);
     assert_eq!(bx[0], x_in.x);
     assert_eq!(bz[0], x_in.z);
     assert_eq!(bc[0], Complex64::new(1.0, 0.0));

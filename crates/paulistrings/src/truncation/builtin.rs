@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 thread_local! {
     /// [`TopN`]'s per-thread squared-magnitude buffer.
     // Taken out and put back, never borrowed across a parallel section: rayon can steal a nested `propagate` onto this thread and re-enter `finalize_layer`.
-    static MAGS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    static MAGNITUDES: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Drop terms whose coefficient magnitude is at most `epsilon`.
@@ -77,17 +77,17 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         }
 
         let total = sum.len();
-        let mut buf = MAGS.take();
-        if buf.len() < total {
-            buf.resize(total, 0.0);
+        let mut buffer = MAGNITUDES.take();
+        if buffer.len() < total {
+            buffer.resize(total, 0.0);
         }
-        let mags = &mut buf[..total];
+        let magnitudes = &mut buffer[..total];
         {
             let view = &*sum;
-            let nb = view.num_buckets();
-            let mut handles: Vec<&mut [f64]> = Vec::with_capacity(nb);
-            let mut rest: &mut [f64] = mags;
-            for b in 0..nb {
+            let num_buckets = view.num_buckets();
+            let mut handles: Vec<&mut [f64]> = Vec::with_capacity(num_buckets);
+            let mut rest: &mut [f64] = magnitudes;
+            for b in 0..num_buckets {
                 let (head, tail) = rest.split_at_mut(view.bucket_len(b));
                 handles.push(head);
                 rest = tail;
@@ -100,32 +100,32 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             });
         }
 
-        mags.select_nth_unstable_by(n - 1, |a, b| {
+        magnitudes.select_nth_unstable_by(n - 1, |a, b| {
             b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal)
         });
-        let t2 = mags[n - 1];
+        let t2 = magnitudes[n - 1];
 
         // The tie group fits iff nothing after the pivot equals `t2`.
-        let keep_tied = !mags[n..].par_iter().any(|&m| m == t2);
+        let keep_tied = !magnitudes[n..].par_iter().any(|&m| m == t2);
 
-        MAGS.set(buf);
+        MAGNITUDES.set(buffer);
 
-        sum.buckets_mut().par_iter_mut().for_each(|cols| {
-            let len = cols.len();
+        sum.buckets_mut().par_iter_mut().for_each(|columns| {
+            let len = columns.len();
             let mut write = 0usize;
             for i in 0..len {
-                let m = cols.coeff[i].norm_sqr();
+                let m = columns.coeff[i].norm_sqr();
                 if !(m > t2 || (keep_tied && m == t2)) {
                     continue;
                 }
-                cols.x[write] = cols.x[i];
-                cols.z[write] = cols.z[i];
-                cols.coeff[write] = cols.coeff[i];
+                columns.x[write] = columns.x[i];
+                columns.z[write] = columns.z[i];
+                columns.coeff[write] = columns.coeff[i];
                 write += 1;
             }
-            cols.x.truncate(write);
-            cols.z.truncate(write);
-            cols.coeff.truncate(write);
+            columns.x.truncate(write);
+            columns.z.truncate(write);
+            columns.coeff.truncate(write);
         });
         sum.recount();
     }
@@ -163,13 +163,13 @@ pub(crate) enum EdgeDecision {
 /// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`.
 pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPROX_BINS] {
     debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
-    let nb = sum.num_buckets();
-    let tasks = (rayon::current_num_threads() * 4).clamp(1, nb);
+    let num_buckets = sum.num_buckets();
+    let tasks = (rayon::current_num_threads() * 4).clamp(1, num_buckets);
     (0..tasks)
         .into_par_iter()
         .map(|t| {
             let mut h = [0u32; APPROX_BINS];
-            for b in (nb * t / tasks)..(nb * (t + 1) / tasks) {
+            for b in (num_buckets * t / tasks)..(num_buckets * (t + 1) / tasks) {
                 for c in sum.bucket(b).2 {
                     h[(c.norm_sqr().to_bits() >> 52) as usize] += 1;
                 }
@@ -318,16 +318,16 @@ pub(crate) fn pick_slot(
     weights: impl IntoIterator<Item = f64>,
     target: f64,
 ) -> Option<(usize, f64)> {
-    let mut cum = 0.0f64;
+    let mut cumulative = 0.0f64;
     let mut last = None;
     for (i, w) in weights.into_iter().enumerate() {
         if w > 0.0 {
-            if target < cum + w {
-                return Some((i, target - cum));
+            if target < cumulative + w {
+                return Some((i, target - cumulative));
             }
-            last = Some((i, target - cum));
+            last = Some((i, target - cumulative));
         }
-        cum += w;
+        cumulative += w;
     }
     last
 }

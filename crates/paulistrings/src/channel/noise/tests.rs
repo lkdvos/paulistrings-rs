@@ -9,12 +9,12 @@ use crate::test_support::{alloc_bufs, approx_eq};
 ///
 /// In emission order, zeros included, since these tests assert on row positions.
 fn outputs<const W: usize>(
-    ch: &AmplitudeDamping,
+    channel: &AmplitudeDamping,
     adjoint: bool,
     p: PauliString<W>,
 ) -> Vec<(PauliString<W>, Complex64)> {
     crate::test_support::raw_outputs::<W, AmplitudeDamping>(
-        ch,
+        channel,
         adjoint,
         p,
         Complex64::new(1.0, 0.0),
@@ -22,9 +22,9 @@ fn outputs<const W: usize>(
 }
 
 /// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the `I=0, X=1, Z=2, Y=3` packing.
-fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
-    let basis = |idx: usize| -> PauliString<1> {
-        match idx {
+fn ptm4(channel: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
+    let basis = |index: usize| -> PauliString<1> {
+        match index {
             0 => PauliString::<1>::identity(),
             1 => PauliString::<1>::x(q),
             2 => PauliString::<1>::z(q),
@@ -40,7 +40,7 @@ fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
     let mut t = [[0.0f64; 4]; 4];
     #[allow(clippy::needless_range_loop)]
     for j in 0..4 {
-        for (out_p, c) in outputs::<1>(ch, adjoint, basis(j)) {
+        for (out_p, c) in outputs::<1>(channel, adjoint, basis(j)) {
             t[index_of(&out_p)][j] += c.re;
         }
     }
@@ -49,7 +49,7 @@ fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
 
 /// Both maps of a damping channel on qubit `q`, row by row.
 fn check_both_maps<const W: usize>(q: u32, g: f64) {
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [q],
         gamma: g,
     };
@@ -58,7 +58,7 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     let zq = PauliString::<W>::z(q);
 
     // Φ = `apply`: the fan-out is on I. `Φ(I) = I + γ Z`.
-    let got = outputs::<W>(&ch, false, id);
+    let got = outputs::<W>(&channel, false, id);
     assert_eq!(got.len(), 2, "W={W}: Φ(I) has two terms");
     assert_eq!(got[0].0, id);
     assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
@@ -66,19 +66,19 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
 
     // `Φ(Z) = (1-γ) Z`, with no identity component: Φ preserves trace and `tr Z = 0`, so the I coefficient must vanish.
-    let got = outputs::<W>(&ch, false, zq);
+    let got = outputs::<W>(&channel, false, zq);
     assert_eq!(got.len(), 1, "W={W}: Φ(Z) has no I component");
     assert_eq!(got[0].0, zq);
     assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
 
     // Φ† = `apply_adjoint`: unital, so `Φ†(I) = I` exactly, fan-out 1.
-    let got = outputs::<W>(&ch, true, id);
+    let got = outputs::<W>(&channel, true, id);
     assert_eq!(got.len(), 1, "W={W}: Φ†(I) must be I alone (unitality)");
     assert_eq!(got[0].0, id);
     assert!((got[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
 
     // `Φ†(Z) = (1-γ) Z + γ I` — the adjoint's only fan-out row.
-    let got = outputs::<W>(&ch, true, zq);
+    let got = outputs::<W>(&channel, true, zq);
     assert_eq!(got.len(), 2, "W={W}: Φ†(Z) has two terms");
     assert_eq!(got[0].0, zq);
     assert!((got[0].1 - Complex64::new(1.0 - g, 0.0)).norm() < 1e-15);
@@ -88,7 +88,7 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     // X and Y: the one row where Φ and Φ† agree, because `⟨1|X|1⟩` and `⟨0|X|0⟩` both vanish and the K₁ term drops out either way.
     for p in [PauliString::<W>::x(q), PauliString::<W>::y(q)] {
         for adjoint in [false, true] {
-            let got = outputs::<W>(&ch, adjoint, p);
+            let got = outputs::<W>(&channel, adjoint, p);
             assert_eq!(got.len(), 1, "W={W}: X/Y stay fan-out 1");
             assert_eq!(got[0].0, p);
             assert!((got[0].1 - Complex64::new(s, 0.0)).norm() < 1e-15);
@@ -126,11 +126,11 @@ fn heisenberg_z_reproduces_the_damped_qubit_expectation() {
         }
     };
     for &g in &[0.0, 0.3, 0.5, 1.0] {
-        let ch = AmplitudeDamping {
+        let channel = AmplitudeDamping {
             support: [0],
             gamma: g,
         };
-        let terms = outputs::<1>(&ch, true, PauliString::<1>::z(0));
+        let terms = outputs::<1>(&channel, true, PauliString::<1>::z(0));
         let ev = |ones: u64| -> f64 {
             terms
                 .iter()
@@ -157,19 +157,19 @@ fn heisenberg_z_reproduces_the_damped_qubit_expectation() {
 #[test]
 fn adjoint_ptm_is_the_transpose_of_the_forward_ptm() {
     for &g in &[0.0, 0.15, 0.5, 0.99, 1.0] {
-        let ch = AmplitudeDamping {
+        let channel = AmplitudeDamping {
             support: [0],
             gamma: g,
         };
-        let fwd = ptm4(&ch, false, 0);
-        let adj = ptm4(&ch, true, 0);
+        let forward = ptm4(&channel, false, 0);
+        let adjoint = ptm4(&channel, true, 0);
         for i in 0..4 {
             for j in 0..4 {
                 assert!(
-                    (adj[i][j] - fwd[j][i]).abs() < 1e-15,
-                    "gamma={g}: adj[{i}][{j}]={} vs fwd[{j}][{i}]={}",
-                    adj[i][j],
-                    fwd[j][i],
+                    (adjoint[i][j] - forward[j][i]).abs() < 1e-15,
+                    "gamma={g}: adjoint[{i}][{j}]={} vs forward[{j}][{i}]={}",
+                    adjoint[i][j],
+                    forward[j][i],
                 );
             }
         }
@@ -180,28 +180,28 @@ fn adjoint_ptm_is_the_transpose_of_the_forward_ptm() {
 #[test]
 fn adjoint_is_unital_and_forward_is_trace_preserving() {
     for &g in &[0.0, 0.3, 1.0] {
-        let ch = AmplitudeDamping {
+        let channel = AmplitudeDamping {
             support: [0],
             gamma: g,
         };
         // Unitality of the adjoint (Heisenberg) map: I -> I exactly.
-        let adj_i = outputs::<1>(&ch, true, PauliString::<1>::identity());
+        let adj_i = outputs::<1>(&channel, true, PauliString::<1>::identity());
         assert_eq!(adj_i.len(), 1, "gamma={g}");
         assert_eq!(adj_i[0].0, PauliString::<1>::identity());
         assert!((adj_i[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
 
         // Trace preservation of the forward map: the I row of its PTM is [1, 0, 0, 0].
-        let fwd = ptm4(&ch, false, 0);
-        assert!((fwd[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
-        for (j, &v) in fwd[0].iter().enumerate().skip(1) {
-            assert!(v.abs() < 1e-15, "gamma={g}: fwd[0][{j}] nonzero");
+        let forward = ptm4(&channel, false, 0);
+        assert!((forward[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
+        for (j, &v) in forward[0].iter().enumerate().skip(1) {
+            assert!(v.abs() < 1e-15, "gamma={g}: forward[0][{j}] nonzero");
         }
     }
 }
 
 #[test]
 fn both_directions_at_gamma_zero_are_the_identity_channel() {
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [0],
         gamma: 0.0,
     };
@@ -212,7 +212,7 @@ fn both_directions_at_gamma_zero_are_the_identity_channel() {
             PauliString::<1>::y(0),
             PauliString::<1>::z(0),
         ] {
-            let got: Vec<_> = outputs::<1>(&ch, adjoint, p)
+            let got: Vec<_> = outputs::<1>(&channel, adjoint, p)
                 .into_iter()
                 .filter(|(_, c)| c.norm() > 1e-15)
                 .collect();
@@ -226,18 +226,18 @@ fn both_directions_at_gamma_zero_are_the_identity_channel() {
 #[test]
 fn forward_respects_a_word_boundary_w2() {
     let g = 0.4;
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [70],
         gamma: g,
     };
     // Φ's fan-out is on the identity, and the new Z lands in word 1.
-    let got = outputs::<2>(&ch, false, PauliString::<2>::identity());
+    let got = outputs::<2>(&channel, false, PauliString::<2>::identity());
     assert_eq!(got.len(), 2);
     assert_eq!(got[1].0, PauliString::<2>::z(70));
     assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
     // A term on the other side of the boundary is untouched, but qubit 70 is still in the identity sector, so Φ fans it out.
     let other = PauliString::<2>::x(3);
-    let got = outputs::<2>(&ch, false, other);
+    let got = outputs::<2>(&channel, false, other);
     assert_eq!(got.len(), 2, "q=3 is I on the support, so Φ fans out");
     assert_eq!(got[0].0, other);
     let mut with_z = other;
@@ -250,19 +250,25 @@ const TOL: f64 = 1e-12;
 /// Identity on the support qubit is preserved exactly — coefficient rescaling does not touch the I sector.
 #[test]
 fn depolarizing_passes_identity_through() {
-    let ch = Depolarizing {
+    let channel = Depolarizing {
         support: [0],
         p: 0.1,
     };
     let p = PauliString::<1>::identity();
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    <Depolarizing as Channel<1>>::apply(&ch, &p.x, &p.z, Complex64::new(2.0, 0.0), &mut buf);
+    <Depolarizing as Channel<1>>::apply(
+        &channel,
+        &p.x,
+        &p.z,
+        Complex64::new(2.0, 0.0),
+        &mut buffer,
+    );
     assert_eq!(len, 1);
     assert_eq!(bx[0], p.x);
     assert_eq!(bz[0], p.z);
@@ -273,7 +279,7 @@ fn depolarizing_passes_identity_through() {
 #[test]
 fn depolarizing_scales_xyz() {
     let p = 0.15;
-    let ch = Depolarizing { support: [0], p };
+    let channel = Depolarizing { support: [0], p };
     let scale = 1.0 - 4.0 * p / 3.0;
     for pauli in [
         PauliString::<1>::x(0),
@@ -281,18 +287,18 @@ fn depolarizing_scales_xyz() {
         PauliString::<1>::z(0),
     ] {
         let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
             coeff: &mut bc,
             len: &mut len,
         };
         <Depolarizing as Channel<1>>::apply(
-            &ch,
+            &channel,
             &pauli.x,
             &pauli.z,
             Complex64::new(1.0, 0.0),
-            &mut buf,
+            &mut buffer,
         );
         assert_eq!(len, 1);
         assert_eq!(bx[0], pauli.x);
@@ -304,19 +310,25 @@ fn depolarizing_scales_xyz() {
 /// Off-support qubits are ignored: a Z on qubit 1 with the channel supported on qubit 0 leaves the coefficient untouched (the support qubit is in I-state).
 #[test]
 fn depolarizing_off_support_is_no_op() {
-    let ch = Depolarizing {
+    let channel = Depolarizing {
         support: [0],
         p: 0.2,
     };
     let p = PauliString::<1>::z(1);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    <Depolarizing as Channel<1>>::apply(&ch, &p.x, &p.z, Complex64::new(3.0, 0.0), &mut buf);
+    <Depolarizing as Channel<1>>::apply(
+        &channel,
+        &p.x,
+        &p.z,
+        Complex64::new(3.0, 0.0),
+        &mut buffer,
+    );
     assert_eq!(len, 1);
     assert!(approx_eq(bc[0], Complex64::new(3.0, 0.0), TOL));
 }
@@ -325,23 +337,23 @@ fn depolarizing_off_support_is_no_op() {
 #[test]
 fn depolarizing_w2_word_boundary() {
     let p = 0.25;
-    let ch = Depolarizing { support: [64], p };
+    let channel = Depolarizing { support: [64], p };
     let scale = 1.0 - 4.0 * p / 3.0;
     // X on qubit 64 → word-1 x-bit set.
     let pauli = PauliString::<2>::x(64);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(1);
-    let mut buf = OutputBuffer::<2> {
+    let mut buffer = OutputBuffer::<2> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
     <Depolarizing as Channel<2>>::apply(
-        &ch,
+        &channel,
         &pauli.x,
         &pauli.z,
         Complex64::new(1.0, 0.0),
-        &mut buf,
+        &mut buffer,
     );
     assert_eq!(len, 1);
     assert_eq!(bx[0], pauli.x);
@@ -352,24 +364,24 @@ fn depolarizing_w2_word_boundary() {
 /// I and Z commute with Z, so dephasing leaves their coefficients alone.
 #[test]
 fn dephasing_preserves_i_and_z() {
-    let ch = Dephasing {
+    let channel = Dephasing {
         support: [0],
         p: 0.3,
     };
     for pauli in [PauliString::<1>::identity(), PauliString::<1>::z(0)] {
         let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
             coeff: &mut bc,
             len: &mut len,
         };
         <Dephasing as Channel<1>>::apply(
-            &ch,
+            &channel,
             &pauli.x,
             &pauli.z,
             Complex64::new(2.5, 0.0),
-            &mut buf,
+            &mut buffer,
         );
         assert_eq!(len, 1);
         assert_eq!(bx[0], pauli.x);
@@ -382,22 +394,22 @@ fn dephasing_preserves_i_and_z() {
 #[test]
 fn dephasing_scales_x_and_y() {
     let p = 0.2;
-    let ch = Dephasing { support: [0], p };
+    let channel = Dephasing { support: [0], p };
     let scale = 1.0 - 2.0 * p;
     for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
         let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(1);
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
             coeff: &mut bc,
             len: &mut len,
         };
         <Dephasing as Channel<1>>::apply(
-            &ch,
+            &channel,
             &pauli.x,
             &pauli.z,
             Complex64::new(1.0, 0.0),
-            &mut buf,
+            &mut buffer,
         );
         assert_eq!(len, 1);
         assert_eq!(bx[0], pauli.x);
@@ -409,7 +421,7 @@ fn dephasing_scales_x_and_y() {
 /// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`: `I → 1`, `X → 0`, `Y → 0.2`, `Z → 0.4`.
 #[test]
 fn pauli_channel_scales_are_hand_computed_w1() {
-    let ch = PauliChannel {
+    let channel = PauliChannel {
         support: [0],
         px: 0.1,
         py: 0.2,
@@ -423,7 +435,7 @@ fn pauli_channel_scales_are_hand_computed_w1() {
     ];
     for (pauli, want) in cases {
         let got = crate::test_support::raw_outputs::<1, PauliChannel>(
-            &ch,
+            &channel,
             false,
             pauli,
             Complex64::new(1.0, 0.0),
@@ -441,7 +453,7 @@ fn pauli_channel_scales_are_hand_computed_w1() {
 /// Same four factors with the support in word 1 (qubit 70 at W=2).
 #[test]
 fn pauli_channel_scales_are_hand_computed_w2() {
-    let ch = PauliChannel {
+    let channel = PauliChannel {
         support: [70],
         px: 0.1,
         py: 0.2,
@@ -455,7 +467,7 @@ fn pauli_channel_scales_are_hand_computed_w2() {
     ];
     for (pauli, want) in cases {
         let got = crate::test_support::raw_outputs::<2, PauliChannel>(
-            &ch,
+            &channel,
             false,
             pauli,
             Complex64::new(1.0, 0.0),
@@ -558,7 +570,7 @@ fn pauli_channel_with_only_pz_is_dephasing() {
 /// Off-support qubits are invisible: the support qubit sits in the identity sector, so the coefficient passes through untouched.
 #[test]
 fn pauli_channel_off_support_is_a_no_op() {
-    let ch = PauliChannel {
+    let channel = PauliChannel {
         support: [0],
         px: 0.1,
         py: 0.2,
@@ -566,7 +578,7 @@ fn pauli_channel_off_support_is_a_no_op() {
     };
     let pauli = PauliString::<1>::y(5);
     let got = crate::test_support::raw_outputs::<1, PauliChannel>(
-        &ch,
+        &channel,
         false,
         pauli,
         Complex64::new(3.0, 0.0),
@@ -578,7 +590,7 @@ fn pauli_channel_off_support_is_a_no_op() {
 /// A diagonal rescaling is its own adjoint, so the default `apply_adjoint` is correct.
 #[test]
 fn pauli_channel_is_self_adjoint() {
-    let ch = PauliChannel {
+    let channel = PauliChannel {
         support: [0],
         px: 0.05,
         py: 0.15,
@@ -591,25 +603,26 @@ fn pauli_channel_is_self_adjoint() {
         PauliString::<1>::z(0),
     ] {
         let c = Complex64::new(1.0, -1.0);
-        let fwd = crate::test_support::raw_outputs::<1, PauliChannel>(&ch, false, pauli, c);
-        let adj = crate::test_support::raw_outputs::<1, PauliChannel>(&ch, true, pauli, c);
-        assert_eq!(fwd.len(), adj.len());
-        assert_eq!(fwd[0].0, adj[0].0);
-        assert!(approx_eq(fwd[0].1, adj[0].1, TOL));
+        let forward =
+            crate::test_support::raw_outputs::<1, PauliChannel>(&channel, false, pauli, c);
+        let adjoint = crate::test_support::raw_outputs::<1, PauliChannel>(&channel, true, pauli, c);
+        assert_eq!(forward.len(), adjoint.len());
+        assert_eq!(forward[0].0, adjoint[0].0);
+        assert!(approx_eq(forward[0].1, adjoint[0].1, TOL));
     }
 }
 
 /// Key-preserving, so the engine takes the in-place rescale.
 #[test]
 fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
-    let ch = PauliChannel {
+    let channel = PauliChannel {
         support: [3],
         px: 0.1,
         py: 0.2,
         pz: 0.3,
     };
     let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
-    let prepared = <PauliChannel as Channel<1>>::prepare(&ch, &hash, false)
+    let prepared = <PauliChannel as Channel<1>>::prepare(&channel, &hash, false)
         .expect("a weight-1 support must prepare");
     match prepared {
         Prepared::Local(ptm) => assert!(ptm.is_key_preserving()),
@@ -621,12 +634,12 @@ fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
 /// Weight-1 restrictions take the same factor.
 #[test]
 fn depolarize2_scale_is_hand_computed_w1() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [0, 1],
         p: 0.3,
     };
-    let local = |q: u32, idx: usize| -> PauliString<1> {
-        match idx {
+    let local = |q: u32, index: usize| -> PauliString<1> {
+        match index {
             0 => PauliString::<1>::identity(),
             1 => PauliString::<1>::x(q),
             2 => PauliString::<1>::z(q),
@@ -641,7 +654,7 @@ fn depolarize2_scale_is_hand_computed_w1() {
             assert_eq!(phase, Phase::ONE);
             let want = if a == 0 && b == 0 { 1.0 } else { 0.68 };
             let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
-                &ch,
+                &channel,
                 false,
                 pauli,
                 Complex64::new(1.0, 0.0),
@@ -660,14 +673,14 @@ fn depolarize2_scale_is_hand_computed_w1() {
 /// At `p = 15/16` the scale is exactly zero, so any Pauli touching the pair is annihilated while `I⊗I` is untouched.
 #[test]
 fn depolarize2_at_fifteen_sixteenths_annihilates_the_pair() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [0, 1],
         p: 15.0 / 16.0,
     };
     let mut xz = PauliString::<1>::x(0);
     xz.mul_assign(&PauliString::<1>::z(1));
     let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
-        &ch,
+        &channel,
         false,
         xz,
         Complex64::new(1.0, 0.0),
@@ -677,7 +690,7 @@ fn depolarize2_at_fifteen_sixteenths_annihilates_the_pair() {
 
     let id = PauliString::<1>::identity();
     let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
-        &ch,
+        &channel,
         false,
         id,
         Complex64::new(2.0, 0.0),
@@ -689,13 +702,13 @@ fn depolarize2_at_fifteen_sixteenths_annihilates_the_pair() {
 /// Qubits outside the pair do not trigger the scale.
 #[test]
 fn depolarize2_ignores_off_support_qubits_w1() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [0, 1],
         p: 0.3,
     };
     let pauli = PauliString::<1>::y(9);
     let got = crate::test_support::raw_outputs::<1, Depolarizing2Q>(
-        &ch,
+        &channel,
         false,
         pauli,
         Complex64::new(3.0, 0.0),
@@ -708,7 +721,7 @@ fn depolarize2_ignores_off_support_qubits_w1() {
 /// a Pauli on either half of the pair takes the scale.
 #[test]
 fn depolarize2_w2_across_a_word_boundary() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [63, 64],
         p: 0.3,
     };
@@ -718,7 +731,7 @@ fn depolarize2_w2_across_a_word_boundary() {
         PauliString::<2>::y(63),
     ] {
         let got = crate::test_support::raw_outputs::<2, Depolarizing2Q>(
-            &ch,
+            &channel,
             false,
             pauli,
             Complex64::new(1.0, 0.0),
@@ -730,7 +743,7 @@ fn depolarize2_w2_across_a_word_boundary() {
     // A qubit just outside the pair (62) is not in the support.
     let outside = PauliString::<2>::x(62);
     let got = crate::test_support::raw_outputs::<2, Depolarizing2Q>(
-        &ch,
+        &channel,
         false,
         outside,
         Complex64::new(1.0, 0.0),
@@ -741,7 +754,7 @@ fn depolarize2_w2_across_a_word_boundary() {
 
 #[test]
 fn depolarize2_is_self_adjoint() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [2, 5],
         p: 0.2,
     };
@@ -749,23 +762,25 @@ fn depolarize2_is_self_adjoint() {
     yx.mul_assign(&PauliString::<1>::x(5));
     for pauli in [PauliString::<1>::identity(), yx] {
         let c = Complex64::new(1.0, -1.0);
-        let fwd = crate::test_support::raw_outputs::<1, Depolarizing2Q>(&ch, false, pauli, c);
-        let adj = crate::test_support::raw_outputs::<1, Depolarizing2Q>(&ch, true, pauli, c);
-        assert_eq!(fwd.len(), adj.len());
-        assert_eq!(fwd[0].0, adj[0].0);
-        assert!(approx_eq(fwd[0].1, adj[0].1, TOL));
+        let forward =
+            crate::test_support::raw_outputs::<1, Depolarizing2Q>(&channel, false, pauli, c);
+        let adjoint =
+            crate::test_support::raw_outputs::<1, Depolarizing2Q>(&channel, true, pauli, c);
+        assert_eq!(forward.len(), adjoint.len());
+        assert_eq!(forward[0].0, adjoint[0].0);
+        assert!(approx_eq(forward[0].1, adjoint[0].1, TOL));
     }
 }
 
 /// Support weight 2 fits `MAX_LOCAL_SUPPORT`, and the channel is key-preserving, so the engine takes `rescale_in_place` here too.
 #[test]
 fn depolarize2_prepares_as_a_key_preserving_local_ptm() {
-    let ch = Depolarizing2Q {
+    let channel = Depolarizing2Q {
         support: [1, 4],
         p: 0.3,
     };
     let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
-    let prepared = <Depolarizing2Q as Channel<1>>::prepare(&ch, &hash, false)
+    let prepared = <Depolarizing2Q as Channel<1>>::prepare(&channel, &hash, false)
         .expect("a weight-2 support must prepare");
     match prepared {
         Prepared::Local(ptm) => {
@@ -780,17 +795,23 @@ fn depolarize2_prepares_as_a_key_preserving_local_ptm() {
 #[test]
 fn dephasing_w2_word_boundary() {
     let p = 0.4;
-    let ch = Dephasing { support: [64], p };
+    let channel = Dephasing { support: [64], p };
     let scale = 1.0 - 2.0 * p;
     let pauli = PauliString::<2>::x(64);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(1);
-    let mut buf = OutputBuffer::<2> {
+    let mut buffer = OutputBuffer::<2> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
-    <Dephasing as Channel<2>>::apply(&ch, &pauli.x, &pauli.z, Complex64::new(1.0, 0.0), &mut buf);
+    <Dephasing as Channel<2>>::apply(
+        &channel,
+        &pauli.x,
+        &pauli.z,
+        Complex64::new(1.0, 0.0),
+        &mut buffer,
+    );
     assert_eq!(len, 1);
     assert!(approx_eq(bc[0], Complex64::new(scale, 0.0), TOL));
 }
@@ -798,24 +819,24 @@ fn dephasing_w2_word_boundary() {
 /// The adjoint map fixes I on the support with fanout 1 (unitality); `apply` instead fans I out to `I + γ Z`.
 #[test]
 fn amplitude_damping_adjoint_passes_identity_through() {
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [0],
         gamma: 0.3,
     };
     let p = PauliString::<1>::identity();
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
     <AmplitudeDamping as Channel<1>>::apply_adjoint(
-        &ch,
+        &channel,
         &p.x,
         &p.z,
         Complex64::new(2.0, 0.0),
-        &mut buf,
+        &mut buffer,
     );
     assert_eq!(len, 1);
     assert_eq!(bx[0], p.x);
@@ -827,25 +848,25 @@ fn amplitude_damping_adjoint_passes_identity_through() {
 #[test]
 fn amplitude_damping_scales_x_and_y_by_sqrt() {
     let gamma = 0.2;
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [0],
         gamma,
     };
     let scale = (1.0 - gamma).sqrt();
     for pauli in [PauliString::<1>::x(0), PauliString::<1>::y(0)] {
         let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-        let mut buf = OutputBuffer::<1> {
+        let mut buffer = OutputBuffer::<1> {
             x: &mut bx,
             z: &mut bz,
             coeff: &mut bc,
             len: &mut len,
         };
         <AmplitudeDamping as Channel<1>>::apply(
-            &ch,
+            &channel,
             &pauli.x,
             &pauli.z,
             Complex64::new(1.0, 0.0),
-            &mut buf,
+            &mut buffer,
         );
         assert_eq!(len, 1);
         assert_eq!(bx[0], pauli.x);
@@ -858,24 +879,24 @@ fn amplitude_damping_scales_x_and_y_by_sqrt() {
 #[test]
 fn amplitude_damping_adjoint_z_fans_out_to_z_plus_i() {
     let gamma = 0.25;
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [0],
         gamma,
     };
     let p = PauliString::<1>::z(0);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<1>(2);
-    let mut buf = OutputBuffer::<1> {
+    let mut buffer = OutputBuffer::<1> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
     <AmplitudeDamping as Channel<1>>::apply_adjoint(
-        &ch,
+        &channel,
         &p.x,
         &p.z,
         Complex64::new(1.0, 0.0),
-        &mut buf,
+        &mut buffer,
     );
     assert_eq!(len, 2);
     // First: (1-γ)·Z (z-bit kept).
@@ -893,24 +914,24 @@ fn amplitude_damping_adjoint_z_fans_out_to_z_plus_i() {
 #[test]
 fn amplitude_damping_adjoint_w2_word_boundary() {
     let gamma = 0.4;
-    let ch = AmplitudeDamping {
+    let channel = AmplitudeDamping {
         support: [64],
         gamma,
     };
     let p = PauliString::<2>::z(64);
     let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<2>(2);
-    let mut buf = OutputBuffer::<2> {
+    let mut buffer = OutputBuffer::<2> {
         x: &mut bx,
         z: &mut bz,
         coeff: &mut bc,
         len: &mut len,
     };
     <AmplitudeDamping as Channel<2>>::apply_adjoint(
-        &ch,
+        &channel,
         &p.x,
         &p.z,
         Complex64::new(1.0, 0.0),
-        &mut buf,
+        &mut buffer,
     );
     assert_eq!(len, 2);
     assert_eq!(bx[0], p.x);

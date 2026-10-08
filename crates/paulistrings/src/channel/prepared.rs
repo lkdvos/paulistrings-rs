@@ -44,13 +44,13 @@ impl<const W: usize> DeltaEntry<W> {
         if a == ZERO {
             return None;
         }
-        let mut kx = *x;
-        let mut kz = *z;
+        let mut key_x = *x;
+        let mut key_z = *z;
         for w in 0..W {
-            kx[w] ^= self.mask_x[w];
-            kz[w] ^= self.mask_z[w];
+            key_x[w] ^= self.mask_x[w];
+            key_z[w] ^= self.mask_z[w];
         }
-        Some((kx, kz, c * a))
+        Some((key_x, key_z, c * a))
     }
 
     /// `(mask_x, mask_z)`.
@@ -190,10 +190,10 @@ impl<const W: usize> RotationPrep<W> {
         if v.commutes_with(&self.gen) {
             return None;
         }
-        let mut prod = v;
-        let phase = prod.mul_assign(&self.gen);
+        let mut product = v;
+        let phase = product.mul_assign(&self.gen);
         let total = Phase::I + phase;
-        Some((prod.x, prod.z, total.apply(c) * self.sin))
+        Some((product.x, product.z, total.apply(c) * self.sin))
     }
 
     /// The generator as an XOR mask pair, the one non-identity key delta.
@@ -317,7 +317,7 @@ where
 
     let mut table = [[ZERO; LOCAL_DIM]; LOCAL_DIM];
 
-    let (sup_x, sup_z) = {
+    let (support_x, support_z) = {
         let mut mx = [0u64; W];
         let mut mz = [0u64; W];
         for j in 0..k {
@@ -329,25 +329,25 @@ where
         (mx, mz)
     };
 
-    let mut buf_x = vec![[0u64; W]; fanout];
-    let mut buf_z = vec![[0u64; W]; fanout];
-    let mut buf_c = vec![ZERO; fanout];
+    let mut buffer_x = vec![[0u64; W]; fanout];
+    let mut buffer_z = vec![[0u64; W]; fanout];
+    let mut buffer_coeff = vec![ZERO; fanout];
 
     for (s, row) in table.iter_mut().enumerate().take(dim) {
         let (mut in_x, mut in_z) = ptm.lift(s as u8);
         if background {
             for w in 0..W {
-                in_x[w] |= !sup_x[w];
-                in_z[w] |= !sup_z[w];
+                in_x[w] |= !support_x[w];
+                in_z[w] |= !support_z[w];
             }
         }
 
         let mut len = 0usize;
         {
             let mut out = OutputBuffer::<W> {
-                x: &mut buf_x,
-                z: &mut buf_z,
-                coeff: &mut buf_c,
+                x: &mut buffer_x,
+                z: &mut buffer_z,
+                coeff: &mut buffer_coeff,
                 len: &mut len,
             };
             if adjoint {
@@ -359,14 +359,14 @@ where
 
         for i in 0..len {
             for w in 0..W {
-                if (buf_x[i][w] ^ in_x[w]) & !sup_x[w] != 0
-                    || (buf_z[i][w] ^ in_z[w]) & !sup_z[w] != 0
+                if (buffer_x[i][w] ^ in_x[w]) & !support_x[w] != 0
+                    || (buffer_z[i][w] ^ in_z[w]) & !support_z[w] != 0
                 {
                     return None;
                 }
             }
-            let t = ptm.support_bits(&buf_x[i], &buf_z[i]);
-            row[t] += buf_c[i];
+            let t = ptm.support_bits(&buffer_x[i], &buffer_z[i]);
+            row[t] += buffer_coeff[i];
         }
     }
 

@@ -153,9 +153,9 @@ fn t_gate_expansion_and_bucket_fanin() {
     assert!((got[0].2 - ONE).norm() < TOL);
 
     let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prep = Channel::<1>::prepare(&t, &hash, false).unwrap();
+    let prepared = Channel::<1>::prepare(&t, &hash, false).unwrap();
     assert_eq!(
-        prep.bucket_deltas().len(),
+        prepared.bucket_deltas().len(),
         2,
         "the T gate only mixes X with Y, so its delta set is 1-dimensional",
     );
@@ -175,9 +175,9 @@ fn dense_unitaries_reach_the_quoted_bucket_fanin() {
     ];
     let g = GeneralUnitary1Q::from_matrix(0, u);
     let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prep = Channel::<1>::prepare(&g, &hash, false).unwrap();
+    let prepared = Channel::<1>::prepare(&g, &hash, false).unwrap();
     assert_eq!(
-        prep.bucket_deltas().len(),
+        prepared.bucket_deltas().len(),
         4,
         "dense 1Q should read 4 buckets"
     );
@@ -204,15 +204,15 @@ fn adjoint_reads_the_table_transposed_and_round_trips() {
         PauliString::<1>::z(2),
     ] {
         // Apply then adjoint, accumulating into a map, must give back `basis`.
-        let mut acc: Vec<Term<1>> = Vec::new();
+        let mut accumulator: Vec<Term<1>> = Vec::new();
         for (x, z, cf) in outputs::<1, _>(&t, false, basis, ONE) {
             for out in outputs::<1, _>(&t, true, PauliString::<1> { x, z }, cf) {
-                acc.push(out);
+                accumulator.push(out);
             }
         }
-        acc.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        accumulator.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         let mut merged: Vec<Term<1>> = Vec::new();
-        for (x, z, cf) in acc {
+        for (x, z, cf) in accumulator {
             match merged.last_mut() {
                 Some(l) if l.0 == x && l.1 == z => l.2 += cf,
                 _ => merged.push((x, z, cf)),
@@ -262,8 +262,8 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
 fn derive_local_recovers_the_table() {
     let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);
     let hash = Gf2Hash::<2>::new(128, 12, 0x1234);
-    let prep = Channel::<2>::prepare(&h, &hash, false).unwrap();
-    let Prepared::Local(ptm) = prep else {
+    let prepared = Channel::<2>::prepare(&h, &hash, false).unwrap();
+    let Prepared::Local(ptm) = prepared else {
         panic!("expected a Local preparation")
     };
     assert_eq!(ptm.qubits(), &[3]);

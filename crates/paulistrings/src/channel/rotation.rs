@@ -13,19 +13,19 @@ use num_complex::Complex64;
 #[derive(Clone, Debug)]
 pub struct PauliRotation<const W: usize> {
     /// X-part of the generator `P`.
-    gen_x: [u64; W],
+    generator_x: [u64; W],
     /// Z-part of the generator `P`.
-    gen_z: [u64; W],
+    generator_z: [u64; W],
     /// Rotation angle in radians.
     theta: f64,
 }
 
 impl<const W: usize> PauliRotation<W> {
-    /// A rotation by `theta` radians about `gen`.
-    pub fn new(gen: PauliString<W>, theta: f64) -> Self {
+    /// A rotation by `theta` radians about `generator`.
+    pub fn new(generator: PauliString<W>, theta: f64) -> Self {
         Self {
-            gen_x: gen.x,
-            gen_z: gen.z,
+            generator_x: generator.x,
+            generator_z: generator.z,
             theta,
         }
     }
@@ -34,8 +34,8 @@ impl<const W: usize> PauliRotation<W> {
     #[inline]
     pub fn generator(&self) -> PauliString<W> {
         PauliString::<W> {
-            x: self.gen_x,
-            z: self.gen_z,
+            x: self.generator_x,
+            z: self.generator_z,
         }
     }
 
@@ -65,25 +65,25 @@ impl<const W: usize> PauliRotation<W> {
             x: *input_x,
             z: *input_z,
         };
-        let gen = PauliString::<W> {
-            x: self.gen_x,
-            z: self.gen_z,
+        let generator = PauliString::<W> {
+            x: self.generator_x,
+            z: self.generator_z,
         };
 
-        if input.commutes_with(&gen) {
+        if input.commutes_with(&generator) {
             out.push(*input_x, *input_z, coeff);
             return;
         }
 
-        let (sin_t, cos_t) = sin_cos(theta);
+        let (sin, cos) = sin_cos(theta);
 
-        out.push(*input_x, *input_z, coeff * cos_t);
+        out.push(*input_x, *input_z, coeff * cos);
 
         // `i · sin θ · Q · P`, the leading `i` folded into the product's phase.
-        let mut prod = input;
-        let phase = prod.mul_assign(&gen);
+        let mut product = input;
+        let phase = product.mul_assign(&generator);
         let total_phase = Phase::I + phase;
-        out.push(prod.x, prod.z, total_phase.apply(coeff) * sin_t);
+        out.push(product.x, product.z, total_phase.apply(coeff) * sin);
     }
 }
 
@@ -105,7 +105,7 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
 
     #[inline]
     fn support(&self) -> [u64; W] {
-        core::array::from_fn(|w| self.gen_x[w] | self.gen_z[w])
+        core::array::from_fn(|w| self.generator_x[w] | self.generator_z[w])
     }
 
     #[inline]
@@ -136,13 +136,13 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
             return Prepared::derive_local(self, hash, adjoint);
         }
         let (sin, cos) = sin_cos(if adjoint { -self.theta } else { self.theta });
-        let gen = self.generator();
+        let generator = self.generator();
         Some(Prepared::Rotation(RotationPrep {
-            gen,
+            gen: generator,
             cos,
             sin,
             bucket_delta_identity: 0,
-            bucket_delta_gen: hash.bucket_of_pauli(&gen),
+            bucket_delta_gen: hash.bucket_of_pauli(&generator),
         }))
     }
 }

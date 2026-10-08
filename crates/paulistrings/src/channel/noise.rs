@@ -17,8 +17,8 @@ fn rescale_on_support<const W: usize>(
     let q = support as usize;
     debug_assert!(q < 64 * W);
     let (word, bit, _mask) = qubit_loc(q);
-    let idx = read_pauli(input_x, input_z, word, bit);
-    let s = if affected(idx) { scale } else { 1.0 };
+    let index = read_pauli(input_x, input_z, word, bit);
+    let s = if affected(index) { scale } else { 1.0 };
     out.push(*input_x, *input_z, coeff * s);
 }
 
@@ -52,7 +52,7 @@ impl<const W: usize> Channel<W> for Depolarizing {
         rescale_on_support(
             self.support[0],
             1.0 - 4.0 * self.p / 3.0,
-            |idx| idx != 0,
+            |index| index != 0,
             input_x,
             input_z,
             coeff,
@@ -91,7 +91,7 @@ impl<const W: usize> Channel<W> for Dephasing {
         rescale_on_support(
             self.support[0],
             1.0 - 2.0 * self.p,
-            |idx| idx & 1 == 1,
+            |index| index & 1 == 1,
             input_x,
             input_z,
             coeff,
@@ -136,8 +136,8 @@ impl<const W: usize> Channel<W> for PauliChannel {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
         let (word, bit, _mask) = qubit_loc(q);
-        let idx = read_pauli(input_x, input_z, word, bit);
-        let s = match idx {
+        let index = read_pauli(input_x, input_z, word, bit);
+        let s = match index {
             0 => 1.0,
             1 => 1.0 - 2.0 * (self.py + self.pz),
             2 => 1.0 - 2.0 * (self.px + self.py),
@@ -229,8 +229,8 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
-        let idx = read_pauli(input_x, input_z, word, bit);
-        match idx {
+        let index = read_pauli(input_x, input_z, word, bit);
+        match index {
             0 => {
                 out.push(*input_x, *input_z, coeff);
                 let mut nz = *input_z;
@@ -258,8 +258,8 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         let q = self.support[0] as usize;
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
-        let idx = read_pauli(input_x, input_z, word, bit);
-        match idx {
+        let index = read_pauli(input_x, input_z, word, bit);
+        match index {
             0 => {
                 out.push(*input_x, *input_z, coeff);
             }

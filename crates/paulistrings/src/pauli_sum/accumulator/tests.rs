@@ -157,7 +157,6 @@ fn finalize_picks_desired_bits_above() {
 
 #[test]
 fn finalize_with_capacity_preallocated() {
-    // with_capacity should behave identically to new() for correctness.
     let mut acc = BuildAccumulator::<1>::with_capacity(4, 16);
     acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
     let s = acc.finalize();

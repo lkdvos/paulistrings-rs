@@ -26,8 +26,7 @@ pub(crate) struct Rng {
 }
 
 impl Rng {
-    /// The stream named by `key`, typically `[seed, call, rank, ...]`.
-    /// Every word, and the key length, is absorbed through a splitmix64 output, so keys differing in any word or in length name unrelated streams.
+    /// The stream named by `key`; keys differing in any word or in length name unrelated streams.
     pub(crate) fn from_key(key: &[u64]) -> Self {
         let mut absorbed = key.len() as u64;
         for &word in key {
@@ -38,7 +37,7 @@ impl Rng {
         for word in s.iter_mut() {
             *word = splitmix64(&mut absorbed);
         }
-        // xoshiro's one forbidden state; four consecutive splitmix outputs are never all zero in practice.
+        // The all-zero state is xoshiro's one fixed point.
         if s == [0; 4] {
             s[0] = 1;
         }

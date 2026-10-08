@@ -1,34 +1,11 @@
-//! [`Phase`] — `i^k` factors arising from Pauli algebra, with `k ∈ {0, 1, 2, 3}`.
-//!
-//! Multiplication of two Pauli bitstrings produces an `i^k` factor wherever X- and Z-bits coincide (see [`PauliString::mul_assign`]); callers fold this into the relevant `Complex64` coefficient at the boundary ([`PauliSum`], [`BuildAccumulator`], channel `apply`).
-//!
-//! # Examples
-//!
-//! Combine phases with `+` (mod 4) and fold one into a `Complex64` coefficient with [`Phase::apply`]:
-//!
-//! ```
-//! use paulistrings::Phase;
-//! use num_complex::Complex64;
-//!
-//! let p = Phase::I + Phase::I; // i · i = -1
-//! assert_eq!(p, Phase::MINUS_ONE);
-//!
-//! let folded = Phase::I.apply(Complex64::new(2.0, 3.0)); // i · (2 + 3i) = -3 + 2i
-//! assert_eq!(folded, Complex64::new(-3.0, 2.0));
-//! ```
-//!
-//! [`PauliString::mul_assign`]: crate::PauliString::mul_assign
-//! [`PauliSum`]: crate::PauliSum
-//! [`BuildAccumulator`]: crate::BuildAccumulator
+//! [`Phase`], the `i^k` factor a Pauli product returns.
 
 use num_complex::Complex64;
 use std::ops::{Add, AddAssign};
 
-/// A phase factor `i^k` where `k ∈ {0, 1, 2, 3}`.
+/// A phase factor `i^k` with `k ∈ {0, 1, 2, 3}`; `+` multiplies phases.
 ///
-/// Layout is `#[repr(transparent)] u8`, so `Phase` is zero-cost: a plain
-/// arithmetic byte at the ABI level. Construction via `Phase::new` reduces
-/// mod 4; the `Add` impl preserves that invariant.
+/// [`crate::PauliString::mul_assign`] returns one, and [`Phase::apply`] folds it into a coefficient.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[repr(transparent)]
 pub struct Phase(u8);
@@ -43,8 +20,7 @@ impl Phase {
     /// `i^3 = -i`.
     pub const MINUS_I: Self = Self(3);
 
-    /// Construct from a raw exponent. Reduces mod 4, so `Phase::new(5) ==
-    /// Phase::I`.
+    /// Construct from a raw exponent, reduced mod 4.
     #[inline]
     pub const fn new(k: u8) -> Self {
         Self(k & 3)
@@ -68,8 +44,7 @@ impl Phase {
         }
     }
 
-    /// Multiply `c` by `i^k` without going through `to_complex`. Each branch
-    /// is a single sign/swap on the `(re, im)` parts — no FP multiply.
+    /// Multiply `c` by `i^k` by a sign/swap of its parts, without a float multiply.
     #[inline]
     pub fn apply(self, c: Complex64) -> Complex64 {
         match self.0 {
@@ -86,8 +61,6 @@ impl Add for Phase {
     type Output = Phase;
     #[inline]
     fn add(self, other: Phase) -> Phase {
-        // Both operands are already in `0..=3`, so the sum is in `0..=6` and
-        // a single mask suffices.
         Phase((self.0 + other.0) & 3)
     }
 }

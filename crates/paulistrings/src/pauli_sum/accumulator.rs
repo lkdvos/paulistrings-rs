@@ -1,11 +1,4 @@
-//! [`BuildAccumulator<W>`] — hashmap-based ingestion path.
-//!
-//! Used to incrementally build a [`PauliSum`] from unsorted inputs (Hamiltonian parsing, Python dict construction, etc.); not used during propagation, which is sort-merge only (see [`engine`]).
-//!
-//! See the [`PauliSum`] module for a worked example: [`BuildAccumulator::new`] → [`BuildAccumulator::add_term`] → [`BuildAccumulator::finalize`].
-//!
-//! [`PauliSum`]: crate::PauliSum
-//! [`engine`]: crate::engine
+//! [`BuildAccumulator<W>`], the hashmap ingestion path from unsorted terms to a [`crate::PauliSum`].
 
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -17,10 +10,21 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-/// Incremental builder for a `PauliSum`.
+/// Incremental builder for a [`crate::PauliSum`] from unsorted terms; repeated keys sum.
 ///
-/// Uses `FxBuildHasher` rather than the default `SipHash` since Pauli
-/// bitstrings are already high-entropy.
+/// ```
+/// use paulistrings::{BuildAccumulator, PauliString, Phase};
+/// use num_complex::Complex64;
+///
+/// let mut accumulator = BuildAccumulator::<1>::new(2);
+/// // The key (x=1, z=1) is Y; Phase::I folds a product's i into the coefficient.
+/// accumulator.add_term(PauliString::<1> { x: [1], z: [1] }, Phase::I, Complex64::new(1.0, 0.0));
+/// accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(0.5, 0.0));
+/// accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(0.5, 0.0));
+/// let sum = accumulator.finalize();
+/// assert_eq!(sum.get(&[1], &[1]), Some(Complex64::new(0.0, 1.0)));
+/// assert_eq!(sum.get(&[0], &[0b10]), Some(Complex64::new(1.0, 0.0)));
+/// ```
 pub struct BuildAccumulator<const W: usize> {
     map: HashMap<PauliString<W>, Complex64, FxBuildHasher>,
     num_qubits: usize,
@@ -35,32 +39,15 @@ impl<const W: usize> BuildAccumulator<W> {
         }
     }
 
-    /// Allocate up-front for at least `cap` distinct Pauli keys.
-    pub fn with_capacity(num_qubits: usize, cap: usize) -> Self {
+    /// Allocate up-front for at least `capacity` distinct Pauli keys.
+    pub fn with_capacity(num_qubits: usize, capacity: usize) -> Self {
         Self {
-            map: HashMap::with_capacity_and_hasher(cap, FxBuildHasher),
+            map: HashMap::with_capacity_and_hasher(capacity, FxBuildHasher),
             num_qubits,
         }
     }
 
-    /// Add `phase · c · p` to the accumulator. The phase factor is folded into `c` before the upsert; `p` is taken as-is and used as the map key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use paulistrings::{BuildAccumulator, PauliString, Phase};
-    /// use num_complex::Complex64;
-    ///
-    /// let mut acc = BuildAccumulator::<1>::new(2);
-    /// // Fold a product phase into the stored coefficient: Z·X = +i·Y, so the Y key (x=1, z=1) gets coefficient i.
-    /// acc.add_term(
-    ///     PauliString::<1> { x: [1], z: [1] },
-    ///     Phase::I,
-    ///     Complex64::new(1.0, 0.0),
-    /// );
-    /// let sum = acc.finalize();
-    /// assert_eq!(sum.bucket(0).2[0], Complex64::new(0.0, 1.0));
-    /// ```
+    /// Add `phase · c · p`.
     pub fn add_term(&mut self, p: PauliString<W>, phase: Phase, c: Complex64) {
         let contribution = phase.apply(c);
         self.map
@@ -69,9 +56,7 @@ impl<const W: usize> BuildAccumulator<W> {
             .or_insert(contribution);
     }
 
-    /// Sort, deduplicate, and emit a `PauliSum`. Entries whose accumulated coefficient is exactly `0+0i` are dropped.
-    ///
-    /// The partition is chosen here, by `desired_bits` under the default seed, so a sum of at most 1024 terms gets a single bucket (plain lex canonical order) and a larger one starts out already sized for the engine.
+    /// Emit the [`crate::PauliSum`], dropping keys whose coefficients summed to exactly zero.
     pub fn finalize(self) -> PauliSum<W> {
         let zero = Complex64::new(0.0, 0.0);
         let mut entries: Vec<(PauliString<W>, Complex64)> =

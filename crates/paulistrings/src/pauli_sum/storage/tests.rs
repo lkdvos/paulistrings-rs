@@ -1,7 +1,6 @@
 #[test]
 fn bucketed_expectation_agrees_with_the_flat_version() {
-    // Not bitwise: partials are combined in bucket order, not global sorted order, and float addition is not associative.
-    // The tolerance below is ~1e5 times looser than the observed difference and ~1e5 times tighter than anything physically meaningful.
+    // Not bitwise: partials are combined in bucket order.
     for &weight in &[2usize, 4] {
         let sum = rand_low_weight_sum::<2>(20_000, 100, weight, 0xE1 + weight as u64);
         let want = sum.expectation_product_state(ProductState::XPlus);
@@ -50,11 +49,9 @@ use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PartitionRows;
 use crate::phase::Phase;
 use crate::readout::{PauliAxis, ProductBasis, ProductState};
-// `Xs64` and `rand_sum` are the canonical fixtures from
-// `crate::test_support` — this module's copies were byte-identical.
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
-/// Low-weight keys — the physically relevant regime, and the one where a badly chosen hash would collapse into one bucket.
+/// Low-weight keys, where a badly chosen hash would collapse into one bucket.
 fn rand_low_weight_sum<const W: usize>(
     n: usize,
     num_qubits: usize,
@@ -104,8 +101,6 @@ fn assert_same_sum<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) {
     };
     assert_eq!(ta, tb, "terms");
 }
-
-// ---- round trip ----
 
 #[test]
 fn round_trip_is_bitwise_identical_w1() {
@@ -171,7 +166,7 @@ fn round_trip_single_term() {
 
 #[test]
 fn round_trip_with_a_single_bucket() {
-    // bits = 0: everything in bucket 0, so the canonical order is plain lex and the scatter must already have produced a sorted bucket.
+    // bits = 0: one bucket, so the canonical order is plain lex.
     let sum = rand_sum::<1>(2000, 64, 0xA6);
     let h = Gf2Hash::<1>::new(64, 0, 0x3);
     let bucketed = sum.clone().with_hash(h);
@@ -199,8 +194,6 @@ fn empty_constructor_matches_empty_sum() {
     assert_eq!(b.len(), 0);
 }
 
-// ---- refine / coarsen ----
-
 #[test]
 fn refine_doubles_buckets_and_preserves_content() {
     let sum = rand_sum::<2>(3000, 128, 0xB1);
@@ -211,7 +204,7 @@ fn refine_doubles_buckets_and_preserves_content() {
     b.refine();
     assert_eq!(b.num_buckets(), 128);
     assert_eq!(b.len(), before_len);
-    // The invariant check is the real assertion: it verifies every term is in its new hash bucket and that each bucket is still sorted.
+    // The invariant check is the real assertion.
     b.assert_invariants();
     assert_same_sum(&sum, &b);
 }
@@ -294,7 +287,7 @@ fn repeated_refine_stays_consistent() {
 
 #[test]
 fn refine_and_coarsen_take_the_parallel_path_above_the_threshold() {
-    // Above DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK (8192) terms, refine/coarsen go parallel; check that branch produces the same invariants and content as the serial path.
+    // Above 8192 terms refine/coarsen take the parallel branch.
     let n = 10_000;
     assert!(n >= DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK);
     let sum = rand_sum::<2>(n, 128, 0xB7);
@@ -327,8 +320,6 @@ fn refine_and_coarsen_on_an_empty_sum() {
     assert_eq!(b.num_buckets(), 8);
     assert_eq!(b.len(), 0);
 }
-
-// ---- rebucket policy ----
 
 #[test]
 fn rebucket_grows_toward_the_target() {
@@ -367,7 +358,7 @@ fn rebucket_never_shrinks() {
 
 #[test]
 fn rebucket_is_a_no_op_when_already_at_the_target() {
-    // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves; pins the no-hysteresis behavior (ARCHITECTURE.md §Bucket-Policy).
+    // 6400 terms at target 100 wants exactly 64 buckets, so nothing moves.
     let sum = rand_sum::<2>(6400, 128, 0xD3);
     let h = Gf2Hash::<2>::new(128, 6, 0xC0DE); // 64 buckets, mean 100
     let mut b = sum.clone().with_hash(h);
@@ -382,8 +373,7 @@ fn rebucket_is_a_no_op_when_already_at_the_target() {
 
 #[test]
 fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
-    // `rebucket` only grows, so it converges on `desired_bits` only when the starting partition is at or below that.
-    // Otherwise the starting bit count is the high-water mark and survives unchanged; both are `want.max(start)`.
+    // Grow-only: the result is `desired_bits.max(start)`.
     for &n in &[500usize, 6400, 60_000] {
         let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
         let want = desired_bits(sum.len(), 256, 8);
@@ -403,7 +393,7 @@ fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
 
 #[test]
 fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
-    // Grow to a high bucket count from a large sum, then shrink the term count sharply and rebucket again: the grow-only policy says the bucket count is a high-water mark and must not follow the length back down.
+    // The bucket count is a high-water mark and must not follow the length back down.
     let sum = rand_sum::<2>(60_000, 128, 0xDA1);
     let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
     let mut b = sum.with_hash(h);
@@ -414,8 +404,6 @@ fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
         "sanity: rebucket should have grown from 0 bits"
     );
 
-    // Shrink the term count sharply, well below what would justify
-    // `grown_bits` under `desired_bits`.
     b.retain(|_, _, c| c.re > 0.995);
     b.assert_invariants();
     assert!(
@@ -451,15 +439,13 @@ fn rebucket_respects_the_parallelism_floor() {
 
 #[test]
 fn rebucket_does_not_split_a_tiny_sum_to_hit_the_floor() {
-    // With only 10 terms, splitting to 32 buckets is pure overhead; the floor is gated on there being enough work to spread.
+    // With only 10 terms the floor does not apply.
     let sum = rand_sum::<1>(10, 64, 0xD5);
     let h = Gf2Hash::<1>::new(64, 0, 0xC0DE);
     let mut b = sum.clone().with_hash(h);
     b.rebucket(1024, 32);
     assert_eq!(b.num_buckets(), 1, "tiny sum was split anyway");
 }
-
-// ---- the canonical-order contract ----
 
 #[test]
 fn canonical_order_is_bucket_then_key() {
@@ -483,7 +469,7 @@ fn canonical_order_is_bucket_then_key() {
 
 #[test]
 fn single_bucket_sum_is_plain_lex_sorted() {
-    // Below the split threshold the canonical order is lex order — the property every small-sum positional expectation in the crate rests on.
+    // Below the split threshold the canonical order is lex order.
     let sum = rand_sum::<1>(1000, 64, 0xC2);
     assert_eq!(sum.num_buckets(), 1);
     let (x, z, _) = sum.to_arrays();
@@ -494,8 +480,6 @@ fn single_bucket_sum_is_plain_lex_sorted() {
         );
     }
 }
-
-// ---- S1: canonical iteration / export ----
 
 /// The canonical order as a plain vector, read out of `bucket()` alone.
 fn canonical_triples<const W: usize>(b: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
@@ -564,12 +548,10 @@ fn single_bucket_to_arrays_is_the_key_sorted_order() {
     }
 }
 
-// ---- S2: keyed lookup ----
-
 #[test]
 fn get_hits_and_misses_across_bucket_counts() {
     let sum = rand_sum::<1>(2000, 64, 0xF7);
-    // Keys that are definitely absent: rather than gamble, take misses from a disjoint second draw and skip any that happen to collide.
+    // Misses come from a second draw, skipping any that collide.
     let other = rand_sum::<1>(2000, 64, 0xF8);
 
     for bits in [0u8, 3, 7] {
@@ -648,12 +630,9 @@ fn get_agrees_with_a_map_model() {
     }
 }
 
-// ---- S3: per-bucket mutators ----
-
 #[test]
 fn scale_matches_flat_bitwise() {
-    // Scaling is elementwise, so per-bucket and flat orders cannot diverge:
-    // the comparison is exact, not toleranced.
+    // Elementwise, so the comparison is exact.
     for bits in [0u8, 5] {
         let sum = rand_sum::<2>(3000, 128, 0x101);
         let h = Gf2Hash::<2>::new(128, bits, 0x102);
@@ -674,7 +653,7 @@ fn retain_filters_in_place_and_keeps_invariants() {
         let sum = rand_sum::<2>(4000, 128, 0x106);
         let h = Gf2Hash::<2>::new(128, bits, 0x107);
         let mut b = sum.clone().with_hash(h);
-        // A predicate that reads the key as well as the coefficient, so a key/coefficient column desync would show up.
+        // Reads the key and the coefficient, so a column desync shows up.
         let keep = |x: &[u64; 2], _z: &[u64; 2], c: Complex64| x[0] & 1 == 0 && c.re > 0.0;
         b.retain(keep);
         b.assert_invariants();
@@ -703,8 +682,6 @@ fn retain_filters_in_place_and_keeps_invariants() {
     }
 }
 
-// ---- S4: overlap ----
-
 /// Reference overlap: two-pointer over globally key-sorted triples — the accumulation order a single-bucket sum uses.
 fn flat_overlap<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) -> Complex64 {
     let ta = sorted_triples(a);
@@ -727,7 +704,7 @@ fn flat_overlap<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) -> Complex64 {
 
 #[test]
 fn overlap_single_bucket_is_bitwise_flat() {
-    // One bucket means one two-pointer pass over globally sorted columns — the same additions in the same order as the flat version, so equality is exact.
+    // One bucket: the same additions in the same order as the flat version, so equality is exact.
     let a = rand_low_weight_sum::<2>(3000, 100, 3, 0x201);
     let b = rand_low_weight_sum::<2>(3000, 100, 3, 0x202);
     let h = Gf2Hash::<2>::new(100, 0, 0x203);
@@ -752,7 +729,6 @@ fn overlap_matches_flat_within_tolerance_across_bits() {
         if bits == 0 {
             assert_eq!(got, want, "bits=0 must be bitwise");
         }
-        // Relative, not absolute: the reordering error is bounded by the accumulated magnitude, which is what a relative bound tracks.
         assert!(
             (got - want).norm() <= 1e-12 * want.norm(),
             "bits={bits}: {got} vs {want}",
@@ -788,8 +764,6 @@ fn overlap_rejects_a_different_hash() {
     let bb = a.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0x20D));
     let _ = ba.overlap(&bb);
 }
-
-// ---- S5: flatten / repartition ----
 
 /// The canonical order, sorted — i.e. the multiset of terms, partition forgotten.
 fn sorted_triples<const W: usize>(b: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
@@ -874,8 +848,6 @@ fn align_different_rows_goes_through_with_hash() {
     assert_eq!(canonical_triples(&got), canonical_triples(&want));
 }
 
-// ---- S6: add ----
-
 /// Two sums over the same keyspace with heavy key overlap, so `add` sees merges and not just interleaving.
 fn overlapping_pair<const W: usize>(
     n: usize,
@@ -891,7 +863,7 @@ fn overlapping_pair<const W: usize>(
 
 #[test]
 fn add_same_hash_is_bitwise_flat_add() {
-    // Every surviving coefficient is one `a + b`, computed in the same operand order as the flat merge, so equality is exact even though the partial sums live in different buckets.
+    // Every surviving coefficient is one `a + b`, so equality is exact.
     let (a, b) = overlapping_pair::<2>(4000, 100, 3, 0x401);
     let want = a.add(&b);
     for bits in [0u8, 4, 9] {
@@ -971,14 +943,6 @@ fn add_rejects_a_qubit_count_mismatch() {
     let bb = b.clone().with_hash(Gf2Hash::<2>::new(128, 3, 0x410));
     let _ = ba.add(&bb);
 }
-
-// =====================================================================
-// Hand-computed small-sum semantics.
-//
-// Everything above is differential or a bucket-count sweep: it pins agreement with the single-bucket path, not what either one computes. These pin the values themselves, on inputs small enough to work out by hand.
-// =====================================================================
-
-// ---- overlap / expectation ----
 
 fn b10_build<const W: usize>(
     num_qubits: usize,
@@ -1141,8 +1105,7 @@ fn expectation_across_a_word_boundary_w2() {
     assert!((s.expectation_product_state(ProductState::ZPlus).re - 9.0).abs() < 1e-12);
 }
 
-/// The new API must reproduce the observable
-/// `examples/ising_2d_quench.rs` hand-rolled, which is why it exists.
+/// Reproduces the observable `examples/ising_2d_quench.rs` computed by hand.
 #[test]
 fn expectation_xplus_matches_the_hand_rolled_reference() {
     let mut rng = 0x2468u64 | 1;
@@ -1173,11 +1136,7 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
     assert!((got - want).abs() < 1e-12, "{got} vs {want}");
 }
 
-// --- non-uniform product states (ProductBasis) ---------------------
-//
-// Every expected value below is the product of single-qubit Bloch-vector
-// components, hand-derived once here:
-//
+// Expected values below are products of single-qubit Bloch components:
 //   |0⟩ = Z+:  ⟨Z⟩ = +1,  ⟨X⟩ = ⟨Y⟩ = 0
 //   |1⟩ = Z-:  ⟨Z⟩ = -1,  ⟨X⟩ = ⟨Y⟩ = 0
 //   |+⟩ = X+:  ⟨X⟩ = +1,  ⟨Y⟩ = ⟨Z⟩ = 0
@@ -1185,10 +1144,9 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
 //   |r⟩ = Y+ = (|0⟩ + i|1⟩)/√2:  ⟨Y⟩ = +1,  ⟨X⟩ = ⟨Z⟩ = 0
 //   |l⟩ = Y- = (|0⟩ - i|1⟩)/√2:  ⟨Y⟩ = -1,  ⟨X⟩ = ⟨Z⟩ = 0
 //
-// and ⟨I⟩ = 1 in every state. Off-axis components vanish because two distinct single-qubit Paulis anticommute.
+// and ⟨I⟩ = 1 in every state.
 
-/// Per-qubit label string → [`ProductBasis`], in the alphabet the Python binding accepts (qiskit `Statevector.from_label`): `0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±. Character `i` addresses qubit `i`.
-/// Deliberately spelled out here rather than shared with the binding: the test's job is to encode the convention independently.
+/// Label string → [`ProductBasis`] in qiskit's `from_label` alphabet (`0`/`1`, `+`/`-`, `r`/`l`), character `i` being qubit `i`; kept independent of the binding's parser.
 fn basis_from_labels<const W: usize>(labels: &str) -> ProductBasis<W> {
     ProductBasis::<W>::from_axes(labels.chars().map(|ch| match ch {
         '0' => (PauliAxis::Z, false),
@@ -1201,7 +1159,7 @@ fn basis_from_labels<const W: usize>(labels: &str) -> ProductBasis<W> {
     }))
 }
 
-/// Differential oracle: `⟨ψ|O|ψ⟩` evaluated one qubit at a time straight from the Bloch table above, sharing no code with the masked scan.
+/// `⟨ψ|O|ψ⟩` one qubit at a time from the Bloch table above.
 fn naive_labelled_expectation<const W: usize>(sum: &PauliSum<W>, labels: &str) -> Complex64 {
     let mut total = Complex64::new(0.0, 0.0);
     for (x, z, c) in sum.iter() {
@@ -1309,7 +1267,7 @@ fn multi_qubit_products_compose_per_qubit_signs_w2() {
 }
 
 fn an_off_axis_pauli_never_matches<const W: usize>() {
-    // The subset-match trap: `X` on a Y-axis qubit must not contribute, even though the Y axis has its x-bit set — the match is an equality on both halves of the key, not `x & !ax_x == 0`. ⟨r|X|r⟩ = 0.
+    // `X` on a Y-axis qubit must not contribute although the Y axis has its x-bit set: ⟨r|X|r⟩ = 0.
     let off_axis = [
         ('r', "X"),
         ('r', "Z"),
@@ -1360,7 +1318,7 @@ fn labelled_expectation_is_linear_and_keeps_the_imaginary_part() {
 
 #[test]
 fn labels_across_the_word_boundary_are_independent_w2() {
-    // 128 qubits, |0…0⟩ except qubit 64, which is |1⟩ — its sign bit lives in word 1 of `neg`, so a word-0-only implementation would miss it.
+    // 128 qubits, |0…0⟩ except qubit 64 in |1⟩, whose sign bit lives in word 1.
     let mut labels: String = "0".repeat(128);
     labels.replace_range(64..65, "1");
     let basis = basis_from_labels::<2>(&labels);
@@ -1452,7 +1410,7 @@ fn labelled_expectation_agrees_with_the_naive_reference_w2() {
 
 #[test]
 fn bucketed_labelled_expectation_agrees_across_partitions() {
-    // The sign parity is accumulated inside a bucket, so a partition change must not move the value (beyond float re-association).
+    // A partition change must not move the value beyond float re-association.
     let alphabet: Vec<char> = "01+-rl".chars().collect();
     let mut rng = Xs64::new(0xB60);
     let labels: String = (0..100)
@@ -1520,8 +1478,6 @@ fn assert_invariants_rejects_bit_in_unused_word() {
     sum.assert_invariants();
 }
 
-// --- keyed lookup (get) -----------------------------------------------
-
 /// Three-term `PauliSum<1>` with sorted, distinct keys `K0 < K1 < K2`.
 fn three_term_sum_w1() -> PauliSum<1> {
     // K0 = (x=0, z=1), K1 = (x=1, z=0), K2 = (x=1, z=2). Sorted by lex on (x, z): K0 has smallest x; K1, K2 share x but K1 has smaller z.
@@ -1557,8 +1513,7 @@ fn get_hits_every_key_and_misses_between() {
 
 #[test]
 fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
-    // Two terms with K_a=(x=0, z=5) and K_b=(x=1, z=0). Despite z_a > z_b, x_a < x_b, so K_a < K_b in the canonical (lex) order of a single-bucket sum. A lex-on-x-only order would invert this.
-    // `single_bucket_sum_is_plain_lex_sorted` above does not cover this: its keys are random, so two of them essentially never share an `x` and the `z` tiebreak is never exercised.
+    // K_a=(x=0, z=5) < K_b=(x=1, z=0) in lex order, which a z-first order would invert.
     let s = PauliSum::<1>::from_sorted_columns(
         vec![[0u64], [1u64]],
         vec![[5u64], [0u64]],
@@ -1570,8 +1525,6 @@ fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
     assert_eq!((x[0], z[0]), ([0u64], [5u64]));
     assert_eq!((x[1], z[1]), ([1u64], [0u64]));
 }
-
-// --- scale() ----------------------------------------------------------
 
 #[test]
 fn scale_by_zero_zeros_all_coeffs() {
@@ -1605,8 +1558,6 @@ fn scale_by_i_rotates_phases() {
     assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 2.0));
     assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
 }
-
-// --- add() ------------------------------------------------------------
 
 #[test]
 fn add_empty_left_is_other() {
@@ -1743,11 +1694,6 @@ fn add_w2_across_word_boundary() {
     r.assert_invariants();
 }
 
-// --- PauliSum::from_strings test helper ----------------------------
-//
-// `from_strings` itself is a `#[cfg(test)]` inherent impl over in
-// `pauli_sum.rs`; only its tests moved here.
-
 #[test]
 fn from_strings_single_x_term() {
     let s = PauliSum::<1>::from_strings(&[("XII", Complex64::new(1.0, 0.0))]);
@@ -1770,7 +1716,7 @@ fn from_strings_x_z_combined() {
 
 #[test]
 fn from_strings_y_is_hermitian() {
-    // Coefficients multiply the literal Hermitian Pauli string: "Y" maps to the symplectic key (x=1, z=1) with no phase factor, matching PauliString::y and expectation_product_state.
+    // "Y" maps to the key (x=1, z=1) with no phase factor.
     let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
     assert_eq!(s.bucket(0).0[0], [1u64]);
     assert_eq!(s.bucket(0).1[0], [1u64]);
@@ -1779,7 +1725,7 @@ fn from_strings_y_is_hermitian() {
 
 #[test]
 fn from_strings_real_coeffs_stay_real_for_any_y_count() {
-    // A Hermitian observable keeps real coefficients regardless of how many Y characters a term contains — no per-Y phase is folded.
+    // No per-Y phase is folded, so coefficients stay real.
     for s in ["Y", "YY", "YYY", "YYYY"] {
         let padded: String = format!("{s:I<4}");
         let sum = PauliSum::<1>::from_strings(&[(&padded, Complex64::new(2.5, 0.0))]);
@@ -1862,8 +1808,6 @@ fn from_strings_panics_on_length_mismatch() {
     ]);
 }
 
-// ---- partition scatter / gather ----
-
 /// Bitwise, order-included comparison of two sums' canonical columns.
 fn assert_same_columns<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
     let (gx, gz, gc) = got.to_arrays();
@@ -1878,7 +1822,7 @@ fn assert_same_columns<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, wh
     }
 }
 
-/// Scatter `sum` (rehashed to `bits`) into `1 << pbits` partitions, check each part is a well-formed single-rank sum on the same partition, and gather it back — which must reproduce the input bit for bit, in the same canonical order.
+/// Scatter `sum` (rehashed to `bits`) into `1 << pbits` partitions, check each part, and gather it back bit for bit.
 fn check_split_merge<const W: usize>(
     sum: &PauliSum<W>,
     num_qubits: usize,
@@ -2130,10 +2074,7 @@ mod props {
     }
 
     proptest! {
-        /// `add` against an independent model: a `BTreeMap` keyed by
-        /// `(x, z)`, summed then stripped of exact zeros.
-        ///
-        /// Coefficients are small integers so exact cancellation actually happens, and the keyspace is 6 qubits so the two operands share keys often. Every surviving coefficient is a single `a + b`, so the comparison is bitwise rather than toleranced.
+        /// `add` against a `BTreeMap` model; small integer coefficients on 6 qubits make exact cancellation common.
         #[test]
         fn bucketed_add_matches_btreemap_model(
             terms_a in prop::collection::vec(
@@ -2181,8 +2122,7 @@ mod props {
         }
     }
 
-    /// Build a sorted, deduplicated `PauliSum<2>` from random `(x, z, coeff)` triples, via a `BTreeMap` keyed on `(x, z)` to enforce the sorted/unique invariant before SoA materialization.
-    /// Coefficients are kept small (`re, im ∈ [-4, 4]`) to avoid FP cancellation noise; length capped at 8 to bound shrinking time.
+    /// A random `PauliSum<2>` of at most 8 terms with small coefficients, deduplicated through a `BTreeMap`.
     fn arb_pauli_sum_w2() -> impl Strategy<Value = PauliSum<2>> {
         prop::collection::vec(
             (
@@ -2241,7 +2181,7 @@ mod props {
 }
 
 impl<const W: usize> PauliSum<W> {
-    /// Test/oracle constructor: wrap globally key-sorted columns as a single-bucket sum (zero hash bits, default seed), whose canonical order is therefore exactly the given column order.
+    /// Wrap globally key-sorted columns as a single-bucket sum.
     pub(crate) fn from_sorted_columns(
         x: Vec<[u64; W]>,
         z: Vec<[u64; W]>,

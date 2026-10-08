@@ -40,8 +40,6 @@ fn expect<const W: usize>(st: &StabilizerState<W>, label: &str) -> f64 {
     st.expectation_of(&gen_of::<W>(label).0)
 }
 
-// ---- Bell state: +XX, +ZZ ----
-
 /// `XX·ZZ = (X·Z)⊗(X·Z) = (-iY)⊗(-iY) = -YY`, so the group is `{+II, +XX, +ZZ, -YY}` and `⟨YY⟩ = -1`. Single-qubit Paulis are outside the group, hence `0`.
 #[test]
 fn bell_state_expectations_w1() {
@@ -86,8 +84,6 @@ fn minus_z_generator_is_the_one_state() {
     assert_eq!(expect(&one, "I"), 1.0);
 }
 
-// ---- GHZ state: +XXX, +ZZI, +IZZ ----
-
 /// `XXX·ZZI` acts as `X·Z = -iY` on qubits 0 and 1 and as `X·I = X` on qubit 2, so it equals `(-i)²·YYX = -YYX`; the group element being `-YYX` means `YYX|ψ⟩ = -|ψ⟩`.
 ///
 /// `ZZI·IZZ = ZIZ` with no phase (no X-bits meet a Z-bit), so `⟨ZIZ⟩ = 1`. `ZII` is outside the span of `{(x=111,z=000), (000,011), (000,110)}`, hence `0`.
@@ -129,8 +125,6 @@ fn generator_order_does_not_change_the_state() {
         assert_eq!(expect(&c, label), want, "{label}");
     }
 }
-
-// ---- rejection cases ----
 
 #[test]
 fn anticommuting_generators_are_rejected() {
@@ -217,8 +211,6 @@ fn errors_display_without_panicking() {
     assert!(e.to_string().contains("anticommute"));
 }
 
-// ---- word-boundary coverage (W = 2, qubits 63/64) ----
-
 /// A Bell pair straddling the 64-qubit word boundary, with every other qubit in `|0⟩`.
 /// Same algebra as `bell_state_expectations_w1`, but the two X-bits and two Z-bits live in different `[u64; 2]` words.
 #[test]
@@ -267,8 +259,6 @@ fn a_minus_generator_in_the_second_word() {
     z63_64.mul_assign(&PauliString::<2>::z(64));
     assert_eq!(st.expectation_of(&z63_64), -1.0);
 }
-
-// ---- differential tests against the product-state path ----
 
 /// Diagonal generators `+Z_q` describe `|0…0⟩`, whose expectation the existing product-state scan already computes — an independent oracle.
 fn product_generators<const W: usize>(num_qubits: usize, axis: char) -> StabilizerState<W> {
@@ -321,7 +311,7 @@ fn uniform_product_generators_agree_with_the_product_state_scan_w2() {
     }
 }
 
-/// The contraction is a per-bucket parallel reduction, so it must agree across partitions (to floating-point tolerance — partials are summed in bucket order, per the crate's determinism policy).
+/// The contraction agrees across partitions to floating-point tolerance.
 #[test]
 fn the_contraction_is_partition_independent() {
     let sum = rand_sum::<1>(5000, 20, 0xB2);
@@ -359,10 +349,7 @@ fn an_empty_sum_contracts_to_zero() {
     assert!(sum.expectation_stabilizer(&stab).norm() < 1e-15);
 }
 
-// ---- brute-force oracle for entangled states ----
-
-/// Enumerate all `2ⁿ` group elements by multiplying out every subset of the generators, and return `key -> sign` — an oracle that shares no code with the echelon reduction under test.
-/// Exponential in `n` by construction, which is exactly the thing [`StabilizerState`] exists to avoid; only usable at `n ≲ 12`.
+/// All `2ⁿ` group elements as `key -> sign`, by multiplying out every subset of the generators; usable only at `n ≲ 12`.
 fn brute_force_group<const W: usize>(
     gens: &[(PauliString<W>, bool)],
 ) -> std::collections::HashMap<([u64; W], [u64; W]), f64> {
@@ -412,7 +399,6 @@ fn brute_force_expectation<const W: usize>(
 }
 
 /// A 1-D cluster state: `K_q = Z_{q-1} X_q Z_{q+1}` (open boundaries), with the sign of generator `q` taken from `signs`.
-/// Genuinely entangled and not a Bell/GHZ special case, and every generator has both X- and Z-support, so the query-side reduction hits mixed products.
 fn cluster_generators<const W: usize>(
     num_qubits: usize,
     signs: &[bool],
@@ -435,7 +421,6 @@ fn cluster_generators<const W: usize>(
 fn cluster_state_contraction_matches_the_brute_force_group_w1() {
     let n = 8;
     for seed in [0xC0u64, 0xC1, 0xC2] {
-        // Signs derived from the seed's bits, so all-plus and mixed-sign states are both covered.
         let signs: Vec<bool> = (0..n).map(|q| seed >> q & 1 == 1).collect();
         let gens = cluster_generators::<1>(n, &signs);
         let stab = StabilizerState::<1>::from_generators(n, &gens).unwrap();
@@ -483,7 +468,7 @@ fn ghz_contraction_matches_the_brute_force_group() {
     assert!((got - want).norm() < 1e-12, "{got} vs {want}");
 }
 
-/// Every one of the `2ⁿ` group elements must be reported with the sign the enumeration assigns it, and every non-member with `0` — a direct check of `sign_of` over the whole Pauli group at small `n`.
+/// `sign_of` over the whole Pauli group at small `n`: every group element with its enumerated sign, every non-member `None`.
 #[test]
 fn sign_of_agrees_with_the_brute_force_group_over_every_pauli() {
     let n = 4;

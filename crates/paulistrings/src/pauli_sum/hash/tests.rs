@@ -48,8 +48,6 @@ fn low_weight_key<const W: usize>(
     p
 }
 
-// ---- range and the identity key ----
-
 #[test]
 fn bucket_is_within_range_w1() {
     let h = Gf2Hash::<1>::new(64, 7, 0xABCDEF);
@@ -72,7 +70,7 @@ fn bucket_is_within_range_w2() {
 
 #[test]
 fn identity_key_maps_to_bucket_zero() {
-    // h(0) = 0 for any linear h. Documented wart: the identity string always lands in bucket 0.
+    // h(0) = 0 for any linear h, so the identity string always lands in bucket 0.
     let h = Gf2Hash::<2>::new(128, 10, 0x1234);
     assert_eq!(h.bucket_of(&[0, 0], &[0, 0]), 0);
 }
@@ -86,8 +84,6 @@ fn zero_bits_is_a_single_bucket() {
         assert_eq!(h.bucket_of_pauli(&rand_key::<1>(&mut rng, 64)), 0);
     }
 }
-
-// ---- linearity: the property everything else rests on ----
 
 #[test]
 fn linearity_hand_checked_w1() {
@@ -128,11 +124,9 @@ fn linearity_random_w2_crosses_word_boundary() {
     }
 }
 
-// ---- column masking ----
-
 #[test]
 fn bits_beyond_num_qubits_do_not_affect_the_bucket() {
-    // 100 qubits in W=2: bits 100..128 are dead. Setting them must not move a term, or `PauliSum`'s `is_within` contract and the hash would disagree about which keys are distinguishable.
+    // 100 qubits in W=2: setting the dead bits 100..128 must not move a term.
     let h = Gf2Hash::<2>::new(100, 10, 0x99);
     let mut rng = Xs64::new(21);
     for _ in 0..500 {
@@ -154,10 +148,7 @@ fn rows_are_masked_at_a_mid_word_boundary() {
     assert_eq!(h.bucket_of(&[0, dead], &[0, dead]), 0);
 }
 
-// ---- row_parity ----
-
-/// The XOR-fold in `row_parity` / `partition_of` must agree bitwise with the naive one-popcount-per-word form it replaced.
-/// This is an independent oracle: `row_parity` and `bucket_of` share the same fold, so checking them against each other would not catch a fold that is wrong in the same way twice.
+/// The XOR-fold in `row_parity` / `partition_of` agrees with a naive one-popcount-per-word oracle.
 #[test]
 fn xor_fold_parity_matches_per_word_popcount() {
     fn naive<const W: usize>(x: &[u64; W], z: &[u64; W], rx: &[u64; W], rz: &[u64; W]) -> u32 {
@@ -209,8 +200,6 @@ fn row_parity_matches_bucket_of_bit_extraction() {
     }
 }
 
-// ---- refine / coarsen prefix consistency ----
-
 #[test]
 fn refine_preserves_the_low_bits() {
     let mut h = Gf2Hash::<2>::new(128, 6, 0xB0B);
@@ -222,7 +211,7 @@ fn refine_preserves_the_low_bits() {
     assert_eq!(h.num_buckets(), 128);
     let mask = (1u32 << 6) - 1;
     for (k, &b) in keys.iter().zip(before.iter()) {
-        // Refining splits each bucket in two: the new index agrees with the old one on the low `bits` bits, so within-bucket order is inherited by both halves.
+        // The refined index agrees with the old one on the low `bits` bits.
         assert_eq!(h.bucket_of_pauli(k) & mask, b);
     }
 }
@@ -250,7 +239,7 @@ fn coarsen_merges_bucket_pairs() {
 
     h.coarsen();
     for (k, &f) in keys.iter().zip(fine.iter()) {
-        // Dropping the top bit merges (b, b + B/2) — the pair that differs only in the bit being dropped.
+        // Dropping the top bit merges (b, b + B/2).
         assert_eq!(h.bucket_of_pauli(k), f & ((1 << 7) - 1));
     }
 }
@@ -274,8 +263,6 @@ fn coarsen_below_one_bucket_panics() {
 fn constructing_past_the_maximum_panics() {
     let _ = Gf2Hash::<1>::new(64, B_MAX_BITS + 1, 0x1);
 }
-
-// ---- reproducibility ----
 
 #[test]
 fn same_seed_gives_the_same_hash() {
@@ -308,7 +295,7 @@ fn different_seeds_give_different_hashes() {
 
 #[test]
 fn no_row_masks_to_zero_even_at_one_qubit() {
-    // At num_qubits = 1 there are only 2 live columns, so a naive generator produces an all-zero (and therefore useless) row 1/4 of the time.
+    // At num_qubits = 1 a naive draw gives an all-zero row 1/4 of the time.
     let h = Gf2Hash::<1>::new(1, 2, 0x1);
     for i in 0..B_MAX_BITS as usize {
         assert!(
@@ -324,8 +311,6 @@ fn zero_qubits_is_degenerate_but_terminates() {
     let h = Gf2Hash::<1>::new(0, 3, 0x1);
     assert_eq!(h.bucket_of(&[0], &[0]), 0);
 }
-
-// ---- row generation: no GF(2)-linear relation between row words ----
 
 /// One step of xorshift64 (13, 7, 17), a GF(2)-linear map `M` on `u64`.
 fn xorshift64_step(mut x: u64) -> u64 {
@@ -450,10 +435,8 @@ fn rows_do_not_depend_on_the_width() {
     }
 }
 
-// ---- occupancy: what guards the choice of a dense random H ----
-
 /// Bucket occupancy on low-weight keys, the physically relevant regime.
-/// This is the test that fails for a coordinate-projection `H`: weight-4 strings over 64 qubits leave any fixed handful of key coordinates zero almost always, so projection dumps nearly everything into bucket 0, whereas a dense random `H` spreads them.
+/// A coordinate-projection `H` would fail this, sending nearly every weight-4 string to bucket 0.
 #[test]
 fn occupancy_is_balanced_on_low_weight_keys() {
     let num_qubits = 64;
@@ -474,15 +457,10 @@ fn occupancy_is_balanced_on_low_weight_keys() {
     let mean = target / b; // 128
     let max = *counts.iter().max().unwrap();
     let min = *counts.iter().min().unwrap();
-    // Deterministic given the seeds, so these bounds are not flaky. A projection hash would put >99% of the mass in one bucket and blow the upper bound by two orders of magnitude.
+    // Deterministic given the seeds, so these bounds are not flaky.
     assert!(max < 2 * mean, "max load {max} vs mean {mean}");
     assert!(min > mean / 2, "min load {min} vs mean {mean}");
 }
-
-// ---- rank of `h` on a channel's delta space ----
-//
-// A channel supported on qubits `{i, j}` has a 4-dimensional key-delta space `span{X_i, Z_i, X_j, Z_j}`; the engine's coset dimension is `r = rank(h(D))` (`engine::coset::Gf2Span::r`), and the per-run sort's comparison count collapses to its floor exactly when `r` is full (4).
-// `r` is not a property of the channel alone: it depends on which rows `H` happens to have, so it moves with the hash seed and the support, but not with `W`. See `research/FINDINGS.md`.
 
 /// Occupancy balance is not the whole story: a dense random `H` can still fail to separate a two-qubit channel's four delta generators, so two distinct local deltas share one bucket delta.
 #[test]
@@ -499,7 +477,7 @@ fn support_delta_rank_is_usually_full_but_not_always() {
             }
         }
     }
-    // About one placement in six at the default seed and bucket-count floor (B = 128), 11% in expectation over seeds. The bound is loose on purpose: it pins the order of magnitude, the load-bearing fact, not the exact draw.
+    // About 11% in expectation over seeds; the bound pins only the order of magnitude.
     assert_eq!(total, 8128);
     assert!(
         (200..2000).contains(&deficient),
@@ -526,8 +504,7 @@ fn support_delta_rank_is_monotone_in_bits() {
 }
 
 /// Rows do not depend on `W` (`rows_do_not_depend_on_the_width`), so neither does a support's delta-span rank.
-/// At the default seed the su4 probe's support `(0, 1)` is full-rank at every bucket count the engine's own policy reaches, and `(0, 7)` is one rank short at the floor, at both widths.
-/// Regenerated literals: the splitmix64 row draw replaced a pinned `(0, 1)` rank of 3 at `W = 1`.
+/// At the default seed support `(0, 1)` is full-rank at 7..=9 bucket bits and `(0, 7)` one rank short at 7, at both widths.
 #[test]
 fn support_delta_rank_is_width_independent_at_the_default_seed() {
     use crate::test_support::support_delta_rank as rank;
@@ -544,17 +521,15 @@ fn support_delta_rank_is_width_independent_at_the_default_seed() {
     assert_eq!(rank(&Gf2Hash::<2>::new(128, 7, seed), &[0, 7]), 3);
 }
 
-/// The mechanism: a support delta cannot reorder a bucket's key column exactly when `h` separates the support's delta space.
-/// The engine's per-run "rest" stream concatenates blocks `{v ⊕ d : v ∈ bucket}`, one per non-identity delta `d`. At full delta rank each bucket holds at most one of the `2^(2k)` local variants of any off-support pattern, so XOR-by-`d` preserves the column's order and every block arrives already ascending. One rank short and each bucket holds two such variants, adjacent in key order, and half the deltas invert every such pair, shattering the block into runs of ~2.
+/// A support delta cannot reorder a bucket's key column exactly when `h` separates the support's delta space.
 #[test]
 fn support_delta_preserves_bucket_order_iff_the_delta_span_is_full_rank() {
-    // Regenerated for the splitmix64 row draw: the deficient support at the default seed is now `(0, 7)`, not `(0, 1)`.
     assert!(!order_broken_by_some_delta::<2>(128, 7, &[0, 1]));
     assert!(order_broken_by_some_delta::<1>(64, 7, &[0, 7]));
 }
 
 /// Partition a closed key set under `h`, then check every non-identity support delta against every bucket's ascending key column; returns `true` if any delta reorders any bucket.
-/// The key set has to be closed (every off-support pattern paired with all `2^(2k)` local patterns), since that is the fixed point a repeated dense-PTM layer drives the sum to and the structure that puts local variants of one pattern in the same bucket when the rank is short. Random keys would essentially never contain such a pair.
+/// The key set is closed (every off-support pattern with all `2^(2k)` local patterns), as a repeated dense-PTM layer leaves it.
 fn order_broken_by_some_delta<const W: usize>(
     num_qubits: usize,
     bits: u8,
@@ -639,8 +614,6 @@ fn occupancy_is_balanced_on_dense_keys() {
     assert!(min > mean / 2, "min load {min} vs mean {mean}");
 }
 
-// ---- partition rows: the coarse prefix, independent of `H`'s refinement rows ----
-
 #[test]
 fn partition_of_hand_checked_w1() {
     // Two explicit rows over 8 qubits:
@@ -707,8 +680,6 @@ fn partition_bits_beyond_num_qubits_do_not_affect_the_partition() {
     }
 }
 
-// ---- construction ----
-
 #[test]
 fn from_seed_is_reproducible_and_seed_dependent() {
     let a = PartitionRows::<2>::from_seed(128, 4, 0x5EED);
@@ -755,7 +726,7 @@ fn excluding_every_column_is_rejected() {
 
 #[test]
 fn partition_rows_are_salted_away_from_the_hash_rows() {
-    // Drawn from the same seed, the partition rows must not simply be the hash's first rows — otherwise they would be dependent on `h` at every bucket count and `is_independent_of` could never hold.
+    // Under one seed the partition rows must not be the hash's first rows.
     for seed in [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
         let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
         let h = Gf2Hash::<2>::new(128, P_MAX_BITS, seed);
@@ -782,10 +753,7 @@ fn from_rows_round_trips_after_masking() {
     assert_eq!(p.bits(), 2);
 }
 
-/// A distributed run needs one partition per rank, and one rank per node (rather than per
-/// NUMA domain) means fewer, bigger partitions for the same rank count is not the point —
-/// more nodes at a fixed granularity is. 64 partitions covers that without making the row
-/// count term-count-dependent, the thing `P_MAX_BITS` exists to avoid.
+/// A distributed run is one partition per rank, so `P_MAX_BITS` must allow 64 ranks.
 #[test]
 fn partition_row_ceiling_covers_64_ranks() {
     // `from_seed` panics with "exceeds P_MAX_BITS" if the constant is still below 6.
@@ -825,8 +793,6 @@ fn partition_from_rows_all_zero_row_is_fine_at_zero_qubits() {
     let p = PartitionRows::<1>::from_rows(0, vec![[0x0]], vec![[0x0]]);
     assert_eq!(p.partition_of(&[0], &[0]), 0);
 }
-
-// ---- `cut`: z-only rows labelling blocks of qubits ----
 
 #[test]
 fn cut_two_blocks_is_one_z_row_over_the_second_block() {
@@ -931,11 +897,9 @@ fn cut_with_an_empty_labelled_block_panics() {
     let _ = PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3], vec![]]);
 }
 
-// ---- occupancy ----
-
 #[test]
 fn partition_occupancy_is_balanced_on_low_weight_keys() {
-    // The same guard as `occupancy_is_balanced_on_low_weight_keys`, one level up: a partition carries a whole worker's share of the sum, so a structured (projection-like) row choice would be fatal here.
+    // The guard of `occupancy_is_balanced_on_low_weight_keys`, for partition rows.
     let num_qubits = 128;
     let p = PartitionRows::<2>::from_seed(num_qubits, 2, 0x0CC3);
     let mut rng = Xs64::new(0xBA3);
@@ -958,8 +922,6 @@ fn partition_occupancy_is_balanced_on_low_weight_keys() {
         "min load {min} vs mean {mean}, counts {counts:?}"
     );
 }
-
-// ---- independence from the refinement rows ----
 
 #[test]
 fn seeded_partition_rows_are_independent_of_the_hash() {
@@ -993,8 +955,7 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Linearity over arbitrary keys — the load-bearing algebraic property.
-        /// Everything about bucket prediction follows from it.
+        /// Linearity over arbitrary keys.
         #[test]
         fn hash_is_gf2_linear_w2(
             ax in any::<[u64; 2]>(), az in any::<[u64; 2]>(),
@@ -1026,7 +987,7 @@ mod props {
             prop_assert_eq!(after & mask, before);
         }
 
-        /// The partition map is GF(2)-linear for the same reason `h` is — which is what makes the global bucket `(part(v), loc(v))` predictable under a channel's delta set.
+        /// The partition map is GF(2)-linear.
         #[test]
         fn partition_of_is_gf2_linear_w1(
             ax in any::<[u64; 1]>(), az in any::<[u64; 1]>(),

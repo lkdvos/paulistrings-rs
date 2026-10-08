@@ -5,9 +5,7 @@ use rayon::prelude::*;
 
 use crate::pauli_sum::PauliSum;
 
-/// A uniform single-qubit product state, for [`PauliSum::expectation_product_state`].
-///
-/// Each variant names the single-qubit Pauli whose `+1` eigenstate is taken on every qubit — the uniform special case of [`ProductBasis`], which allows a different axis and sign per qubit ([`PauliSum::expectation_product_basis`] is the one scan underneath both).
+/// A uniform single-qubit product state, for [`PauliSum::expectation_product_state`]; [`ProductBasis`] is the per-qubit generalization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductState {
     /// `|+…+⟩`, the `+1` eigenstate of `X` on every qubit.
@@ -30,7 +28,7 @@ pub enum PauliAxis {
 }
 
 impl PauliAxis {
-    /// The axis Pauli's symplectic bits `(x, z)`: `X = (1, 0)`, `Z = (0, 1)`, `Y = (1, 1)` (Hermitian convention, no phase).
+    /// The axis Pauli's symplectic bits `(x, z)`.
     #[inline]
     const fn bits(self) -> (bool, bool) {
         match self {
@@ -43,34 +41,8 @@ impl PauliAxis {
 
 /// A product of single-qubit stabilizer states, one per qubit: on qubit `q` an axis `A_q ∈ {X, Y, Z}` with a sign `s_q ∈ {+1, -1}`, i.e. `|ψ⟩ = ⊗_q |A_q, s_q⟩`.
 ///
-/// Stored as per-word bit masks in the same symplectic layout as a [`PauliString`] key, so [`PauliSum::expectation_product_basis`] stays a masked scan over the key columns, never an expansion over `2ⁿ` basis states.
-/// Build one with [`ProductBasis::uniform`] or [`ProductBasis::from_axes`].
-///
-/// # Semantics
-///
-/// For a term `P` with key `(x, z)`, `⟨ψ|P|ψ⟩ = Π_q ⟨P_q⟩`, where `⟨P_q⟩ = 1` if `P_q = I`, `s_q` if `P_q = A_q`, and `0` otherwise (distinct single-qubit Paulis anticommute, so every off-axis Bloch component vanishes).
-/// With `sup = x | z` the term's support mask, the term contributes iff `x == sup & ax_x && z == sup & ax_z` — an equality on both halves of the key, not a subset test, so e.g. an `X` term on a `Y`-axis qubit contributes `0` (`⟨+i|X|+i⟩ = 0`). When it does contribute, its sign is `(-1)^popcount(sup & neg)`.
-///
-/// # Examples
-///
-/// `⟨01|Z⊗Z|01⟩ = ⟨0|Z|0⟩·⟨1|Z|1⟩ = (+1)(-1) = -1`.
-///
-/// ```
-/// use paulistrings::{BuildAccumulator, PauliAxis, PauliString, Phase, ProductBasis};
-/// use num_complex::Complex64;
-///
-/// let mut acc = BuildAccumulator::<1>::new(2);
-/// let mut zz = PauliString::<1>::z(0);
-/// zz.mul_assign(&PauliString::<1>::z(1));
-/// acc.add_term(zz, Phase::ONE, Complex64::new(1.0, 0.0));
-/// let sum = acc.finalize();
-///
-/// // Qubit 0 in |0⟩, qubit 1 in |1⟩ — both Z-axis, the second one negative.
-/// let basis = ProductBasis::<1>::from_axes([(PauliAxis::Z, false), (PauliAxis::Z, true)]);
-/// assert!((sum.expectation_product_basis(&basis).re + 1.0).abs() < 1e-12);
-/// ```
-///
-/// [`PauliString`]: crate::PauliString
+/// Stored as bit masks in the symplectic key layout; build one with [`ProductBasis::uniform`] or [`ProductBasis::from_axes`].
+/// A term `P` has `⟨ψ|P|ψ⟩ = Π_q ⟨P_q⟩`, with `⟨P_q⟩ = 1` for `I`, `s_q` for `A_q`, and `0` for any other Pauli.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductBasis<const W: usize> {
     /// `x`-bit of each qubit's axis Pauli.
@@ -83,8 +55,6 @@ pub struct ProductBasis<const W: usize> {
 
 impl<const W: usize> ProductBasis<W> {
     /// The uniform basis of a [`ProductState`]: the same axis, sign `+1`, on every qubit.
-    ///
-    /// The axis masks are all-ones rather than trimmed to a qubit count — safe at any width, since a stored key never has a bit set beyond `num_qubits`.
     pub fn uniform(state: ProductState) -> Self {
         let axis = match state {
             ProductState::XPlus => PauliAxis::X,
@@ -102,7 +72,7 @@ impl<const W: usize> ProductBasis<W> {
 
     /// A basis from per-qubit `(axis, minus)` pairs: item `i` describes qubit `i`, and `minus = true` selects that axis's `-1` eigenstate.
     ///
-    /// Qubits past the end of the iterator keep an all-zero (identity) axis, matching only an identity factor — supply one pair per qubit the sum actually uses.
+    /// Qubits past the end of the iterator match only an identity factor, so supply one pair per qubit the sum uses.
     ///
     /// # Panics
     ///
@@ -139,32 +109,19 @@ impl<const W: usize> ProductBasis<W> {
 }
 
 impl<const W: usize> PauliSum<W> {
-    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state.
-    /// For each [`ProductState`] there is exactly one single-qubit Pauli with expectation `1`; a term contributes its full coefficient iff every factor is `I` or that Pauli — a masked scan over the key columns, run as a per-bucket parallel reduction.
-    /// The uniform states are the special case of [`ProductBasis`] with sign `+1` everywhere, so this is a thin wrapper over [`Self::expectation_product_basis`].
-    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
-    ///
-    /// # Summation order
-    ///
-    /// Partial sums are combined in bucket order, which is deterministic given the partition; two partitions of the same terms can differ in the last bits, since `f64` addition is not associative.
+    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state; complex since `O` need not be Hermitian.
     pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
         self.expectation_product_basis(&ProductBasis::<W>::uniform(state))
     }
 
-    /// Expectation value `⟨ψ|O|ψ⟩` in an arbitrary single-qubit product state.
-    /// `basis` gives each qubit its own axis and sign; see [`ProductBasis`] for the per-word match condition and the sign rule this evaluates. A term contributes its coefficient (negated when an odd number of support sites are `-1` eigenstates) iff every non-identity factor equals that qubit's axis exactly. Cost is one pass over the key columns as a per-bucket parallel reduction, with no expansion over basis states.
-    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
-    ///
-    /// # Summation order
-    ///
-    /// As in [`Self::expectation_product_state`] — partials are combined in bucket order, so two partitions of the same terms can differ in the last bits.
+    /// Expectation value `⟨ψ|O|ψ⟩` in a single-qubit product state with a per-qubit axis and sign; complex since `O` need not be Hermitian.
     pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.buckets()
             .par_iter()
             .map(|cols| {
                 let mut acc = Complex64::new(0.0, 0.0);
                 for i in 0..cols.len() {
-                    // `mismatch` stays zero iff every word's non-identity sites carry exactly the local axis Pauli; `sign_bits` counts the `-1` eigenstates inside the support.
+                    // An equality on both key halves, not a subset test: an X factor on a Y-axis qubit must not match.
                     let mut mismatch = 0u64;
                     let mut sign_bits = 0u32;
                     for w in 0..W {

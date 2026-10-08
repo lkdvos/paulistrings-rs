@@ -17,7 +17,7 @@ fn sum_of<const W: usize>(terms: &[(&str, f64)]) -> PauliSum<W> {
     PauliSum::<W>::from_strings(&terms)
 }
 
-/// `2⁻ⁿ Tr(A† V† A V)` by brute force: `V† A V` materialized through `propagate` of `exp(-i (2δ) G_q / 2)` rotations in the Heisenberg picture, then [`PauliSum::overlap`].
+/// `2⁻ⁿ Tr(A† V† A V)` by brute force: `V† A V` materialized through `propagate`, then [`PauliSum::overlap`].
 fn materialized<const W: usize>(
     a: &PauliSum<W>,
     sites: &[usize],

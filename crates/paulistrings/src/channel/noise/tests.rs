@@ -5,12 +5,9 @@ use crate::pauli_sum::hash::Gf2Hash;
 use crate::phase::Phase;
 use crate::test_support::{alloc_bufs, approx_eq};
 
-// AmplitudeDamping: `apply` is Φ (Schrödinger, `direction="forward"`), `apply_adjoint` is Φ† (Heisenberg, `direction="heisenberg"`) — see the type doc for the derivation and the four scale factors each way.
-
 /// Collect the outputs of `apply` or `apply_adjoint` on one input.
 ///
-/// Emission order, zeros included — these tests assert on row *positions*,
-/// so the normalizing `test_support::outputs` would not do.
+/// In emission order, zeros included, since these tests assert on row positions.
 fn outputs<const W: usize>(
     ch: &AmplitudeDamping,
     adjoint: bool,
@@ -24,8 +21,7 @@ fn outputs<const W: usize>(
     )
 }
 
-/// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the
-/// `I=0, X=1, Z=2, Y=3` packing.
+/// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the `I=0, X=1, Z=2, Y=3` packing.
 fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
     let basis = |idx: usize| -> PauliString<1> {
         match idx {
@@ -42,8 +38,6 @@ fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
         xb | (zb << 1)
     };
     let mut t = [[0.0f64; 4]; 4];
-    // `j` is the *column* (input basis element) while the row is computed
-    // from each output, so there is nothing to iterate over here.
     #[allow(clippy::needless_range_loop)]
     for j in 0..4 {
         for (out_p, c) in outputs::<1>(ch, adjoint, basis(j)) {
@@ -53,7 +47,7 @@ fn ptm4(ch: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
     t
 }
 
-/// Both PTM rows of a damping channel on qubit `q`, checked against the type doc's derivation. Generic in `W` so the word-boundary bit arithmetic is exercised at both widths.
+/// Both maps of a damping channel on qubit `q`, row by row.
 fn check_both_maps<const W: usize>(q: u32, g: f64) {
     let ch = AmplitudeDamping {
         support: [q],
@@ -71,8 +65,7 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     assert_eq!(got[1].0, zq);
     assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
 
-    // `Φ(Z) = (1-γ) Z`, with no identity component: Φ preserves trace and
-    // `tr Z = 0`, so the I coefficient must vanish.
+    // `Φ(Z) = (1-γ) Z`, with no identity component: Φ preserves trace and `tr Z = 0`, so the I coefficient must vanish.
     let got = outputs::<W>(&ch, false, zq);
     assert_eq!(got.len(), 1, "W={W}: Φ(Z) has no I component");
     assert_eq!(got[0].0, zq);
@@ -92,8 +85,7 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     assert_eq!(got[1].0, id);
     assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
 
-    // X and Y: the one row where Φ and Φ† agree, because `⟨1|X|1⟩` and
-    // `⟨0|X|0⟩` both vanish and the K₁ term drops out either way.
+    // X and Y: the one row where Φ and Φ† agree, because `⟨1|X|1⟩` and `⟨0|X|0⟩` both vanish and the K₁ term drops out either way.
     for p in [PauliString::<W>::x(q), PauliString::<W>::y(q)] {
         for adjoint in [false, true] {
             let got = outputs::<W>(&ch, adjoint, p);
@@ -104,8 +96,7 @@ fn check_both_maps<const W: usize>(q: u32, g: f64) {
     }
 }
 
-/// `apply` is Φ (Schrödinger, fan-out on I) and `apply_adjoint` is Φ†
-/// (Heisenberg, unital, fan-out on Z) — W=1.
+/// `apply` is Φ (Schrödinger, fan-out on I) and `apply_adjoint` is Φ† (Heisenberg, unital, fan-out on Z) — W=1.
 #[test]
 fn forward_is_phi_and_adjoint_is_phi_dagger_w1() {
     check_both_maps::<1>(0, 0.3);
@@ -119,8 +110,7 @@ fn forward_is_phi_and_adjoint_is_phi_dagger_w2() {
     check_both_maps::<2>(64, 0.4);
 }
 
-/// The physics the orientation is for: `⟨Z⟩_after = tr[Φ†(Z) ρ]` with `Φ†(Z) = γ I + (1-γ) Z` gives `⟨Z⟩ = 1` for `ρ = |0⟩⟨0|` (fixed point) and `2γ - 1` for `ρ = |1⟩⟨1|` (decay toward `|0⟩`).
-/// The swapped orientation would instead give `(1-γ)·⟨Z⟩`, a ground-state qubit spontaneously depolarizing.
+/// `⟨Z⟩_after = tr[Φ†(Z) ρ]` with `Φ†(Z) = γ I + (1-γ) Z` gives `⟨Z⟩ = 1` for `ρ = |0⟩⟨0|` (fixed point) and `2γ - 1` for `ρ = |1⟩⟨1|` (decay toward `|0⟩`).
 #[test]
 fn heisenberg_z_reproduces_the_damped_qubit_expectation() {
     // `⟨b|P|b⟩` for a computational state whose qubits-in-|1⟩ are `ones`:
@@ -200,9 +190,7 @@ fn adjoint_is_unital_and_forward_is_trace_preserving() {
         assert_eq!(adj_i[0].0, PauliString::<1>::identity());
         assert!((adj_i[0].1 - Complex64::new(1.0, 0.0)).norm() < 1e-15);
 
-        // Trace preservation of the forward map: the I row of its PTM is
-        // [1, 0, 0, 0], i.e. the I component of the output depends only on
-        // the I component of the input, with unit weight.
+        // Trace preservation of the forward map: the I row of its PTM is [1, 0, 0, 0].
         let fwd = ptm4(&ch, false, 0);
         assert!((fwd[0][0] - 1.0).abs() < 1e-15, "gamma={g}");
         for (j, &v) in fwd[0].iter().enumerate().skip(1) {
@@ -247,8 +235,7 @@ fn forward_respects_a_word_boundary_w2() {
     assert_eq!(got.len(), 2);
     assert_eq!(got[1].0, PauliString::<2>::z(70));
     assert!((got[1].1 - Complex64::new(g, 0.0)).norm() < 1e-15);
-    // A term on the other side of the boundary is untouched, but qubit 70
-    // is still in the identity sector, so Φ fans it out.
+    // A term on the other side of the boundary is untouched, but qubit 70 is still in the identity sector, so Φ fans it out.
     let other = PauliString::<2>::x(3);
     let got = outputs::<2>(&ch, false, other);
     assert_eq!(got.len(), 2, "q=3 is I on the support, so Φ fans out");
@@ -260,8 +247,7 @@ fn forward_respects_a_word_boundary_w2() {
 
 const TOL: f64 = 1e-12;
 
-/// Identity on the support qubit is preserved exactly — coefficient
-/// rescaling does not touch the I sector.
+/// Identity on the support qubit is preserved exactly — coefficient rescaling does not touch the I sector.
 #[test]
 fn depolarizing_passes_identity_through() {
     let ch = Depolarizing {
@@ -315,9 +301,7 @@ fn depolarizing_scales_xyz() {
     }
 }
 
-/// Off-support qubits are ignored: a Z on qubit 1 with the channel
-/// supported on qubit 0 leaves the coefficient untouched (the support
-/// qubit is in I-state).
+/// Off-support qubits are ignored: a Z on qubit 1 with the channel supported on qubit 0 leaves the coefficient untouched (the support qubit is in I-state).
 #[test]
 fn depolarizing_off_support_is_no_op() {
     let ch = Depolarizing {
@@ -337,8 +321,7 @@ fn depolarizing_off_support_is_no_op() {
     assert!(approx_eq(bc[0], Complex64::new(3.0, 0.0), TOL));
 }
 
-/// W=2: support qubit lives in word 1 (qubit 64+). The scale must
-/// trigger when bits at qubit 64 are non-identity.
+/// W=2: the scale triggers on a non-identity Pauli at qubit 64, in word 1.
 #[test]
 fn depolarizing_w2_word_boundary() {
     let p = 0.25;
@@ -423,7 +406,7 @@ fn dephasing_scales_x_and_y() {
     }
 }
 
-/// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`, per the type doc's dual scales: `I → 1`, `X → 0`, `Y → 0.2`, `Z → 0.4`.
+/// The four scale factors at `(px, py, pz) = (0.1, 0.2, 0.3)`: `I → 1`, `X → 0`, `Y → 0.2`, `Z → 0.4`.
 #[test]
 fn pauli_channel_scales_are_hand_computed_w1() {
     let ch = PauliChannel {
@@ -483,9 +466,7 @@ fn pauli_channel_scales_are_hand_computed_w2() {
     }
 }
 
-/// `pauli_channel(p/3, p/3, p/3) ≡ depolarize(p)`: uniform Pauli error is
-/// exactly depolarizing noise, so the two channels must agree Pauli for
-/// Pauli. Checked at both widths.
+/// `pauli_channel(p/3, p/3, p/3) ≡ depolarize(p)`: uniform Pauli error is exactly depolarizing noise, so the two channels must agree Pauli for Pauli.
 #[test]
 fn pauli_channel_at_uniform_probabilities_is_depolarizing() {
     let p = 0.42;
@@ -574,8 +555,7 @@ fn pauli_channel_with_only_pz_is_dephasing() {
     }
 }
 
-/// Off-support qubits are invisible: the support qubit sits in the identity
-/// sector, so the coefficient passes through untouched.
+/// Off-support qubits are invisible: the support qubit sits in the identity sector, so the coefficient passes through untouched.
 #[test]
 fn pauli_channel_off_support_is_a_no_op() {
     let ch = PauliChannel {
@@ -595,8 +575,7 @@ fn pauli_channel_off_support_is_a_no_op() {
     assert!(approx_eq(got[0].1, Complex64::new(3.0, 0.0), TOL));
 }
 
-/// A diagonal rescaling is its own Hilbert-Schmidt adjoint, so the default
-/// `apply_adjoint` is correct — pinned rather than assumed.
+/// A diagonal rescaling is its own adjoint, so the default `apply_adjoint` is correct.
 #[test]
 fn pauli_channel_is_self_adjoint() {
     let ch = PauliChannel {
@@ -620,8 +599,7 @@ fn pauli_channel_is_self_adjoint() {
     }
 }
 
-/// Key-preserving fanout-1, so the engine takes `rescale_in_place`: no
-/// gather, no sort, no merge. Losing this would be a silent slowdown.
+/// Key-preserving, so the engine takes the in-place rescale.
 #[test]
 fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
     let ch = PauliChannel {
@@ -639,8 +617,8 @@ fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
     }
 }
 
-/// `p = 0.3`: the scale is `0.68` for all 15 non-identity restrictions, `1` for `I⊗I`, per the type doc's dual scale.
-/// Enumerated over the full 4x4 local basis so weight-1 restrictions are covered too — they take the same factor, which is the easy thing to get wrong.
+/// `p = 0.3`: the scale is `0.68` for all 15 non-identity restrictions, `1` for `I⊗I`.
+/// Weight-1 restrictions take the same factor.
 #[test]
 fn depolarize2_scale_is_hand_computed_w1() {
     let ch = Depolarizing2Q {
@@ -779,8 +757,7 @@ fn depolarize2_is_self_adjoint() {
     }
 }
 
-/// Support weight 2 fits `MAX_LOCAL_SUPPORT`, and the channel is
-/// key-preserving, so the engine takes `rescale_in_place` here too.
+/// Support weight 2 fits `MAX_LOCAL_SUPPORT`, and the channel is key-preserving, so the engine takes `rescale_in_place` here too.
 #[test]
 fn depolarize2_prepares_as_a_key_preserving_local_ptm() {
     let ch = Depolarizing2Q {
@@ -818,9 +795,7 @@ fn dephasing_w2_word_boundary() {
     assert!(approx_eq(bc[0], Complex64::new(scale, 0.0), TOL));
 }
 
-/// I on the support is fixed by the *adjoint* (Heisenberg) map — fanout 1,
-/// coefficient preserved. That is unitality; `apply` instead fans I out to
-/// `I + γ Z`.
+/// The adjoint map fixes I on the support with fanout 1 (unitality); `apply` instead fans I out to `I + γ Z`.
 #[test]
 fn amplitude_damping_adjoint_passes_identity_through() {
     let ch = AmplitudeDamping {
@@ -879,9 +854,7 @@ fn amplitude_damping_scales_x_and_y_by_sqrt() {
     }
 }
 
-/// In the adjoint (Heisenberg) map, Z on the support fans out to
-/// `(1-γ)·Z + γ·I`. The first emit is the Z term, the second is the I term
-/// (z-bit cleared on the support qubit).
+/// The adjoint map fans Z on the support out to `(1-γ)·Z` first, then `γ·I` with the z-bit cleared.
 #[test]
 fn amplitude_damping_adjoint_z_fans_out_to_z_plus_i() {
     let gamma = 0.25;
@@ -916,8 +889,7 @@ fn amplitude_damping_adjoint_z_fans_out_to_z_plus_i() {
     assert!(approx_eq(bc[1], Complex64::new(gamma, 0.0), TOL));
 }
 
-/// W=2, adjoint map: Z on qubit 64 fans out to (1-γ)·Z@64 + γ·I, with the
-/// I term's z-bit cleared in word 1 only.
+/// W=2, adjoint map: Z on qubit 64 fans out to (1-γ)·Z@64 + γ·I, with the I term's z-bit cleared in word 1 only.
 #[test]
 fn amplitude_damping_adjoint_w2_word_boundary() {
     let gamma = 0.4;

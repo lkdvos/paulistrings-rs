@@ -51,8 +51,6 @@ where
     }
 }
 
-// ---- Cliffords expressed as general unitaries ----
-
 #[test]
 fn hadamard_as_a_general_unitary_matches_clifford1q() {
     let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);
@@ -130,8 +128,6 @@ fn cnot_across_a_word_boundary_w2() {
     assert_agrees_on_basis::<2, _, _>(&g, &Clifford2Q::cnot(60, 70), &[60, 70], "cnot@60,70");
 }
 
-// ---- non-Clifford ----
-
 /// The `T` gate mixes `X` with `Y` and fixes `I` and `Z`, so it is a genuine fanout-2 non-Clifford whose delta set is only one-dimensional, reading 2 buckets rather than the 4 a dense 1Q unitary would.
 #[test]
 fn t_gate_expansion_and_bucket_fanin() {
@@ -186,8 +182,6 @@ fn dense_unitaries_reach_the_quoted_bucket_fanin() {
         "dense 1Q should read 4 buckets"
     );
 }
-
-// ---- adjoint ----
 
 #[test]
 fn adjoint_reads_the_table_transposed_and_round_trips() {
@@ -262,8 +256,6 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
         }
     }
 }
-
-// ---- prepared-form round trip ----
 
 /// The derivation must recover exactly the table it was built from — a bounded-support channel *is* its local PTM.
 #[test]

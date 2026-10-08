@@ -1,14 +1,9 @@
-//! `IdentityChannel` — no-op channel that emits its input unchanged.
-//!
-//! Useful as a sanity scaffold for the engine (ARCHITECTURE.md §Engine) and
-//! as a neutral element when composing circuits.
+//! [`IdentityChannel`], the channel that emits its input unchanged.
 
 use super::{Channel, OutputBuffer};
 use num_complex::Complex64;
 
-/// A channel that maps every input Pauli to itself with the same coefficient.
-///
-/// `support()` is empty, so the engine's bucket layout collapses to a single bucket and the only effect is to copy the input through. `max_fanout()` is `1`.
+/// The identity channel, with empty support.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IdentityChannel;
 

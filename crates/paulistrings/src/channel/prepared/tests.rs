@@ -11,8 +11,7 @@ const TOL: f64 = 1e-12;
 
 type Term<const W: usize> = ([u64; W], [u64; W], Complex64);
 
-/// Outputs of `apply` / `apply_adjoint`, with exact zeros dropped and equal
-/// keys summed — the same normalization the merge phase performs.
+/// Outputs of `apply` / `apply_adjoint`, with exact zeros dropped and equal keys summed — the same normalization the merge phase performs.
 fn via_apply<const W: usize, C: Channel<W> + ?Sized>(
     ch: &C,
     adjoint: bool,
@@ -104,7 +103,7 @@ fn assert_terms_eq<const W: usize>(a: &[Term<W>], b: &[Term<W>], what: &str) {
     }
 }
 
-/// The derived table must reproduce `apply` on randomized full-width inputs, not just the basis probes prepare-time derivation reads — this catches a channel reading outside its declared support.
+/// The derived table reproduces `apply` on randomized full-width inputs, not just the basis probes.
 fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
     ch: &C,
     num_qubits: usize,
@@ -133,8 +132,6 @@ fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
         }
     }
 }
-
-// ---- the derived table reproduces `apply`, per built-in channel ----
 
 #[test]
 fn derived_table_matches_apply_identity() {
@@ -226,8 +223,6 @@ fn functional_form_matches_apply_for_a_wide_rotation() {
     check_agrees_on_random_inputs::<2, _>(&rot, 128, "rot_weight4");
 }
 
-// `DeltaEntry::emit` / `RotationPrep::emit_gen` are the row-level form the partitioned export pass uses in place of the engine's gather loops; these check them against `Channel::apply` itself, not against the gather.
-
 /// The same outputs, reconstructed one entry at a time through the emitters.
 /// Mirrors `via_prepared`, but routes every row through [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
 fn via_emit<const W: usize>(
@@ -247,9 +242,7 @@ fn via_emit<const W: usize>(
             }
         }
         Prepared::Rotation(r) => {
-            // Entry 0, the identity pass, has no `DeltaEntry`: every term
-            // emits one such row, full coefficient when it commutes and
-            // `cos`-scaled when it does not.
+            // Entry 0, the identity pass, has no `DeltaEntry`: every term emits one such row, full coefficient when it commutes and `cos`-scaled when it does not.
             let input = PauliString::<W> { x: *x, z: *z };
             let commutes = input.commutes_with(&r.gen);
             out.push((*x, *z, if commutes { coeff } else { coeff * r.cos }));
@@ -377,8 +370,7 @@ fn emit_matches_apply_for_rotations_at_every_width() {
 
 #[test]
 fn emit_returns_none_exactly_on_a_zero_amplitude() {
-    // CNOT's identity entry is nonzero on 4 of the 16 support patterns, so
-    // both branches of `emit` are reachable from one table.
+    // CNOT's identity entry is nonzero on 4 of the 16 support patterns, so both branches of `emit` are reachable from one table.
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
     let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
@@ -429,8 +421,6 @@ fn rotation_gen_mask_is_the_generator() {
     };
     assert_eq!(r.gen_mask(), (gen.x, gen.z));
 }
-
-// ---- retaining a subset of the entries ----
 
 fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &str) {
     assert_eq!(a.bucket_delta, b.bucket_delta, "{what}: bucket_delta");
@@ -487,8 +477,6 @@ fn retain_entries_keeping_everything_is_the_original() {
         0
     );
 }
-
-// ---- delta-set dimensions must match ARCHITECTURE.md §Bucketing ----
 
 fn n_bucket_deltas<const W: usize, C: Channel<W>>(ch: &C, adjoint: bool) -> usize {
     // Plenty of bucket bits, so distinct key deltas do not collide.
@@ -571,9 +559,7 @@ fn bucket_fanin_matches_the_design_table() {
 
 #[test]
 fn a_rotation_reads_two_buckets_at_any_generator_weight() {
-    // The headline structural claim: unlike naive support-derived
-    // bucketing (which would need 4^w buckets), the delta set {0, P} is
-    // 1-dimensional at every weight.
+    // The delta set {0, P} is 1-dimensional at every weight.
     for weight in 1..=6usize {
         let mut gen = PauliString::<2>::z(0);
         for q in 1..weight as u32 {
@@ -591,8 +577,7 @@ fn a_rotation_reads_two_buckets_at_any_generator_weight() {
 
 #[test]
 fn adjoint_preparations_have_the_same_fanin() {
-    // Conjugating by G^-1 has delta set im(S^-1 ^ I), a different subspace of
-    // the same dimension, so the bucket count must not change.
+    // Conjugating by G^-1 has delta set im(S^-1 ^ I), a different subspace of the same dimension, so the bucket count must not change.
     for (name, fwd, adj) in [
         (
             "s",
@@ -631,8 +616,6 @@ fn adjoint_preparations_have_the_same_fanin() {
     }
 }
 
-// ---- key-preserving detection ----
-
 #[test]
 fn key_preserving_channels_are_detected() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
@@ -670,8 +653,6 @@ fn key_preserving_channels_are_detected() {
     }
 }
 
-// ---- support-bit packing ----
-
 #[test]
 fn support_bits_use_the_clifford2q_packing() {
     let hash = Gf2Hash::<1>::new(64, 8, 0x1);
@@ -695,13 +676,9 @@ fn support_bits_use_the_clifford2q_packing() {
     assert_eq!(p.support_bits(&noise.x, &noise.z), 0b0001);
 }
 
-// ---- hash collisions among deltas ----
-
 #[test]
 fn colliding_deltas_share_a_group_rather_than_being_lost() {
-    // With 1 bucket bit, CNOT's four key deltas cannot map to four distinct
-    // bucket deltas, so rank(H|_D) < dim D and groups must carry multiple
-    // members. Correctness must not depend on H being well-chosen.
+    // With 1 bucket bit, CNOT's four key deltas collide on bucket deltas.
     let hash = Gf2Hash::<2>::new(128, 1, 0xC011);
     let prep = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
     let Prepared::Local(p) = prep else {
@@ -719,9 +696,7 @@ fn colliding_deltas_share_a_group_rather_than_being_lost() {
 
 #[test]
 fn deltas_are_ascending_by_local_delta() {
-    // Construction depends on gathering deltas in an order that does not
-    // depend on the bucket count. `local_delta` is that order, and it
-    // must hold even when bucket deltas collide (bits = 1 here).
+    // Entries ascend by `local_delta` even when bucket deltas collide.
     for bits in [1u8, 4, 16] {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
         let prep = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
@@ -739,8 +714,7 @@ fn deltas_are_ascending_by_local_delta() {
 
 #[test]
 fn delta_iteration_order_is_independent_of_bucket_count() {
-    // The same claim, checked directly: changing `bits` must not reorder the
-    // flattened delta sequence.
+    // Changing `bits` must not reorder the entries.
     let order = |bits: u8| -> Vec<u8> {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC013);
         let prep = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
@@ -755,12 +729,9 @@ fn delta_iteration_order_is_independent_of_bucket_count() {
     }
 }
 
-// ---- when derivation must refuse ----
-
 #[test]
 fn derive_refuses_support_wider_than_the_local_maximum() {
-    // A weight-3 rotation: `derive_local` must decline, even though
-    // `PauliRotation::prepare` overrides to the functional form.
+    // A weight-3 rotation: `derive_local` must decline, even though `PauliRotation::prepare` overrides to the functional form.
     let mut gen = PauliString::<1>::z(0);
     gen.mul_assign(&PauliString::<1>::z(1));
     gen.mul_assign(&PauliString::<1>::z(2));
@@ -774,8 +745,7 @@ fn derive_refuses_support_wider_than_the_local_maximum() {
     ));
 }
 
-/// The popcount check reads straight off the mask, independent of which
-/// qubits are set or which word they land in.
+/// The popcount check reads straight off the mask, independent of which qubits are set or which word they land in.
 #[test]
 fn derive_local_rejects_popcount_gt_2() {
     struct ThreeQubits;
@@ -804,10 +774,7 @@ fn derive_local_rejects_popcount_gt_2() {
 
 #[test]
 fn derive_refuses_a_channel_that_writes_outside_its_support() {
-    // A deliberately broken channel: declares support [0] but also flips
-    // qubit 1. Deriving a local PTM for it would be silently wrong, so
-    // derivation must decline — and `propagate` then panics rather than
-    // silently propagating a contract violation.
+    // Declares support [0] but also flips qubit 1, so derivation must decline.
     struct Liar;
     impl<const W: usize> Channel<W> for Liar {
         fn max_fanout(&self) -> usize {

@@ -47,8 +47,6 @@ fn pauli_y<const W: usize>(qubit: u32) -> PauliString<W> {
     PauliString::<W>::y(qubit)
 }
 
-// ---- Clifford1Q tables ----
-
 #[test]
 fn h_on_qubit_0_w1() {
     let h = Clifford1Q::h(0);
@@ -180,8 +178,6 @@ fn h_squared_is_identity() {
     }
 }
 
-// ---- Clifford1Q adjoint table ----
-
 /// Self-adjoint 1Q Cliffords round-trip through `adjoint()` to themselves.
 #[test]
 fn h_x_y_z_are_self_adjoint() {
@@ -202,8 +198,7 @@ fn h_x_y_z_are_self_adjoint() {
 fn s_adjoint_inverts_table_and_is_involutive() {
     let s = Clifford1Q::s(0);
     let s_dag = s.adjoint();
-    // Forward: I→I(+1), X→Y(+1), Z→Z(+1), Y→-X(-1)
-    // Adjoint: I→I(+1), X→-Y(-1), Z→Z(+1), Y→X(+1)
+    // S†: I→I, X→-Y, Z→Z, Y→X.
     assert_eq!(s_dag.out_pauli, [0, 3, 2, 1]);
     assert_eq!(
         s_dag.phase,
@@ -235,8 +230,6 @@ fn s_apply_then_apply_adjoint_round_trips() {
     assert_eq!(bz[0], x_in.z);
     assert_eq!(bc[0], Complex64::new(1.0, 0.0));
 }
-
-// ---- Clifford2Q tables ----
 
 /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli codes (`I=0, X=1, Z=2, Y=3`).
 fn tensor<const W: usize>(q0: u32, q1: u32, pa: u8, pb: u8) -> PauliString<W> {

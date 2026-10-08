@@ -1,14 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-/// `CoefficientThreshold` compares `|c|²` against `ε²`, so a magnitude
-/// whose *square* underflows to zero is indistinguishable from an exact
-/// zero. At `ε = 0` — "drop only the exact zeros" — that means every
-/// magnitude below `≈1.57e-162` is dropped as well.
-///
-/// `(1e-100)² = 1e-200` is a normal `f64` and survives; `(1e-200)² ` is
-/// below the smallest subnormal (`4.94e-324`) and rounds to `0.0`, which
-/// is not `> 0.0`.
+/// At `ε = 0` a magnitude whose square underflows is dropped: `(1e-100)²` survives, `(1e-200)²` rounds to `0.0`.
 #[test]
 fn coefficient_threshold_drops_squares_that_underflow_to_zero() {
     let policy = CoefficientThreshold(0.0);
@@ -24,7 +17,7 @@ fn coefficient_threshold_drops_squares_that_underflow_to_zero() {
         &[0],
         Complex64::new(1e-200, 0.0)
     ));
-    // An exact zero is dropped at ε = 0, exactly as it was before.
+    // An exact zero is dropped at ε = 0.
     assert!(!<CoefficientThreshold as TruncationPolicy<1>>::keep_term(
         &policy,
         &[1],
@@ -69,8 +62,7 @@ fn layer_finalize_hint_matches_the_builtins() {
     let topn_first = And(TopN(4), WeightCutoff(2));
     assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&topn_first));
 
-    // `Or` does not forward `finalize_layer` to either side, so it has no
-    // layer pass however its children answer.
+    // `Or` does not forward `finalize_layer` to either side, so it has no layer pass however its children answer.
     let ored = Or(CoefficientThreshold(1e-9), TopN(4));
     assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&ored));
 }
@@ -150,7 +142,7 @@ fn weight_cutoff_zero_keeps_only_identity() {
     ));
 }
 
-/// multi-word popcount. Qubit 64 lives in word 1, bit 0.
+/// Weight counts across words; qubit 64 is word 1, bit 0.
 #[test]
 fn weight_cutoff_w2_word_boundary() {
     let cut = WeightCutoff(1);
@@ -173,7 +165,7 @@ fn weight_cutoff_w2_word_boundary() {
 /// Ten distinct keys with decreasing |coeff| (10, 9, …, 1); `TopN(3)` keeps the three with magnitudes 10, 9, 8.
 #[test]
 fn top_n_keeps_largest_three_of_ten() {
-    // Largest magnitudes sit at the front of the sort order; back-loaded magnitudes are exercised separately.
+    // Largest magnitudes first in key order.
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (1u64..=10).map(|i| [i]).collect(),
         vec![[0u64]; 10],
@@ -373,15 +365,7 @@ fn top_n_drops_an_underflowing_tail_and_keeps_the_rest() {
     sum.assert_invariants();
 }
 
-/// The squared-magnitude buffer is pooled per thread and never shrunk, so
-/// a *smaller* sum finalized after a larger one must read only its own
-/// `[..len]` prefix. This is the guard for that: the second sum's
-/// magnitudes all sit below the first sum's threshold, so a stale tail
-/// leaking into the selection would pick `t2` from the previous layer and
-/// wipe the second sum instead of truncating it.
-///
-/// Both calls run on the test's own thread, in order, which is exactly
-/// the reuse pattern a Trotter driver produces.
+/// A smaller sum finalized after a larger one on the same thread reads only its own prefix of the pooled buffer, not the stale tail.
 #[test]
 fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
     let mut big = PauliSum::<1>::from_sorted_columns(
@@ -417,7 +401,7 @@ fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
     );
 }
 
-/// Smoke test for `finalize_layer` called from inside a rayon job (a caller propagating several observables in parallel), where a blocked worker may re-enter `finalize_layer` via work-stealing.
+/// `finalize_layer` inside a rayon job, where work-stealing may re-enter it.
 #[test]
 fn finalize_layer_runs_inside_a_rayon_job() {
     use crate::test_support::rand_sum;
@@ -483,12 +467,7 @@ fn top_n_preserves_sort_order() {
     sum.assert_invariants();
 }
 
-// -----------------------------------------------------------------
-// ApproxTopN
-// -----------------------------------------------------------------
-
-/// A `W = 1` sum of `mags.len()` distinct keys (`x = i`, `z = 0`) with the
-/// given real coefficients, single-bucket and already in key order.
+/// A `W = 1` sum of `mags.len()` distinct keys (`x = i`, `z = 0`) with the given real coefficients, single-bucket and already in key order.
 fn sum_of_mags(mags: &[f64]) -> PauliSum<1> {
     PauliSum::<1>::from_sorted_columns(
         (0u64..mags.len() as u64).map(|i| [i]).collect(),
@@ -503,8 +482,7 @@ fn kept_mags<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
     sum.iter().map(|(_, _, c)| c.norm()).collect()
 }
 
-/// Octave of `|c|²`, i.e. the bin `ApproxTopN` histograms into, derived
-/// here from the definition rather than from the implementation.
+/// Octave of `|c|²`, i.e. the bin `ApproxTopN` histograms into, derived here from the definition rather than from the implementation.
 fn octave(c: Complex64) -> usize {
     (c.norm_sqr().to_bits() >> 52) as usize
 }
@@ -582,9 +560,7 @@ fn approx_top_n_is_monotone_in_n() {
 }
 
 /// The `≈n` contract, checked against a bound derived from the input:
-/// `kept <= n`, and `kept > n - p` where `p` is the population of the
-/// highest *excluded* octave. Equivalently `kept + p > n`: the next octave
-/// down would have overshot.
+/// `kept <= n`, and `kept > n - p` where `p` is the population of the highest *excluded* octave. Equivalently `kept + p > n`: the next octave down would have overshot.
 #[test]
 fn approx_top_n_shortfall_is_bounded_by_one_octave() {
     let input = crate::test_support::rand_sum::<1>(3000, 10, 0xB0117);
@@ -710,8 +686,7 @@ fn approx_top_n_ranks_complex_coefficients_by_squared_magnitude() {
     assert_eq!(kept_mags(&sum), vec![6.0], "only 6i fits in one slot");
     sum.assert_invariants();
 
-    // Two slots take both of the top two octaves; magnitudes come back in
-    // key order, not magnitude order.
+    // Two slots take both of the top two octaves; magnitudes come back in key order, not magnitude order.
     let mut sum = build();
     ApproxTopN(2).finalize_layer(&mut sum);
     assert_eq!(kept_mags(&sum), vec![5.0, 6.0]);
@@ -769,10 +744,6 @@ proptest! {
         }
     }
 }
-
-// -----------------------------------------------------------------
-// CollapseSample
-// -----------------------------------------------------------------
 
 use crate::pauli_sum::Gf2Hash;
 use crate::test_support::{
@@ -891,8 +862,7 @@ fn collapse_sample_rejects_an_all_zero_sum() {
     CollapseSample::new(1, 0).finalize_layer(&mut sum);
 }
 
-/// `And` requires both policies to accept. Pair a coeff threshold with
-/// a weight cutoff; only terms passing *both* survive.
+/// `And` requires both policies to accept. Pair a coeff threshold with a weight cutoff; only terms passing *both* survive.
 #[test]
 fn and_requires_both_keep() {
     let policy = And(CoefficientThreshold(0.5), WeightCutoff(1));

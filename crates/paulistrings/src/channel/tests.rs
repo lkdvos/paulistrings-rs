@@ -1,8 +1,6 @@
 use super::*;
 use crate::test_support::alloc_bufs;
 
-// ---- support_mask ----
-
 #[test]
 fn support_mask_packs_cross_word_qubits() {
     // Qubit 70 at W=2 lands in word 1, bit 6.
@@ -17,8 +15,6 @@ fn support_mask_is_order_and_duplicate_insensitive() {
     let b: [u64; 1] = support_mask(&[1, 3]);
     assert_eq!(a, b);
 }
-
-// ---- debug_name (progress logging) ----
 
 /// The default `debug_name` must survive erasure to `dyn Channel<W>` — that is how the engine sees every channel — and must trim both the module path and any generic arguments.
 #[test]

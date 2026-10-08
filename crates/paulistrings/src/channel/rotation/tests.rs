@@ -1,7 +1,3 @@
-// ---- support derivation ----
-//
-// These pin that the support is derived from the generator: a mismatch would silently miscompile the sort order.
-
 #[test]
 fn support_is_derived_from_a_weight_one_generator() {
     let rot = PauliRotation::new(PauliString::<1>::z(7), 0.3);
@@ -53,15 +49,13 @@ fn support_is_deduplicated_across_x_and_z() {
 
 #[test]
 fn an_identity_generator_has_empty_support() {
-    // Degenerate but representable: exp(-i*theta*I/2) is a global phase, so
-    // it commutes with everything and fanout collapses to 1.
+    // Degenerate but representable: exp(-i*theta*I/2) is a global phase, so it commutes with everything and fanout collapses to 1.
     let rot = PauliRotation::new(PauliString::<1>::identity(), 0.3);
     assert_eq!(Channel::<1>::support(&rot), [0u64]);
     assert_eq!(rot.weight(), 0);
 }
 
-/// The mask form directly: bit `q` set in `support()` iff qubit `q` is
-/// non-identity in the generator (`gen_x[w] | gen_z[w]` per word).
+/// The mask form directly: bit `q` set in `support()` iff qubit `q` is non-identity in the generator (`gen_x[w] | gen_z[w]` per word).
 #[test]
 fn rotation_support_is_generator_mask() {
     let mut gen = PauliString::<2>::z(3);

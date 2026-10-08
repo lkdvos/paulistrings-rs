@@ -8,25 +8,14 @@ use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use std::sync::Arc;
 
-/// The builtin truncation policies as one value-level tree, the form a backend lowers.
+/// Any builtin policy or combinator as one runtime value, the form the device drivers take.
 ///
-/// Every variant delegates to the builtin type it names, so a `BuiltinTruncation` truncates exactly as the corresponding composition of [`CoefficientThreshold`], [`WeightCutoff`], [`TopN`], [`ApproxTopN`], [`CollapseSample`], [`And`](super::And) and [`Or`](super::Or) does, on the host and in partitioned mode.
-/// Every builtin and combinator converts into one with [`From`], which is how the CUDA backend takes a policy; a custom [`TruncationPolicy`] has no conversion, so it cannot reach a device.
-///
-/// `Or` combines per-term filters only and runs neither side's layer pass, matching [`Or`](super::Or); `And` runs both, first then second.
-/// In partitioned mode an exact `TopN` whose layer pass would run panics, since it has no collective form (see [`PartitionedTruncation`](crate::PartitionedTruncation)).
-/// A [`CollapseSample`] is shared, not copied, by `Clone`: its pass counter is the trajectory's state, so every tree holding one handle continues the same sequence. No device backend runs it.
-///
-/// ```
-/// use paulistrings::BuiltinTruncation as T;
-/// use paulistrings::TruncationPolicy;
-///
-/// let policy = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(1_000)));
-/// assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&policy));
-/// ```
+/// Each variant truncates exactly as the builtin it names, and every builtin converts into one with [`From`]; a custom [`TruncationPolicy`] does not.
+/// An exact `TopN` whose layer pass would run panics in partitioned mode, where it has no collective form.
+/// `Clone` shares a [`CollapseSample`] rather than copying it, so every clone continues the same trajectory.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuiltinTruncation {
-    /// No filtering; exact zeros are still dropped by the merge.
+    /// No truncation.
     Keep,
     /// [`CoefficientThreshold`]`(eps)`.
     Coeff(f64),
@@ -36,11 +25,11 @@ pub enum BuiltinTruncation {
     TopN(usize),
     /// [`ApproxTopN`]`(n)`.
     ApproxTopN(usize),
-    /// [`CollapseSample`], one trajectory shared by every clone of the tree.
+    /// [`CollapseSample`].
     CollapseSample(Arc<CollapseSample>),
-    /// [`And`](super::And) of two policies.
+    /// [`And`] of two policies.
     And(Box<BuiltinTruncation>, Box<BuiltinTruncation>),
-    /// [`Or`](super::Or) of two policies.
+    /// [`Or`] of two policies.
     Or(Box<BuiltinTruncation>, Box<BuiltinTruncation>),
 }
 
@@ -60,7 +49,7 @@ impl BuiltinTruncation {
         }
     }
 
-    /// Whether a [`CollapseSample`] appears anywhere in the tree, `Or` branches included; no device backend runs one.
+    /// Whether a [`CollapseSample`] appears anywhere in the tree, `Or` branches included.
     pub fn contains_collapse_sample(&self) -> bool {
         match self {
             Self::CollapseSample(_) => true,
@@ -168,7 +157,7 @@ impl<A: Into<BuiltinTruncation>, B: Into<BuiltinTruncation>> From<Or<A, B>> for 
     }
 }
 
-/// A borrowed policy converts as its clone does, so a device driver takes `&policy` as the host engine does.
+/// A borrowed policy converts as its clone does.
 impl<P: Clone + Into<BuiltinTruncation>> From<&P> for BuiltinTruncation {
     fn from(p: &P) -> Self {
         p.clone().into()

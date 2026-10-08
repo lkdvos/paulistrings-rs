@@ -6,72 +6,48 @@ use num_complex::Complex64;
 
 use super::{ChunkMap, Payload};
 
-/// Fixed-size prefix describing one [`ExchangeBlock`] on the wire.
-///
-/// `#[repr(C)]` and `Pod`: four `u32`s, 16 bytes, no padding, so it casts to bytes with no copy and reads back from an unaligned buffer.
+/// Fixed-size wire prefix of one [`ExchangeBlock`]: four `u32`s, no padding, so it casts to bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct BlockHeader {
-    /// Number of destination positions the block is indexed by — the group's agreed bucket count. `offsets` has `num_buckets + 1` entries.
+    /// Destination positions, the group's agreed bucket count; `offsets` has one more entry.
     pub num_buckets: u32,
-    /// Total rows in the block: `offsets[num_buckets]`, and the length of each column once the export pass has filled it.
+    /// Live rows, `offsets[num_buckets]`.
     pub rows: u32,
-    /// The width `W` the block was built at. Checked on decode: a payload encoded at one width is never silently reinterpreted at another.
+    /// The width `W` the block was built at, checked on receive.
     pub w: u32,
-    /// Which of the layer plan's remote deltas this block carries — the receiver looks it up for the delta's bucket offset `bd[e]` in the [`ExchangeBlock::segment`] rule.
+    /// The layer plan's remote-delta index this block carries.
     pub entry: u32,
 }
 
-/// The rows one remote delta moves from this partition to one partner, in CSR order by the receiver's **destination position** ([`ChunkMap`]).
+/// The rows one remote delta moves to one partner, CSR-indexed by the receiver's destination position ([`ChunkMap`]).
 ///
-/// Columns are structure-of-arrays, matching the bucket storage they are gathered from and scattered into: `x`, `z` and `coeff` are parallel and their first [`rows`](Self::rows) entries are the block.
-/// `offsets` is the CSR index, `num_buckets() + 1` entries, ascending, `offsets[0] == 0` and `offsets[num_buckets] == rows`.
-///
-/// **The columns are grow-only, so they may be longer than `rows`.** A block is reused across layers ([`set_counts`](Self::set_counts)) and the storage a wider layer needed is kept rather than freed and re-faulted, so the row count in the header is the one authority on how much of a column is live: read the block through [`cols`](Self::cols) or [`segment`](Self::segment), never through `x.len()`.
-/// Whatever sits past `rows` is a previous layer's rows, and never travels.
-///
-/// The receiver never scans: for its output bucket `β′` it reads [`segment`](Self::segment)`(map.position_of(β′))` and merges those rows into that bucket — see the module docs for the ordering.
+/// The columns are grow-only and may be longer than `header.rows`, which alone says how much is live: read through `cols` or `segment`, never `x.len()`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExchangeBlock<const W: usize> {
-    /// Wire prefix: source-bucket count, row count, width, remote-delta index.
     pub header: BlockHeader,
     /// CSR offsets by destination position, `num_buckets + 1` entries.
     pub offsets: Vec<u32>,
-    /// X-part column, at least [`rows`](Self::rows) entries.
     pub x: Vec<[u64; W]>,
-    /// Z-part column, at least [`rows`](Self::rows) entries.
     pub z: Vec<[u64; W]>,
-    /// Coefficient column, at least [`rows`](Self::rows) entries.
     pub coeff: Vec<Complex64>,
 }
 
-/// Two blocks are equal when their **live** contents are: the header, the CSR offsets, and the first `rows` entries of each column.
-/// The grow-only tail past `rows` is a previous layer's scratch and is deliberately not compared — a block built through a reused payload must equal the same block built fresh.
+/// Compares the live rows only, so a reused block equals the same block built fresh.
 impl<const W: usize> PartialEq for ExchangeBlock<W> {
     fn eq(&self, other: &Self) -> bool {
         self.header == other.header && self.offsets == other.offsets && self.cols() == other.cols()
     }
 }
 
-/// Everything one partner receives from this partition for one layer: the blocks in ascending remote-delta index ([`BlockHeader::entry`]).
-///
-/// A partner with nothing to receive is sent `None` rather than an empty payload (see the collective-order invariant in the module docs); an empty `blocks` is legal and encodes to zero parts.
+/// Everything one partner receives from this partition for one layer: one block per remote delta, ascending by [`BlockHeader::entry`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PartnerPayload<const W: usize> {
-    /// One block per remote delta, ascending by [`BlockHeader::entry`].
     pub blocks: Vec<ExchangeBlock<W>>,
 }
 
 impl<const W: usize> ExchangeBlock<W> {
-    /// Build the CSR skeleton for `counts[p]` rows at each destination position `p` under remote-delta index `entry`, and size the columns.
-    ///
-    /// [`set_counts`](Self::set_counts) on a fresh block: the columns come back `rows` long, ready for the export pass to write by index.
-    ///
-    /// The engine always re-aims a pooled block instead, so this is the tests' constructor.
-    ///
-    /// # Panics
-    ///
-    /// If the counts sum past `u32::MAX` rows.
+    /// `set_counts` on a fresh block.
     #[cfg(test)]
     pub fn with_counts(entry: u32, counts: &[u32]) -> Self {
         let mut block = Self::default();
@@ -79,15 +55,7 @@ impl<const W: usize> ExchangeBlock<W> {
         block
     }
 
-    /// Re-aim an existing block at `counts[p]` rows per destination position `p` under remote-delta index `entry`, **keeping every allocation**.
-    ///
-    /// The export pass then writes each row by index into the segment the offsets describe.
-    /// The columns are only ever grown, never shrunk or re-zeroed (see the type docs): a steady-state layer re-aims a block it has already used at the same size, which touches nothing but the offsets.
-    /// That is the whole point of holding the payloads across layers — the alternative is faulting in and zeroing the block's megabytes again every layer.
-    ///
-    /// # Panics
-    ///
-    /// If the counts sum past `u32::MAX` rows.
+    /// Re-aim the block at `counts[p]` rows per destination position under remote-delta index `entry`, growing but never shrinking or re-zeroing the columns.
     pub(crate) fn set_counts(&mut self, entry: u32, counts: &[u32]) {
         self.offsets.clear();
         self.offsets.reserve(counts.len() + 1);
@@ -108,7 +76,6 @@ impl<const W: usize> ExchangeBlock<W> {
         self.grow_columns(rows as usize);
     }
 
-    /// Make every column at least `rows` long, keeping what is there.
     fn grow_columns(&mut self, rows: usize) {
         if self.coeff.len() < rows {
             self.x.resize(rows, [0u64; W]);
@@ -117,47 +84,36 @@ impl<const W: usize> ExchangeBlock<W> {
         }
     }
 
-    /// The block's live rows: the first [`rows`](Self::rows) entries of the three columns.
+    /// The live rows of the three columns.
     pub(crate) fn cols(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let rows = self.rows();
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
 
-    /// The rows destined for position `p`, as parallel `x` / `z` / `coeff` slices.
-    ///
-    /// The receiver's rule for its own output bucket `β′` is `segment(map.position_of(β′))` (module docs).
-    /// A position with no rows yields three empty slices.
-    ///
-    /// # Panics
-    ///
-    /// If `p >= num_buckets()`, or if the block's columns are shorter than [`rows`](Self::rows) — which only a hand-built block can be.
+    /// The rows destined for position `p`; output bucket `β′` reads `segment(map.position_of(β′))`.
     pub(crate) fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let lo = self.offsets[p as usize] as usize;
         let hi = self.offsets[p as usize + 1] as usize;
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
     }
 
-    /// The row index each of `map`'s chunk boundaries falls at.
-    ///
-    /// `chunks + 1` ascending entries starting at 0 and ending at [`rows`](Self::rows): chunk `k` carries rows `out[k]..out[k + 1]` of every column.
+    /// The row index at each of `map`'s chunk boundaries, `chunks + 1` entries.
     pub(crate) fn chunk_rows(&self, map: &ChunkMap) -> Vec<usize> {
         chunk_rows_of(&self.offsets, map)
     }
 
-    /// Rows the block carries: `offsets[num_buckets]`, and the length of each column once the export pass has filled it.
+    /// Live rows.
     pub(crate) fn rows(&self) -> usize {
         self.header.rows as usize
     }
 
-    /// Destination positions the block is indexed by — the group's agreed bucket count, which both sides hold.
-    ///
-    /// The engine reads it only to check a received block against its own count, which is a `debug_assert` (the count is a collective decision, so a mismatch is a driver bug, not a data-dependent outcome).
+    /// Destination positions the block is indexed by.
     #[cfg(any(test, debug_assertions))]
     pub(crate) fn num_buckets(&self) -> u32 {
         self.header.num_buckets
     }
 
-    /// Wire footprint in bytes: the header, the offsets, and the live rows of the three columns ([`Payload::byte_parts`] hands out exactly these bytes).
+    /// Wire footprint in bytes, exactly what `byte_parts` hands out.
     pub(crate) fn bytes(&self) -> usize {
         size_of::<BlockHeader>()
             + self.offsets.len() * size_of::<u32>()
@@ -166,11 +122,10 @@ impl<const W: usize> ExchangeBlock<W> {
     }
 }
 
-/// Parts per block in the [`PartnerPayload`] encoding: header, offsets, x, z,
-/// coeff.
+/// Parts per block on the wire: header, offsets, x, z, coeff.
 pub(super) const PARTS_PER_BLOCK: usize = 5;
 
-/// The row index each of `map`'s chunk boundaries falls at, `chunks + 1` ascending entries — the CSR offsets read at the chunks' destination positions.
+/// The CSR `offsets` read at `map`'s chunk boundaries, `chunks + 1` entries.
 pub(crate) fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
     debug_assert_eq!(
         offsets.len(),
@@ -210,7 +165,7 @@ where
     out
 }
 
-/// Panic unless a declared part length is a whole number of `stride`-byte elements — the one thing a receiver can check about a part before its bytes exist.
+/// Panic unless a declared part length is a whole number of `stride`-byte elements.
 pub(super) fn check_stride(len: usize, stride: usize, what: &str) {
     assert_eq!(
         len % stride,
@@ -233,9 +188,6 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 
-    /// Size the blocks from the declared part lengths — five parts per block, and each block's shape is readable from the lengths alone: `offsets` gives the bucket count, the `x` column the row count — then hand out the columns as bytes.
-    ///
-    /// The header travels into [`ExchangeBlock::header`] itself, so nothing about a block is known twice; [`finish_recv`](Payload::finish_recv) checks it against the shape sized here once it has arrived.
     fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         assert_eq!(
             lens.len() % PARTS_PER_BLOCK,
@@ -245,8 +197,6 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         );
         let n = lens.len() / PARTS_PER_BLOCK;
         let key_stride = W * size_of::<u64>();
-        // Grow-only, like the columns: a pooled payload keeps the blocks it held last layer and re-aims them.
-        // Truncate first, grow second: the views handed out below borrow the blocks for as long as the caller holds them, so `self.blocks` cannot be touched again after that.
         self.blocks.truncate(n);
         if self.blocks.len() < n {
             self.blocks.resize_with(n, ExchangeBlock::<W>::default);
@@ -283,7 +233,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             block.offsets.clear();
             block.offsets.resize(lens[1] / size_of::<u32>(), 0);
             block.grow_columns(rows);
-            // The row count the wire declared, so `cols` and `segment` see exactly what arrives; the header's own copy is checked against it in `finish_recv`.
+            // Overwritten by the arriving header, which `finish_recv` checks against the columns.
             block.header.rows = rows as u32;
             let ExchangeBlock {
                 header,
@@ -308,8 +258,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
                 "partner payload: block encoded at width W={} decoded at W={W}",
                 block.header.w,
             );
-            // The header travelled with the columns, so it could name more rows than the columns the declared part lengths sized.
-            // It never does between ranks running the same build; the check is what keeps a garbled header an assertion rather than an out-of-bounds read.
+            // A garbled header must fail here rather than as an out-of-bounds read.
             assert!(
                 block.header.rows as usize <= block.coeff.len(),
                 "partner payload: a block header claims {} rows but only {} arrived",
@@ -333,8 +282,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         }
     }
 
-    /// Parts 0 and 1 of every block — the header and the CSR offsets.
-    /// Those are what `RecvRows::count` reads to size a gather run; the three columns after them are read only inside `append_into`.
+    /// The header and the CSR offsets of every block.
     fn early_parts(&self) -> Vec<&[u8]> {
         let mut parts = Vec::with_capacity(2 * self.blocks.len());
         for block in &self.blocks {
@@ -344,7 +292,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 
-    /// The three columns of each block, in block order, each cut at the chunks' destination-position boundaries.
+    /// The three columns of each block, each cut at the chunk boundaries.
     fn bulk_parts(&self, map: &ChunkMap) -> Vec<Vec<&[u8]>> {
         let mut parts = Vec::with_capacity(3 * self.blocks.len());
         for block in &self.blocks {
@@ -364,7 +312,6 @@ impl<const W: usize> Payload for PartnerPayload<W> {
 
     fn early_recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         let mut parts = self.recv_into(lens);
-        // `recv_into` sized every column and handed out all five views per block; keep the header and the offsets and drop the columns, which `bulk_recv_into` hands out once their shape is known.
         let mut early = Vec::with_capacity(2 * parts.len() / PARTS_PER_BLOCK);
         for (i, view) in parts.drain(..).enumerate() {
             if i % PARTS_PER_BLOCK < 2 {

@@ -25,7 +25,6 @@ fn the_fingerprint_separates_every_field_it_covers() {
     let mut options = PropagateOptions::default();
     options.min_buckets += 1;
     assert_ne!(base, run_fingerprint(3, Direction::Forward, options, 8, 1),);
-    // And it is a function of its inputs, not of the call.
     assert_eq!(
         base,
         run_fingerprint(3, Direction::Forward, PropagateOptions::default(), 8, 1),

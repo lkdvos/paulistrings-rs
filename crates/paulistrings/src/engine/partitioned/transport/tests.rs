@@ -6,17 +6,13 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 
-// ---- the destination-coset order and its chunks -----------------------
-
-/// The map for `deltas` over `2^bits` buckets, cut into `chunks`.
 fn map_of(bits: u8, deltas: &[u32], chunks: usize) -> ChunkMap {
     let mut map = ChunkMap::default();
     map.rebuild(&Gf2Span::new(deltas, bits), 1usize << bits, chunks);
     map
 }
 
-/// A payload of `blocks` blocks over `2^bits` positions, with a few rows
-/// per position, filled deterministically.
+/// A payload of `blocks` blocks over `2^bits` positions, filled deterministically.
 fn payload_of<const W: usize>(bits: u8, blocks: usize, seed: u64) -> PartnerPayload<W> {
     let n = 1usize << bits;
     let mut s = seed | 1;
@@ -41,9 +37,7 @@ fn payload_of<const W: usize>(bits: u8, blocks: usize, seed: u64) -> PartnerPayl
     payload
 }
 
-/// The two-phase framing is a partition of the one-phase one: the early parts are the block headers and offsets, and each bulk part's chunks concatenate to exactly the column that part carries.
-///
-/// That is the whole contract between the sender's `bulk_parts` and the receiver's `bulk_recv_into` — get it wrong and the two sides post different message sizes, which MPI reports as a truncated message rather than as wrong rows.
+/// The early parts are the headers and offsets, and each bulk part's chunks concatenate to its column, on both sides.
 #[test]
 fn the_early_and_bulk_parts_partition_the_wire() {
     for bits in [0u8, 1, 4, 5] {
@@ -79,7 +73,6 @@ fn the_early_and_bulk_parts_partition_the_wire() {
                     let want = &all[PARTS_PER_BLOCK * (i / 3) + 2 + i % 3];
                     assert_eq!(&joined, want, "part {i} at {chunks} chunks");
                 }
-                // The receive side cuts the same column the same way.
                 let want_lens: Vec<Vec<usize>> = bulk
                     .iter()
                     .map(|p| p.iter().map(|c| c.len()).collect())
@@ -95,8 +88,7 @@ fn the_early_and_bulk_parts_partition_the_wire() {
     }
 }
 
-/// Both directions of the layout are one permutation: every bucket has one position, every position one bucket, and nothing is dropped or duplicated.
-/// This is the property the sender's permuted CSR and the receiver's table lookup both rest on.
+/// `position_of` and `bucket_at` are mutually inverse permutations.
 #[test]
 fn the_destination_order_is_a_bijection() {
     for (bits, deltas) in [
@@ -126,7 +118,7 @@ fn the_destination_order_is_a_bijection() {
     }
 }
 
-/// The chunks tile the position range: ascending bounds from 0 to the position count, and `chunk_of_position` is their inverse.
+/// The chunks tile the positions, and `chunk_of_position` inverts `bound`.
 #[test]
 fn the_chunks_tile_the_position_range() {
     for (bits, deltas) in [(4u8, vec![0u32]), (6, vec![0, 3]), (6, vec![0, 1, 2, 3])] {
@@ -155,7 +147,7 @@ fn the_chunks_tile_the_position_range() {
     }
 }
 
-/// A chunk boundary always falls between cosets, so a coset task never has to wait for two chunks — which is what makes the receiver's per-chunk wait sound.
+/// A chunk boundary always falls between cosets.
 #[test]
 fn a_chunk_never_splits_a_coset() {
     for (bits, deltas) in [(6u8, vec![0u32, 3]), (6, vec![0, 1, 2, 3]), (5, vec![0, 7])] {
@@ -184,7 +176,7 @@ fn a_chunk_never_splits_a_coset() {
     }
 }
 
-/// Asking for more chunks than there are cosets would make empty ones; the map clamps instead, so the pipeline degrades to one batch per coset.
+/// The chunk count is clamped to the coset count.
 #[test]
 fn the_chunk_count_is_clamped_to_the_coset_count() {
     // 2^3 buckets, a span of dimension 2, so two cosets.
@@ -196,7 +188,6 @@ fn the_chunk_count_is_clamped_to_the_coset_count() {
 }
 
 proptest! {
-    /// The two properties above over arbitrary spans and chunk counts.
     #[test]
     fn the_layout_is_a_bijection_and_its_chunks_tile_it(
         bits in 0u8..=7,
@@ -222,7 +213,7 @@ proptest! {
     }
 }
 
-/// Deterministic pseudo-random row filler: xorshift64, so the tests carry no RNG dependency and a failing case is reproducible from its seed.
+/// Deterministic xorshift64 row filler.
 fn fill<const W: usize>(block: &mut ExchangeBlock<W>, seed: u64) {
     let mut s = seed | 1;
     let mut next = move || {
@@ -256,13 +247,11 @@ fn with_counts_builds_offsets_and_reserves_the_columns() {
     );
     assert_eq!(block.rows(), 8);
     assert_eq!(block.num_buckets(), 4);
-    // Sized, not filled: the export pass writes the rows by index.
     assert_eq!(block.x.len(), 8);
     assert_eq!(block.z.len(), 8);
     assert_eq!(block.coeff.len(), 8);
 }
 
-/// A block re-aimed at a new layer keeps its storage and reports the new shape: the columns grow to what the widest layer needed and stay there, so a narrower layer neither shrinks nor re-zeroes them — and `rows()`, not `x.len()`, is what says how much of a column is live.
 #[test]
 fn set_counts_reuses_the_columns_and_grows_only() {
     let mut block = ExchangeBlock::<1>::with_counts(0, &[4, 4]);
@@ -302,7 +291,6 @@ fn segment_slices_the_columns_by_source_bucket() {
     assert_eq!(z0, &block.z[0..2]);
     assert_eq!(c0, &block.coeff[0..2]);
 
-    // An empty source bucket yields three empty slices, not a panic.
     let (x1, z1, c1) = block.segment(1);
     assert!(x1.is_empty() && z1.is_empty() && c1.is_empty());
 
@@ -342,9 +330,7 @@ fn byte_parts_are_five_borrowed_views_per_block() {
     assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 92);
 }
 
-/// Move `payload` over the wire and back: [`Payload::byte_parts`] on the sender, [`Payload::recv_into`] + [`Payload::finish_recv`] on a fresh receiver, with the bytes copied across the way a transport moves them.
-///
-/// That pair is the only encode/decode path the engine has, so it is what the wire-format tests exercise.
+/// `byte_parts` on the sender, `recv_into` + `finish_recv` on a fresh receiver.
 fn wire_round_trip<const W: usize>(payload: &PartnerPayload<W>) -> PartnerPayload<W> {
     let sent: Vec<Vec<u8>> = payload
         .byte_parts()
@@ -378,12 +364,9 @@ fn payload_round_trips_through_byte_parts() {
 
     let back = wire_round_trip(&payload);
     assert_eq!(back, payload);
-    // And the CSR indexing survives byte-for-byte.
     assert_eq!(back.blocks[1].segment(1).0, payload.blocks[1].segment(1).0);
 }
 
-/// A block whose header says it was built at another width is rejected rather than reinterpreted.
-/// The declared part lengths cannot catch it — they are a whole number of rows either way — so [`Payload::finish_recv`] is what does.
 #[test]
 #[should_panic(expected = "width")]
 fn a_block_encoded_at_another_width_is_rejected() {
@@ -419,9 +402,7 @@ proptest! {
     }
 }
 
-// ---- transport ------------------------------------------------------
-
-/// A minimal [`Payload`] for the transport tests: one column of `u64`.
+/// A one-column [`Payload`].
 impl Payload for Vec<u64> {
     fn byte_parts(&self) -> Vec<&[u8]> {
         vec![bytemuck::cast_slice(&self[..])]
@@ -438,12 +419,11 @@ impl Payload for Vec<u64> {
     fn finish_recv(&mut self) {}
 }
 
-/// What rank `from` sends to rank `to`: a `from`-long column of a code unique to the ordered pair, so a crossed delivery cannot pass.
+/// A column unique to the ordered pair `(from, to)`.
 fn message(from: u32, to: u32) -> Vec<u64> {
     vec![(u64::from(from) << 32) | u64::from(to); from as usize + 1]
 }
 
-/// Rank 0 sends nothing to rank 1, so a `None` slot is exercised too.
 fn sends_nothing(from: u32, to: u32) -> bool {
     from == 0 && to == 1
 }
@@ -543,8 +523,7 @@ fn a_group_of_one_is_a_no_op() {
     transport.barrier();
 }
 
-/// Contributions chosen so that the sum depends on the order: `1e16 + 1 + 1 - 1e16` is `0` or `2` by association.
-/// Every rank must return the same bits, namely the rank-order fold `((0 + 1e16) + 1) + 1) - 1e16 = 0`, and a one-rank slot comes back exactly.
+/// `1e16 + 1 + 1 - 1e16` folds to `0` in rank order on every rank; a one-rank slot comes back exactly.
 #[test]
 fn f64_sums_are_bitwise_identical_on_every_rank() {
     let inputs = [
@@ -569,7 +548,6 @@ fn f64_sums_are_bitwise_identical_on_every_rank() {
     }
 }
 
-/// An integer sum on one rank against a float sum on the others is a collective-order violation, reported by name.
 #[test]
 #[should_panic(expected = "allreduce_sum_f64")]
 fn mixing_integer_and_float_sums_is_detected() {
@@ -610,10 +588,7 @@ fn exchange_rejects_a_wrongly_sized_send_vector() {
     let _: Vec<Option<Vec<u64>>> = group[0].exchange(vec![None], &mut Vec::new());
 }
 
-/// A partition that issues one collective more than its partners is caught by the generation stamp rather than crossing payloads.
-///
-/// The *in-step* rank is the one that names it: the desynchronized rank has published a generation its partner never reached, so the partner finds a call it did not issue in that generation's slot.
-/// The desynchronized rank is left waiting for a generation that will never come, and dies of its partner's departure instead — both panics are checked here, and both ranks own their endpoint inside their own thread so neither drop waits on the other.
+/// The in-step rank reports the mismatch; the desynchronized one dies of its partner's departure.
 #[test]
 fn a_desynchronized_partition_is_caught_by_the_generation_stamp() {
     let mut group = InProcessTransport::group(2);
@@ -621,7 +596,6 @@ fn a_desynchronized_partition_is_caught_by_the_generation_stamp() {
     let zero = group.pop().expect("rank 0");
 
     let (desynced, in_step) = std::thread::scope(|scope| {
-        // Rank 0 behaves as if it had issued one extra collective.
         let desynced = scope.spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                 zero.skip_sequence_for_test();
@@ -651,7 +625,6 @@ fn a_desynchronized_partition_is_caught_by_the_generation_stamp() {
     assert!(desynced.contains("terminated"), "{desynced}");
 }
 
-/// The panic message behind a `catch_unwind` payload.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -662,7 +635,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// A rank that dies *between* two collectives must fail its partners fast — through the departure mask, not the 10 s backstop — and name itself.
 #[test]
 fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
     let mut group = InProcessTransport::group(2);
@@ -671,8 +643,6 @@ fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
 
     let (elapsed, message) = std::thread::scope(|scope| {
         scope.spawn(move || {
-            // The transport is dropped *while unwinding*, which is what a
-            // partitioned run does when a partition body panics.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                 one.barrier();
                 panic!("rank 1 dies after its barrier");
@@ -695,9 +665,6 @@ fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
     );
 }
 
-/// A thousand back-to-back reductions on four ranks with rank- *and*
-/// round-dependent contributions: a generation that mixed with its
-/// neighbour shows up as a wrong sum, not as a hang.
 #[test]
 fn a_thousand_back_to_back_sums_never_mix_generations() {
     const ROUNDS: u64 = 1_000;
@@ -729,12 +696,10 @@ fn a_thousand_back_to_back_sums_never_mix_generations() {
     });
 }
 
-/// One round of the mixed script: the first `max`, the reduced buffer, and the flag `max`.
+/// The first `max`, the reduced buffer, and the flag `max` of one round.
 type MixedRound = (u8, Vec<u64>, u8);
-/// What one rank came out of the mixed script with.
 type MixedScript = (u32, Vec<MixedRound>);
 
-/// Reductions and barriers interleaved: every rank runs the same mixed script and every rank must come out with the same hand-computed answers.
 #[test]
 fn mixed_collective_sequences_agree_on_every_rank() {
     const ROUNDS: u8 = 25;
@@ -784,14 +749,12 @@ fn mixed_collective_sequences_agree_on_every_rank() {
             assert_eq!(*flag, 255, "rank {rank}, round {round}");
         }
     }
-    // And identical across ranks, not merely correct on each.
     for (rank, rounds) in &results[1..] {
         assert_eq!(rounds, &results[0].1, "rank {rank} disagrees with rank 0");
     }
 }
 
-/// Sixteen ranks — more than a CI box has cores — must finish rather than livelock: past [`SPINS_BEFORE_YIELD`] a waiting rank hands the core to the partner it is waiting for.
-/// Completing *is* the assertion.
+/// Completing is the assertion.
 #[test]
 fn sixteen_ranks_complete_when_oversubscribed() {
     const ROUNDS: u64 = 50;
@@ -821,9 +784,6 @@ fn sixteen_ranks_complete_when_oversubscribed() {
     });
 }
 
-// ---- the two collectives every transport inherits ------------------
-
-/// Run `f` on every rank of a fresh group of `size`, joining in rank order.
 fn on_every_rank<O: Send>(size: u32, f: impl Fn(&InProcessTransport) -> O + Send + Sync) -> Vec<O> {
     let group = InProcessTransport::group(size);
     let f = &f;
@@ -848,8 +808,6 @@ fn check_consistency_passes_when_every_rank_agrees() {
     }
 }
 
-/// One rank out of step is named, rather than left to deadlock two layers later.
-/// Every rank sees the mismatch (the reduction is symmetric), so rank 1 swallows its own panic and only rank 0's reaches the harness.
 #[test]
 #[should_panic(expected = "disagree about the run")]
 fn check_consistency_names_a_rank_that_disagrees() {
@@ -871,7 +829,7 @@ fn gather_to_root_collects_every_ranks_parts_in_rank_order() {
     for size in [1u32, 2, 4] {
         let got = on_every_rank(size, |transport| {
             let rank = transport.rank();
-            // Rank `r` contributes `r + 1` parts, part `j` being `r + 1` copies of the byte `10 · r + j`, so a crossed or reordered delivery cannot pass.
+            // Rank `r` sends `r + 1` parts, part `j` being `r + 1` copies of `10 · r + j`.
             let owned: Vec<Vec<u8>> = (0..=rank)
                 .map(|j| vec![(10 * rank + j) as u8; rank as usize + 1])
                 .collect();
@@ -904,7 +862,6 @@ fn gather_to_root_of_no_parts_is_an_empty_vector_per_rank() {
     assert_eq!(got[1], None);
 }
 
-/// A partner that died mid-layer must be reported, not waited on forever.
 #[test]
 #[should_panic(expected = "terminated")]
 fn a_partner_that_panicked_is_reported_rather_than_hanging() {
@@ -921,12 +878,7 @@ fn a_partner_that_panicked_is_reported_rather_than_hanging() {
     });
 }
 
-/// `GroupState::departed` marks a rank's bit with `1 << rank`: at rank 32 (the first index
-/// beyond a `u32` mask's width), a `u32` mask either panics on the shift (debug) or wraps the
-/// exponent and silently marks rank 0 instead (release) — both wrong, and `P_MAX_BITS` is
-/// meant to allow a group this large. Rank 32 dying must be reported by its own number, not
-/// rank 0's, and must not panic on the shift itself. Ranks 1..=31 must genuinely participate
-/// (not just sit idle) so none of them is itself mistaken for the dead partner.
+/// Rank 32 is past a `u32` departure mask's width.
 #[test]
 #[should_panic(expected = "partition 32 terminated")]
 fn a_partner_at_rank_32_that_panicked_is_reported_by_its_own_rank() {

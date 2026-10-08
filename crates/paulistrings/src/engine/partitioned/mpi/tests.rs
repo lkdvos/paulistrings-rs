@@ -1,7 +1,5 @@
 use super::*;
 
-/// The tag layout: kind in the low four bits, epoch above, and never past
-/// the `MPI_TAG_UB` the standard guarantees.
 #[test]
 fn tags_pack_kind_and_epoch_below_the_guaranteed_tag_bound() {
     assert_eq!(MpiTransport::tag(KIND_EXCHANGE_HEADER, 0), 0);
@@ -23,7 +21,6 @@ fn tags_pack_kind_and_epoch_below_the_guaranteed_tag_bound() {
             assert_eq!(tag & 0xf, kind);
         }
     }
-    // Epochs wrap rather than overflowing the tag space.
     assert_eq!(
         MpiTransport::tag(KIND_EXCHANGE_PART, EPOCHS),
         MpiTransport::tag(KIND_EXCHANGE_PART, 0),
@@ -88,7 +85,6 @@ fn a_truncated_header_is_rejected() {
     let _ = decode_header(&[0u8; 8], 0, 0);
 }
 
-/// The chunk count must agree with `slice::chunks` at every boundary — that agreement is what makes the sender's and receiver's message counts equal with no negotiation.
 #[test]
 fn chunk_counts_agree_with_slice_chunks_at_the_boundaries() {
     let buf = vec![0u8; 4096];

@@ -30,6 +30,9 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 // Not lower without checking a dense and a sparse PTM layer: the bucket count also caps the coset dimension a dense layer's sort needs (research/FINDINGS.md §The dense-PTM bucket cliff is a delta-span rank effect).
 pub(crate) const MIN_TERMS_PER_TASK: usize = 64;
 
+/// Below this many terms the bucket-parallel maintenance passes run serially.
+pub(super) const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
+
 /// Default target terms per bucket (ARCHITECTURE.md §Bucket-Policy).
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
@@ -309,7 +312,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// A copy of `self` partitioned exactly as `target` partitions.
-    pub(crate) fn align_to(&self, target: &Gf2Hash<W>) -> Self {
+    fn align_to(&self, target: &Gf2Hash<W>) -> Self {
         if !self.hash.same_rows_as(target) {
             return self.clone().with_hash(target.clone());
         }
@@ -385,7 +388,7 @@ impl<const W: usize> PauliSum<W> {
         let mut upper: Vec<BucketCols<W>> =
             (0..old_num_buckets).map(|_| BucketCols::new()).collect();
 
-        if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+        if self.len < PARALLEL_MIN_TERMS {
             for (b, (columns, upper_half)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
                 refine_bucket(columns, upper_half, hash, new_bit, b as u32);
             }
@@ -410,7 +413,7 @@ impl<const W: usize> PauliSum<W> {
         let old = std::mem::take(&mut self.buckets);
         let (lower, upper) = old.split_at(new_num_buckets);
 
-        let merged: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+        let merged: Vec<BucketCols<W>> = if self.len < PARALLEL_MIN_TERMS {
             lower
                 .iter()
                 .zip(upper.iter())

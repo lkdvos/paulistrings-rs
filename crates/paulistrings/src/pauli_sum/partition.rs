@@ -4,7 +4,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::{Gf2Hash, PartitionRows};
-use super::storage::{merge_two, BucketCols, PauliSum, DEFAULT_MIN_BUCKETS, MIN_TERMS_PER_TASK};
+use super::storage::{merge_two, BucketCols, PauliSum, PARALLEL_MIN_TERMS};
 
 /// Copy the terms of one bucket whose partition rank is `rank`.
 // Not reserved up front: research/FINDINGS.md §Reserving a safe upper bound in the merge.
@@ -72,7 +72,7 @@ impl<const W: usize> PauliSum<W> {
             (rank as usize) < rows.num_partitions(),
             "PauliSum::filter_partition: rank {rank} out of range",
         );
-        let buckets: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+        let buckets: Vec<BucketCols<W>> = if self.len < PARALLEL_MIN_TERMS {
             self.buckets
                 .iter()
                 .map(|columns| filter_bucket(columns, rows, rank))
@@ -124,7 +124,7 @@ impl<const W: usize> PauliSum<W> {
             }
         }
 
-        let buckets: Vec<BucketCols<W>> = if len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
+        let buckets: Vec<BucketCols<W>> = if len < PARALLEL_MIN_TERMS {
             runs.into_iter().map(merge_disjoint_runs).collect()
         } else {
             runs.into_par_iter().map(merge_disjoint_runs).collect()

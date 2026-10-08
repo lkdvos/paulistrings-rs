@@ -158,7 +158,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// `2⁻ⁿ Tr(A† V† A V)` in full, the sign convention included; [`Self::rotated_overlap`] is its real part.
-    pub(crate) fn rotated_overlap_complex(
+    fn rotated_overlap_complex(
         &self,
         sites: &[usize],
         delta: f64,

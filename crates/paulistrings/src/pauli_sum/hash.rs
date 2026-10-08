@@ -1,6 +1,6 @@
 //! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`] (ARCHITECTURE.md §Hash, §Partitioning).
 
-use crate::pauli_string::PauliString;
+use crate::pauli_string::{word_mask, PauliString};
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Maximum number of bucket bits; all rows are drawn up front so the active hash is a prefix of one fixed matrix.
@@ -19,19 +19,6 @@ fn row_word(seed: u64, row: usize, attempt: u32, word: usize, half: u64) -> u64 
     debug_assert!(row < 1 << 16 && word < 1 << 15);
     let position = ((attempt as u64) << 32) | ((row as u64) << 16) | ((word as u64) << 1) | half;
     mix64(seed.wrapping_add(SPLITMIX_GAMMA.wrapping_mul(position.wrapping_add(1))))
-}
-
-/// Mask of the live qubit bits in word `word`, given `num_qubits` total.
-#[inline]
-fn word_mask(num_qubits: usize, word: usize) -> u64 {
-    let first_qubit = 64 * word;
-    if num_qubits >= first_qubit + 64 {
-        !0u64
-    } else if num_qubits <= first_qubit {
-        0
-    } else {
-        (1u64 << (num_qubits - first_qubit)) - 1
-    }
 }
 
 /// `n_rows` rows drawn from `seed` and masked to the live columns, an all-zero row redrawn unless `num_qubits == 0`.
@@ -148,7 +135,7 @@ impl<const W: usize> Gf2Hash<W> {
 
     /// Bit `row` of `H·v`, as `0` or `1`.
     #[inline]
-    pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
+    pub(super) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
         let row_x = &self.rows_x[row as usize];
         let row_z = &self.rows_z[row as usize];
         let mut folded: u64 = 0;

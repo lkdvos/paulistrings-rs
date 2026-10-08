@@ -123,15 +123,7 @@ impl<const W: usize> PauliString<W> {
         debug_assert!(num_qubits <= 64 * W);
         let mut leak: u64 = 0;
         for i in 0..W {
-            let first_qubit = 64 * i;
-            let in_bounds: u64 = if num_qubits >= first_qubit + 64 {
-                !0u64
-            } else if num_qubits <= first_qubit {
-                0
-            } else {
-                (1u64 << (num_qubits - first_qubit)) - 1
-            };
-            leak |= (self.x[i] | self.z[i]) & !in_bounds;
+            leak |= (self.x[i] | self.z[i]) & !word_mask(num_qubits, i);
         }
         leak == 0
     }
@@ -165,6 +157,19 @@ impl<const W: usize> PauliString<W> {
         let vanishes = !self.commutes_with(other);
         let (product, phase) = self.mul(other);
         (product, scaled_phase(phase, vanishes))
+    }
+}
+
+/// Mask of the live qubit bits in word `word`, given `num_qubits` total.
+#[inline]
+pub(crate) fn word_mask(num_qubits: usize, word: usize) -> u64 {
+    let first_qubit = 64 * word;
+    if num_qubits >= first_qubit + 64 {
+        !0u64
+    } else if num_qubits <= first_qubit {
+        0
+    } else {
+        (1u64 << (num_qubits - first_qubit)) - 1
     }
 }
 

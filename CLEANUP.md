@@ -81,6 +81,12 @@ Conventions (2026-10-08), applied first by a preparatory pass before the chunk 0
 - **D9 CLAUDE.md and research docs.** Rewrite the testing and layout sections to match, add a short "Code organisation" section (D5, D6, D10), and trim CLAUDE.md, `research/FINDINGS.md` and `research/HARDWARE.md` to current-state essentials.
 - **D10 Naming favours readability.** No abbreviations in names (`accumulator` not `acc`, `stamp` not `st`); established domain acronyms (`GF2`, `PTM`, `NUMA`, `MPI`) stay but are defined once in docs.
 
+- **D11 Seal `Transport`.** `Transport`/`Collectives` stay public (`DistributedSum` names the transport), sealed so no external impl; `Payload`, `ChunkMap`, `ChunkWait`, `InProcessTransport` crate-private, `InProcessTransport` reachable for integration tests through `test_support`.
+- **D12 Tuning constants off the root.** `DEFAULT_MIN_BUCKETS`, `DEFAULT_TARGET_BUCKET_LEN`, `TIMER_READ_OVERHEAD_NS` move to `test_support`.
+- **D13 Narrow externally unused methods.** `Gf2Hash::same_rows_as`, `PartitionRuntime::wait_timeout`, `DistributedSum::scatter_with_runtime`, `ChunkMap::chunk_of_position`, `InProcessTransport::group_with_timeout`, `PauliSum::empty_with_hash` become `pub(crate)`.
+- **D14 Collapse method pairs.** `propagate`/`propagate_with_options` on `PartitionedSum`, `DistributedSum`, `GpuPartitionedSum`, `GpuDistributedSum`, and the four `DistributedSum::scatter*`, each to one plain call plus one taking options.
+- Feature-level cuts (D7 candidates: direct path, `TermTrace`/`GateTrace`, bucket knobs, partition-row diagnostics, GPU fault hooks) are decided in the chunk that tours them (8, 9, 14).
+
 ### As applied, stage A (D4, D5, D6)
 
 `5f44228`..`0b0f466` (16 commits): `pauli_sum/{storage,partition,hash,accumulator}`, `readout/{product_state,stabilizer,echo}`, the four wrong-way edges fixed (read-out methods as `impl PauliSum` blocks in `readout/`, `keeps_flip_classes` to `readout/echo`, `PartitionedTruncation for BuiltinTruncation` to `engine/partitioned/truncation`, new `engine/cuda_context` breaks the topology↔gpu cycle), seven files split on seams, 54 sibling `tests.rs` files, private modules with flat root re-exports, `propagate` + `propagate_with(…, &mut scratch, options)`, `propagate_partitioned` takes options.
@@ -94,4 +100,4 @@ Left in source: `cfg(test)` fields woven into `gpu/wire/peer.rs`, `nccl.rs`, `Ex
 
 ## Resume here
 
-Conventions D1–D10 agreed. Preparatory pass running (stage A: organisation, test extraction, pub surface; stage B: comments, naming, mechanical cuts by folder; stage C: CLAUDE.md and research docs). Chunk 0 tour after it lands.
+Stage A done; D11–D14 agreed. Stage B0 (D11–D14, one agent) then B1–B6 (comments/naming/mechanical cuts per folder, parallel worktrees). Preparatory pass: (stage A: organisation, test extraction, pub surface; stage B: comments, naming, mechanical cuts by folder; stage C: CLAUDE.md and research docs). Chunk 0 tour after it lands.

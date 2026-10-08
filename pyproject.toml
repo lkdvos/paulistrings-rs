@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "paulistrings"
 version = "0.1.0"
-description = "Pauli string manipulation, Rust-backed"
+description = "Pauli propagation: classical simulation of quantum circuits in the Pauli basis, with a parallel Rust engine"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }

@@ -58,9 +58,38 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
+  smoke:
+    name: smoke (${{ matrix.wheel }}, py${{ matrix.python }})
+    needs: [wheels]
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, wheel: x86_64, python: "3.9", arch: x64 }
+          - { os: ubuntu-latest, wheel: x86_64, python: "3.13", arch: x64 }
+          - { os: macos-14, wheel: aarch64-apple-darwin, python: "3.12", arch: arm64 }
+          # An x64 interpreter on the arm64 runner runs the Intel wheel under Rosetta.
+          - { os: macos-14, wheel: x86_64-apple-darwin, python: "3.12", arch: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/wheel-smoke.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.wheel }}
+          path: dist
+      - run: python -m pip install dist/*.whl
+      # `-I` and a cwd outside the checkout, so the import resolves to the installed wheel.
+      - run: cd "$RUNNER_TEMP" && python -I "$GITHUB_WORKSPACE/scripts/wheel-smoke.py"
+
   release:
     name: publish release
-    needs: [sanity, wheels]
+    needs: [sanity, wheels, smoke]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

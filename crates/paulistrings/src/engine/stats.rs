@@ -85,55 +85,55 @@ pub struct PhaseStats {
 
 impl PhaseStats {
     /// Accumulate another drained snapshot into `self`.
-    pub fn add(&mut self, o: &PhaseStats) {
-        self.rebucket_ns += o.rebucket_ns;
-        self.prepare_ns += o.prepare_ns;
-        self.rescale_ns += o.rescale_ns;
-        self.span_plan_ns += o.span_plan_ns;
-        self.permute_ns += o.permute_ns;
-        self.coset_loop_ns += o.coset_loop_ns;
-        self.unpermute_ns += o.unpermute_ns;
-        self.recount_ns += o.recount_ns;
-        self.finalize_ns += o.finalize_ns;
-        self.collective_ns += o.collective_ns;
-        self.export_ns += o.export_ns;
-        self.exchange_ns += o.exchange_ns;
-        self.swap_ns += o.swap_ns;
-        self.size_ns += o.size_ns;
-        self.gather_ns += o.gather_ns;
-        self.sort_ns += o.sort_ns;
-        self.merge_ns += o.merge_ns;
-        self.clear_ns += o.clear_ns;
-        self.layers += o.layers;
-        self.cosets += o.cosets;
-        self.runs += o.runs;
-        self.rows_gathered += o.rows_gathered;
-        self.rows_sorted += o.rows_sorted;
-        self.rows_id += o.rows_id;
-        self.terms_in += o.terms_in;
-        self.terms_out += o.terms_out;
-        self.rows_exported += o.rows_exported;
-        self.recv_rows += o.recv_rows;
-        self.append_ns += o.append_ns;
-        self.chunk_wait_ns += o.chunk_wait_ns;
-        self.compact_ns += o.compact_ns;
-        self.h2d_ns += o.h2d_ns;
-        self.d2h_ns += o.d2h_ns;
+    pub fn add(&mut self, other: &PhaseStats) {
+        self.rebucket_ns += other.rebucket_ns;
+        self.prepare_ns += other.prepare_ns;
+        self.rescale_ns += other.rescale_ns;
+        self.span_plan_ns += other.span_plan_ns;
+        self.permute_ns += other.permute_ns;
+        self.coset_loop_ns += other.coset_loop_ns;
+        self.unpermute_ns += other.unpermute_ns;
+        self.recount_ns += other.recount_ns;
+        self.finalize_ns += other.finalize_ns;
+        self.collective_ns += other.collective_ns;
+        self.export_ns += other.export_ns;
+        self.exchange_ns += other.exchange_ns;
+        self.swap_ns += other.swap_ns;
+        self.size_ns += other.size_ns;
+        self.gather_ns += other.gather_ns;
+        self.sort_ns += other.sort_ns;
+        self.merge_ns += other.merge_ns;
+        self.clear_ns += other.clear_ns;
+        self.layers += other.layers;
+        self.cosets += other.cosets;
+        self.runs += other.runs;
+        self.rows_gathered += other.rows_gathered;
+        self.rows_sorted += other.rows_sorted;
+        self.rows_id += other.rows_id;
+        self.terms_in += other.terms_in;
+        self.terms_out += other.terms_out;
+        self.rows_exported += other.rows_exported;
+        self.recv_rows += other.recv_rows;
+        self.append_ns += other.append_ns;
+        self.chunk_wait_ns += other.chunk_wait_ns;
+        self.compact_ns += other.compact_ns;
+        self.h2d_ns += other.h2d_ns;
+        self.d2h_ns += other.d2h_ns;
     }
 
     /// Fold one coset task's busy-time counters into the totals.
-    pub(crate) fn absorb_coset(&mut self, c: &CosetStats) {
-        self.swap_ns += c.swap_ns;
-        self.size_ns += c.size_ns;
-        self.gather_ns += c.gather_ns;
-        self.sort_ns += c.sort_ns;
-        self.merge_ns += c.merge_ns;
-        self.clear_ns += c.clear_ns;
-        self.cosets += c.cosets;
-        self.runs += c.runs;
-        self.rows_gathered += c.rows_gathered;
-        self.rows_sorted += c.rows_sorted;
-        self.rows_id += c.rows_id;
+    pub(crate) fn absorb_coset(&mut self, coset: &CosetStats) {
+        self.swap_ns += coset.swap_ns;
+        self.size_ns += coset.size_ns;
+        self.gather_ns += coset.gather_ns;
+        self.sort_ns += coset.sort_ns;
+        self.merge_ns += coset.merge_ns;
+        self.clear_ns += coset.clear_ns;
+        self.cosets += coset.cosets;
+        self.runs += coset.runs;
+        self.rows_gathered += coset.rows_gathered;
+        self.rows_sorted += coset.rows_sorted;
+        self.rows_id += coset.rows_id;
     }
 
     /// Sum of the wall-clock phase fields.
@@ -196,9 +196,9 @@ impl Stamp {
 
     #[inline]
     pub(crate) fn lap(&mut self, slot: &mut u64) {
-        let t = Instant::now();
-        *slot += t.duration_since(self.0).as_nanos() as u64;
-        self.0 = t;
+        let now = Instant::now();
+        *slot += now.duration_since(self.0).as_nanos() as u64;
+        self.0 = now;
     }
 
     /// Re-arm without recording, skipping a region that times itself.

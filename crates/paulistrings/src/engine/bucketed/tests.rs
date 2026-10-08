@@ -134,7 +134,7 @@ fn peak_terms_spans_the_first_input_and_every_output() {
 /// Run one layer through the bucketed engine, converting in and out.
 pub(super) fn bucketed_layer<const W: usize, C, T>(
     input: &PauliSum<W>,
-    ch: &C,
+    channel: &C,
     policy: &T,
     adjoint: bool,
     bits: u8,
@@ -146,11 +146,11 @@ where
 {
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
     let mut b = input.clone().with_hash(hash);
-    let prep = ch
+    let prepared = channel
         .prepare(b.hash(), adjoint)
         .expect("channel could not be prepared");
     let mut scratch = LayerScratch::<W>::new();
-    apply_layer_bucketed(&mut b, &prep, policy, &mut scratch);
+    apply_layer_bucketed(&mut b, &prepared, policy, &mut scratch);
     b
 }
 
@@ -163,9 +163,9 @@ pub(super) fn assert_sums_close<const W: usize>(got: &PauliSum<W>, want: &PauliS
 
 #[test]
 fn h_conjugates_z_to_x() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let input = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let input = accumulator.finalize();
     let out = bucketed_layer(&input, &Clifford1Q::h(0), &AlwaysKeep, false, 4, 0x1);
     assert_eq!(out.len(), 1);
     let (x, z, c) = out.iter().next().unwrap();
@@ -176,9 +176,9 @@ fn h_conjugates_z_to_x() {
 
 #[test]
 fn cnot_propagates_z_on_the_control() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-    acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
-    let input = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
+    accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
+    let input = accumulator.finalize();
     // I⊗Z under CNOT(0 -> 1) becomes Z⊗Z.
     let out = bucketed_layer(&input, &Clifford2Q::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
     assert_eq!(out.len(), 1);
@@ -189,9 +189,9 @@ fn cnot_propagates_z_on_the_control() {
 
 #[test]
 fn a_rotation_fans_out_to_two_terms() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let input = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
+    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let input = accumulator.finalize();
     let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_3);
     let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
     // cos(pi/3)*X + sin(pi/3)*(i * X * Z) = 0.5*X - 0.866*Y
@@ -209,12 +209,12 @@ fn differential_against_the_naive_oracle_w1_dense_collisions() {
     let input = rand_sum::<1>(2000, 8, 0xC0FFEE);
     let channels = crate::test_support::differential_channels_w1();
 
-    for (name, ch) in &channels {
-        let cr: &dyn Channel<1> = ch.as_ref();
+    for (name, channel) in &channels {
+        let channel_ref: &dyn Channel<1> = channel.as_ref();
         for &adjoint in &[false, true] {
             for &bits in &[0u8, 1, 3, 6, 11] {
-                let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
-                let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
+                let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+                let got = bucketed_layer(&input, channel_ref, &AlwaysKeep, adjoint, bits, 0xABCD);
                 assert_terms_close(
                     &got,
                     &want,
@@ -231,12 +231,12 @@ fn differential_against_the_naive_oracle_w2_sparse() {
     // The other regime: wide keys, few collisions, word-boundary supports.
     let input = rand_sum::<2>(3000, 128, 0xBEEF);
     let channels = crate::test_support::differential_channels_w2();
-    for (name, ch) in &channels {
-        let cr: &dyn Channel<2> = ch.as_ref();
+    for (name, channel) in &channels {
+        let channel_ref: &dyn Channel<2> = channel.as_ref();
         for &adjoint in &[false, true] {
             for &bits in &[2u8, 5, 9] {
-                let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
-                let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
+                let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+                let got = bucketed_layer(&input, channel_ref, &AlwaysKeep, adjoint, bits, 0xABCD);
                 assert_terms_close(
                     &got,
                     &want,
@@ -274,14 +274,14 @@ fn differential_with_truncation_policies() {
 #[test]
 fn keep_term_sees_the_summed_coefficient() {
     // At theta = pi/2, X and Y land on one key with nearly cancelling weights, which the threshold must drop.
-    let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.5, 0.0));
-    acc.add_term(
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 2);
+    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.5, 0.0));
+    accumulator.add_term(
         PauliString::<1>::y(0),
         Phase::ONE,
         Complex64::new(-0.4999999, 0.0),
     );
-    let input = acc.finalize();
+    let input = accumulator.finalize();
     let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_2);
     for bits in [0u8, 3, 7] {
         let policy = CoefficientThreshold(1e-6);
@@ -315,11 +315,11 @@ fn rescale_fast_path_agrees_with_the_general_path() {
         ),
         ("pauli_z", Box::new(Clifford1Q::z(3))),
     ];
-    for (name, ch) in &chans {
-        let cr: &dyn Channel<1> = ch.as_ref();
+    for (name, channel) in &chans {
+        let channel_ref: &dyn Channel<1> = channel.as_ref();
         for bits in [0u8, 4, 8] {
-            let got = bucketed_layer(&input, cr, &AlwaysKeep, false, bits, 0x31);
-            let want = naive_apply_layer(&input, cr, &AlwaysKeep, false);
+            let got = bucketed_layer(&input, channel_ref, &AlwaysKeep, false, bits, 0x31);
+            let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, false);
             assert_terms_close(&got, &want, TOL, &format!("{name} bits={bits}"));
         }
     }
@@ -368,14 +368,14 @@ fn output_agrees_across_bucket_counts_to_fp_tolerance() {
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
     let cnot = Clifford2Q::cnot(1, 5);
     let gu2q = sqrt_swap_w1(1, 5);
-    for ch in [
+    for channel in [
         &rot as &dyn Channel<1>,
         &cnot as &dyn Channel<1>,
         &gu2q as &dyn Channel<1>,
     ] {
-        let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 0, 0x51);
+        let reference = bucketed_layer(&input, channel, &AlwaysKeep, false, 0, 0x51);
         for bits in [1u8, 2, 3, 5, 8, 11] {
-            let got = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x51);
+            let got = bucketed_layer(&input, channel, &AlwaysKeep, false, bits, 0x51);
             assert_terms_close(&got, &reference, TOL, &format!("bits={bits}"));
         }
     }
@@ -387,10 +387,10 @@ fn output_agrees_across_hash_seeds_to_fp_tolerance() {
     let input = rand_sum::<1>(2000, 8, 0x9002);
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
     let gu2q = sqrt_swap_w1(1, 5);
-    for ch in [&rot as &dyn Channel<1>, &gu2q as &dyn Channel<1>] {
-        let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, 1);
+    for channel in [&rot as &dyn Channel<1>, &gu2q as &dyn Channel<1>] {
+        let reference = bucketed_layer(&input, channel, &AlwaysKeep, false, 6, 1);
         for seed in [2u64, 3, 5, 8, 13, 21] {
-            let got = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, seed);
+            let got = bucketed_layer(&input, channel, &AlwaysKeep, false, 6, seed);
             assert_terms_close(&got, &reference, TOL, &format!("seed={seed}"));
         }
     }
@@ -404,11 +404,11 @@ fn local_gather_orders_agree_to_fp_tolerance() {
     let gu2q = sqrt_swap_w1(1, 5);
     let hash = Gf2Hash::<1>::new(8, 5, 0x77);
     let sum = input.clone().with_hash(hash);
-    let prep = gu2q.prepare(sum.hash(), false).unwrap();
-    let Prepared::Local(ptm) = &prep else {
+    let prepared = gu2q.prepare(sum.hash(), false).unwrap();
+    let Prepared::Local(ptm) = &prepared else {
         panic!("gu2q prepares to a Local plan");
     };
-    let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
+    let span = Gf2Span::new(&prepared.bucket_deltas(), sum.hash().bits());
     assert!(
         span.r() >= 2,
         "want a multi-member coset so the two visit orders actually differ; got r={}",
@@ -514,10 +514,10 @@ fn local_gather_orders_agree_to_fp_tolerance() {
 #[test]
 fn identity_density_classification() {
     let hash = Gf2Hash::<1>::new(12, 6, 0xD1CE);
-    let check = |ch: &dyn Channel<1>, want: bool, label: &str| {
-        let prep = ch.prepare(&hash, false).unwrap();
-        let span = Gf2Span::new(&prep.bucket_deltas(), 6);
-        match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
+    let check = |channel: &dyn Channel<1>, want: bool, label: &str| {
+        let prepared = channel.prepare(&hash, false).unwrap();
+        let span = Gf2Span::new(&prepared.bucket_deltas(), 6);
+        match DeltaPlan::new(&prepared, &span, LayerKnobs::default()) {
             DeltaPlan::Local { dense_identity, .. } => {
                 assert_eq!(dense_identity, want, "{label}")
             }
@@ -548,10 +548,10 @@ fn identity_density_classification() {
 #[test]
 fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
     let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-    let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool, f64) {
-        let prep = ch.prepare(&hash, false).unwrap();
-        let span = Gf2Span::new(&prep.bucket_deltas(), 8);
-        match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
+    let rest_streams = |channel: &dyn Channel<1>, label: &str| -> (usize, bool, f64) {
+        let prepared = channel.prepare(&hash, false).unwrap();
+        let span = Gf2Span::new(&prepared.bucket_deltas(), 8);
+        match DeltaPlan::new(&prepared, &span, LayerKnobs::default()) {
             DeltaPlan::Local {
                 ptm,
                 has_identity,
@@ -613,10 +613,11 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         ),
     ];
     assert_eq!(cases.len(), expect.len());
-    for ((label, ch), &(want_label, want_streams, want_rpk, want_radix)) in cases.iter().zip(expect)
+    for ((label, channel), &(want_label, want_streams, want_rpk, want_radix)) in
+        cases.iter().zip(expect)
     {
         assert_eq!(*label, want_label);
-        let (streams, radix, rpk) = rest_streams(ch.as_ref(), label);
+        let (streams, radix, rpk) = rest_streams(channel.as_ref(), label);
         assert_eq!(streams, want_streams, "{label}: rest streams");
         assert!(
             (rpk - want_rpk).abs() < 1e-9,
@@ -643,8 +644,8 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
 fn a_partitioned_plan_reads_the_channel_wide_overlap() {
     let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
     let gu2q = sqrt_swap_w1(1, 5);
-    let prep = gu2q.prepare(&hash, false).unwrap();
-    let Prepared::Local(full) = &prep else {
+    let prepared = gu2q.prepare(&hash, false).unwrap();
+    let Prepared::Local(full) = &prepared else {
         panic!("sqrt(SWAP) prepares to a Local plan");
     };
     assert!(
@@ -715,16 +716,16 @@ fn many_layers_without_converting_out() {
     ];
 
     let mut want = input.clone();
-    for ch in &chans {
-        want = naive_apply_layer(&want, ch.as_ref(), &AlwaysKeep, false);
+    for channel in &chans {
+        want = naive_apply_layer(&want, channel.as_ref(), &AlwaysKeep, false);
     }
 
     let hash = Gf2Hash::<1>::new(8, 5, 0x77);
     let mut b = input.clone().with_hash(hash);
     let mut scratch = LayerScratch::<1>::new();
-    for ch in &chans {
-        let prep = ch.prepare(b.hash(), false).unwrap();
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+    for channel in &chans {
+        let prepared = channel.prepare(b.hash(), false).unwrap();
+        apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
     }
     let got = b;
     assert_terms_close(&got, &want, TOL, "six layers");
@@ -747,11 +748,11 @@ fn layers_survive_a_rebucket_in_between() {
     let mut b = input.clone().with_hash(hash);
     let mut scratch = LayerScratch::<1>::new();
 
-    let prep = h.prepare(b.hash(), false).unwrap();
-    apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+    let prepared = h.prepare(b.hash(), false).unwrap();
+    apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
     b.rebucket(32, 1);
-    let prep = rot.prepare(b.hash(), false).unwrap();
-    apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+    let prepared = rot.prepare(b.hash(), false).unwrap();
+    apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
 
     assert_terms_close(&b, &want, TOL, "layer, rebucket, layer");
 }
@@ -892,11 +893,11 @@ fn layer_fingerprints_are_stable() {
     let input = rand_sum::<2>(2000, 10, 0xC05E7);
     let channels = fingerprint_channels();
     let mut got: Vec<(&str, bool, u8, u64)> = Vec::new();
-    for (name, ch) in &channels {
-        let cr: &dyn Channel<2> = ch.as_ref();
+    for (name, channel) in &channels {
+        let channel_ref: &dyn Channel<2> = channel.as_ref();
         for &adjoint in &[false, true] {
             for &bits in &[2u8, 5] {
-                let out = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xF17E);
+                let out = bucketed_layer(&input, channel_ref, &AlwaysKeep, adjoint, bits, 0xF17E);
                 got.push((name, adjoint, bits, layer_fingerprint(&out)));
             }
         }
@@ -938,7 +939,7 @@ fn an_empty_sum_survives_a_layer() {
 #[test]
 fn single_bucket_sum_is_one_serial_coset() {
     let input = rand_sum::<1>(600, 8, 0xB1);
-    for ch in [
+    for channel in [
         Box::new(PauliRotation::new(
             {
                 let mut g = PauliString::<1>::z(1);
@@ -949,9 +950,9 @@ fn single_bucket_sum_is_one_serial_coset() {
         )) as Box<dyn Channel<1>>,
         Box::new(Clifford2Q::cnot(2, 6)),
     ] {
-        let got = bucketed_layer(&input, ch.as_ref(), &AlwaysKeep, false, 0, 0xEE);
+        let got = bucketed_layer(&input, channel.as_ref(), &AlwaysKeep, false, 0, 0xEE);
         assert_eq!(got.num_buckets(), 1);
-        let want = naive_apply_layer(&input, ch.as_ref(), &AlwaysKeep, false);
+        let want = naive_apply_layer(&input, channel.as_ref(), &AlwaysKeep, false);
         // Tolerance: the oracle sums equal keys in hash-map order.
         assert_terms_close(&got, &want, TOL, "bits=0 single coset");
     }
@@ -982,8 +983,8 @@ fn wide_rotation_with_colliding_bucket_delta() {
 
     let hash = Gf2Hash::<1>::new(8, bits, seed);
     let mut b = input.clone().with_hash(hash);
-    let prep = rot.prepare(b.hash(), false).unwrap();
-    match &prep {
+    let prepared = rot.prepare(b.hash(), false).unwrap();
+    match &prepared {
         Prepared::Rotation(r) => {
             assert_eq!(
                 r.bucket_delta_gen, r.bucket_delta_identity,
@@ -993,7 +994,7 @@ fn wide_rotation_with_colliding_bucket_delta() {
         _ => panic!("weight-4 rotation must prepare as Rotation"),
     }
     let mut scratch = LayerScratch::<1>::new();
-    apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+    apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
 
     let want = naive_apply_layer(&input, &rot, &AlwaysKeep, false);
     // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
@@ -1033,10 +1034,10 @@ fn in_place_layers_share_one_scratch_across_channel_types() {
     let mut b = input.clone().with_hash(hash);
     let mut scratch = LayerScratch::<2>::new();
     let mut want = input;
-    for ch in channels {
-        let prep = ch.prepare(b.hash(), false).unwrap();
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-        want = naive_apply_layer(&want, ch, &AlwaysKeep, false);
+    for channel in channels {
+        let prepared = channel.prepare(b.hash(), false).unwrap();
+        apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
+        want = naive_apply_layer(&want, channel, &AlwaysKeep, false);
     }
     // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
     assert_terms_close(&b, &want, TOL, "rot → cnot → gu2q through one scratch");
@@ -1049,10 +1050,10 @@ fn capacity_stabilizes_across_repeated_layers() {
     let hash = Gf2Hash::<1>::new(10, 4, 0xF00);
     let mut b = input.with_hash(hash);
     let hgate = Clifford1Q::h(3);
-    let prep = hgate.prepare(b.hash(), false).unwrap();
+    let prepared = hgate.prepare(b.hash(), false).unwrap();
     let mut scratch = LayerScratch::<1>::new();
 
-    let total_capacity = |s: &PauliSum<1>, sc: &LayerScratch<1>| -> usize {
+    let total_capacity = |s: &PauliSum<1>, scratch: &LayerScratch<1>| -> usize {
         let bucket_cap: usize = (0..s.num_buckets())
             .map(|i| {
                 let (x, _, _) = s.bucket(i);
@@ -1060,15 +1061,20 @@ fn capacity_stabilizes_across_repeated_layers() {
                 x.len()
             })
             .sum();
-        let old_cap: usize = sc.task.old.iter().map(|c| c.x.capacity()).sum();
-        let run_cap: usize = sc.task.runs.iter().map(|r| r.x.capacity()).sum();
-        let sort_cap = sc.task.sort.total_capacity();
-        bucket_cap + old_cap + run_cap + sort_cap + sc.perm.capacity() + sc.staging.capacity()
+        let old_cap: usize = scratch.task.old.iter().map(|c| c.x.capacity()).sum();
+        let run_cap: usize = scratch.task.runs.iter().map(|r| r.x.capacity()).sum();
+        let sort_cap = scratch.task.sort.total_capacity();
+        bucket_cap
+            + old_cap
+            + run_cap
+            + sort_cap
+            + scratch.permutation.capacity()
+            + scratch.staging.capacity()
     };
 
     let mut snapshots = Vec::new();
     for _ in 0..4 {
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
+        apply_layer_bucketed(&mut b, &prepared, &AlwaysKeep, &mut scratch);
         snapshots.push(total_capacity(&b, &scratch));
     }
     assert_eq!(
@@ -1106,11 +1112,11 @@ fn coset_path_is_correct_for_a_non_subspace_delta_set() {
         }
     }
 
-    let ch = ThreeDeltas;
+    let channel = ThreeDeltas;
     let input = rand_sum::<1>(1200, 8, 0xAB5EA7);
-    let want = naive_apply_layer(&input, &ch, &AlwaysKeep, false);
+    let want = naive_apply_layer(&input, &channel, &AlwaysKeep, false);
     for bits in [0u8, 2, 5] {
-        let got = bucketed_layer(&input, &ch, &AlwaysKeep, false, bits, 0x7EA);
+        let got = bucketed_layer(&input, &channel, &AlwaysKeep, false, bits, 0x7EA);
         // Tolerance: three summands per key, summed by the oracle in hash-map order.
         assert_terms_close(
             &got,
@@ -1187,7 +1193,7 @@ mod extra_rows_tests {
     /// One layer through [`apply_layer_bucketed_with`], at a fixed partition.
     fn layer_with_extra<const W: usize, T, X>(
         input: &PauliSum<W>,
-        ch: &dyn Channel<W>,
+        channel: &dyn Channel<W>,
         policy: &T,
         bits: u8,
         seed: u64,
@@ -1199,13 +1205,13 @@ mod extra_rows_tests {
     {
         let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
         let mut b = input.clone().with_hash(hash);
-        let prep = ch
+        let prepared = channel
             .prepare(b.hash(), false)
             .expect("channel could not be prepared");
         let mut scratch = LayerScratch::<W>::new();
         apply_layer_bucketed_with(
             &mut b,
-            &prep,
+            &prepared,
             policy,
             &mut scratch,
             extra,
@@ -1217,14 +1223,14 @@ mod extra_rows_tests {
     /// The oracle: the naive layer plus the injected rows, summed per key and only then filtered.
     fn expected<const W: usize, T>(
         input: &PauliSum<W>,
-        ch: &dyn Channel<W>,
+        channel: &dyn Channel<W>,
         policy: &T,
         injected: &Injected<W>,
     ) -> PauliSum<W>
     where
         T: TruncationPolicy<W> + ?Sized,
     {
-        let base = naive_apply_layer(input, ch, &AlwaysKeep, false);
+        let base = naive_apply_layer(input, channel, &AlwaysKeep, false);
         let mut map: HashMap<([u64; W], [u64; W]), Complex64> = HashMap::new();
         for (x, z, c) in base.iter() {
             *map.entry((*x, *z)).or_insert(ZERO) += c;
@@ -1232,14 +1238,14 @@ mod extra_rows_tests {
         for &(x, z, c) in injected.all() {
             *map.entry((x, z)).or_insert(ZERO) += c;
         }
-        let mut acc = BuildAccumulator::<W>::with_capacity(input.num_qubits(), map.len());
+        let mut accumulator = BuildAccumulator::<W>::with_capacity(input.num_qubits(), map.len());
         for ((x, z), c) in map {
             if c == ZERO || !policy.keep_term(&x, &z, c) {
                 continue;
             }
-            acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
+            accumulator.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
         }
-        acc.finalize()
+        accumulator.finalize()
     }
 
     /// A handful of rows for a layer: some on keys the fixture already carries (colliding with the local output, so they must be summed), some on keys it does not.
@@ -1275,13 +1281,13 @@ mod extra_rows_tests {
             ("rot bits=0", &rot, 0, 0),
             ("cnot bits=0", &cnot, 0, 0),
         ];
-        for (label, ch, bits, want_r) in cases {
+        for (label, channel, bits, want_r) in cases {
             // Pick the hash for the intended span rank, so a colliding draw cannot degrade a `bits = 5` case.
             let seed = (0u64..4096)
                 .find(|&s| {
                     let hash = Gf2Hash::<1>::new(8, bits, s);
-                    let prep = ch.prepare(&hash, false).unwrap();
-                    Gf2Span::new(&prep.bucket_deltas(), bits).r() == want_r
+                    let prepared = channel.prepare(&hash, false).unwrap();
+                    Gf2Span::new(&prepared.bucket_deltas(), bits).r() == want_r
                 })
                 .unwrap_or_else(|| panic!("{label}: no seed of rank {want_r} in 4096 tries"));
             let hash = Gf2Hash::<1>::new(8, bits, seed);
@@ -1293,7 +1299,7 @@ mod extra_rows_tests {
             );
 
             // Non-vacuity: both the summed and the inserted case occur.
-            let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, seed);
+            let plain = bucketed_layer(&input, channel, &AlwaysKeep, false, bits, seed);
             let collided = injected
                 .all()
                 .filter(|(x, z, _)| plain.get(x, z).is_some())
@@ -1304,8 +1310,8 @@ mod extra_rows_tests {
                 "{label}: want both colliding and fresh keys (collided={collided} fresh={fresh})"
             );
 
-            let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, seed, &injected);
-            let want = expected(&input, ch, &AlwaysKeep, &injected);
+            let got = layer_with_extra(&input, channel, &AlwaysKeep, bits, seed, &injected);
+            let want = expected(&input, channel, &AlwaysKeep, &injected);
             assert_eq!(got.len(), plain.len() + fresh, "{label}: term count");
             assert_terms_close(&got, &want, TOL, label);
         }
@@ -1317,11 +1323,11 @@ mod extra_rows_tests {
         let input = rand_sum::<1>(600, 8, 0xE47B);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
         let cnot = Clifford2Q::cnot(1, 5);
-        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
+        for channel in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
             for bits in [0u8, 2, 5] {
                 let empty = Injected::<1>::default();
-                let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, 0x7A58, &empty);
-                let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x7A58);
+                let got = layer_with_extra(&input, channel, &AlwaysKeep, bits, 0x7A58, &empty);
+                let plain = bucketed_layer(&input, channel, &AlwaysKeep, false, bits, 0x7A58);
                 assert_eq!(
                     got.to_arrays(),
                     plain.to_arrays(),
@@ -1334,10 +1340,10 @@ mod extra_rows_tests {
     /// `keep_term` runs on the sum of the local and the injected contribution, not on either alone: two coefficients that each clear the threshold can cancel to below it.
     #[test]
     fn keep_term_sees_local_plus_injected() {
-        let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
-        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(0.5, 0.0));
-        acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
-        let input = acc.finalize();
+        let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
+        accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(0.5, 0.0));
+        accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
+        let input = accumulator.finalize();
         // H on qubit 0 sends Z₀ → X₀ with amplitude 1 and leaves Z₁ alone.
         let h = Clifford1Q::h(0);
         let x0 = PauliString::<1>::x(0);
@@ -1521,17 +1527,17 @@ mod finalize_tests {
         ];
 
         let mut want = input.clone();
-        for ch in &chans {
-            want = naive_apply_layer(&want, ch.as_ref(), &policy, false);
+        for channel in &chans {
+            want = naive_apply_layer(&want, channel.as_ref(), &policy, false);
             policy.finalize_layer(&mut want);
         }
 
         let hash = Gf2Hash::<1>::new(8, 5, 0xBB);
         let mut b = input.clone().with_hash(hash);
         let mut scratch = LayerScratch::<1>::new();
-        for ch in &chans {
-            let prep = ch.prepare(b.hash(), false).unwrap();
-            apply_layer_bucketed(&mut b, &prep, &policy, &mut scratch);
+        for channel in &chans {
+            let prepared = channel.prepare(b.hash(), false).unwrap();
+            apply_layer_bucketed(&mut b, &prepared, &policy, &mut scratch);
             policy.finalize_layer(&mut b);
         }
         let got = b;
@@ -1552,7 +1558,7 @@ mod tie_tests {
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.37);
         let cnot = crate::channel::clifford::Clifford2Q::cnot(1, 5);
 
-        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
+        for channel in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
             // 64 buckets, well above MIN_COSETS_FOR_PARALLEL.
             let run = |threads: usize| {
                 rayon::ThreadPoolBuilder::new()
@@ -1562,11 +1568,11 @@ mod tie_tests {
                     .install(|| {
                         let hash = Gf2Hash::<1>::new(10, 6, 0xC1);
                         let mut b = input.clone().with_hash(hash);
-                        let prep = ch.prepare(b.hash(), false).unwrap();
+                        let prepared = channel.prepare(b.hash(), false).unwrap();
                         let mut scratch = LayerScratch::<1>::new();
                         apply_layer_bucketed(
                             &mut b,
-                            &prep,
+                            &prepared,
                             &super::tests::AlwaysKeep,
                             &mut scratch,
                         );
@@ -1606,9 +1612,14 @@ mod tie_tests {
                 .install(|| {
                     let hash = Gf2Hash::<1>::new(10, 6, 0xC2);
                     let mut b = input.clone().with_hash(hash);
-                    let prep = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
+                    let prepared = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
                     let mut scratch = LayerScratch::<1>::new();
-                    apply_layer_bucketed(&mut b, &prep, &super::tests::AlwaysKeep, &mut scratch);
+                    apply_layer_bucketed(
+                        &mut b,
+                        &prepared,
+                        &super::tests::AlwaysKeep,
+                        &mut scratch,
+                    );
                     b
                 })
         };

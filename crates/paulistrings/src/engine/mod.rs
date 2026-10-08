@@ -117,9 +117,9 @@ impl PropagateOptions {
 /// };
 /// use num_complex::Complex64;
 ///
-/// let mut acc = BuildAccumulator::<1>::new(1);
-/// acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-/// let observable = acc.finalize();
+/// let mut accumulator = BuildAccumulator::<1>::new(1);
+/// accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+/// let observable = accumulator.finalize();
 ///
 /// let mut circuit = Circuit::<1>::new(1);
 /// circuit.push(Clifford1Q::h(0));
@@ -172,41 +172,41 @@ pub fn propagate_with<const W: usize, T>(
 where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let n = circuit.channels.len();
+    let num_channels = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
     let terms_in = sum.len();
     let started = std::time::Instant::now();
     log::info!(
         target: LOG_TARGET,
-        "propagate: {terms_in} terms through {n} channels ({direction:?})",
+        "propagate: {terms_in} terms through {num_channels} channels ({direction:?})",
     );
 
     let tracing = scratch.term_trace.is_some();
     let gate_tracing = scratch.gate_trace.is_some();
 
     let mut start = 0usize;
-    if n > 0 && options.starts_direct(terms_in, policy.finalizes_layer()) {
+    if num_channels > 0 && options.starts_direct(terms_in, policy.finalizes_layer()) {
         let (out, applied) =
             direct::run_direct_prefix(circuit, sum, policy, direction, scratch, options);
         sum = out;
         start = applied;
     }
 
-    for k in start..n {
-        let idx = match direction {
-            Direction::Forward => k,
-            Direction::Heisenberg => n - 1 - k,
+    for application_index in start..num_channels {
+        let circuit_index = match direction {
+            Direction::Forward => application_index,
+            Direction::Heisenberg => num_channels - 1 - application_index,
         };
-        let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
+        let channel: &dyn Channel<W> = circuit.channels[circuit_index].as_ref();
 
         // The clock is read only when a logger or the gate trace wants it.
         let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
         let want_timer = gate_tracing || debug_on;
-        let layer_t0 = want_timer.then(std::time::Instant::now);
+        let layer_started = want_timer.then(std::time::Instant::now);
         let terms_before = sum.len();
 
         #[cfg(feature = "phase-timing")]
-        let mut st = stats::Stamp::now();
+        let mut stamp = stats::Stamp::now();
         #[cfg(feature = "phase-timing")]
         {
             scratch.stats.layers += 1;
@@ -215,23 +215,23 @@ where
 
         sum.rebucket(options.target_bucket_len, options.min_buckets);
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut scratch.stats.rebucket_ns);
+        stamp.lap(&mut scratch.stats.rebucket_ns);
 
-        let prep = ch.prepare(sum.hash(), adjoint);
+        let prepared = channel.prepare(sum.hash(), adjoint);
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut scratch.stats.prepare_ns);
+        stamp.lap(&mut scratch.stats.prepare_ns);
 
-        match prep {
-            Some(prep) => {
-                apply_layer_bucketed(&mut sum, &prep, policy, scratch);
+        match prepared {
+            Some(prepared) => {
+                apply_layer_bucketed(&mut sum, &prepared, policy, scratch);
                 #[cfg(feature = "phase-timing")]
-                st.rearm();
+                stamp.rearm();
             }
             None => {
                 // Reachable only from a user `Channel`: every built-in has support ≤ MAX_LOCAL_SUPPORT or, like `PauliRotation`, overrides `prepare`.
-                let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
+                let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
                 panic!(
-                    "layer {idx}: Channel::prepare declined, so this channel cannot be \
+                    "layer {circuit_index}: Channel::prepare declined, so this channel cannot be \
                      propagated. The engine tabulates channels of support ≤ \
                      {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a \
                      channel must not write outside its declared support. See \
@@ -243,7 +243,7 @@ where
         policy.finalize_layer(&mut sum);
         #[cfg(feature = "phase-timing")]
         {
-            st.lap(&mut scratch.stats.finalize_ns);
+            stamp.lap(&mut scratch.stats.finalize_ns);
             scratch.stats.terms_out += sum.len() as u64;
         }
         // Behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion (CLAUDE.md §Performance discipline).
@@ -252,30 +252,30 @@ where
         }
 
         if want_timer {
-            let dt = layer_t0
-                .expect("want_timer implies layer_t0 is Some")
+            let elapsed = layer_started
+                .expect("want_timer implies layer_started is Some")
                 .elapsed();
             if gate_tracing {
                 record_gate_trace(
                     scratch,
-                    idx as u32,
-                    k as u32,
-                    ch.debug_name(),
+                    circuit_index as u32,
+                    application_index as u32,
+                    channel.debug_name(),
                     terms_before,
                     sum.len(),
-                    dt,
+                    elapsed,
                 );
             }
             if debug_on {
                 log::debug!(
                     target: LOG_TARGET,
                     "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
-                    k + 1,
-                    n,
-                    ch.debug_name(),
+                    application_index + 1,
+                    num_channels,
+                    channel.debug_name(),
                     terms_before,
                     sum.len(),
-                    dt.as_secs_f64() * 1e3,
+                    elapsed.as_secs_f64() * 1e3,
                 );
             }
         }
@@ -284,7 +284,7 @@ where
     log::info!(
         target: LOG_TARGET,
         "propagate: {} layers applied, {} -> {} terms, {:.3} s",
-        n,
+        num_channels,
         terms_in,
         sum.len(),
         started.elapsed().as_secs_f64(),

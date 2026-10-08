@@ -16,7 +16,7 @@ impl<const W: usize> TruncationPolicy<W> for KeepAll {
 
 fn apply_one<const W: usize, T>(
     sum: PauliSum<W>,
-    ch: &dyn Channel<W>,
+    channel: &dyn Channel<W>,
     policy: &T,
     adjoint: bool,
 ) -> PauliSum<W>
@@ -24,17 +24,17 @@ where
     T: TruncationPolicy<W> + ?Sized,
 {
     let mut direct = DirectSum::from_sum(sum);
-    direct.apply_layer(ch, policy, adjoint);
+    direct.apply_layer(channel, policy, adjoint);
     direct.to_sum()
 }
 
 /// `H` conjugates `Z` to `X`, so `Z₀ + 0.5·X₁` becomes `X₀ + 0.5·X₁`.
 #[test]
 fn h_maps_z_to_x() {
-    let mut acc = BuildAccumulator::<1>::new(2);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
-    let out = apply_one(acc.finalize(), &Clifford1Q::h(0), &KeepAll, false);
+    let mut accumulator = BuildAccumulator::<1>::new(2);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+    let out = apply_one(accumulator.finalize(), &Clifford1Q::h(0), &KeepAll, false);
 
     assert_eq!(out.len(), 2);
     assert_eq!(out.get(&[0b01], &[0]), Some(Complex64::new(1.0, 0.0)));
@@ -45,11 +45,11 @@ fn h_maps_z_to_x() {
 #[test]
 fn rotation_fans_out_with_cos_and_sin() {
     let theta = std::f64::consts::FRAC_PI_3;
-    let mut acc = BuildAccumulator::<1>::new(1);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let mut accumulator = BuildAccumulator::<1>::new(1);
+    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
     let gen = PauliString::<1>::z(0);
     let out = apply_one(
-        acc.finalize(),
+        accumulator.finalize(),
         &PauliRotation::new(gen, theta),
         &KeepAll,
         false,
@@ -77,18 +77,18 @@ fn keep_term_sees_summed_coefficients() {
 
     // A π/2 Z-rotation on X₀ emits cos(π/2)·X₀ (an exact-ish zero) plus sin(π/2)·Y₀.
     // Seeding both X₀ and Y₀ makes the Y row a two-row sum.
-    let mut acc = BuildAccumulator::<1>::new(1);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(
+    let mut accumulator = BuildAccumulator::<1>::new(1);
+    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(
         PauliString::<1>::y(0),
         Phase::ONE,
         Complex64::new(-1.0, 0.0),
     );
-    let sum = acc.finalize();
-    let ch = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_2);
+    let sum = accumulator.finalize();
+    let channel = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_2);
 
-    let loose = apply_one(sum.clone(), &ch, &Above(1e-12), false);
-    let strict = apply_one(sum, &ch, &Above(0.5), false);
+    let loose = apply_one(sum.clone(), &channel, &Above(1e-12), false);
+    let strict = apply_one(sum, &channel, &Above(0.5), false);
     // Y₀'s two contributions sum to ≈ 1 and X₀'s to ≈ −1, so both survive the loose threshold.
     assert_eq!(loose.len(), 2);
     // The strict threshold keeps both too; a per-row filter would have dropped the ≈ 0 rows and changed the sums.
@@ -142,10 +142,10 @@ fn differential<const W: usize>(num_qubits: usize, seed: u64) {
         Box::new(GeneralUnitary2Q::from_matrix(0, 1, matrix)),
     ];
 
-    for ch in &channels {
+    for channel in &channels {
         for adjoint in [false, true] {
-            let got = apply_one(sum.clone(), ch.as_ref(), &KeepAll, adjoint);
-            let want = naive_apply_layer(&sum, ch.as_ref(), &KeepAll, adjoint);
+            let got = apply_one(sum.clone(), channel.as_ref(), &KeepAll, adjoint);
+            let want = naive_apply_layer(&sum, channel.as_ref(), &KeepAll, adjoint);
             assert_terms_close(&got, &want, 1e-12, "direct vs naive");
             got.assert_invariants();
         }

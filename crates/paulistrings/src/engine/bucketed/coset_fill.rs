@@ -42,15 +42,20 @@ pub(in crate::engine) struct GatherRun<const W: usize> {
     pub(super) coeff: Vec<Complex64>,
 }
 
-/// `a != ZERO`, without the `||` short-circuit — one flag, no branch.
+/// `value != ZERO`, without the `||` short-circuit — one flag, no branch.
 #[inline(always)]
-pub(super) fn nonzero(a: Complex64) -> bool {
-    (a.re != 0.0) | (a.im != 0.0)
+pub(super) fn nonzero(value: Complex64) -> bool {
+    (value.re != 0.0) | (value.im != 0.0)
 }
 
 impl<const W: usize> GatherRun<W> {
     #[inline]
-    pub(super) fn reset(&mut self, cap_id_keys: usize, cap_id_coeff: usize, cap_rest: usize) {
+    pub(super) fn reset(
+        &mut self,
+        id_key_capacity: usize,
+        id_coeff_capacity: usize,
+        rest_capacity: usize,
+    ) {
         self.id_x.clear();
         self.id_z.clear();
         self.id_coeff.clear();
@@ -58,12 +63,12 @@ impl<const W: usize> GatherRun<W> {
         self.z.clear();
         self.coeff.clear();
         // One slot past the exact capacity: `append_if` writes a discarded row at `len` before deciding not to publish it.
-        self.id_x.reserve(cap_id_keys + 1);
-        self.id_z.reserve(cap_id_keys + 1);
-        self.id_coeff.reserve(cap_id_coeff + 1);
-        self.x.reserve(cap_rest + 1);
-        self.z.reserve(cap_rest + 1);
-        self.coeff.reserve(cap_rest + 1);
+        self.id_x.reserve(id_key_capacity + 1);
+        self.id_z.reserve(id_key_capacity + 1);
+        self.id_coeff.reserve(id_coeff_capacity + 1);
+        self.x.reserve(rest_capacity + 1);
+        self.z.reserve(rest_capacity + 1);
+        self.coeff.reserve(rest_capacity + 1);
     }
 
     /// Write one row at `len` and publish it iff `keep`.
@@ -81,25 +86,25 @@ impl<const W: usize> GatherRun<W> {
         z: [u64; W],
         c: Complex64,
     ) {
-        let n = xs.len();
-        debug_assert!(n < xs.capacity());
-        debug_assert!(n < zs.capacity());
-        debug_assert!(n < cs.capacity());
+        let len = xs.len();
+        debug_assert!(len < xs.capacity());
+        debug_assert!(len < zs.capacity());
+        debug_assert!(len < cs.capacity());
         unsafe {
-            xs.as_mut_ptr().add(n).write(x);
-            zs.as_mut_ptr().add(n).write(z);
-            cs.as_mut_ptr().add(n).write(c);
-            let m = n + keep as usize;
-            xs.set_len(m);
-            zs.set_len(m);
-            cs.set_len(m);
+            xs.as_mut_ptr().add(len).write(x);
+            zs.as_mut_ptr().add(len).write(z);
+            cs.as_mut_ptr().add(len).write(c);
+            let published = len + keep as usize;
+            xs.set_len(published);
+            zs.set_len(published);
+            cs.set_len(published);
         }
     }
 
     /// Branchless filtered append to the rest stream.
     #[inline]
     pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and `cap_rest` bounds every row the plan's deltas can emit into this run.
+        // SAFETY: `reset` reserved `rest_capacity + 1` on all three columns, and `rest_capacity` bounds every row the plan's deltas can emit into this run.
         unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
     }
 
@@ -112,7 +117,7 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the identity stream.
     #[inline]
     pub(super) fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding the identity stream's rows.
+        // SAFETY: as `push_if`, with `id_key_capacity` / `id_coeff_capacity` bounding the identity stream's rows.
         unsafe {
             Self::append_if(
                 &mut self.id_x,
@@ -129,12 +134,12 @@ impl<const W: usize> GatherRun<W> {
     /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
     #[inline]
     pub(super) fn push_id_coeff(&mut self, c: Complex64) {
-        let n = self.id_coeff.len();
-        debug_assert!(n < self.id_coeff.capacity());
-        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is the source bucket's length, exactly the number of calls made.
+        let len = self.id_coeff.len();
+        debug_assert!(len < self.id_coeff.capacity());
+        // SAFETY: `reset` reserved `id_coeff_capacity + 1`, and `id_coeff_capacity` is the source bucket's length, exactly the number of calls made.
         unsafe {
-            self.id_coeff.as_mut_ptr().add(n).write(c);
-            self.id_coeff.set_len(n + 1);
+            self.id_coeff.as_mut_ptr().add(len).write(c);
+            self.id_coeff.set_len(len + 1);
         }
     }
 
@@ -148,25 +153,25 @@ impl<const W: usize> GatherRun<W> {
 /// Below this many cosets the layer runs serially.
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
-/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `inv_perm` name each member's original bucket for `extra`.
+/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `inverse_permutation` name each member's original bucket for `extra`.
 pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketCols<W>],
     plan: &DeltaPlan<'_, W>,
     policy: &T,
-    ws: &mut CosetScratch<W>,
+    scratch: &mut CosetScratch<W>,
     extra: &X,
     chunk_base: usize,
-    inv_perm: &[u32],
+    inverse_permutation: &[u32],
 ) where
     T: TruncationPolicy<W> + ?Sized,
     X: ExtraRows<W>,
 {
-    let m = chunk.len();
+    let members = chunk.len();
     let beta_of = |j: usize| -> u32 {
-        if inv_perm.is_empty() {
+        if inverse_permutation.is_empty() {
             (chunk_base + j) as u32
         } else {
-            inv_perm[chunk_base + j]
+            inverse_permutation[chunk_base + j]
         }
     };
     #[cfg(feature = "phase-timing")]
@@ -175,64 +180,65 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         runs,
         sort,
         stats,
-    } = ws;
+    } = scratch;
     #[cfg(not(feature = "phase-timing"))]
-    let CosetScratch { old, runs, sort } = ws;
+    let CosetScratch { old, runs, sort } = scratch;
     #[cfg(feature = "phase-timing")]
-    let mut st = Stamp::now();
-    old.resize_with(m, BucketCols::default);
-    runs.resize_with(m, GatherRun::default);
+    let mut stamp = Stamp::now();
+    old.resize_with(members, BucketCols::default);
+    runs.resize_with(members, GatherRun::default);
 
     for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
         std::mem::swap(slot, cols);
         slot.clear();
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.swap_ns);
+    stamp.lap(&mut stats.swap_ns);
 
     // Exact per-run capacity per stream; it is also the bound `append_if`'s safety relies on.
     for (j, run) in runs.iter_mut().enumerate() {
-        let (cap_id_keys, cap_id_coeff, mut cap_rest): (usize, usize, usize) = match plan {
-            DeltaPlan::Local {
-                coords,
-                has_identity,
-                dense_identity,
-                ..
-            } => {
-                let mut id = 0usize;
-                let mut rest = 0usize;
-                for (e, &c) in coords.iter().enumerate() {
-                    let l = old[j ^ c as usize].len();
-                    if *has_identity && e == 0 {
-                        id += l;
-                    } else {
-                        rest += l;
+        let (id_key_capacity, id_coeff_capacity, mut rest_capacity): (usize, usize, usize) =
+            match plan {
+                DeltaPlan::Local {
+                    coords,
+                    has_identity,
+                    dense_identity,
+                    ..
+                } => {
+                    let mut id = 0usize;
+                    let mut rest = 0usize;
+                    for (entry, &coord) in coords.iter().enumerate() {
+                        let len = old[j ^ coord as usize].len();
+                        if *has_identity && entry == 0 {
+                            id += len;
+                        } else {
+                            rest += len;
+                        }
                     }
+                    (if *dense_identity { 0 } else { id }, id, rest)
                 }
-                (if *dense_identity { 0 } else { id }, id, rest)
-            }
-            DeltaPlan::Rotation {
-                coord_identity,
-                coord_gen,
-                gen_local,
-                ..
-            } => (
-                0,
-                old[j ^ *coord_identity as usize].len(),
-                if *gen_local {
-                    old[j ^ *coord_gen as usize].len()
-                } else {
-                    0
-                },
-            ),
-        };
+                DeltaPlan::Rotation {
+                    coord_identity,
+                    coord_gen,
+                    gen_local,
+                    ..
+                } => (
+                    0,
+                    old[j ^ *coord_identity as usize].len(),
+                    if *gen_local {
+                        old[j ^ *coord_gen as usize].len()
+                    } else {
+                        0
+                    },
+                ),
+            };
         if X::NEEDS_BETA {
-            cap_rest += extra.count(beta_of(j));
+            rest_capacity += extra.count(beta_of(j));
         }
-        run.reset(cap_id_keys, cap_id_coeff, cap_rest);
+        run.reset(id_key_capacity, id_coeff_capacity, rest_capacity);
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.size_ns);
+    stamp.lap(&mut stats.size_ns);
 
     match plan {
         DeltaPlan::Local {
@@ -242,37 +248,38 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             dense_identity,
             ..
         } => {
-            if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
+            if members >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
                 gather_local_output_major(old, runs, ptm, coords, *has_identity, *dense_identity);
             } else {
                 gather_local_input_major(old, runs, ptm, coords, *has_identity, *dense_identity);
             }
         }
         DeltaPlan::Rotation {
-            prep,
+            rotation,
             coord_identity,
             coord_gen,
             gen_local,
         } => {
             // Every term emits one id row, kept even when `cos == 0` (the signed-zero contract on `merge2_into`), so the merge borrows the source keys.
-            for (i, src) in old.iter().enumerate() {
-                for t in 0..src.len() {
-                    let v = PauliString::<W> {
-                        x: src.x[t],
-                        z: src.z[t],
+            for (i, source) in old.iter().enumerate() {
+                for row in 0..source.len() {
+                    let key = PauliString::<W> {
+                        x: source.x[row],
+                        z: source.z[row],
                     };
-                    if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
+                    if key.commutes_with(&rotation.gen) {
+                        runs[i ^ *coord_identity as usize].push_id_coeff(source.coeff[row]);
                     } else {
-                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
+                        runs[i ^ *coord_identity as usize]
+                            .push_id_coeff(source.coeff[row] * rotation.cos);
                         if *gen_local {
-                            let mut prod = v;
-                            let phase = prod.mul_assign(&prep.gen);
+                            let mut product = key;
+                            let phase = product.mul_assign(&rotation.gen);
                             let total = Phase::I + phase;
                             runs[i ^ *coord_gen as usize].push_row(
-                                prod.x,
-                                prod.z,
-                                total.apply(src.coeff[t]) * prep.sin,
+                                product.x,
+                                product.z,
+                                total.apply(source.coeff[row]) * rotation.sin,
                             );
                         }
                     }
@@ -286,7 +293,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.gather_ns);
+    stamp.lap(&mut stats.gather_ns);
 
     let radix = matches!(
         plan,
@@ -295,7 +302,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             ..
         }
     );
-    for (j, (run, dst)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
+    for (j, (run, destination)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += run.len() as u64;
@@ -307,29 +314,29 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
         }
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut stats.sort_ns);
+        stamp.lap(&mut stats.sort_ns);
         let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
             DeltaPlan::Local {
                 dense_identity: true,
                 ..
             } => {
-                let src = &old[j];
-                debug_assert_eq!(src.len(), run.id_coeff.len());
+                let source = &old[j];
+                debug_assert_eq!(source.len(), run.id_coeff.len());
                 #[cfg(feature = "phase-timing")]
                 {
-                    stats.rows_id += src.len() as u64;
+                    stats.rows_id += source.len() as u64;
                 }
-                (&src.x, &src.z)
+                (&source.x, &source.z)
             }
             DeltaPlan::Local { .. } => (&run.id_x, &run.id_z),
             DeltaPlan::Rotation { coord_identity, .. } => {
-                let src = &old[j ^ *coord_identity as usize];
-                debug_assert_eq!(src.len(), run.id_coeff.len());
+                let source = &old[j ^ *coord_identity as usize];
+                debug_assert_eq!(source.len(), run.id_coeff.len());
                 #[cfg(feature = "phase-timing")]
                 {
-                    stats.rows_id += src.len() as u64;
+                    stats.rows_id += source.len() as u64;
                 }
-                (&src.x, &src.z)
+                (&source.x, &source.z)
             }
         };
         merge2_into::<W, T>(
@@ -339,13 +346,13 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             &run.x,
             &run.z,
             &run.coeff,
-            &mut dst.x,
-            &mut dst.z,
-            &mut dst.coeff,
+            &mut destination.x,
+            &mut destination.z,
+            &mut destination.coeff,
             policy,
         );
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut stats.merge_ns);
+        stamp.lap(&mut stats.merge_ns);
     }
 
     for cols in old.iter_mut() {
@@ -353,9 +360,9 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     }
     #[cfg(feature = "phase-timing")]
     {
-        st.lap(&mut stats.clear_ns);
+        stamp.lap(&mut stats.clear_ns);
         stats.cosets += 1;
-        stats.runs += m as u64;
+        stats.runs += members as u64;
     }
 }
 
@@ -374,27 +381,37 @@ pub(super) fn gather_local_input_major<const W: usize>(
     dense_identity: bool,
 ) {
     let rest_start = has_identity as usize;
-    for (i, src) in old.iter().enumerate() {
-        for t in 0..src.len() {
-            let s = ptm.support_bits(&src.x[t], &src.z[t]);
+    for (i, source) in old.iter().enumerate() {
+        for row in 0..source.len() {
+            let pattern = ptm.support_bits(&source.x[row], &source.z[row]);
             if has_identity {
-                let a = ptm.deltas()[0].amp[s];
+                let amplitude = ptm.deltas()[0].amp[pattern];
                 if dense_identity {
-                    debug_assert!(a != ZERO);
-                    runs[i].push_id_coeff(src.coeff[t] * a);
+                    debug_assert!(amplitude != ZERO);
+                    runs[i].push_id_coeff(source.coeff[row] * amplitude);
                 } else {
-                    runs[i].push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
+                    runs[i].push_id_if(
+                        nonzero(amplitude),
+                        source.x[row],
+                        source.z[row],
+                        source.coeff[row] * amplitude,
+                    );
                 }
             }
-            for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
-                let a = d.amp[s];
-                let mut kx = src.x[t];
-                let mut kz = src.z[t];
+            for (entry, delta) in ptm.deltas().iter().enumerate().skip(rest_start) {
+                let amplitude = delta.amp[pattern];
+                let mut key_x = source.x[row];
+                let mut key_z = source.z[row];
                 for w in 0..W {
-                    kx[w] ^= d.mask_x[w];
-                    kz[w] ^= d.mask_z[w];
+                    key_x[w] ^= delta.mask_x[w];
+                    key_z[w] ^= delta.mask_z[w];
                 }
-                runs[i ^ coords[e] as usize].push_if(nonzero(a), kx, kz, src.coeff[t] * a);
+                runs[i ^ coords[entry] as usize].push_if(
+                    nonzero(amplitude),
+                    key_x,
+                    key_z,
+                    source.coeff[row] * amplitude,
+                );
             }
         }
     }
@@ -412,31 +429,41 @@ pub(super) fn gather_local_output_major<const W: usize>(
     let rest_start = has_identity as usize;
     for (j, run) in runs.iter_mut().enumerate() {
         if has_identity {
-            let d = &ptm.deltas()[0];
-            let src = &old[j];
-            for t in 0..src.len() {
-                let s = ptm.support_bits(&src.x[t], &src.z[t]);
-                let a = d.amp[s];
+            let delta = &ptm.deltas()[0];
+            let source = &old[j];
+            for row in 0..source.len() {
+                let pattern = ptm.support_bits(&source.x[row], &source.z[row]);
+                let amplitude = delta.amp[pattern];
                 if dense_identity {
-                    debug_assert!(a != ZERO);
-                    run.push_id_coeff(src.coeff[t] * a);
+                    debug_assert!(amplitude != ZERO);
+                    run.push_id_coeff(source.coeff[row] * amplitude);
                 } else {
-                    run.push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
+                    run.push_id_if(
+                        nonzero(amplitude),
+                        source.x[row],
+                        source.z[row],
+                        source.coeff[row] * amplitude,
+                    );
                 }
             }
         }
-        for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
-            let src = &old[j ^ coords[e] as usize];
-            for t in 0..src.len() {
-                let s = ptm.support_bits(&src.x[t], &src.z[t]);
-                let a = d.amp[s];
-                let mut kx = src.x[t];
-                let mut kz = src.z[t];
+        for (entry, delta) in ptm.deltas().iter().enumerate().skip(rest_start) {
+            let source = &old[j ^ coords[entry] as usize];
+            for row in 0..source.len() {
+                let pattern = ptm.support_bits(&source.x[row], &source.z[row]);
+                let amplitude = delta.amp[pattern];
+                let mut key_x = source.x[row];
+                let mut key_z = source.z[row];
                 for w in 0..W {
-                    kx[w] ^= d.mask_x[w];
-                    kz[w] ^= d.mask_z[w];
+                    key_x[w] ^= delta.mask_x[w];
+                    key_z[w] ^= delta.mask_z[w];
                 }
-                run.push_if(nonzero(a), kx, kz, src.coeff[t] * a);
+                run.push_if(
+                    nonzero(amplitude),
+                    key_x,
+                    key_z,
+                    source.coeff[row] * amplitude,
+                );
             }
         }
     }

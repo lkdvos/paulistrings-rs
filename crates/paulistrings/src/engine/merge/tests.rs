@@ -72,13 +72,13 @@ fn sort_fixtures<const W: usize>(
     let mut out = Vec::new();
     let mask = |w: usize| crate::test_support::word_mask(num_qubits, w);
     let mut push = |label: &str, keys: Vec<([u64; W], [u64; W])>, seed: u64| {
-        let mut st = seed | 1;
+        let mut state = seed | 1;
         let c: Vec<Complex64> = keys
             .iter()
             .map(|_| {
                 Complex64::new(
-                    (xs64(&mut st) % 17) as f64 - 8.0,
-                    (xs64(&mut st) % 13) as f64 - 6.0,
+                    (xs64(&mut state) % 17) as f64 - 8.0,
+                    (xs64(&mut state) % 13) as f64 - 6.0,
                 )
             })
             .collect();
@@ -103,14 +103,14 @@ fn sort_fixtures<const W: usize>(
     }
 
     // Dense random keys, no duplicates: the sparse-PTM shape.
-    let mut st = 0xC0FF_EE00_1234_5678u64;
+    let mut state = 0xC0FF_EE00_1234_5678u64;
     let mut keys: Vec<([u64; W], [u64; W])> = (0..400)
         .map(|_| {
             let mut kx = [0u64; W];
             let mut kz = [0u64; W];
             for w in 0..W {
-                kx[w] = xs64(&mut st) & mask(w);
-                kz[w] = xs64(&mut st) & mask(w);
+                kx[w] = xs64(&mut state) & mask(w);
+                kz[w] = xs64(&mut state) & mask(w);
             }
             (kx, kz)
         })
@@ -123,14 +123,14 @@ fn sort_fixtures<const W: usize>(
 
     // Heavy duplicates: the dense-PTM shape.
     // 40 distinct keys, each repeated 15 times as 15 sorted streams.
-    let mut st = 0x5EED_0000_0000_0001u64;
+    let mut state = 0x5EED_0000_0000_0001u64;
     let mut distinct: Vec<([u64; W], [u64; W])> = (0..40)
         .map(|_| {
             let mut kx = [0u64; W];
             let mut kz = [0u64; W];
             for w in 0..W {
-                kx[w] = xs64(&mut st) & mask(w);
-                kz[w] = xs64(&mut st) & mask(w);
+                kx[w] = xs64(&mut state) & mask(w);
+                kz[w] = xs64(&mut state) & mask(w);
             }
             (kx, kz)
         })
@@ -409,16 +409,16 @@ fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     let mut i = 0usize;
     while i < end {
         let (key_x, key_z) = (sorted_x[i], sorted_z[i]);
-        let mut acc = sorted_c[i];
+        let mut accumulator = sorted_c[i];
         let mut j = i + 1;
         while j < end && sorted_x[j] == key_x && sorted_z[j] == key_z {
-            acc += sorted_c[j];
+            accumulator += sorted_c[j];
             j += 1;
         }
-        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
+        if accumulator != zero && policy.keep_term(&key_x, &key_z, accumulator) {
             ox.push(key_x);
             oz.push(key_z);
-            oc.push(acc);
+            oc.push(accumulator);
         }
         i = j;
     }
@@ -440,7 +440,7 @@ fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             .chain(b.0.iter().zip(b.1).zip(b.2).map(|((&x, &z), &c)| (x, z, c)))
             .collect();
     rows.sort_by_key(|&(x, z, _)| (x, z));
-    let (sx, sz, sc): (Vec<_>, Vec<_>, Vec<_>) =
+    let (sx, sz, scratch): (Vec<_>, Vec<_>, Vec<_>) =
         rows.into_iter()
             .fold((vec![], vec![], vec![]), |(mut x, mut z, mut c), r| {
                 x.push(r.0);
@@ -448,7 +448,7 @@ fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
                 c.push(r.2);
                 (x, z, c)
             });
-    reduce_sorted(&sx, &sz, &sc, policy)
+    reduce_sorted(&sx, &sz, &scratch, policy)
 }
 
 fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
@@ -554,11 +554,11 @@ fn merge2_policy_sees_summed_coefficient() {
 impl<const W: usize> SortScratch<W> {
     /// Total heap capacity held across this scratch's buffers.
     pub(crate) fn total_capacity(&self) -> usize {
-        self.perm.capacity()
+        self.permutation.capacity()
             + self.packed.capacity()
-            + self.aux.capacity()
-            + self.tmp_x.capacity()
-            + self.tmp_z.capacity()
-            + self.tmp_c.capacity()
+            + self.spare.capacity()
+            + self.staging_x.capacity()
+            + self.staging_z.capacity()
+            + self.staging_c.capacity()
     }
 }

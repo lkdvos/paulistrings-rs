@@ -36,9 +36,9 @@ impl<const W: usize> Channel<W> for ThreeQubits {
 #[test]
 #[should_panic(expected = "Channel::prepare declined")]
 fn an_unpreparable_channel_panics() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let sum = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(ThreeQubits);
@@ -47,9 +47,9 @@ fn an_unpreparable_channel_panics() {
 
 #[test]
 fn gate_trace_forward_indices_match_circuit_order() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let sum = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
     circuit.push(Clifford1Q::h(0));
@@ -77,9 +77,9 @@ fn gate_trace_forward_indices_match_circuit_order() {
 
 #[test]
 fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let sum = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
     circuit.push(Clifford1Q::h(0));
@@ -104,9 +104,9 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
 
 #[test]
 fn gate_trace_stays_empty_when_not_enabled() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    let sum = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
     circuit.push(Clifford1Q::h(0));

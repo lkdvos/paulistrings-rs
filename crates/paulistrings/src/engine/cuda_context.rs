@@ -20,7 +20,7 @@ impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ContextError::LibraryMissing => write!(f, "libcuda could not be loaded"),
-            ContextError::Driver(e) => write!(f, "CUDA driver error: {e}"),
+            ContextError::Driver(error) => write!(f, "CUDA driver error: {error}"),
         }
     }
 }
@@ -32,22 +32,24 @@ pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, ContextError> {
         return Err(ContextError::LibraryMissing);
     }
     let mut cache = CONTEXTS.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, ctx)) = cache.iter().find(|(o, _)| *o == ordinal) {
-        return Ok(ctx.clone());
+    if let Some((_, cuda_context)) = cache.iter().find(|(cached, _)| *cached == ordinal) {
+        return Ok(cuda_context.clone());
     }
-    let ctx = CudaContext::new(ordinal as usize).map_err(ContextError::Driver)?;
-    cache.push((ordinal, ctx.clone()));
-    Ok(ctx)
+    let cuda_context = CudaContext::new(ordinal as usize).map_err(ContextError::Driver)?;
+    cache.push((ordinal, cuda_context.clone()));
+    Ok(cuda_context)
 }
 
 /// Make `device`'s CUDA context current on this thread, warning rather than failing like the pinning calls.
 pub(crate) fn bind_device_context(device: u32) {
     match context(device) {
-        Ok(ctx) => {
-            if let Err(err) = ctx.bind_to_thread() {
-                log::warn!(target: LOG_TARGET, "failed to bind device {device} to a partition thread: {err}");
+        Ok(cuda_context) => {
+            if let Err(error) = cuda_context.bind_to_thread() {
+                log::warn!(target: LOG_TARGET, "failed to bind device {device} to a partition thread: {error}");
             }
         }
-        Err(err) => log::warn!(target: LOG_TARGET, "device {device} for a partition thread: {err}"),
+        Err(error) => {
+            log::warn!(target: LOG_TARGET, "device {device} for a partition thread: {error}")
+        }
     }
 }

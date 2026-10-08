@@ -9,14 +9,14 @@ use crate::truncation::TruncationPolicy;
 /// Worker-persistent scratch for the per-run sorts.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SortScratch<const W: usize> {
-    perm: Vec<u32>,
+    permutation: Vec<u32>,
     /// The radix kernel's `(surrogate << 32) | row index` records.
     packed: Vec<u64>,
     /// The radix kernel's double buffer for `packed`.
-    aux: Vec<u64>,
-    tmp_x: Vec<[u64; W]>,
-    tmp_z: Vec<[u64; W]>,
-    tmp_c: Vec<Complex64>,
+    spare: Vec<u64>,
+    staging_x: Vec<[u64; W]>,
+    staging_z: Vec<[u64; W]>,
+    staging_c: Vec<Complex64>,
 }
 
 impl<const W: usize> SortScratch<W> {}
@@ -29,7 +29,7 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
     c: &mut Vec<Complex64>,
-    s: &mut SortScratch<W>,
+    scratch: &mut SortScratch<W>,
 ) {
     let len = x.len();
     debug_assert_eq!(len, z.len());
@@ -38,22 +38,28 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     if len < 2 {
         return;
     }
-    s.perm.clear();
-    s.perm.extend(0..len as u32);
-    s.perm.sort_by(|&a, &b| {
+    scratch.permutation.clear();
+    scratch.permutation.extend(0..len as u32);
+    scratch.permutation.sort_by(|&a, &b| {
         x[a as usize]
             .cmp(&x[b as usize])
             .then_with(|| z[a as usize].cmp(&z[b as usize]))
     });
-    s.tmp_x.clear();
-    s.tmp_x.extend(s.perm.iter().map(|&i| x[i as usize]));
-    s.tmp_z.clear();
-    s.tmp_z.extend(s.perm.iter().map(|&i| z[i as usize]));
-    s.tmp_c.clear();
-    s.tmp_c.extend(s.perm.iter().map(|&i| c[i as usize]));
-    std::mem::swap(x, &mut s.tmp_x);
-    std::mem::swap(z, &mut s.tmp_z);
-    std::mem::swap(c, &mut s.tmp_c);
+    scratch.staging_x.clear();
+    scratch
+        .staging_x
+        .extend(scratch.permutation.iter().map(|&i| x[i as usize]));
+    scratch.staging_z.clear();
+    scratch
+        .staging_z
+        .extend(scratch.permutation.iter().map(|&i| z[i as usize]));
+    scratch.staging_c.clear();
+    scratch
+        .staging_c
+        .extend(scratch.permutation.iter().map(|&i| c[i as usize]));
+    std::mem::swap(x, &mut scratch.staging_x);
+    std::mem::swap(z, &mut scratch.staging_z);
+    std::mem::swap(c, &mut scratch.staging_c);
 }
 
 /// Rest streams at or above which a layer uses [`sort_rows_radix_with_scratch`]; research/FINDINGS.md §Radix sort kernel for dense PTMs.
@@ -75,11 +81,11 @@ const RADIX_MIN_WINDOW_BITS: u32 = 8;
 
 /// Word `k` of the lex key `(x, z)`, word 0 the most significant.
 #[inline(always)]
-fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) -> u64 {
-    if k < W {
-        x[i][k]
+fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], word: usize, row: usize) -> u64 {
+    if word < W {
+        x[row][word]
     } else {
-        z[i][k - W]
+        z[row][word - W]
     }
 }
 
@@ -88,18 +94,18 @@ fn discriminating_window<const W: usize>(
     x: &[[u64; W]],
     z: &[[u64; W]],
 ) -> Option<(usize, u32, u64)> {
-    let n = x.len();
-    for k in 0..2 * W {
+    let len = x.len();
+    for word in 0..2 * W {
         let mut any = 0u64;
         let mut all = !0u64;
-        for i in 0..n {
-            let v = key_word(x, z, k, i);
-            any |= v;
-            all &= v;
+        for row in 0..len {
+            let value = key_word(x, z, word, row);
+            any |= value;
+            all &= value;
         }
         let diff = any & !all;
         if diff != 0 {
-            return Some((k, 63 - diff.leading_zeros(), diff));
+            return Some((word, 63 - diff.leading_zeros(), diff));
         }
     }
     None
@@ -111,7 +117,7 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
     c: &mut Vec<Complex64>,
-    s: &mut SortScratch<W>,
+    scratch: &mut SortScratch<W>,
 ) {
     let len = x.len();
     debug_assert_eq!(len, z.len());
@@ -120,49 +126,49 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         return;
     }
     if len > u32::MAX as usize {
-        sort_rows_with_scratch(x, z, c, s);
+        sort_rows_with_scratch(x, z, c, scratch);
         return;
     }
-    let Some((k, hb, diff)) = discriminating_window(x, z) else {
+    let Some((word, high_bit, diff)) = discriminating_window(x, z) else {
         return;
     };
-    let shift = (hb + 1).saturating_sub(RADIX_SURROGATE_BITS);
+    let shift = (high_bit + 1).saturating_sub(RADIX_SURROGATE_BITS);
     let mask = (1u64 << RADIX_SURROGATE_BITS) - 1;
     if ((diff >> shift) & mask).count_ones() < RADIX_MIN_WINDOW_BITS {
-        sort_rows_with_scratch(x, z, c, s);
+        sort_rows_with_scratch(x, z, c, scratch);
         return;
     }
 
     let SortScratch {
         packed,
-        aux,
-        tmp_x,
-        tmp_z,
-        tmp_c,
+        spare,
+        staging_x,
+        staging_z,
+        staging_c,
         ..
-    } = s;
+    } = scratch;
     packed.clear();
-    packed.extend((0..len).map(|i| (((key_word(x, z, k, i) >> shift) & mask) << 32) | i as u64));
-    aux.resize(len, 0);
+    packed.extend((0..len).map(|i| (((key_word(x, z, word, i) >> shift) & mask) << 32) | i as u64));
+    spare.resize(len, 0);
 
     let mut digit = 0u32;
     while digit * RADIX_DIGIT_BITS < RADIX_SURROGATE_BITS {
-        let sh = 32 + digit * RADIX_DIGIT_BITS;
+        let digit_shift = 32 + digit * RADIX_DIGIT_BITS;
         let mut count = [0u32; RADIX_BUCKETS + 1];
-        for &v in packed.iter() {
-            count[(((v >> sh) as usize) & (RADIX_BUCKETS - 1)) + 1] += 1;
+        for &record in packed.iter() {
+            count[(((record >> digit_shift) as usize) & (RADIX_BUCKETS - 1)) + 1] += 1;
         }
         // A constant digit contributes no ordering: skip its scatter.
-        if count[1..].iter().filter(|&&n| n != 0).count() > 1 {
-            for t in 1..=RADIX_BUCKETS {
-                count[t] += count[t - 1];
+        if count[1..].iter().filter(|&&tally| tally != 0).count() > 1 {
+            for slot in 1..=RADIX_BUCKETS {
+                count[slot] += count[slot - 1];
             }
-            for &v in packed.iter() {
-                let b = ((v >> sh) as usize) & (RADIX_BUCKETS - 1);
-                aux[count[b] as usize] = v;
-                count[b] += 1;
+            for &record in packed.iter() {
+                let bucket = ((record >> digit_shift) as usize) & (RADIX_BUCKETS - 1);
+                spare[count[bucket] as usize] = record;
+                count[bucket] += 1;
             }
-            std::mem::swap(packed, aux);
+            std::mem::swap(packed, spare);
         }
         digit += 1;
     }
@@ -176,26 +182,28 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
             j += 1;
         }
         if j - i > 1 {
-            packed[i..j].sort_by(|&a, &b| {
-                let (ia, ib) = (a as u32 as usize, b as u32 as usize);
-                x[ia].cmp(&x[ib]).then_with(|| z[ia].cmp(&z[ib]))
+            packed[i..j].sort_by(|&left, &right| {
+                let (row_a, row_b) = (left as u32 as usize, right as u32 as usize);
+                x[row_a]
+                    .cmp(&x[row_b])
+                    .then_with(|| z[row_a].cmp(&z[row_b]))
             });
         }
         i = j;
     }
 
-    tmp_x.clear();
-    tmp_x.extend(packed.iter().map(|&v| x[v as u32 as usize]));
-    tmp_z.clear();
-    tmp_z.extend(packed.iter().map(|&v| z[v as u32 as usize]));
-    tmp_c.clear();
-    tmp_c.extend(packed.iter().map(|&v| c[v as u32 as usize]));
-    std::mem::swap(x, tmp_x);
-    std::mem::swap(z, tmp_z);
-    std::mem::swap(c, tmp_c);
+    staging_x.clear();
+    staging_x.extend(packed.iter().map(|&record| x[record as u32 as usize]));
+    staging_z.clear();
+    staging_z.extend(packed.iter().map(|&record| z[record as u32 as usize]));
+    staging_c.clear();
+    staging_c.extend(packed.iter().map(|&record| c[record as u32 as usize]));
+    std::mem::swap(x, staging_x);
+    std::mem::swap(z, staging_z);
+    std::mem::swap(c, staging_c);
 }
 
-/// Merge the strictly ascending id stream `a` with the sorted rest stream `b` into `dst`, summing equal keys and applying `keep_term` to each full sum.
+/// Merge the strictly ascending id stream `a` with the sorted rest stream `b` into the `out` columns, summing equal keys and applying `keep_term` to each full sum.
 // Signed-zero contract: exact-zero rows are summed like any other, and the only zero test is on the final sum.
 // Three loops, so neither stream's bound is tested in the main walk (ARCHITECTURE.md §Engine).
 // Not segment copies: research/FINDINGS.md §Segment-copy merge
@@ -208,22 +216,22 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     b_x: &[[u64; W]],
     b_z: &[[u64; W]],
     b_c: &[Complex64],
-    dst_x: &mut Vec<[u64; W]>,
-    dst_z: &mut Vec<[u64; W]>,
-    dst_coeff: &mut Vec<Complex64>,
+    out_x: &mut Vec<[u64; W]>,
+    out_z: &mut Vec<[u64; W]>,
+    out_coeff: &mut Vec<Complex64>,
     policy: &T,
 ) {
     let zero = Complex64::new(0.0, 0.0);
-    let (an, bn) = (a_c.len(), b_c.len());
-    debug_assert_eq!(an, a_x.len());
-    debug_assert_eq!(an, a_z.len());
-    debug_assert_eq!(bn, b_x.len());
-    debug_assert_eq!(bn, b_z.len());
+    let (a_len, b_len) = (a_c.len(), b_c.len());
+    debug_assert_eq!(a_len, a_x.len());
+    debug_assert_eq!(a_len, a_z.len());
+    debug_assert_eq!(b_len, b_x.len());
+    debug_assert_eq!(b_len, b_z.len());
     let (mut i, mut j) = (0usize, 0usize);
-    while i < an && j < bn {
+    while i < a_len && j < b_len {
         // On a tie `a` seeds the sum; since `a` is unique, only `b` rows can extend the segment.
         let take_a = (a_x[i], a_z[i]) <= (b_x[j], b_z[j]);
-        let (key_x, key_z, mut acc) = if take_a {
+        let (key_x, key_z, mut sum) = if take_a {
             debug_assert!(
                 i == 0 || (a_x[i - 1], a_z[i - 1]) < (a_x[i], a_z[i]),
                 "merge2_into: identity stream must be strictly ascending at {i}",
@@ -240,37 +248,37 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             j += 1;
             t
         };
-        while j < bn && b_x[j] == key_x && b_z[j] == key_z {
-            acc += b_c[j];
+        while j < b_len && b_x[j] == key_x && b_z[j] == key_z {
+            sum += b_c[j];
             j += 1;
         }
-        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
-            dst_x.push(key_x);
-            dst_z.push(key_z);
-            dst_coeff.push(acc);
+        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
+            out_x.push(key_x);
+            out_z.push(key_z);
+            out_coeff.push(sum);
         }
     }
-    while i < an {
-        let (key_x, key_z, acc) = (a_x[i], a_z[i], a_c[i]);
+    while i < a_len {
+        let (key_x, key_z, sum) = (a_x[i], a_z[i], a_c[i]);
         i += 1;
-        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
-            dst_x.push(key_x);
-            dst_z.push(key_z);
-            dst_coeff.push(acc);
+        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
+            out_x.push(key_x);
+            out_z.push(key_z);
+            out_coeff.push(sum);
         }
     }
-    while j < bn {
+    while j < b_len {
         let (key_x, key_z) = (b_x[j], b_z[j]);
-        let mut acc = b_c[j];
+        let mut sum = b_c[j];
         j += 1;
-        while j < bn && b_x[j] == key_x && b_z[j] == key_z {
-            acc += b_c[j];
+        while j < b_len && b_x[j] == key_x && b_z[j] == key_z {
+            sum += b_c[j];
             j += 1;
         }
-        if acc != zero && policy.keep_term(&key_x, &key_z, acc) {
-            dst_x.push(key_x);
-            dst_z.push(key_z);
-            dst_coeff.push(acc);
+        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
+            out_x.push(key_x);
+            out_z.push(key_z);
+            out_coeff.push(sum);
         }
     }
 }

@@ -24,11 +24,11 @@ fn span_of_zero_is_trivial() {
     assert_eq!(span.coset_size(), 1);
     assert_eq!(span.num_cosets(), 16);
     for beta in 0u32..16 {
-        assert!(span.is_rep(beta));
+        assert!(span.is_representative(beta));
         assert_eq!(span.rep_of(beta), beta);
         assert_eq!(span.member(beta, 0), beta);
         assert_eq!(span.coord_of(0), 0);
-        assert_eq!(span.rank_of_rep(beta), beta);
+        assert_eq!(span.rank_of_representative(beta), beta);
         assert_eq!(span.perm_index(beta), beta);
     }
 }
@@ -48,10 +48,10 @@ fn echelon_basis_is_reduced() {
         let carriers = basis.iter().filter(|&&b| b & (1 << p) != 0).count();
         assert_eq!(carriers, 1, "pivot {p} in basis {basis:?}");
     }
-    // The OR of the pivots is what `is_rep` tests against.
+    // The OR of the pivots is what `is_representative` tests against.
     let mask = pivots.iter().fold(0u32, |m, &p| m | (1 << p));
     for beta in 0u32..32 {
-        assert_eq!(span.is_rep(beta), beta & mask == 0);
+        assert_eq!(span.is_representative(beta), beta & mask == 0);
     }
 }
 
@@ -65,7 +65,7 @@ fn rep_of_reduces_rather_than_masks() {
     // The coset of 0b100 is {0b100, 0b010}; the mask `beta & !0b100` would give 0b000, in a different coset.
     assert_eq!(span.rep_of(0b100), 0b010);
     assert_ne!(span.rep_of(0b100), 0b100 & !(1 << 2));
-    assert!(span.is_rep(0b010));
+    assert!(span.is_representative(0b010));
     assert_eq!(span.member(0b010, 1), 0b100);
     // 0b000 is its own coset's rep, and that coset is {0b000, 0b110}.
     assert_eq!(span.rep_of(0b000), 0b000);
@@ -86,7 +86,7 @@ fn non_subspace_input_is_covered() {
 
     // The partition is still a partition: 4 cosets of 4, covering 0..16.
     let mut seen: HashSet<u32> = HashSet::new();
-    let reps: Vec<u32> = (0u32..16).filter(|&x| span.is_rep(x)).collect();
+    let reps: Vec<u32> = (0u32..16).filter(|&x| span.is_representative(x)).collect();
     assert_eq!(reps.len(), span.num_cosets());
     for &rep in &reps {
         for i in 0..span.coset_size() as u32 {
@@ -103,13 +103,13 @@ proptest! {
         let span = Gf2Span::new(&deltas, bits);
         let n = 1u32 << bits;
 
-        let reps: Vec<u32> = (0..n).filter(|&x| span.is_rep(x)).collect();
+        let reps: Vec<u32> = (0..n).filter(|&x| span.is_representative(x)).collect();
         prop_assert_eq!(reps.len(), (n as usize) >> span.r());
         prop_assert_eq!(reps.len(), span.num_cosets());
 
         for beta in 0..n {
             let rep = span.rep_of(beta);
-            prop_assert!(span.is_rep(rep));
+            prop_assert!(span.is_representative(rep));
             prop_assert!(rep < n);
             let i = span.coord_of(beta ^ rep);
             prop_assert!((i as usize) < span.coset_size());
@@ -133,7 +133,7 @@ proptest! {
     #[test]
     fn rep_is_the_integer_minimum_of_its_coset((bits, deltas) in span_input()) {
         let span = Gf2Span::new(&deltas, bits);
-        for rep in (0..1u32 << bits).filter(|&x| span.is_rep(x)) {
+        for rep in (0..1u32 << bits).filter(|&x| span.is_representative(x)) {
             for i in 0..span.coset_size() as u32 {
                 prop_assert!(span.member(rep, i) >= rep);
             }
@@ -147,7 +147,7 @@ proptest! {
         let size = span.coset_size() as u32;
         for &delta in &deltas {
             let c = span.coord_of(delta);
-            for rep in (0..1u32 << bits).filter(|&x| span.is_rep(x)) {
+            for rep in (0..1u32 << bits).filter(|&x| span.is_representative(x)) {
                 for i in 0..size {
                     prop_assert_eq!(
                         span.member(rep, i) ^ delta,
@@ -172,7 +172,7 @@ proptest! {
             // The run a bucket lands in is its coset's rank.
             prop_assert_eq!(
                 p >> span.r(),
-                span.rank_of_rep(span.rep_of(beta))
+                span.rank_of_representative(span.rep_of(beta))
             );
         }
     }
@@ -188,13 +188,13 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     use crate::pauli_sum::Gf2Hash;
     use crate::test_support::{haar_su4_matrix, support_delta_rank};
 
-    let ch = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+    let channel = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
 
     for bits in 0..=9u8 {
         // W = 2: full rank from `bits = 7`, the engine's own floor.
         let h2 = Gf2Hash::<2>::new(128, bits, DEFAULT_HASH_SEED);
         let want2 = support_delta_rank(&h2, &[0, 1]).min(bits as usize);
-        let prep2 = Channel::<2>::prepare(&ch, &h2, false).expect("prepare W=2");
+        let prep2 = Channel::<2>::prepare(&channel, &h2, false).expect("prepare W=2");
         assert_eq!(
             Gf2Span::new(&prep2.bucket_deltas(), bits).r(),
             want2,
@@ -204,7 +204,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
         // W = 1: the same rows in word 0, so the same rank.
         let h1 = Gf2Hash::<1>::new(64, bits, DEFAULT_HASH_SEED);
         let want1 = support_delta_rank(&h1, &[0, 1]).min(bits as usize);
-        let prep1 = Channel::<1>::prepare(&ch, &h1, false).expect("prepare W=1");
+        let prep1 = Channel::<1>::prepare(&channel, &h1, false).expect("prepare W=1");
         assert_eq!(
             Gf2Span::new(&prep1.bucket_deltas(), bits).r(),
             want1,
@@ -217,7 +217,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
     let deficient = GeneralUnitary2Q::from_matrix(0, 7, haar_su4_matrix());
     let s2 = Gf2Span::new(
-        &Channel::<2>::prepare(&ch, &h2, false)
+        &Channel::<2>::prepare(&channel, &h2, false)
             .unwrap()
             .bucket_deltas(),
         7,

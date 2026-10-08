@@ -31,10 +31,10 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 pub struct LayerScratch<const W: usize> {
     /// The serial path's coset working set.
     pub(super) task: CosetScratch<W>,
-    /// The layer's handle permutation, `perm[β] = span.perm_index(β)`.
-    pub(super) perm: Vec<u32>,
-    /// The inverse of [`Self::perm`], filled only under [`ExtraRows::NEEDS_BETA`]; empty means the identity.
-    pub(super) inv_perm: Vec<u32>,
+    /// The layer's handle permutation, `permutation[β] = span.perm_index(β)`.
+    pub(super) permutation: Vec<u32>,
+    /// The inverse of [`Self::permutation`], filled only under [`ExtraRows::NEEDS_BETA`]; empty means the identity.
+    pub(super) inverse_permutation: Vec<u32>,
     /// Bucket handles in coset-contiguous order while a layer runs.
     pub(super) staging: Vec<BucketCols<W>>,
     /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
@@ -60,8 +60,8 @@ impl<const W: usize> LayerScratch<W> {
         let mut total = std::mem::take(&mut self.stats);
         total.absorb_coset(&std::mem::take(&mut self.task.stats));
         for slot in &self.workers {
-            let mut ws = slot.lock().unwrap();
-            total.absorb_coset(&std::mem::take(&mut ws.stats));
+            let mut worker_scratch = slot.lock().unwrap();
+            total.absorb_coset(&std::mem::take(&mut worker_scratch.stats));
         }
         total
     }
@@ -142,7 +142,7 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
     },
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
-        prep: &'p RotationPrep<W>,
+        rotation: &'p RotationPrep<W>,
         coord_identity: u32,
         coord_gen: u32,
         /// Whether the generator pass emits here ([`LayerKnobs::gen_local`]); `coord_gen` is 0 when not.
@@ -179,13 +179,13 @@ pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
     let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
     let dim = 1usize << (2 * ptm.k());
     let (mut rows, mut keys) = (0u32, 0u32);
-    for o in 0..dim {
-        let n = ptm.deltas()[rest_start..]
+    for output in 0..dim {
+        let rows_here = ptm.deltas()[rest_start..]
             .iter()
-            .filter(|d| d.amp[o ^ d.local_delta as usize] != ZERO)
+            .filter(|delta| delta.amp[output ^ delta.local_delta as usize] != ZERO)
             .count() as u32;
-        rows += n;
-        keys += u32::from(n > 0);
+        rows += rows_here;
+        keys += u32::from(rows_here > 0);
     }
     if keys == 0 {
         0.0
@@ -195,8 +195,8 @@ pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
 }
 
 impl<'p, const W: usize> DeltaPlan<'p, W> {
-    pub(super) fn new(prep: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
-        match prep {
+    pub(super) fn new(prepared: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
+        match prepared {
             Prepared::Local(ptm) => {
                 let coords: Vec<u32> = ptm
                     .deltas()
@@ -224,12 +224,12 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     radix_sort,
                 }
             }
-            Prepared::Rotation(r) => DeltaPlan::Rotation {
-                prep: r,
-                coord_identity: span.coord_of(r.bucket_delta_identity),
+            Prepared::Rotation(rotation) => DeltaPlan::Rotation {
+                rotation,
+                coord_identity: span.coord_of(rotation.bucket_delta_identity),
                 // `coord_of` demands its argument be in the span, and a remote generator's bucket delta is not.
                 coord_gen: if knobs.gen_local {
-                    span.coord_of(r.bucket_delta_gen)
+                    span.coord_of(rotation.bucket_delta_gen)
                 } else {
                     0
                 },
@@ -273,19 +273,26 @@ impl<const W: usize> ExtraRows<W> for NoExtra {}
 /// Apply one prepared channel to a bucketed sum, folding `keep_term` into the merge; the caller runs `finalize_layer`.
 pub fn apply_layer_bucketed<const W: usize, T>(
     sum: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
-    apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra, LayerKnobs::default())
+    apply_layer_bucketed_with(
+        sum,
+        prepared,
+        policy,
+        scratch,
+        &NoExtra,
+        LayerKnobs::default(),
+    )
 }
 
 /// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`].
 pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     sum: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
     extra: &X,
@@ -295,59 +302,61 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     X: ExtraRows<W> + Sync,
 {
     #[cfg(feature = "phase-timing")]
-    let mut st = Stamp::now();
+    let mut stamp = Stamp::now();
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
-    if let Prepared::Local(ptm) = prep {
+    if let Prepared::Local(ptm) = prepared {
         if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
             #[cfg(feature = "phase-timing")]
-            st.lap(&mut scratch.stats.rescale_ns);
+            stamp.lap(&mut scratch.stats.rescale_ns);
             return;
         }
     }
 
     let own_deltas;
     let deltas: &[u32] = match knobs.bucket_deltas {
-        Some(d) => d,
+        Some(deltas) => deltas,
         None => {
-            own_deltas = prep.bucket_deltas();
+            own_deltas = prepared.bucket_deltas();
             &own_deltas
         }
     };
     let span = Gf2Span::new(deltas, sum.hash().bits());
-    let plan = DeltaPlan::new(prep, &span, knobs);
-    let m = span.coset_size();
+    let plan = DeltaPlan::new(prepared, &span, knobs);
+    let coset_size = span.coset_size();
     let num_cosets = span.num_cosets();
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.span_plan_ns);
+    stamp.lap(&mut scratch.stats.span_plan_ns);
 
     // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the permutation is the identity and the handle passes are skipped.
     let identity_perm = span.r() == 0;
     if !identity_perm {
         let buckets = sum.buckets_mut();
-        scratch.perm.clear();
+        scratch.permutation.clear();
         scratch
-            .perm
+            .permutation
             .extend((0..buckets.len() as u32).map(|beta| span.perm_index(beta)));
         scratch
             .staging
             .resize_with(buckets.len(), BucketCols::default);
-        for (beta, cols) in buckets.iter_mut().enumerate() {
-            scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
+        for (beta, columns) in buckets.iter_mut().enumerate() {
+            scratch.staging[scratch.permutation[beta] as usize] = std::mem::take(columns);
         }
     }
     if X::NEEDS_BETA {
-        scratch.inv_perm.clear();
+        scratch.inverse_permutation.clear();
         if !identity_perm {
-            scratch.inv_perm.resize(scratch.perm.len(), 0);
-            for (beta, &p) in scratch.perm.iter().enumerate() {
-                scratch.inv_perm[p as usize] = beta as u32;
+            scratch
+                .inverse_permutation
+                .resize(scratch.permutation.len(), 0);
+            for (beta, &position) in scratch.permutation.iter().enumerate() {
+                scratch.inverse_permutation[position as usize] = beta as u32;
             }
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.permute_ns);
+    stamp.lap(&mut scratch.stats.permute_ns);
 
     // Each coset reads and writes only its own chunk (ARCHITECTURE.md §Parallelism).
     {
@@ -358,15 +367,15 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
         let workers = &scratch.workers;
-        let inv_perm: &[u32] = &scratch.inv_perm;
+        let inverse_permutation: &[u32] = &scratch.inverse_permutation;
         let chunks: &mut [BucketCols<W>] = if identity_perm {
             sum.buckets_mut()
         } else {
             scratch.staging.as_mut_slice()
         };
         if num_cosets < MIN_COSETS_FOR_PARALLEL {
-            for (ci, chunk) in chunks.chunks_mut(m).enumerate() {
-                let base = ci * m;
+            for (coset_index, chunk) in chunks.chunks_mut(coset_size).enumerate() {
+                let base = coset_index * coset_size;
                 fill_coset::<W, T, X>(
                     chunk,
                     &plan,
@@ -374,27 +383,39 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                     &mut scratch.task,
                     extra,
                     base,
-                    inv_perm,
+                    inverse_permutation,
                 );
             }
         } else {
             chunks
-                .par_chunks_mut(m)
+                .par_chunks_mut(coset_size)
                 .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let base = ci * m;
+                .for_each(|(coset_index, chunk)| {
+                    let base = coset_index * coset_size;
                     // The fresh-scratch arm is a defensive fallback; a pool worker always has an index.
                     match rayon::current_thread_index() {
-                        Some(i) if i < workers.len() => {
-                            let mut ws = workers[i].lock().unwrap();
+                        Some(worker) if worker < workers.len() => {
+                            let mut worker_scratch = workers[worker].lock().unwrap();
                             fill_coset::<W, T, X>(
-                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                                chunk,
+                                &plan,
+                                policy,
+                                &mut worker_scratch,
+                                extra,
+                                base,
+                                inverse_permutation,
                             );
                         }
                         _ => {
-                            let mut ws = CosetScratch::<W>::default();
+                            let mut worker_scratch = CosetScratch::<W>::default();
                             fill_coset::<W, T, X>(
-                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                                chunk,
+                                &plan,
+                                policy,
+                                &mut worker_scratch,
+                                extra,
+                                base,
+                                inverse_permutation,
                             );
                         }
                     }
@@ -402,19 +423,19 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.coset_loop_ns);
+    stamp.lap(&mut scratch.stats.coset_loop_ns);
 
     if !identity_perm {
         let buckets = sum.buckets_mut();
-        for (beta, cols) in buckets.iter_mut().enumerate() {
-            *cols = std::mem::take(&mut scratch.staging[scratch.perm[beta] as usize]);
+        for (beta, columns) in buckets.iter_mut().enumerate() {
+            *columns = std::mem::take(&mut scratch.staging[scratch.permutation[beta] as usize]);
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.unpermute_ns);
+    stamp.lap(&mut scratch.stats.unpermute_ns);
     sum.recount();
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.recount_ns);
+    stamp.lap(&mut scratch.stats.recount_ns);
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
@@ -425,24 +446,24 @@ fn rescale_in_place<const W: usize, T>(sum: &mut PauliSum<W>, ptm: &LocalPtm<W>,
 where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let amp = &ptm.deltas()[0].amp;
-    sum.buckets_mut().par_iter_mut().for_each(|cols| {
-        let n = cols.len();
+    let amplitude = &ptm.deltas()[0].amp;
+    sum.buckets_mut().par_iter_mut().for_each(|columns| {
+        let len = columns.len();
         let mut keep = 0usize;
-        for i in 0..n {
-            let s = ptm.support_bits(&cols.x[i], &cols.z[i]);
-            let c = cols.coeff[i] * amp[s];
-            if c == ZERO || !policy.keep_term(&cols.x[i], &cols.z[i], c) {
+        for i in 0..len {
+            let pattern = ptm.support_bits(&columns.x[i], &columns.z[i]);
+            let coeff = columns.coeff[i] * amplitude[pattern];
+            if coeff == ZERO || !policy.keep_term(&columns.x[i], &columns.z[i], coeff) {
                 continue;
             }
-            cols.x[keep] = cols.x[i];
-            cols.z[keep] = cols.z[i];
-            cols.coeff[keep] = c;
+            columns.x[keep] = columns.x[i];
+            columns.z[keep] = columns.z[i];
+            columns.coeff[keep] = coeff;
             keep += 1;
         }
-        cols.x.truncate(keep);
-        cols.z.truncate(keep);
-        cols.coeff.truncate(keep);
+        columns.x.truncate(keep);
+        columns.z.truncate(keep);
+        columns.coeff.truncate(keep);
     });
     sum.recount();
 

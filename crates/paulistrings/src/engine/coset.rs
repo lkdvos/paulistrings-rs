@@ -13,15 +13,15 @@ fn highest_bit(v: u32) -> u32 {
 #[inline]
 fn pext(value: u32, mask: u32) -> u32 {
     let mut out = 0u32;
-    let mut k = 0u32;
-    let mut m = mask;
-    while m != 0 {
-        let bit = m & m.wrapping_neg();
+    let mut out_bit = 0u32;
+    let mut remaining = mask;
+    while remaining != 0 {
+        let bit = remaining & remaining.wrapping_neg();
         if value & bit != 0 {
-            out |= 1 << k;
+            out |= 1 << out_bit;
         }
-        k += 1;
-        m ^= bit;
+        out_bit += 1;
+        remaining ^= bit;
     }
     out
 }
@@ -54,31 +54,31 @@ impl Gf2Span {
         let mut basis: Vec<u32> = Vec::new();
         let mut pivot_mask = 0u32;
 
-        for &d in deltas {
+        for &delta in deltas {
             assert!(
-                d & !space_mask == 0,
-                "Gf2Span: delta {d} has bits outside the {bits}-bit bucket space"
+                delta & !space_mask == 0,
+                "Gf2Span: delta {delta} has bits outside the {bits}-bit bucket space"
             );
             // Pivot bits are disjoint across basis vectors, so one pass in any order clears them all.
-            let mut v = d;
-            for &b in &basis {
-                if v & (1 << highest_bit(b)) != 0 {
-                    v ^= b;
+            let mut reduced = delta;
+            for &vector in &basis {
+                if reduced & (1 << highest_bit(vector)) != 0 {
+                    reduced ^= vector;
                 }
             }
-            if v == 0 {
+            if reduced == 0 {
                 continue;
             }
-            let p = highest_bit(v);
+            let pivot = highest_bit(reduced);
             // Back-substitute so the new pivot is unique to one vector; only vectors with a higher pivot can carry bit `p`.
-            for b in basis.iter_mut() {
-                if *b & (1 << p) != 0 {
-                    *b ^= v;
+            for vector in basis.iter_mut() {
+                if *vector & (1 << pivot) != 0 {
+                    *vector ^= reduced;
                 }
             }
-            let idx = basis.partition_point(|&b| highest_bit(b) < p);
-            basis.insert(idx, v);
-            pivot_mask |= 1 << p;
+            let position = basis.partition_point(|&vector| highest_bit(vector) < pivot);
+            basis.insert(position, reduced);
+            pivot_mask |= 1 << pivot;
         }
 
         Self {
@@ -110,7 +110,7 @@ impl Gf2Span {
 
     /// Whether `beta` is its coset's representative: the unique member with every pivot bit clear, which is also the coset's minimum.
     #[inline]
-    pub(crate) fn is_rep(&self, beta: u32) -> bool {
+    pub(crate) fn is_representative(&self, beta: u32) -> bool {
         beta & self.pivot_mask == 0
     }
 
@@ -122,13 +122,13 @@ impl Gf2Span {
             beta & !self.space_mask == 0,
             "Gf2Span::rep_of: beta outside the bucket space"
         );
-        let mut v = beta;
-        for &b in &self.basis {
-            if v & (1 << highest_bit(b)) != 0 {
-                v ^= b;
+        let mut reduced = beta;
+        for &vector in &self.basis {
+            if reduced & (1 << highest_bit(vector)) != 0 {
+                reduced ^= vector;
             }
         }
-        v
+        reduced
     }
 
     /// The member index of `delta` in the span, read off its pivot bits since the basis is reduced.
@@ -141,21 +141,22 @@ impl Gf2Span {
         pext(delta, self.pivot_mask)
     }
 
-    /// The position of `rep` among all representatives in ascending order.
+    /// The position of `representative` among all representatives in ascending order.
     #[inline]
-    pub(crate) fn rank_of_rep(&self, rep: u32) -> u32 {
+    pub(crate) fn rank_of_representative(&self, representative: u32) -> u32 {
         debug_assert!(
-            self.is_rep(rep),
-            "Gf2Span::rank_of_rep: {rep} is not a representative"
+            self.is_representative(representative),
+            "Gf2Span::rank_of_representative: {representative} is not a representative"
         );
-        pext(rep, self.nonpivot_mask)
+        pext(representative, self.nonpivot_mask)
     }
 
     /// `beta` renumbered so coset `c` owns `c << r .. (c + 1) << r`, with the member coordinate in the low `r` bits.
     #[inline]
     pub(crate) fn perm_index(&self, beta: u32) -> u32 {
-        let rep = self.rep_of(beta);
-        (self.rank_of_rep(rep) << self.basis.len()) | self.coord_of(beta ^ rep)
+        let representative = self.rep_of(beta);
+        (self.rank_of_representative(representative) << self.basis.len())
+            | self.coord_of(beta ^ representative)
     }
 }
 

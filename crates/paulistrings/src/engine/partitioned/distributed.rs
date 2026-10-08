@@ -33,7 +33,7 @@ use crate::readout::echo::{qubit_mask, RotationAxis};
 use crate::readout::product_state::ProductState;
 
 #[cfg(feature = "phase-timing")]
-use super::driver::PartitionPhaseStats;
+use super::sum::PartitionPhaseStats;
 
 /// `log` target for the driver's progress events, as in
 /// [`propagate`](crate::propagate).

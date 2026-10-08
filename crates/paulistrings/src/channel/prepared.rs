@@ -13,10 +13,10 @@ use crate::phase::Phase;
 /// Largest support size handled by [`Prepared::Local`].
 ///
 /// The dense local Pauli-transfer matrix is `4^k × 4^k`, so `k = 2` is 4 KB of `Complex64` per layer; `k = 3` would be 64 KB, too large to be worth building per layer.
-pub const MAX_LOCAL_SUPPORT: usize = 2;
+pub(crate) const MAX_LOCAL_SUPPORT: usize = 2;
 
 /// `4^MAX_LOCAL_SUPPORT` — the number of local Pauli basis elements.
-pub const LOCAL_DIM: usize = 16;
+pub(crate) const LOCAL_DIM: usize = 16;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 

@@ -34,15 +34,15 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 /// The floor in [`PauliSum::rebucket`] exists to give Rayon enough independent tasks, but a task carrying almost nothing is pure overhead; below `min_buckets × MIN_TERMS_PER_TASK` total terms we would rather have few buckets and let the small-`n` fallback handle it. See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value.
 ///
 /// This gate is not only about parallelism: the bucket count caps the engine's coset dimension, and the per-run sort's comparison count reaches its floor only at full delta rank — so it also controls how much sort work a dense-PTM layer pays. Do not lower or drop the gate without checking a sparse-PTM layer too; the two regimes pull in opposite directions (see `research/FINDINGS.md`).
-pub const MIN_TERMS_PER_TASK: usize = 64;
+pub(crate) const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Default target terms per bucket.
-/// Chosen so a bucket plus its gather scratch stays L2-resident on the reference host. See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value, and [`MIN_TERMS_PER_TASK`] for the dense-PTM caveat.
+/// Chosen so a bucket plus its gather scratch stays L2-resident on the reference host. See ARCHITECTURE.md §Bucket-Policy for the sweep that set this value, and `MIN_TERMS_PER_TASK` for the dense-PTM caveat.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
 /// Default floor on the bucket count.
 /// Fixed, not thread-derived, so the bucket count `B` stays a deterministic function of the sum's history alone (ARCHITECTURE.md §Determinism) rather than of how many threads happen to be available.
-/// Must be `>= 16`: [`desired_bits`]'s "worth splitting" floor is non-monotone below that, and we want "a sum of `<= 1024` terms gets a single bucket" to hold.
+/// Must be `>= 16`: `desired_bits`'s "worth splitting" floor is non-monotone below that, and we want "a sum of `<= 1024` terms gets a single bucket" to hold.
 pub const DEFAULT_MIN_BUCKETS: usize = 128;
 
 /// One bucket's structure-of-arrays columns.
@@ -278,7 +278,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Empty sum on `num_qubits` qubits, in a single bucket.
-    /// The hash is the zero-bit prefix of the default seed's matrix, so the canonical order is plain lexicographic `(x, z)` until the sum grows past the [`desired_bits`] threshold and something refines it.
+    /// The hash is the zero-bit prefix of the default seed's matrix, so the canonical order is plain lexicographic `(x, z)` until the sum grows past the `desired_bits` threshold and something refines it.
     ///
     /// # Panics
     ///
@@ -385,7 +385,7 @@ impl<const W: usize> PauliSum<W> {
 
     /// Double the bucket count, splitting each bucket in two.
     /// One `Gf2Hash::row_parity` evaluation per term against just the new high bit — `O(n)` total — since only whether the new bit is set decides which half a term lands in; both halves inherit the source bucket's order, so nothing is re-sorted.
-    /// Bucket pairs are independent, so above [`MIN_TERMS_PER_TASK`] × [`DEFAULT_MIN_BUCKETS`] total terms the per-bucket work runs across Rayon; below it the sequential loop avoids per-task overhead.
+    /// Bucket pairs are independent, so above `MIN_TERMS_PER_TASK` × [`DEFAULT_MIN_BUCKETS`] total terms the per-bucket work runs across Rayon; below it the sequential loop avoids per-task overhead.
     pub fn refine(&mut self) {
         let old_nb = self.buckets.len();
         self.hash.refine();
@@ -439,7 +439,7 @@ impl<const W: usize> PauliSum<W> {
         self.buckets = merged;
     }
 
-    /// Bring the bucket count up to what [`desired_bits`] would choose for the current length — but never down.
+    /// Bring the bucket count up to what `desired_bits` would choose for the current length — but never down.
     ///
     /// # Grow-only policy
     ///

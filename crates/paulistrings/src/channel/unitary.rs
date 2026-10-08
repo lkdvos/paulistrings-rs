@@ -103,7 +103,7 @@ fn effective_row<const N: usize>(
 ///
 /// ```
 /// use num_complex::Complex64;
-/// use paulistrings::channel::GeneralUnitary1Q;
+/// use paulistrings::GeneralUnitary1Q;
 ///
 /// // Hadamard as a general unitary.
 /// let r = std::f64::consts::FRAC_1_SQRT_2;

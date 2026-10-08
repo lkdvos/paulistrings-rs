@@ -56,16 +56,13 @@
 //!
 //! [`BuildAccumulator`]: crate::BuildAccumulator
 
-pub mod accumulator;
-pub mod hash;
+pub(crate) mod accumulator;
+pub(crate) mod hash;
 mod partition;
-pub mod storage;
+pub(crate) mod storage;
 
-pub use hash::{Gf2Hash, PartitionRows, B_MAX_BITS, P_MAX_BITS};
-pub use storage::{
-    desired_bits, PauliSum, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
-    MIN_TERMS_PER_TASK,
-};
+pub use hash::{Gf2Hash, PartitionRows, P_MAX_BITS};
+pub use storage::{PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 
 #[cfg(test)]
 mod tests;

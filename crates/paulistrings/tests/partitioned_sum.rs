@@ -1,15 +1,15 @@
 //! The persistent partitioned driver: `PartitionedSum` held across calls, its
 //! accessors, and the runtime shared between sums.
 
-use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
-use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
 use paulistrings::test_support::{
     approx_eq, assert_terms_close, low_weight_sum, rand_sum, unpinned_partitions, KeepAll,
 };
-use paulistrings::truncation::{ApproxTopN, CoefficientThreshold};
 use paulistrings::{
     propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
 };
+use paulistrings::{ApproxTopN, CoefficientThreshold};
+use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
+use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
 
 const TOL: f64 = 1e-11;
 const NQ: usize = 16;

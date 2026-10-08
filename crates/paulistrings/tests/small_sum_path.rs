@@ -14,17 +14,17 @@
 use num_complex::Complex64;
 use proptest::prelude::*;
 
-use paulistrings::channel::{
-    AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Depolarizing, Depolarizing2Q,
-    GeneralUnitary2Q, PauliRotation,
-};
-use paulistrings::pauli_sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
-use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, EngineSelection, LayerScratch, PauliString,
     PauliSum, PropagateOptions, TruncationPolicy, DEFAULT_SMALL_SUM_THRESHOLD,
 };
+use paulistrings::{
+    AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Depolarizing, Depolarizing2Q,
+    GeneralUnitary2Q, PauliRotation,
+};
+use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
+use paulistrings::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 
 /// Keeps everything, and declares no layer pass — so `Auto` will actually take
 /// the direct path. The trait's default answer is the conservative `true`.
@@ -431,7 +431,7 @@ impl<const W: usize> Channel<W> for ThreeQubitShift {
         1
     }
     fn support(&self) -> [u64; W] {
-        paulistrings::channel::support_mask(&[0, 1, 2])
+        paulistrings::support_mask(&[0, 1, 2])
     }
     fn apply(
         &self,

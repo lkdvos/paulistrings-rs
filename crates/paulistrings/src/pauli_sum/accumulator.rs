@@ -71,7 +71,7 @@ impl<const W: usize> BuildAccumulator<W> {
 
     /// Sort, deduplicate, and emit a `PauliSum`. Entries whose accumulated coefficient is exactly `0+0i` are dropped.
     ///
-    /// The partition is chosen here, by [`desired_bits`] under the default seed, so a sum of at most 1024 terms gets a single bucket (plain lex canonical order) and a larger one starts out already sized for the engine.
+    /// The partition is chosen here, by `desired_bits` under the default seed, so a sum of at most 1024 terms gets a single bucket (plain lex canonical order) and a larger one starts out already sized for the engine.
     pub fn finalize(self) -> PauliSum<W> {
         let zero = Complex64::new(0.0, 0.0);
         let mut entries: Vec<(PauliString<W>, Complex64)> =

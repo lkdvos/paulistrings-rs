@@ -54,7 +54,7 @@ pattern generalises to mixed generators).
 
 ```rust,no_run
 use paulistrings::{Circuit, PauliString};
-use paulistrings::channel::PauliRotation;
+use paulistrings::PauliRotation;
 
 fn qubit_index(x: usize, y: usize, lx: usize) -> u32 {
     (y * lx + x) as u32
@@ -156,7 +156,7 @@ expectation after each step.
 
 ```rust,no_run
 use paulistrings::{propagate, Circuit, Direction, PauliSum};
-use paulistrings::truncation::{And, CoefficientThreshold, TopN};
+use paulistrings::{And, CoefficientThreshold, TopN};
 
 # fn trotter_step(_lx: usize, _ly: usize, _dt: f64, _j: f64, _h: f64) -> Circuit<1> { todo!() }
 # fn x_magnetization(_lx: usize, _ly: usize) -> PauliSum<1> { todo!() }
@@ -182,7 +182,7 @@ for k in 1..=steps {
 
 The 4×4 lattice grows from `N = 16` weight-1 terms at `t = 0` to ~10⁴–10⁵
 terms within a handful of Trotter steps. The 6×6 grows much faster. Two
-policies, composed with [`And`](crate::truncation::And), keep this
+policies, composed with [`And`](crate::And), keep this
 tractable:
 
 | Lattice | `CoefficientThreshold` | `TopN`     |

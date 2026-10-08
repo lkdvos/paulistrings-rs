@@ -2,50 +2,16 @@
 //!
 //! Built-ins: [`Clifford1Q`], [`Clifford2Q`], [`PauliRotation`], [`GeneralUnitary1Q`], [`GeneralUnitary2Q`], [`Depolarizing`], [`Dephasing`], [`PauliChannel`], [`Depolarizing2Q`], [`AmplitudeDamping`], [`IdentityChannel`]. See ARCHITECTURE.md §Channels.
 //!
-//! # Implementing a custom channel
-//!
-//! Implement the trait directly; the engine treats your type as just another `Box<dyn `[`Channel<W>`]`>` inside a [`Circuit`].
-//!
-//! ```
-//! use paulistrings::{Channel, OutputBuffer};
-//! use num_complex::Complex64;
-//!
-//! /// Multiplies every input coefficient by a complex factor, with no
-//! /// support and `MAX_FANOUT = 1`.
-//! struct GlobalPhase {
-//!     factor: Complex64,
-//! }
-//!
-//! impl<const W: usize> Channel<W> for GlobalPhase {
-//!     fn max_fanout(&self) -> usize { 1 }
-//!     fn support(&self) -> [u64; W] { [0; W] }
-//!     fn apply(
-//!         &self,
-//!         input_x: &[u64; W],
-//!         input_z: &[u64; W],
-//!         coeff: Complex64,
-//!         out: &mut OutputBuffer<'_, W>,
-//!     ) {
-//!         out.push(*input_x, *input_z, coeff * self.factor);
-//!     }
-//! }
-//!
-//! let ch = GlobalPhase {
-//!     factor: Complex64::new(0.0, 1.0),
-//! };
-//! let _: Box<dyn Channel<1>> = Box::new(ch);
-//! ```
-//!
 //! [`PauliSum`]: crate::PauliSum
 //! [`engine`]: crate::engine
 //! [`Circuit`]: crate::Circuit
 
-pub mod clifford;
-pub mod identity;
-pub mod noise;
-pub mod prepared;
-pub mod rotation;
-pub mod unitary;
+pub(crate) mod clifford;
+pub(crate) mod identity;
+pub(crate) mod noise;
+pub(crate) mod prepared;
+pub(crate) mod rotation;
+pub(crate) mod unitary;
 
 pub use clifford::{Clifford1Q, Clifford2Q};
 pub use identity::IdentityChannel;
@@ -160,7 +126,40 @@ fn set_bit<const W: usize>(arr: &mut [u64; W], word: usize, mask: u64, value: bo
 ///
 /// [`Channel::max_fanout`] is a method, not an associated `const`, so the trait stays `dyn`-compatible — [`Circuit`](crate::Circuit) stores `Box<dyn Channel<W>>` to keep the channel set open for user extensions.
 ///
-/// See the [module-level docs](self) for an `impl Channel` example.
+/// # Implementing a custom channel
+///
+/// Implement the trait directly; the engine treats your type as just another `Box<dyn `[`Channel<W>`]`>` inside a [`Circuit`](crate::Circuit).
+///
+/// ```
+/// use paulistrings::{Channel, OutputBuffer};
+/// use num_complex::Complex64;
+///
+/// /// Multiplies every input coefficient by a complex factor, with no
+/// /// support and `MAX_FANOUT = 1`.
+/// struct GlobalPhase {
+///     factor: Complex64,
+/// }
+///
+/// impl<const W: usize> Channel<W> for GlobalPhase {
+///     fn max_fanout(&self) -> usize { 1 }
+///     fn support(&self) -> [u64; W] { [0; W] }
+///     fn apply(
+///         &self,
+///         input_x: &[u64; W],
+///         input_z: &[u64; W],
+///         coeff: Complex64,
+///         out: &mut OutputBuffer<'_, W>,
+///     ) {
+///         out.push(*input_x, *input_z, coeff * self.factor);
+///     }
+/// }
+///
+/// let ch = GlobalPhase {
+///     factor: Complex64::new(0.0, 1.0),
+/// };
+/// let _: Box<dyn Channel<1>> = Box::new(ch);
+/// ```
+///
 pub trait Channel<const W: usize>: Send + Sync {
     /// Maximum number of output terms produced per input term. Used by the engine to size the scratch buffer up-front.
     fn max_fanout(&self) -> usize;
@@ -210,7 +209,7 @@ pub trait Channel<const W: usize>: Send + Sync {
     /// Prepare this channel for one layer of the bucketed engine.
     ///
     /// The default derives a dense local Pauli-transfer matrix by probing `apply` on the `4^|support|` local basis Paulis, so a channel that implements `apply` gets the bucketed engine for free.
-    /// Override only when the support is wider than [`prepared::MAX_LOCAL_SUPPORT`] and a tighter description exists (only `PauliRotation` above generator weight 2 does among the built-ins).
+    /// Override only when the support is wider than `MAX_LOCAL_SUPPORT` and a tighter description exists (only `PauliRotation` above generator weight 2 does among the built-ins).
     /// `None` means "cannot be bucketed": `propagate` panics rather than proceed with an unsound preparation (ARCHITECTURE.md §Prepared-Channels).
     ///
     /// # Contract

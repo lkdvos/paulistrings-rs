@@ -40,7 +40,7 @@ use super::transport::Collectives;
 /// [`And`] runs both sides in order, like [`And::finalize_layer`](TruncationPolicy::finalize_layer); [`Or`] runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
 ///
 /// ```
-/// use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold};
+/// use paulistrings::{And, ApproxTopN, CoefficientThreshold};
 /// use paulistrings::PartitionedTruncation;
 ///
 /// fn propagate_partitioned<T: PartitionedTruncation<1>>(_policy: T) {}
@@ -51,7 +51,7 @@ use super::transport::Collectives;
 /// # Why [`TopN`](crate::truncation::TopN) is rejected
 ///
 /// ```compile_fail
-/// use paulistrings::truncation::TopN;
+/// use paulistrings::TopN;
 /// use paulistrings::PartitionedTruncation;
 ///
 /// fn propagate_partitioned<T: PartitionedTruncation<1>>(_policy: T) {}

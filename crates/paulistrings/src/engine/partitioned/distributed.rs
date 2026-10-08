@@ -125,8 +125,8 @@ pub(crate) fn group_bits(size: u32) -> u8 {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use paulistrings::channel::Clifford1Q;
-/// use paulistrings::engine::partitioned::{
+/// use paulistrings::Clifford1Q;
+/// use paulistrings::{
 ///     Collectives, DistributedSum, InProcessTransport, PartitionConfig, Placement,
 /// };
 /// use paulistrings::{

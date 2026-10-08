@@ -32,7 +32,7 @@ pub struct GpuLayerOptions {
     pub bucket_policy: GpuBucketPolicy,
     /// Bytes the loose output arena may hold; positions are batched so no batch's pre-dedup rows exceed it.
     pub arena_bytes: usize,
-    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`]; `B_MAX_BITS` by default.
+    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`](crate::gpu::GpuError::Unsupported); `B_MAX_BITS` by default.
     pub max_bits: u8,
     /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on by default.
     pub premerge: bool,

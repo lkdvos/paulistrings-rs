@@ -3,12 +3,12 @@
 
 use num_complex::Complex64;
 // Aliased: `ChannelSpec` has a variant of the same name, which would otherwise silently collide in `push_into`.
-use paulistrings::channel::{
+use paulistrings::Circuit as CoreCircuit;
+use paulistrings::PauliString;
+use paulistrings::{
     AmplitudeDamping, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, Depolarizing2Q,
     GeneralUnitary1Q, GeneralUnitary2Q, PauliChannel as CorePauliChannel, PauliRotation,
 };
-use paulistrings::pauli_string::PauliString;
-use paulistrings::Circuit as CoreCircuit;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;

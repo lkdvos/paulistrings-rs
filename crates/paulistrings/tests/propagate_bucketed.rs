@@ -4,14 +4,14 @@
 //! Agreement with the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`) over whole circuits, truncation policies on many-term sums, Heisenberg round trips, and byte-identical output across thread counts (a convenience tripwire, not a correctness requirement — see ARCHITECTURE.md §Determinism).
 
 use num_complex::Complex64;
-use paulistrings::channel::{
-    AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
-    PauliRotation,
-};
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
 };
-use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
+use paulistrings::{
+    AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
+    PauliRotation,
+};
+use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
 };

@@ -87,7 +87,7 @@ fn draw_rows<const W: usize>(
 /// # Examples
 ///
 /// ```
-/// use paulistrings::pauli_sum::Gf2Hash;
+/// use paulistrings::Gf2Hash;
 /// use paulistrings::PauliString;
 ///
 /// let h = Gf2Hash::<1>::new(64, 6, 0xC0FFEE);
@@ -202,7 +202,7 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// # Panics
     ///
-    /// Panics if already at [`B_MAX_BITS`].
+    /// Panics if already at `B_MAX_BITS`.
     #[inline]
     pub fn refine(&mut self) {
         assert!(
@@ -255,7 +255,7 @@ impl<const W: usize> Gf2Hash<W> {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::pauli_sum::PartitionRows;
+/// use paulistrings::PartitionRows;
 /// use paulistrings::PauliString;
 ///
 /// let p = PartitionRows::<1>::from_seed(64, 2, 0xC0FFEE);
@@ -416,7 +416,7 @@ impl<const W: usize> PartitionRows<W> {
     /// # Examples
     ///
     /// ```
-    /// use paulistrings::pauli_sum::PartitionRows;
+    /// use paulistrings::PartitionRows;
     /// use paulistrings::PauliString;
     ///
     /// // A chain of four qubits bisected: {0,1} | {2,3}.

@@ -24,7 +24,7 @@ thread_local! {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::CoefficientThreshold;
+/// use paulistrings::CoefficientThreshold;
 /// let policy = CoefficientThreshold(1e-9);
 /// # let _ = policy;
 /// ```
@@ -54,7 +54,7 @@ impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::WeightCutoff;
+/// use paulistrings::WeightCutoff;
 /// let policy = WeightCutoff(4);
 /// # let _ = policy;
 /// ```
@@ -106,7 +106,7 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::TopN;
+/// use paulistrings::TopN;
 /// let policy = TopN(1_000_000);
 /// # let _ = policy;
 /// ```
@@ -222,7 +222,7 @@ pub(crate) const APPROX_BINS: usize = 2048;
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::ApproxTopN;
+/// use paulistrings::ApproxTopN;
 /// let policy = ApproxTopN(1_000_000);
 /// # let _ = policy;
 /// ```
@@ -375,7 +375,7 @@ pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::CollapseSample;
+/// use paulistrings::CollapseSample;
 /// use paulistrings::TruncationPolicy;
 /// use paulistrings::{BuildAccumulator, PauliString, Phase};
 /// use num_complex::Complex64;
@@ -520,7 +520,7 @@ impl<const W: usize> TruncationPolicy<W> for CollapseSample {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::{And, CoefficientThreshold, WeightCutoff};
+/// use paulistrings::{And, CoefficientThreshold, WeightCutoff};
 /// let policy = And(CoefficientThreshold(1e-6), WeightCutoff(4));
 /// # let _ = policy;
 /// ```
@@ -563,7 +563,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use paulistrings::truncation::{Or, CoefficientThreshold, WeightCutoff};
+/// use paulistrings::{Or, CoefficientThreshold, WeightCutoff};
 /// // Keep a term if |coeff| > 0.1 OR weight == 0 (identity).
 /// let policy = Or(CoefficientThreshold(0.1), WeightCutoff(0));
 /// # let _ = policy;

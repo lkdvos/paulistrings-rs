@@ -88,7 +88,7 @@ impl<const W: usize> ExchangeBlock<W> {
     /// # Panics
     ///
     /// If the counts sum past `u32::MAX` rows.
-    pub fn set_counts(&mut self, entry: u32, counts: &[u32]) {
+    pub(crate) fn set_counts(&mut self, entry: u32, counts: &[u32]) {
         self.offsets.clear();
         self.offsets.reserve(counts.len() + 1);
         self.offsets.push(0u32);
@@ -118,7 +118,7 @@ impl<const W: usize> ExchangeBlock<W> {
     }
 
     /// The block's live rows: the first [`rows`](Self::rows) entries of the three columns.
-    pub fn cols(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn cols(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let rows = self.rows();
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
@@ -131,7 +131,7 @@ impl<const W: usize> ExchangeBlock<W> {
     /// # Panics
     ///
     /// If `p >= num_buckets()`, or if the block's columns are shorter than [`rows`](Self::rows) — which only a hand-built block can be.
-    pub fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let lo = self.offsets[p as usize] as usize;
         let hi = self.offsets[p as usize + 1] as usize;
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
@@ -140,12 +140,12 @@ impl<const W: usize> ExchangeBlock<W> {
     /// The row index each of `map`'s chunk boundaries falls at.
     ///
     /// `chunks + 1` ascending entries starting at 0 and ending at [`rows`](Self::rows): chunk `k` carries rows `out[k]..out[k + 1]` of every column.
-    pub fn chunk_rows(&self, map: &ChunkMap) -> Vec<usize> {
+    pub(crate) fn chunk_rows(&self, map: &ChunkMap) -> Vec<usize> {
         chunk_rows_of(&self.offsets, map)
     }
 
     /// Rows the block carries: `offsets[num_buckets]`, and the length of each column once the export pass has filled it.
-    pub fn rows(&self) -> usize {
+    pub(crate) fn rows(&self) -> usize {
         self.header.rows as usize
     }
 
@@ -153,12 +153,12 @@ impl<const W: usize> ExchangeBlock<W> {
     ///
     /// The engine reads it only to check a received block against its own count, which is a `debug_assert` (the count is a collective decision, so a mismatch is a driver bug, not a data-dependent outcome).
     #[cfg(any(test, debug_assertions))]
-    pub fn num_buckets(&self) -> u32 {
+    pub(crate) fn num_buckets(&self) -> u32 {
         self.header.num_buckets
     }
 
     /// Wire footprint in bytes: the header, the offsets, and the live rows of the three columns ([`Payload::byte_parts`] hands out exactly these bytes).
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         size_of::<BlockHeader>()
             + self.offsets.len() * size_of::<u32>()
             + 2 * self.rows() * W * size_of::<u64>()

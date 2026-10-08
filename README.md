@@ -69,7 +69,7 @@ The same idea, directly against the core:
 
 ```rust
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, Phase, propagate};
-use paulistrings::{channel::Clifford1Q, truncation::TopN};
+use paulistrings::{Clifford1Q, TopN};
 use num_complex::Complex64;
 
 let mut acc = BuildAccumulator::<1>::new(1);

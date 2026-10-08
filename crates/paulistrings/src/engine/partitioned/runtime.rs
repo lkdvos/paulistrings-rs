@@ -28,7 +28,7 @@ const LOG_TARGET: &str = "paulistrings::partitioned";
 /// # Examples
 ///
 /// ```
-/// use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
+/// use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
 ///
 /// let config = PartitionConfig {
 ///     placement: Placement::Unpinned { partitions: 2, threads_per_partition: Some(1) },
@@ -51,10 +51,10 @@ pub struct PartitionRuntime {
 }
 
 /// The in-process transport's default wait for a partner's collective.
-pub const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The wait for a group of device partitions, which share a device and its queue.
-pub const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl PartitionRuntime {
     /// Resolves `config` against the machine and builds one pinned pool per partition.
@@ -118,7 +118,7 @@ impl PartitionRuntime {
         &self.slots
     }
 
-    /// How long a partition waits for a partner's collective before declaring it dead: [`DEFAULT_WAIT_TIMEOUT`], or [`DEVICE_WAIT_TIMEOUT`] when a slot names a device.
+    /// How long a partition waits for a partner's collective before declaring it dead: `DEFAULT_WAIT_TIMEOUT`, or `DEVICE_WAIT_TIMEOUT` when a slot names a device.
     pub fn wait_timeout(&self) -> std::time::Duration {
         self.wait_timeout
     }

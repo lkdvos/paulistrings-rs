@@ -5,11 +5,11 @@
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
 use crate::truncation_spec::{collapse_count, collapses_since};
-use paulistrings::engine::partitioned::Collectives;
 #[cfg(feature = "cuda")]
 use paulistrings::gpu::first_failure;
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
-use paulistrings::truncation::BuiltinTruncation;
+use paulistrings::BuiltinTruncation;
+use paulistrings::Collectives;
 use paulistrings::{
     Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionTrace,
     PauliSum as CorePauliSum, PropagateOptions, TopologyError,

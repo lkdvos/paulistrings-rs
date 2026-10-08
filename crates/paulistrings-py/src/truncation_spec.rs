@@ -1,7 +1,7 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle over a core [`BuiltinTruncation`] tree.
 //! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`.
 
-use paulistrings::truncation::{BuiltinTruncation, CollapseSample};
+use paulistrings::{BuiltinTruncation, CollapseSample};
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -90,9 +90,9 @@ impl PyTruncation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paulistrings::pauli_string::PauliString;
-    use paulistrings::pauli_sum::accumulator::BuildAccumulator;
-    use paulistrings::phase::Phase;
+    use paulistrings::BuildAccumulator;
+    use paulistrings::PauliString;
+    use paulistrings::Phase;
     use paulistrings::TruncationPolicy;
 
     /// `n` single-site `X` strings with coefficient 1.

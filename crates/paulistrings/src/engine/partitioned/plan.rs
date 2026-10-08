@@ -13,8 +13,11 @@
 //! The identity delta has mask `0` and `part(0) = 0`, so it is always local: a partition never has to ship a term to itself.
 
 use crate::channel::prepared::Prepared;
+#[cfg(any(test, feature = "test-utils"))]
 use crate::circuit::Circuit;
-use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::hash::PartitionRows;
 
 /// One delta of a prepared channel that crosses a partition boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +163,7 @@ impl PartitionPlan {
 /// # Panics
 ///
 /// Panics if any channel declines [`Channel::prepare`](crate::Channel::prepare), the same condition on which `propagate` panics.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn count_remote_deltas<const W: usize>(
     circuit: &Circuit<W>,
     hash: &Gf2Hash<W>,

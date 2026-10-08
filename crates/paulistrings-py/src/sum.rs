@@ -6,11 +6,11 @@ use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
 use crate::truncation_spec::{collapse_count, collapses_since, PyTruncation, TOPN_PARTITIONED_MSG};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
-use paulistrings::engine::partitioned::{numa_nodes, CpuSet};
-use paulistrings::pauli_string::PauliString;
-use paulistrings::pauli_sum::accumulator::BuildAccumulator;
-use paulistrings::phase::Phase;
-use paulistrings::truncation::BuiltinTruncation;
+use paulistrings::BuildAccumulator;
+use paulistrings::BuiltinTruncation;
+use paulistrings::PauliString;
+use paulistrings::Phase;
+use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, EngineSelection, GateTrace, LayerScratch,
     PartitionConfig, PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace,
@@ -524,7 +524,7 @@ fn reduce_over_comm(
     comm: &Bound<'_, PyAny>,
     local: impl FnOnce() -> Vec<f64> + Send,
 ) -> PyResult<Vec<f64>> {
-    use paulistrings::engine::partitioned::Collectives;
+    use paulistrings::Collectives;
     let transport = crate::mpi::transport_from_comm(py, comm)?;
     Ok(py.allow_threads(move || {
         let mut values = local();
@@ -1448,7 +1448,7 @@ fn parse_distributed_device_mode(
         }
         let rows = row_policy(row_blocks, exclude, partition_row_seed);
         let transport = crate::mpi::transport_from_comm(py, comm)?;
-        let rank = paulistrings::engine::partitioned::Collectives::rank(&transport);
+        let rank = paulistrings::Collectives::rank(&transport);
         // Collective on every rank whatever each asked for, so an `"auto"` rank never waits on one that named an ordinal.
         let auto = paulistrings::gpu::local_device_for_comm(transport.communicator());
         let local = crate::gpu::resolve_rank_device(request, shown, rank, auto);
@@ -2504,7 +2504,7 @@ mod partition_row_knob_tests {
     /// blocks named, and two different cuts assign at least one term to different partitions.
     #[test]
     fn explicit_cut_blocks_round_trip_and_differ_from_each_other() {
-        use paulistrings::pauli_string::PauliString;
+        use paulistrings::PauliString;
 
         let num_qubits = 4;
         let num_partitions = 2;

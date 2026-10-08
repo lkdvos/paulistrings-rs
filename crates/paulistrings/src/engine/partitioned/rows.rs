@@ -38,7 +38,7 @@ pub struct GeneratorWeight<const W: usize> {
 /// Every non-identity key delta mask `circuit` produces, with the number of layers carrying it.
 ///
 /// Layers are walked in **application order** — circuit order for `adjoint == false`, reverse order for `adjoint == true`, matching [`Direction::Heisenberg`](crate::Direction) — and each layer is prepared against `hash` exactly as `propagate` prepares it, so the masks are the engine's own.
-/// A [`Prepared::Rotation`] contributes its generator mask; a [`Prepared::Local`] contributes each delta entry's mask.
+/// A `Prepared::Rotation` contributes its generator mask; a `Prepared::Local` contributes each delta entry's mask.
 /// Duplicates across layers are merged and their weights added, so a Trotter circuit of `k` identical steps reports each mask once with weight `k`.
 ///
 /// The identity delta (mask 0) is dropped: `part(0) = 0` unconditionally, so it constrains nothing.

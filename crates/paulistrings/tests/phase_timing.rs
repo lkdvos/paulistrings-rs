@@ -4,10 +4,8 @@
 //! passing under `--features phase-timing`.
 #![cfg(feature = "phase-timing")]
 
-use paulistrings::channel::{Depolarizing, PauliRotation};
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionRuntime, PartitionedSum,
-};
+use paulistrings::{Depolarizing, PauliRotation};
+use paulistrings::{DistributedSum, InProcessTransport, PartitionRuntime, PartitionedSum};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.

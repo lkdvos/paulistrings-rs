@@ -19,7 +19,7 @@ use num_complex::Complex64;
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::PauliRotation;
+/// use paulistrings::PauliRotation;
 /// use paulistrings::{Channel, PauliString};
 ///
 /// let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_4);

@@ -10,7 +10,7 @@ use crate::channel::Channel;
 /// # Examples
 ///
 /// ```
-/// use paulistrings::{Circuit, channel::Clifford1Q};
+/// use paulistrings::{Circuit, Clifford1Q};
 ///
 /// let mut c = Circuit::<1>::new(2);
 /// c.push(Clifford1Q::h(0));

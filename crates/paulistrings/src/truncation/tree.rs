@@ -18,7 +18,7 @@ use std::sync::Arc;
 /// A [`CollapseSample`] is shared, not copied, by `Clone`: its pass counter is the trajectory's state, so every tree holding one handle continues the same sequence. No device backend runs it.
 ///
 /// ```
-/// use paulistrings::truncation::BuiltinTruncation as T;
+/// use paulistrings::BuiltinTruncation as T;
 /// use paulistrings::TruncationPolicy;
 ///
 /// let policy = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(1_000)));

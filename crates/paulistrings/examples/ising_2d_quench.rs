@@ -23,11 +23,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::channel::PauliRotation;
-use paulistrings::truncation::{And, CoefficientThreshold, TopN};
+use paulistrings::PauliRotation;
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, ProductState,
 };
+use paulistrings::{And, CoefficientThreshold, TopN};
 
 /// Ising couplings: H = -J · ΣZZ - h · ΣX.
 const J: f64 = 1.0;

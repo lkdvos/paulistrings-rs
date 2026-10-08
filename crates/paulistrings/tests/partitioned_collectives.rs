@@ -14,19 +14,18 @@
 //! affordable.
 
 use num_complex::Complex64;
-use paulistrings::channel::PauliRotation;
-use paulistrings::engine::partitioned::{
-    PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum, BITS_AGREE_EVERY,
-};
-use paulistrings::pauli_sum::desired_bits;
+use paulistrings::test_support::desired_bits;
+use paulistrings::test_support::BITS_AGREE_EVERY;
 use paulistrings::test_support::{
     assert_terms_close, rand_sum_real, unpinned_partitions, zz_rotation,
 };
-use paulistrings::truncation::WeightCutoff;
+use paulistrings::PauliRotation;
+use paulistrings::WeightCutoff;
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, Phase,
     PropagateOptions,
 };
+use paulistrings::{PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum};
 
 const NQ: usize = 32;
 const TOL: f64 = 1e-11;

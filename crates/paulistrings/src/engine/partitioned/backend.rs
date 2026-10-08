@@ -44,7 +44,7 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
 /// The layer itself under policy type `T`.
 ///
 /// Everything collective stays in `run_layers`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step.
-pub trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
+pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
     /// One layer's export, exchange and merge, as [`apply_layer_partitioned_with_plan`].
     fn apply_layer<X: Transport>(
         &mut self,

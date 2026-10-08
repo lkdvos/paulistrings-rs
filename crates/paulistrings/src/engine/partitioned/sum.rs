@@ -31,8 +31,8 @@ use crate::readout::product_state::ProductState;
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::Clifford1Q;
-/// use paulistrings::engine::partitioned::{
+/// use paulistrings::Clifford1Q;
+/// use paulistrings::{
 ///     PartitionConfig, PartitionRuntime, PartitionedSum, Placement,
 /// };
 /// use paulistrings::{
@@ -298,7 +298,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// # Bucket counts
     ///
-    /// Each partition takes the bucket count its *own* share wants ([`desired_bits`](crate::pauli_sum::desired_bits) on the default bucket policy, all-reduced to a maximum so the group agrees), but sheds at most `log2(P)` bits of the count the unpartitioned sum arrived with — so the bucket count summed over partitions is the one the sum already had, and at `P = 1` the scatter changes nothing at all.
+    /// Each partition takes the bucket count its *own* share wants (`desired_bits` on the default bucket policy, all-reduced to a maximum so the group agrees), but sheds at most `log2(P)` bits of the count the unpartitioned sum arrived with — so the bucket count summed over partitions is the one the sum already had, and at `P = 1` the scatter changes nothing at all.
     /// The layer loop then re-normalizes upward against the caller's own [`PropagateOptions`].
     ///
     /// # Panics

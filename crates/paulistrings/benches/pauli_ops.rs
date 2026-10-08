@@ -11,23 +11,24 @@ use criterion::{
     PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
-use paulistrings::channel::{
+use paulistrings::test_support::apply_layer_bucketed;
+use paulistrings::BuildAccumulator;
+use paulistrings::Circuit;
+use paulistrings::LayerScratch;
+use paulistrings::PauliString;
+use paulistrings::PauliSum;
+use paulistrings::Phase;
+use paulistrings::{propagate, Direction};
+use paulistrings::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
-use paulistrings::circuit::Circuit;
-use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
-use paulistrings::engine::{propagate, Direction};
-use paulistrings::pauli_string::PauliString;
-use paulistrings::pauli_sum::accumulator::BuildAccumulator;
-use paulistrings::pauli_sum::PauliSum;
-use paulistrings::pauli_sum::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
-use paulistrings::phase::Phase;
+use paulistrings::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 // `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
 // the committed criterion baselines are pinned to them specifically.
 use paulistrings::test_support::{
     low_weight_sum, rand_pauli, rand_sum_unmasked, tie_heavy_sum_unmasked, Xs64,
 };
-use paulistrings::truncation::TruncationPolicy;
+use paulistrings::TruncationPolicy;
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -193,7 +194,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
 
 /// Bucket count the engine would pick for `n` terms.
 fn bits_for(n: usize) -> u8 {
-    paulistrings::pauli_sum::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
+    paulistrings::test_support::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
 }
 
 /// One `apply_layer_bucketed` case, on an already-bucketed sum.
@@ -451,7 +452,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
         bencher.iter_batched_ref(
             || input.clone().with_hash(hash.clone()),
             |sum| {
-                paulistrings::truncation::TopN(keep).finalize_layer(sum);
+                paulistrings::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -463,7 +464,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
         bencher.iter_batched_ref(
             || input.clone(),
             |sum| {
-                paulistrings::truncation::TopN(keep).finalize_layer(sum);
+                paulistrings::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -480,7 +481,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
         bencher.iter_batched_ref(
             || tied.clone().with_hash(tied_hash.clone()),
             |sum| {
-                paulistrings::truncation::TopN(tied_keep).finalize_layer(sum);
+                paulistrings::TopN(tied_keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,

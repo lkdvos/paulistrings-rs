@@ -14,6 +14,14 @@ use crate::pauli_sum::PauliSum;
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
+pub use crate::channel::prepared::Prepared;
+pub use crate::engine::bucketed::apply_layer_bucketed;
+pub use crate::engine::partitioned::driver::BITS_AGREE_EVERY;
+pub use crate::engine::partitioned::plan::count_remote_deltas;
+pub use crate::engine::partitioned::rows::{circuit_generators, GeneratorWeight};
+pub use crate::pauli_sum::hash::B_MAX_BITS;
+pub use crate::pauli_sum::storage::{desired_bits, DEFAULT_HASH_SEED};
+
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Returns early from the calling test when no CUDA device is available, so a device test is
@@ -22,7 +30,7 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 #[macro_export]
 macro_rules! require_cuda {
     () => {
-        if !$crate::engine::gpu::cuda_available() {
+        if !$crate::gpu::cuda_available() {
             return;
         }
     };

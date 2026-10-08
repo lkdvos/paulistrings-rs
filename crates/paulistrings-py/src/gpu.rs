@@ -88,8 +88,8 @@ mod cuda {
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
     use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
-    use paulistrings::pauli_sum::P_MAX_BITS;
-    use paulistrings::truncation::BuiltinTruncation;
+    use paulistrings::BuiltinTruncation;
+    use paulistrings::P_MAX_BITS;
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
     use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError, PyValueError};
     use pyo3::prelude::*;

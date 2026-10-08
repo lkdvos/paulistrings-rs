@@ -4,7 +4,7 @@
 //! Python composition is via the `&` and `|` operators on the returned objects.
 
 use crate::truncation_spec::PyTruncation;
-use paulistrings::truncation::{BuiltinTruncation, CollapseSample};
+use paulistrings::{BuiltinTruncation, CollapseSample};
 use pyo3::prelude::*;
 
 #[pyfunction]

@@ -1,10 +1,10 @@
 //! `PartitionTrace`: the opt-in per-layer record of a partitioned run.
 
-use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
-use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
-use paulistrings::pauli_sum::desired_bits;
+use paulistrings::test_support::desired_bits;
 use paulistrings::test_support::{low_weight_sum, rand_sum, unpinned_partitions, KeepAll};
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
+use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
+use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
 
 const NQ: usize = 16;
 
@@ -138,7 +138,7 @@ fn total_rows_exchanged_counts_the_anticommuting_terms() {
 /// A key-preserving layer crosses nothing and makes no transport call.
 #[test]
 fn a_key_preserving_layer_is_local() {
-    use paulistrings::channel::Depolarizing;
+    use paulistrings::Depolarizing;
 
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut circuit = Circuit::<1>::new(NQ);

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! use paulistrings::truncation::{And, CoefficientThreshold, WeightCutoff};
+//! use paulistrings::{And, CoefficientThreshold, WeightCutoff};
 //! use paulistrings::TruncationPolicy;
 //! use num_complex::Complex64;
 //!
@@ -19,7 +19,7 @@
 //! ));
 //! ```
 
-pub mod builtin;
+pub(crate) mod builtin;
 mod tree;
 
 pub use builtin::{And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff};
@@ -74,7 +74,7 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     ///
     /// ```
     /// use paulistrings::TruncationPolicy;
-    /// use paulistrings::truncation::{CoefficientThreshold, TopN};
+    /// use paulistrings::{CoefficientThreshold, TopN};
     ///
     /// assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&CoefficientThreshold(1e-9)));
     /// assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&TopN(1000)));

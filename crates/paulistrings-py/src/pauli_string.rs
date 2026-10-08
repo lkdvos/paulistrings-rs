@@ -3,7 +3,7 @@
 
 use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
 use num_complex::Complex64;
-use paulistrings::pauli_string::PauliString as CorePauliString;
+use paulistrings::PauliString as CorePauliString;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};

@@ -13,21 +13,17 @@
 //! transport's own net is `tests/mpi_ranks.rs`, run under `mpirun`.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy,
-};
 use paulistrings::test_support::{
     assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
     trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
-};
-use paulistrings::truncation::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff,
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
     Phase, RotationAxis,
 };
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
+use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
+use paulistrings::{DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
@@ -153,7 +149,7 @@ fn trotter_matches_propagate_w2() {
 /// `BuiltinTruncation`'s collective layer pass, per rank.
 #[test]
 fn builtin_truncation_tree_matches_propagate() {
-    use paulistrings::truncation::BuiltinTruncation as T;
+    use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(24, THETA);
     let sum = rand_sum_real::<1>(1_200, 24, 0x0D17);
     let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(2_000)));
@@ -351,7 +347,7 @@ fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
 }
 
 /// The qubits this rank's share names, one per single-`Z` term, ascending.
-fn local_z_qubits<const W: usize, X: paulistrings::engine::partitioned::Transport>(
+fn local_z_qubits<const W: usize, X: paulistrings::Transport>(
     split: &DistributedSum<W, X>,
 ) -> Vec<u32> {
     let (_, z, _) = split.local().to_arrays();
@@ -483,11 +479,11 @@ fn collapse_sample_trajectories_over_ranks() {
 /// Over `InProcessTransport` ranks, one collapse keeps exactly one string in the whole group, drawn with probability `|c|² / Σ|c|²`.
 #[test]
 fn collapse_sample_distributed_picks_by_weight() {
-    use paulistrings::engine::partitioned::PartitionRuntime;
     use paulistrings::test_support::{
         assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
         FOUR_TERM_WEIGHTS,
     };
+    use paulistrings::PartitionRuntime;
     const ROW_SEED: u64 = 0x5EED_C0FF_EE00_4321;
 
     let keys = four_term_keys::<1>();
@@ -515,7 +511,7 @@ fn collapse_sample_distributed_picks_by_weight() {
         for seed in 0..2000u64 {
             let policy = CollapseSample::new(3, seed);
             let gathered = on_ranks(size, |transport| {
-                use paulistrings::engine::partitioned::Collectives;
+                use paulistrings::Collectives;
                 let runtime = runtimes[transport.rank() as usize].clone();
                 let mut split = DistributedSum::scatter_with_rows(
                     input.clone(),

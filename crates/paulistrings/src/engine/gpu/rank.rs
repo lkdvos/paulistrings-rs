@@ -63,11 +63,11 @@ pub type GpuDistributedSum<const W: usize, X> = DistributedSum<W, X, DeviceParti
 /// The universe is the application's, as for [`MpiSum`](crate::engine::partitioned::mpi::MpiSum); pick each rank's device with [`local_device_for_comm`].
 ///
 /// ```no_run
-/// # use paulistrings::engine::partitioned::PartitionRowPolicy;
+/// # use paulistrings::PartitionRowPolicy;
 /// # use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 /// # use paulistrings::mpi::{rsmpi, MpiTransport};
 /// # use paulistrings::{Circuit, Direction, PauliSum};
-/// # use paulistrings::truncation::ApproxTopN;
+/// # use paulistrings::ApproxTopN;
 /// # fn go(circuit: &Circuit<1>, sum: PauliSum<1>) -> Result<(), paulistrings::gpu::GpuError> {
 /// let (universe, _) =
 ///     rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).expect("MPI initializes");

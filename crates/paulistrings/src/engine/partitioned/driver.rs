@@ -40,7 +40,7 @@ pub(super) const LOG_TARGET: &str = "paulistrings::propagate";
 /// Two regimes justify the value. In steady state under a truncation policy the term count moves by a few percent per layer, so a lag of 16 layers is far short of the factor of two that would cost a bucket bit at all.
 /// A run starting from a small operator can double every layer for a while, so the first `BITS_AGREE_EVERY` layers of every call agree unconditionally rather than run the growth phase under-bucketed.
 ///
-/// Between agreements a partition keeps the bucket count it has even if its own [`desired_bits`] is higher: nobody refines off-schedule, so the group's counts stay equal by construction and an exchange can always index a partner's blocks.
+/// Between agreements a partition keeps the bucket count it has even if its own `desired_bits` is higher: nobody refines off-schedule, so the group's counts stay equal by construction and an exchange can always index a partner's blocks.
 /// The lag is bounded by `BITS_AGREE_EVERY` layers.
 pub const BITS_AGREE_EVERY: usize = 16;
 
@@ -344,8 +344,8 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::Clifford1Q;
-/// use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
+/// use paulistrings::Clifford1Q;
+/// use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
 /// use paulistrings::{
 ///     BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, Phase,
 ///     PropagateOptions, TruncationPolicy,

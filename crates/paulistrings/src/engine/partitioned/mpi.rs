@@ -137,7 +137,7 @@ impl std::error::Error for MpiError {}
 ///
 /// ```no_run
 /// use paulistrings::mpi::{rsmpi, MpiTransport};
-/// use paulistrings::engine::partitioned::Collectives;
+/// use paulistrings::Collectives;
 ///
 /// let (universe, _threading) =
 ///     rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).expect("MPI initializes");

@@ -29,24 +29,20 @@
 use std::panic::AssertUnwindSafe;
 
 use num_complex::Complex64;
-use paulistrings::channel::{
-    Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
-use paulistrings::engine::partitioned::{
-    count_remote_deltas, Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy,
-    PartitionRuntime, BITS_AGREE_EVERY,
-};
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
-};
+use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
     PauliString, PauliSum, Phase, PropagateOptions,
+};
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::{
+    Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
 };
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -817,7 +813,7 @@ fn run_host_cases(r: &mut Runner) {
         "collapse sample keeps one bounded unit-norm trajectory",
         |r| {
             use paulistrings::test_support::{collapsing_circuit, z0_sum};
-            use paulistrings::truncation::CollapseSample;
+            use paulistrings::CollapseSample;
             const CACHE: usize = 6;
             let (circuit, input) = (collapsing_circuit(), z0_sum());
 

@@ -132,7 +132,7 @@ Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each ra
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::engine::partitioned::PartitionRowPolicy;
+use paulistrings::PartitionRowPolicy;
 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 

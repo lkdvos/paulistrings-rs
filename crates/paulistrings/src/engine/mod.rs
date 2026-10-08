@@ -6,7 +6,7 @@
 //! The crate-private `direct` module is an **additive** second layer path for sums small enough that the bucketed layer's per-layer fixed cost dominates: off unless a caller asks for it through [`propagate_with`], never reached by [`propagate`], and canonical for nothing.
 //! See `research/FINDINGS.md`.
 
-pub mod bucketed;
+pub(crate) mod bucketed;
 pub(crate) mod coset;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_context;
@@ -14,9 +14,9 @@ pub(crate) mod direct;
 #[cfg(feature = "cuda")]
 pub mod gpu;
 pub(crate) mod merge;
-pub mod partitioned;
+pub(crate) mod partitioned;
 #[cfg(feature = "phase-timing")]
-pub mod stats;
+pub(crate) mod stats;
 
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
@@ -43,7 +43,7 @@ pub enum Direction {
 
 /// Which layer engine [`propagate_with`] uses.
 ///
-/// The bucketed sorting engine ([`bucketed`]) is canonical at every term count; the alternative is a strictly additive small-sum path (`engine::direct`) that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`] and the bucketed machinery.
+/// The bucketed sorting engine is canonical at every term count; the alternative is a strictly additive small-sum path (`engine::direct`) that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`] and the bucketed machinery.
 /// See `research/FINDINGS.md`.
 ///
 /// The default is [`EngineSelection::SortedOnly`]: today's behaviour, unchanged, for every caller that does not ask for anything else.
@@ -99,7 +99,7 @@ pub struct PropagateOptions {
     /// A measurement lever, not a tuning parameter: the default is the measured optimum (ARCHITECTURE.md §Bucket-Policy).
     /// What has to stay resident is the *gather run*, not the bucket, so the headroom is not the bucket size alone.
     ///
-    /// Raising this alone does nothing above the `min_buckets` floor: with `len >= min_buckets * MIN_TERMS_PER_TASK`, [`desired_bits`](crate::pauli_sum::desired_bits) clamps the bucket count below at `min_buckets` whatever the target says.
+    /// Raising this alone does nothing above the `min_buckets` floor: with `len >= min_buckets * MIN_TERMS_PER_TASK`, `desired_bits` clamps the bucket count below at `min_buckets` whatever the target says.
     /// Both fields have to move together to get *fewer* buckets, and [`PauliSum::rebucket`](crate::PauliSum::rebucket) is grow-only, so lowering either mid-run never coarsens a partition already grown.
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
@@ -142,7 +142,7 @@ impl PropagateOptions {
 /// Iterates the circuit's channels — in order for [`Direction::Forward`], in reverse for [`Direction::Heisenberg`], calling [`Channel::apply_adjoint`] in the latter case (default = self-adjoint; overridden on [`PauliRotation`](crate::channel::PauliRotation) and [`Clifford1Q`](crate::channel::Clifford1Q)).
 ///
 /// The sum is propagated in its bucketed form throughout — there is no conversion at either end, so calling this repeatedly on the same sum (a Trotter driver stepping an observable) costs nothing beyond the layers themselves; per-bucket storage capacity is retained inside the returned sum across calls.
-/// The bucket count is re-normalized against [`desired_bits`](crate::pauli_sum::desired_bits) before every layer.
+/// The bucket count is re-normalized against `desired_bits` before every layer.
 ///
 /// # Progress logging
 ///
@@ -158,7 +158,7 @@ impl PropagateOptions {
 /// ```
 /// use paulistrings::{
 ///     BuildAccumulator, Circuit, Direction, PauliString, Phase, TruncationPolicy,
-///     channel::Clifford1Q, propagate,
+///     Clifford1Q, propagate,
 /// };
 /// use num_complex::Complex64;
 ///
@@ -218,7 +218,7 @@ where
 /// ```
 /// use paulistrings::{
 ///     BuildAccumulator, Circuit, Direction, EngineSelection, LayerScratch, PauliString, Phase,
-///     PropagateOptions, TruncationPolicy, channel::Clifford1Q, propagate_with,
+///     PropagateOptions, TruncationPolicy, Clifford1Q, propagate_with,
 /// };
 /// use num_complex::Complex64;
 ///
@@ -444,14 +444,6 @@ fn record_gate_trace<const W: usize>(
         trace.terms_out.push(terms_out);
         trace.nanos.push(elapsed.as_nanos() as u64);
     }
-}
-
-/// Bucket-count floor: enough buckets that Rayon has slack to load-balance.
-///
-/// Fixed, not derived from `rayon::current_num_threads`: see [`crate::pauli_sum::storage::DEFAULT_MIN_BUCKETS`] for why a thread-independent floor is what we want here (ARCHITECTURE.md §Bucket-Policy).
-/// Combined with the grow-only `rebucket` policy, this floor is a lower bound on `B` throughout a `propagate` call, not just at the layer where it was first crossed.
-pub fn default_min_buckets() -> usize {
-    crate::pauli_sum::storage::DEFAULT_MIN_BUCKETS
 }
 
 #[cfg(test)]

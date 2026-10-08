@@ -47,7 +47,7 @@ fn reset_log_cache() {
 /// A machine with no NUMA information reports the whole affinity mask as a single node. The lists are a snapshot: a later affinity change is not reflected until the next call.
 #[pyfunction]
 fn numa_nodes() -> Vec<Vec<usize>> {
-    paulistrings::engine::partitioned::numa_nodes()
+    paulistrings::numa_nodes()
         .into_iter()
         .map(|(_id, cpus)| cpus.0)
         .collect()

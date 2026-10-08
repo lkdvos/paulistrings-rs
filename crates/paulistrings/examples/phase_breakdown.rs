@@ -12,25 +12,23 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
-use paulistrings::engine::partitioned::{
-    circuit_generators, count_remote_deltas, CpuSet, GeneratorWeight, PartitionConfig,
-    PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Placement, BITS_AGREE_EVERY,
+use paulistrings::test_support::{
+    circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
+    GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
 };
-use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
-use paulistrings::pauli_sum::hash::B_MAX_BITS;
-use paulistrings::pauli_sum::storage::{
-    DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
-};
-use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 #[cfg(feature = "cuda")]
-use paulistrings::truncation::BuiltinTruncation;
-use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
+use paulistrings::BuiltinTruncation;
 use paulistrings::{
     propagate_with, BuildAccumulator, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
     PauliString, PauliSum, Phase, PhaseStats, PropagateOptions, TruncationPolicy,
 };
+use paulistrings::{ApproxTopN, CoefficientThreshold, TopN};
+use paulistrings::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::{
+    CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
+    PartitionedTruncation, Placement,
+};
+use paulistrings::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, TIMER_READ_OVERHEAD_NS};
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
@@ -2011,8 +2009,8 @@ fn run_cell_mpi<const W: usize, P>(
 where
     P: PartitionedTruncation<W>,
 {
-    use paulistrings::engine::partitioned::{Collectives, DistributedSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
+    use paulistrings::{Collectives, DistributedSum};
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();
@@ -2161,9 +2159,9 @@ fn run_cell_mpi_gpu<const W: usize>(
     cfg: &Config,
     policy: &BuiltinTruncation,
 ) -> CellResult {
-    use paulistrings::engine::partitioned::Collectives;
     use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
+    use paulistrings::Collectives;
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();

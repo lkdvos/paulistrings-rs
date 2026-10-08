@@ -6,8 +6,8 @@
 //!
 //! ```
 //! use paulistrings::{
-//!     BuildAccumulator, Circuit, Direction, PauliString, Phase, TruncationPolicy,
-//!     channel::Clifford1Q, propagate,
+//!     BuildAccumulator, Circuit, Clifford1Q, Direction, PauliString, Phase, TruncationPolicy,
+//!     propagate,
 //! };
 //! use num_complex::Complex64;
 //!
@@ -31,12 +31,12 @@
 //! # Module map
 //!
 //! - [`PauliString`], [`PauliSum`], [`BuildAccumulator`], [`Phase`] — the data model (ARCHITECTURE.md §Data-Model).
-//! - [`Circuit`], [`Channel`] (built-ins in [`channel`]) — gates and noise.
-//! - [`TruncationPolicy`] (built-ins in [`truncation`]) — composable per-term and per-layer filters.
+//! - [`Circuit`], [`Channel`] (built-ins such as [`Clifford1Q`] and [`PauliRotation`]) — gates and noise.
+//! - [`TruncationPolicy`] (built-ins such as [`CoefficientThreshold`] and [`ApproxTopN`]) — composable per-term and per-layer filters.
 //! - [`propagate`] / [`Direction`] / [`propagate_with`] — the propagation entry point (ARCHITECTURE.md §Engine).
 //! - [`ProductBasis`] / [`StabilizerState`] — read-out-only contraction states, never evolved.
-//! - [`readout::echo`] — operator Loschmidt-echo read-outs ([`PauliSum::rotated_overlap`], [`PauliSum::anticommute_histogram`]).
-//! - [`engine`] / [`engine::partitioned`] — the bucketed engine and its NUMA/distributed partitioning (ARCHITECTURE.md §Engine, §Partitioning); [`propagate`] is the front door for almost all callers.
+//! - [`diagonal_echo`] — operator Loschmidt-echo read-outs ([`PauliSum::rotated_overlap`], [`PauliSum::anticommute_histogram`]).
+//! - [`PartitionedSum`] / [`DistributedSum`] — the sum split across NUMA domains or ranks (ARCHITECTURE.md §Partitioning); [`propagate`] is the front door for almost all callers.
 //! - [`examples`] — worked-example walkthroughs of full-scale simulations.
 //!
 //! # Choosing `W`
@@ -46,21 +46,25 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-pub mod channel;
-pub mod circuit;
-pub mod engine;
+mod channel;
+mod circuit;
+mod engine;
 pub mod examples;
-pub mod pauli_string;
-pub mod pauli_sum;
-pub mod phase;
-pub mod readout;
-pub(crate) mod rng;
+mod pauli_string;
+mod pauli_sum;
+mod phase;
+mod readout;
+mod rng;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_support;
-pub mod truncation;
+mod truncation;
 
-pub use channel::{Channel, OutputBuffer};
+pub use channel::{
+    support_mask, AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing,
+    Depolarizing2Q, GeneralUnitary1Q, GeneralUnitary2Q, IdentityChannel, OutputBuffer,
+    PauliChannel, PauliRotation,
+};
 pub use circuit::Circuit;
 pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
 // The CUDA backend, behind the `cuda` feature.
@@ -72,23 +76,28 @@ pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    circuit_generators, count_remote_deltas, propagate_partitioned, DistributedSum,
-    GeneratorWeight, PartitionConfig, PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime,
-    PartitionTrace, PartitionedSum, PartitionedTruncation, Placement, TopologyError,
+    numa_nodes, propagate_partitioned, ChunkMap, ChunkWait, Collectives, CpuSet, DistributedSum,
+    InProcessTransport, PartitionConfig, PartitionLayerRecord, PartitionRowPolicy,
+    PartitionRuntime, PartitionSlot, PartitionTrace, PartitionedSum, PartitionedTruncation,
+    Payload, Placement, TopologyError, Transport,
 };
 #[cfg(feature = "phase-timing")]
-pub use engine::stats::PhaseStats;
+pub use engine::stats::{PhaseStats, TIMER_READ_OVERHEAD_NS};
 pub use engine::{
-    default_min_buckets, propagate, propagate_with, Direction, EngineSelection, PropagateOptions,
+    propagate, propagate_with, Direction, EngineSelection, PropagateOptions,
     DEFAULT_SMALL_SUM_THRESHOLD,
 };
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;
-pub use pauli_sum::PauliSum;
-pub use pauli_sum::{Gf2Hash, PartitionRows};
+pub use pauli_sum::{
+    Gf2Hash, PartitionRows, PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, P_MAX_BITS,
+};
 pub use phase::Phase;
 pub use readout::{
     diagonal_echo, PauliAxis, ProductBasis, ProductState, RotationAxis, StabilizerError,
     StabilizerState,
 };
-pub use truncation::TruncationPolicy;
+pub use truncation::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, CollapseSample, Or, TopN,
+    TruncationPolicy, WeightCutoff,
+};

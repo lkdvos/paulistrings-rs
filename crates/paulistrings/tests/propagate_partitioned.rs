@@ -9,16 +9,16 @@
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
-use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
 use paulistrings::test_support::{
     assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
     propagate, Circuit, Direction, PartitionedTruncation, PauliSum, PropagateOptions,
     TruncationPolicy,
 };
+use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
@@ -90,7 +90,7 @@ fn trotter_matches_propagate_w2() {
 /// `BuiltinTruncation` drives the partitioned engines through its own `finalize_layer_partitioned`, one collective per layer as the builtin `And` it names.
 #[test]
 fn builtin_truncation_tree_matches_propagate() {
-    use paulistrings::truncation::BuiltinTruncation as T;
+    use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(32, THETA);
     let sum = rand_sum_real::<1>(2_000, 32, 0x71A2);
     let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(3_000)));
@@ -329,7 +329,7 @@ fn partner_panic_does_not_hang() {
         fn finalize_layer_partitioned(
             &self,
             _local: &mut PauliSum<W>,
-            coll: &dyn paulistrings::engine::partitioned::Collectives,
+            coll: &dyn paulistrings::Collectives,
         ) {
             let rank = coll.rank() as usize;
             let k = self.seen[rank].fetch_add(1, Ordering::Relaxed);

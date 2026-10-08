@@ -32,7 +32,7 @@ fn rescale_on_support<const W: usize>(
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::Depolarizing;
+/// use paulistrings::Depolarizing;
 /// let ch = Depolarizing { support: [3], p: 0.05 };
 /// # let _ = ch;
 /// ```
@@ -128,7 +128,7 @@ impl<const W: usize> Channel<W> for Dephasing {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::PauliChannel;
+/// use paulistrings::PauliChannel;
 /// let ch = PauliChannel { support: [3], px: 0.01, py: 0.02, pz: 0.03 };
 /// # let _ = ch;
 /// ```
@@ -181,7 +181,7 @@ impl<const W: usize> Channel<W> for PauliChannel {
 
 /// Uniform two-qubit depolarizing noise: probability `p` spread evenly over the 15 non-identity two-qubit Paulis.
 ///
-/// `E(ρ) = (1-p)ρ + (p/15)·Σ_k P_k ρ P_k`. Fanout 1, key-preserving, self-adjoint, like its single-qubit siblings; the support weight of 2 is exactly [`MAX_LOCAL_SUPPORT`](super::prepared::MAX_LOCAL_SUPPORT), so the default `prepare` derivation applies.
+/// `E(ρ) = (1-p)ρ + (p/15)·Σ_k P_k ρ P_k`. Fanout 1, key-preserving, self-adjoint, like its single-qubit siblings; the support weight of 2 is exactly `MAX_LOCAL_SUPPORT`, so the default `prepare` derivation applies.
 ///
 /// # Dual scales
 ///
@@ -191,7 +191,7 @@ impl<const W: usize> Channel<W> for PauliChannel {
 /// # Examples
 ///
 /// ```
-/// use paulistrings::channel::Depolarizing2Q;
+/// use paulistrings::Depolarizing2Q;
 /// let ch = Depolarizing2Q { support: [3, 4], p: 0.01 };
 /// # let _ = ch;
 /// ```

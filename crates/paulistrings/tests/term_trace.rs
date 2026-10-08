@@ -8,13 +8,13 @@
 //! behind the `phase-timing` feature.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, PauliRotation};
 use paulistrings::test_support::assert_terms_close;
-use paulistrings::truncation::CoefficientThreshold;
+use paulistrings::CoefficientThreshold;
 use paulistrings::{
     propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
     PauliSum, Phase, PropagateOptions, TruncationPolicy,
 };
+use paulistrings::{Clifford1Q, PauliRotation};
 
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}

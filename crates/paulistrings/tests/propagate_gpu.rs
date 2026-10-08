@@ -1,9 +1,6 @@
 //! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance (ARCHITECTURE.md §Determinism).
 //! Every case returns early without a device.
 
-use paulistrings::channel::{
-    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
@@ -11,12 +8,13 @@ use paulistrings::test_support::{
     differential_channels_w2, haar_su4_matrix, or, rand_sum, random_circuit, trotter_circuit,
     zz_rotation, KeepAll, ShiftX, Xs64,
 };
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff,
-};
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PartitionedTruncation,
     PauliString, PauliSum, PropagateOptions,
+};
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff};
+use paulistrings::{
+    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
 
 const TOL: f64 = 1e-11;
@@ -314,8 +312,8 @@ fn exact_top_n_edge_cases_match_the_host() {
 #[test]
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
-    use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
     use paulistrings::gpu::GpuPartitionedSum;
+    use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
@@ -688,7 +686,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
     let circuit = random_clifford_circuit::<W>(nq, 24, 0x5EED);
     let last_permutes = !matches!(
         circuit.channels.last().unwrap().prepare(input.hash(), false),
-        Some(paulistrings::channel::prepared::Prepared::Local(p)) if p.is_key_preserving()
+        Some(paulistrings::test_support::Prepared::Local(p)) if p.is_key_preserving()
     );
     for (pname, policy) in &policies {
         let what = format!("random clifford {pname}");

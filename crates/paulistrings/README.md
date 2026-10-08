@@ -16,7 +16,7 @@ This crate is the pure-Rust core. Python bindings live in the
 
 ```rust
 use paulistrings::{
-    channel::Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString, Phase,
+    Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString, Phase,
     TruncationPolicy, propagate,
 };
 use num_complex::Complex64;

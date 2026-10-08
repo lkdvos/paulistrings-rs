@@ -248,7 +248,7 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// Double the bucket count, as [`PauliSum::refine`]: bucket `β` splits into `β` and `β + B`, each inheriting `β`'s order.
-    /// Returns [`GpuError::Unsupported`] at [`B_MAX_BITS`].
+    /// Returns [`GpuError::Unsupported`] at `B_MAX_BITS`.
     pub fn refine(&mut self) -> Result<(), GpuError> {
         if self.hash.bits() >= B_MAX_BITS {
             return Err(GpuError::Unsupported("refine beyond B_MAX_BITS"));
@@ -257,7 +257,7 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass; a no-op at or above it.
-    /// The result is the one repeated [`Self::refine`] gives. Returns [`GpuError::Unsupported`] past [`B_MAX_BITS`], leaving the sum unchanged.
+    /// The result is the one repeated [`Self::refine`] gives. Returns [`GpuError::Unsupported`] past `B_MAX_BITS`, leaving the sum unchanged.
     pub fn refine_to(&mut self, bits: u8) -> Result<(), GpuError> {
         if bits > B_MAX_BITS {
             return Err(GpuError::Unsupported("refine_to beyond B_MAX_BITS"));

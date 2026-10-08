@@ -415,7 +415,7 @@ pub enum Placement {
 
 /// Host workers of a device partition's pool: enough for the export staging and payload plumbing.
 #[cfg(feature = "cuda")]
-pub const DEVICE_PARTITION_THREADS: usize = 4;
+pub(crate) const DEVICE_PARTITION_THREADS: usize = 4;
 
 /// Placement plus the knobs the partitioned engine reads alongside it.
 #[derive(Clone, Debug, PartialEq, Eq)]

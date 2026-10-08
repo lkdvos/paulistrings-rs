@@ -2,24 +2,21 @@
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
-use paulistrings::engine::partitioned::{
-    count_remote_deltas, PartitionConfig, PartitionRuntime, Placement,
-};
 use paulistrings::gpu::{
     GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
 };
 use paulistrings::require_cuda;
+use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
     rows_reading_z63, su4_chain, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
-};
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows,
     PartitionedTruncation, PauliSum, PropagateOptions,
 };
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
 
 const TOL: f64 = 1e-11;
 const THETA: f64 = 0.1;
@@ -190,9 +187,7 @@ fn a_rotation_crossing_the_partition_agrees() {
         let mut circuit = Circuit::<1>::new(nq);
         for k in 0..4 {
             circuit.push(zz_rotation::<1>(0, q1, 0.3 + 0.1 * k as f64));
-            circuit.push(paulistrings::channel::Clifford1Q::h(
-                (k as u32 + 3) % nq as u32,
-            ));
+            circuit.push(paulistrings::Clifford1Q::h((k as u32 + 3) % nq as u32));
         }
         check(&circuit, &sum, &KeepAll, "crossing zz", &[p]);
         check(
@@ -490,8 +485,8 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
     let input = x0_terms_identity_on_q63(500, 0xE0);
     let mut circuit = Circuit::<1>::new(64);
     circuit.push(zz_rotation::<1>(0, 63, 0.3));
-    circuit.push(paulistrings::channel::Clifford1Q::h(5));
-    circuit.push(paulistrings::channel::Clifford2Q::cnot(2, 63));
+    circuit.push(paulistrings::Clifford1Q::h(5));
+    circuit.push(paulistrings::Clifford2Q::cnot(2, 63));
     circuit.push(zz_rotation::<1>(7, 63, 0.4));
     let rows = rows_reading_z63();
     assert!(
@@ -560,8 +555,8 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
 #[test]
 fn an_agreed_count_below_the_devices_need_is_unsupported() {
     require_cuda!();
-    use paulistrings::channel::GeneralUnitary2Q;
     use paulistrings::test_support::haar_su4_matrix;
+    use paulistrings::GeneralUnitary2Q;
     // One bucket in, so the scatter keeps one bucket and the agreement stays there under the capped proposal.
     let sum = rand_sum::<1>(20_000, 10, 0x1F03);
     let sum = sum
@@ -617,8 +612,8 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
 #[test]
 fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     require_cuda!();
-    use paulistrings::channel::{Clifford1Q, Clifford2Q, GeneralUnitary2Q};
     use paulistrings::test_support::haar_su4_matrix;
+    use paulistrings::{Clifford1Q, Clifford2Q, GeneralUnitary2Q};
     let nq = 16;
     let sum = rand_sum::<1>(1_500, nq, 0x1F06);
     let blocks: Vec<Vec<u32>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
@@ -651,12 +646,12 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
         let ch = &circuit.channels[layer.circuit_index as usize];
         let mut deltas = std::collections::HashSet::new();
         match ch.prepare(hash, false).expect("prepared") {
-            paulistrings::channel::prepared::Prepared::Local(ptm) => {
+            paulistrings::test_support::Prepared::Local(ptm) => {
                 for d in ptm.deltas() {
                     deltas.insert(rows.partition_of(&d.mask_x, &d.mask_z));
                 }
             }
-            paulistrings::channel::prepared::Prepared::Rotation(r) => {
+            paulistrings::test_support::Prepared::Rotation(r) => {
                 deltas.insert(rows.partition_of(&r.gen.x, &r.gen.z));
             }
         }
@@ -750,8 +745,8 @@ fn premerge_ships_fewer_rows_on_dense_layers_and_agrees_w2() {
 #[test]
 fn premerge_with_exactly_cancelling_rows_agrees() {
     require_cuda!();
-    use paulistrings::channel::GeneralUnitary2Q;
     use paulistrings::test_support::sqrt_swap_matrix;
+    use paulistrings::GeneralUnitary2Q;
     let nq = 8;
     let base = rand_sum_real::<1>(400, nq, 0x9E3);
     let mut acc = paulistrings::BuildAccumulator::<1>::new(nq);
@@ -809,7 +804,7 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
         .iter()
         .map(|&(a, b)| {
             let mut c = Circuit::<W>::new(nq);
-            c.push(paulistrings::channel::GeneralUnitary2Q::from_matrix(
+            c.push(paulistrings::GeneralUnitary2Q::from_matrix(
                 a,
                 b,
                 paulistrings::test_support::haar_su4_matrix(),
@@ -905,8 +900,8 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
 #[test]
 fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
     require_cuda!();
-    use paulistrings::channel::Clifford1Q;
     use paulistrings::test_support::random_clifford_circuit;
+    use paulistrings::Clifford1Q;
     let nq = 12;
     let sum = rand_sum::<1>(2000, nq, 0xC11F);
     let circuit = random_clifford_circuit::<1>(nq, 30, 0xC1FF);

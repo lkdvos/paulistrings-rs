@@ -16,12 +16,12 @@
 //! thread-count stability.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
 use paulistrings::test_support::approx_eq;
-use paulistrings::truncation::{CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
 };
+use paulistrings::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
+use paulistrings::{CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-12;
 
@@ -440,7 +440,7 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
 #[test]
 fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
     use paulistrings::test_support::{collapsing_circuit, z0_sum};
-    use paulistrings::truncation::CollapseSample;
+    use paulistrings::CollapseSample;
 
     const CACHE: usize = 6;
     let (circuit, input) = (collapsing_circuit(), z0_sum());

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 const TOL: f64 = 1e-12;
 
-/// The destination-coset order for `plan` over `num_buckets` buckets, in one chunk: the layout every export test compares against.
+/// The destination-coset order for `plan` over `num_buckets` buckets, in one chunk.
 fn map_for(plan: &PartitionPlan, num_buckets: usize) -> ChunkMap {
     let mut map = ChunkMap::default();
     map.rebuild(
@@ -93,10 +93,7 @@ fn by_key<const W: usize>(
     map
 }
 
-/// The **row-level** oracle: for every input term, the rows [`Channel::apply`] emits whose output key lands in a different partition than the term itself.
-///
-/// Deliberately not `test_support::naive_apply_layer`, which sums a key's contributions from *every* source; the export carries only the partition-crossing ones.
-/// Rows are summed per (input term, output key) first, and exactly-zero results are dropped the way a zero amplitude emits nothing.
+/// Row-level oracle: per input term, the summed nonzero rows [`Channel::apply`] emits into another partition (not `naive_apply_layer`, which sums every source).
 fn crossing_rows<const W: usize>(
     input: &PauliSum<W>,
     ch: &dyn Channel<W>,
@@ -137,10 +134,7 @@ fn crossing_rows<const W: usize>(
     out
 }
 
-/// Two terms, one bucket, one remote delta: the export is hand-checkable row for row.
-///
-/// `H` on qubit 0 sends `X₀ → Z₀` and `Z₀ → X₀`, so its non-identity delta is the mask `x₀ z₀`.
-/// Under a partition row that reads the `x` bit of qubit 0, that mask has `part = 1`, so the delta is remote and `X₀`/`Z₀` sit in different partitions; each exports its single image to the other.
+/// `H₀` swaps `X₀ ↔ Z₀`; a partition row on `x₀` puts them in different partitions, so each exports its image to the other.
 #[test]
 fn a_single_bucket_h_layer_exports_the_swapped_keys() {
     let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
@@ -177,8 +171,7 @@ fn a_single_bucket_h_layer_exports_the_swapped_keys() {
     }
 }
 
-/// A rotation every term commutes with produces no rows — but still
-/// produces its block, because the receiver indexes blocks positionally.
+/// A rotation every term commutes with produces no rows, but still its (empty) block.
 #[test]
 fn an_all_commuting_rotation_exports_empty_blocks() {
     // Generator Z₀X₂X₄X₆, weight 4 > MAX_LOCAL_SUPPORT (the Rotation arm).
@@ -213,10 +206,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
     }
 }
 
-/// The CSR is in the *receiver's* order: every row of segment `p` lands in the receiver's bucket `map.bucket_at(p)`.
-///
-/// This is the contract `RecvRows` reads the block through, so it is checked directly against the hash rather than only end to end through the differential nets.
-/// The matrix covers a non-trivial permutation and a non-zero bucket delta on the remote entry.
+/// The CSR is in the receiver's order: every row of segment `p` lands in the receiver's bucket `map.bucket_at(p)`.
 #[test]
 fn every_segment_holds_the_rows_of_its_destination_bucket() {
     let input = rand_sum::<1>(700, 8, 0x9C7);
@@ -259,10 +249,7 @@ fn every_segment_holds_the_rows_of_its_destination_bucket() {
     }
 }
 
-/// Pass 1 sized every block exactly: the counted row total is what pass 2 wrote, in every block, for every channel class.
-///
-/// The two passes agreeing is `fill_range`'s own `debug_assert` (this suite runs in debug).
-/// What is checked here is the shape around it: the CSR offsets end at `header.rows`, the grow-only columns hold at least that many rows, and the reported per-partner totals are the blocks' own.
+/// Pass 1 sized every block exactly: CSR offsets end at `header.rows`, columns hold at least that many rows, and per-partner totals are the blocks' own.
 #[test]
 fn the_counted_rows_are_the_filled_rows() {
     let input = rand_sum::<1>(700, 8, 0x9C0);
@@ -302,8 +289,7 @@ fn the_counted_rows_are_the_filled_rows() {
     }
 }
 
-/// The union of every partition's export is exactly the layer's
-/// partition-crossing rows, key by key, count and sum.
+/// The union of every partition's export is exactly the layer's partition-crossing rows, key by key, count and sum.
 #[test]
 fn the_export_is_the_partition_crossing_rows_w1() {
     let input = rand_sum::<1>(700, 8, 0x9C1);
@@ -361,7 +347,7 @@ fn the_export_is_the_partition_crossing_rows_w2() {
     }
 }
 
-/// Every exported row is addressed to the partition it belongs to — the property [`debug_assert_exported_partitions`] pins in debug builds, asserted here unconditionally.
+/// Every exported row is addressed to the partition it belongs to.
 #[test]
 fn exported_rows_are_addressed_to_their_own_partition() {
     let input = rand_sum::<1>(400, 8, 0x9C3);
@@ -399,8 +385,7 @@ fn a_layer_with_no_remote_delta_exports_nothing() {
     }
 }
 
-/// The scratch is reusable: a layer through a scratch a wider layer has
-/// already grown gives the same payload as one through a fresh scratch.
+/// A layer through a scratch a wider layer has grown gives the same payload as through a fresh scratch.
 #[test]
 fn a_reused_scratch_gives_the_same_export() {
     let input = rand_sum::<1>(500, 8, 0x9C5);

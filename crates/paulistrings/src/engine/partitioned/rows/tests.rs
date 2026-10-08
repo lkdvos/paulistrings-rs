@@ -17,8 +17,7 @@ fn circuit_generators_merges_duplicate_masks_and_counts_layers() {
     c.push(PauliRotation::new(PauliString::<1>::x(0), 0.7));
     let gens = circuit_generators(&c, &hash(4), false);
 
-    // Two distinct masks: X_0 (twice) and Z_0·Z_1 (once). The identity
-    // delta of every layer is dropped.
+    // Two distinct masks: X_0 (twice) and Z_0·Z_1 (once); identity deltas are dropped.
     assert_eq!(gens.len(), 2);
     assert_eq!(gens[0].mask_x, [0b0001]);
     assert_eq!(gens[0].mask_z, [0]);
@@ -48,5 +47,3 @@ fn circuit_generators_walks_layers_in_application_order() {
 fn circuit_generators_of_an_empty_circuit_is_empty() {
     assert!(circuit_generators(&Circuit::<1>::new(4), &hash(4), false).is_empty());
 }
-
-// ---- property: the reported split is the rows' own verdict ----

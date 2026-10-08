@@ -1,16 +1,4 @@
-//! Per-layer classification of a prepared channel's deltas into *local* and
-//! *remote*. See ARCHITECTURE.md §Engine for the delta set itself.
-//!
-//! A partitioning splits keys by `part(v) = P·v` ([`PartitionRows`]) on top of
-//! the bucket split `loc(v) = H·v` ([`Gf2Hash`]). Both are GF(2)-linear, so a
-//! prepared channel's key delta `d` moves a term by a *constant* partition
-//! delta `pd = part(d)` and bucket delta `bd = h(d)`, whatever the term. That
-//! is what makes this a per-layer plan rather than a per-term decision:
-//!
-//! * `pd == 0` — the delta is **local**: it lands in the same partition, and the ordinary coset loop handles it with no communication.
-//! * `pd != 0` — the delta is **remote**: every row it produces belongs to partition `rank ^ pd`, so the layer exports one stream per such delta to that one partner.
-//!
-//! The identity delta has mask `0` and `part(0) = 0`, so it is always local: a partition never has to ship a term to itself.
+//! Per-layer classification of a prepared channel's deltas into local (`part(d) = 0`) and remote ones (ARCHITECTURE.md §Partitioning).
 
 use crate::channel::prepared::Prepared;
 #[cfg(any(test, feature = "test-utils"))]
@@ -22,47 +10,31 @@ use crate::pauli_sum::hash::PartitionRows;
 /// One delta of a prepared channel that crosses a partition boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteDelta {
-    /// Index into `ptm.deltas()`.
-    /// For [`Prepared::Rotation`] the two implicit entries are numbered the way the engine's plan numbers them: the identity pass is `0`, the generator pass is `1`.
+    /// Index into `ptm.deltas()`; for a rotation, `0` is the identity pass and `1` the generator pass.
     pub entry: usize,
-    /// The partition every row of this delta belongs to, `rank ^ partition_delta`.
+    /// `rank ^ partition_delta`.
     pub partner: u32,
-    /// `h(d)` — the entry's bucket delta, carried so the export pass can name
-    /// the destination bucket without re-hashing.
+    /// `h(d)`.
     pub bucket_delta: u32,
     /// `part(d)`, nonzero by construction.
     pub partition_delta: u32,
 }
 
-/// How one prepared channel's deltas split under a partitioning, from the
-/// point of view of one partition (`rank`).
+/// How one prepared channel's deltas split under a partitioning, seen from one partition.
 #[derive(Clone, Debug)]
 pub(crate) struct PartitionPlan {
-    /// Per entry, `true` if the entry's partition delta is zero.
-    ///
-    /// Length is `ptm.deltas().len()` for [`Prepared::Local`] and 2 for [`Prepared::Rotation`] (identity pass, generator pass).
-    /// Indices line up with [`RemoteDelta::entry`], so the two together cover every entry exactly once.
+    /// Per entry (numbered as [`RemoteDelta::entry`]), whether its partition delta is zero.
     pub local_entries: Vec<bool>,
-    /// The local deltas' bucket deltas, ascending and deduplicated — the input to `Gf2Span::new` for the coset loop that runs inside this partition.
-    ///
-    /// Always contains `0`: the identity delta is local, and `0` is in every span regardless, so including it unconditionally cannot change the span it generates.
+    /// The local deltas' bucket deltas, ascending, deduplicated and always containing `0`.
     pub local_bucket_deltas: Vec<u32>,
-    /// The remote deltas, ascending by [`RemoteDelta::entry`].
+    /// Ascending by [`RemoteDelta::entry`].
     pub remote: Vec<RemoteDelta>,
-    /// Non-identity *realized* deltas, local and remote together.
-    ///
-    /// The gather's sort-kernel choice (`merge::RADIX_MIN_REST_STREAMS`) turns on how wide a channel's fanout is, which is a property of the channel, not of how this partition happens to see it — so the gate reads the total, not the local count.
+    /// Non-identity realized deltas, local and remote together, so the sort-kernel gate sees the channel's whole fanout.
     pub rest_streams_total: usize,
 }
 
 impl PartitionPlan {
     /// Classify `prep`'s deltas under `rows`, as seen from partition `rank`.
-    ///
-    /// With [`PartitionRows::none`] every delta is local and `local_bucket_deltas` is exactly `prep.bucket_deltas()`.
-    ///
-    /// # Panics
-    ///
-    /// Panics in debug builds if `rank` is not a partition of `rows`, or if the identity delta somehow classifies as remote (it cannot: `part(0) = 0`).
     pub(crate) fn new<const W: usize>(
         prep: &Prepared<W>,
         rows: &PartitionRows<W>,
@@ -75,7 +47,6 @@ impl PartitionPlan {
         );
 
         // `(mask_x, mask_z, bucket_delta)` per entry, in entry order.
-        // Built once so the classification below is one loop for both variants; this runs once per layer, so the small allocation is free.
         let entries: Vec<([u64; W], [u64; W], u32)> = match prep {
             Prepared::Local(ptm) => ptm
                 .deltas()
@@ -85,7 +56,6 @@ impl PartitionPlan {
                     (mx, mz, d.bucket_delta)
                 })
                 .collect(),
-            // The rotation's two implicit entries: the identity pass (mask 0) and the generator pass (mask `P`).
             Prepared::Rotation(r) => {
                 let (gx, gz) = r.gen_mask();
                 vec![
@@ -114,8 +84,7 @@ impl PartitionPlan {
             }
         }
 
-        // `deltas()` is the *realized* delta set (ARCHITECTURE.md §Bucketing), so its length minus the identity entry is the number of streams a gather concatenates into a run's rest columns — the quantity `engine::bucketed`'s own plan calls `rest_streams`.
-        // The rotation has exactly one non-identity pass at any generator weight.
+        // `engine::bucketed`'s `rest_streams`, over the whole realized delta set (ARCHITECTURE.md §Bucketing).
         let rest_streams_total = match prep {
             Prepared::Local(ptm) => {
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
@@ -142,7 +111,7 @@ impl PartitionPlan {
         }
     }
 
-    /// `true` if this layer moves anything across a partition boundary.
+    /// Whether this layer moves anything across a partition boundary.
     pub(crate) fn has_remote(&self) -> bool {
         !self.remote.is_empty()
     }
@@ -153,16 +122,11 @@ impl PartitionPlan {
     }
 }
 
-/// Per layer, `(local delta count, remote delta count)` under `rows`, for `circuit`'s channels prepared against `hash`.
-///
-/// Layers are reported in **application order**: circuit order for `adjoint == false`, reverse order for `adjoint == true`, matching [`Direction::Heisenberg`](crate::Direction::Heisenberg).
-///
-/// A diagnostic answering "how much of this circuit crosses a partition boundary?" without running a layer.
-/// The counts do not depend on `rank`, so it reports from partition 0.
+/// Per layer in application order, `(local, remote)` delta counts of `circuit`'s channels prepared against `hash` under `rows`.
 ///
 /// # Panics
 ///
-/// Panics if any channel declines [`Channel::prepare`](crate::Channel::prepare), the same condition on which `propagate` panics.
+/// If any channel declines [`Channel::prepare`](crate::Channel::prepare).
 #[cfg(any(test, feature = "test-utils"))]
 pub fn count_remote_deltas<const W: usize>(
     circuit: &Circuit<W>,

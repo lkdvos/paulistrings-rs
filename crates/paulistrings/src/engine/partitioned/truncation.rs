@@ -1,16 +1,4 @@
-//! [`PartitionedTruncation`] — truncation whose layer pass is collective.
-//!
-//! In partitioned mode each partition holds a *disjoint subset* of the terms
-//! (ARCHITECTURE.md §Partitioning), so a [`TruncationPolicy`] splits cleanly
-//! in two:
-//!
-//! - [`keep_term`](TruncationPolicy::keep_term) is per term and needs nothing: it runs inside the merge, on the complete summed coefficient of a key, and a key lives on exactly one partition.
-//! - [`finalize_layer`](TruncationPolicy::finalize_layer) may be *global*, and a partition cannot see the global layer.
-//!   [`ApproxTopN`] chooses an octave edge from the histogram of the whole layer — exactly the sum of the per-partition histograms — so one `allreduce` makes every partition choose the same edge, and the union of the retained sets is bit for bit the single-partition answer.
-//!
-//! Exact [`TopN`](crate::truncation::TopN) has no such reduction: the `n`-th
-//! largest magnitude is a distributed *k*-th selection, not a sum. It is
-//! rejected at compile time rather than approximated — see the trait docs.
+//! [`PartitionedTruncation`], truncation whose layer pass is collective, and its implementations for the builtin policies (ARCHITECTURE.md §Partitioning).
 
 use crate::pauli_sum::PauliSum;
 use crate::truncation::builtin::{
@@ -26,29 +14,10 @@ use super::transport::Collectives;
 
 /// A truncation policy usable in partitioned propagation: its layer finalization is collective.
 ///
-/// # The contract
+/// A policy whose `finalizes_layer()` is `true` must override [`finalize_layer_partitioned`](Self::finalize_layer_partitioned), which runs on every layer on every partition in lock-step.
+/// An implementation must not skip a collective call on a partition with nothing to do, and must decide only from all-reduced values, so every partition applies the same predicate to its own terms.
 ///
-/// A truncation policy that finalizes a layer (`finalizes_layer() == true`) must implement [`PartitionedTruncation`]; the trait's default panics otherwise, since finalizing a layer with no collective form would let partitions diverge silently.
-/// [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) is called on every layer, on every partition, in lock-step: a collective is only well-defined if every partition issues the same calls in the same order, so an implementation must not skip a call on a partition that happens to have nothing to do, and must derive its decision only from all-reduced values so every partition applies the identical predicate to its own terms.
-/// Under those two rules the retained set is exactly what a single partition holding the whole sum would have retained.
-///
-/// # Which policies implement it
-///
-/// [`CoefficientThreshold`] and [`WeightCutoff`] are per-term filters with no layer pass, so they take the default no-op body.
-/// [`ApproxTopN`] all-reduces its octave histogram every layer, regardless of what the partition rows do.
-/// [`CollapseSample`] all-reduces the global length every layer, and the per-partition norms on a layer that collapses.
-/// [`And`] runs both sides in order, like [`And::finalize_layer`](TruncationPolicy::finalize_layer); [`Or`] runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
-///
-/// ```
-/// use paulistrings::{And, ApproxTopN, CoefficientThreshold};
-/// use paulistrings::PartitionedTruncation;
-///
-/// fn propagate_partitioned<T: PartitionedTruncation<1>>(_policy: T) {}
-///
-/// propagate_partitioned(And(CoefficientThreshold(1e-12), ApproxTopN(1_000)));
-/// ```
-///
-/// # Why [`TopN`](crate::truncation::TopN) is rejected
+/// Exact [`TopN`](crate::TopN) is rejected at compile time, a distributed `n`-th selection having no collective form; use [`ApproxTopN`] when `n` is a memory budget.
 ///
 /// ```compile_fail
 /// use paulistrings::TopN;
@@ -56,18 +25,10 @@ use super::transport::Collectives;
 ///
 /// fn propagate_partitioned<T: PartitionedTruncation<1>>(_policy: T) {}
 ///
-/// // error[E0277]: the trait bound `TopN: PartitionedTruncation<1>` is not
-/// // satisfied — exact top-n has no collective form yet.
 /// propagate_partitioned(TopN(10));
 /// ```
-///
-/// `TopN` needs the exact `n`-th largest `|c|²` of the whole layer — a distributed *k*-th selection, not a reduction — so it is rejected at compile time rather than approximated, which would silently change what `TopN` means.
-/// Use [`ApproxTopN`] when `n` is a memory budget.
 pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
-    /// The collective layer pass: `local` is this partition's slice of the layer, `coll` its view of the group.
-    ///
-    /// Called on every layer on every partition, in lock-step, for a policy whose [`finalizes_layer`](TruncationPolicy::finalizes_layer) is `true` — the driver skips the call entirely on one that answers `false` (see the trait docs).
-    /// The default is no layer pass at all, which is correct exactly for the policies that have none, so it asserts that this is one of them rather than silently dropping a `finalize_layer` a caller was relying on.
+    /// The collective layer pass over this partition's slice of the layer; the default is no pass at all.
     ///
     /// # Panics
     ///
@@ -86,10 +47,8 @@ pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
     }
 }
 
-/// Per-term only — the default no-op layer pass is the whole story.
 impl<const W: usize> PartitionedTruncation<W> for CoefficientThreshold {}
 
-/// Per-term only — the default no-op layer pass is the whole story.
 impl<const W: usize> PartitionedTruncation<W> for WeightCutoff {}
 
 impl<const W: usize, A, B> PartitionedTruncation<W> for And<A, B>
@@ -97,7 +56,7 @@ where
     A: PartitionedTruncation<W>,
     B: PartitionedTruncation<W>,
 {
-    /// Both sides, first then second — the order [`And::finalize_layer`](TruncationPolicy::finalize_layer) uses, and the same order on every partition, so the collectives stay in lock-step.
+    /// Both sides, in [`And::finalize_layer`](TruncationPolicy::finalize_layer)'s order.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         self.0.finalize_layer_partitioned(local, coll);
         self.1.finalize_layer_partitioned(local, coll);
@@ -109,24 +68,16 @@ where
     A: PartitionedTruncation<W>,
     B: PartitionedTruncation<W>,
 {
-    /// Neither side — `Or`'s unpartitioned [`finalize_layer`](TruncationPolicy::finalize_layer) is the trait's no-op default rather than either child's, and the two paths have to agree.
-    ///
-    /// The children are still bounded by this trait: a composition is partitioned-safe only if its parts are, which keeps the bound meaningful if `Or` ever grows a layer pass.
+    /// Neither side, since `Or`'s unpartitioned [`finalize_layer`](TruncationPolicy::finalize_layer) is the no-op default and the two must agree.
     fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _coll: &dyn Collectives) {}
 }
 
 impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
-    /// One `allreduce_sum_u64` of `[len, hist…]`, then the single-partition edge walk and retain.
-    ///
-    /// Octave populations are additive across a disjoint partition of the terms, and so is the term count, so the reduced buffer is exactly the histogram and length the single-partition path would have computed.
-    /// `octave_edge` is a pure function of those two, so every partition reaches the same edge decision and retains its own terms against it, with no second round of communication.
-    ///
-    /// The length rides in slot 0 of the same buffer rather than in its own reduction.
-    /// Neither early exit of the single-partition path is taken here, because neither test can be answered before the reduction — a partition that returned early would desynchronize the group.
+    /// One `allreduce_sum_u64` of `[len, hist…]`, then the single-partition edge walk; no early exit, since that would desynchronize the group.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         let hist = octave_histogram(local);
 
-        // [len, bin 0, bin 1, …]. `u32` counters widen to `u64` for the reduction: `P` partitions of up to `u32::MAX` terms each can overflow a `u32` bin, and the transport's reduction is `u64`.
+        // `u64`, since `P` partitions' `u32` bins can overflow a `u32`.
         let mut packed = [0u64; 1 + APPROX_BINS];
         packed[0] = local.len() as u64;
         for (slot, &count) in packed[1..].iter_mut().zip(hist.iter()) {
@@ -141,8 +92,7 @@ impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
 }
 
 impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
-    /// Two reductions, then a pick every partition makes identically: `[len, pass]` as integers, where only rank 0 contributes the pass index, and the per-partition `Σ|c|²` as a vector in which each partition fills its own slot, so every partition holds the same exact weights.
-    /// The shared uniform picks a partition by weight and the offset left over picks within it, exactly as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
+    /// Reduces `[len, pass]` (the pass from rank 0) and the per-partition `Σ|c|²`, then picks a partition by weight and a term within it, as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         let rank = coll.rank() as usize;
         let call = if rank == 0 { self.next_call() } else { 0 };
@@ -179,11 +129,7 @@ impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
 }
 
 impl<const W: usize> PartitionedTruncation<W> for BuiltinTruncation {
-    /// Arm for arm the host [`finalize_layer`](TruncationPolicy::finalize_layer), through each builtin's own collective form.
-    ///
-    /// # Panics
-    ///
-    /// On a `TopN` that is reached, which has no collective form.
+    /// Arm for arm the host [`finalize_layer`](TruncationPolicy::finalize_layer); panics on a reached `TopN`.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
         match self {
             Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer_partitioned(local, coll),

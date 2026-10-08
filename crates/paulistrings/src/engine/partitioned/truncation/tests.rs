@@ -8,8 +8,6 @@ use num_complex::Complex64;
 const PSEED: u64 = 0x5EED_C0FFEE;
 
 /// Split `sum` into `1 << pbits` partitions, run the policy's collective layer pass on each in its own thread, and gather the result.
-///
-/// One `std::thread::scope` per call with one thread per partition, which is what the in-process transport's blocking collectives need: every rank has to be able to make progress independently.
 fn partitioned_finalize<const W: usize, T>(policy: &T, sum: &PauliSum<W>, pbits: u8) -> PauliSum<W>
 where
     T: PartitionedTruncation<W>,
@@ -51,7 +49,7 @@ where
     merged
 }
 
-/// The whole point: partitioned finalization is *exactly* the single-partition one, for every `P`.
+/// Partitioned finalization is exactly the single-partition one.
 fn assert_matches_single_partition<const W: usize, T>(
     policy: &T,
     input: &PauliSum<W>,
@@ -90,11 +88,11 @@ fn approx_top_n_partitioned_matches_single_partition_w1() {
     }
 }
 
-/// `W = 2`, and a tie-heavy fixture: magnitudes 1, ½, ¼, ⅛ put one magnitude group per octave, so several of these `n` cut *inside* a tie band — the case where the edge choice actually matters and a per-partition decision would differ from a global one.
+/// `W = 2` with magnitudes 1, ½, ¼, ⅛, one group per octave, so several `n` cut inside a tie band.
 #[test]
 fn approx_top_n_partitioned_matches_single_partition_w2_tie_heavy() {
     let input = tie_heavy_sum::<2>(2000, 100, 0x7135);
-    // The four magnitude groups are ~500 terms each, so the cumulative octave populations are ~500, ~1000, ~1500, ~2000: every one of these `n` lands strictly between two of them.
+    // Cumulative octave populations are ~500, ~1000, ~1500, ~2000; every `n` lands strictly between two of them.
     for pbits in [1u8, 2] {
         for n in [0usize, 3, 250, 700, 1200, 1900, 2500] {
             assert_matches_single_partition(
@@ -107,8 +105,7 @@ fn approx_top_n_partitioned_matches_single_partition_w2_tie_heavy() {
     }
 }
 
-/// A sum confined to one octave of `|c|²` is wiped to empty — the degenerate case documented on `ApproxTopN` — and it has to be wiped on *every* partition, from the global histogram, not decided locally.
-/// Magnitudes 1, 1⅛, 1¼, 1⅜ square into `[1, 2)`.
+/// A sum confined to one octave of `|c|²` (magnitudes 1, 1⅛, 1¼, 1⅜) is wiped to empty on every partition.
 #[test]
 fn approx_top_n_partitioned_wipes_a_single_octave_sum() {
     let mags = [1.0f64, 1.125, 1.25, 1.375];
@@ -131,8 +128,7 @@ fn approx_top_n_partitioned_wipes_a_single_octave_sum() {
     }
 }
 
-/// A four-way split of a five-term sum leaves partitions empty (or very nearly).
-/// They must still enter the collective — an early return on "nothing here" would hang or desynchronize the group — and the merged result must still be the single-partition one.
+/// A four-way split of a five-term sum leaves partitions (nearly) empty, which must still enter the collective.
 #[test]
 fn an_empty_partition_still_participates() {
     let mags = [1.0f64, 2.0, 4.0, 8.0, 16.0];
@@ -152,7 +148,7 @@ fn an_empty_partition_still_participates() {
     }
 }
 
-/// `And` forwards to both sides in order, so a threshold paired with `ApproxTopN` finalizes exactly as the same `And` does unpartitioned.
+/// `And` forwards to both sides in order, as it does unpartitioned.
 #[test]
 fn and_composes_with_a_collective_finalization() {
     let input = rand_sum_real::<1>(1500, 32, 0xC0DE);
@@ -180,7 +176,7 @@ fn a_per_term_policy_finalizes_to_a_no_op() {
     }
 }
 
-/// `Or` does not forward `finalize_layer` to either side, and its partitioned pass must not either — otherwise `Or(_, ApproxTopN)` would truncate under partitioning and not without it.
+/// `Or` forwards its partitioned pass to neither side, as it does unpartitioned.
 #[test]
 fn or_forwards_no_layer_pass_either_way() {
     let input = rand_sum_real::<1>(600, 32, 0xB0B0);
@@ -219,7 +215,7 @@ fn collapse_sample_partitioned_is_a_no_op_up_to_the_global_cache() {
     }
 }
 
-/// Above the cache exactly one string survives across the group, counted once for the shared policy, and the picks over 3000 seeds match `|c|² / Σ|c|²`.
+/// Above the cache exactly one string survives across the group, counted once, and the picks over 3000 seeds match `|c|² / Σ|c|²`.
 #[test]
 fn collapse_sample_partitioned_draws_one_string_by_weight() {
     use crate::test_support::{
@@ -248,7 +244,7 @@ fn collapse_sample_partitioned_draws_one_string_by_weight() {
     }
 }
 
-/// The default body is a no-op *and* a tripwire: a policy with a real `finalize_layer` that forgets to write a collective one is caught at the first layer rather than silently losing its truncation.
+/// The default body panics for a policy with a real `finalize_layer` and no collective one.
 #[test]
 #[should_panic(expected = "ApproxTopN")]
 fn the_default_body_rejects_a_policy_that_finalizes_layers() {

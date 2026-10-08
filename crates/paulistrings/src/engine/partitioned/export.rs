@@ -1,9 +1,4 @@
-//! The export pass: rows a layer generates that belong to another partition, gathered into one [`ExchangeBlock`] per remote delta.
-//!
-//! A remote delta (see [`PartitionPlan`]) moves every row it produces to one partner, so export is a pure per-delta gather with no per-term routing decision.
-//! Each block is CSR in the receiver's destination-coset order ([`ChunkMap`](super::transport::ChunkMap)), which is what makes a receiving coset's rows contiguous so the transfer can be cut into chunks.
-//! Two parallel passes over the local buckets: count rows per (remote delta, source bucket), then fill each block position by position.
-//! The row arithmetic itself is not reimplemented here: see [`DeltaEntry::emit`](crate::channel::prepared::DeltaEntry::emit) and [`RotationPrep::emit_gen`](crate::channel::prepared::RotationPrep::emit_gen).
+//! The export pass: a layer's rows that belong to another partition, gathered into one [`ExchangeBlock`] per remote delta (ARCHITECTURE.md §Partitioning).
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -17,32 +12,21 @@ use crate::pauli_sum::storage::PauliSum;
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
 /// Rows below which a block's fill stays on one thread.
-///
-/// The fill splits a block's position range in two and hands the halves to `rayon::join`; this threshold is purely about not paying task overhead for a handful of rows.
 const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 
-/// Reusable scratch for [`export_layer`], held by the caller across layers so a layer allocates nothing after the first.
-///
-/// [`Self::counts`] is the pass-1 count table in bucket-major order (`counts[β * K + k]` is remote delta `k`'s row count from source bucket `β`), the layout that lets pass 1 run as one disjoint `par_chunks_mut(K)` over buckets.
-/// [`Self::block_counts`] is that layout transposed into a per-block column for [`ExchangeBlock::set_counts`].
+/// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
 #[derive(Debug)]
 pub(crate) struct ExportScratch<const W: usize> {
     /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
     counts: Vec<u32>,
-    /// One block's counts by destination position, gathered out of
-    /// [`Self::counts`].
+    /// One block's counts by destination position.
     block_counts: Vec<u32>,
-    /// One block's source bucket per destination position:
-    /// `src_of[p] = map.bucket_at(p) ^ bd`. Built once per block and read by
-    /// both the count transpose and the fill.
+    /// `src_of[p] = map.bucket_at(p) ^ bd`.
     src_of: Vec<u32>,
-    /// Payloads not currently in flight, with their block columns intact.
-    ///
-    /// The layer's own pool ([`Transport::exchange_layer`](super::transport::Transport::exchange_layer)): both outgoing and incoming payloads are drawn from here and returned when the layer is done with them, so a steady-state remote layer allocates nothing at all.
+    /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
 }
 
-// Hand-written because `#[derive(Default)]` would demand `W: Default`.
 impl<const W: usize> Default for ExportScratch<W> {
     fn default() -> Self {
         Self {
@@ -54,36 +38,26 @@ impl<const W: usize> Default for ExportScratch<W> {
     }
 }
 
-/// What one layer's export costs, by partner rank (length is the group size).
-///
-/// Rows and bytes are what this partition *sent*; a partner it sent nothing to has zeros.
-/// The bytes are the wire footprint ([`ExchangeBlock::bytes`]) of the blocks as they stand, so an in-process transport reports the same number an MPI one would move.
+/// What one layer's export sent, indexed by partner rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExportCounts {
-    /// Rows sent to each partner.
     pub rows_to: Vec<u64>,
-    /// Wire bytes sent to each partner.
+    /// Wire bytes ([`ExchangeBlock::bytes`]), the same under every transport.
     pub bytes_to: Vec<u64>,
 }
 
 /// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
-///
-/// Exists so the two prepared forms share the count and fill loops.
 enum RowEmitter<'p, const W: usize> {
-    /// A tabulated delta of a [`Prepared::Local`] layer.
     Tabulated {
         ptm: &'p LocalPtm<W>,
         entry: &'p DeltaEntry<W>,
     },
-    /// The generator pass of a [`Prepared::Rotation`] layer; the identity pass is never remote.
+    /// The identity pass of a rotation is never remote.
     Generator { prep: &'p RotationPrep<W> },
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
-    /// Whether every term emits a row, so a bucket's count is its length.
-    ///
-    /// Dense over the *active* support patterns only: `amp` is sized `LOCAL_DIM` but the channel populates `4^k` entries.
-    /// A rotation's generator pass is never dense, since a commuting term emits nothing.
+    /// Whether every term emits a row; `amp` is sized `LOCAL_DIM` but only `4^k` entries are populated.
     fn is_dense(&self) -> bool {
         match self {
             RowEmitter::Tabulated { ptm, entry } => {
@@ -94,7 +68,6 @@ impl<const W: usize> RowEmitter<'_, W> {
         }
     }
 
-    /// The row this delta emits for one term, or `None` when it emits none.
     #[inline]
     fn emit(
         &self,
@@ -109,10 +82,9 @@ impl<const W: usize> RowEmitter<'_, W> {
     }
 }
 
-/// Build this partition's outgoing payloads for one layer.
+/// This partition's outgoing payloads for one layer, one slot per partner rank.
 ///
-/// Returns one slot per partner rank: `Some(payload)` for every partner the plan names, `None` for the rest (including this partition's own slot).
-/// A partner's [`PartnerPayload::blocks`] is one block per remote delta destined for it, in ascending remote-delta index, *including blocks with no rows*: the receiver indexes blocks positionally.
+/// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
 pub(crate) fn export_layer<const W: usize>(
     local: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -151,7 +123,7 @@ pub(crate) fn export_layer<const W: usize>(
         .collect();
     let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
 
-    // Pass 1. Bucket-major counts, so each bucket owns one contiguous chunk and the pass needs no synchronization.
+    // Pass 1: bucket-major counts, `counts[β * k + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
     scratch.counts.resize(nb * k, 0);
     scratch
@@ -160,7 +132,7 @@ pub(crate) fn export_layer<const W: usize>(
         .enumerate()
         .for_each(|(b, slot)| count_bucket(local, prep, plan, &dense, b, slot));
 
-    // Pass 2, one block per remote delta, written into payloads taken from the pool: the fill writes by index into storage that is neither allocated nor zeroed here.
+    // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
         map.positions(),
         nb,
@@ -172,7 +144,6 @@ pub(crate) fn export_layer<const W: usize>(
     scratch.src_of.resize(nb, 0);
     let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
-        // Destination-coset order: position `p` of the receiver is filled from this partition's bucket `bucket_at(p) ^ bd`.
         for p in 0..nb {
             let src = map.bucket_at(p as u32) ^ r.bucket_delta;
             scratch.src_of[p] = src;
@@ -208,7 +179,7 @@ pub(crate) fn export_layer<const W: usize>(
         counts.rows_to[q] += rows as u64;
         counts.bytes_to[q] += block.bytes() as u64;
     }
-    // A payload out of the pool may have carried more blocks than this layer has remote deltas for it; the extras must not travel.
+    // A pooled payload may carry more blocks than this layer fills; the extras must not travel.
     for (q, payload) in send.iter_mut().enumerate() {
         if let Some(payload) = payload {
             payload.blocks.truncate(blocks_used[q]);
@@ -219,8 +190,6 @@ pub(crate) fn export_layer<const W: usize>(
 }
 
 /// Count one source bucket's exported rows, one slot per remote delta.
-///
-/// The support pattern is computed once per term and reused across every sparse entry; dense entries are filled from the bucket length without touching a term at all.
 fn count_bucket<const W: usize>(
     local: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -268,10 +237,7 @@ fn count_bucket<const W: usize>(
     }
 }
 
-/// Fill destination positions `lo..hi` of one block.
-///
-/// `src_of[p]` is the source bucket position `p` draws from.
-/// Splitting the range at `mid` splits the columns at `offsets[mid] - offsets[lo]`, and the two halves are disjoint by construction, so a block's contents are independent of the thread count.
+/// Fill destination positions `lo..hi` of one block; the halves of a split are disjoint, so the contents are independent of the thread count.
 fn fill_range<const W: usize>(
     local: &PauliSum<W>,
     emitter: &RowEmitter<'_, W>,
@@ -313,8 +279,6 @@ fn fill_range<const W: usize>(
 }
 
 /// One block's three columns, restricted to a source-bucket range.
-///
-/// A bundle, not an abstraction: keeps [`fill_range`]'s recursive signature inside clippy's argument budget.
 struct BlockCols<'a, const W: usize> {
     x: &'a mut [[u64; W]],
     z: &'a mut [[u64; W]],
@@ -322,12 +286,10 @@ struct BlockCols<'a, const W: usize> {
 }
 
 impl<'a, const W: usize> BlockCols<'a, W> {
-    /// Rows in the range.
     fn len(&self) -> usize {
         self.c.len()
     }
 
-    /// Split every column at the same row, consuming the borrow.
     fn split_at(self, at: usize) -> (BlockCols<'a, W>, BlockCols<'a, W>) {
         let (x0, x1) = self.x.split_at_mut(at);
         let (z0, z1) = self.z.split_at_mut(at);
@@ -348,9 +310,6 @@ impl<'a, const W: usize> BlockCols<'a, W> {
 }
 
 /// Every exported row belongs to the partner it is addressed to.
-///
-/// Debug builds only, `O(exported rows)`.
-/// A failure means either the plan misclassified a delta or the caller's `local` sum was not the pure partition it claims to be.
 #[cfg(debug_assertions)]
 pub(super) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],

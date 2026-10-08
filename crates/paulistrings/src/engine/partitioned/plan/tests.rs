@@ -12,7 +12,7 @@ fn hash() -> Gf2Hash<2> {
     Gf2Hash::<2>::new(NQ, 8, 0xB00C)
 }
 
-/// One partition row that is `Z` on `qubit` and nothing else: `part(v)` is then the z-bit of `v` on that qubit (the row's z-mask is what meets the key's z-word in `partition_of`).
+/// One partition row that is `Z` on `qubit`: `part(v)` is the z-bit of `v` there.
 fn z_row(qubit: u32) -> PartitionRows<2> {
     let mut rz = [0u64; 2];
     rz[qubit as usize / 64] = 1u64 << (qubit % 64);
@@ -22,8 +22,6 @@ fn z_row(qubit: u32) -> PartitionRows<2> {
 fn prep_of<C: Channel<2>>(ch: &C) -> Prepared<2> {
     ch.prepare(&hash(), false).unwrap()
 }
-
-// ---- the trivial partitioning keeps everything local ----
 
 #[test]
 fn without_partition_rows_nothing_is_remote() {
@@ -68,8 +66,6 @@ fn a_wide_rotation_without_partition_rows_is_all_local() {
     assert_eq!(plan.local_bucket_deltas, prep.bucket_deltas());
     assert_eq!(plan.rest_streams_total, 1);
 }
-
-// ---- a crafted row makes one delta remote ----
 
 #[test]
 fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
@@ -120,7 +116,7 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
     for q in [5u32, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
-    // A Z row on qubit 1 reads the generator's z-bit there, which is set — the generator is a product of `Z`s, so an x-row would read nothing.
+    // A Z row on qubit 1 reads the generator's z-bit there, which is set.
     let rows = z_row(1);
     let prep = prep_of(&PauliRotation::new(gen, 0.41));
     let Prepared::Rotation(r) = &prep else {
@@ -141,8 +137,6 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
     );
     assert_eq!(plan.rest_streams_total, 1);
 }
-
-// ---- the two classes partition the entry set ----
 
 #[test]
 fn local_and_remote_cover_every_entry_exactly_once() {
@@ -195,7 +189,7 @@ fn local_and_remote_cover_every_entry_exactly_once() {
             plan.remote.len(),
             "trial {trial}",
         );
-        // The local span input is exactly the local entries' bucket deltas (plus 0, which the identity always contributes anyway).
+        // The local span input is exactly the local entries' bucket deltas, plus 0.
         let mut want: Vec<u32> = vec![0];
         for (e, keep) in plan.local_entries.iter().enumerate() {
             if *keep {
@@ -208,8 +202,6 @@ fn local_and_remote_cover_every_entry_exactly_once() {
         assert_eq!(plan.rest_streams_total, 15, "trial {trial}");
     }
 }
-
-// ---- the diagnostic ----
 
 #[test]
 fn count_remote_deltas_reports_layers_in_application_order() {
@@ -249,8 +241,6 @@ fn count_remote_deltas_without_rows_is_all_local() {
 
 impl PartitionPlan {
     /// The partitions this layer exports to, distinct and ascending.
-    ///
-    /// The engine routes by [`Self::remote`] directly; this is the tests' way of asking the same question as a set.
     fn partners(&self) -> impl Iterator<Item = u32> + '_ {
         let mut v: Vec<u32> = self.remote.iter().map(|r| r.partner).collect();
         v.sort_unstable();

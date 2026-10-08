@@ -22,7 +22,7 @@ fn partition_bits_is_log2_of_the_count() {
     }
 }
 
-/// The pool-width override replaces the resolved worker count on every slot and leaves the CPU sets alone — the probe's "total threads split over P partitions" knob.
+/// The pool-width override replaces the resolved worker count on every slot and leaves the CPU sets alone.
 #[test]
 fn with_threads_per_partition_overrides_the_resolved_width() {
     let cpus = allowed_cpus();
@@ -68,11 +68,7 @@ fn map_partitions_runs_collectives_between_partitions() {
     assert_eq!(got, vec![7, 7, 7, 7]);
 }
 
-/// A partition that panics while its partners are inside a collective must surface as a panic, not a deadlock.
-/// (The test itself would hang on failure; that is the assertion.)
-///
-/// *Which* panic surfaces is a race, so the assertion is bare `should_panic` with no expected text: a partner can notice the dead partition first and report that instead, or die itself before another partner reads its channel.
-/// Every one of those outcomes is the behaviour under test: the group terminates instead of blocking forever.
+/// A partition that panics while its partners are inside a collective surfaces as a panic (which one is a race), not a hang.
 #[test]
 #[should_panic]
 fn a_panicking_partition_does_not_hang_the_group() {
@@ -81,7 +77,6 @@ fn a_panicking_partition_does_not_hang_the_group() {
         if rank == 2 {
             panic!("rank 2 fell over");
         }
-        // The partners keep collecting, so they are blocked on the dead partition until its endpoint drops.
         for _ in 0..4 {
             transport.allreduce_max_u8(rank as u8);
         }

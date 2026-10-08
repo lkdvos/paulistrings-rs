@@ -1,47 +1,37 @@
-//! [`PartitionTrace`]: the opt-in per-layer record of what a partitioned run did — term counts per partition, bucket bits, and the exchange volume.
-//!
-//! Always compiled, and off unless [`PartitionedSum::enable_trace`](super::PartitionedSum::enable_trace) is called, the same shape as [`TermTrace`](crate::TermTrace) for the same reason: everything recorded is already computed by the layer, so an untraced layer pays only one register test.
-//! Per-partition rows are transposed into per-layer records after the join, so a record shows one layer *across* the group: which partition held how many terms (hence [`PartitionTrace::imbalance`]), and who sent how much to whom.
+//! [`PartitionTrace`], the opt-in per-layer record of a partitioned run, and the per-partition rows it is transposed from.
 
 use super::layer::LayerExchangeCounts;
 
-/// What one layer did, seen across the whole group.
-///
-/// The per-partition vectors are indexed by rank and are all `P` long.
+/// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionLayerRecord {
-    /// Bucket bits every partition held for this layer — one number, because the count is agreed collectively before the layer runs.
+    /// Bucket bits every partition held for this layer.
     pub bits: u8,
-    /// Remote deltas the layer had. Also one number: a delta is remote by its mask alone, so every partition reaches the same verdict.
-    /// Zero means the layer was purely local and made no transport call.
+    /// Remote deltas the layer had; zero means it made no transport call.
     pub remote_deltas: u32,
-    /// Collective calls the layer issued, not counting the exchange itself (`remote_deltas` reports that): the bucket-count all-reduce, when the schedule called for one, plus whatever the policy's collective finalization ran.
-    /// One number like the two above — the schedule is a function of the layer index and the plan, both rank-independent, so every partition issues the same calls.
+    /// Collective calls the layer issued besides the exchange: the scheduled bucket-count all-reduce plus the policy's collective finalization.
     pub collectives: u32,
-    /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction. One number: every partition runs the same channel in lock-step.
+    /// This layer's position in the [`Circuit`](crate::Circuit), independent of direction.
     pub circuit_index: u32,
-    /// This layer's position in the propagation loop (`k`). One number, for the same reason as `circuit_index`.
+    /// This layer's position in the propagation loop.
     pub application_index: u32,
-    /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel. One value, for the same reason as `circuit_index`.
+    /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel.
     pub gate_name: &'static str,
     /// Terms each partition held before the layer.
     pub terms_in: Vec<usize>,
-    /// Terms each partition held after the layer, i.e. after `keep_term` and the collective finalization.
+    /// Terms each partition held after the layer and its finalization.
     pub terms_out: Vec<usize>,
-    /// Rows sent, `rows_sent[from][to]`. The diagonal is always zero — a partition never sends to itself.
+    /// Rows sent, `rows_sent[from][to]`.
     pub rows_sent: Vec<Vec<u64>>,
     /// Wire bytes sent, `bytes_sent[from][to]`, for the same rows.
     pub bytes_sent: Vec<Vec<u64>>,
     /// Rows each partition received, summed over its partners.
     pub rows_received: Vec<u64>,
-    /// Each partition's own elapsed wall time for the complete gate, indexed by rank.
-    /// Ranks are not synchronized mid-layer, so `max` is a critical-rank proxy rather than a globally elapsed time, and the spread between `min`/`median`/`max` is the group's timing skew.
+    /// Each partition's own wall time for the layer; ranks are not synchronized mid-layer, so `max` is only a critical-rank proxy.
     pub nanos: Vec<u64>,
 }
 
-/// One partitioned propagation's per-layer records, in application order (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)).
-///
-/// Counts accumulate across [`propagate`](super::PartitionedSum::propagate) calls until drained by [`take_trace`](super::PartitionedSum::take_trace).
+/// Per-layer records of partitioned propagations in application order, accumulated until drained by [`take_trace`](crate::PartitionedSum::take_trace).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionTrace {
     /// One record per layer applied.
@@ -50,8 +40,6 @@ pub struct PartitionTrace {
 
 impl PartitionTrace {
     /// Rows moved across partitions over the whole trace.
-    ///
-    /// The traffic figure to divide by the layer count or the term count: each exchanged row is one key plus one coefficient written by the sender and read by the receiver's merge.
     pub fn total_rows_exchanged(&self) -> u64 {
         self.layers
             .iter()
@@ -60,9 +48,7 @@ impl PartitionTrace {
             .sum()
     }
 
-    /// Per layer, the load imbalance of the *input* term counts: the maximum over partitions divided by their mean.
-    ///
-    /// `1.0` is perfect balance and also the answer for a layer where every partition was empty; `P` is the worst case (one partition holds everything).
+    /// Per layer, the maximum input term count over partitions divided by the mean; `1.0` for a layer where every partition was empty.
     pub fn imbalance(&self) -> Vec<f64> {
         self.layers
             .iter()
@@ -78,7 +64,7 @@ impl PartitionTrace {
             .collect()
     }
 
-    /// Layers that exchanged nothing — every delta stayed inside its partition, so the layer made no transport call at all.
+    /// Layers that made no transport call.
     pub fn local_layers(&self) -> usize {
         self.layers
             .iter()
@@ -86,9 +72,7 @@ impl PartitionTrace {
             .count()
     }
 
-    /// Layers with at least one remote delta, i.e. layers that exchanged.
-    ///
-    /// `local_layers() + remote_layers()` is the number of layers traced.
+    /// Layers that exchanged.
     pub fn remote_layers(&self) -> usize {
         self.layers
             .iter()
@@ -96,9 +80,7 @@ impl PartitionTrace {
             .count()
     }
 
-    /// Collective calls over the whole trace — the figure the per-layer collective schedule exists to hold down (ARCHITECTURE.md §Partitioning).
-    ///
-    /// Excludes the exchanges themselves, which are point-to-point; [`remote_layers`](Self::remote_layers) counts those.
+    /// Collective calls over the whole trace, excluding the point-to-point exchanges.
     pub fn total_collectives(&self) -> u64 {
         self.layers
             .iter()
@@ -107,34 +89,24 @@ impl PartitionTrace {
     }
 }
 
-/// One layer as a single partition saw it, before the transpose.
-///
-/// Recorded on the partition's own driving thread into its own `Vec`, so nothing is shared and nothing is synchronized; the group's view is assembled by [`assemble`] after the join.
+/// One layer as a single partition saw it, before [`assemble`] transposes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PartitionLayerRow {
     pub bits: u8,
     pub remote_deltas: u32,
-    /// Collectives this partition issued for the layer; see
-    /// [`PartitionLayerRecord::collectives`].
     pub collectives: u32,
     pub circuit_index: u32,
     pub application_index: u32,
     pub gate_name: &'static str,
     pub terms_in: usize,
     pub terms_out: usize,
-    /// Rows sent to each partner rank (`P` long, own slot zero).
     pub rows_sent: Vec<u64>,
-    /// Wire bytes sent to each partner rank.
     pub bytes_sent: Vec<u64>,
     pub rows_received: u64,
-    /// This partition's own elapsed wall time for the complete gate.
     pub nanos: u64,
 }
 
-/// Append one layer's record to this partition's rows.
-///
-/// `#[cold]` + `#[inline(never)]` for the same reason as `engine::record_layer_terms`: the layer loop inlines the bucketed layer and, through it, the merge kernels, whose throughput moves by 6-34% under a few bytes of code motion (CLAUDE.md §Performance discipline).
-/// The counts arrive by value, so the two `Vec`s the exchange already allocated are moved rather than copied.
+/// Append one layer's record; cold and out of line to keep it from perturbing the inlined merge kernels' layout.
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -166,11 +138,7 @@ pub(crate) fn record_layer_row(
     });
 }
 
-/// Transposes the partitions' rows into per-layer records and appends them to `trace`.
-///
-/// # Panics
-///
-/// If the partitions recorded different numbers of layers, or disagree about a layer's bucket bits or remote-delta count — both are collective decisions, so a disagreement is a driver bug rather than a data-dependent outcome.
+/// Transposes the partitions' rows into per-layer records appended to `trace`, panicking if the partitions disagree on a collective decision.
 pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<PartitionLayerRow>>) {
     let size = per_partition.len();
     let layers = per_partition[0].len();

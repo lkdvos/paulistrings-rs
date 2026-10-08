@@ -29,10 +29,7 @@ impl super::ChunkWait for WaitSpy {
     }
 }
 
-/// `count` and `append_into` read the block at the *destination position*, and each waits for exactly the chunk that position falls in.
-///
-/// This is the whole receive-side contract of the pipelined exchange: get the position wrong and rows land in the wrong bucket; get the chunk wrong and a task reads a column MPI is still writing.
-/// The oracle is hand-built, one row per position carrying that position's index, so a misread shows up as a wrong number rather than a wrong sum.
+/// `count` and `append_into` read the block at the destination position, and each waits for exactly the chunk that position falls in.
 #[test]
 fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
     const BITS: u8 = 5;
@@ -93,10 +90,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
     }
 }
 
-/// Run one layer on every partition of `rows`, each on its own thread with its own transport, and give back the parts in rank order with their exchange counts.
-///
-/// `threads`, when given, runs each partition inside a Rayon pool of that size, the knob the byte-identity test turns.
-/// Every part is checked on the way out: the bucketed invariants hold, and it holds keys of its own partition only.
+/// Run one layer on every partition of `rows` on its own thread (inside a `threads`-wide pool if given), returning the checked parts and counts in rank order.
 fn run_parts<const W: usize, T>(
     whole: &PauliSum<W>,
     prep: &Prepared<W>,
@@ -179,14 +173,12 @@ fn wide_gen() -> PauliString<1> {
     g
 }
 
-/// A partitioning that sees exactly the `x` bit of qubit 2, which [`wide_gen`] carries: `part(gen) = 1`, so the generator pass is remote at every rank.
+/// A partitioning that sees exactly the `x` bit of qubit 2, so [`wide_gen`]'s generator pass is remote.
 fn rows_seeing_qubit_2_x() -> PartitionRows<1> {
     PartitionRows::<1>::from_rows(8, vec![[1u64 << 2]], vec![[0u64]])
 }
 
-/// The whole differential net, split every way: merged output against the naive oracle *and* against the unpartitioned engine on the same hash.
-///
-/// This is the primary correctness net for the partitioned layer: both prepared arms, both directions, four bucket counts, one/two/four partitions, and two independent partition-row draws so a delta that crosses in one draw stays local in another.
+/// Merged output against the naive oracle and the unpartitioned engine, over both prepared arms, both directions, several bucket counts, `P` and row draws.
 #[test]
 fn partitioned_layer_matches_naive_oracle_w1() {
     let input = rand_sum::<1>(600, 8, 0x9D0);
@@ -248,14 +240,11 @@ fn partitioned_layer_matches_naive_oracle_w2() {
     }
 }
 
-/// A layer whose every delta stays inside its partition issues **no** transport call, not an empty one.
-///
-/// That is what lets a partitioned run skip the collective entirely on layers that do not cross: the verdict comes from the plan, which every partition computes identically.
+/// A layer whose every delta stays inside its partition issues no transport call, not an empty one.
 #[test]
 fn no_remote_deltas_means_no_exchange() {
     let input = rand_sum::<1>(300, 8, 0x9D2);
-    // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition
-    // row reading qubit 0 alone cannot see it.
+    // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition row reading qubit 0 alone cannot see it.
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
     let h = Clifford1Q::h(3);
     let hash = Gf2Hash::<1>::new(8, 4, 0x9D);
@@ -343,11 +332,7 @@ fn all_remote_rotation_generator() {
     assert_terms_close(&got, &want, TOL, "all-remote generator");
 }
 
-/// A key whose contributions live on two partitions, and the amplitudes that bring each of them to it.
-///
-/// `w` anticommutes with the generator, so it contributes to itself through the identity pass with amplitude `alpha = cos θ`, and its generator image `u = w · gen` contributes through the generator pass with amplitude `beta = i^k sin θ`.
-/// `part(u)` differs from `part(w)`, so the two contributions *must* meet across the exchange or not at all.
-/// Both amplitudes are measured off the oracle rather than assumed, so the caller can pick coefficients whose sum at `w` is exactly `beta·alpha − alpha·beta`.
+/// A key `w` and its generator image `u` on two partitions, with the oracle's amplitudes `alpha` (`w → w`) and `beta` (`u → w`).
 fn cancelling_pair(
     rot: &PauliRotation<1>,
     rows: &PartitionRows<1>,
@@ -376,9 +361,7 @@ fn cancelling_pair(
     (w, u, alpha, beta)
 }
 
-/// The layer's two-term fixture: `w` with coefficient `beta` and `u` with
-/// coefficient `-alpha · scale`, so `w`'s output is `beta·alpha` plus
-/// `-scale · alpha·beta`.
+/// `w` with coefficient `beta` and `u` with `-alpha · scale`, so `w`'s output is `beta·alpha − scale · alpha·beta`.
 fn cancelling_input(
     w: PauliString<1>,
     u: PauliString<1>,
@@ -392,9 +375,7 @@ fn cancelling_input(
     acc.finalize()
 }
 
-/// `keep_term` sees the sum across the partition boundary: two contributions that each clear the threshold by five orders of magnitude cancel to below it, and the term is dropped, exactly as the oracle (which sums before it filters) drops it.
-///
-/// Were the received rows merged *after* the policy ran, the term would survive with the wrong coefficient.
+/// `keep_term` sees the sum across the partition boundary: two contributions far above the threshold cancel below it, and the term is dropped.
 #[test]
 fn keep_term_sees_the_sum_across_partitions() {
     let rot = PauliRotation::new(wide_gen(), 0.41);
@@ -430,9 +411,7 @@ fn keep_term_sees_the_sum_across_partitions() {
     }
 }
 
-/// Contributions from two partitions that cancel **exactly** leave no term: the merge drops exact zeros, and it can only see the zero because the received row was summed with the local one first.
-///
-/// The cancellation is exact by construction: `beta·alpha` and `(−alpha)·beta` round to the same magnitude with opposite signs in every component.
+/// Contributions from two partitions that cancel exactly leave no term.
 #[test]
 fn exact_zero_sum_across_partitions_is_dropped() {
     let rot = PauliRotation::new(wide_gen(), 0.41);
@@ -460,8 +439,7 @@ fn exact_zero_sum_across_partitions_is_dropped() {
     }
 }
 
-/// Partitions with nothing in them still take part: they export empty
-/// blocks, receive real ones, and produce their share of the output.
+/// Partitions with no input still export empty blocks, receive real ones, and produce their share of the output.
 #[test]
 fn empty_partition_participates() {
     let channels = differential_channels_w1();
@@ -486,7 +464,6 @@ fn empty_partition_participates() {
     let prep = su4.prepare(whole.hash(), false).expect("prepare");
     assert!(PartitionPlan::new(&prep, &rows, 0).has_remote());
 
-    // The fixture property is an empty *input* share, which two terms over four partitions guarantee by pigeonhole, whatever the row draw.
     assert!(
         (0..rows.num_partitions() as u32).any(|r| whole.filter_partition(&rows, r).is_empty()),
         "the fixture must leave a partition's input empty",
@@ -498,9 +475,7 @@ fn empty_partition_participates() {
     assert_terms_close(&got, &want, TOL, "empty partition");
 }
 
-/// Each partition's output is byte-identical across Rayon pool sizes.
-///
-/// The determinism argument of ARCHITECTURE.md §Determinism survives partitioning: cosets stay write-disjoint, and received rows are appended to a run in a fixed order that no thread count can perturb.
+/// Each partition's output is byte-identical across Rayon pool sizes (ARCHITECTURE.md §Determinism).
 #[test]
 fn partitioned_output_is_byte_identical_across_pool_sizes() {
     let input = rand_sum::<1>(1500, 8, 0x9D6);
@@ -510,9 +485,7 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
         .iter()
         .find(|(n, _)| *n == "haar_su4")
         .expect("the dense SU(4) cell");
-    // The dense PTM crosses under a random draw; the wide rotation needs
-    // the row that sees its generator, or its one non-identity delta
-    // stays local and there is nothing to exchange.
+    // The wide rotation needs the row that sees its generator, or nothing crosses.
     let cases: [(&str, &dyn Channel<1>, PartitionRows<1>); 2] = [
         (
             "su4",
@@ -542,11 +515,7 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
     }
 }
 
-/// Apply one prepared channel to this partition's share of a sum.
-///
-/// `local` must hold exactly the terms with `rows.partition_of(v) == transport.rank()`, under a hash and bucket count every partition agrees on; it comes back holding this partition's share of the layer's output, merged, deduplicated and filtered through `policy`'s `keep_term`.
-/// Neither rebuckets nor calls `finalize_layer`: both are collective decisions the driver makes with the counts this returns.
-/// Classifies `prep`'s deltas itself; the driver needs that classification before it decides whether the layer takes a collective, so it holds the plan and calls [`apply_layer_partitioned_with_plan`] instead.
+/// [`apply_layer_partitioned_with_plan`], classifying `prep`'s deltas itself.
 pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prep: &Prepared<W>,

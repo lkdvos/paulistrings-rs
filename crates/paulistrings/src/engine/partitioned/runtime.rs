@@ -1,12 +1,5 @@
-//! [`PartitionRuntime`]: the placement resolved once, the pinned pools built
-//! once, and the scoped fan-out every partitioned call runs inside.
-//!
-//! A partitioned run has two kinds of thread.
-//! Each partition has one **driving** thread that walks the layers, issues the collectives and calls into the engine; partition 0's driving thread is the *calling* thread, and partitions `1..P` get a scoped thread each.
-//! Inside a partition, the layer itself runs on that partition's own pinned Rayon pool — the driving thread enters it with `ThreadPool::install`, so every allocation a layer makes is first-touched by a worker in the partition's own NUMA domain (ARCHITECTURE.md §Parallelism for why the layer needs no synchronization of its own).
-//! That `install` is also why the MPI transport requires `MPI_THREAD_SERIALIZED` rather than `FUNNELED`: a distributed rank's collectives are issued from a pool worker, not from the process's main thread.
-//!
-//! There is no synchronization between partitions other than the transport: every partition issues the identical sequence of transport calls per layer (see [`transport`](super::transport)'s collective-order invariant), so the group stays in step without a barrier.
+//! [`PartitionRuntime`]: the resolved placement, one pinned pool per partition, and the scoped fan-out every in-process partitioned call runs inside (ARCHITECTURE.md §Partitioning).
+//! A layer runs inside `ThreadPool::install`, so transport calls come from a pool worker, which is why the MPI transport needs `MPI_THREAD_SERIALIZED`.
 
 use std::sync::Arc;
 
@@ -16,44 +9,22 @@ use super::topology::{
 };
 use super::transport::InProcessTransport;
 
-/// `log` target for placement diagnostics, matching
-/// [`topology`](super::topology).
 const LOG_TARGET: &str = "paulistrings::partitioned";
 
-/// The resolved placement and its pools, shared by every [`PartitionedSum`](super::PartitionedSum) that runs on it.
-///
-/// Built once — pools are not cheap — and held behind an [`Arc`], so a driver stepping an observable through many circuits, or several sums propagated in turn, pays for the pinned pools once.
-/// Cloning the `Arc` is the intended way to share it.
-///
-/// # Examples
-///
-/// ```
-/// use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
-///
-/// let config = PartitionConfig {
-///     placement: Placement::Unpinned { partitions: 2, threads_per_partition: Some(1) },
-///     bind_memory: false,
-///     partition_row_seed: None,
-/// };
-/// let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-/// assert_eq!(runtime.num_partitions(), 2);
-/// assert_eq!(runtime.slots().len(), 2);
-/// ```
+/// The resolved placement and its pinned pools, built once and shared behind an [`Arc`] by every [`PartitionedSum`](crate::PartitionedSum) that runs on it.
 pub struct PartitionRuntime {
-    /// One slot per partition, in rank order.
+    /// In rank order.
     slots: Vec<PartitionSlot>,
-    /// One pinned pool per partition, in rank order.
+    /// In rank order.
     pools: Vec<rayon::ThreadPool>,
-    /// Whether driving threads and pool workers bind their allocations to the slot's NUMA node.
     bind_memory: bool,
     /// How long a partition waits for a partner's collective before declaring it dead.
     wait_timeout: std::time::Duration,
 }
 
-/// The in-process transport's default wait for a partner's collective.
 pub(crate) const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The wait for a group of device partitions, which share a device and its queue.
+/// Longer, since device partitions may share a device and its queue.
 pub(crate) const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl PartitionRuntime {
@@ -66,13 +37,9 @@ impl PartitionRuntime {
         Self::with_threads_per_partition(config, None)
     }
 
-    /// [`new`](Self::new) with the pool width chosen by the caller instead of by the placement.
+    /// [`new`](Self::new), with `Some(t)` giving every partition a `t`-worker pool (at least one) on the CPU set the placement resolved.
     ///
-    /// `Some(t)` gives every partition a `t`-worker pool (at least one), leaving the CPU set each pool is pinned to exactly as [`PartitionConfig::resolve`] derived it.
-    /// `None` keeps the resolved widths ([`Placement::Auto`](super::Placement::Auto) and [`Explicit`](super::Placement::Explicit) size a pool by the number of CPUs in its set).
-    ///
-    /// This is the knob a measurement harness needs to hold the *total* thread count fixed across partition counts — `T` threads unpartitioned against `P` pools of `T / P` on the same CPUs — without shrinking the CPU masks and changing what is being compared.
-    /// In production, prefer [`new`](Self::new): a pool narrower than its CPU set leaves cores idle, and a wider one oversubscribes them.
+    /// A measurement knob for holding the total thread count fixed across partition counts; in production prefer [`new`](Self::new).
     ///
     /// # Errors
     ///
@@ -118,8 +85,7 @@ impl PartitionRuntime {
         &self.slots
     }
 
-    /// `log2` of the partition count: the number of GF(2) rows a
-    /// [`PartitionRows`](crate::PartitionRows) needs to name a partition.
+    /// `log2` of the partition count.
     pub(crate) fn partition_bits(&self) -> u8 {
         debug_assert!(self.slots.len().is_power_of_two());
         self.slots.len().trailing_zeros() as u8
@@ -141,26 +107,12 @@ impl PartitionRuntime {
         s
     }
 
-    /// Runs `f` on partition 0's pool and returns its result.
-    ///
-    /// The distributed shape of [`map_partitions`](Self::map_partitions): a process that *is* one partition has nothing to fan out to, but its work still belongs on the pinned pool, so that every allocation is first-touched by a worker inside the process's own domain.
-    /// As with `map_partitions`, the calling thread is not re-affinitized — the work runs on pool 0's workers, which `build_pool` pinned.
-    ///
-    /// `rayon::ThreadPool::install` blocks the caller and runs `f` on a pool worker, so `f` (and any MPI call inside it) is not on the process's main thread — that is why the MPI transport documents `MPI_THREAD_SERIALIZED` rather than `FUNNELED`.
+    /// Runs `f` on partition 0's pool: the distributed shape of [`map_partitions`](Self::map_partitions).
     pub(crate) fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         self.pools[0].install(f)
     }
 
-    /// Runs `f(rank, item, transport)` once per partition, concurrently, and returns the results in rank order.
-    ///
-    /// `items` carries one value per partition — the partition's local sum and scratch — moved in and handed back, so nothing is shared between partitions but the transport.
-    /// Partition 0 runs on the calling thread; partitions `1..P` on scoped threads that pin themselves to their slot first.
-    /// Every partition's body runs inside its own pool (`ThreadPool::install`), so a `rayon` call inside `f` lands on the partition's own workers.
-    ///
-    /// # Panics
-    ///
-    /// A panic in any partition is propagated to the caller with its original payload, after the scope has joined the others.
-    /// It cannot hang the group: the transport group is *moved* into the partitions, so a dying partition drops its endpoints and its partners' next collective reports a dead partner rather than blocking (see [`transport`](super::transport)).
+    /// Runs `f(rank, item, transport)` once per partition inside its own pool, concurrently, and returns the results in rank order; a partition's panic is re-raised here.
     pub(crate) fn map_partitions<I, O, F>(&self, items: Vec<I>, f: F) -> Vec<O>
     where
         I: Send,
@@ -169,8 +121,7 @@ impl PartitionRuntime {
     {
         let size = self.num_partitions();
         assert_eq!(items.len(), size, "map_partitions: one item per partition");
-        // A fresh group per call, rather than one held in the runtime: each partition *owns* its endpoint for the duration, which is what turns a partner's panic into a panic (dropped senders) instead of a hang.
-        // It also means an aborted call cannot leave the group's collective counter out of step for the next one.
+        // A fresh group per call, each partition owning its endpoint, so a partner's panic drops its senders and surfaces as a panic instead of a hang.
         let transports = InProcessTransport::group_with_timeout(size as u32, self.wait_timeout);
         let f = &f;
 
@@ -195,13 +146,12 @@ impl PartitionRuntime {
                 })
                 .collect();
 
-            // Partition 0 on the calling thread — deliberately *not* pinned: the caller's thread is not ours to re-affinitize, and the work itself runs on pool 0's workers, which `build_pool` pinned.
+            // The calling thread is not ours to pin; the work runs on pool 0's pinned workers.
             let mut out = Vec::with_capacity(size);
             out.push(self.pools[0].install(|| f(0, item0, &transport0)));
             for handle in handles {
                 match handle.join() {
                     Ok(o) => out.push(o),
-                    // Re-raise the partition's own payload, so the caller sees the original message rather than a join error.
                     Err(payload) => std::panic::resume_unwind(payload),
                 }
             }
@@ -210,7 +160,7 @@ impl PartitionRuntime {
     }
 }
 
-/// Pins a partition's driving thread to its slot, warning (not failing) when the platform declines — the same degradation policy `build_pool` applies to pool workers.
+/// Pins a partition's driving thread to its slot, warning rather than failing when the platform declines.
 fn place_current_thread(slot: &PartitionSlot, bind_memory: bool) {
     #[cfg(feature = "cuda")]
     if let Some(device) = slot.device {

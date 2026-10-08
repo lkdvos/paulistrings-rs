@@ -65,7 +65,6 @@ struct Raw {
 unsafe impl Send for Raw {}
 
 /// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
-/// Drop finalizes and destroys a healthy one (bounded) and aborts any other, never panicking.
 pub(crate) struct NcclComm {
     raw: Mutex<Raw>,
     ctx: Arc<CudaContext>,
@@ -161,7 +160,7 @@ impl NcclComm {
         self.wait(stream)
     }
 
-    /// Abort the communicator if it is still live; idempotent, and returns at once (see `abort_locked`).
+    /// Abort the communicator if it is still live; idempotent, and returns at once.
     pub(crate) fn abort(&self) {
         let mut raw = self.lock();
         Self::abort_locked(&mut raw, self.rank, &self.ctx);
@@ -172,11 +171,11 @@ impl NcclComm {
     }
 
     /// Mark the communicator dead and abort it on a detached thread.
-    /// `ncclCommAbort` blocks until every stream on the device drains, so a stall that is not NCCL's own would otherwise hold the caller past its timeout.
     fn abort_locked(raw: &mut Raw, rank: u32, ctx: &Arc<CudaContext>) {
         if raw.aborted {
             return;
         }
+        // Detached: `ncclCommAbort` blocks until every stream on the device drains, so a stall that is not NCCL's own would hold the caller past its timeout.
         raw.aborted = true;
         let comm = CommPtr(std::mem::replace(&mut raw.comm, std::ptr::null_mut()));
         let owned = ctx.clone();
@@ -543,8 +542,7 @@ impl DeviceWire for NcclWire {
     }
 }
 
-/// Whether the group can start NCCL, the same verdict on every rank. **Collective**: one `allreduce_sum_u64` of `1 + 2 × size` words.
-/// Every rank must `can` (libnccl 2.22+ loads) and no two `device` UUIDs may coincide, since NCCL refuses two ranks on one device.
+/// Whether the group can start NCCL, the same verdict on every rank: every rank `can` (libnccl 2.22+ loads) and no two `device` UUIDs coincide, which NCCL refuses (**collective**: one `allreduce_sum_u64` of `1 + 2 × size` words).
 pub(crate) fn agree_start(
     coll: &dyn Collectives,
     can: bool,

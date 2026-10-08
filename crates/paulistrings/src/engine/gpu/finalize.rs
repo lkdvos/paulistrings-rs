@@ -95,8 +95,7 @@ pub(crate) fn approx_top_n_device<const W: usize>(
     retain_at_or_above_device(sum, scratch, edge)
 }
 
-/// K8's radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, `TopN::finalize_layer`'s `select_nth_unstable_by` at the bit level.
-/// A digit whose population is `1` names one term, whose remaining bits `k_radix_extract` reads directly.
+/// K8's radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down.
 fn radix_select_bits<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,
@@ -142,6 +141,7 @@ fn radix_select_bits<const W: usize>(
         if p == 7 {
             return Ok(prefix);
         }
+        // A digit of population one names one term, whose remaining bits are read directly.
         if group == 1 {
             let mask = fixed_mask | (0xFFu64 << shift);
             s.memset_zeros(&mut scratch.radix_out.slice_mut(0..1))?;
@@ -227,8 +227,7 @@ fn retain_device<const W: usize>(
     Ok(())
 }
 
-/// One `TopN(n)` layer pass on one device: [`radix_select_bits`], the two global counts the tie rule needs, then [`retain_device`], `TopN::finalize_layer`'s three passes.
-/// A group member never calls it (`DevicePartition::finalize_layer`), since the group's `n`-th largest has no collective form.
+/// One `TopN(n)` layer pass on one device: [`radix_select_bits`], the two counts the tie rule needs, then [`retain_device`].
 pub(crate) fn top_n_device<const W: usize>(
     sum: &mut GpuSum<W>,
     scratch: &mut LayerScratch<W>,

@@ -90,8 +90,7 @@ impl GpuError {
 }
 
 impl From<cudarc::driver::DriverError> for GpuError {
-    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`
-    /// (the driver error carries neither); a caller that knows better should build the variant itself.
+    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`, since the driver error carries neither.
     fn from(e: cudarc::driver::DriverError) -> Self {
         if e.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY {
             GpuError::OutOfMemory {

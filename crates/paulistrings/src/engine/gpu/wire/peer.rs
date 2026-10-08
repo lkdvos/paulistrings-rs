@@ -75,7 +75,6 @@ pub(crate) enum PeerFault {
 /// A [`DeviceWire`] over a group of in-process ranks: each rank's `n`-th group is matched against every other rank's `n`-th, per peer in posting order, and every receive is a device-to-device copy from its send on the receiver's stream, a peer copy across devices.
 ///
 /// Stricter than NCCL, which would hang: a rank posting a different number of receives from a peer than the peer posts sends to it, or a receive whose size differs from its send, panics naming both ranks, and so does every other rank of the group.
-/// A wait returns once every rank's copies have completed, so the sender's buffers are free again; it times out after `PAULISTRINGS_NCCL_TIMEOUT_S`, killing the wire.
 pub(crate) struct PeerWire {
     rank: u32,
     shared: Arc<Shared>,
@@ -462,8 +461,7 @@ enum PeerAccess {
     Failed(String),
 }
 
-/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair, and report the outcome.
-/// A pair without access is still correct, since the copy stages through the host, so the outcome is logged rather than an error.
+/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair; a pair without it stays correct through host staging, so the outcome is logged, not an error.
 fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAccess {
     static DONE: Mutex<Vec<((usize, usize), PeerAccess)>> = Mutex::new(Vec::new());
     let pair = (dst.ordinal(), src.ordinal());

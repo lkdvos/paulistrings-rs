@@ -226,7 +226,6 @@ mod protocol {
     }
 
     /// The receive cut into chunks over the peer wire agrees with `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
-    /// `W = 2` runs the same protocol in `propagate_gpu_partitioned`'s chunked net.
     #[test]
     fn a_capped_receive_moves_in_chunk_groups_and_agrees() {
         crate::require_cuda!();
@@ -294,7 +293,6 @@ mod protocol {
     }
 
     /// A rank failing after its second chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
-    /// The culprit's own `recv_chunks`, set before the chunk loop runs, proves the failure landed on a layer of several chunks.
     #[test]
     fn a_mid_receive_failure_drains_its_groups_and_is_agreed_over_the_group() {
         crate::require_cuda!();
@@ -372,8 +370,7 @@ mod protocol {
         }
     }
 
-    /// One source bucket of `n` rows crossing from rank 1 to rank 0 at one bucket: `MAX_BUCKET_LEN` rows fit, one more makes the receiver vote no.
-    /// A device sender's own over-long bucket fails it after the exchange, so the receiver is rank 0, the culprit the agreement names first.
+    /// One source bucket of `n` rows crossing from rank 1 to rank 0 at one bucket: `MAX_BUCKET_LEN` rows fit, one more makes the receiver, rank 0, vote no and be named first.
     #[test]
     fn an_oversize_received_segment_votes_no_and_names_the_receiver() {
         crate::require_cuda!();
@@ -556,7 +553,6 @@ mod protocol {
     }
 
     /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer.
-    /// The device run ends on the propagate's own failure agreement, which the host driver has no counterpart of.
     #[test]
     fn every_remote_layer_adds_one_vote_and_a_local_layer_nothing() {
         crate::require_cuda!();
@@ -615,6 +611,7 @@ mod protocol {
                         other => vec![other],
                     })
                     .collect();
+                // The propagate's own failure agreement, which the host driver has no counterpart of.
                 want.push("allreduce_sum_u64");
                 assert_eq!(device, want, "rank {r} of {size}: the device exchange");
             }

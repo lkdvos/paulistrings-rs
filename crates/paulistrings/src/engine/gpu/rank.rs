@@ -54,37 +54,11 @@ fn agree<T>(coll: &dyn Collectives, r: Result<T, GpuError>) -> Result<T, GpuErro
 /// A group of more than one rank moves its exchange columns device to device over NCCL (features `cuda` and `mpi`), started at scatter: a rank that cannot load NCCL, or two ranks on one device, fail the scatter on every rank.
 /// Device failures are agreed over the group: a scatter, propagate or gather that fails on any rank fails on every rank, with that rank's own error on the failing one and [`GpuError::Poisoned`] naming it on its peers, so the group never falls out of step.
 /// After a failed `propagate` a group of more than one rank is poisoned, as a [`GpuPartitionedSum`](super::GpuPartitionedSum) is, until the caller scatters again.
-///
-/// `MpiGpuSum` (feature `mpi`) is this type over MPI, one GPU per rank; the in-process transport drives it for testing.
 pub type GpuDistributedSum<const W: usize, X> = DistributedSum<W, X, DevicePartition<W>>;
 
 /// [`GpuDistributedSum`] over MPI: one CUDA device per rank.
 ///
 /// The universe is the application's, as for [`MpiSum`](crate::engine::partitioned::mpi::MpiSum); pick each rank's device with [`local_device_for_comm`].
-///
-/// ```no_run
-/// # use paulistrings::PartitionRowPolicy;
-/// # use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
-/// # use paulistrings::mpi::{rsmpi, MpiTransport};
-/// # use paulistrings::{Circuit, Direction, PauliSum};
-/// # use paulistrings::ApproxTopN;
-/// # fn go(circuit: &Circuit<1>, sum: PauliSum<1>) -> Result<(), paulistrings::gpu::GpuError> {
-/// let (universe, _) =
-///     rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).expect("MPI initializes");
-/// let world = universe.world();
-/// let device = local_device_for_comm(&world)?;
-/// let transport = MpiTransport::from_communicator(&world);
-/// let mut split: MpiGpuSum<1> =
-///     MpiGpuSum::scatter_to_device(&sum, transport, device, &PartitionRowPolicy::Seeded(None))?;
-/// for _ in 0..10 {
-///     split.propagate(circuit, ApproxTopN(1_000_000), Direction::Heisenberg)?;
-/// }
-/// if let Some(out) = split.gather()? {
-///     println!("{} terms", out.len());
-/// }
-/// # Ok(())
-/// # }
-/// ```
 #[cfg(feature = "mpi")]
 pub type MpiGpuSum<const W: usize> = GpuDistributedSum<W, MpiTransport>;
 
@@ -329,8 +303,7 @@ fn start_nccl<const W: usize>(
     Ok(())
 }
 
-/// Start a communicator with `init`, warm it up with `warm`, and agree each step over the group. **Collective**: two `allreduce_sum_u64`.
-/// A communicator whose own warm-up failed or whose peers failed is aborted with `abort` rather than left to finalize against dead peers, and every rank errs.
+/// Start a communicator with `init` and warm it up with `warm`, each step agreed over the group (**collective**: two `allreduce_sum_u64`); on any failure every rank errs and its communicator is aborted, not finalized against dead peers.
 #[cfg(feature = "mpi")]
 fn bootstrap<C>(
     coll: &dyn Collectives,

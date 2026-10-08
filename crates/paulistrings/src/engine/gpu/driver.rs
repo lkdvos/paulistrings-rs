@@ -25,8 +25,8 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 
 /// A [`PauliSum`] split across the device partitions of a [`PartitionRuntime`] resolved from [`Placement::Devices`] (ARCHITECTURE.md §Partitioning): [`PartitionedSum`] over the device backend.
 ///
-/// Every partition's share lives on its slot's device and is driven by the shared layer loop; the rows a layer moves across partitions are exported by K10, sent device to device (a peer copy across devices) and merged by the fused layer, so no row touches the host.
-/// Several partitions may share one device (`per_device > 1`), which is the testing shape; one partition per device is the production one.
+/// Rows a layer moves between partitions go device to device and never touch the host.
+/// Several partitions may share one device (`per_device > 1`), which is a testing shape; one partition per device is the production one.
 /// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select (K8) at one partition only, since the `n`-th largest of a split sum has no collective form.
@@ -37,9 +37,7 @@ pub type GpuPartitionedSum<const W: usize> = PartitionedSum<W, DevicePartition<W
 /// A [`PauliSum`] resident on one CUDA device: a [`GpuPartitionedSum`] of one partition, built by [`from_host`](GpuPartitionedSum::from_host) (ARCHITECTURE.md §GPU-Readiness).
 pub type GpuPauliSum<const W: usize> = GpuPartitionedSum<W>;
 
-/// The checks every device propagation makes before its first layer: the policy lowers and every channel prepares.
-///
-/// `single_partition` gates an exact `TopN`, which only a lone partition can run; a `CollapseSample` has no device form at all.
+/// The policy's per-term program, after checking that it lowers, that every channel prepares, and that an exact `TopN` runs only at `single_partition`.
 pub(super) fn lower_for_run<const W: usize>(
     circuit: &Circuit<W>,
     policy: &BuiltinTruncation,
@@ -111,7 +109,6 @@ pub(super) fn upload_share<const W: usize>(
     coll: &dyn Collectives,
     extra_options: &[String],
 ) -> Result<DevicePartition<W>, GpuError> {
-    // At one partition the scatter is the identity, so the sum uploads without a filtered copy.
     let dev = if size == 1 {
         GpuSum::from_host_with_options(sum, device, extra_options)?
     } else {
@@ -165,7 +162,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         Self::scatter_to_devices_with_rows(sum, rows, runtime)
     }
 
-    /// Splits `sum` across `runtime`'s device partitions with caller-supplied rows; each partition filters its share on its own thread and uploads it to its slot's device.
+    /// Splits `sum` across `runtime`'s device partitions with caller-supplied rows.
     ///
     /// # Errors
     ///

@@ -39,7 +39,7 @@ pub(crate) enum WireOpKind {
 }
 
 /// One point-to-point transfer of a [`WireGroup`]: `bytes` bytes at device address `ptr`, to or from `peer`, ordered on `stream`.
-/// Only a [`WireGroup`] builds one, which is what lets [`DeviceWire::post`] trust `ptr` without being `unsafe`.
+// Only a `WireGroup` builds one, which is what lets `DeviceWire::post` trust `ptr` without being `unsafe`.
 #[derive(Clone, Copy)]
 pub(crate) struct WireOp<'a> {
     kind: WireOpKind,
@@ -95,8 +95,8 @@ impl<'a> WireGroup<'a> {
         self.push(WireOpKind::Recv, peer, ptr, bytes, stream, guard);
     }
 
-    /// Receive consecutive ranges of `dst` in order, `parts[i] = (len, peer)` being `len` elements from `peer`, on `stream`; one view carved here, since a borrowed split of a cudarc view cannot outlive its parent.
-    /// Panics if the parts are longer than `dst`.
+    /// Receive consecutive ranges of `dst`, `parts[i] = (len, peer)` being `len` elements from `peer`, on `stream`; panics if the parts are longer than `dst`.
+    // Carved here from one view, since a borrowed split of a cudarc view cannot outlive its parent.
     pub(crate) fn recv_parts<T>(
         &mut self,
         dst: CudaViewMut<'a, T>,

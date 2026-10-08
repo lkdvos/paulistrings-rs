@@ -162,11 +162,7 @@ fn mask_list(mask: u64) -> String {
         .join(",")
 }
 
-/// Each rank's device, given each rank's CPU NUMA mask (`0` unknown) in node-local rank order and each device's NUMA node.
-///
-/// Every device offers `ceil(ranks / devices)` slots, filled round by round.
-/// A maximum matching (augmenting paths, ranks in order) puts as many ranks as possible on a slot of a device on one of their NUMA nodes; every other rank takes the least-loaded device with a free slot, lowest ordinal first.
-/// With no NUMA facts at all this is local rank `i` on device `i % devices`.
+/// Each rank's device from each rank's CPU NUMA mask (`0` unknown) and each device's NUMA node: a maximum matching onto `ceil(ranks / devices)` slots per device on the rank's own nodes, every other rank on the least-loaded device, lowest ordinal first.
 fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
     let k = devices.len();
     assert!(k > 0, "assign_devices needs a device");

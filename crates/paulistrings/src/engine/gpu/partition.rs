@@ -289,8 +289,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
     }
 }
 
-/// One device layer's counters into the partition's [`PhaseStats`]: kernel families onto the host phases they replace, the driving thread's wall minus the refine, rescale, export and exchange as the coset loop.
-/// `sort_ns` stays zero: the sort is inside the fused layer, so it is part of `merge_ns` on a device row.
+/// One device layer's counters into the partition's [`PhaseStats`], mapped as [`GpuPartitionedSum::take_stats`](super::GpuPartitionedSum::take_stats) documents.
 #[cfg(feature = "phase-timing")]
 fn fold_layer_stats<const W: usize>(
     stats: &mut PhaseStats,
@@ -319,7 +318,6 @@ fn fold_layer_stats<const W: usize>(
     stats.d2h_ns += d2h;
     let c = scratch.counters;
     if c.permuted {
-        // One scatter over every input row, nothing sorted.
         stats.cosets += 1;
         stats.runs += 1u64 << c.bits;
         stats.rows_gathered += c.records;

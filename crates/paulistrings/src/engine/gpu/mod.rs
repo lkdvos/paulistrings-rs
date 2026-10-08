@@ -1,6 +1,6 @@
-//! The CUDA backend. See ARCHITECTURE.md §GPU-Readiness.
+//! The CUDA backend (feature `cuda`): device probes, device-resident sums and their propagation drivers. See ARCHITECTURE.md §GPU-Readiness.
 //!
-//! `device` is the runtime probe and device table, `module` the NVRTC kernel cache, [`GpuSum`] the device-resident sum over `columns`, [`GpuPartitionedSum`] (one device: [`GpuPauliSum`]) and [`GpuDistributedSum`] the partitioned drivers over the device backend of `partition`, `layer` and `export`.
+//! [`GpuPauliSum`] holds a sum on one device, [`GpuPartitionedSum`] splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 
 mod columns;
 pub(crate) mod device;

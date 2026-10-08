@@ -11,8 +11,7 @@ fn nccl_available_never_panics() {
     let _ = nccl_available();
 }
 
-/// A `libnccl.so*` file on `LD_LIBRARY_PATH` means the module is loaded; without one the test returns early.
-/// A directory name containing "nccl" is not enough, since the `mpi` build script puts its `OUT_DIR` on the path.
+/// A `libnccl.so*` file on `LD_LIBRARY_PATH`, not merely an `nccl` directory such as the `mpi` build script's `OUT_DIR`, means the module is loaded; without one the test returns early.
 #[cfg(feature = "mpi")]
 #[test]
 fn nccl_available_true_with_module_on_path() {

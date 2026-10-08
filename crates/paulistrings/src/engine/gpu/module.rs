@@ -45,7 +45,6 @@ const KERNEL_SOURCES: &[&str] = &[
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
-/// A device with a smaller opt-in limit loads fewer variants and [`KernelSet::layer_cap`] is lower.
 pub(crate) const LAYER_CAP: usize = 8192;
 
 /// Test hook: an extra option `-DTEST_SHARED_LIMIT=<bytes>` caps the opt-in shared memory the loader assumes, which is inert to NVRTC.
@@ -134,7 +133,6 @@ thread_local! {
 }
 
 /// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook); needs only NVRTC, no device.
-/// A hit on the on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`) skips NVRTC; a miss compiles and writes back, best-effort.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,

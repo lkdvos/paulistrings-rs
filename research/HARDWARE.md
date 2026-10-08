@@ -1,8 +1,7 @@
 # Hardware facts
 
-Measured host data, cited as roofline denominators.
-Numbers are as measured; do not round or re-derive them.
-Full measurement write-ups are in git history under the deleted `research/notes/`.
+Measured host facts and roofline denominators; numbers are as measured, never rounded or re-derived.
+Method write-ups are in git history (`git log --diff-filter=D -- research/`).
 
 ## ccqlin038 — reference workstation
 
@@ -11,8 +10,7 @@ Cascade Lake-SP: affected by the JCC erratum (SKX102).
 
 ### Memory bandwidth ceilings
 
-`crates/membench` via `scripts/bandwidth.sh`; STREAM-convention nominal bytes, plain (write-allocating) stores, best of 5 reps over 512 MiB f64 arrays.
-Rerun only after hardware changes.
+`scripts/bandwidth.sh` (`crates/membench`): STREAM-convention bytes, write-allocating stores, best of 5 over 512 MiB f64 arrays.
 
 | placement | read | write | copy | triad |
 |---|---:|---:|---:|---:|
@@ -24,14 +22,12 @@ Rerun only after hardware changes.
 | both sockets, 16 phys, interleaved pages | 41.2 | 21.3 | 31.8 | 33.5 |
 | both sockets, 32 threads | 48.8 | 23.1 | 33.8 | 36.5 |
 
-GB/s. Uncore cross-check (`perf stat -a uncore_imc/cas_count_*`, node0 read run): 38.3 vs 39.0 GB/s.
-Consistent with 2 of 6 memory channels populated per socket (2 × 23.4 = 46.9 GB/s nominal; 39/46.9 = 83% efficiency), not the 140.8 GB/s/socket DDR4-2933 spec figure.
-Hyperthreads add nothing (39.0 → 39.2); the second socket adds ~15–25%, not 2×; remote streams run at 7.8 GB/s/core.
+GB/s; the uncore IMC counters agree (38.3 against 39.0 read).
+2 of 6 memory channels are populated per socket (46.9 GB/s nominal, 83% achieved); hyperthreads add nothing and the second socket adds ~15–25%.
 
 ### Engine roofline, single thread
 
-`target/release/examples/phase_breakdown --qubits 128` (`W = 2`), truncation `keep`, counters via `scripts/perf-stat.sh --reps 40`, idle DRAM baseline (0.4–0.5 GB/s) subtracted; byte model `T = 48` B/term.
-Ceilings: 1 core node-local read 11.3 / copy 9.5 / triad 11.3 GB/s.
+`phase_breakdown --qubits 128` (`W = 2`), truncation `keep`, `scripts/perf-stat.sh --reps 40` with the idle DRAM baseline subtracted; byte model 48 B/term against the 1-core node-local ceilings.
 
 | cell | m | ns/term | model GB/s | measured GB/s | % of copy | model / measured | IPC | LLC load-miss | verdict |
 |---|---|---|---|---|---|---|---|---|---|
@@ -41,11 +37,11 @@ Ceilings: 1 core node-local read 11.3 / copy 9.5 / triad 11.3 GB/s.
 | `gu2q` | 1.0e6 | 138.5 | 9.8 | 2.07 | 22% | 4.7× | 2.68 | 33.6% | latency-bound |
 | `su4` | 1.41e7 | 327.3 | 8.6 | 0.67 | 7% | 12.8× | 2.98 | 2.1% | compute-bound |
 
-Per-term cost is flat in `m`: `rotation_zz` 30.5–30.6 ns/term over 1.50e6→4.50e6, `gu2q` 138.5–141.3 over 1.0e6→3.0e6, `su4` 322–327 over 1.41e7→4.24e7.
+Per-term cost is flat in `m` (`su4` 322–327 ns/term over 1.41e7 → 4.24e7).
 
 ### Engine roofline, thread scaling
 
-`su4` at m = 1.41e7. Ceilings: 8/16t read 45.0 / write 25.3; 32t read 48.8 / write 23.1 GB/s.
+`su4` at m = 1.41e7, against the both-socket ceilings above.
 
 | threads | ns/term | speedup | IPC | LLC load-miss | read GB/s | write GB/s | % read ceil | % write ceil | verdict |
 |---|---|---|---|---|---|---|---|---|---|
@@ -69,17 +65,15 @@ Phase shares (share of summed worker busy time, gather/sort/merge):
 | `gu2q` (m=3.0e6) | 38/33/29 | 35/31/33 | 39/29/31 |
 | `su4` (m=4.24e7) | 41/51/8 | 35/55/10 | 26/65/9 |
 
-Parallel efficiency (busy / (coset-loop wall × threads)) is 0.99 for `su4` at 16t.
-Thread guidance on this host: 16 threads for dense-PTM-heavy circuits, 32 for sparse-rotation circuits.
+Parallel efficiency is 0.99 for `su4` at 16t; use 16 threads for dense-PTM circuits and 32 for sparse-rotation circuits on this host.
 
 ## ccqlin038 — GPU
 
-NVIDIA RTX A6000 (GA102, sm_86, 48 GB GDDR6, 768 GB/s spec), driver-managed clocks: 210 / 405 MHz idle, 1800 MHz SM / 7601 MHz memory under load, 44–66 °C, 175–183 W during the cells below.
-Shared box; load average 2–5 during the device cells, 6–11 during the host cells.
+NVIDIA RTX A6000 (GA102, sm_86, 48 GB GDDR6, 768 GB/s spec), driver-managed clocks at 1800 MHz SM / 7601 MHz memory under load; shared box.
 
 ### Device memory bandwidth ceilings
 
-`crates/membench --device 0` (feature `cuda`) via `scripts/bandwidth.sh --device 0`; STREAM-convention nominal bytes, grid-stride f64 kernels, best of 5 reps.
+`scripts/bandwidth.sh --device 0`: STREAM-convention bytes, grid-stride f64 kernels, best of 5.
 
 | arrays | read | write | copy | triad |
 |---|---:|---:|---:|---:|
@@ -90,8 +84,7 @@ GB/s; read and write reach 92% of the 768 GB/s spec.
 
 ### Device layer vs host, first table
 
-`phase_breakdown --device 0` against `phase_breakdown --threads 16,32` (`scripts/jcc-rustflags.sh` sourced), `--qubits 128` (`W = 2`), truncation `keep`, `--reps 5`: one untimed application drives the sum to its steady state, the timed call applies the layer five more times, both sides identically.
-`m` is the steady-state term count; ns per term is wall per layer over `m`; the ratio is host over device.
+`phase_breakdown --device 0` against `--threads 16,32`, `--qubits 128`, truncation `keep`, `--reps 5` after one untimed application; `m` is the steady-state term count, the ratio host over device.
 
 | cell | m | device ms/layer | device ns/term | host 16t ns/term | host 32t ns/term | ratio vs 16t | ratio vs 32t |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -109,8 +102,7 @@ GB/s; read and write reach 92% of the 768 GB/s spec.
 | `heavyhex_step` (5 steps, `coeff:2^-13`, 1355 layers, final m) | 1.16e6 | 2.122 | 1.84 | 3.53 | 3.52 | 1.9× | 1.9× |
 | `trotter` (64 layers, 100 → 6.7e4 terms) | 6.7e4 | 9.316 | 139.5 | 130.8 | 121.7 | 0.94× | 0.87× |
 
-`su4` at `--n 16000000` (2.3e8 steady terms) does not fit the 48 GB device and was not run.
-The host `su4` row at 5.65e7 (74.3 ns/term at 16t) is above the 49–58 ns/term of earlier quiet measurements; the box carried a load average of 6–11 during it.
+`su4` at 2.3e8 steady terms does not fit the 48 GB device; the host `su4` row at 5.65e7 ran under load average 6–11 (quiet: 49–58 ns/term).
 
 Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = `merge_ns`, K4 = `compact_ns`, `coset_loop_ns` the driving thread's wall):
 
@@ -122,15 +114,13 @@ Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = 
 | `su4` | 1.41e7 | 1.044 | 61.98 | 2.440 | 65.64 | 2.11e8 | 0.29 |
 | `su4` | 5.65e7 | 4.035 | 248.7 | 9.838 | 263.3 | 8.44e8 | 0.29 |
 
-ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one, where the fixed per-block cost (0.55–0.76 ns per record at ~1000 records per block) dominates.
-Both tables' `cnot` rows are the fused layer; on the permutation path (K12–K14, research/FINDINGS.md) the same cell is 0.386 ms per layer at 1.00e6 (K12 + K13 0.125, K14 0.221) and 5.07 ms at 1.60e7, at 1800 / 8001 MHz.
-In-layer copies are 0.02–0.5 ms per layer (`h2d_ns` + `d2h_ns`); the per-process NVRTC compile is 3.5 s inside the first cell's `upload_ns`, and `download_ns` (`to_host`, pinned D2H plus the host re-sort into `PauliSum`) is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
+ms; the fused kernel is 94% of a dense layer and 69–82% of a sparse one.
+Both tables' `cnot` rows are the fused layer; the permutation path (`FINDINGS.md §GPU Clifford permutation path`) runs the same cell at 0.386 ms per layer at 1.00e6 and 5.07 ms at 1.60e7.
+In-layer copies are 0.02–0.5 ms per layer; `to_host` is 0.8 s at 1.41e7 and 3.1 s at 5.65e7 terms.
 
 ## `gpu` cluster nodes — one process, several devices
 
-From `scripts/slurm/gpu-devices.sbatch` runs (`scripts/slurm/README.md`, The GPU jobs).
-Same conventions as the ccqlin038 tables: `--qubits 128`, truncation `keep` (`heavyhex_step` five steps under `coeff:2^-13`, 1355 layers), `--reps 5`, `m` the steady-state term count, ms per layer, device exchange (`PAULISTRINGS_GPU_EXCHANGE` unset).
-The partitioned row keeps the single device's total `m`, so its speedup is strong scaling.
+`scripts/slurm/gpu-devices.sbatch`, same conventions as the ccqlin038 tables, ms per layer; the multi-device rows keep the single device's total `m` (strong scaling).
 
 | node | GPUs | interconnect (`nvidia-smi topo -m`) | SM / memory clock under load | job |
 |---|---|---|---|---|
@@ -158,9 +148,8 @@ Four devices, workergpu065 (one device 5.729 / 3.326 / 11.02 / 204.4 / 1.733 ms 
 | `rotation_remote` | 7.232 | — | 0.3 | 5.0 | 1.1 | 2.24e8 |
 | `heavyhex_step` | 1.023 | 1.69× | 0.1 | 0.3 | 0.1 | 6.85e6 |
 
-A layer without remote deltas scales; a layer with them is exchange-bound, at ≈ 27 GB/s aggregate for `su4` (2.35e10 bytes in 884 ms) against the 100 GB/s per direction of four NVLink3 links.
-Every row above predates `cuMemPoolSetAccess` in `enable_peer_access`: cudarc allocates from the stream-ordered pool, which `cuCtxEnablePeerAccess` does not map, so the exchange staged through the host and direct peer loads faulted (`gpu_peer`, jobs 7101880 and 7102281: 21.7 GB/s peer copies against 26 GB/s pinned host copies and 880 GB/s same-device, `CUDA_ERROR_ILLEGAL_ADDRESS` from a kernel reading its peer, `nvidia-smi topo -p2p` OK).
-The exported bytes are pre-dedup deltas, 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
+These two tables lack the memory-pool peer grant and the sender-side merge, so their exchange staged through the host (≈ 27 GB/s aggregate for `su4`); the table below has both.
+Unmerged exports are 7.4 rows per steady-state term on `su4`, 56 bytes each at `W = 2`.
 One A100 runs `su4` at 3.61 ns/term against the A6000's 4.66.
 
 Two devices with the peer-pool grant and the sender-side merge, workergpu046 (job 7110164, rev 54b7bd2):
@@ -172,14 +161,13 @@ Two devices with the peer-pool grant and the sender-side merge, workergpu046 (jo
 | `rotation_remote` | 6.00e6 | — | 5.892 | 0.98 | — | 0.53 | 2.50 | 0.92 | 2.24e8 |
 | `heavyhex_step` | 1.16e6 | 1.734 | 1.109 | 0.96 | 1.56× | 0.05 | 0.07 | 0.02 | 4.86e6 |
 
-`gpu_peer` on the same pair: `cuMemcpyPeerAsync` 93.9 GB/s each way, `cuMemcpyDtoDAsync` 94.0 GB/s, a kernel reading or writing its peer 88 GB/s, both directions at once 94.0 GB/s aggregate; on workergpu063 (job 7127220) every one of the twelve ordered pairs of four devices copies at 91.6–92.2 GB/s with no NVLink replay, recovery or CRC errors.
+Peer copies on an A100 pair run at 93.9 GB/s each way (88 GB/s for a kernel touching its peer), and 91.6–92.2 GB/s on every ordered pair of workergpu063's four devices.
 The `su4` exchange moves the merged 3.17e9 bytes in 38.4 ms, ≈ 83 GB/s.
 
 ## `gpu` cluster nodes — one device per MPI rank
 
-From `scripts/slurm/mpi-gpu-ranks.sbatch` runs.
-Replicated input, so `m` per rank equals the single-device `m` above (`heavyhex_step` excepted: its sum is split, 5.8e5 per rank); one GPU and 8 CPUs per rank, rank 0 shown (rank 1 within 4%), ms per layer.
-Exchange goes through host memory (`h2d` + `d2h` is 55–57% of a remote layer's wall).
+Replicated input (`heavyhex_step` split), one GPU and 8 CPUs per rank, rank 0 shown, ms per layer.
+These rows exchange through host memory, since replaced by NCCL (next section).
 
 | ranks (nodes) | node | layer | m per rank | wall | export | exchange | chunk wait | coset loop | h2d + d2h | bytes exported/rank | peak RSS/rank |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -196,12 +184,11 @@ Exchange goes through host memory (`h2d` + `d2h` is 55–57% of a remote layer's
 | 4 (1) | A100 | `rotation_remote` | 6.00e6 | 85.70 | 24.54 | 0.08 | 30.85 | 57.31 | 44.31 | 1.92e8 | 46.2 GB |
 | 4 (1) | A100 | `heavyhex_step` | 2.89e5 | 1.37 | 0.36 | 0.03 | 0.25 | 0.96 | 0.50 | 1.47e6 | 0.5 GB |
 
-`rotation_zz` weak-scales flat (5.75 vs 5.74 ms on one device); the peak RSS is the probe's replicated input, carried from `su4` into the later cells.
-The 2-rank rows are job 7101048 (rev 01df3eb, exported rows unmerged); the 4-rank rows are job 7110165 (rev 54b7bd2, sender-side merge on, workergpu068).
+`rotation_zz` weak-scales flat; peak RSS is the probe's replicated input; the 2-rank rows are unmerged, the 4-rank rows have the sender-side merge.
 
 ## `gpu` cluster nodes — NCCL exchange between MPI ranks
 
-From `scripts/slurm/mpi-gpu-nccl.sbatch`: one A100-SXM4-80GB node, `--gpus-per-node` so every rank sees every GPU, one GPU and 8 CPUs per rank, replicated input, `--reps 5`, rank 0 shown, ms per layer, medians of five alternating host/NCCL pairs on one binary (`--gpu-exchange host|nccl`).
+One A100-SXM4-80GB node, every GPU visible to every rank, one GPU and 8 CPUs per rank, replicated input, rank 0, ms per layer, medians of five alternating host/NCCL pairs.
 NCCL 2.23.4 chose `P2P/CUMEM/read` between every pair of ranks.
 
 | ranks | node, job | layer | m per rank | host staging | NCCL | speedup | NCCL exchange | bytes exported/rank |
@@ -211,12 +198,11 @@ NCCL 2.23.4 chose `P2P/CUMEM/read` between every pair of ranks.
 | 2 | | `rotation_remote` | 6.00e6 | 72.35 | 10.70 | 6.8× | 4.36 | 1.92e8 |
 | 2 | | `su4` | 5.65e7 | 1250 | 356.9 | 3.5× | 57.50 | 2.72e9 |
 
-Every pair agrees in sign and the per-cell ranges do not overlap (`su4` host 1227–1275, NCCL 356.5–357.8).
-The four-rank bring-up (`scripts/slurm/nccl-probe.sbatch`, job 7127220, workergpu063) passes every variant: the engine's communicator and warm-up at four ranks, all six device pairs, `NCCL_P2P_DISABLE=1`, `NCCL_CUMEM_ENABLE=0`, `NCCL_PROTO=Simple`, blocking init, per-peer and ring warm-ups, and the locality device pick, 10.3 s init and 0.7 s warm-up.
+Every pair agrees in sign; a four-rank bring-up on workergpu063 takes 10.3 s of NCCL init and 0.7 s of warm-up.
 
 ## `ccq` cluster node types
 
-`scripts/slurm/jcc-portability.sbatch`, one exclusive node each, governor `performance`; family/model read from `/proc/cpuinfo`.
+One exclusive node each, governor `performance`; family/model from `/proc/cpuinfo`.
 
 | node | CPU | family/model | JCC erratum | sockets × cores | NUMA |
 |---|---|---|---|---|---|
@@ -235,8 +221,7 @@ The four-rank bring-up (`scripts/slurm/nccl-probe.sbatch`, job 7127220, workergp
 | magnitude range | +0.60% to +3.78% per phase, ~+1% wall where wall resolves |
 | same flag on ccqlin038 (Cascade Lake) | DSB residency 45.8% → 98.0%, −9..−13% wall |
 
-Multi-thread cells of that campaign are unusable: `--n 1000000` leaves ~10–20k terms per worker at 64–128 threads (rome `rotation_zz` at 128 threads spans −33.31% to +32.55%).
-A multi-thread campaign needs `--n` scaled with core count, roughly `3e7` on a 96-core node.
+A multi-thread campaign on these nodes needs `--n` scaled with core count, roughly `3e7` on a 96-core node; `--n 1000000` is noise at 64–128 threads.
 
 ## Partitioned engine, P=1 vs P=2 in-process
 

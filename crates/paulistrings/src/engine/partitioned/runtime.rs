@@ -93,18 +93,20 @@ impl PartitionRuntime {
 
     /// A one-line summary of the placement, for the entry log line.
     pub(crate) fn placement_summary(&self) -> String {
-        let mut s = String::new();
+        let mut summary = String::new();
         for (rank, slot) in self.slots.iter().enumerate() {
             if rank > 0 {
-                s.push_str(", ");
+                summary.push_str(", ");
             }
             match (&slot.cpus, slot.device) {
-                (_, Some(d)) => s.push_str(&format!("{rank}:gpu{d} x{}", slot.threads)),
-                (Some(cpus), None) => s.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
-                (None, None) => s.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
+                (_, Some(device)) => {
+                    summary.push_str(&format!("{rank}:gpu{device} x{}", slot.threads))
+                }
+                (Some(cpus), None) => summary.push_str(&format!("{rank}:{cpus}x{}", slot.threads)),
+                (None, None) => summary.push_str(&format!("{rank}:unpinned x{}", slot.threads)),
             }
         }
-        s
+        summary
     }
 
     /// Runs `f` on partition 0's pool: the distributed shape of [`map_partitions`](Self::map_partitions).

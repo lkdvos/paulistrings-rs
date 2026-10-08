@@ -34,9 +34,9 @@ pub(crate) struct PartitionPlan {
 }
 
 impl PartitionPlan {
-    /// Classify `prep`'s deltas under `rows`, as seen from partition `rank`.
+    /// Classify `prepared`'s deltas under `rows`, as seen from partition `rank`.
     pub(crate) fn new<const W: usize>(
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         rows: &PartitionRows<W>,
         rank: u32,
     ) -> Self {
@@ -47,7 +47,7 @@ impl PartitionPlan {
         );
 
         // `(mask_x, mask_z, bucket_delta)` per entry, in entry order.
-        let entries: Vec<([u64; W], [u64; W], u32)> = match prep {
+        let entries: Vec<([u64; W], [u64; W], u32)> = match prepared {
             Prepared::Local(ptm) => ptm
                 .deltas()
                 .iter()
@@ -56,11 +56,11 @@ impl PartitionPlan {
                     (mx, mz, d.bucket_delta)
                 })
                 .collect(),
-            Prepared::Rotation(r) => {
-                let (gx, gz) = r.gen_mask();
+            Prepared::Rotation(rotation) => {
+                let (gx, gz) = rotation.gen_mask();
                 vec![
-                    ([0u64; W], [0u64; W], r.bucket_delta_identity),
-                    (gx, gz, r.bucket_delta_gen),
+                    ([0u64; W], [0u64; W], rotation.bucket_delta_identity),
+                    (gx, gz, rotation.bucket_delta_gen),
                 ]
             }
         };
@@ -85,7 +85,7 @@ impl PartitionPlan {
         }
 
         // `engine::bucketed`'s `rest_streams`, over the whole realized delta set (ARCHITECTURE.md §Bucketing).
-        let rest_streams_total = match prep {
+        let rest_streams_total = match prepared {
             Prepared::Local(ptm) => {
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
                 debug_assert!(
@@ -137,13 +137,13 @@ pub fn count_remote_deltas<const W: usize>(
     let n = circuit.channels.len();
     (0..n)
         .map(|k| if adjoint { n - 1 - k } else { k })
-        .map(|idx| {
-            let prep = circuit.channels[idx]
+        .map(|index| {
+            let prepared = circuit.channels[index]
                 .prepare(hash, adjoint)
                 .unwrap_or_else(|| {
-                    panic!("count_remote_deltas: layer {idx} declined Channel::prepare")
+                    panic!("count_remote_deltas: layer {index} declined Channel::prepare")
                 });
-            let plan = PartitionPlan::new(&prep, rows, 0);
+            let plan = PartitionPlan::new(&prepared, rows, 0);
             let local = plan.local_entries.iter().filter(|b| **b).count();
             (local, plan.remote.len())
         })

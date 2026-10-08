@@ -21,8 +21,8 @@ pub(crate) struct ExportScratch<const W: usize> {
     counts: Vec<u32>,
     /// One block's counts by destination position.
     block_counts: Vec<u32>,
-    /// `src_of[p] = map.bucket_at(p) ^ bd`.
-    src_of: Vec<u32>,
+    /// `source_of[p] = map.bucket_at(p) ^ bd`.
+    source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
 }
@@ -32,7 +32,7 @@ impl<const W: usize> Default for ExportScratch<W> {
         Self {
             counts: Vec::new(),
             block_counts: Vec::new(),
-            src_of: Vec::new(),
+            source_of: Vec::new(),
             pool: Vec::new(),
         }
     }
@@ -53,7 +53,7 @@ enum RowEmitter<'p, const W: usize> {
         entry: &'p DeltaEntry<W>,
     },
     /// The identity pass of a rotation is never remote.
-    Generator { prep: &'p RotationPrep<W> },
+    Generator { rotation: &'p RotationPrep<W> },
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
@@ -77,7 +77,7 @@ impl<const W: usize> RowEmitter<'_, W> {
     ) -> Option<([u64; W], [u64; W], Complex64)> {
         match self {
             RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, c),
-            RowEmitter::Generator { prep } => prep.emit_gen(x, z, c),
+            RowEmitter::Generator { rotation } => rotation.emit_gen(x, z, c),
         }
     }
 }
@@ -87,14 +87,14 @@ impl<const W: usize> RowEmitter<'_, W> {
 /// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
 pub(crate) fn export_layer<const W: usize>(
     local: &PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     plan: &PartitionPlan,
     size: u32,
     map: &ChunkMap,
     scratch: &mut ExportScratch<W>,
 ) -> (Vec<Option<PartnerPayload<W>>>, ExportCounts) {
     let k = plan.remote.len();
-    let nb = local.num_buckets();
+    let num_buckets = local.num_buckets();
     let mut send: Vec<Option<PartnerPayload<W>>> = (0..size).map(|_| None).collect();
     let mut counts = ExportCounts {
         rows_to: vec![0; size as usize],
@@ -107,17 +107,17 @@ pub(crate) fn export_layer<const W: usize>(
     let emitters: Vec<RowEmitter<'_, W>> = plan
         .remote
         .iter()
-        .map(|r| match prep {
+        .map(|r| match prepared {
             Prepared::Local(ptm) => RowEmitter::Tabulated {
                 ptm,
                 entry: &ptm.deltas()[r.entry],
             },
-            Prepared::Rotation(p) => {
+            Prepared::Rotation(rotation) => {
                 debug_assert_eq!(
                     r.entry, 1,
                     "a rotation's only remote entry is the generator pass",
                 );
-                RowEmitter::Generator { prep: p }
+                RowEmitter::Generator { rotation }
             }
         })
         .collect();
@@ -125,29 +125,29 @@ pub(crate) fn export_layer<const W: usize>(
 
     // Pass 1: bucket-major counts, `counts[β * k + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
-    scratch.counts.resize(nb * k, 0);
+    scratch.counts.resize(num_buckets * k, 0);
     scratch
         .counts
         .par_chunks_mut(k)
         .enumerate()
-        .for_each(|(b, slot)| count_bucket(local, prep, plan, &dense, b, slot));
+        .for_each(|(b, slot)| count_bucket(local, prepared, plan, &dense, b, slot));
 
     // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
         map.positions(),
-        nb,
+        num_buckets,
         "the chunk map is built for a different bucket count than the sum has",
     );
     scratch.block_counts.clear();
-    scratch.block_counts.resize(nb, 0);
-    scratch.src_of.clear();
-    scratch.src_of.resize(nb, 0);
+    scratch.block_counts.resize(num_buckets, 0);
+    scratch.source_of.clear();
+    scratch.source_of.resize(num_buckets, 0);
     let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
-        for p in 0..nb {
-            let src = map.bucket_at(p as u32) ^ r.bucket_delta;
-            scratch.src_of[p] = src;
-            scratch.block_counts[p] = scratch.counts[src as usize * k + i];
+        for p in 0..num_buckets {
+            let source = map.bucket_at(p as u32) ^ r.bucket_delta;
+            scratch.source_of[p] = source;
+            scratch.block_counts[p] = scratch.counts[source as usize * k + i];
         }
         let q = r.partner as usize;
         let payload = send[q].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
@@ -174,7 +174,15 @@ pub(crate) fn export_layer<const W: usize>(
                 z: &mut z[..rows],
                 c: &mut coeff[..rows],
             };
-            fill_range(local, &emitters[i], offsets, &scratch.src_of, 0, nb, cols);
+            fill_range(
+                local,
+                &emitters[i],
+                offsets,
+                &scratch.source_of,
+                0,
+                num_buckets,
+                cols,
+            );
         }
         counts.rows_to[q] += rows as u64;
         counts.bytes_to[q] += block.bytes() as u64;
@@ -192,7 +200,7 @@ pub(crate) fn export_layer<const W: usize>(
 /// Count one source bucket's exported rows, one slot per remote delta.
 fn count_bucket<const W: usize>(
     local: &PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     plan: &PartitionPlan,
     dense: &[bool],
     b: usize,
@@ -200,7 +208,7 @@ fn count_bucket<const W: usize>(
 ) {
     let (bx, bz, bc) = local.bucket(b);
     let n = bc.len();
-    match prep {
+    match prepared {
         Prepared::Local(ptm) => {
             let mut all_dense = true;
             for (k, &d) in dense.iter().enumerate() {
@@ -223,16 +231,16 @@ fn count_bucket<const W: usize>(
                 }
             }
         }
-        Prepared::Rotation(p) => {
+        Prepared::Rotation(rotation) => {
             debug_assert_eq!(out.len(), 1, "a rotation has at most one remote delta");
-            let mut anti = 0u32;
+            let mut anticommuting = 0u32;
             for t in 0..n {
                 let v = PauliString::<W> { x: bx[t], z: bz[t] };
-                if !v.commutes_with(&p.gen) {
-                    anti += 1;
+                if !v.commutes_with(&rotation.gen) {
+                    anticommuting += 1;
                 }
             }
-            out[0] = anti;
+            out[0] = anticommuting;
         }
     }
 }
@@ -242,7 +250,7 @@ fn fill_range<const W: usize>(
     local: &PauliSum<W>,
     emitter: &RowEmitter<'_, W>,
     offsets: &[u32],
-    src_of: &[u32],
+    source_of: &[u32],
     lo: usize,
     hi: usize,
     cols: BlockCols<'_, W>,
@@ -252,15 +260,15 @@ fn fill_range<const W: usize>(
         let mid = lo + (hi - lo) / 2;
         let (head, tail) = cols.split_at((offsets[mid] - offsets[lo]) as usize);
         rayon::join(
-            || fill_range(local, emitter, offsets, src_of, lo, mid, head),
-            || fill_range(local, emitter, offsets, src_of, mid, hi, tail),
+            || fill_range(local, emitter, offsets, source_of, lo, mid, head),
+            || fill_range(local, emitter, offsets, source_of, mid, hi, tail),
         );
         return;
     }
     let BlockCols { x, z, c } = cols;
     let mut w = 0usize;
-    for &src in &src_of[lo..hi] {
-        let (bx, bz, bc) = local.bucket(src as usize);
+    for &source in &source_of[lo..hi] {
+        let (bx, bz, bc) = local.bucket(source as usize);
         for t in 0..bc.len() {
             if let Some((kx, kz, kc)) = emitter.emit(&bx[t], &bz[t], bc[t]) {
                 x[w] = kx;

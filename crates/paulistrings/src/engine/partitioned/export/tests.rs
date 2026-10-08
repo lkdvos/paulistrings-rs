@@ -36,7 +36,7 @@ struct Exported<const W: usize> {
 /// Split `input` across `rows`'s partitions and export one layer from each.
 fn export_all<const W: usize>(
     input: &PauliSum<W>,
-    ch: &dyn Channel<W>,
+    channel: &dyn Channel<W>,
     adjoint: bool,
     bits: u8,
     seed: u64,
@@ -44,17 +44,17 @@ fn export_all<const W: usize>(
 ) -> Vec<Exported<W>> {
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
     let whole = input.clone().with_hash(hash);
-    let prep = ch
+    let prepared = channel
         .prepare(whole.hash(), adjoint)
         .expect("channel could not be prepared");
     let size = rows.num_partitions() as u32;
     (0..size)
         .map(|rank| {
             let local = whole.filter_partition(rows, rank);
-            let plan = PartitionPlan::new(&prep, rows, rank);
+            let plan = PartitionPlan::new(&prepared, rows, rank);
             let mut scratch = ExportScratch::default();
             let map = map_for(&plan, local.num_buckets());
-            let (send, counts) = export_layer(&local, &prep, &plan, size, &map, &mut scratch);
+            let (send, counts) = export_layer(&local, &prepared, &plan, size, &map, &mut scratch);
             assert!(
                 send[rank as usize].is_none(),
                 "a partition exports to itself"
@@ -96,29 +96,29 @@ fn by_key<const W: usize>(
 /// Row-level oracle: per input term, the summed nonzero rows [`Channel::apply`] emits into another partition (not `naive_apply_layer`, which sums every source).
 fn crossing_rows<const W: usize>(
     input: &PauliSum<W>,
-    ch: &dyn Channel<W>,
+    channel: &dyn Channel<W>,
     adjoint: bool,
     rows: &PartitionRows<W>,
 ) -> Vec<([u64; W], [u64; W], Complex64)> {
-    let mf = ch.max_fanout().max(1);
+    let mf = channel.max_fanout().max(1);
     let mut buf_x = vec![[0u64; W]; mf];
     let mut buf_z = vec![[0u64; W]; mf];
     let mut buf_c = vec![ZERO; mf];
     let mut out = Vec::new();
     for (x, z, c) in input.iter() {
-        let src = rows.partition_of(x, z);
+        let source = rows.partition_of(x, z);
         let mut len = 0usize;
         {
-            let mut buf = OutputBuffer::<W> {
+            let mut buffer = OutputBuffer::<W> {
                 x: &mut buf_x,
                 z: &mut buf_z,
                 coeff: &mut buf_c,
                 len: &mut len,
             };
             if adjoint {
-                ch.apply_adjoint(x, z, c, &mut buf);
+                channel.apply_adjoint(x, z, c, &mut buffer);
             } else {
-                ch.apply(x, z, c, &mut buf);
+                channel.apply(x, z, c, &mut buffer);
             }
         }
         let mut per_term: HashMap<([u64; W], [u64; W]), Complex64> = HashMap::new();
@@ -126,7 +126,7 @@ fn crossing_rows<const W: usize>(
             *per_term.entry((buf_x[i], buf_z[i])).or_insert(ZERO) += buf_c[i];
         }
         for ((kx, kz), kc) in per_term {
-            if kc != ZERO && rows.partition_of(&kx, &kz) != src {
+            if kc != ZERO && rows.partition_of(&kx, &kz) != source {
                 out.push((kx, kz, kc));
             }
         }
@@ -137,10 +137,10 @@ fn crossing_rows<const W: usize>(
 /// `H₀` swaps `X₀ ↔ Z₀`; a partition row on `x₀` puts them in different partitions, so each exports its image to the other.
 #[test]
 fn a_single_bucket_h_layer_exports_the_swapped_keys() {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
-    acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(2.0, 0.0));
-    let input = acc.finalize();
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
+    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(2.0, 0.0));
+    let input = accumulator.finalize();
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
     assert_eq!(rows.partition_of(&[1], &[0]), 1, "X₀ is in partition 1");
     assert_eq!(rows.partition_of(&[0], &[1]), 0, "Z₀ is in partition 0");
@@ -182,12 +182,12 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
         }
         g
     };
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 3);
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 3);
     for p in [gen, PauliString::<1>::z(1), PauliString::<1>::x(3)] {
         assert!(p.commutes_with(&gen), "fixture term must commute");
-        acc.add_term(p, Phase::ONE, Complex64::new(1.5, 0.0));
+        accumulator.add_term(p, Phase::ONE, Complex64::new(1.5, 0.0));
     }
-    let input = acc.finalize();
+    let input = accumulator.finalize();
     // A row on the `x` bit of qubit 2 makes `part(gen) = 1`: the generator pass is remote.
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64 << 2]], vec![[0u64]]);
     assert_eq!(rows.partition_of(&gen.x, &gen.z), 1);
@@ -210,22 +210,22 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
 #[test]
 fn every_segment_holds_the_rows_of_its_destination_bucket() {
     let input = rand_sum::<1>(700, 8, 0x9C7);
-    for (_name, ch) in &differential_channels_w1() {
+    for (_name, channel) in &differential_channels_w1() {
         for &adjoint in &[false, true] {
             for &bits in &[1u8, 3, 4] {
                 for &pbits in &[1u8, 2] {
                     let rows = PartitionRows::<1>::from_seed(8, pbits, 0x1234);
                     let hash = Gf2Hash::<1>::new(8, bits, 0xAB);
                     let whole = input.clone().with_hash(hash);
-                    let prep = ch.prepare(whole.hash(), adjoint).expect("prepare");
+                    let prepared = channel.prepare(whole.hash(), adjoint).expect("prepare");
                     let size = rows.num_partitions() as u32;
                     for rank in 0..size {
                         let local = whole.filter_partition(&rows, rank);
-                        let plan = PartitionPlan::new(&prep, &rows, rank);
+                        let plan = PartitionPlan::new(&prepared, &rows, rank);
                         let map = map_for(&plan, local.num_buckets());
                         let mut scratch = ExportScratch::default();
                         let (send, _) =
-                            export_layer(&local, &prep, &plan, size, &map, &mut scratch);
+                            export_layer(&local, &prepared, &plan, size, &map, &mut scratch);
                         for payload in send.iter().flatten() {
                             for block in &payload.blocks {
                                 for p in 0..block.num_buckets() {
@@ -253,12 +253,12 @@ fn every_segment_holds_the_rows_of_its_destination_bucket() {
 #[test]
 fn the_counted_rows_are_the_filled_rows() {
     let input = rand_sum::<1>(700, 8, 0x9C0);
-    for (name, ch) in &differential_channels_w1() {
+    for (name, channel) in &differential_channels_w1() {
         for &adjoint in &[false, true] {
             for &bits in &[0u8, 3] {
                 for &pbits in &[1u8, 2] {
                     let rows = PartitionRows::<1>::from_seed(8, pbits, 0x1234);
-                    let exports = export_all(&input, ch.as_ref(), adjoint, bits, 0xAB, &rows);
+                    let exports = export_all(&input, channel.as_ref(), adjoint, bits, 0xAB, &rows);
                     for e in &exports {
                         let mut rows_to = vec![0u64; rows.num_partitions()];
                         for (q, payload) in e.send.iter().enumerate() {
@@ -293,14 +293,15 @@ fn the_counted_rows_are_the_filled_rows() {
 #[test]
 fn the_export_is_the_partition_crossing_rows_w1() {
     let input = rand_sum::<1>(700, 8, 0x9C1);
-    for (name, ch) in &differential_channels_w1() {
+    for (name, channel) in &differential_channels_w1() {
         for &adjoint in &[false, true] {
             for &pbits in &[1u8, 2] {
                 for &seed in &[0x2222u64, 0x7777] {
                     let rows = PartitionRows::<1>::from_seed(8, pbits, seed);
-                    let want = by_key(crossing_rows(&input, ch.as_ref(), adjoint, &rows));
+                    let want = by_key(crossing_rows(&input, channel.as_ref(), adjoint, &rows));
                     for &bits in &[0u8, 4] {
-                        let exports = export_all(&input, ch.as_ref(), adjoint, bits, 0xAB, &rows);
+                        let exports =
+                            export_all(&input, channel.as_ref(), adjoint, bits, 0xAB, &rows);
                         let got = by_key(all_rows(&exports));
                         let what =
                             format!("{name} adjoint={adjoint} bits={bits} p={pbits} seed={seed:x}");
@@ -326,12 +327,12 @@ fn the_export_is_the_partition_crossing_rows_w1() {
 #[test]
 fn the_export_is_the_partition_crossing_rows_w2() {
     let input = rand_sum_real::<2>(800, 128, 0x9C2);
-    for (name, ch) in &differential_channels_w2() {
+    for (name, channel) in &differential_channels_w2() {
         for &adjoint in &[false, true] {
             let rows = PartitionRows::<2>::from_seed(128, 2, 0x3333);
-            let want = by_key(crossing_rows(&input, ch.as_ref(), adjoint, &rows));
+            let want = by_key(crossing_rows(&input, channel.as_ref(), adjoint, &rows));
             for &bits in &[2u8, 5] {
-                let exports = export_all(&input, ch.as_ref(), adjoint, bits, 0xCD, &rows);
+                let exports = export_all(&input, channel.as_ref(), adjoint, bits, 0xCD, &rows);
                 let got = by_key(all_rows(&exports));
                 let what = format!("{name} adjoint={adjoint} bits={bits}");
                 assert_eq!(got.len(), want.len(), "{what}: distinct keys");
@@ -351,9 +352,9 @@ fn the_export_is_the_partition_crossing_rows_w2() {
 #[test]
 fn exported_rows_are_addressed_to_their_own_partition() {
     let input = rand_sum::<1>(400, 8, 0x9C3);
-    for (name, ch) in &differential_channels_w1() {
+    for (name, channel) in &differential_channels_w1() {
         let rows = PartitionRows::<1>::from_seed(8, 2, 0x4444);
-        for exported in export_all(&input, ch.as_ref(), false, 3, 0xAB, &rows) {
+        for exported in export_all(&input, channel.as_ref(), false, 3, 0xAB, &rows) {
             for (q, payload) in exported.send.iter().enumerate() {
                 let Some(payload) = payload else { continue };
                 for block in &payload.blocks {
@@ -400,20 +401,26 @@ fn a_reused_scratch_gives_the_same_export() {
         .iter()
         .find(|(n, _)| *n == "haar_su4")
         .expect("the dense SU(4) cell");
-    let prep = wide.prepare(whole.hash(), false).unwrap();
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let prepared = wide.prepare(whole.hash(), false).unwrap();
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     let wide_local = whole.filter_partition(&rows, 0);
     let map = map_for(&plan, wide_local.num_buckets());
-    let _ = export_layer(&wide_local, &prep, &plan, 4, &map, &mut scratch);
+    let _ = export_layer(&wide_local, &prepared, &plan, 4, &map, &mut scratch);
 
     let h = Clifford1Q::h(3);
-    let prep = Channel::<1>::prepare(&h, whole.hash(), false).unwrap();
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let prepared = Channel::<1>::prepare(&h, whole.hash(), false).unwrap();
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     let local = whole.filter_partition(&rows, 0);
     let map = map_for(&plan, local.num_buckets());
-    let (reused, counts_reused) = export_layer(&local, &prep, &plan, 4, &map, &mut scratch);
-    let (fresh, counts_fresh) =
-        export_layer(&local, &prep, &plan, 4, &map, &mut ExportScratch::default());
+    let (reused, counts_reused) = export_layer(&local, &prepared, &plan, 4, &map, &mut scratch);
+    let (fresh, counts_fresh) = export_layer(
+        &local,
+        &prepared,
+        &plan,
+        4,
+        &map,
+        &mut ExportScratch::default(),
+    );
     assert_eq!(counts_reused, counts_fresh);
     assert_eq!(reused.len(), fresh.len());
     for (a, b) in reused.iter().zip(&fresh) {

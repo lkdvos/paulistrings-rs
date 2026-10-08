@@ -53,13 +53,13 @@ impl Collectives for CountingCollectives<'_> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.inner.allreduce_max_u8(v)
     }
-    fn allreduce_sum_u64(&self, buf: &mut [u64]) {
+    fn allreduce_sum_u64(&self, buffer: &mut [u64]) {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.allreduce_sum_u64(buf)
+        self.inner.allreduce_sum_u64(buffer)
     }
-    fn allreduce_sum_f64(&self, buf: &mut [f64]) {
+    fn allreduce_sum_f64(&self, buffer: &mut [f64]) {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.allreduce_sum_f64(buf)
+        self.inner.allreduce_sum_f64(buffer)
     }
     fn barrier(&self) {
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -91,11 +91,11 @@ pub(crate) fn scatter_local<const W: usize>(
     sum: &PauliSum<W>,
     rows: &PartitionRows<W>,
     rank: u32,
-    coll: &dyn Collectives,
+    collectives: &dyn Collectives,
 ) -> PauliSum<W> {
     let mut local = sum.filter_partition(rows, rank);
     let want = desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
-    let want = coll.allreduce_max_u8(want);
+    let want = collectives.allreduce_max_u8(want);
     local.coarsen_to(scatter_bits(local.hash().bits(), rows.bits(), want));
     local
 }
@@ -115,16 +115,16 @@ pub(crate) struct PartitionCtx<'a, const W: usize> {
 
 /// [`Channel::prepare`], or the unpartitioned engine's hard error naming the partition and layer.
 fn prepare_or_panic<const W: usize>(
-    ch: &dyn Channel<W>,
+    channel: &dyn Channel<W>,
     hash: &Gf2Hash<W>,
     adjoint: bool,
     rank: usize,
-    idx: usize,
+    index: usize,
 ) -> crate::channel::prepared::Prepared<W> {
-    ch.prepare(hash, adjoint).unwrap_or_else(|| {
-        let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
+    channel.prepare(hash, adjoint).unwrap_or_else(|| {
+        let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
-            "partition {rank}, layer {idx}: Channel::prepare declined, so this channel \
+            "partition {rank}, layer {index}: Channel::prepare declined, so this channel \
              cannot be propagated. The engine tabulates channels of support ≤ \
              {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
              not write outside its declared support. See \
@@ -139,7 +139,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
-    ctx: PartitionCtx<'_, W>,
+    context: PartitionCtx<'_, W>,
     work: &mut PartitionWork<B>,
     transport: &X,
 ) where
@@ -152,29 +152,29 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         rank,
         size,
         tracing,
-    } = ctx;
+    } = context;
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
-    let size32 = transport.size();
+    let group_size = transport.size();
     // `finalizes_layer` is a property of the policy type, so skipping the collective call is safe on every partition alike.
     let finalizes = policy.finalizes_layer();
     let policy_calls = AtomicU32::new(0);
     let local = &mut work.local;
 
     for k in 0..n {
-        let idx = match direction {
+        let index = match direction {
             Direction::Forward => k,
             Direction::Heisenberg => n - 1 - k,
         };
-        let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
+        let channel: &dyn Channel<W> = circuit.channels[index].as_ref();
 
         let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
         let want_timer = tracing || debug_on;
-        let layer_t0 = want_timer.then(Instant::now);
+        let layer_start = want_timer.then(Instant::now);
         let terms_before = local.len();
 
         #[cfg(feature = "phase-timing")]
-        let mut st = Stamp::now();
+        let mut stamp = Stamp::now();
         #[cfg(feature = "phase-timing")]
         {
             let stats = local.stats();
@@ -183,39 +183,39 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         }
 
         // Prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
-        let mut prep = prepare_or_panic(ch, local.hash(), adjoint, rank, idx);
-        let mut plan = PartitionPlan::new(&prep, rows, rank as u32);
+        let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
+        let mut plan = PartitionPlan::new(&prepared, rows, rank as u32);
         #[cfg(feature = "phase-timing")]
-        st.lap(&mut local.stats().prepare_ns);
+        stamp.lap(&mut local.stats().prepare_ns);
 
         let mut collectives = 0u32;
         // At `P = 1` the local answer is the agreed one, so the loop rebuckets every layer exactly as `propagate` does.
-        let solo = size32 == 1;
+        let solo = group_size == 1;
         if solo || plan.has_remote() || agrees_bucket_bits(k) {
             let mut want =
-                local.proposed_bits(&prep, options.target_bucket_len, options.min_buckets);
+                local.proposed_bits(&prepared, options.target_bucket_len, options.min_buckets);
             if !solo {
                 want = transport.allreduce_max_u8(want);
                 collectives += 1;
             }
             #[cfg(feature = "phase-timing")]
-            st.lap(&mut local.stats().collective_ns);
+            stamp.lap(&mut local.stats().collective_ns);
             if want > local.hash().bits() {
                 while local.hash().bits() < want {
                     local.refine();
                 }
                 #[cfg(feature = "phase-timing")]
-                st.lap(&mut local.stats().rebucket_ns);
-                prep = prepare_or_panic(ch, local.hash(), adjoint, rank, idx);
-                plan = PartitionPlan::new(&prep, rows, rank as u32);
+                stamp.lap(&mut local.stats().rebucket_ns);
+                prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
+                plan = PartitionPlan::new(&prepared, rows, rank as u32);
                 #[cfg(feature = "phase-timing")]
-                st.lap(&mut local.stats().prepare_ns);
+                stamp.lap(&mut local.stats().prepare_ns);
             }
         }
 
-        let counts = local.apply_layer(&prep, &plan, rows, policy, transport);
+        let counts = local.apply_layer(&prepared, &plan, rows, policy, transport);
         #[cfg(feature = "phase-timing")]
-        st.rearm();
+        stamp.rearm();
 
         if finalizes {
             policy_calls.store(0, Ordering::Relaxed);
@@ -228,7 +228,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         }
         #[cfg(feature = "phase-timing")]
         {
-            st.lap(&mut local.stats().finalize_ns);
+            stamp.lap(&mut local.stats().finalize_ns);
             let terms_out = local.len() as u64;
             local.stats().terms_out += terms_out;
         }
@@ -236,24 +236,24 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         // The trace sits behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion.
         let remote_deltas = counts.remote_deltas;
         let rows_received = counts.rows_received;
-        let dt = layer_t0.map(|t0| t0.elapsed());
+        let elapsed = layer_start.map(|start| start.elapsed());
         if tracing {
             record_layer_row(
                 &mut work.rows,
                 local.hash().bits(),
                 collectives,
-                idx as u32,
+                index as u32,
                 k as u32,
-                ch.debug_name(),
+                channel.debug_name(),
                 terms_before,
                 local.len(),
                 counts,
-                dt.unwrap_or_default().as_nanos() as u64,
+                elapsed.unwrap_or_default().as_nanos() as u64,
             );
         }
 
         if debug_on {
-            if let Some(dt) = dt {
+            if let Some(elapsed) = elapsed {
                 log::debug!(
                     target: LOG_TARGET,
                     "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \
@@ -262,12 +262,12 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                     size,
                     k + 1,
                     n,
-                    ch.debug_name(),
+                    channel.debug_name(),
                     terms_before,
                     local.len(),
                     remote_deltas,
                     rows_received,
-                    dt.as_secs_f64() * 1e3,
+                    elapsed.as_secs_f64() * 1e3,
                 );
             }
         }

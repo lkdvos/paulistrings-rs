@@ -19,14 +19,14 @@ fn z_row(qubit: u32) -> PartitionRows<2> {
     PartitionRows::<2>::from_rows(NQ, vec![[0u64; 2]], vec![rz])
 }
 
-fn prep_of<C: Channel<2>>(ch: &C) -> Prepared<2> {
-    ch.prepare(&hash(), false).unwrap()
+fn prep_of<C: Channel<2>>(channel: &C) -> Prepared<2> {
+    channel.prepare(&hash(), false).unwrap()
 }
 
 #[test]
 fn without_partition_rows_nothing_is_remote() {
     let rows = PartitionRows::<2>::none(NQ);
-    for (name, ch) in [
+    for (name, channel) in [
         ("h", Box::new(Clifford1Q::h(3)) as Box<dyn Channel<2>>),
         ("cnot", Box::new(Clifford2Q::cnot(1, 4))),
         (
@@ -34,18 +34,18 @@ fn without_partition_rows_nothing_is_remote() {
             Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
         ),
     ] {
-        let prep = ch.prepare(&hash(), false).unwrap();
-        let plan = PartitionPlan::new(&prep, &rows, 0);
+        let prepared = channel.prepare(&hash(), false).unwrap();
+        let plan = PartitionPlan::new(&prepared, &rows, 0);
         assert!(!plan.has_remote(), "{name}: unexpected remote deltas");
         assert!(plan.remote.is_empty(), "{name}");
         assert_eq!(plan.partners().count(), 0, "{name}");
         assert!(plan.local_entries.iter().all(|b| *b), "{name}");
         assert_eq!(
             plan.local_bucket_deltas,
-            prep.bucket_deltas(),
+            prepared.bucket_deltas(),
             "{name}: local span input differs from the channel's own",
         );
-        let Prepared::Local(ptm) = &prep else {
+        let Prepared::Local(ptm) = &prepared else {
             panic!("{name}: expected Local")
         };
         assert_eq!(plan.rest_streams_total, ptm.num_deltas() - 1, "{name}");
@@ -58,12 +58,12 @@ fn a_wide_rotation_without_partition_rows_is_all_local() {
     for q in [5u32, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
-    let prep = prep_of(&PauliRotation::new(gen, 0.41));
-    assert!(matches!(prep, Prepared::Rotation(_)));
-    let plan = PartitionPlan::new(&prep, &PartitionRows::<2>::none(NQ), 0);
+    let prepared = prep_of(&PauliRotation::new(gen, 0.41));
+    assert!(matches!(prepared, Prepared::Rotation(_)));
+    let plan = PartitionPlan::new(&prepared, &PartitionRows::<2>::none(NQ), 0);
     assert_eq!(plan.local_entries, vec![true, true]);
     assert!(!plan.has_remote());
-    assert_eq!(plan.local_bucket_deltas, prep.bucket_deltas());
+    assert_eq!(plan.local_bucket_deltas, prepared.bucket_deltas());
     assert_eq!(plan.rest_streams_total, 1);
 }
 
@@ -72,14 +72,14 @@ fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
     // H(3)'s delta set is {0, XZ on qubit 3}. A single partition row that is Z on qubit 3 reads the z-bit there, which that mask sets, so `part(XZ_3) = 1`.
     let rows = z_row(3);
     assert_eq!(rows.num_partitions(), 2);
-    let prep = prep_of(&Clifford1Q::h(3));
-    let Prepared::Local(ptm) = &prep else {
+    let prepared = prep_of(&Clifford1Q::h(3));
+    let Prepared::Local(ptm) = &prepared else {
         panic!("expected Local")
     };
     assert_eq!(ptm.num_deltas(), 2);
 
     for rank in 0..2u32 {
-        let plan = PartitionPlan::new(&prep, &rows, rank);
+        let plan = PartitionPlan::new(&prepared, &rows, rank);
         assert_eq!(plan.local_entries, vec![true, false], "rank {rank}");
         assert!(plan.has_remote(), "rank {rank}");
         assert_eq!(
@@ -118,12 +118,12 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
     }
     // A Z row on qubit 1 reads the generator's z-bit there, which is set.
     let rows = z_row(1);
-    let prep = prep_of(&PauliRotation::new(gen, 0.41));
-    let Prepared::Rotation(r) = &prep else {
+    let prepared = prep_of(&PauliRotation::new(gen, 0.41));
+    let Prepared::Rotation(r) = &prepared else {
         panic!("expected Rotation")
     };
 
-    let plan = PartitionPlan::new(&prep, &rows, 1);
+    let plan = PartitionPlan::new(&prepared, &rows, 1);
     assert_eq!(plan.local_entries, vec![true, false]);
     assert_eq!(plan.local_bucket_deltas, vec![0]);
     assert_eq!(
@@ -141,8 +141,8 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
 #[test]
 fn local_and_remote_cover_every_entry_exactly_once() {
     let mut rng = Xs64::new(0xA11CE);
-    let prep = prep_of(&GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix()));
-    let Prepared::Local(ptm) = &prep else {
+    let prepared = prep_of(&GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix()));
+    let Prepared::Local(ptm) = &prepared else {
         panic!("expected Local")
     };
     // The dense fixture realizes all sixteen deltas.
@@ -154,7 +154,7 @@ fn local_and_remote_cover_every_entry_exactly_once() {
         let rows_z: Vec<[u64; 2]> = (0..bits).map(|_| rng.next_array::<2>()).collect();
         let rows = PartitionRows::<2>::from_rows(NQ, rows_x, rows_z);
         let rank = (rng.next_u64() as u32) % rows.num_partitions() as u32;
-        let plan = PartitionPlan::new(&prep, &rows, rank);
+        let plan = PartitionPlan::new(&prepared, &rows, rank);
 
         assert_eq!(plan.local_entries.len(), ptm.num_deltas());
         let n_local = plan.local_entries.iter().filter(|b| **b).count();

@@ -450,7 +450,9 @@ fn resolve_auto(max_partitions: Option<usize>) -> Vec<PartitionSlot> {
         rest = tail;
         let cpus = group
             .iter()
-            .fold(CpuSet(Vec::new()), |acc, (_, set)| acc.union(set));
+            .fold(CpuSet(Vec::new()), |accumulator, (_, set)| {
+                accumulator.union(set)
+            });
         slots.push(PartitionSlot {
             node: (group.len() == 1).then(|| group[0].0),
             threads: cpus.len(),

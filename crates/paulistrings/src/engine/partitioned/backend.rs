@@ -18,11 +18,11 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
     /// The bucket bits this partition proposes for the layer; a backend may raise the host formula but never lower it.
     fn proposed_bits(
         &self,
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
-        let _ = prep;
+        let _ = prepared;
         crate::pauli_sum::storage::desired_bits(self.len(), target_bucket_len, min_buckets)
             .max(self.hash().bits())
     }
@@ -36,13 +36,13 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
 pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
     fn apply_layer<X: Transport>(
         &mut self,
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         plan: &PartitionPlan,
         rows: &PartitionRows<W>,
         policy: &T,
         transport: &X,
     ) -> LayerExchangeCounts;
-    fn finalize_layer(&mut self, policy: &T, coll: &dyn Collectives);
+    fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
 }
 
 /// A partition in host memory with its retained scratch; `pub` only so it can be a `pub` type's default backend.
@@ -99,7 +99,7 @@ where
     #[inline]
     fn apply_layer<X: Transport>(
         &mut self,
-        prep: &Prepared<W>,
+        prepared: &Prepared<W>,
         plan: &PartitionPlan,
         rows: &PartitionRows<W>,
         policy: &T,
@@ -107,7 +107,7 @@ where
     ) -> LayerExchangeCounts {
         apply_layer_partitioned_with_plan(
             &mut self.sum,
-            prep,
+            prepared,
             plan,
             rows,
             policy,
@@ -117,8 +117,8 @@ where
     }
 
     #[inline]
-    fn finalize_layer(&mut self, policy: &T, coll: &dyn Collectives) {
-        policy.finalize_layer_partitioned(&mut self.sum, coll);
+    fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
+        policy.finalize_layer_partitioned(&mut self.sum, collectives);
     }
 }
 

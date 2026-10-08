@@ -109,13 +109,13 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         c: &mut Vec<Complex64>,
     ) {
         #[cfg(feature = "phase-timing")]
-        let t0 = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let p = self.map.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
         self.wait.wait_chunk(self.map.chunk_of_position(p));
         #[cfg(feature = "phase-timing")]
         self.chunk_wait_ns.fetch_add(
-            t0.elapsed().as_nanos() as u64,
+            start.elapsed().as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
         for block in &self.blocks {
@@ -127,7 +127,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         }
         #[cfg(feature = "phase-timing")]
         self.append_ns.fetch_add(
-            t0.elapsed().as_nanos() as u64,
+            start.elapsed().as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
     }
@@ -164,10 +164,10 @@ impl LayerExchangeCounts {
     }
 }
 
-/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prep, rows, transport.rank())`.
+/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`.
 pub(crate) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
     local: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     plan: &PartitionPlan,
     #[cfg_attr(not(debug_assertions), allow(unused_variables))] rows: &PartitionRows<W>,
     policy: &T,
@@ -182,21 +182,28 @@ where
 
     // No transport call at all: every partition takes this branch, since `part(d)` depends on the delta alone.
     if !plan.has_remote() {
-        apply_layer_bucketed(local, prep, policy, &mut state.layer);
+        apply_layer_bucketed(local, prepared, policy, &mut state.layer);
         return LayerExchangeCounts::none(size);
     }
 
     #[cfg(feature = "phase-timing")]
-    let mut st = crate::engine::stats::Stamp::now();
+    let mut stamp = crate::engine::stats::Stamp::now();
     // The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count.
     let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
     state
         .chunks
         .rebuild(&span, local.num_buckets(), exchange_chunks());
-    let (send, export) = export_layer(local, prep, plan, size, &state.chunks, &mut state.export);
+    let (send, export) = export_layer(
+        local,
+        prepared,
+        plan,
+        size,
+        &state.chunks,
+        &mut state.export,
+    );
     #[cfg(feature = "phase-timing")]
     {
-        st.lap(&mut state.layer.stats.export_ns);
+        stamp.lap(&mut state.layer.stats.export_ns);
         state.layer.stats.rows_exported += export.rows_to.iter().sum::<u64>();
     }
     #[cfg(debug_assertions)]
@@ -211,23 +218,23 @@ where
         }
     }
     let retained;
-    let local_prep: &Prepared<W> = match prep {
+    let local_prepared: &Prepared<W> = match prepared {
         Prepared::Local(ptm) => {
             retained = Prepared::Local(ptm.retain_entries(&plan.local_entries));
             &retained
         }
         // A rotation's identity entry is always local, so the generator crosses; `gen_local` switches its pass off.
-        Prepared::Rotation(_) => prep,
+        Prepared::Rotation(_) => prepared,
     };
     let knobs = LayerKnobs {
         bucket_deltas: Some(&plan.local_bucket_deltas),
         rest_streams: Some(plan.rest_streams_total),
-        // From `prep`, not `local_prep`, so every partition picks the unpartitioned run's sort kernel.
-        rows_per_key: match prep {
+        // From `prepared`, not `local_prepared`, so every partition picks the unpartitioned run's sort kernel.
+        rows_per_key: match prepared {
             Prepared::Local(ptm) => Some(rest_rows_per_key(ptm)),
             Prepared::Rotation(_) => None,
         },
-        gen_local: match prep {
+        gen_local: match prepared {
             Prepared::Rotation(_) => plan.local_entries[1],
             Prepared::Local(_) => true,
         },
@@ -266,7 +273,14 @@ where
                 .map(|block| block.rows() as u64)
                 .sum();
             let recv_rows = RecvRows::new(plan, recv, map, wait);
-            apply_layer_bucketed_with(local, local_prep, policy, layer_scratch, &recv_rows, knobs);
+            apply_layer_bucketed_with(
+                local,
+                local_prepared,
+                policy,
+                layer_scratch,
+                &recv_rows,
+                knobs,
+            );
             #[cfg(feature = "phase-timing")]
             {
                 layer_scratch.stats.recv_rows += rows_received;
@@ -285,7 +299,7 @@ where
         // Excludes the body it wraps: the transfer the coset loop did not hide.
         layer_scratch.stats.exchange_ns +=
             exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
-        st.rearm();
+        stamp.rearm();
     }
     export_scratch.pool.extend(recv.into_iter().flatten());
 

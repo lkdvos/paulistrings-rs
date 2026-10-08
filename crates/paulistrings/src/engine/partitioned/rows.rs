@@ -35,15 +35,15 @@ pub fn circuit_generators<const W: usize>(
     let mut seen: HashMap<Mask<W>, usize> = HashMap::new();
 
     for k in 0..n {
-        let idx = if adjoint { n - 1 - k } else { k };
-        let ch = &circuit.channels[idx];
-        let prep = ch
-            .prepare(hash, adjoint)
-            .unwrap_or_else(|| panic!("circuit_generators: layer {idx} declined Channel::prepare"));
+        let index = if adjoint { n - 1 - k } else { k };
+        let channel = &circuit.channels[index];
+        let prepared = channel.prepare(hash, adjoint).unwrap_or_else(|| {
+            panic!("circuit_generators: layer {index} declined Channel::prepare")
+        });
         // One layer's masks are distinct, so a repeat is a second layer.
-        let masks: Vec<Mask<W>> = match &prep {
+        let masks: Vec<Mask<W>> = match &prepared {
             Prepared::Local(ptm) => ptm.deltas().iter().map(|d| d.mask()).collect(),
-            Prepared::Rotation(r) => vec![r.gen_mask()],
+            Prepared::Rotation(rotation) => vec![rotation.gen_mask()],
         };
         for m in masks {
             if mask_is_zero(&m) {
@@ -57,7 +57,7 @@ pub fn circuit_generators<const W: usize>(
                         mask_x: m.0,
                         mask_z: m.1,
                         weight: 1.0,
-                        name: ch.debug_name(),
+                        name: channel.debug_name(),
                     });
                 }
             }

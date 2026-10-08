@@ -33,7 +33,7 @@ pub trait PartitionedTruncation<const W: usize>: TruncationPolicy<W> {
     /// # Panics
     ///
     /// If the policy reports [`finalizes_layer()`](TruncationPolicy::finalizes_layer) and has not overridden this method.
-    fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _coll: &dyn Collectives) {
+    fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _collectives: &dyn Collectives) {
         assert!(
             !self.finalizes_layer(),
             "{} has a layer finalization but no partitioned one. A layer pass \
@@ -57,9 +57,9 @@ where
     B: PartitionedTruncation<W>,
 {
     /// Both sides, in [`And::finalize_layer`](TruncationPolicy::finalize_layer)'s order.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
-        self.0.finalize_layer_partitioned(local, coll);
-        self.1.finalize_layer_partitioned(local, coll);
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        self.0.finalize_layer_partitioned(local, collectives);
+        self.1.finalize_layer_partitioned(local, collectives);
     }
 }
 
@@ -69,21 +69,22 @@ where
     B: PartitionedTruncation<W>,
 {
     /// Neither side, since `Or`'s unpartitioned [`finalize_layer`](TruncationPolicy::finalize_layer) is the no-op default and the two must agree.
-    fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _coll: &dyn Collectives) {}
+    fn finalize_layer_partitioned(&self, _local: &mut PauliSum<W>, _collectives: &dyn Collectives) {
+    }
 }
 
 impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
-    /// One `allreduce_sum_u64` of `[len, hist…]`, then the single-partition edge walk; no early exit, since that would desynchronize the group.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
-        let hist = octave_histogram(local);
+    /// One `allreduce_sum_u64` of `[len, histogram…]`, then the single-partition edge walk; no early exit, since that would desynchronize the group.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        let histogram = octave_histogram(local);
 
         // `u64`, since `P` partitions' `u32` bins can overflow a `u32`.
         let mut packed = [0u64; 1 + APPROX_BINS];
         packed[0] = local.len() as u64;
-        for (slot, &count) in packed[1..].iter_mut().zip(hist.iter()) {
+        for (slot, &count) in packed[1..].iter_mut().zip(histogram.iter()) {
             *slot = u64::from(count);
         }
-        coll.allreduce_sum_u64(&mut packed);
+        collectives.allreduce_sum_u64(&mut packed);
 
         let total = packed[0] as usize;
         let edge = octave_edge(&packed[1..], total, self.0);
@@ -93,20 +94,20 @@ impl<const W: usize> PartitionedTruncation<W> for ApproxTopN {
 
 impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
     /// Reduces `[len, pass]` (the pass from rank 0) and the per-partition `Σ|c|²`, then picks a partition by weight and a term within it, as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
-        let rank = coll.rank() as usize;
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        let rank = collectives.rank() as usize;
         let call = if rank == 0 { self.next_call() } else { 0 };
         let mut head = [local.len() as u64, call];
-        coll.allreduce_sum_u64(&mut head);
+        collectives.allreduce_sum_u64(&mut head);
         let [len, call] = head;
         if len as usize <= self.cache {
             return;
         }
 
         let norms = bucket_norms(local);
-        let mut weights = vec![0.0f64; coll.size() as usize];
+        let mut weights = vec![0.0f64; collectives.size() as usize];
         weights[rank] = norms.iter().sum();
-        coll.allreduce_sum_f64(&mut weights);
+        collectives.allreduce_sum_f64(&mut weights);
         let total: f64 = weights.iter().sum();
         let target = self.target(call, total, len as usize);
         let (chosen, rest) = pick_slot(weights.iter().copied(), target)
@@ -117,12 +118,12 @@ impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
             local.clear();
         }
         if rank == 0 {
-            let n = self.count_collapse();
+            let collapses = self.count_collapse();
             log::debug!(
                 target: LOG_TARGET,
                 "collapse_sample: {len} terms over {} partitions, sum |c|^2 = {total:.6e}, \
-                 collapsed to one on partition {chosen} (collapse {n})",
-                coll.size(),
+                 collapsed to one on partition {chosen} (collapse {collapses})",
+                collectives.size(),
             );
         }
     }
@@ -130,17 +131,17 @@ impl<const W: usize> PartitionedTruncation<W> for CollapseSample {
 
 impl<const W: usize> PartitionedTruncation<W> for BuiltinTruncation {
     /// Arm for arm the host [`finalize_layer`](TruncationPolicy::finalize_layer); panics on a reached `TopN`.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, coll: &dyn Collectives) {
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
         match self {
-            Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer_partitioned(local, coll),
+            Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer_partitioned(local, collectives),
             Self::CollapseSample(s) => {
                 <CollapseSample as PartitionedTruncation<W>>::finalize_layer_partitioned(
-                    s, local, coll,
+                    s, local, collectives,
                 )
             }
             Self::And(a, b) => {
-                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(a, local, coll);
-                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(b, local, coll);
+                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(a, local, collectives);
+                <Self as PartitionedTruncation<W>>::finalize_layer_partitioned(b, local, collectives);
             }
             Self::TopN(_) => panic!(
                 "BuiltinTruncation::TopN has no partitioned layer pass: exact top-n is a distributed k-th selection; use ApproxTopN"

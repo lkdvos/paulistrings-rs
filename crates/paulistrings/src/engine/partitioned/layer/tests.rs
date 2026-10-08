@@ -93,7 +93,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
 /// Run one layer on every partition of `rows` on its own thread (inside a `threads`-wide pool if given), returning the checked parts and counts in rank order.
 fn run_parts<const W: usize, T>(
     whole: &PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     rows: &PartitionRows<W>,
     policy: &T,
     threads: Option<usize>,
@@ -113,7 +113,7 @@ where
                     let mut state = PartitionState::<W>::default();
                     let mut run = || {
                         apply_layer_partitioned(
-                            &mut local, prep, rows, policy, &mut state, &transport,
+                            &mut local, prepared, rows, policy, &mut state, &transport,
                         )
                     };
                     let counts = match threads {
@@ -152,7 +152,7 @@ where
 /// The unpartitioned layer on the whole sum, for the same hash.
 fn unsplit_layer<const W: usize, T>(
     whole: &PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     policy: &T,
 ) -> PauliSum<W>
 where
@@ -160,7 +160,7 @@ where
 {
     let mut sum = whole.clone();
     let mut scratch = LayerScratch::<W>::new();
-    apply_layer_bucketed(&mut sum, prep, policy, &mut scratch);
+    apply_layer_bucketed(&mut sum, prepared, policy, &mut scratch);
     sum
 }
 
@@ -182,19 +182,19 @@ fn rows_seeing_qubit_2_x() -> PartitionRows<1> {
 #[test]
 fn partitioned_layer_matches_naive_oracle_w1() {
     let input = rand_sum::<1>(600, 8, 0x9D0);
-    for (name, ch) in &differential_channels_w1() {
-        let cr: &dyn Channel<1> = ch.as_ref();
+    for (name, channel) in &differential_channels_w1() {
+        let channel_ref: &dyn Channel<1> = channel.as_ref();
         for &adjoint in &[false, true] {
-            let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
+            let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
             for &bits in &[0u8, 1, 3, 6] {
                 let hash = Gf2Hash::<1>::new(8, bits, 0xABCD);
                 let whole = input.clone().with_hash(hash);
-                let prep = cr.prepare(whole.hash(), adjoint).expect("prepare");
-                let unsplit = unsplit_layer(&whole, &prep, &AlwaysKeep);
+                let prepared = channel_ref.prepare(whole.hash(), adjoint).expect("prepare");
+                let unsplit = unsplit_layer(&whole, &prepared, &AlwaysKeep);
                 for &pbits in &[0u8, 1, 2] {
                     for &pseed in &[0x1357u64, 0x2468] {
                         let rows = PartitionRows::<1>::from_seed(8, pbits, pseed);
-                        let (parts, _) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+                        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
                         let got = PauliSum::merge_partitions(parts);
                         let what = format!(
                             "{name} adjoint={adjoint} bits={bits} P={} pseed={pseed:x}",
@@ -213,19 +213,19 @@ fn partitioned_layer_matches_naive_oracle_w1() {
 #[test]
 fn partitioned_layer_matches_naive_oracle_w2() {
     let input = rand_sum_real::<2>(700, 128, 0x9D1);
-    for (name, ch) in &differential_channels_w2() {
-        let cr: &dyn Channel<2> = ch.as_ref();
+    for (name, channel) in &differential_channels_w2() {
+        let channel_ref: &dyn Channel<2> = channel.as_ref();
         for &adjoint in &[false, true] {
-            let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
+            let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
             for &bits in &[2u8, 5] {
                 let hash = Gf2Hash::<2>::new(128, bits, 0xABCD);
                 let whole = input.clone().with_hash(hash);
-                let prep = cr.prepare(whole.hash(), adjoint).expect("prepare");
-                let unsplit = unsplit_layer(&whole, &prep, &AlwaysKeep);
+                let prepared = channel_ref.prepare(whole.hash(), adjoint).expect("prepare");
+                let unsplit = unsplit_layer(&whole, &prepared, &AlwaysKeep);
                 for &pbits in &[0u8, 1, 2] {
                     for &pseed in &[0x1357u64, 0x2468] {
                         let rows = PartitionRows::<2>::from_seed(128, pbits, pseed);
-                        let (parts, _) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+                        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
                         let got = PauliSum::merge_partitions(parts);
                         let what = format!(
                             "{name} adjoint={adjoint} bits={bits} P={} pseed={pseed:x}",
@@ -249,15 +249,15 @@ fn no_remote_deltas_means_no_exchange() {
     let h = Clifford1Q::h(3);
     let hash = Gf2Hash::<1>::new(8, 4, 0x9D);
     let whole = input.clone().with_hash(hash);
-    let prep = Channel::<1>::prepare(&h, whole.hash(), false).expect("prepare");
+    let prepared = Channel::<1>::prepare(&h, whole.hash(), false).expect("prepare");
     assert!(
-        !PartitionPlan::new(&prep, &rows, 0).has_remote(),
+        !PartitionPlan::new(&prepared, &rows, 0).has_remote(),
         "fixture must have no remote delta",
     );
 
     let transports = crate::test_support::LoggingTransport::group(2);
     let parts: Vec<PauliSum<1>> = (0..2).map(|r| whole.filter_partition(&rows, r)).collect();
-    let prep = &prep;
+    let prepared = &prepared;
     let rows = &rows;
     let results: Vec<(PauliSum<1>, LayerExchangeCounts, usize)> = std::thread::scope(|scope| {
         let handles: Vec<_> = parts
@@ -268,7 +268,7 @@ fn no_remote_deltas_means_no_exchange() {
                     let mut state = PartitionState::<1>::default();
                     let counts = apply_layer_partitioned(
                         &mut local,
-                        prep,
+                        prepared,
                         rows,
                         &AlwaysKeep,
                         &mut state,
@@ -303,8 +303,8 @@ fn all_remote_rotation_generator() {
     let input = rand_sum::<1>(500, 8, 0x9D3);
     let hash = Gf2Hash::<1>::new(8, 3, 0x9E);
     let whole = input.clone().with_hash(hash);
-    let prep = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
-    let plan = PartitionPlan::new(&prep, &rows, 0);
+    let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+    let plan = PartitionPlan::new(&prepared, &rows, 0);
     assert!(plan.has_remote(), "the generator must be remote");
     assert!(!plan.local_entries[1], "entry 1 is the generator pass");
     assert_eq!(plan.local_bucket_deltas, vec![0], "only the identity stays");
@@ -315,7 +315,7 @@ fn all_remote_rotation_generator() {
         .count() as u64;
     assert!(anticommuting > 0, "fixture must have anticommuting terms");
 
-    let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+    let (parts, counts) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
     let sent: u64 = counts.iter().map(|c| c.rows_sent.iter().sum::<u64>()).sum();
     let received: u64 = counts.iter().map(|c| c.rows_received).sum();
     assert_eq!(
@@ -349,9 +349,9 @@ fn cancelling_pair(
     );
 
     let probe = |term: PauliString<1>| -> Complex64 {
-        let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
-        acc.add_term(term, Phase::ONE, Complex64::new(1.0, 0.0));
-        naive_apply_layer(&acc.finalize(), rot, &AlwaysKeep, false)
+        let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
+        accumulator.add_term(term, Phase::ONE, Complex64::new(1.0, 0.0));
+        naive_apply_layer(&accumulator.finalize(), rot, &AlwaysKeep, false)
             .get(&w.x, &w.z)
             .unwrap_or(ZERO)
     };
@@ -369,10 +369,10 @@ fn cancelling_input(
     beta: Complex64,
     scale: f64,
 ) -> PauliSum<1> {
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
-    acc.add_term(w, Phase::ONE, beta);
-    acc.add_term(u, Phase::ONE, -alpha * scale);
-    acc.finalize()
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
+    accumulator.add_term(w, Phase::ONE, beta);
+    accumulator.add_term(u, Phase::ONE, -alpha * scale);
+    accumulator.finalize()
 }
 
 /// `keep_term` sees the sum across the partition boundary: two contributions far above the threshold cancel below it, and the term is dropped.
@@ -387,8 +387,8 @@ fn keep_term_sees_the_sum_across_partitions() {
     for bits in [0u8, 3] {
         let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
         let whole = input.clone().with_hash(hash);
-        let prep = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
-        let (parts, _) = run_parts(&whole, &prep, &rows, &policy, None);
+        let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+        let (parts, _) = run_parts(&whole, &prepared, &rows, &policy, None);
         let got = PauliSum::merge_partitions(parts);
         assert!(
             got.get(&w.x, &w.z).is_none(),
@@ -399,7 +399,7 @@ fn keep_term_sees_the_sum_across_partitions() {
         assert_terms_close(&got, &want, TOL, &format!("threshold bits={bits}"));
 
         // Without the threshold the residue is there, and it is the sum.
-        let (parts, _) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
         let kept = PauliSum::merge_partitions(parts);
         let residue = kept.get(&w.x, &w.z).expect("the residue survives");
         assert!(
@@ -422,8 +422,8 @@ fn exact_zero_sum_across_partitions_is_dropped() {
     for bits in [0u8, 3] {
         let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
         let whole = input.clone().with_hash(hash);
-        let prep = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
-        let (parts, _) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+        let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
         let got = PauliSum::merge_partitions(parts);
         assert!(
             got.get(&w.x, &w.z).is_none(),
@@ -448,27 +448,27 @@ fn empty_partition_participates() {
         .find(|(n, _)| *n == "haar_su4")
         .expect("the dense SU(4) cell");
     // Two terms over four partitions: at least two parts are empty.
-    let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
-    acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(
+    let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
+    accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(
         PauliString::<1>::z(5),
         Phase::ONE,
         Complex64::new(-0.5, 0.25),
     );
-    let input = acc.finalize();
+    let input = accumulator.finalize();
     let rows = PartitionRows::<1>::from_seed(8, 2, 0x9D4);
     assert_eq!(rows.num_partitions(), 4);
 
     let hash = Gf2Hash::<1>::new(8, 2, 0x9D5);
     let whole = input.clone().with_hash(hash);
-    let prep = su4.prepare(whole.hash(), false).expect("prepare");
-    assert!(PartitionPlan::new(&prep, &rows, 0).has_remote());
+    let prepared = su4.prepare(whole.hash(), false).expect("prepare");
+    assert!(PartitionPlan::new(&prepared, &rows, 0).has_remote());
 
     assert!(
         (0..rows.num_partitions() as u32).any(|r| whole.filter_partition(&rows, r).is_empty()),
         "the fixture must leave a partition's input empty",
     );
-    let (parts, counts) = run_parts(&whole, &prep, &rows, &AlwaysKeep, None);
+    let (parts, counts) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
     assert_eq!(counts.len(), 4);
     let got = PauliSum::merge_partitions(parts);
     let want = naive_apply_layer(&input, su4.as_ref(), &AlwaysKeep, false);
@@ -495,15 +495,18 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
         ("rot_wide", &rot, rows_seeing_qubit_2_x()),
     ];
 
-    for (name, ch, rows) in cases {
+    for (name, channel, rows) in cases {
         // 64 buckets: comfortably above MIN_COSETS_FOR_PARALLEL.
         let hash = Gf2Hash::<1>::new(8, 6, 0x9D7);
         let whole = input.clone().with_hash(hash);
-        let prep = ch.prepare(whole.hash(), false).expect("prepare");
-        assert!(PartitionPlan::new(&prep, &rows, 0).has_remote(), "{name}");
+        let prepared = channel.prepare(whole.hash(), false).expect("prepare");
+        assert!(
+            PartitionPlan::new(&prepared, &rows, 0).has_remote(),
+            "{name}"
+        );
 
-        let (one, counts_one) = run_parts(&whole, &prep, &rows, &AlwaysKeep, Some(1));
-        let (four, counts_four) = run_parts(&whole, &prep, &rows, &AlwaysKeep, Some(4));
+        let (one, counts_one) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, Some(1));
+        let (four, counts_four) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, Some(4));
         assert_eq!(counts_one, counts_four, "{name}: counts");
         for (rank, (a, b)) in one.iter().zip(&four).enumerate() {
             assert_eq!(
@@ -515,10 +518,10 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
     }
 }
 
-/// [`apply_layer_partitioned_with_plan`], classifying `prep`'s deltas itself.
+/// [`apply_layer_partitioned_with_plan`], classifying `prepared`'s deltas itself.
 pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
     local: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     rows: &PartitionRows<W>,
     policy: &T,
     state: &mut PartitionState<W>,
@@ -528,6 +531,6 @@ where
     T: TruncationPolicy<W> + ?Sized,
     X: Transport,
 {
-    let plan = PartitionPlan::new(prep, rows, transport.rank());
-    apply_layer_partitioned_with_plan(local, prep, &plan, rows, policy, state, transport)
+    let plan = PartitionPlan::new(prepared, rows, transport.rank());
+    apply_layer_partitioned_with_plan(local, prepared, &plan, rows, policy, state, transport)
 }

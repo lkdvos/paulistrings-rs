@@ -18,26 +18,25 @@ use crate::engine::stats::{CosetStats, Stamp};
 /// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
 #[derive(Clone, Debug, Default)]
 pub(in crate::engine) struct CosetScratch<const W: usize> {
-    /// The coset's input columns, `mem::swap`ped with the live bucket slots so the layer runs in place: bucket capacity circulates through here instead of through a second full-sum copy.
+    /// The coset's input columns, swapped with the live bucket slots so the layer runs in place.
     pub(super) old: Vec<BucketCols<W>>,
     /// Per-output-member gather runs.
     pub(super) runs: Vec<GatherRun<W>>,
-    /// Scratch for `sort_rows_with_scratch`'s per-run sort, reused across every run in every coset this scratch instance handles.
+    /// The per-run sort's scratch.
     pub(super) sort: SortScratch<W>,
-    /// This slot's busy-time phase counters, drained by `LayerScratch::take_stats`.
+    /// This slot's busy-time counters.
     #[cfg(feature = "phase-timing")]
     pub(super) stats: CosetStats,
 }
 
-/// One output member's gather run: key columns and coefficients.
-/// Equal-key summation order is not pinned by a sort tiebreak — see the module doc and `merge::sort_rows_with_scratch`.
+/// One output member's gather run, split into the identity stream and the rest.
 #[derive(Clone, Debug, Default)]
 pub(in crate::engine) struct GatherRun<const W: usize> {
-    /// The identity-delta stream: keys untouched, so it inherits the source bucket's strictly-ascending, duplicate-free order and is never sorted. Under a dense identity plan only `id_coeff` is populated, aligned 1:1 with `old[j]` whose keys the merge borrows in place; under a sparse plan all three columns are filled.
+    /// The identity-delta stream, already sorted; under a dense identity only `id_coeff` is filled.
     pub(super) id_x: Vec<[u64; W]>,
     pub(super) id_z: Vec<[u64; W]>,
     pub(super) id_coeff: Vec<Complex64>,
-    /// Every other delta's rows — keys XOR'd by a constant mask, so generally unsorted; canonicalized per run by `sort_rows_with_scratch`.
+    /// Every other delta's rows, unsorted until the per-run sort.
     pub(super) x: Vec<[u64; W]>,
     pub(super) z: Vec<[u64; W]>,
     pub(super) coeff: Vec<Complex64>,
@@ -58,9 +57,7 @@ impl<const W: usize> GatherRun<W> {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
-        // One slot past the exact capacity: `push_if` writes a discarded row at `len` before
-        // deciding not to publish it via `set_len`, so the write must stay in bounds even when
-        // every countable row is kept.
+        // One slot past the exact capacity: `append_if` writes a discarded row at `len` before deciding not to publish it.
         self.id_x.reserve(cap_id_keys + 1);
         self.id_z.reserve(cap_id_keys + 1);
         self.id_coeff.reserve(cap_id_coeff + 1);
@@ -69,14 +66,11 @@ impl<const W: usize> GatherRun<W> {
         self.coeff.reserve(cap_rest + 1);
     }
 
-    /// Write one row at `len` in a three-column stream and publish it iff `keep`.
-    /// The single unsafe block behind every gather append, so there is one invariant to audit
-    /// rather than several copies of it that drift apart.
+    /// Write one row at `len` and publish it iff `keep`.
     ///
     /// # Safety
     ///
-    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller gets this from
-    /// [`GatherRun::reset`], which reserves one slot past the plan's exact per-run capacity.
+    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`, which [`GatherRun::reset`] guarantees.
     #[inline]
     unsafe fn append_if(
         xs: &mut Vec<[u64; W]>,
@@ -105,12 +99,11 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the rest stream.
     #[inline]
     pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and `cap_rest` bounds
-        // every row the plan's deltas can emit into this run.
+        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and `cap_rest` bounds every row the plan's deltas can emit into this run.
         unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
     }
 
-    /// Unconditional append to the rest stream — [`Self::push_if`] with the predicate known true, which is what the rotation generator pass wants.
+    /// Unconditional append to the rest stream.
     #[inline]
     pub(super) fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.push_if(true, x, z, c);
@@ -133,16 +126,12 @@ impl<const W: usize> GatherRun<W> {
         }
     }
 
-    /// Unchecked unconditional append to the identity *coefficient* column.
-    /// The dense-identity plans emit exactly one identity row per source row and borrow the
-    /// keys from the source bucket, so this is the only column materialized — hence its own
-    /// helper rather than [`Self::push_id_if`].
+    /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
     #[inline]
     pub(super) fn push_id_coeff(&mut self, c: Complex64) {
         let n = self.id_coeff.len();
         debug_assert!(n < self.id_coeff.capacity());
-        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is the source
-        // bucket's length — exactly the number of calls this loop makes.
+        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is the source bucket's length, exactly the number of calls made.
         unsafe {
             self.id_coeff.as_mut_ptr().add(n).write(c);
             self.id_coeff.set_len(n + 1);
@@ -156,18 +145,10 @@ impl<const W: usize> GatherRun<W> {
     }
 }
 
-/// Below this many cosets there is nothing to spread, so skip Rayon entirely — mostly the
-/// `bits = 0` / `r = bits` case, where one coset spans every bucket and the layer degenerates
-/// to a single whole-sum task on the same code path.
+/// Below this many cosets the layer runs serially.
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
-/// Gather, sort and merge one coset, in place. The unit of parallel work.
-/// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis coordinate,
-/// serving as both input source and output destination.
-/// `extra` supplies rows generated elsewhere (the partitioned engine); they join each member's
-/// rest stream between the gather and the sort, so the merge sees the complete sum. Naming
-/// their destination needs the member's original bucket index, recovered from `chunk_base` and
-/// `inv_perm`. Under [`NoExtra`] all of that is behind `X::NEEDS_BETA == false` and compiles away.
+/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `inv_perm` name each member's original bucket for `extra`.
 pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketCols<W>],
     plan: &DeltaPlan<'_, W>,
@@ -181,8 +162,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     X: ExtraRows<W>,
 {
     let m = chunk.len();
-    // Member `j`'s original bucket index. An empty `inv_perm` means the layer skipped the
-    // handle permutation (`r = 0`), where the permuted slot is the bucket.
     let beta_of = |j: usize| -> u32 {
         if inv_perm.is_empty() {
             (chunk_base + j) as u32
@@ -204,9 +183,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     old.resize_with(m, BucketCols::default);
     runs.resize_with(m, GatherRun::default);
 
-    // Swap the coset's columns out. The chunk slots inherit this scratch's cleared,
-    // capacity-retaining columns and become the write destinations — capacities circulate
-    // between buckets across cosets, which holds the steady state allocation-free in aggregate.
     for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
         std::mem::swap(slot, cols);
         slot.clear();
@@ -214,10 +190,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.swap_ns);
 
-    // Exact per-run capacity, counted once per delta entry, split by destination stream: the
-    // identity entry feeds the pre-sorted `id` columns, everything else the sorted rest. Under
-    // a dense identity the id key columns stay empty since the merge borrows the source
-    // bucket's keys, so only `id_coeff` needs capacity.
+    // Exact per-run capacity per stream; it is also the bound `append_if`'s safety relies on.
     for (j, run) in runs.iter_mut().enumerate() {
         let (cap_id_keys, cap_id_coeff, mut cap_rest): (usize, usize, usize) = match plan {
             DeltaPlan::Local {
@@ -246,8 +219,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             } => (
                 0,
                 old[j ^ *coord_identity as usize].len(),
-                // A remote generator emits nothing here, so the rest stream is whatever
-                // `extra` adds below and nothing else.
                 if *gen_local {
                     old[j ^ *coord_gen as usize].len()
                 } else {
@@ -255,8 +226,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                 },
             ),
         };
-        // Received rows land in the rest stream, so they belong to its exact capacity.
-        // `const false` under `NoExtra`.
         if X::NEEDS_BETA {
             cap_rest += extra.count(beta_of(j));
         }
@@ -265,10 +234,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.size_ns);
 
-    // Gather. Two visit orders produce the same multiset of rows per run, differing only in
-    // arrival order, which the key-only sort erases up to floating-point tolerance (see
-    // `local_gather_orders_agree_to_fp_tolerance`). Which order is faster depends on `r`; see
-    // `GATHER_OUTPUT_MAJOR_MIN_R`.
     match plan {
         DeltaPlan::Local {
             ptm,
@@ -289,11 +254,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             coord_gen,
             gen_local,
         } => {
-            // The identity pass and the generator pass. Every term emits exactly one
-            // identity-pass row (full coefficient when it commutes, `cos`-scaled when it
-            // doesn't, kept even when `cos == 0` — see `merge2_into` on signed zeros), so the
-            // id stream is the whole source bucket in order and only the coefficient is
-            // materialized; the merge borrows the keys from the source bucket in place.
+            // Every term emits one id row, kept even when `cos == 0` (the signed-zero contract on `merge2_into`), so the merge borrows the source keys.
             for (i, src) in old.iter().enumerate() {
                 for t in 0..src.len() {
                     let v = PauliString::<W> {
@@ -304,9 +265,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                         runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
                     } else {
                         runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
-                        // `true` on every unpartitioned layer; under a partitioning that sees
-                        // the generator, these rows belong to a partner and the export pass
-                        // has already shipped them.
                         if *gen_local {
                             let mut prod = v;
                             let phase = prod.mul_assign(&prep.gen);
@@ -322,9 +280,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             }
         }
     }
-    // Rows generated on other partitions whose output bucket lives here. The rest stream only:
-    // it is sorted below, so a received row may duplicate a local key and `merge2_into` still
-    // sees the complete sum before `keep_term` runs. `const false` under `NoExtra`.
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
             extra.append_into(beta_of(j), &mut run.x, &mut run.z, &mut run.coeff);
@@ -333,12 +288,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     st.lap(&mut stats.gather_ns);
 
-    // Sort each run's rest stream by key alone, then fuse the two-stream merge with the
-    // segmented reduction into the member's live slot: the id stream never moves through the
-    // sort. Under a dense identity plan the id stream's keys were never materialized either —
-    // they are the source bucket's own key columns, borrowed here.
-    // Which sort kernel this layer uses, hoisted out of the run loop: a per-layer property of
-    // the plan, never a per-run one.
     let radix = matches!(
         plan,
         DeltaPlan::Local {
@@ -399,8 +348,6 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         st.lap(&mut stats.merge_ns);
     }
 
-    // Leave `old` cleared so the next coset's swap hands its chunk clean, capacity-retaining
-    // columns. Runs are cleared by their own `reset`.
     for cols in old.iter_mut() {
         cols.clear();
     }
@@ -412,26 +359,12 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     }
 }
 
-/// Coset dimension at or above which the gather switches to output-major.
-///
-/// Input-major loads each term once but keeps `2^r` write streams open per task; at large `r`
-/// those streams plus the swapped coset no longer fit L2. Output-major re-reads each input
-/// bucket `2^r` times but keeps a single write stream, trading re-reads (coset-local, cheap)
-/// for write-stream pressure. Below this threshold the extra re-reads cost more than the write
-/// streams save; above it, the reverse. Both orders gather the same multiset of rows, so the
-/// choice is a pure performance knob, never a correctness one — pinned by
-/// `local_gather_orders_agree_to_fp_tolerance`. See `research/FINDINGS.md` for the measurements
-/// behind the current value.
+/// Coset dimension at or above which the gather switches to output-major, trading re-reads for fewer open write streams.
+/// Both orders gather the same rows, so the choice is performance only; no built-in channel reaches it.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
-/// Input-major gather for a tabulated (`Local`) plan: each term is loaded once and its whole
-/// fanout is scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
-/// (input member, input position, delta) order.
-///
-/// The zero-amplitude filter is branchless: the row is always materialized and
-/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, avoiding a
-/// data-dependent branch on which PTM entries vanish for a given support pattern (see
-/// `research/FINDINGS.md`).
+/// Input-major gather for a `Local` plan: each term is loaded once and scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`.
+// Not a branch on zero amplitudes: research/FINDINGS.md §Branch misprediction: merge loop split and branchless gather filter
 pub(super) fn gather_local_input_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -445,12 +378,8 @@ pub(super) fn gather_local_input_major<const W: usize>(
         for t in 0..src.len() {
             let s = ptm.support_bits(&src.x[t], &src.z[t]);
             if has_identity {
-                // Entry 0 is the identity delta: masks are zero, so the row lands in this
-                // member's own run with its key untouched — the pre-sorted id stream.
                 let a = ptm.deltas()[0].amp[s];
                 if dense_identity {
-                    // Dense: `a` never vanishes and the stream is 1:1 with the source rows,
-                    // so only the coefficient is stored — the merge borrows the keys from `old[i]`.
                     debug_assert!(a != ZERO);
                     runs[i].push_id_coeff(src.coeff[t] * a);
                 } else {
@@ -471,15 +400,7 @@ pub(super) fn gather_local_input_major<const W: usize>(
     }
 }
 
-/// Output-major gather for a tabulated (`Local`) plan: for each output member, stream the one
-/// input bucket per delta entry and append to that member's run only. Rows land in (delta,
-/// input position) order — the same multiset as [`gather_local_input_major`] in a different
-/// order; they agree only up to floating-point tolerance (see
-/// `local_gather_orders_agree_to_fp_tolerance`).
-///
-/// The zero-amplitude filter is branchless, as in [`gather_local_input_major`], and helps here
-/// even though output-major is only reached on a dense PTM with nothing to filter: what
-/// [`GatherRun::push_if`] removes is the `Vec::push` capacity check and length increment per row.
+/// Output-major gather for a `Local` plan: each output member streams one input bucket per delta.
 pub(super) fn gather_local_output_major<const W: usize>(
     old: &[BucketCols<W>],
     runs: &mut [GatherRun<W>],
@@ -491,8 +412,6 @@ pub(super) fn gather_local_output_major<const W: usize>(
     let rest_start = has_identity as usize;
     for (j, run) in runs.iter_mut().enumerate() {
         if has_identity {
-            // Entry 0: masks zero — the member's own bucket streams into the pre-sorted id
-            // columns; coefficient only when the identity is dense (keys borrowed).
             let d = &ptm.deltas()[0];
             let src = &old[j];
             for t in 0..src.len() {

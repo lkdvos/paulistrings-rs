@@ -7,8 +7,7 @@ const TOL: f64 = 1e-12;
 
 // ---- the per-run sort kernel's contract ----
 //
-// Every kernel `bucketed.rs` may pick for a gather run's rest stream must satisfy exactly this, and nothing more: the output is **ascending** in lex `(x, z)` (duplicates allowed — `merge2_into` reduces them) and is a permutation of the input `(x, z, c)` triples, so a coefficient still travels with its own key.
-// Equal-key order is explicitly *not* pinned (ARCHITECTURE.md §Determinism), which is why the check is a multiset comparison rather than an element-wise one.
+// Output ascending in lex `(x, z)` with duplicates allowed, as a permutation of the input triples; equal-key order is unpinned, so the check is a multiset comparison.
 
 type SortKernel<const W: usize> =
     fn(&mut Vec<[u64; W]>, &mut Vec<[u64; W]>, &mut Vec<Complex64>, &mut SortScratch<W>);
@@ -34,7 +33,7 @@ fn assert_sort_contract<const W: usize>(
             "{what}: not ascending at row {i}",
         );
     }
-    // Multiset of triples, with the coefficient bits as the tiebreak so the comparison is exact and order-insensitive.
+    // Coefficient bits break ties, so the multiset comparison is exact.
     let key =
         |(a, b, v): &([u64; W], [u64; W], Complex64)| (*a, *b, v.re.to_bits(), v.im.to_bits());
     let mut want: Vec<([u64; W], [u64; W], Complex64)> = x
@@ -57,7 +56,7 @@ fn assert_sort_contract<const W: usize>(
     );
 }
 
-/// Xorshift64 — local so the fixtures below need no dev-dependency draw order shared with `test_support`.
+/// Xorshift64, local so the fixtures share no draw order with `test_support`.
 fn xs64(state: &mut u64) -> u64 {
     *state ^= *state << 13;
     *state ^= *state >> 7;
@@ -65,8 +64,7 @@ fn xs64(state: &mut u64) -> u64 {
     *state
 }
 
-/// The shapes a real gather run takes, plus the degenerate ones a kernel that looks at the key *bits* (rather than only comparing keys) can trip over.
-/// `(label, x, z, c)`.
+/// Real gather-run shapes plus degenerate ones for a kernel that reads key bits, as `(label, x, z, c)`.
 #[allow(clippy::type_complexity)]
 fn sort_fixtures<const W: usize>(
     num_qubits: usize,
@@ -124,7 +122,7 @@ fn sort_fixtures<const W: usize>(
     push("reverse_sorted", keys, 0x24);
 
     // Heavy duplicates: the dense-PTM shape.
-    // 40 distinct keys, each repeated 15 times, the repeats interleaved as 15 sorted streams.
+    // 40 distinct keys, each repeated 15 times as 15 sorted streams.
     let mut st = 0x5EED_0000_0000_0001u64;
     let mut distinct: Vec<([u64; W], [u64; W])> = (0..40)
         .map(|_| {
@@ -162,7 +160,7 @@ fn sort_fixtures<const W: usize>(
         .collect();
     push("thin_window", thin, 0x28);
 
-    // A constant *nonzero* high part above the varying bits — the case where masking a shifted window must not reorder rows.
+    // A constant nonzero high part above the varying bits, which masking a shifted window must not reorder.
     let hi = if num_qubits >= 64 {
         1u64 << 63
     } else {
@@ -180,7 +178,7 @@ fn sort_fixtures<const W: usize>(
     out
 }
 
-/// The shipping comparison kernel satisfies the contract on every shape.
+/// The comparison kernel satisfies the contract on every shape.
 #[test]
 fn sort_rows_with_scratch_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<1>(64) {
@@ -194,8 +192,7 @@ fn sort_rows_with_scratch_honors_the_kernel_contract() {
     }
 }
 
-/// The radix kernel satisfies the *same* contract on every shape — the point of the harness.
-/// Includes the two shapes that must reach its fallbacks: `thin_window` (fewer than `RADIX_MIN_WINDOW_BITS` discriminating bits) and `all_equal` (no discriminating word at all).
+/// The radix kernel satisfies the same contract, including the `thin_window` and `all_equal` fallbacks.
 #[test]
 fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<1>(64) {
@@ -207,7 +204,7 @@ fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<2>(65) {
         assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
     }
-    // Narrow qubit counts put every discriminating bit low in word 0, so the window shift saturates at 0 and the mask covers the whole word.
+    // Narrow qubit counts saturate the window shift at 0.
     for q in [3usize, 8, 17, 33] {
         for (label, x, z, c) in sort_fixtures::<1>(q) {
             assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
@@ -215,8 +212,7 @@ fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
     }
 }
 
-/// Both kernels agree on the *reduced* content of every fixture: same keys in the same order, and equal-key coefficient sums that agree exactly (the fixtures' coefficients are small integers, so any summation order is exact).
-/// This is the interchangeability claim `bucketed.rs` relies on when it picks a kernel per layer.
+/// Both kernels agree exactly on the reduced content of every fixture, whose integer coefficients sum exactly in any order.
 #[test]
 fn the_two_sort_kernels_reduce_to_the_same_sum() {
     #[allow(clippy::type_complexity)]
@@ -264,7 +260,7 @@ fn the_two_sort_kernels_reduce_to_the_same_sum() {
     }
 }
 
-/// A steady-state layer must not allocate: the radix kernel's own buffers have to stop growing once the largest run has been seen.
+/// The radix kernel's buffers stop growing once the largest run has been seen.
 #[test]
 fn radix_sort_scratch_capacity_stabilizes() {
     let mut scratch = SortScratch::<2>::default();
@@ -288,14 +284,14 @@ fn radix_sort_scratch_capacity_stabilizes() {
 }
 
 proptest! {
-    /// Randomized shapes, including short runs, narrow key spaces and heavy duplication (the `% modulus` draw makes collisions common).
+    /// Randomized shapes with short runs, narrow key spaces and heavy duplication.
     #[test]
     fn sort_rows_radix_contract_proptest(
         rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
         modulus in 1u64..64,
         spread in 0u32..60,
     ) {
-        // `spread` slides the varying bits up and down word 0, exercising every window shift including the saturating one.
+        // `spread` slides the varying bits through word 0, covering every window shift.
         let x: Vec<[u64; 1]> = rows.iter().map(|r| [(r.0 % modulus) << spread]).collect();
         let z: Vec<[u64; 1]> = rows.iter().map(|r| [(r.1 % modulus) << spread]).collect();
         let c: Vec<Complex64> = rows
@@ -315,7 +311,7 @@ proptest! {
         assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x2, &z2, &c, "radix proptest w2");
     }
 
-    /// Randomized shapes, including short runs, narrow key spaces and heavy duplication (the `% modulus` draw makes collisions common).
+    /// Randomized shapes with short runs, narrow key spaces and heavy duplication.
     #[test]
     fn sort_rows_with_scratch_contract_proptest(
         rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
@@ -335,7 +331,7 @@ proptest! {
     }
 }
 
-/// Truncation policy that always keeps terms — exercises the trait bound without filtering anything out.
+/// Keeps every term.
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
@@ -365,7 +361,7 @@ fn sort_rows_with_scratch_orders_by_lex_key() {
     );
 }
 
-/// Coefficient-permutation consistency across the word boundary: `x[0]` decides before `x[1]`, and a coefficient must follow its key through the permutation, not just land in the right count.
+/// `x[0]` decides before `x[1]`, and each coefficient follows its key.
 #[test]
 fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
     let mut x: Vec<[u64; 2]> = vec![[1, 0], [0, 99]];
@@ -379,7 +375,7 @@ fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
     assert_eq!(c[1], Complex64::new(11.0, 0.0));
 }
 
-/// Empty/single-row: `len < 2` is a no-op short-circuit.
+/// `len < 2` is a no-op.
 #[test]
 fn sort_rows_with_scratch_len_lt_2_is_noop() {
     let mut x: Vec<[u64; 1]> = vec![[5]];
@@ -400,8 +396,7 @@ fn sort_rows_with_scratch_len_lt_2_is_noop() {
 
 // ---- merge2_into: fused id/rest merge + reduction ----
 
-/// Plain single-stream segmented reduction over sorted columns: adjacent equal keys are summed, exact-zero sums are dropped, and `keep_term` sees the summed coefficient.
-/// Used only to build `merge2_reference`.
+/// Single-stream segmented reduction over sorted columns, for `merge2_reference`.
 fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     sorted_x: &[[u64; W]],
     sorted_z: &[[u64; W]],
@@ -430,8 +425,7 @@ fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     (ox, oz, oc)
 }
 
-/// Reference for `merge2_into`: concatenate both streams, sort by key, reduce.
-/// Coefficients in these tests are small integers, so `f64` addition is exact in any order and the comparison can be `==` even where the two pipelines sum in different orders.
+/// Reference for `merge2_into`: concatenate, sort, reduce; integer coefficients make `==` valid.
 #[allow(clippy::type_complexity)]
 fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
@@ -471,10 +465,9 @@ fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     (ox, oz, oc)
 }
 
-/// Randomized differential against the concat-sort-reduce reference: unique sorted id keys, rest with duplicates and cross-stream collisions, integer coefficients so any summation order is exact.
+/// Randomized differential against the concat-sort-reduce reference, with cross-stream collisions.
 #[test]
 fn merge2_matches_concat_sort_reduce() {
-    // Tiny xorshift so the cases are deterministic without new deps.
     let mut state = 0x1234_5678_9abc_def0u64;
     let mut next = move || {
         state ^= state << 13;
@@ -508,7 +501,7 @@ fn merge2_matches_concat_sort_reduce() {
     }
 }
 
-/// Both degenerate stream shapes: empty id (a channel with no identity delta) reduces to plain single-stream behavior; empty rest (a fully commuting coset) passes the unique id stream through the zero-drop and policy filters untouched.
+/// Empty id reduces the rest stream alone; empty rest passes the id stream through the filters.
 #[test]
 fn merge2_handles_empty_streams() {
     let x: Vec<[u64; 1]> = vec![[1], [2], [3]];
@@ -527,7 +520,7 @@ fn merge2_handles_empty_streams() {
     assert_eq!(rest_only, (x, z, c));
 }
 
-/// A cross-stream cancellation must drop the key entirely, and an exact-zero id coefficient (a `θ = π/2` rotation's `cos`-scaled row) must still participate: `-0.0 + 0.0 = +0.0` — pre-filtering zero rows would flip the sign of a zero sum against the single-stream pipeline.
+/// A cross-stream cancellation drops the key, and an exact-zero id row still participates: `-0.0 + 0.0 = +0.0`.
 #[test]
 fn merge2_cancellation_and_signed_zero() {
     let a_x: Vec<[u64; 1]> = vec![[1], [2]];
@@ -538,7 +531,7 @@ fn merge2_cancellation_and_signed_zero() {
     let b_c: Vec<Complex64> = vec![Complex64::new(0.0, 0.0), Complex64::new(-5.0, 0.0)];
     let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
     // Key [2]: exact cancellation, dropped.
-    // Key [1]: sums to +0.0 exactly (the sign a zero-row prefilter would get wrong), which the zero-drop then removes — matching the single-stream reduction on the concatenated streams.
+    // Key [1]: sums to +0.0 exactly, which the zero-drop then removes.
     assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
 }
 
@@ -560,7 +553,6 @@ fn merge2_policy_sees_summed_coefficient() {
 
 impl<const W: usize> SortScratch<W> {
     /// Total heap capacity held across this scratch's buffers.
-    /// Exposed only for `bucketed::tests::capacity_stabilizes_across_repeated_layers`.
     pub(crate) fn total_capacity(&self) -> usize {
         self.perm.capacity()
             + self.packed.capacity()

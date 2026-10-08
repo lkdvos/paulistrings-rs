@@ -1,25 +1,16 @@
-//! Per-run sort and fused two-stream merge — the bucketed engine's inner kernels.
+//! The per-run sort kernels and the fused two-stream merge, the bucketed engine's inner loop (ARCHITECTURE.md §Engine).
 //!
-//! [`sort_rows_with_scratch`] and [`sort_rows_radix_with_scratch`] canonicalize one gather run's *rest* stream — the first by comparison, the second by a radix pass over a monotone surrogate; `bucketed.rs` picks between them per layer from the plan's rest-delta count, see [`RADIX_MIN_REST_STREAMS`].
-//! [`merge2_into`] fuses the id/rest two-stream merge with the segmented reduction that restores the `PauliSum` invariant (strictly ascending, no duplicates) inside a destination bucket.
-//! All are called per gather run by `engine::bucketed`; [`SortScratch`] is the worker-persistent scratch the sorts reuse so a steady-state layer allocates nothing.
-//!
-//! Both sorts satisfy one contract and nothing more, pinned by `tests::assert_sort_contract`: the output is **ascending** in lex `(x, z)` with duplicates allowed, and is a permutation of the input `(x, z, c)` triples.
-//! Equal-key order is unspecified (ARCHITECTURE.md §Determinism), so the two kernels are interchangeable to floating-point tolerance and not bitwise.
+//! Both sorts leave a run ascending in lex `(x, z)` with duplicates allowed, as a permutation of its rows; equal-key order is unspecified, so they agree only to floating-point tolerance.
 
 use num_complex::Complex64;
 
 use crate::truncation::TruncationPolicy;
 
 /// Worker-persistent scratch for the per-run sorts.
-///
-/// Held across coset tasks (one instance per `CosetScratch`, in turn one per Rayon worker, per `bucketed.rs`'s `LayerScratch`): every buffer retains its high-water capacity across calls, so a run at or below a previously-seen size sorts without allocating.
-/// `perm` serves the comparison kernel; `packed`/`aux` serve the radix kernel; the `tmp_*` triple is the output staging both share.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SortScratch<const W: usize> {
     perm: Vec<u32>,
-    /// `(surrogate << 32) | row index` records, in sorted order once the radix kernel has run.
-    /// Empty unless that kernel is selected.
+    /// The radix kernel's `(surrogate << 32) | row index` records.
     packed: Vec<u64>,
     /// The radix kernel's double buffer for `packed`.
     aux: Vec<u64>,
@@ -30,26 +21,9 @@ pub(crate) struct SortScratch<const W: usize> {
 
 impl<const W: usize> SortScratch<W> {}
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, using `s` as reusable scratch.
-///
-/// Equal-key summation order is not required to be bucket-count- or hash-seed-independent (ARCHITECTURE.md §Determinism), so this sort compares the key alone — cheaper, and with one fewer column to carry through the gather.
-///
-/// The sort is the **stable** `sort_by`, but not for stability — nothing depends on equal-key order any more — it is for *adaptivity*.
-/// A gather run is a concatenation of per-delta streams, each drawn from one sorted source bucket — the identity stream arrives fully sorted, and an XOR-by-constant stream is piecewise sorted (order survives wherever the mask's high bits don't flip) — and Rust's stable driftsort detects and merges those natural ascending runs while the unstable pdqsort does not.
-/// This only matters once there are ≥2 streams to merge: on a single already-ascending run, pdqsort's own presorted-input fast path is just as cheap.
-///
-/// **When those streams are ascending is a partition property, not a given.**
-/// The stream `{v ⊕ d : v ∈ bucket}` is fully ascending exactly when no two of the bucket's keys differ only inside the channel's support — which holds iff the hash separates the support's key-delta space, i.e. the coset dimension `r` is full (4 for a two-qubit channel).
-/// One rank short and each bucket holds two local variants of every off-support pattern, adjacent in key order, and half the deltas invert every such pair: the stream shatters into runs of ~2 and the merge's comparison count rises sharply.
-/// `r` is capped by the bucket bits *and* is a draw from `H`'s rows, so it moves with the term count, the hash seed and `W`; see `research/FINDINGS.md`.
-/// At full rank the merge already sits at the information-theoretic floor for a 15-way merge of sorted runs (`log2(15) + 1 ≈ 4.9` comparisons per row), so headroom here is a matter of configuration, not kernel.
-///
-/// What must still hold — and does, structurally: cosets are write-disjoint, work within one is sequential, and the sort is a deterministic function of its input, so **thread-count determinism and repeat-run determinism at fixed configuration** are unaffected.
-/// A later merge sums whatever order equal keys land in; that sum agrees with any other order to floating-point tolerance, never bit-for-bit across a different order.
-///
-/// Scratch-swap capacity circulation: `s.perm` is filled with the identity permutation `0..len` and reordered by the sort; the caller's columns are then read out through the permutation directly into `s.tmp_*` (one pass, not two), and finally each `tmp_*` is `mem::swap`ped with the caller's `Vec`.
-/// The caller ends up holding the sorted columns; `s` ends up holding the caller's pre-sort columns' storage (cleared next call) as its own scratch capacity — so capacity circulates between the live columns and the scratch instead of either side ever growing past its high-water mark.
-// `#[inline]` is a hint for non-fat-LTO builds only; codegen-inert under the shipping profile.
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by comparison through a permutation.
+// Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
+// Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
 #[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
@@ -82,41 +56,24 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     std::mem::swap(c, &mut s.tmp_c);
 }
 
-/// Minimum number of *rest* delta streams in a gather run before `bucketed.rs` switches that layer to [`sort_rows_radix_with_scratch`].
-///
-/// The two kernels win in opposite regimes and the crossover is steep, so this is deliberately conservative — only a genuinely dense two-qubit PTM (a general SU(4) realizes all 16 bucket deltas, so 15 rest streams) clears it.
-/// A single nearly-sorted stream (the sparse-PTM case) costs about one comparison per row already, so the radix kernel's fixed passes would be pure overhead there.
-/// This is one of two gate arms; see [`RADIX_MAX_REST_ROWS_PER_KEY`] for the other, which separates layers whose streams are pairwise disjoint (a key permutation, where the k-way merge's branch mispredicts often) from those that fan out (predicting well).
-/// Measured crossovers and protocol: `research/FINDINGS.md`.
+/// Rest streams at or above which a layer uses [`sort_rows_radix_with_scratch`]; research/FINDINGS.md §Radix sort kernel for dense PTMs.
 pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
 
-/// Second arm of the radix gate: the largest `rest_rows_per_key` a layer may have and still be treated as *disjoint*-streamed.
-///
-/// `bucketed::rest_rows_per_key` estimates, from the prepared PTM alone, how many rest rows land on one output key.
-/// Exactly `1.0` means the streams are pairwise disjoint and the k-way merge's branch is a coin flip, which is the regime the radix kernel wins.
-/// Built-ins take only `1.00` (every Clifford) or `3.00`/`14.00` (denser two-qubit gates), so this sits at the midpoint of the one measured gap rather than a tuned curve.
+/// The radix gate's second arm: the largest `rest_rows_per_key` still treated as disjoint streams; research/FINDINGS.md §Constant recalibration and the radix gate's second arm.
 pub(crate) const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
 
-/// Second arm of the radix gate: the minimum rest-stream count for the *disjoint*-streams arm.
-///
-/// A disjoint k-way merge mispredicts about once per two comparisons, and comparisons per row grow as `log2(k) + 1`, so the comparison kernel's cost grows with `k` while the radix kernel's does not.
-/// The measured crossover is at `k = 3`; no built-in channel realizes exactly two rest deltas, so the arm starts there and a two-stream layer keeps the comparison kernel.
+/// The radix gate's second arm: the minimum rest-stream count for disjoint streams.
 pub(crate) const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 
-/// Surrogate width the radix kernel sorts on, in [`RADIX_DIGIT_BITS`] digits.
-///
-/// 16 bits is two passes, chosen to resolve duplicate-key *groups* rather than every key: a dense-PTM run's residual tie groups are then ordered by the fixup pass at roughly one full-key comparison per row.
-/// Wider surrogates buy fewer ties at the cost of another whole pass and measured worse across the engine's run sizes.
+/// Surrogate width the radix kernel sorts on, enough to separate duplicate-key groups rather than every key.
 const RADIX_SURROGATE_BITS: u32 = 16;
-/// Digit width per radix pass. 256 counters is 1 KiB of stack histogram.
+/// Digit width per radix pass.
 const RADIX_DIGIT_BITS: u32 = 8;
 const RADIX_BUCKETS: usize = 1 << RADIX_DIGIT_BITS;
-/// Below this many *discriminating* bits in the surrogate window the radix pass cannot separate the run into useful groups, so the comparison kernel runs instead.
-/// Reached by low-weight sums (a `WeightCutoff`-truncated sum whose `x` words are nearly constant) and by narrow key spaces.
+/// Below this many discriminating bits in the surrogate window the comparison kernel runs instead.
 const RADIX_MIN_WINDOW_BITS: u32 = 8;
 
-/// Word `k` of the lex key `(x, z)`: `k < W` selects `x[k]`, `k >= W` selects `z[k - W]`.
-/// Word 0 is the **most** significant, matching the derived `Ord` on `[u64; W]` and hence `PauliString`'s (ARCHITECTURE.md §Data-Model).
+/// Word `k` of the lex key `(x, z)`, word 0 the most significant.
 #[inline(always)]
 fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) -> u64 {
     if k < W {
@@ -126,10 +83,7 @@ fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], k: usize, i: usize) 
     }
 }
 
-/// The most significant key word the rows disagree on, its index, and the disagreeing bits within it.
-/// `None` ⟺ every row carries the same key.
-///
-/// One `OR`/`AND` reduction per word, stopping at the first word that disagrees — for the dense-PTM runs this kernel serves that is word 0, so the scan touches only the `x` column.
+/// The first key word the rows disagree on, its highest disagreeing bit and the disagreeing bits; `None` if all keys are equal.
 fn discriminating_window<const W: usize>(
     x: &[[u64; W]],
     z: &[[u64; W]],
@@ -145,39 +99,14 @@ fn discriminating_window<const W: usize>(
         }
         let diff = any & !all;
         if diff != 0 {
-            // Rows agree on every word before `k` and, within word `k`, on
-            // every bit above the highest set bit of `diff`.
             return Some((k, 63 - diff.leading_zeros(), diff));
         }
     }
     None
 }
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone — radix variant, for gather runs assembled from many delta streams.
-///
-/// Same contract as [`sort_rows_with_scratch`] and freely interchangeable with it (equal-key order differs; see the module doc).
-/// Chosen per layer by `bucketed.rs` when the plan has at least [`RADIX_MIN_REST_STREAMS`] rest streams, and it falls back to the comparison kernel itself whenever its surrogate cannot discriminate.
-///
-/// # Why a surrogate, and why it is order-faithful
-///
-/// The full key is `16·W` bytes — 32 at `W = 2` — so an LSD radix over all of it would be 32 passes.
-/// Instead one pass finds [`discriminating_window`]: the most significant key word `k` the rows actually disagree on, and the highest disagreeing bit `hb` inside it.
-/// Every row then shares the same value on words before `k` and on bits above `hb`, so writing `word_k = H·2^(hb+1) + L` with `H` **constant across the run**,
-///
-/// ```text
-/// surrogate = (word_k >> shift) & (2^NBITS − 1) = L >> shift,
-///     shift = (hb + 1) − NBITS
-/// ```
-///
-/// — the mask erases exactly the constant `H`, and `L >> shift` is monotone in `L`, which is monotone in the key.
-/// So `key₁ < key₂ ⟹ surrogate₁ ≤ surrogate₂`: sorting by the surrogate never puts two rows in the wrong order, it only leaves ties, which the fixup pass resolves on the full key.
-/// A run whose keys are *all equal* needs no work at all and returns early.
-///
-/// # Why this beats the comparison sort where it is selected
-///
-/// Not by doing less work — a dense-PTM run arrives as ~15 ascending blocks and driftsort already merges them near the information-theoretic floor (`log₂ 15 + 1 ≈ 4.9` comparisons per row).
-/// It wins on the cost of that work: each comparison is a dependent indexed load into a 100–400 KiB key column, whereas a radix pass streams 8-byte records sequentially at a fraction of the cost.
-/// Two passes plus the fixup replace those comparisons with about one.
+/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
+// Every row shares the bits above the window, so the surrogate is monotone in the key and only leaves ties, which the fixup orders on the full key.
 pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -190,13 +119,11 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     if len < 2 {
         return;
     }
-    // The record packs the row index into the low 32 bits.
     if len > u32::MAX as usize {
         sort_rows_with_scratch(x, z, c, s);
         return;
     }
     let Some((k, hb, diff)) = discriminating_window(x, z) else {
-        // Every row carries the same key, so any order is already ascending.
         return;
     };
     let shift = (hb + 1).saturating_sub(RADIX_SURROGATE_BITS);
@@ -216,8 +143,6 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     } = s;
     packed.clear();
     packed.extend((0..len).map(|i| (((key_word(x, z, k, i) >> shift) & mask) << 32) | i as u64));
-    // Exactly `len`, so the pass-to-pass `swap` keeps both buffers that long.
-    // `resize` on the retained capacity writes only when the run grew.
     aux.resize(len, 0);
 
     let mut digit = 0u32;
@@ -228,7 +153,6 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
             count[(((v >> sh) as usize) & (RADIX_BUCKETS - 1)) + 1] += 1;
         }
         // A constant digit contributes no ordering: skip its scatter.
-        // Common on the high digit, whose bits the window shift often leaves fixed.
         if count[1..].iter().filter(|&&n| n != 0).count() > 1 {
             for t in 1..=RADIX_BUCKETS {
                 count[t] += count[t - 1];
@@ -244,7 +168,6 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     }
 
     // Fixup: rows sharing a surrogate are ordered on the full key.
-    // The radix is stable and the index sits in the low bits, so a group arrives in gather order; on the dense-PTM runs this kernel serves, a group is one duplicate key's ~15 rows and this costs ~1 comparison per row.
     let mut i = 0usize;
     while i < len {
         let surrogate = packed[i] >> 32;
@@ -261,7 +184,6 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         i = j;
     }
 
-    // Read the columns out through the record order into the staging triple, then swap — the same capacity circulation `sort_rows_with_scratch` does.
     tmp_x.clear();
     tmp_x.extend(packed.iter().map(|&v| x[v as u32 as usize]));
     tmp_z.clear();
@@ -273,21 +195,11 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     std::mem::swap(c, tmp_c);
 }
 
-/// Fused two-stream merge + segmented reduction.
-///
-/// `a` is a gather run's identity-delta stream: its keys are untouched source keys, so it inherits the bucket invariant — strictly ascending, no duplicates — and is **never sorted**.
-/// (Under a dense identity plan the key slices are the *source bucket's own columns*, borrowed in place, with only the coefficients gathered; this function cannot tell and need not care.)
-/// `b` is the run's remaining rows, canonicalized by [`sort_rows_with_scratch`] (ascending, duplicates allowed).
-/// The two-pointer walk consumes rows in global key order, seeding a key tie from the `a` row first and then adding the equal-key `b` rows in their sorted order; that order is deterministic for a fixed input but not specified across partitions (ARCHITECTURE.md §Determinism).
-/// Zero-drop and `keep_term` see the fully summed coefficient.
-/// When `a` is empty this degenerates to the plain single-stream segmented reduction, which is the whole story for a channel with no identity delta: everything is gathered into `b`.
-///
-/// **Written as three loops, not one.** The main walk runs only while both streams are live, so its per-row test is the key comparison alone; the two drains then run with no test for the exhausted side at all.
-/// A single combined loop pays two extra conditional branches per output row for the exhausted-side checks, including in the all-Clifford case where `a` is always empty.
-///
-/// Exact-zero rows are consumed like any other (a `θ = π/2` rotation emits `cos·coeff = ±0.0` rows): dropping them *before* the reduction could flip the sign of a zero sum, so the only zero test is on the final accumulator.
-///
-/// Do not restructure this walk into gallop + bulk segment copies: real workloads' id/rest densities make the average id segment one or two rows, so per-segment overhead swamps the per-row compare it would save; see `research/FINDINGS.md`.
+/// Merge the strictly ascending id stream `a` with the sorted rest stream `b` into `dst`, summing equal keys and applying `keep_term` to each full sum.
+// Signed-zero contract: exact-zero rows are summed like any other, and the only zero test is on the final sum.
+// Three loops, so neither stream's bound is tested in the main walk (ARCHITECTURE.md §Engine).
+// Not segment copies: research/FINDINGS.md §Segment-copy merge
+// Not a branchless walk: research/FINDINGS.md §Branchless `merge2_into`
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a_x: &[[u64; W]],
@@ -308,10 +220,8 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     debug_assert_eq!(bn, b_x.len());
     debug_assert_eq!(bn, b_z.len());
     let (mut i, mut j) = (0usize, 0usize);
-    // Main walk: both streams live, so the "which side" test is a pure key comparison with no bounds short-circuit.
     while i < an && j < bn {
-        // Take the smaller next key; on a tie the `a` row seeds the sum.
-        // After an `a` seed there is no second `a` row for the key (`a` is unique), and after a `b` seed every equal-key `a` row would have compared `<=`, so only `b` rows can extend the segment either way.
+        // On a tie `a` seeds the sum; since `a` is unique, only `b` rows can extend the segment.
         let take_a = (a_x[i], a_z[i]) <= (b_x[j], b_z[j]);
         let (key_x, key_z, mut acc) = if take_a {
             debug_assert!(
@@ -340,7 +250,6 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             dst_coeff.push(acc);
         }
     }
-    // `b` exhausted: every remaining `a` key is unique, so each is its own segment.
     while i < an {
         let (key_x, key_z, acc) = (a_x[i], a_z[i], a_c[i]);
         i += 1;
@@ -350,7 +259,6 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             dst_coeff.push(acc);
         }
     }
-    // `a` exhausted — which for a channel with no identity delta is the whole call: the plain single-stream segmented reduction, with no `a`-side test in the loop at all.
     while j < bn {
         let (key_x, key_z) = (b_x[j], b_z[j]);
         let mut acc = b_c[j];

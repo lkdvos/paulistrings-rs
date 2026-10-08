@@ -13,8 +13,7 @@ use super::{propagate, propagate_with, Direction, PropagateOptions};
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-/// Support on three qubits, so `Prepared::derive_local` bails on the popcount check and `prepare` returns `None`.
-/// Cribbed from `channel::prepared::tests::derive_local_rejects_popcount_gt_2`.
+/// Support on three qubits, so `prepare` returns `None`.
 struct ThreeQubits;
 impl<const W: usize> Channel<W> for ThreeQubits {
     fn max_fanout(&self) -> usize {
@@ -34,7 +33,6 @@ impl<const W: usize> Channel<W> for ThreeQubits {
     }
 }
 
-/// A channel that declines `prepare` is a hard error: there is no whole-sum fallback to absorb it, so `propagate` panics with the support weight and a pointer to the generalization note.
 #[test]
 #[should_panic(expected = "Channel::prepare declined")]
 fn an_unpreparable_channel_panics() {
@@ -47,7 +45,6 @@ fn an_unpreparable_channel_panics() {
     let _ = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
 }
 
-/// Under `Direction::Forward`, `application_index` and `circuit_index` agree, both running `0..n`.
 #[test]
 fn gate_trace_forward_indices_match_circuit_order() {
     let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
@@ -78,7 +75,6 @@ fn gate_trace_forward_indices_match_circuit_order() {
     assert_eq!(trace.nanos.len(), 2);
 }
 
-/// Under `Direction::Heisenberg`, `application_index` still runs `0..n` in the order layers were *applied*, but `circuit_index` is reversed — the pair that keeps a Heisenberg trace from being mislabeled against the circuit as written.
 #[test]
 fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
     let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
@@ -106,7 +102,6 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
     assert_eq!(trace.circuit_index, vec![1, 0]);
 }
 
-/// Gate tracing is opt-in: an untraced `propagate_with` call records nothing, matching [`TermTrace`]'s own default-off contract.
 #[test]
 fn gate_trace_stays_empty_when_not_enabled() {
     let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);

@@ -1,10 +1,6 @@
-//! The propagation engine: front door [`propagate`], layer loop in [`bucketed`].
+//! The propagation front door [`propagate`] and its layer loop; one layer is applied in `bucketed`.
 //!
-//! One layer is a coset walk over the GF(2)-linear bucket partition (the crate-private `coset` module), with the per-run sort and fused merge kernels in the crate-private `merge` module.
-//! See ARCHITECTURE.md §Engine for the layer and this module's propagation loop.
-//!
-//! The crate-private `direct` module is an **additive** second layer path for sums small enough that the bucketed layer's per-layer fixed cost dominates: off unless a caller asks for it through [`propagate_with`], never reached by [`propagate`], and canonical for nothing.
-//! See `research/FINDINGS.md`.
+//! See ARCHITECTURE.md §Engine.
 
 pub(crate) mod bucketed;
 pub(crate) mod coset;
@@ -26,13 +22,10 @@ use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 use bucketed::{apply_layer_bucketed, LayerScratch};
 
-/// `log` target for the engine's progress events, so a consumer can filter them without touching the rest of the crate's (currently empty) logging.
-/// See the "Progress logging" section on [`propagate`].
+/// `log` target for the engine's progress events.
 const LOG_TARGET: &str = "paulistrings::propagate";
 
-/// Propagation direction.
-///
-/// [`Direction::Forward`] applies channels in order; [`Direction::Heisenberg`] iterates in reverse and applies adjoints (for backpropagating observables).
+/// Propagation direction: channels in order, or in reverse with adjoints for backpropagating observables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     /// Apply channels in the order they were pushed onto the [`Circuit`].
@@ -43,72 +36,40 @@ pub enum Direction {
 
 /// Which layer engine [`propagate_with`] uses.
 ///
-/// The bucketed sorting engine is canonical at every term count; the alternative is a strictly additive small-sum path (`engine::direct`) that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`] and the bucketed machinery.
-/// See `research/FINDINGS.md`.
-///
-/// The default is [`EngineSelection::SortedOnly`]: today's behaviour, unchanged, for every caller that does not ask for anything else.
+/// The alternative to the bucketed sorting engine is a small-sum direct path that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EngineSelection {
-    /// The bucketed sorting engine for every layer. The default.
+    /// The bucketed sorting engine for every layer.
     #[default]
     SortedOnly,
-    /// The small-sum direct path while it is expected to be faster — the sum is at most [`PropagateOptions::small_sum_threshold`] terms *and* the policy reports no layer finalization ([`TruncationPolicy::finalizes_layer`]) — then the sorting engine for the rest of the circuit.
+    /// The direct path while the sum is at most [`PropagateOptions::small_sum_threshold`] terms and the policy reports no [`TruncationPolicy::finalizes_layer`], then the sorting engine.
     ///
-    /// The policy condition is a performance decision, not a correctness one: a finalizing policy would make the direct path pay a materialize → finalize → re-ingest round trip per layer, which is what the direct path exists to avoid.
-    /// Use [`EngineSelection::SmallSumDirect`] to take the direct path anyway.
+    /// The policy condition is for performance only: a finalizing policy would cost the direct path a materialize and re-ingest per layer.
     Auto,
-    /// The small-sum direct path whenever the sum is at most [`PropagateOptions::small_sum_threshold`] terms, whatever the policy.
+    /// The direct path whenever the sum is at most [`PropagateOptions::small_sum_threshold`] terms, whatever the policy.
     ///
-    /// A policy with a layer pass still gets it, once per layer, on a materialized sum — the results match [`EngineSelection::SortedOnly`] to floating-point tolerance either way.
-    /// The only way to measure the direct path against a `TopN`-style policy.
+    /// A policy with a layer pass still gets it once per layer, on a materialized sum.
     SmallSumDirect,
 }
 
-/// Default for [`PropagateOptions::small_sum_threshold`].
-///
-/// The direct path saves the bucketed layer's fixed per-layer cost but pays a per-term cost that rises as its hash map leaves cache, where the sorting engine's is flat in the term count; the crossover is workload-dependent.
-/// 2048 is the largest value, in a measured sweep across representative workloads, at which no configuration regresses; see `research/FINDINGS.md` for the sweep.
-/// It also sits below `desired_bits`'s `worth_splitting` floor (`DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`), so a sum on this path is one the sorting engine would have run in few buckets anyway.
+/// Default for [`PropagateOptions::small_sum_threshold`]; research/FINDINGS.md §Direct-apply path for small sums.
 pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 2048;
 
-/// Tuning knobs for [`propagate_with`].
-///
-/// [`Default`] is exactly today's behaviour — the sorting engine for every layer — so `PropagateOptions::default()` and [`propagate`] agree bit for bit.
-///
-/// # Examples
-///
-/// ```
-/// use paulistrings::{EngineSelection, PropagateOptions};
-///
-/// let opts = PropagateOptions {
-///     engine: EngineSelection::Auto,
-///     ..PropagateOptions::default()
-/// };
-/// assert_eq!(PropagateOptions::default().engine, EngineSelection::SortedOnly);
-/// # let _ = opts;
-/// ```
+/// Tuning knobs for [`propagate_with`]; [`Default`] is what [`propagate`] uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropagateOptions {
-    /// Which layer engine to use. Default [`EngineSelection::SortedOnly`].
+    /// Which layer engine to use.
     pub engine: EngineSelection,
-    /// Resident term count up to which the small-sum direct path is used.
-    /// Ignored under [`EngineSelection::SortedOnly`]. Default [`DEFAULT_SMALL_SUM_THRESHOLD`].
+    /// Resident term count up to which the small-sum direct path is used; ignored under [`EngineSelection::SortedOnly`].
     pub small_sum_threshold: usize,
-    /// Terms per bucket the per-layer partition targets. Default 1024.
+    /// Terms per bucket the per-layer partition targets (ARCHITECTURE.md §Bucket-Policy).
     ///
-    /// A measurement lever, not a tuning parameter: the default is the measured optimum (ARCHITECTURE.md §Bucket-Policy).
-    /// What has to stay resident is the *gather run*, not the bucket, so the headroom is not the bucket size alone.
-    ///
-    /// Raising this alone does nothing above the `min_buckets` floor: with `len >= min_buckets * MIN_TERMS_PER_TASK`, `desired_bits` clamps the bucket count below at `min_buckets` whatever the target says.
-    /// Both fields have to move together to get *fewer* buckets, and [`PauliSum::rebucket`](crate::PauliSum::rebucket) is grow-only, so lowering either mid-run never coarsens a partition already grown.
+    /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
-    /// Default 128.
     ///
-    /// Must be `>= 16`: below that `desired_bits`'s "worth splitting" gate is non-monotone, and the invariant "a sum of at most `target_bucket_len` terms gets one bucket" stops holding.
-    /// Lowering it also lowers the parallel task count — the coset is the unit of work — so a coarse partition is a single-thread measurement tool first.
-    ///
-    /// Applies to the sorting engine's per-layer `rebucket` only. The small-sum direct path's materialize (`engine::direct`) still sizes its partition from the defaults; it is a small-`n` path where the knob has nothing to measure, and the asymmetry is deliberate.
+    /// Must be `>= 16`, below which a sum of at most `target_bucket_len` terms no longer reliably gets one bucket.
+    /// The small-sum direct path ignores it and sizes its materialized sum from the defaults.
     pub min_buckets: usize,
 }
 
@@ -124,10 +85,7 @@ impl Default for PropagateOptions {
 }
 
 impl PropagateOptions {
-    /// Whether a propagation starting at `len` terms under a policy that answers `policy_finalizes` to [`TruncationPolicy::finalizes_layer`] starts on the direct path.
-    ///
-    /// Evaluated once per [`propagate_with`] call, outside the layer loop.
-    /// The direct path is entered only here: once the sum outgrows the threshold the run continues on the sorting engine and never comes back (see [`propagate_with`]).
+    /// Whether a run starting at `len` terms starts on the direct path, the only place it is entered.
     fn starts_direct(&self, len: usize, policy_finalizes: bool) -> bool {
         match self.engine {
             EngineSelection::SortedOnly => false,
@@ -139,19 +97,16 @@ impl PropagateOptions {
 
 /// Propagate `initial` through `circuit` under `policy`.
 ///
-/// Iterates the circuit's channels — in order for [`Direction::Forward`], in reverse for [`Direction::Heisenberg`], calling [`Channel::apply_adjoint`] in the latter case (default = self-adjoint; overridden on [`PauliRotation`](crate::channel::PauliRotation) and [`Clifford1Q`](crate::channel::Clifford1Q)).
+/// Under [`Direction::Heisenberg`] the channels run in reverse through [`Channel::apply_adjoint`].
+/// The sum stays bucketed throughout, so stepping one sum through repeated calls costs only the layers.
 ///
-/// The sum is propagated in its bucketed form throughout — there is no conversion at either end, so calling this repeatedly on the same sum (a Trotter driver stepping an observable) costs nothing beyond the layers themselves; per-bucket storage capacity is retained inside the returned sum across calls.
-/// The bucket count is re-normalized against `desired_bits` before every layer.
+/// # Panics
+///
+/// If a channel's [`Channel::prepare`] declines, as for a user channel with support above two qubits; no built-in channel does.
 ///
 /// # Progress logging
 ///
-/// Progress is reported through the [`log`] facade under the target `paulistrings::propagate`: one `INFO` line on entry (term count, channel count, direction), one `INFO` line on exit (layers applied, terms in → out, elapsed seconds), and one `DEBUG` line per layer (`layer k/n [name]: before -> after terms, ms`).
-/// Per-layer is `DEBUG` rather than `INFO` because a Trotter driver calls this hundreds of times.
-/// The layer name comes from [`Channel::debug_name`].
-///
-/// With no logger installed each site costs one relaxed atomic load and allocates nothing — in particular the per-layer clock read is itself behind the level check.
-/// To see the lines, install any `log` implementation, e.g. `env_logger::init()` in `main` plus `RUST_LOG=paulistrings=debug` in the environment.
+/// Through the [`log`] facade under the target `paulistrings::propagate`: `INFO` on entry and exit, `DEBUG` once per layer, named by [`Channel::debug_name`].
 ///
 /// # Examples
 ///
@@ -199,70 +154,13 @@ where
     )
 }
 
-/// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`] — the implementation [`propagate`] delegates to.
+/// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`].
 ///
-/// Holding the scratch lets the caller retain its high-water buffer capacity across calls (a Trotter driver stepping an observable), and, under the `phase-timing` feature, read the per-phase counters afterwards through `LayerScratch::take_stats` (the method — and so a resolvable doc link to it — exists only when that feature is enabled).
+/// The scratch keeps its buffer capacity across calls and carries the opt-in [`TermTrace`](crate::TermTrace) and [`GateTrace`](crate::GateTrace) (and, under `phase-timing`, the phase counters).
+/// Log events are emitted on the calling thread, never inside a parallel layer.
 ///
-/// It is also the only entry point that records a [`TermTrace`](bucketed::TermTrace) — the always-compiled, opt-in per-layer term counts.
-/// Call [`LayerScratch::enable_term_trace`] before propagating and [`LayerScratch::take_term_trace`] afterwards; [`propagate`], which owns its scratch, never enables it.
-///
-/// `PropagateOptions::default()` is [`propagate`]'s choice — same code path, same bits — so the options are only interesting for opting into a non-default [`EngineSelection`] or bucket policy.
-///
-/// # Progress logging
-///
-/// This is where the events described under [`propagate`] are emitted: target `paulistrings::propagate`, `INFO` on entry and exit, `DEBUG` per layer.
-/// Every event is emitted on the calling thread, outside the engine's Rayon region, so a logger implementation never runs inside a parallel layer.
-///
-/// # Examples
-///
-/// ```
-/// use paulistrings::{
-///     BuildAccumulator, Circuit, Direction, EngineSelection, LayerScratch, PauliString, Phase,
-///     PropagateOptions, TruncationPolicy, Clifford1Q, propagate_with,
-/// };
-/// use num_complex::Complex64;
-///
-/// struct KeepAll;
-/// impl<const W: usize> TruncationPolicy<W> for KeepAll {
-///     // The direct path skips the finalize round trip only for a policy that
-///     // says it has no layer pass; the trait's default answer is the
-///     // conservative `true`.
-///     fn finalizes_layer(&self) -> bool { false }
-/// }
-///
-/// let mut acc = BuildAccumulator::<1>::new(1);
-/// acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-/// let mut circuit = Circuit::<1>::new(1);
-/// circuit.push(Clifford1Q::h(0));
-///
-/// let opts = PropagateOptions {
-///     engine: EngineSelection::Auto,
-///     ..PropagateOptions::default()
-/// };
-/// let mut scratch = LayerScratch::new();
-/// let evolved = propagate_with(
-///     &circuit, acc.finalize(), &KeepAll, Direction::Heisenberg, &mut scratch, opts,
-/// );
-/// // H conjugates Z to X, whichever engine ran the layer.
-/// assert_eq!(evolved.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
-/// ```
-///
-/// # The small-sum path, when selected
-///
-/// Under [`EngineSelection::Auto`] or [`EngineSelection::SmallSumDirect`] and a starting sum within [`PropagateOptions::small_sum_threshold`], the leading layers run on the direct path (`engine::direct`): the sum is held in a hash map across those layers, and materialized back into a [`PauliSum`] once — when a layer leaves it above the threshold, or when the circuit ends.
-/// From that point the sorting engine runs every remaining layer.
-///
-/// The transition is **one-way**. Re-entering the direct path when a later truncation drops the sum back under the threshold is deliberately not done: each crossing costs an `O(n)` ingest plus an `O(n log n)` materialize, and a sum oscillating around the threshold would pay them per layer for an upside bounded by the fixed cost the direct path saves.
-/// One crossing per call is also trivially reasoned about: the per-layer term counts and the [`TermTrace`](bucketed::TermTrace) are the same records in the same order regardless of where it happened.
-///
-/// Truncation is applied identically on both sides of the transition: `keep_term` runs per layer on summed coefficients (where the merge phase runs it), and `finalize_layer` runs per layer on a materialized sum whenever [`TruncationPolicy::finalizes_layer`] says there is one.
-/// Progress logging and the term trace emit the same records from either path.
-///
-/// # Channels wider than the sorting engine can prepare
-///
-/// The direct path calls only [`Channel::apply`], so it applies a channel of any support width — including the `> MAX_LOCAL_SUPPORT` channels for which `Channel::prepare` returns `None` and the sorting engine panics.
-/// It is a wider path, not a narrower one, and that asymmetry is visible: a circuit containing such a channel propagates while the sum is under the threshold and panics on the layer after it grows past it, exactly as it panics today under [`EngineSelection::SortedOnly`].
-/// The generalization design for the sorting engine is tracked in `research/FINDINGS.md`.
+/// Under a direct-path [`EngineSelection`] the leading layers run on a hash map until a layer leaves the sum above the threshold; the switch to the sorting engine is one-way.
+/// The direct path applies channels of any support width, so a circuit with a channel `prepare` declines panics only once the sum outgrows the threshold.
 pub fn propagate_with<const W: usize, T>(
     circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
@@ -276,10 +174,6 @@ where
 {
     let n = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
-    // The bucket count `B` is a deterministic function of the *history* of term counts (`rebucket` is grow-only, so `B` is the running max of `desired_bits` over every layer so far, not the instantaneous length), which is itself fully determined by the circuit and the starting sum.
-    // Agreement across `B` is only required to floating-point tolerance (ARCHITECTURE.md §Determinism).
-
-    // Entry/exit INFO pair. One unconditional `Instant` pair per `propagate` call is negligible next to a single layer; the *per-layer* clock reads below are the ones that have to be gated.
     let terms_in = sum.len();
     let started = std::time::Instant::now();
     log::info!(
@@ -287,12 +181,9 @@ where
         "propagate: {terms_in} terms through {n} channels ({direction:?})",
     );
 
-    // Hoisted out of the layer loop: nothing inside it can enable or disable the trace, so the per-layer test is on a register rather than a load through `scratch`.
     let tracing = scratch.term_trace.is_some();
     let gate_tracing = scratch.gate_trace.is_some();
 
-    // The engine choice is made once, here, outside every loop: a layer's own code path cannot change it, and under the default `SortedOnly` this is one not-taken branch before the loop and nothing inside it.
-    // `n > 0` keeps a zero-layer call off the direct path entirely, so it stays a no-op rather than an ingest/materialize round trip.
     let mut start = 0usize;
     if n > 0 && options.starts_direct(terms_in, policy.finalizes_layer()) {
         let (out, applied) =
@@ -308,7 +199,7 @@ where
         };
         let ch: &dyn Channel<W> = circuit.channels[idx].as_ref();
 
-        // Per-layer DEBUG progress, and the opt-in gate trace, share one clock read: `log_enabled!` is a relaxed atomic load plus a compare, so a disabled logger and a disabled gate trace together cost one branch per layer and never read the clock; `terms_before` is the cached length field.
+        // The clock is read only when a logger or the gate trace wants it.
         let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
         let want_timer = gate_tracing || debug_on;
         let layer_t0 = want_timer.then(std::time::Instant::now);
@@ -337,8 +228,7 @@ where
                 st.rearm();
             }
             None => {
-                // No built-in channel can reach this arm: every one of them has support ≤ MAX_LOCAL_SUPPORT except `PauliRotation`, which overrides `prepare` and returns `Prepared::Rotation` at any generator weight, and none writes outside its declared support.
-                // So this is only reachable from a user-supplied `Channel` impl, and it is a hard error rather than a slow path: there is no whole-sum fallback to absorb it.
+                // Reachable only from a user `Channel`: every built-in has support ≤ MAX_LOCAL_SUPPORT or, like `PauliRotation`, overrides `prepare`.
                 let weight: u32 = ch.support().iter().map(|w| w.count_ones()).sum();
                 panic!(
                     "layer {idx}: Channel::prepare declined, so this channel cannot be \
@@ -356,8 +246,7 @@ where
             st.lap(&mut scratch.stats.finalize_ns);
             scratch.stats.terms_out += sum.len() as u64;
         }
-        // Opt-in term trace (`LayerScratch::enable_term_trace`), both counts in one call: `terms_before` from the read above, `sum.len()` post-truncation, so the pair says what the layer actually left resident.
-        // Placed last so it is outside every measured phase, and behind a hoisted flag + a `#[cold]` callee so the untraced layer body grows by a register test and a not-taken branch — this loop inlines `apply_layer_bucketed`, whose merge kernels are sensitive to a few bytes of code motion (CLAUDE.md §Performance discipline).
+        // Behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion (CLAUDE.md §Performance discipline).
         if tracing {
             record_layer_terms(scratch, terms_before, sum.len());
         }
@@ -404,10 +293,7 @@ where
     sum
 }
 
-/// Append one layer's `(terms_in, terms_out)` to the scratch's trace.
-///
-/// Deliberately `#[cold]` + `#[inline(never)]`: the layer loop is the caller that inlines [`apply_layer_bucketed`] and, through it, the merge kernels, whose throughput is sensitive to a few bytes of code motion (CLAUDE.md §Performance discipline).
-/// Keeping the pushes out-of-line and marked cold puts the whole trace off the layer's code path; the tracing caller pays a call, which is nothing next to a layer.
+/// Append one layer's term counts; cold and out of line to keep the trace off the inlined layer path.
 #[cold]
 #[inline(never)]
 fn record_layer_terms<const W: usize>(
@@ -421,9 +307,7 @@ fn record_layer_terms<const W: usize>(
     }
 }
 
-/// Append one layer's full [`GateTrace`] record.
-///
-/// Deliberately `#[cold]` + `#[inline(never)]` for the same reason as [`record_layer_terms`]: keeps the trace off the layer's inlined code path.
+/// Append one layer's [`GateTrace`](crate::GateTrace) record; cold for the same reason as [`record_layer_terms`].
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]

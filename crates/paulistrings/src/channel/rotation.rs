@@ -65,10 +65,7 @@ impl<const W: usize> PauliRotation<W> {
             x: *input_x,
             z: *input_z,
         };
-        let generator = PauliString::<W> {
-            x: self.generator_x,
-            z: self.generator_z,
-        };
+        let generator = self.generator();
 
         if input.commutes_with(&generator) {
             out.push(*input_x, *input_z, coeff);

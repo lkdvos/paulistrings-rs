@@ -19,15 +19,15 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 #[derive(Clone, Debug)]
 pub struct DeltaEntry<const W: usize> {
     /// `δ = H·d`; entries may share one.
-    pub bucket_delta: u32,
+    pub(crate) bucket_delta: u32,
     /// `d` in local support coordinates: bit `2j` is the x-bit of support qubit `j`, bit `2j+1` its z-bit.
-    pub local_delta: u8,
+    pub(crate) local_delta: u8,
     /// X-part of `d` as a full-width XOR mask.
     pub mask_x: [u64; W],
     /// Z-part of `d` as a full-width XOR mask.
     pub mask_z: [u64; W],
     /// `amp[s]` takes support pattern `s` to `s ^ local_delta`; exactly zero means no output.
-    pub amp: [Complex64; LOCAL_DIM],
+    pub(crate) amp: [Complex64; LOCAL_DIM],
 }
 
 impl<const W: usize> DeltaEntry<W> {
@@ -74,7 +74,7 @@ pub struct LocalPtm<const W: usize> {
 impl<const W: usize> LocalPtm<W> {
     /// Number of support qubits.
     #[inline]
-    pub fn k(&self) -> usize {
+    pub(crate) fn k(&self) -> usize {
         self.k as usize
     }
 
@@ -97,7 +97,7 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// The distinct bucket deltas `h(D)`, ascending.
-    pub fn bucket_deltas(&self) -> Vec<u32> {
+    pub(crate) fn bucket_deltas(&self) -> Vec<u32> {
         let mut v: Vec<u32> = self.deltas.iter().map(|d| d.bucket_delta).collect();
         v.sort_unstable();
         v.dedup();
@@ -106,7 +106,7 @@ impl<const W: usize> LocalPtm<W> {
 
     /// The local support pattern of a key, packed like `local_delta`.
     #[inline]
-    pub fn support_bits(&self, x: &[u64; W], z: &[u64; W]) -> usize {
+    pub(crate) fn support_bits(&self, x: &[u64; W], z: &[u64; W]) -> usize {
         let mut s = 0usize;
         for j in 0..self.k as usize {
             let q = self.qubits[j] as usize;
@@ -168,13 +168,13 @@ pub struct RotationPrep<const W: usize> {
     /// The generator `P`.
     pub gen: PauliString<W>,
     /// `cos(θ)`.
-    pub cos: f64,
+    pub(crate) cos: f64,
     /// `sin(θ)`.
-    pub sin: f64,
+    pub(crate) sin: f64,
     /// Bucket delta of the identity output, `H·0 = 0`.
-    pub bucket_delta_identity: u32,
+    pub(crate) bucket_delta_identity: u32,
     /// Bucket delta of the `v ⊕ P` output, `H·P`.
-    pub bucket_delta_gen: u32,
+    pub(crate) bucket_delta_gen: u32,
 }
 
 impl<const W: usize> RotationPrep<W> {
@@ -213,7 +213,7 @@ pub enum Prepared<const W: usize> {
 
 impl<const W: usize> Prepared<W> {
     /// The distinct bucket deltas `h(D)`.
-    pub fn bucket_deltas(&self) -> Vec<u32> {
+    pub(crate) fn bucket_deltas(&self) -> Vec<u32> {
         match self {
             Prepared::Local(p) => p.bucket_deltas(),
             Prepared::Rotation(r) => {
@@ -227,7 +227,7 @@ impl<const W: usize> Prepared<W> {
     }
 
     /// [`Prepared::Local`] probed from [`Channel::apply`]; `None` when the support exceeds [`MAX_LOCAL_SUPPORT`] or an output leaves it.
-    pub fn derive_local<C>(channel: &C, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
+    pub(crate) fn derive_local<C>(channel: &C, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
     where
         C: Channel<W> + ?Sized,
     {

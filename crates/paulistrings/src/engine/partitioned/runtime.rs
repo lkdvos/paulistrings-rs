@@ -22,10 +22,10 @@ pub struct PartitionRuntime {
     wait_timeout: std::time::Duration,
 }
 
-pub(crate) const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Longer, since device partitions may share a device and its queue.
-pub(crate) const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl PartitionRuntime {
     /// Resolves `config` against the machine and builds one pinned pool per partition.

@@ -191,7 +191,7 @@ pub(crate) fn sysfs_numa_nodes(_allowed: &CpuSet) -> Vec<(usize, CpuSet)> {
 }
 
 /// Pins the calling thread to `set`; a no-op on non-Linux targets.
-pub(crate) fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
+pub(super) fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         if set.is_empty() {
@@ -223,7 +223,7 @@ pub(crate) fn pin_current_thread(set: &CpuSet) -> io::Result<()> {
 }
 
 /// Binds the calling thread's allocations to one NUMA node (`MPOL_BIND`), or restores `MPOL_DEFAULT` for `None`; a no-op on non-Linux targets.
-pub(crate) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> {
+pub(super) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         const BITS: usize = 8 * std::mem::size_of::<libc::c_ulong>();
@@ -275,7 +275,7 @@ pub struct PartitionSlot {
 }
 
 /// Builds one partition's Rayon pool, each worker pinning itself before Rayon's main loop and only warning when pinning fails.
-pub(crate) fn build_pool(
+pub(super) fn build_pool(
     slot: &PartitionSlot,
     bind_memory: bool,
     name: &str,
@@ -359,7 +359,7 @@ pub enum Placement {
 
 /// Host workers of a device partition's pool.
 #[cfg(feature = "cuda")]
-pub(crate) const DEVICE_PARTITION_THREADS: usize = 4;
+const DEVICE_PARTITION_THREADS: usize = 4;
 
 /// Placement plus the knobs the partitioned engine reads alongside it.
 #[derive(Clone, Debug, PartialEq, Eq)]

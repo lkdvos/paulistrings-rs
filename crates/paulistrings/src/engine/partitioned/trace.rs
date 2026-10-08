@@ -91,7 +91,7 @@ impl PartitionTrace {
 
 /// One layer as a single partition saw it, before [`assemble`] transposes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PartitionLayerRow {
+pub(super) struct PartitionLayerRow {
     pub bits: u8,
     pub remote_deltas: u32,
     pub collectives: u32,
@@ -110,7 +110,7 @@ pub(crate) struct PartitionLayerRow {
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record_layer_row(
+pub(super) fn record_layer_row(
     rows: &mut Vec<PartitionLayerRow>,
     bits: u8,
     collectives: u32,
@@ -139,7 +139,7 @@ pub(crate) fn record_layer_row(
 }
 
 /// Transposes the partitions' rows into per-layer records appended to `trace`, panicking if the partitions disagree on a collective decision.
-pub(crate) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<PartitionLayerRow>>) {
+pub(super) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<PartitionLayerRow>>) {
     let size = per_partition.len();
     let layers = per_partition[0].len();
     for (rank, rows) in per_partition.iter().enumerate() {

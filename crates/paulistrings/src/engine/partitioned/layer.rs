@@ -16,10 +16,10 @@ use crate::truncation::TruncationPolicy;
 use num_complex::Complex64;
 
 /// Chunks a layer's bulk transfer is cut into by default; not derived from the thread count, since both sides must cut a block alike.
-pub(crate) const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
+const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
 /// [`DEFAULT_EXCHANGE_CHUNKS`] unless `PAULISTRINGS_EXCHANGE_CHUNKS` names another; every rank must see the same environment.
-pub(crate) fn exchange_chunks() -> usize {
+fn exchange_chunks() -> usize {
     static CHUNKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CHUNKS.get_or_init(|| {
         std::env::var("PAULISTRINGS_EXCHANGE_CHUNKS")
@@ -31,7 +31,7 @@ pub(crate) fn exchange_chunks() -> usize {
 }
 
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
-pub(crate) struct RecvRows<'a, const W: usize> {
+struct RecvRows<'a, const W: usize> {
     blocks: Vec<Option<&'a ExchangeBlock<W>>>,
     map: &'a ChunkMap,
     wait: &'a dyn ChunkWait,
@@ -135,7 +135,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
 
 /// One partition's reusable per-layer scratch.
 #[derive(Debug, Default)]
-pub(crate) struct PartitionState<const W: usize> {
+pub(super) struct PartitionState<const W: usize> {
     pub layer: LayerScratch<W>,
     pub export: ExportScratch<W>,
     pub chunks: ChunkMap,
@@ -165,7 +165,7 @@ impl LayerExchangeCounts {
 }
 
 /// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`.
-pub(crate) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
+pub(super) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prepared: &Prepared<W>,
     plan: &PartitionPlan,

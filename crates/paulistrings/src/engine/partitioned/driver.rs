@@ -68,14 +68,14 @@ impl Collectives for CountingCollectives<'_> {
 }
 
 /// One partition's payload, moved into its thread for the duration of a call and handed back.
-pub(crate) struct PartitionWork<B> {
-    pub(crate) local: B,
+pub(super) struct PartitionWork<B> {
+    pub(super) local: B,
     /// One row per layer, empty unless tracing is on.
-    pub(crate) rows: Vec<PartitionLayerRow>,
+    pub(super) rows: Vec<PartitionLayerRow>,
 }
 
 impl<B> PartitionWork<B> {
-    pub(crate) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
+    pub(super) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
     where
         B: PartitionStorage<W>,
     {
@@ -106,11 +106,11 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 }
 
 /// What a partition knows about itself while it walks the layers.
-pub(crate) struct PartitionCtx<'a, const W: usize> {
-    pub(crate) rows: &'a PartitionRows<W>,
-    pub(crate) rank: usize,
-    pub(crate) size: usize,
-    pub(crate) tracing: bool,
+pub(super) struct PartitionCtx<'a, const W: usize> {
+    pub(super) rows: &'a PartitionRows<W>,
+    pub(super) rank: usize,
+    pub(super) size: usize,
+    pub(super) tracing: bool,
 }
 
 /// [`Channel::prepare`], or the unpartitioned engine's hard error naming the partition and layer.
@@ -134,7 +134,7 @@ fn prepare_or_panic<const W: usize>(
 }
 
 /// One partition's layer loop, run in lock-step with its peers inside its own pool (ARCHITECTURE.md §Partitioning).
-pub(crate) fn run_layers<const W: usize, T, X, B>(
+pub(super) fn run_layers<const W: usize, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,

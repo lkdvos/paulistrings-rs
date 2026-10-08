@@ -15,7 +15,7 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct ExportScratch<const W: usize> {
     /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
     counts: Vec<u32>,
@@ -25,17 +25,6 @@ pub(crate) struct ExportScratch<const W: usize> {
     source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
-}
-
-impl<const W: usize> Default for ExportScratch<W> {
-    fn default() -> Self {
-        Self {
-            counts: Vec::new(),
-            block_counts: Vec::new(),
-            source_of: Vec::new(),
-            pool: Vec::new(),
-        }
-    }
 }
 
 /// What one layer's export sent, indexed by partner rank.

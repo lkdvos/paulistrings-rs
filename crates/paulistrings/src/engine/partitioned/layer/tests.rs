@@ -519,7 +519,7 @@ fn partitioned_output_is_byte_identical_across_pool_sizes() {
 }
 
 /// [`apply_layer_partitioned_with_plan`], classifying `prepared`'s deltas itself.
-pub(crate) fn apply_layer_partitioned<const W: usize, T, X>(
+fn apply_layer_partitioned<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prepared: &Prepared<W>,
     rows: &PartitionRows<W>,

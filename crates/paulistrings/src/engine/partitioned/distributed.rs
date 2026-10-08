@@ -26,10 +26,11 @@ use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
 use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
-use crate::echo::{qubit_mask, RotationAxis};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
-use crate::pauli_sum::{PauliSum, ProductState};
+use crate::pauli_sum::PauliSum;
+use crate::readout::echo::{qubit_mask, RotationAxis};
+use crate::readout::product_state::ProductState;
 
 #[cfg(feature = "phase-timing")]
 use super::driver::PartitionPhaseStats;

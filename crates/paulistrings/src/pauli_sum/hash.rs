@@ -1,6 +1,5 @@
 //! The GF(2)-linear bucket function `h(v) = H·v`. See ARCHITECTURE.md §Hash.
 
-use crate::echo::RotationAxis;
 use crate::pauli_string::PauliString;
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
@@ -545,12 +544,6 @@ impl<const W: usize> PartitionRows<W> {
             .iter()
             .zip(&self.rows_z)
             .all(|(rx, rz)| (0..W).all(|w| rx[w] & mask_x[w] == 0 && rz[w] & mask_z[w] == 0))
-    }
-
-    /// `true` if no row reads a coordinate [`RotationAxis::flip_mask`] of `sites` names, so every [`PauliSum::rotated_overlap`](crate::PauliSum::rotated_overlap) class lies in one partition.
-    pub fn keeps_flip_classes(&self, sites: &[usize], axis: RotationAxis) -> bool {
-        let (mask_x, mask_z) = axis.flip_mask(sites);
-        self.avoids(&mask_x, &mask_z)
     }
 
     /// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent over the `2·num_qubits` key columns.

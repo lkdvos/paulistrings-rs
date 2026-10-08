@@ -7,10 +7,6 @@ use rayon::prelude::*;
 
 use super::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_string::PauliString;
-#[cfg(test)]
-use crate::pauli_sum::PauliAxis;
-use crate::pauli_sum::{ProductBasis, ProductState};
-use crate::stabilizer::StabilizerState;
 
 /// Default seed for the partitioning hash. Fixed so a `propagate` run is reproducible across processes.
 /// Exposed as a constant rather than hidden so a caller who needs a different partition can build their own [`Gf2Hash`].
@@ -398,98 +394,6 @@ impl<const W: usize> PauliSum<W> {
         out
     }
 
-    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state.
-    /// For each [`ProductState`] there is exactly one single-qubit Pauli with expectation `1`; a term contributes its full coefficient iff every factor is `I` or that Pauli — a masked scan over the key columns, run as a per-bucket parallel reduction.
-    /// The uniform states are the special case of [`ProductBasis`] with sign `+1` everywhere, so this is a thin wrapper over [`Self::expectation_product_basis`].
-    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
-    ///
-    /// # Summation order
-    ///
-    /// Partial sums are combined in bucket order, which is deterministic given the partition; two partitions of the same terms can differ in the last bits, since `f64` addition is not associative.
-    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
-        self.expectation_product_basis(&ProductBasis::<W>::uniform(state))
-    }
-
-    /// Expectation value `⟨ψ|O|ψ⟩` in an arbitrary single-qubit product state.
-    /// `basis` gives each qubit its own axis and sign; see [`ProductBasis`] for the per-word match condition and the sign rule this evaluates. A term contributes its coefficient (negated when an odd number of support sites are `-1` eigenstates) iff every non-identity factor equals that qubit's axis exactly. Cost is one pass over the key columns as a per-bucket parallel reduction, with no expansion over basis states.
-    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
-    ///
-    /// # Summation order
-    ///
-    /// As in [`Self::expectation_product_state`] — partials are combined in bucket order, so two partitions of the same terms can differ in the last bits.
-    pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
-        self.buckets
-            .par_iter()
-            .map(|cols| {
-                let mut acc = Complex64::new(0.0, 0.0);
-                for i in 0..cols.len() {
-                    // `mismatch` stays zero iff every word's non-identity sites carry exactly the local axis Pauli; `sign_bits` counts the `-1` eigenstates inside the support.
-                    let mut mismatch = 0u64;
-                    let mut sign_bits = 0u32;
-                    for w in 0..W {
-                        let x = cols.x[i][w];
-                        let z = cols.z[i][w];
-                        let sup = x | z;
-                        mismatch |= (x ^ (sup & basis.ax_x[w])) | (z ^ (sup & basis.ax_z[w]));
-                        sign_bits += (sup & basis.neg[w]).count_ones();
-                    }
-                    if mismatch == 0 {
-                        if sign_bits & 1 == 0 {
-                            acc += cols.coeff[i];
-                        } else {
-                            acc -= cols.coeff[i];
-                        }
-                    }
-                }
-                acc
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
-    }
-
-    /// Expectation value `⟨ψ|O|ψ⟩` in a stabilizer state.
-    /// `⟨ψ|P|ψ⟩` is `±1` when `±P` lies in the state's stabilizer group and `0` otherwise, so this is a filter with a sign, exactly like [`Self::expectation_product_basis`], but the admissible state widens to any stabilizer state (Bell, GHZ, cluster, a Clifford circuit's output). See [`StabilizerState`] for the membership test and the sign bookkeeping.
-    /// Cost is `O(terms · n²/64)` word operations after the state's one-time `O(n³/64)` reduction — `n` times more work per term than the product-state scan, so prefer [`Self::expectation_product_basis`] for states that factorize.
-    /// Returns `Complex64` rather than `f64` because `self` need not be Hermitian; take `.re` when it is.
-    ///
-    /// # Summation order
-    ///
-    /// As in [`Self::expectation_product_state`] — partials are combined in bucket order, so two partitions of the same terms can differ in the last bits.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`].
-    pub fn expectation_stabilizer(&self, state: &StabilizerState<W>) -> Complex64 {
-        assert_eq!(
-            self.num_qubits,
-            state.num_qubits(),
-            "PauliSum::expectation_stabilizer: num_qubits mismatch ({} vs {})",
-            self.num_qubits,
-            state.num_qubits(),
-        );
-        self.buckets
-            .par_iter()
-            .map(|cols| {
-                let mut acc = Complex64::new(0.0, 0.0);
-                for i in 0..cols.len() {
-                    let key = PauliString::<W> {
-                        x: cols.x[i],
-                        z: cols.z[i],
-                    };
-                    match state.sign_of(&key) {
-                        None => {}
-                        Some(false) => acc += cols.coeff[i],
-                        Some(true) => acc -= cols.coeff[i],
-                    }
-                }
-                acc
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
-    }
-
     /// Drop every term, keeping the hash and the bucket storage.
     pub fn clear(&mut self) {
         for cols in self.buckets.iter_mut() {
@@ -812,6 +716,11 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
+    /// The buckets' columns, for read-outs that scan them.
+    pub(crate) fn buckets(&self) -> &[BucketCols<W>] {
+        &self.buckets
+    }
+
     /// Mutable access to the buckets, for layers that are applied in place.
     pub(crate) fn buckets_mut(&mut self) -> &mut [BucketCols<W>] {
         &mut self.buckets
@@ -1073,6 +982,7 @@ mod tests {
     use super::*;
     use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::phase::Phase;
+    use crate::readout::{PauliAxis, ProductBasis, ProductState};
     // `Xs64` and `rand_sum` are the canonical fixtures from
     // `crate::test_support` — this module's copies were byte-identical.
     use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};

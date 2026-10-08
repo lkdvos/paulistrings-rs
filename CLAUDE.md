@@ -213,7 +213,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
                           rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
                           behind `cuda` and `mpi`),
-                          stabilizer, echo, rng, test_support
+                          readout/{product_state,stabilizer,echo}, rng, test_support
   tests/ benches/ examples/ docs/examples/
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

@@ -4,7 +4,7 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::pauli_sum::PauliSum;
+use crate::pauli_sum::{PartitionRows, PauliSum};
 
 /// The single-qubit generator `G_q` of an echo perturbation `V = ⊗_{q ∈ sites} exp(-iδ G_q)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +101,14 @@ fn and<const W: usize>(a: &[u64; W], b: &[u64; W]) -> [u64; W] {
 #[inline]
 fn popcount<const W: usize>(a: &[u64; W]) -> usize {
     a.iter().map(|w| w.count_ones() as usize).sum()
+}
+
+impl<const W: usize> PartitionRows<W> {
+    /// `true` if no row reads a coordinate [`RotationAxis::flip_mask`] of `sites` names, so every [`PauliSum::rotated_overlap`](crate::PauliSum::rotated_overlap) class lies in one partition.
+    pub fn keeps_flip_classes(&self, sites: &[usize], axis: RotationAxis) -> bool {
+        let (mask_x, mask_z) = axis.flip_mask(sites);
+        self.avoids(&mask_x, &mask_z)
+    }
 }
 
 /// One term that anticommutes with some generator, keyed by its class.

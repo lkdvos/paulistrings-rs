@@ -35,7 +35,7 @@
 //! - [`TruncationPolicy`] (built-ins in [`truncation`]) — composable per-term and per-layer filters.
 //! - [`propagate`] / [`Direction`] / [`propagate_with_options`] — the propagation entry point (ARCHITECTURE.md §Engine).
 //! - [`ProductBasis`] / [`StabilizerState`] — read-out-only contraction states, never evolved.
-//! - [`echo`] — operator Loschmidt-echo read-outs ([`PauliSum::rotated_overlap`], [`PauliSum::anticommute_histogram`]).
+//! - [`readout::echo`] — operator Loschmidt-echo read-outs ([`PauliSum::rotated_overlap`], [`PauliSum::anticommute_histogram`]).
 //! - [`engine`] / [`engine::partitioned`] — the bucketed engine and its NUMA/distributed partitioning (ARCHITECTURE.md §Engine, §Partitioning); [`propagate`] is the front door for almost all callers.
 //! - [`examples`] — worked-example walkthroughs of full-scale simulations.
 //!
@@ -48,14 +48,13 @@
 
 pub mod channel;
 pub mod circuit;
-pub mod echo;
 pub mod engine;
 pub mod examples;
 pub mod pauli_string;
 pub mod pauli_sum;
 pub mod phase;
+pub mod readout;
 pub(crate) mod rng;
-pub mod stabilizer;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_support;
@@ -63,7 +62,6 @@ pub mod truncation;
 
 pub use channel::{Channel, OutputBuffer};
 pub use circuit::Circuit;
-pub use echo::{diagonal_echo, RotationAxis};
 pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
 // The CUDA backend, behind the `cuda` feature.
 #[cfg(feature = "cuda")]
@@ -88,8 +86,11 @@ pub use engine::{
 };
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;
+pub use pauli_sum::PauliSum;
 pub use pauli_sum::{Gf2Hash, PartitionRows};
-pub use pauli_sum::{PauliAxis, PauliSum, ProductBasis, ProductState};
 pub use phase::Phase;
-pub use stabilizer::{StabilizerError, StabilizerState};
+pub use readout::{
+    diagonal_echo, PauliAxis, ProductBasis, ProductState, RotationAxis, StabilizerError,
+    StabilizerState,
+};
 pub use truncation::TruncationPolicy;

@@ -289,7 +289,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// An empty sum over `num_qubits`, partitioned by `hash`.
-    pub fn empty_with_hash(num_qubits: usize, hash: Gf2Hash<W>) -> Self {
+    pub(crate) fn empty_with_hash(num_qubits: usize, hash: Gf2Hash<W>) -> Self {
         let nb = hash.num_buckets();
         Self {
             buckets: (0..nb).map(|_| BucketCols::new()).collect(),

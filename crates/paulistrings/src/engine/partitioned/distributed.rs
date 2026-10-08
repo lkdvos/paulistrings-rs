@@ -417,25 +417,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         Self::scatter_with_policy(sum, transport, config, &policy)
     }
 
-    /// [`scatter`](Self::scatter) onto a runtime the caller already built — the form a Trotter driver uses to keep one pinned pool across many sums.
-    ///
-    /// # Panics
-    ///
-    /// If `runtime` has more than one partition, or the group size is not a power of two.
-    pub fn scatter_with_runtime(
-        sum: PauliSum<W>,
-        transport: X,
-        runtime: Arc<PartitionRuntime>,
-        partition_row_seed: Option<u64>,
-    ) -> Self {
-        let rows = PartitionRowPolicy::Seeded(partition_row_seed).rows(
-            sum.num_qubits(),
-            group_bits(transport.size()),
-            sum.hash().seed(),
-        );
-        Self::scatter_with_rows(sum, transport, runtime, rows)
-    }
-
     /// [`scatter`](Self::scatter) with the rows a [`PartitionRowPolicy`] names, the qubit count and the group size taken from `sum` and `transport`.
     ///
     /// [`PartitionRowPolicy::Seeded(config.partition_row_seed)`](PartitionRowPolicy::Seeded) is [`scatter`](Self::scatter) itself.

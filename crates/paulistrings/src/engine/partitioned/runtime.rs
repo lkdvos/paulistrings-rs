@@ -118,11 +118,6 @@ impl PartitionRuntime {
         &self.slots
     }
 
-    /// How long a partition waits for a partner's collective before declaring it dead: `DEFAULT_WAIT_TIMEOUT`, or `DEVICE_WAIT_TIMEOUT` when a slot names a device.
-    pub fn wait_timeout(&self) -> std::time::Duration {
-        self.wait_timeout
-    }
-
     /// `log2` of the partition count: the number of GF(2) rows a
     /// [`PartitionRows`](crate::PartitionRows) needs to name a partition.
     pub(crate) fn partition_bits(&self) -> u8 {

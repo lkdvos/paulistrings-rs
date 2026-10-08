@@ -349,7 +349,7 @@ impl InProcessTransport {
     }
 
     /// [`Self::group`] with the collective wait's backstop set to `timeout`; a group sharing one device queue needs more than the default.
-    pub fn group_with_timeout(size: u32, timeout: Duration) -> Vec<InProcessTransport> {
+    pub(crate) fn group_with_timeout(size: u32, timeout: Duration) -> Vec<InProcessTransport> {
         assert!(size > 0, "a transport group needs at least one partition");
         let n = size as usize;
         let mut senders: Vec<Vec<Option<std::sync::mpsc::Sender<Message>>>> =

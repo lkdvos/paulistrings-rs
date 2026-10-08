@@ -145,7 +145,7 @@ impl ChunkMap {
     ///
     /// The inverse of [`bound`](Self::bound): `bound(k) <= p < bound(k + 1)`.
     #[inline]
-    pub fn chunk_of_position(&self, p: u32) -> usize {
+    pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
         let c = u64::from(p >> self.r);
         ((c * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
     }

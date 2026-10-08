@@ -228,7 +228,7 @@ impl<const W: usize> Gf2Hash<W> {
 
     /// `true` if `other` was generated with the same rows, so sums partitioned by the two can be combined (after matching `bits`).
     #[inline]
-    pub fn same_rows_as(&self, other: &Self) -> bool {
+    pub(crate) fn same_rows_as(&self, other: &Self) -> bool {
         self.seed == other.seed && self.num_qubits == other.num_qubits
     }
 

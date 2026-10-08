@@ -81,16 +81,14 @@ pub use engine::partitioned::{
     PartitionedSum, PartitionedTruncation, Placement, TopologyError, Transport,
 };
 #[cfg(feature = "phase-timing")]
-pub use engine::stats::{PhaseStats, TIMER_READ_OVERHEAD_NS};
+pub use engine::stats::PhaseStats;
 pub use engine::{
     propagate, propagate_with, Direction, EngineSelection, PropagateOptions,
     DEFAULT_SMALL_SUM_THRESHOLD,
 };
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;
-pub use pauli_sum::{
-    Gf2Hash, PartitionRows, PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, P_MAX_BITS,
-};
+pub use pauli_sum::{Gf2Hash, PartitionRows, PauliSum, P_MAX_BITS};
 pub use phase::Phase;
 pub use readout::{
     diagonal_echo, PauliAxis, ProductBasis, ProductState, RotationAxis, StabilizerError,

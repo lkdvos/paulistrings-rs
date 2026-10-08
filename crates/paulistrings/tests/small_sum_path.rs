@@ -15,6 +15,7 @@ use num_complex::Complex64;
 use proptest::prelude::*;
 
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
+use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, EngineSelection, LayerScratch, PauliString,
     PauliSum, PropagateOptions, TruncationPolicy, DEFAULT_SMALL_SUM_THRESHOLD,
@@ -24,7 +25,6 @@ use paulistrings::{
     GeneralUnitary2Q, PauliRotation,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
-use paulistrings::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 
 /// Keeps everything, and declares no layer pass — so `Auto` will actually take
 /// the direct path. The trait's default answer is the conservative `true`.

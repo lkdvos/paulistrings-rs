@@ -189,7 +189,7 @@ Two clock domains are deliberately mixed in one `PhaseStats`:
 
 The probe runs each `(layer, threads)` cell twice inside a dedicated Rayon pool: an untimed warm-up call, then a timed call whose input is the warm-up's output, so the timed call measures steady-state cost.
 `trotter` additionally self-caps its input at `TROTTER_MAX_N` regardless of `--n` (64 distinct generators under no truncation grow combinatorially rather than closing).
-The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × stats::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
+The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × test_support::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
 
 ### The partition axis
 

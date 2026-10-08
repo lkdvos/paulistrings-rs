@@ -137,8 +137,8 @@ fn finalize_gives_one_bucket_at_or_below_1024_terms() {
 
 #[test]
 fn finalize_picks_desired_bits_above() {
+    use crate::pauli_sum::storage::DEFAULT_TARGET_BUCKET_LEN;
     use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS};
-    use crate::pauli_sum::DEFAULT_TARGET_BUCKET_LEN;
     let mut acc = BuildAccumulator::<1>::new(12);
     for k in 1..=1500u64 {
         acc.add_term(

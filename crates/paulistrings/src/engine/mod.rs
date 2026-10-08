@@ -94,7 +94,7 @@ pub struct PropagateOptions {
     /// Resident term count up to which the small-sum direct path is used.
     /// Ignored under [`EngineSelection::SortedOnly`]. Default [`DEFAULT_SMALL_SUM_THRESHOLD`].
     pub small_sum_threshold: usize,
-    /// Terms per bucket the per-layer partition targets. Default [`DEFAULT_TARGET_BUCKET_LEN`].
+    /// Terms per bucket the per-layer partition targets. Default 1024.
     ///
     /// A measurement lever, not a tuning parameter: the default is the measured optimum (ARCHITECTURE.md §Bucket-Policy).
     /// What has to stay resident is the *gather run*, not the bucket, so the headroom is not the bucket size alone.
@@ -103,7 +103,7 @@ pub struct PropagateOptions {
     /// Both fields have to move together to get *fewer* buckets, and [`PauliSum::rebucket`](crate::PauliSum::rebucket) is grow-only, so lowering either mid-run never coarsens a partition already grown.
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
-    /// Default [`DEFAULT_MIN_BUCKETS`].
+    /// Default 128.
     ///
     /// Must be `>= 16`: below that `desired_bits`'s "worth splitting" gate is non-monotone, and the invariant "a sum of at most `target_bucket_len` terms gets one bucket" stops holding.
     /// Lowering it also lowers the parallel task count — the coset is the unit of work — so a coarse partition is a single-thread measurement tool first.

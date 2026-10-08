@@ -12,8 +12,10 @@ use criterion::{
 };
 use num_complex::Complex64;
 use paulistrings::test_support::apply_layer_bucketed;
+use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::BuildAccumulator;
 use paulistrings::Circuit;
+use paulistrings::Gf2Hash;
 use paulistrings::LayerScratch;
 use paulistrings::PauliString;
 use paulistrings::PauliSum;
@@ -22,7 +24,6 @@ use paulistrings::{propagate, Direction};
 use paulistrings::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
-use paulistrings::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 // `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
 // the committed criterion baselines are pinned to them specifically.
 use paulistrings::test_support::{

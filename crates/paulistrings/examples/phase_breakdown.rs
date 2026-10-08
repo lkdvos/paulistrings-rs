@@ -16,6 +16,9 @@ use paulistrings::test_support::{
     circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
     GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
 };
+use paulistrings::test_support::{
+    DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, TIMER_READ_OVERHEAD_NS,
+};
 #[cfg(feature = "cuda")]
 use paulistrings::BuiltinTruncation;
 use paulistrings::{
@@ -28,7 +31,6 @@ use paulistrings::{
     CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
     PartitionedTruncation, Placement,
 };
-use paulistrings::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, TIMER_READ_OVERHEAD_NS};
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]

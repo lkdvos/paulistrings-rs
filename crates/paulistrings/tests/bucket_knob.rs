@@ -10,12 +10,12 @@
 //! `research/FINDINGS.md` §1.4).
 
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
+use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::PauliRotation;
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PauliString, PauliSum,
     PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 
 /// No truncation: the partition must not change the surviving terms, so nothing
 /// may be dropped on either arm.

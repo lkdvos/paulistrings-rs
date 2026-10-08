@@ -9,9 +9,9 @@
 
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::storage::DEFAULT_TARGET_BUCKET_LEN;
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
 use crate::pauli_sum::PauliSum;
-use crate::pauli_sum::DEFAULT_TARGET_BUCKET_LEN;
 use crate::phase::Phase;
 use hashbrown::HashMap;
 use num_complex::Complex64;

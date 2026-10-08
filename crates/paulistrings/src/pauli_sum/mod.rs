@@ -3,7 +3,7 @@
 //! # Canonical order
 //!
 //! Terms are ordered by bucket index `h(x, z)` ascending, then lexicographic `(x, z)` key within a bucket; [`PauliSum::iter`] and [`PauliSum::to_arrays`] produce exactly this order, and no two entries share a key.
-//! A single-bucket sum's order is plain lexicographic `(x, z)`; sums of at most [`DEFAULT_TARGET_BUCKET_LEN`] terms built through [`BuildAccumulator`] are single-bucket, so small sums come out lex-sorted. Larger sums interleave buckets in an `H`-dependent order — compare by key ([`PauliSum::get`], [`PauliSum::iter`]), not by position.
+//! A single-bucket sum's order is plain lexicographic `(x, z)`; sums of at most [`DEFAULT_TARGET_BUCKET_LEN`](storage::DEFAULT_TARGET_BUCKET_LEN) terms built through [`BuildAccumulator`] are single-bucket, so small sums come out lex-sorted. Larger sums interleave buckets in an `H`-dependent order — compare by key ([`PauliSum::get`], [`PauliSum::iter`]), not by position.
 //!
 //! Build a [`PauliSum`] from unsorted inputs via [`BuildAccumulator`]; once built, combine sums with [`PauliSum::add`] or scale with [`PauliSum::scale`].
 //!
@@ -62,7 +62,7 @@ mod partition;
 pub(crate) mod storage;
 
 pub use hash::{Gf2Hash, PartitionRows, P_MAX_BITS};
-pub use storage::{PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
+pub use storage::PauliSum;
 
 #[cfg(test)]
 mod tests;

@@ -8,9 +8,6 @@
 
 use std::time::Instant;
 
-/// Rough estimate of the cost of one `Instant::now()` read, in nanoseconds, for this hardware class; used by the `phase_breakdown` probe's overhead line (`timer_reads() * TIMER_READ_OVERHEAD_NS`).
-pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
-
 /// Cumulative per-phase breakdown of one or more propagation layers.
 ///
 /// All `*_ns` fields are nanoseconds, summed over every layer since the counters were last drained.
@@ -177,7 +174,7 @@ impl PhaseStats {
     }
 
     /// Upper-bound estimate of the number of `Instant::now()` reads behind these counters: ~11 per layer, ~5 per coset task, 2 per run.
-    /// At [`TIMER_READ_OVERHEAD_NS`] ns per read, `timer_reads() × TIMER_READ_OVERHEAD_NS` ns is the self-inflicted overhead ceiling a probe should print next to the breakdown.
+    /// At `test_support::TIMER_READ_OVERHEAD_NS` ns per read, `timer_reads() × TIMER_READ_OVERHEAD_NS` ns is the self-inflicted overhead ceiling a probe should print next to the breakdown.
     pub fn timer_reads(&self) -> u64 {
         11 * self.layers + 5 * self.cosets + 2 * self.runs
     }

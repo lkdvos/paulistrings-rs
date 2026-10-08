@@ -21,7 +21,13 @@ pub use crate::engine::partitioned::plan::count_remote_deltas;
 pub use crate::engine::partitioned::rows::{circuit_generators, GeneratorWeight};
 pub use crate::engine::partitioned::transport::InProcessTransport;
 pub use crate::pauli_sum::hash::B_MAX_BITS;
-pub use crate::pauli_sum::storage::{desired_bits, DEFAULT_HASH_SEED};
+pub use crate::pauli_sum::storage::{
+    desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+};
+
+/// Rough estimate of the cost of one `Instant::now()` read, in nanoseconds, for this hardware class; used by the `phase_breakdown` probe's overhead line (`timer_reads() * TIMER_READ_OVERHEAD_NS`).
+#[cfg(feature = "phase-timing")]
+pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 

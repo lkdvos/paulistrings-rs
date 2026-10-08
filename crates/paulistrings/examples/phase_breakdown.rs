@@ -1487,13 +1487,13 @@ fn run_cell_gpu<const W: usize>(
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     let n = split.len();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
@@ -1945,13 +1945,13 @@ where
     split.enable_trace();
 
     // Untimed warm-up, then its counters discarded — same contract as the unpartitioned cell.
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
 
     let steady_n = split.len();
     let started = Instant::now();
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
@@ -2012,7 +2012,7 @@ where
     P: PartitionedTruncation<W>,
 {
     use paulistrings::mpi::{rsmpi, MpiTransport};
-    use paulistrings::{Collectives, DistributedSum};
+    use paulistrings::{Collectives, DistributedSum, ScatterOptions, ScatterRows};
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();
@@ -2063,18 +2063,22 @@ where
 
     let transport = MpiTransport::from_communicator(&world);
     let split_hash_seed = base.hash().seed();
-    let mut split = DistributedSum::scatter_with_rows(base, transport, runtime, rows);
+    let scatter_options = ScatterOptions {
+        runtime,
+        rows: ScatterRows::Explicit(rows),
+    };
+    let mut split = DistributedSum::scatter_with(base, transport, scatter_options);
     split.enable_trace();
 
     // Untimed warm-up, counters discarded; a barrier so the timed call starts together.
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
     split.transport().barrier();
 
     let steady_n = split.len_local();
     let started = Instant::now();
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
@@ -2214,14 +2218,14 @@ fn run_cell_mpi_gpu<const W: usize>(
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     split.transport().barrier();
     let n = split.len_local();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");

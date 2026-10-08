@@ -335,7 +335,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 /// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
 ///
 /// One-shot convenience: it builds a [`PartitionRuntime`], scatters, runs and gathers.
-/// [`EngineSelection`](crate::EngineSelection) in `options` is ignored; see [`PartitionedSum::propagate_with_options`].
+/// [`EngineSelection`](crate::EngineSelection) in `options` is ignored; see [`PartitionedSum::propagate_with`].
 /// A caller propagating repeatedly (a Trotter driver stepping an observable) should hold the runtime and a [`PartitionedSum`] instead, so the pools, the split and the scratch survive between calls.
 ///
 /// # Errors
@@ -397,7 +397,7 @@ where
 {
     let runtime = PartitionRuntime::new(config)?;
     let mut split = PartitionedSum::scatter(sum, runtime, config);
-    split.propagate_with_options(circuit, policy, direction, options);
+    split.propagate_with(circuit, policy, direction, options);
     Ok(split.into_gathered())
 }
 

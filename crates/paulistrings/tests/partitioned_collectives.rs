@@ -91,7 +91,7 @@ fn exchange_free_layers_are_collective_free() {
     let mut ps =
         PartitionedSum::scatter_with_rows(rand_sum_real::<1>(600, NQ, 0xC01), cut_rows(), runtime);
     ps.enable_trace();
-    ps.propagate_with_options(&circuit, &WeightCutoff(3), Direction::Forward, fine());
+    ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
 
     let layers = trace.layers.len();
@@ -139,7 +139,7 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     );
     let before = ps.bits();
     ps.enable_trace();
-    ps.propagate_with_options(&circuit, &WeightCutoff(5), Direction::Forward, fine());
+    ps.propagate_with(&circuit, &WeightCutoff(5), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
 
     assert_eq!(total(&trace), 0, "P = 1 has nobody to reduce with");
@@ -207,7 +207,7 @@ fn a_remote_layer_after_a_long_local_run_agrees_first() {
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter_with_rows(lopsided_start(), cut_rows(), runtime);
     ps.enable_trace();
-    ps.propagate_with_options(&circuit, &WeightCutoff(3), Direction::Forward, fine());
+    ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
 
     // The fixture has to actually exercise the lag: a layer past the ramp

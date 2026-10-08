@@ -43,6 +43,7 @@ use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Wei
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::{
     Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
+    ScatterOptions, ScatterRows,
 };
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -650,7 +651,11 @@ fn run_host_cases(r: &mut Runner) {
         let config = r.config(SEED);
         let runtime = PartitionRuntime::new(&config).expect("topology resolves");
         let transport = MpiTransport::from_communicator(r.world);
-        let mut split = DistributedSum::scatter_with_rows(sum.clone(), transport, runtime, rows);
+        let options = ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        };
+        let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
         split.enable_trace();
         split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
         let trace = split.take_trace().expect("tracing is on");
@@ -710,13 +715,11 @@ fn run_host_cases(r: &mut Runner) {
         let sum = acc.finalize();
 
         let transport = MpiTransport::from_communicator(r.world);
-        let mut split = DistributedSum::scatter_with_policy(
-            sum.clone(),
-            transport,
-            &r.config(SEED),
-            &PartitionRowPolicy::Cut(blocks.clone()),
-        )
-        .expect("topology resolves");
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(&r.config(SEED)).expect("topology resolves"),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Cut(blocks.clone())),
+        };
+        let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
         split.assert_invariants();
 
         let (_, z, _) = split.local().to_arrays();
@@ -866,13 +869,11 @@ fn run_host_cases(r: &mut Runner) {
                 exclude_z: vec![2, 3, 6],
             };
             let transport = MpiTransport::from_communicator(r.world);
-            let mut split = DistributedSum::scatter_with_policy(
-                sum.clone(),
-                transport,
-                &r.config(SEED),
-                &policy,
-            )
-            .expect("topology resolves");
+            let options = ScatterOptions {
+                runtime: PartitionRuntime::new(&r.config(SEED)).expect("topology resolves"),
+                rows: ScatterRows::Policy(policy.clone()),
+            };
+            let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
             split.propagate(&circuit, &KeepAll, Direction::Heisenberg);
             let got = split.rotated_overlap(&sites, 0.3, axis);
             let want = oracle.rotated_overlap(&sites, 0.3, axis);

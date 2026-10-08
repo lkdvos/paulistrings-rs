@@ -1089,7 +1089,7 @@ impl RunMode {
                 if traced {
                     split.enable_trace();
                 }
-                split.propagate_with_options(circuit, policy, direction, options);
+                split.propagate_with(circuit, policy, direction, options);
                 // The partition count from the runtime, not the trace: a zero-layer circuit records no layer, but the placement is still worth reporting.
                 let partitions = split.num_partitions();
                 let trace = traced.then(|| {
@@ -1151,7 +1151,7 @@ fn run_devices<const W: usize>(
         split.enable_trace();
     }
     split
-        .propagate_with_options(circuit, policy, direction, options)
+        .propagate_with(circuit, policy, direction, options)
         .map_err(PropagateFailure::Gpu)?;
     let trace = split.take_trace();
     let out = split.gather().map_err(PropagateFailure::Gpu)?;

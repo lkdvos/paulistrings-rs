@@ -24,7 +24,10 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::{DistributedSum, PartitionConfig, PartitionRowPolicy};
+use paulistrings::{
+    DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime, ScatterOptions,
+    ScatterRows,
+};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
@@ -36,6 +39,19 @@ const THETA: f64 = 0.1;
 /// the launcher, not the engine, did the placement.
 fn config() -> PartitionConfig {
     unpinned_partitions(1, 2, 0x5EED_C0FF_EE00_4321)
+}
+
+/// This rank's share of `sum`, split by the rows `policy` draws, on a runtime built from [`config`].
+fn scatter_by_policy<const W: usize>(
+    sum: PauliSum<W>,
+    transport: InProcessTransport,
+    policy: PartitionRowPolicy,
+) -> DistributedSum<W, InProcessTransport> {
+    let options = ScatterOptions {
+        runtime: PartitionRuntime::new(&config()).expect("topology resolves"),
+        rows: ScatterRows::Policy(policy),
+    };
+    DistributedSum::scatter_with(sum, transport, options)
 }
 
 /// A short circuit mixing the layer shapes that matter: a local-ish Clifford, a
@@ -366,8 +382,7 @@ fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
     let policy = PartitionRowPolicy::Cut(vec![(0..4).collect(), (4..8).collect()]);
 
     let held: Vec<Vec<u32>> = on_ranks(2, |transport| {
-        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
-            .expect("topology resolves");
+        let split = scatter_by_policy(sum.clone(), transport, policy.clone());
         split.assert_invariants();
         local_z_qubits(&split)
     });
@@ -392,13 +407,8 @@ fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
                 scope.spawn(move || {
                     let want = DistributedSum::scatter(sum.clone(), a, &config())
                         .expect("topology resolves");
-                    let got = DistributedSum::scatter_with_policy(
-                        sum.clone(),
-                        b,
-                        &config(),
-                        &PartitionRowPolicy::Seeded(Some(SEED)),
-                    )
-                    .expect("topology resolves");
+                    let got =
+                        scatter_by_policy(sum.clone(), b, PartitionRowPolicy::Seeded(Some(SEED)));
                     assert_eq!(want.rows(), got.rows());
                     (want.len_local(), got.len_local())
                 })
@@ -514,12 +524,11 @@ fn collapse_sample_distributed_picks_by_weight() {
             let gathered = on_ranks(size, |transport| {
                 use paulistrings::Collectives;
                 let runtime = runtimes[transport.rank() as usize].clone();
-                let mut split = DistributedSum::scatter_with_rows(
-                    input.clone(),
-                    transport,
+                let options = ScatterOptions {
                     runtime,
-                    rows.clone(),
-                );
+                    rows: ScatterRows::Explicit(rows.clone()),
+                };
+                let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
                 split.propagate(&circuit, &policy, Direction::Forward);
                 assert!(split.len_local() <= 1);
                 split.gather()
@@ -544,9 +553,7 @@ fn distributed_echo<const W: usize>(
     axis: RotationAxis,
 ) -> Vec<(f64, Vec<f64>, usize)> {
     on_ranks(size, |transport| {
-        let mut split =
-            DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), policy)
-                .expect("topology resolves");
+        let mut split = scatter_by_policy(sum.clone(), transport, policy.clone());
         split.propagate(circuit, &KeepAll, Direction::Heisenberg);
         (
             split.rotated_overlap(sites, 0.3, axis),
@@ -619,8 +626,7 @@ fn distributed_rotated_overlap_rejects_rows_that_split_classes() {
     let sites = [2usize, 3, 6];
     let policy = PartitionRowPolicy::Seeded(Some(0x5EED_0E40));
     let results: Vec<_> = on_ranks(2, |transport| {
-        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
-            .expect("topology resolves");
+        let split = scatter_by_policy(sum.clone(), transport, policy.clone());
         assert!(
             !split.rows().keeps_flip_classes(&sites, RotationAxis::Z),
             "the fixture rows must read a flip"

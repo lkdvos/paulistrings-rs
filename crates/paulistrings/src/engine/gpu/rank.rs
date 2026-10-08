@@ -168,20 +168,20 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         policy: impl Into<BuiltinTruncation>,
         direction: Direction,
     ) -> Result<(), GpuError> {
-        self.propagate_with_options(circuit, policy, direction, PropagateOptions::default())
+        self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
 
     /// Propagate through `circuit` under `policy` with explicit [`PropagateOptions`]. **Collective**, with the same circuit, direction and options on every rank.
     ///
     /// # Errors
     ///
-    /// [`GpuError::Unsupported`] on every rank before any layer if `policy` or a channel cannot run on device (as [`GpuPartitionedSum::propagate_with_options`](super::GpuPartitionedSum::propagate_with_options)), or if the policy contains an exact `TopN` and the group has more than one rank.
+    /// [`GpuError::Unsupported`] on every rank before any layer if `policy` or a channel cannot run on device (as [`GpuPartitionedSum::propagate_with`](super::GpuPartitionedSum::propagate_with)), or if the policy contains an exact `TopN` and the group has more than one rank.
     /// A device error on any rank is agreed after the loop, the partners having finished the call on empty exchange blocks, and poisons a group of more than one rank on every rank.
     ///
     /// # Panics
     ///
-    /// As [`DistributedSum::propagate_with_options`], including the ranks disagreeing about the run's shape.
-    pub fn propagate_with_options(
+    /// As [`DistributedSum::propagate_with`], including the ranks disagreeing about the run's shape.
+    pub fn propagate_with(
         &mut self,
         circuit: &Circuit<W>,
         policy: impl Into<BuiltinTruncation>,
@@ -381,7 +381,7 @@ pub fn propagate_mpi_gpu<const W: usize>(
         device,
         &PartitionRowPolicy::Seeded(None),
     )?;
-    split.propagate_with_options(circuit, policy, direction, options)?;
+    split.propagate_with(circuit, policy, direction, options)?;
     split.gather()
 }
 

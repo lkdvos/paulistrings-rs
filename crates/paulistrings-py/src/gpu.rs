@@ -250,7 +250,7 @@ mod cuda {
                         let _ = s.take_trace();
                     }
                     let result =
-                        s.propagate_with_options(c, policy, direction, options);
+                        s.propagate_with(c, policy, direction, options);
                     let trace = s.take_trace();
                     result.map_err(PropagateFailure::Gpu)?;
                     Ok(if traced { trace } else { None })

@@ -22,7 +22,7 @@ pub(crate) mod transport;
 pub(crate) mod truncation;
 
 // The front door: a sum split across partitions, and the one-shot entry points.
-pub use distributed::{DistributedSum, PartitionRowPolicy};
+pub use distributed::{DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows};
 pub use driver::propagate_partitioned;
 pub use runtime::PartitionRuntime;
 #[cfg(feature = "phase-timing")]

@@ -197,7 +197,7 @@ fn bits_are_uniform_and_grow_only() {
     };
     let before = ps.bits();
     ps.enable_trace();
-    ps.propagate_with_options(&circuit(), &KeepAll, Direction::Forward, options);
+    ps.propagate_with(&circuit(), &KeepAll, Direction::Forward, options);
     let trace = ps.take_trace().expect("tracing is on");
 
     let mut prev = before;

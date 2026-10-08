@@ -11,8 +11,9 @@ use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::BuiltinTruncation;
 use paulistrings::Collectives;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionTrace,
-    PauliSum as CorePauliSum, PropagateOptions, TopologyError,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionRuntime,
+    PartitionTrace, PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows,
+    TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -165,13 +166,16 @@ impl MpiRun {
             rows,
             gather,
         } = self;
-        let mut split =
-            MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
+        let scatter_options = ScatterOptions {
+            runtime: PartitionRuntime::new(&default_config())?,
+            rows: ScatterRows::Policy(rows),
+        };
+        let mut split = MpiSum::<W>::scatter_with(sum.clone(), transport, scatter_options);
         if traced {
             split.enable_trace();
         }
         let before = collapse_count(policy);
-        split.propagate_with_options(circuit, policy, direction, options);
+        split.propagate_with(circuit, policy, direction, options);
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
@@ -305,7 +309,7 @@ impl MpiGpuRun {
         }
         let before = collapse_count(policy);
         split
-            .propagate_with_options(circuit, policy, direction, options)
+            .propagate_with(circuit, policy, direction, options)
             .map_err(MpiGpuFailure::Gpu)?;
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());

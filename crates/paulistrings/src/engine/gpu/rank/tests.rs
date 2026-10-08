@@ -45,7 +45,7 @@ mod protocol {
     use super::super::super::module::MAX_BUCKET_LEN;
     use super::super::super::wire::{DeviceWire, PeerFault, PeerTally, PeerWire};
     use super::*;
-    use crate::engine::partitioned::PartitionRuntime;
+    use crate::engine::partitioned::{PartitionRuntime, ScatterOptions, ScatterRows};
     use crate::test_support::{
         assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63, su4_chain,
         trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog,
@@ -122,7 +122,7 @@ mod protocol {
                                 Err(e) => return (Err(e), GpuLayerCounters::default()),
                             };
                             setup(&mut split);
-                            let ran = split.propagate_with_options(
+                            let ran = split.propagate_with(
                                 self.circuit,
                                 &self.policy,
                                 self.direction,
@@ -573,12 +573,11 @@ mod protocol {
                         s.spawn(move || {
                             let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2, 0))
                                 .expect("topology");
-                            let mut split = DistributedSum::scatter_with_rows(
-                                input.clone(),
-                                t,
+                            let options = ScatterOptions {
                                 runtime,
-                                rows.clone(),
-                            );
+                                rows: ScatterRows::Explicit(rows.clone()),
+                            };
+                            let mut split = DistributedSum::scatter_with(input.clone(), t, options);
                             split.transport().log.take();
                             split.propagate(circuit, &ApproxTopN(900), Direction::Forward);
                             split.transport().log.take()

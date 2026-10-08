@@ -178,7 +178,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         self.trace.as_mut().map(std::mem::take)
     }
 
-    /// The host driver's `propagate_with_options` on any backend.
+    /// The host driver's `propagate_with` on any backend.
     pub(crate) fn propagate_on_backend<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -346,12 +346,12 @@ impl<const W: usize> PartitionedSum<W> {
 
     /// Propagates through `circuit` under `policy`, in place, with [`PropagateOptions::default()`].
     ///
-    /// See [`propagate_with_options`](Self::propagate_with_options) for the non-default knobs and for what the loop does per layer.
+    /// See [`propagate_with`](Self::propagate_with) for the non-default knobs and for what the loop does per layer.
     pub fn propagate<T>(&mut self, circuit: &Circuit<W>, policy: &T, direction: Direction)
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        self.propagate_with_options(circuit, policy, direction, PropagateOptions::default())
+        self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
 
     /// Propagates through `circuit` under `policy` with explicit [`PropagateOptions`].
@@ -369,7 +369,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// If a channel's [`Channel::prepare`](crate::Channel::prepare) declines (support wider than `MAX_LOCAL_SUPPORT`), exactly as the unpartitioned engine does — there is no fallback path.
     /// If `policy` reports [`finalizes_layer`](crate::TruncationPolicy::finalizes_layer) without overriding [`finalize_layer_partitioned`](PartitionedTruncation::finalize_layer_partitioned).
     /// A panic in any partition is re-raised on the calling thread.
-    pub fn propagate_with_options<T>(
+    pub fn propagate_with<T>(
         &mut self,
         circuit: &Circuit<W>,
         policy: &T,

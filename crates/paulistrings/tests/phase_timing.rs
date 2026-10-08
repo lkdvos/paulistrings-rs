@@ -6,7 +6,7 @@
 
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::{Depolarizing, PauliRotation};
-use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum};
+use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum, ScatterOptions, ScatterRows};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
@@ -226,8 +226,14 @@ fn distributed_stats_are_attributed() {
                     let config = unpinned_partitions(1, 1, 0x51A75);
                     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
                     let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-                    let mut split =
-                        DistributedSum::scatter_with_rows(sum, transport, runtime, rows);
+                    let mut split = DistributedSum::scatter_with(
+                        sum,
+                        transport,
+                        ScatterOptions {
+                            runtime,
+                            rows: ScatterRows::Explicit(rows),
+                        },
+                    );
 
                     let started = std::time::Instant::now();
                     split.propagate(circuit, &KeepAll, Direction::Forward);

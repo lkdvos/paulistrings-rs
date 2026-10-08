@@ -831,7 +831,7 @@ pub fn default_config() -> PartitionConfig {
 ///
 /// # Panics
 ///
-/// If the group size is not a power of two, if the placement cannot be resolved, or for any of the reasons [`DistributedSum::propagate_with_options`] panics — including the ranks disagreeing about the run.
+/// If the group size is not a power of two, if the placement cannot be resolved, or for any of the reasons [`DistributedSum::propagate_with`] panics — including the ranks disagreeing about the run.
 pub fn propagate_mpi<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
@@ -846,7 +846,7 @@ where
     let transport = MpiTransport::from_communicator(comm);
     let mut split = MpiSum::<W>::scatter(sum, transport, &default_config())
         .unwrap_or_else(|err| panic!("could not place the MPI rank's partition: {err}"));
-    split.propagate_with_options(circuit, policy, direction, options);
+    split.propagate_with(circuit, policy, direction, options);
     split.gather()
 }
 

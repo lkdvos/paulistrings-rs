@@ -31,7 +31,7 @@ const LOG_TARGET: &str = "paulistrings::propagate";
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select (K8) at one partition only, since the `n`-th largest of a split sum has no collective form.
 ///
-/// A device error mid-run leaves a one-partition sum holding the last completed layer's output, and a later call resumes from it; above one partition the split is **poisoned** instead (see [`propagate_with_options`](Self::propagate_with_options)).
+/// A device error mid-run leaves a one-partition sum holding the last completed layer's output, and a later call resumes from it; above one partition the split is **poisoned** instead (see [`propagate_with`](Self::propagate_with)).
 pub type GpuPartitionedSum<const W: usize> = PartitionedSum<W, DevicePartition<W>>;
 
 /// A [`PauliSum`] resident on one CUDA device: a [`GpuPartitionedSum`] of one partition, built by [`from_host`](GpuPartitionedSum::from_host) (ARCHITECTURE.md §GPU-Readiness).
@@ -230,7 +230,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         policy: impl Into<BuiltinTruncation>,
         direction: Direction,
     ) -> Result<(), GpuError> {
-        self.propagate_with_options(circuit, policy, direction, PropagateOptions::default())
+        self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
 
     /// Propagate through `circuit`, every partition on its own thread and device, in lock-step through the shared layer loop; `options` drive the host-side bucket schedule, which the device bucket policy of [`Self::set_layer_options`] refines on top of.
@@ -241,7 +241,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry.
     /// A device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
     /// Above one partition the split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
-    pub fn propagate_with_options(
+    pub fn propagate_with(
         &mut self,
         circuit: &Circuit<W>,
         policy: impl Into<BuiltinTruncation>,

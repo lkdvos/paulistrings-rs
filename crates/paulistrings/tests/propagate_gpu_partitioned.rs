@@ -342,7 +342,7 @@ fn options_are_honoured() {
     for &p in &PS {
         let mut split = split_of(&sum, p);
         split
-            .propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+            .propagate_with(&circuit, KeepAll, Direction::Forward, options)
             .expect("propagate");
         assert_terms_close(
             &split.gather().expect("gather"),
@@ -538,7 +538,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     });
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+        .propagate_with(&circuit, KeepAll, Direction::Forward, options)
         .expect("a block over two fitting segments is merged");
     let trace = split.take_trace().expect("tracing on");
     let sent: u64 = trace.layers[0].rows_sent[0].iter().sum();
@@ -575,7 +575,7 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
         min_buckets: 1,
         ..PropagateOptions::default()
     };
-    let r = split.propagate_with_options(&circuit, KeepAll, Direction::Forward, options);
+    let r = split.propagate_with(&circuit, KeepAll, Direction::Forward, options);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{r:?}");
 }
 

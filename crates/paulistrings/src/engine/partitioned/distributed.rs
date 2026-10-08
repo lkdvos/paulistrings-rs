@@ -97,6 +97,24 @@ impl PartitionRowPolicy {
     }
 }
 
+/// How [`DistributedSum::scatter_with`] runs this rank's partition and picks the rows the group splits by.
+#[derive(Clone)]
+pub struct ScatterOptions<const W: usize> {
+    /// The one-partition runtime to run on; build it once with [`PartitionRuntime::new`] to keep a pinned pool across many sums.
+    pub runtime: Arc<PartitionRuntime>,
+    /// The partition rows the group splits by.
+    pub rows: ScatterRows<W>,
+}
+
+/// The partition rows a [`DistributedSum::scatter_with`] splits by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScatterRows<const W: usize> {
+    /// The rows a policy draws for the group's size, falling back to the sum's own hash seed.
+    Policy(PartitionRowPolicy),
+    /// Rows the caller built; every rank must pass the same ones.
+    Explicit(PartitionRows<W>),
+}
+
 /// `log2(size)`, the partition bits a group of `size` ranks is split by.
 ///
 /// # Panics
@@ -295,7 +313,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// [`DistributedSum::propagate_with_options`] on any backend.
+    /// [`DistributedSum::propagate_with`] on any backend.
     pub(crate) fn propagate_on_backend<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -413,50 +431,32 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         transport: X,
         config: &PartitionConfig,
     ) -> Result<Self, TopologyError> {
-        let policy = PartitionRowPolicy::Seeded(config.partition_row_seed);
-        Self::scatter_with_policy(sum, transport, config, &policy)
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(config)?,
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+        };
+        Ok(Self::scatter_with(sum, transport, options))
     }
 
-    /// [`scatter`](Self::scatter) with the rows a [`PartitionRowPolicy`] names, the qubit count and the group size taken from `sum` and `transport`.
+    /// [`scatter`](Self::scatter) onto a runtime the caller already built, split by the rows `options` names.
     ///
-    /// [`PartitionRowPolicy::Seeded(config.partition_row_seed)`](PartitionRowPolicy::Seeded) is [`scatter`](Self::scatter) itself.
-    ///
-    /// # Errors
-    ///
-    /// [`TopologyError`] if `config` cannot be resolved or the pool cannot be built.
+    /// A [`ScatterRows::Policy`] takes the qubit count and the group size from `sum` and `transport`; [`ScatterRows::Explicit`] rows must be the *same* on every rank, and nothing checks it, so a disagreement misroutes an exchange rather than failing loudly.
     ///
     /// # Panics
     ///
-    /// As [`scatter`](Self::scatter), plus [`PartitionRows::cut`]'s own checks on a [`Cut`](PartitionRowPolicy::Cut) policy: one block per rank, disjoint, every qubit in range.
-    pub fn scatter_with_policy(
-        sum: PauliSum<W>,
-        transport: X,
-        config: &PartitionConfig,
-        policy: &PartitionRowPolicy,
-    ) -> Result<Self, TopologyError> {
-        let runtime = PartitionRuntime::new(config)?;
-        let rows = policy.rows(
-            sum.num_qubits(),
-            group_bits(transport.size()),
-            sum.hash().seed(),
-        );
-        Ok(Self::scatter_with_rows(sum, transport, runtime, rows))
-    }
-
-    /// [`scatter`](Self::scatter) with caller-supplied partition rows.
-    ///
-    /// Every rank must pass the *same* rows; nothing checks it, and a disagreement misroutes an exchange rather than failing loudly.
-    ///
-    /// # Panics
-    ///
-    /// If `runtime` has more than one partition, if `rows` does not name one partition per rank, or if it is for a different qubit count than `sum`.
+    /// If the runtime has more than one partition, if the group size is not a power of two, if the rows do not name one partition per rank, or if they are for a different qubit count than `sum`.
+    /// Plus [`PartitionRows::cut`]'s own checks on a [`Cut`](PartitionRowPolicy::Cut) policy: one block per rank, disjoint, every qubit in range.
     /// In debug builds, if the rows are not independent of the sum's hash rows (which costs load balance, not correctness — see [`PartitionedSum::scatter_with_rows`](super::PartitionedSum::scatter_with_rows)).
-    pub fn scatter_with_rows(
-        sum: PauliSum<W>,
-        transport: X,
-        runtime: Arc<PartitionRuntime>,
-        rows: PartitionRows<W>,
-    ) -> Self {
+    pub fn scatter_with(sum: PauliSum<W>, transport: X, options: ScatterOptions<W>) -> Self {
+        let ScatterOptions { runtime, rows } = options;
+        let rows = match rows {
+            ScatterRows::Policy(policy) => policy.rows(
+                sum.num_qubits(),
+                group_bits(transport.size()),
+                sum.hash().seed(),
+            ),
+            ScatterRows::Explicit(rows) => rows,
+        };
         assert_eq!(
             runtime.num_partitions(),
             1,
@@ -509,7 +509,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     where
         T: PartitionedTruncation<W> + ?Sized,
     {
-        self.propagate_with_options(circuit, policy, direction, PropagateOptions::default())
+        self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
 
     /// Propagate through `circuit` under `policy` with explicit [`PropagateOptions`].
@@ -517,13 +517,13 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// **Collective**: every rank must call it, with the same circuit, the same direction and the same options.
     /// One [`check_consistency`](super::Collectives::check_consistency) call up front turns the common way of getting that wrong — ranks driven through different circuits — into a message rather than a deadlock two layers in; it cannot see a difference in the *contents* of two channels, only in the shape of the run.
     ///
-    /// [`EngineSelection`](crate::EngineSelection) is ignored, exactly as in [`PartitionedSum::propagate_with_options`](super::PartitionedSum::propagate_with_options).
+    /// [`EngineSelection`](crate::EngineSelection) is ignored, exactly as in [`PartitionedSum::propagate_with`](super::PartitionedSum::propagate_with).
     ///
     /// # Panics
     ///
     /// As the in-process driver: a channel whose `prepare` declines, or a policy that finalizes layers with no collective form.
     /// Plus [`check_consistency`](super::Collectives::check_consistency)'s own panic when the ranks disagree about the run.
-    pub fn propagate_with_options<T>(
+    pub fn propagate_with<T>(
         &mut self,
         circuit: &Circuit<W>,
         policy: &T,

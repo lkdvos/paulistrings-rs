@@ -194,7 +194,7 @@ The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads(
 ### The partition axis
 
 `--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`.
-A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with_options`.
+A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with`.
 
 - **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers. A `--threads` value not divisible by `--partitions` is a startup error, and so is `P > threads`.
 - `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` — the same string `host-topology.sh`'s `PARTITION_CPUS` holds.

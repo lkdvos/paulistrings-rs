@@ -430,7 +430,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         ..GpuLayerOptions::default()
     });
-    dev.propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+    dev.propagate_with(&circuit, KeepAll, Direction::Forward, options)
         .expect("propagate");
     let c = dev.last_layer_counters(0);
     assert!(c.refine_passes > 0, "{c:?}");
@@ -632,7 +632,7 @@ fn propagate_gpu_front_door_and_options() {
     assert_terms_close(&got, &want, TOL, "front door");
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.enable_trace();
-    dev.propagate_with_options(
+    dev.propagate_with(
         &circuit,
         KeepAll,
         Direction::Forward,
@@ -801,7 +801,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(opts);
-    dev.propagate_with_options(
+    dev.propagate_with(
         &circuit,
         KeepAll,
         Direction::Forward,

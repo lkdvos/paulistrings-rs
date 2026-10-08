@@ -62,6 +62,8 @@ struct CountingCollectives<'a> {
     calls: &'a AtomicU32,
 }
 
+impl super::transport::sealed::Sealed for CountingCollectives<'_> {}
+
 impl Collectives for CountingCollectives<'_> {
     fn rank(&self) -> u32 {
         self.inner.rank()

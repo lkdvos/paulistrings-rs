@@ -494,6 +494,8 @@ fn chunk_count(len: usize, chunk: usize) -> usize {
     len.div_ceil(chunk)
 }
 
+impl super::transport::sealed::Sealed for MpiTransport {}
+
 impl Collectives for MpiTransport {
     fn rank(&self) -> u32 {
         self.rank

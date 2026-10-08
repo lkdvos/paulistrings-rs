@@ -1,6 +1,6 @@
 use super::*;
 use crate::engine::partitioned::transport::Collectives;
-use crate::engine::partitioned::InProcessTransport;
+use crate::engine::partitioned::transport::InProcessTransport;
 
 #[test]
 fn the_timeout_knob_parses_positive_seconds() {

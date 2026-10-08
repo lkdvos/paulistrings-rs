@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::partitioned::InProcessTransport;
+use crate::engine::partitioned::transport::InProcessTransport;
 use crate::test_support::rand_sum;
 
 /// A group of more than one rank without a way to start NCCL (no `mpi` feature, or every rank on device 0) fails the scatter on every rank.

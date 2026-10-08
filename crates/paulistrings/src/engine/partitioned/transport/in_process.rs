@@ -79,6 +79,7 @@ const CHECKS_EVERY: u32 = 64;
 ///
 /// The backstop, not the mechanism: a partner that panics drops its transport and is reported within `CHECKS_EVERY` spins ([`InProcessTransport::drop`]).
 /// This bound only catches a partner that is neither dead nor arriving — a deadlock elsewhere in the process — so it is generous.
+#[cfg(any(test, feature = "test-utils"))]
 pub(super) const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One rank's contribution to one generation, double-buffered by generation parity (see [`GroupState`] for why two are enough).
@@ -342,6 +343,7 @@ impl InProcessTransport {
     /// # Panics
     ///
     /// If `size` is zero.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn group(size: u32) -> Vec<InProcessTransport> {
         Self::group_with_timeout(size, WAIT_TIMEOUT)
     }
@@ -427,6 +429,8 @@ impl InProcessTransport {
         }
     }
 }
+
+impl super::sealed::Sealed for InProcessTransport {}
 
 impl Collectives for InProcessTransport {
     fn rank(&self) -> u32 {

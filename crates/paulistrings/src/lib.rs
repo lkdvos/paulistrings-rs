@@ -76,10 +76,9 @@ pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    numa_nodes, propagate_partitioned, ChunkMap, ChunkWait, Collectives, CpuSet, DistributedSum,
-    InProcessTransport, PartitionConfig, PartitionLayerRecord, PartitionRowPolicy,
-    PartitionRuntime, PartitionSlot, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Payload, Placement, TopologyError, Transport,
+    numa_nodes, propagate_partitioned, Collectives, CpuSet, DistributedSum, PartitionConfig,
+    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionSlot, PartitionTrace,
+    PartitionedSum, PartitionedTruncation, Placement, TopologyError, Transport,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::{PhaseStats, TIMER_READ_OVERHEAD_NS};

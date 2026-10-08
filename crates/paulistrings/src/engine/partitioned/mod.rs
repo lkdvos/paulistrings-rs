@@ -33,6 +33,6 @@ pub use topology::{numa_nodes, CpuSet, PartitionConfig, PartitionSlot, Placement
 // What a partitioned run did, layer by layer: term counts, bucket bits, exchange volume.
 pub use trace::{PartitionLayerRecord, PartitionTrace};
 // The seam a transport is written against; a transport moves an opaque `P: Payload`, never the wire types.
-pub use transport::{ChunkMap, ChunkWait, Collectives, InProcessTransport, Payload, Transport};
+pub use transport::{Collectives, Transport};
 // The collective form of a layer finalization a truncation policy must provide.
 pub use truncation::PartitionedTruncation;

@@ -13,6 +13,7 @@
 //! transport's own net is `tests/mpi_ranks.rs`, run under `mpirun`.
 
 use num_complex::Complex64;
+use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
     assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
     trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
@@ -23,7 +24,7 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::{DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy};
+use paulistrings::{DistributedSum, PartitionConfig, PartitionRowPolicy};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long

@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::partitioned::InProcessTransport;
+use crate::engine::partitioned::transport::InProcessTransport;
 
 #[test]
 fn a_probe_that_never_readies_times_out() {

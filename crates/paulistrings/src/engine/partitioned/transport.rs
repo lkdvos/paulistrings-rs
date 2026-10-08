@@ -16,6 +16,12 @@ pub(crate) use exchange_block::{chunk_rows_of, BlockHeader};
 pub(crate) use exchange_block::{ExchangeBlock, PartnerPayload};
 pub use in_process::InProcessTransport;
 
+/// The private supertrait that seals [`Collectives`] and, through it, [`Transport`].
+pub(crate) mod sealed {
+    /// Implemented only inside this crate.
+    pub trait Sealed {}
+}
+
 /// The order a layer's exchange blocks are laid out in, and the chunks the
 /// bulk transfer is cut into.
 ///
@@ -237,7 +243,7 @@ impl ChunkWait for AlreadyHere {
 /// The integer reductions are exact and order-independent (a maximum, and a wrapping integer sum), so an implementation is free to combine in arrival order; [`allreduce_sum_f64`](Self::allreduce_sum_f64) is not, and must fix one combination order for the whole group.
 ///
 /// Every method obeys the collective-order invariant in the module docs: all partitions call them in the same order, the same number of times.
-pub trait Collectives: Send + Sync {
+pub trait Collectives: sealed::Sealed + Send + Sync {
     /// This partition's index in the group, `0 <= rank < size`.
     fn rank(&self) -> u32;
     /// Number of partitions in the group.
@@ -293,8 +299,8 @@ pub trait Collectives: Send + Sync {
 pub trait Transport: Collectives {
     /// **The** exchange: send `send[q]` to partition `q`, run `body` on what the partners sent here, and give both back.
     ///
-    /// It is **two-phase**. Everything the coset loop needs to size its gather runs — the block headers and the CSR offsets ([`Payload::early_parts`]) — has arrived before `body` starts; the rows themselves ([`Payload::bulk_parts`]) may still be in flight while it runs, and `body` blocks on the [`ChunkWait`] it is handed before it reads a chunk's rows.
-    /// A transport with nothing to overlap completes the transfer first and hands over a no-op [`ChunkWait`], which makes it a blocking exchange with extra steps — that is what [`InProcessTransport`] is, its "transfer" being a moved pointer.
+    /// It is **two-phase**. Everything the coset loop needs to size its gather runs — the block headers and the CSR offsets (`Payload::early_parts`) — has arrived before `body` starts; the rows themselves (`Payload::bulk_parts`) may still be in flight while it runs, and `body` blocks on the `ChunkWait` it is handed before it reads a chunk's rows.
+    /// A transport with nothing to overlap completes the transfer first and hands over a no-op `ChunkWait`, which makes it a blocking exchange with extra steps — that is what `InProcessTransport` is, its "transfer" being a moved pointer.
     ///
     /// `send.len()` must be [`size`](Collectives::size) and `send[self.rank()]` must be `None`; the slots handed to `body` have the same length and `None` in the same self slot.
     /// A partner with nothing to send still participates, with `None` — silence would desynchronize the group (module docs).
@@ -305,7 +311,7 @@ pub trait Transport: Collectives {
     /// `spare` is the caller's **payload pool**, and it is what keeps a steady-state layer from allocating: a transport that has to materialize the received payloads takes them from here rather than building them fresh, and returns any payload from `send` it is finished with.
     /// The caller returns the results to the pool once the layer has consumed them.
     /// Pooled payloads are in an unspecified state — a taker reshapes one before it reads anything back — and an empty pool is always legal, so a transport must fall back to [`Default`].
-    /// [`InProcessTransport`] uses neither direction: it *moves* the sender's payload to the receiver, so the pool circulates through the partners instead.
+    /// `InProcessTransport` uses neither direction: it *moves* the sender's payload to the receiver, so the pool circulates through the partners instead.
     ///
     /// `body` returns whatever the caller needs out of the layer; the received payloads come back with it, for the caller to return to `spare`.
     fn exchange_layer<P, F, R>(
@@ -321,7 +327,7 @@ pub trait Transport: Collectives {
 
     /// [`exchange_layer`](Self::exchange_layer) with nothing to overlap: the blocking all-to-all, for a caller that wants the payloads and no more.
     ///
-    /// The empty [`ChunkMap`] cuts no chunks, so every part travels as an early one — which is what a payload with no interesting internal structure wants, and the gather's is the only one.
+    /// The empty `ChunkMap` cuts no chunks, so every part travels as an early one — which is what a payload with no interesting internal structure wants, and the gather's is the only one.
     /// A payload whose `bulk_parts` needs a real map goes through `exchange_layer`.
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
         self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())

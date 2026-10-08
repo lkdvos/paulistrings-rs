@@ -238,10 +238,12 @@ impl Drop for PeerWire {
 }
 
 impl DeviceWire for PeerWire {
+    #[cfg(test)]
     fn rank(&self) -> u32 {
         self.rank
     }
 
+    #[cfg(test)]
     fn size(&self) -> u32 {
         self.shared.size
     }

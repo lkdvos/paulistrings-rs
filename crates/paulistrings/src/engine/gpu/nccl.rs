@@ -15,7 +15,7 @@ use super::wire::{wire_timeout, DeviceWire, WireGroup, WireOp, WireOpKind};
 use crate::engine::partitioned::transport::Collectives;
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
-pub(crate) const MIN_NCCL_VERSION: i32 = 22200;
+const MIN_NCCL_VERSION: i32 = 22200;
 
 /// `sizeof(ncclUniqueId)` in `u64` words.
 const ID_WORDS: usize = 16;
@@ -518,16 +518,18 @@ impl NcclWire {
     }
 
     /// The communicator, for the health checks and abort of the failure paths.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn comm(&self) -> &Arc<NcclComm> {
         &self.comm
     }
 }
 
 impl DeviceWire for NcclWire {
+    #[cfg(test)]
     fn rank(&self) -> u32 {
         self.comm.rank
     }
+    #[cfg(test)]
     fn size(&self) -> u32 {
         self.comm.size
     }

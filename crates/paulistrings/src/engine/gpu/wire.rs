@@ -16,7 +16,7 @@ pub(crate) use peer::PeerWire;
 pub(crate) use peer::{PeerFault, PeerTally};
 
 /// The bound on every wire wait when `PAULISTRINGS_NCCL_TIMEOUT_S` is unset.
-pub(crate) const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// `PAULISTRINGS_NCCL_TIMEOUT_S` as a positive number of seconds, else [`DEFAULT_WIRE_TIMEOUT`].
 pub(crate) fn wire_timeout() -> Duration {
@@ -88,7 +88,7 @@ impl<'a> WireGroup<'a> {
     }
 
     /// Receive `dst.len()` elements' bytes from `peer` into `dst`, ordered on `stream`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn recv<T>(&mut self, dst: CudaViewMut<'a, T>, peer: u32, stream: &'a CudaStream) {
         let bytes = dst.len() * std::mem::size_of::<T>();
         let (ptr, guard) = dst.view_ptr(stream);
@@ -145,7 +145,7 @@ impl<'a> WireGroup<'a> {
     }
 
     /// The ops in posting order.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn ops(&self) -> &[WireOp<'a>] {
         &self.ops
     }
@@ -171,10 +171,10 @@ impl<'a> WireGroup<'a> {
 /// Every wait is bounded; a timed-out or failed wire is dead, and every later call on it returns an error.
 pub(crate) trait DeviceWire: Send + Sync {
     /// This rank's index in the group.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn rank(&self) -> u32;
     /// Ranks in the group.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn size(&self) -> u32;
     /// Post `ops` as one group: when it returns `Ok`, every op is enqueued on its stream, so later work on that stream runs after it.
     /// Every rank a posted op names must post its matching group, or the transfers never complete and [`wait`](Self::wait) times out.
@@ -307,7 +307,7 @@ pub(crate) enum WireColumn {
 }
 
 impl WireColumn {
-    pub(crate) const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coeff];
+    const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coeff];
 
     /// Device elements per row at width `W`: `u64` words for a key column, `f64` halves for the coefficient.
     pub(crate) fn elems_per_row<const W: usize>(self) -> usize {

@@ -3,8 +3,8 @@
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, GpuLayerCounters, GpuLayerOptions,
-    LayerScratch,
+    apply_layer_device, gpu_desired_bits, prepared_fanout, GpuBucketPolicy, GpuLayerCounters,
+    GpuLayerOptions, LayerScratch,
 };
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -30,15 +30,15 @@ pub struct DevicePartition<const W: usize> {
     scratch: Option<LayerScratch<W>>,
     hash: Gf2Hash<W>,
     pub(crate) keep: KeepProgram,
-    pub(crate) error: Option<GpuError>,
+    error: Option<GpuError>,
     /// `(rank, layer)` of the group's first failure; set on every partition at once, and refuses every later call.
-    pub(crate) poison: Option<(usize, usize)>,
+    poison: Option<(usize, usize)>,
     /// Partitions in the group this partition runs in; above one, the layer never refines off-schedule and the proposal carries growth headroom.
     pub(crate) group_size: u32,
     /// Layers `apply_layer` was asked for since construction.
     layers_applied: usize,
     /// The layer index (in `layers_applied` terms) at which the first error was recorded.
-    pub(crate) failed_layer: Option<usize>,
+    failed_layer: Option<usize>,
     /// Test hook: fail before the exchange on this layer index.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_at_layer: Option<usize>,
@@ -70,7 +70,7 @@ impl<const W: usize> DevicePartition<W> {
         self.sum.as_ref().expect("DevicePartition: detached")
     }
 
-    pub(crate) fn scratch(&self) -> &LayerScratch<W> {
+    fn scratch(&self) -> &LayerScratch<W> {
         self.scratch.as_ref().expect("DevicePartition: detached")
     }
 
@@ -162,11 +162,11 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
         // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
         let policy = match scratch.options.bucket_policy {
             policy if self.group_size == 1 => policy,
-            super::layer::GpuBucketPolicy::RecordsPerBlock(target) => {
-                super::layer::GpuBucketPolicy::RecordsPerBlock((target / 2).max(1))
+            GpuBucketPolicy::RecordsPerBlock(target) => {
+                GpuBucketPolicy::RecordsPerBlock((target / 2).max(1))
             }
-            super::layer::GpuBucketPolicy::TermsPerBucket(target) => {
-                super::layer::GpuBucketPolicy::TermsPerBucket((target / 2).max(1))
+            GpuBucketPolicy::TermsPerBucket(target) => {
+                GpuBucketPolicy::TermsPerBucket((target / 2).max(1))
             }
         };
         let device = gpu_desired_bits(

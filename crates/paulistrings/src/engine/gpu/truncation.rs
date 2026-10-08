@@ -6,7 +6,7 @@ use super::error::GpuError;
 use crate::truncation::BuiltinTruncation;
 
 /// Nodes a [`KeepProgram`] holds; must match `KEEP_NODES` in `kernels/prelude.cuh`.
-pub(crate) const KEEP_NODES: usize = 15;
+const KEEP_NODES: usize = 15;
 
 const OP_KEEP: u32 = 0;
 const OP_COEFF: u32 = 1;

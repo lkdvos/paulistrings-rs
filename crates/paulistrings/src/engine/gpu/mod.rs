@@ -3,7 +3,7 @@
 //! [`GpuPauliSum`] holds a sum on one device, [`GpuPartitionedSum`] splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 
 mod columns;
-pub(crate) mod device;
+mod device;
 mod driver;
 mod error;
 mod export;

@@ -24,7 +24,7 @@ fn whole_sum_launch(b: usize) -> LaunchConfig {
 }
 
 /// `[len, bin 0, …, bin 2047]` of `sum`, the packed layout of the host's collective `ApproxTopN` pass.
-pub(crate) fn octave_histogram_device<const W: usize>(
+fn octave_histogram_device<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,
 ) -> Result<Vec<u64>, GpuError> {
@@ -52,7 +52,7 @@ pub(crate) fn octave_histogram_device<const W: usize>(
 }
 
 /// Apply `edge` to `sum` in place of [`retain_at_or_above`](crate::truncation::builtin::retain_at_or_above), keeping each bucket's order and start offset.
-pub(crate) fn retain_at_or_above_device<const W: usize>(
+fn retain_at_or_above_device<const W: usize>(
     sum: &mut GpuSum<W>,
     scratch: &mut LayerScratch<W>,
     edge: EdgeDecision,

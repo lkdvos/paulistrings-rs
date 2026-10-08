@@ -73,7 +73,7 @@ pub fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize,
     first_nonzero(&codes)
 }
 
-pub(super) fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
+fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
     codes
         .iter()
         .position(|&code| code != 0)

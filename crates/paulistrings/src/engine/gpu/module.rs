@@ -45,7 +45,7 @@ const KERNEL_SOURCES: &[&str] = &[
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
-pub(crate) const LAYER_CAP: usize = 8192;
+const LAYER_CAP: usize = 8192;
 
 /// Test hook: an extra option `-DTEST_SHARED_LIMIT=<bytes>` caps the opt-in shared memory the loader assumes, which is inert to NVRTC.
 const TEST_SHARED_LIMIT: &str = "-DTEST_SHARED_LIMIT=";

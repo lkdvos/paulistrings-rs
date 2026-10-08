@@ -2,11 +2,12 @@
 //!
 //! `cudarc`'s own `culib()`/`device_count()` panic when the driver library is absent, so every function here checks `is_culib_present()` first.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use cudarc::driver::CudaContext;
 
 use super::error::GpuError;
+use crate::engine::cuda_context::ContextError;
 
 /// Whether both `libcuda` and `libnvrtc` are present *and* at least one device answers; never panics, even with no CUDA installation at all.
 pub fn cuda_available() -> bool {
@@ -78,17 +79,10 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
 
 /// The context for `ordinal`, created on first use and cached for the process.
 pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
-    static CONTEXTS: Mutex<Vec<(u32, Arc<CudaContext>)>> = Mutex::new(Vec::new());
-    if !unsafe { cudarc::driver::sys::is_culib_present() } {
-        return Err(GpuError::LibraryMissing("libcuda"));
-    }
-    let mut cache = CONTEXTS.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, ctx)) = cache.iter().find(|(o, _)| *o == ordinal) {
-        return Ok(ctx.clone());
-    }
-    let ctx = CudaContext::new(ordinal as usize)?;
-    cache.push((ordinal, ctx.clone()));
-    Ok(ctx)
+    crate::engine::cuda_context::context(ordinal).map_err(|err| match err {
+        ContextError::LibraryMissing => GpuError::LibraryMissing("libcuda"),
+        ContextError::Driver(e) => GpuError::from(e),
+    })
 }
 
 #[cfg(test)]

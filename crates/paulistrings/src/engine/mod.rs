@@ -8,6 +8,8 @@
 
 pub mod bucketed;
 pub(crate) mod coset;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_context;
 pub(crate) mod direct;
 #[cfg(feature = "cuda")]
 pub mod gpu;

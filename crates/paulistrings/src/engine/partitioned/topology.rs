@@ -371,7 +371,7 @@ pub(crate) fn build_pool(
             builder.spawn(move || {
                 #[cfg(feature = "cuda")]
                 if let Some(device) = device {
-                    bind_device_context(device);
+                    crate::engine::cuda_context::bind_device_context(device);
                 }
                 if let Some(cpus) = &cpus {
                     if let Err(err) = pin_current_thread(cpus) {
@@ -389,19 +389,6 @@ pub(crate) fn build_pool(
         })
         .build()
         .map_err(|err| TopologyError::Io(io::Error::other(err.to_string())))
-}
-
-/// Make `device`'s CUDA context current on this thread, warning rather than failing like the pinning calls.
-#[cfg(feature = "cuda")]
-pub(crate) fn bind_device_context(device: u32) {
-    match crate::engine::gpu::device::context(device) {
-        Ok(ctx) => {
-            if let Err(err) = ctx.bind_to_thread() {
-                log::warn!(target: LOG_TARGET, "failed to bind device {device} to a partition thread: {err}");
-            }
-        }
-        Err(err) => log::warn!(target: LOG_TARGET, "device {device} for a partition thread: {err}"),
-    }
 }
 
 /// How partitions map onto the machine.

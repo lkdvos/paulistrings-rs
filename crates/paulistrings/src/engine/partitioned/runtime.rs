@@ -219,7 +219,7 @@ impl PartitionRuntime {
 fn place_current_thread(slot: &PartitionSlot, bind_memory: bool) {
     #[cfg(feature = "cuda")]
     if let Some(device) = slot.device {
-        super::topology::bind_device_context(device);
+        crate::engine::cuda_context::bind_device_context(device);
     }
     if let Some(cpus) = &slot.cpus {
         if let Err(err) = pin_current_thread(cpus) {

@@ -2,7 +2,7 @@
 //!
 //! Compiled only under `--features phase-timing`; the default build carries no timing code and no stats fields, so it is byte- and performance-identical to an uninstrumented build.
 //!
-//! Read the counters through [`LayerScratch::take_stats`](crate::engine::bucketed::LayerScratch::take_stats) after driving layers with [`propagate_with_scratch`](crate::engine::propagate_with_scratch), or — per partition, plus the driver's own scatter/gather — through `PartitionedSum::take_stats`.
+//! Read the counters through [`LayerScratch::take_stats`](crate::engine::bucketed::LayerScratch::take_stats) after driving layers with [`propagate_with`](crate::propagate_with), or — per partition, plus the driver's own scatter/gather — through `PartitionedSum::take_stats`.
 //!
 //! The three `*_ns` fields the partitioned engine adds (`collective_ns`, `export_ns`, `exchange_ns`), its two row counters, and the two worker sub-phases (`append_ns`, `chunk_wait_ns`) are all zero in the unpartitioned engine, which has no exchange.
 
@@ -60,7 +60,7 @@ pub struct PhaseStats {
     /// Clearing the swapped-out columns at the end of each coset task.
     pub clear_ns: u64,
     // -- counters --
-    /// Layers driven through `propagate_with_scratch`.
+    /// Layers driven through `propagate_with`.
     pub layers: u64,
     /// Coset tasks executed (feeds the timer-overhead estimate).
     pub cosets: u64,

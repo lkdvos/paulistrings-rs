@@ -22,9 +22,8 @@ use paulistrings::pauli_sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
 use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{
-    propagate, propagate_with_options, propagate_with_scratch_and_options, Circuit, Direction,
-    EngineSelection, LayerScratch, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
-    DEFAULT_SMALL_SUM_THRESHOLD,
+    propagate, propagate_with, Circuit, Direction, EngineSelection, LayerScratch, PauliString,
+    PauliSum, PropagateOptions, TruncationPolicy, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 
 /// Keeps everything, and declares no layer pass — so `Auto` will actually take
@@ -150,28 +149,14 @@ fn assert_engines_agree<const W: usize, T>(
     let mut s1 = LayerScratch::<W>::new();
     s1.enable_term_trace();
     s1.enable_gate_trace();
-    let want = propagate_with_scratch_and_options(
-        circuit,
-        sum.clone(),
-        policy,
-        direction,
-        &mut s1,
-        SORTED,
-    );
+    let want = propagate_with(circuit, sum.clone(), policy, direction, &mut s1, SORTED);
     let want_trace = s1.take_term_trace().expect("tracing enabled");
     let want_gate_trace = s1.take_gate_trace().expect("gate tracing enabled");
 
     let mut s2 = LayerScratch::<W>::new();
     s2.enable_term_trace();
     s2.enable_gate_trace();
-    let got = propagate_with_scratch_and_options(
-        circuit,
-        sum.clone(),
-        policy,
-        direction,
-        &mut s2,
-        options,
-    );
+    let got = propagate_with(circuit, sum.clone(), policy, direction, &mut s2, options);
     let got_trace = s2.take_term_trace().expect("tracing enabled");
     let got_gate_trace = s2.take_gate_trace().expect("gate tracing enabled");
 
@@ -232,11 +217,12 @@ fn default_options_match_propagate_bitwise() {
     let policy = CoefficientThreshold(1e-6);
 
     let want = propagate(&circuit, sum.clone(), &policy, Direction::Heisenberg);
-    let got = propagate_with_options(
+    let got = propagate_with(
         &circuit,
         sum,
         &policy,
         Direction::Heisenberg,
+        &mut LayerScratch::new(),
         PropagateOptions::default(),
     );
     assert_same_terms(&got, &want, "default options vs propagate");
@@ -251,8 +237,14 @@ fn a_large_starting_sum_stays_on_the_sorting_engine() {
     let circuit = circuit_from::<1>(20, &[5, 0, 6, 2]);
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for options in [auto(100), forced(100)] {
-        let got =
-            propagate_with_options(&circuit, sum.clone(), &KeepAll, Direction::Forward, options);
+        let got = propagate_with(
+            &circuit,
+            sum.clone(),
+            &KeepAll,
+            Direction::Forward,
+            &mut LayerScratch::new(),
+            options,
+        );
         assert_same_terms(&got, &want, "above-threshold start");
     }
 }
@@ -466,11 +458,12 @@ fn the_direct_path_runs_a_channel_the_sorting_engine_refuses() {
     circuit.push(ThreeQubitShift);
     circuit.push(ThreeQubitShift);
     // Three shifts of a 3-cycle are the identity on the keys.
-    let out = propagate_with_options(
+    let out = propagate_with(
         &circuit,
         sum.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         auto(1024),
     );
     assert_same_terms(&out, &sum, "three-cycle returns to the identity");
@@ -488,7 +481,14 @@ fn a_channel_the_sorting_engine_refuses_panics_after_the_transition() {
     circuit.push(ThreeQubitShift);
     // Threshold 1: the first layer leaves 16 terms, above it, so layer two is
     // the sorting engine's.
-    let _ = propagate_with_options(&circuit, sum, &KeepAll, Direction::Forward, auto(1));
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut LayerScratch::new(),
+        auto(1),
+    );
 }
 
 /// Under `Auto` a finalizing policy keeps the run on the sorting engine — which
@@ -500,7 +500,14 @@ fn auto_declines_a_finalizing_policy() {
     let sum = rand_sum::<1>(16, 8, 0x3B3);
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(ThreeQubitShift);
-    let _ = propagate_with_options(&circuit, sum, &TopN(1000), Direction::Forward, auto(1024));
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &TopN(1000),
+        Direction::Forward,
+        &mut LayerScratch::new(),
+        auto(1024),
+    );
 }
 
 #[test]
@@ -508,11 +515,12 @@ fn small_sum_direct_takes_a_finalizing_policy_anyway() {
     let sum = rand_sum::<1>(16, 8, 0x3B3);
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(ThreeQubitShift);
-    let out = propagate_with_options(
+    let out = propagate_with(
         &circuit,
         sum.clone(),
         &TopN(1000),
         Direction::Forward,
+        &mut LayerScratch::new(),
         forced(1024),
     );
     assert_eq!(out.len(), sum.len());

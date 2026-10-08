@@ -12,11 +12,10 @@ use paulistrings::pauli_sum::accumulator::BuildAccumulator;
 use paulistrings::phase::Phase;
 use paulistrings::truncation::BuiltinTruncation;
 use paulistrings::{
-    propagate_with_scratch_and_options, Circuit as CoreCircuit, Direction, EngineSelection,
-    GateTrace, LayerScratch, PartitionConfig, PartitionRowPolicy, PartitionRows, PartitionRuntime,
-    PartitionTrace, PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis,
-    ProductState, PropagateOptions, RotationAxis, StabilizerState, TopologyError,
-    DEFAULT_SMALL_SUM_THRESHOLD,
+    propagate_with, Circuit as CoreCircuit, Direction, EngineSelection, GateTrace, LayerScratch,
+    PartitionConfig, PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace,
+    PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
+    PropagateOptions, RotationAxis, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -1065,7 +1064,7 @@ impl RunMode {
                 if traced {
                     scratch.enable_gate_trace();
                 }
-                let out = propagate_with_scratch_and_options(
+                let out = propagate_with(
                     circuit,
                     sum.clone(),
                     policy,

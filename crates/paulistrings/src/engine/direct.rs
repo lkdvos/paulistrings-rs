@@ -19,7 +19,7 @@
 //! - A [`TruncationPolicy`]'s `keep_term` is applied per layer, on summed coefficients, in the same place the merge applies it.
 //!   Its `finalize_layer` needs a real `PauliSum`, so it costs a materialize → finalize → re-ingest round trip; [`TruncationPolicy::finalizes_layer`] is how a policy says that round trip is pointless.
 //! - This path needs only [`Channel::apply`], never `Channel::prepare`, so it applies channels of **any** support width — including the > 2-qubit channels that make the bucketed path panic.
-//!   It is a strictly wider fallback, not a narrower fast path (see `super::propagate_with_options` for what that means for a circuit that mixes the two).
+//!   It is a strictly wider fallback, not a narrower fast path (see `super::propagate_with` for what that means for a circuit that mixes the two).
 //!
 //! GPU-readiness (ARCHITECTURE.md §GPU-Readiness) is the bucketed path's story and this path makes no claim on it: a hash map is not a device buffer, and at these term counts there is nothing to offload.
 
@@ -185,7 +185,7 @@ impl<const W: usize> DirectSum<W> {
 /// Stops after the layer that leaves the sum above [`PropagateOptions::small_sum_threshold`], or when the circuit runs out.
 /// The caller has already decided this path applies ([`PropagateOptions::starts_direct`]); nothing here re-decides, and nothing here can hand control back mid-circuit.
 ///
-/// `#[inline(never)]` on purpose: it must not land inside `propagate_with_scratch_and_options`'s body, whose layer loop inlines `apply_layer_bucketed` and its merge kernels, which are sensitive to a few bytes of code motion (CLAUDE.md §Performance discipline).
+/// `#[inline(never)]` on purpose: it must not land inside `propagate_with`'s body, whose layer loop inlines `apply_layer_bucketed` and its merge kernels, which are sensitive to a few bytes of code motion (CLAUDE.md §Performance discipline).
 /// The default `SortedOnly` path must be able to reach this function's call site and not its code.
 ///
 /// # Per-layer records

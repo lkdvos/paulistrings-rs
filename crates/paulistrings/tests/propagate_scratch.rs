@@ -1,4 +1,4 @@
-//! `propagate_with_scratch` is `propagate`'s implementation; these tests pin
+//! `propagate_with` is `propagate`'s implementation; these tests pin
 //! that the two entry points are bitwise-interchangeable and that reusing one
 //! scratch across calls does not leak state into the output. They run in both
 //! feature configurations (`--features phase-timing` must not change a bit).
@@ -8,8 +8,8 @@ use paulistrings::channel::{Clifford2Q, Depolarizing, PauliRotation};
 // shared with the other propagation test files so fixtures are comparable.
 use paulistrings::test_support::rand_sum_real;
 use paulistrings::{
-    propagate, propagate_with_scratch, Circuit, Direction, LayerScratch, PauliString, PauliSum,
-    TruncationPolicy,
+    propagate, propagate_with, Circuit, Direction, LayerScratch, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 
 struct AlwaysKeep;
@@ -60,12 +60,13 @@ fn check_equivalence<const W: usize>() {
     );
 
     let mut scratch = LayerScratch::<W>::new();
-    let via_scratch = propagate_with_scratch(
+    let via_scratch = propagate_with(
         &circuit,
         rand_sum_real::<W>(3000, 8, 0xFEED),
         &AlwaysKeep,
         Direction::Heisenberg,
         &mut scratch,
+        PropagateOptions::default(),
     );
     assert_bitwise_eq(&reference, &via_scratch);
 
@@ -77,12 +78,13 @@ fn check_equivalence<const W: usize>() {
         &AlwaysKeep,
         Direction::Forward,
     );
-    let via2 = propagate_with_scratch(
+    let via2 = propagate_with(
         &circuit,
         rand_sum_real::<W>(2000, 8, 0xBEEF),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
     assert_bitwise_eq(&ref2, &via2);
 }

@@ -162,7 +162,7 @@ Channel fanout (`max_fanout`) sizes the `OutputBuffer` for direct `apply` calls 
 
 ## Engine
 
-`propagate` (and `propagate_with_scratch`, which it wraps) iterates the circuit's channels — in order for forward propagation, in reverse with adjoints for Heisenberg — and per layer runs:
+`propagate` (and `propagate_with`, which it wraps) iterates the circuit's channels — in order for forward propagation, in reverse with adjoints for Heisenberg — and per layer runs:
 
 ```
 rebucket → prepare → apply layer over cosets → policy.finalize_layer

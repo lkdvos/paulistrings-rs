@@ -22,7 +22,7 @@ pub(crate) mod truncation;
 
 // The front door: a sum split across partitions, and the one-shot entry points.
 pub use distributed::{DistributedSum, PartitionRowPolicy};
-pub use driver::{propagate_partitioned, propagate_partitioned_with_options, BITS_AGREE_EVERY};
+pub use driver::{propagate_partitioned, BITS_AGREE_EVERY};
 pub use plan::count_remote_deltas;
 // Choosing partition rows: the circuit's generator masks and the weighted MAX-XOR-SAT selector over them.
 pub use rows::{circuit_generators, GeneratorWeight};

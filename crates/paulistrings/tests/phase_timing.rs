@@ -13,8 +13,8 @@ use paulistrings::engine::partitioned::{
 // matches the other propagation test files' fixtures.
 use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PauliString,
-    PhaseStats,
+    propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliString, PhaseStats,
+    PropagateOptions,
 };
 
 #[test]
@@ -34,7 +34,14 @@ fn stats_sum_approximates_total() {
         .expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
-        propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Heisenberg, &mut scratch)
+        propagate_with(
+            &circuit,
+            sum,
+            &KeepAll,
+            Direction::Heisenberg,
+            &mut scratch,
+            PropagateOptions::default(),
+        )
     });
     assert!(!out.is_empty());
 
@@ -76,7 +83,14 @@ fn take_stats_drains() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let first = scratch.take_stats();
     assert!(first.layers == 1 && first.coset_loop_ns > 0);
@@ -94,7 +108,14 @@ fn rescale_path_is_attributed() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let stats = scratch.take_stats();
     assert!(stats.rescale_ns > 0, "{stats:?}");
@@ -267,7 +288,14 @@ fn the_unpartitioned_engine_reports_no_exchange() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let stats = scratch.take_stats();
     assert_eq!(stats.collective_ns, 0, "{stats:?}");

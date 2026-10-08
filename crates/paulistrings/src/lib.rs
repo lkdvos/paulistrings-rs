@@ -33,7 +33,7 @@
 //! - [`PauliString`], [`PauliSum`], [`BuildAccumulator`], [`Phase`] — the data model (ARCHITECTURE.md §Data-Model).
 //! - [`Circuit`], [`Channel`] (built-ins in [`channel`]) — gates and noise.
 //! - [`TruncationPolicy`] (built-ins in [`truncation`]) — composable per-term and per-layer filters.
-//! - [`propagate`] / [`Direction`] / [`propagate_with_options`] — the propagation entry point (ARCHITECTURE.md §Engine).
+//! - [`propagate`] / [`Direction`] / [`propagate_with`] — the propagation entry point (ARCHITECTURE.md §Engine).
 //! - [`ProductBasis`] / [`StabilizerState`] — read-out-only contraction states, never evolved.
 //! - [`readout::echo`] — operator Loschmidt-echo read-outs ([`PauliSum::rotated_overlap`], [`PauliSum::anticommute_histogram`]).
 //! - [`engine`] / [`engine::partitioned`] — the bucketed engine and its NUMA/distributed partitioning (ARCHITECTURE.md §Engine, §Partitioning); [`propagate`] is the front door for almost all callers.
@@ -72,16 +72,14 @@ pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    circuit_generators, count_remote_deltas, propagate_partitioned,
-    propagate_partitioned_with_options, DistributedSum, GeneratorWeight, PartitionConfig,
-    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
-    PartitionedTruncation, Placement, TopologyError,
+    circuit_generators, count_remote_deltas, propagate_partitioned, DistributedSum,
+    GeneratorWeight, PartitionConfig, PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime,
+    PartitionTrace, PartitionedSum, PartitionedTruncation, Placement, TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
 pub use engine::{
-    default_min_buckets, propagate, propagate_with_options, propagate_with_scratch,
-    propagate_with_scratch_and_options, Direction, EngineSelection, PropagateOptions,
+    default_min_buckets, propagate, propagate_with, Direction, EngineSelection, PropagateOptions,
     DEFAULT_SMALL_SUM_THRESHOLD,
 };
 pub use pauli_string::PauliString;

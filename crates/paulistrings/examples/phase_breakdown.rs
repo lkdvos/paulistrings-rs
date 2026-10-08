@@ -1,6 +1,6 @@
 //! Per-phase timing / memory probe for the bucketed propagation engine.
 //!
-//! Drives [`propagate_with_scratch_and_options`] over a menu of layers (rotation, Clifford,
+//! Drives [`propagate_with`] over a menu of layers (rotation, Clifford,
 //! general-unitary, noise, Trotter, and partitioned/distributed variants) across a matrix of
 //! thread and partition counts, and prints the [`PhaseStats`] breakdown the `phase-timing`
 //! feature exposes.
@@ -28,15 +28,14 @@ use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::truncation::BuiltinTruncation;
 use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{
-    propagate_with_scratch_and_options, BuildAccumulator, Circuit, Direction, Gf2Hash,
-    LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
-    TruncationPolicy,
+    propagate_with, BuildAccumulator, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
+    PauliString, PauliSum, Phase, PhaseStats, PropagateOptions, TruncationPolicy,
 };
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
 
-Measures the phase-timing breakdown of propagate_with_scratch_and_options across a
+Measures the phase-timing breakdown of propagate_with across a
 menu of layers and thread counts.
 
 Options:
@@ -91,7 +90,7 @@ Options:
                             floor, raising --target-bucket-len alone is inert.
   --occupancy-at <rep>     0-based rep index to sample bucket occupancy at (diagnostic, opt-in;
                             absent by default). Runs ONE real cfg.reps-deep trajectory from the
-                            cell's built initial sum, one propagate_with_scratch_and_options call
+                            cell's built initial sum, one propagate_with call
                             per rep (no untimed warm-up pass first: warm-up-then-repeat would
                             silently run the dynamics to depth 2 * --reps, which is fine for a
                             periodic single-gate layer but wrong for a growing Trotter-step
@@ -1349,7 +1348,7 @@ where
             let mut occupancy = None;
             for step in 0..cfg.reps {
                 let start = Instant::now();
-                sum = propagate_with_scratch_and_options(
+                sum = propagate_with(
                     &one_rep,
                     sum,
                     policy,
@@ -1368,7 +1367,7 @@ where
             (steady_n, wall_ns, stats, occupancy)
         } else {
             // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
-            let warmed = propagate_with_scratch_and_options(
+            let warmed = propagate_with(
                 &circuit,
                 base.clone(),
                 policy,
@@ -1380,7 +1379,7 @@ where
 
             let steady_n = warmed.len();
             let start = Instant::now();
-            let output = propagate_with_scratch_and_options(
+            let output = propagate_with(
                 &circuit,
                 warmed,
                 policy,

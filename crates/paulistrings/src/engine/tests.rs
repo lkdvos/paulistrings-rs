@@ -8,7 +8,7 @@ use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
-use super::{propagate, propagate_with_scratch, Direction};
+use super::{propagate, propagate_with, Direction, PropagateOptions};
 
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
@@ -60,7 +60,14 @@ fn gate_trace_forward_indices_match_circuit_order() {
 
     let mut scratch = LayerScratch::<1>::new();
     scratch.enable_gate_trace();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &AlwaysKeep,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
     let trace = scratch.take_gate_trace().unwrap();
 
     assert_eq!(trace.application_index, vec![0, 1]);
@@ -84,12 +91,13 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
 
     let mut scratch = LayerScratch::<1>::new();
     scratch.enable_gate_trace();
-    let _ = propagate_with_scratch(
+    let _ = propagate_with(
         &circuit,
         sum,
         &AlwaysKeep,
         Direction::Heisenberg,
         &mut scratch,
+        PropagateOptions::default(),
     );
     let trace = scratch.take_gate_trace().unwrap();
 
@@ -98,7 +106,7 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
     assert_eq!(trace.circuit_index, vec![1, 0]);
 }
 
-/// Gate tracing is opt-in: an untraced `propagate_with_scratch` call records nothing, matching [`TermTrace`]'s own default-off contract.
+/// Gate tracing is opt-in: an untraced `propagate_with` call records nothing, matching [`TermTrace`]'s own default-off contract.
 #[test]
 fn gate_trace_stays_empty_when_not_enabled() {
     let mut acc = BuildAccumulator::<1>::with_capacity(8, 1);
@@ -109,6 +117,13 @@ fn gate_trace_stays_empty_when_not_enabled() {
     circuit.push(Clifford1Q::h(0));
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &AlwaysKeep, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &AlwaysKeep,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
     assert!(scratch.take_gate_trace().is_none());
 }

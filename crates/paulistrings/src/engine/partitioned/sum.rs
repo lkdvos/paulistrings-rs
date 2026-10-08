@@ -362,7 +362,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// # Progress logging
     ///
     /// Target `paulistrings::propagate`, as in the unpartitioned engine: one `INFO` line on entry and exit, on the calling thread, and one `DEBUG` line per layer **per partition**, tagged `partition r/P`.
-    /// Unlike [`propagate_with_scratch`](crate::propagate_with_scratch) the per-layer lines come from each partition's own driving thread between layers rather than the calling thread; every site is behind `log_enabled!`, so a disabled logger reads no clock.
+    /// Unlike [`propagate_with`](crate::propagate_with) the per-layer lines come from each partition's own driving thread between layers rather than the calling thread; every site is behind `log_enabled!`, so a disabled logger reads no clock.
     ///
     /// # Panics
     ///

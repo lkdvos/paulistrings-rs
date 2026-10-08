@@ -9,9 +9,7 @@
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
-use paulistrings::engine::partitioned::{
-    propagate_partitioned, propagate_partitioned_with_options, PartitionConfig, Placement,
-};
+use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
 use paulistrings::test_support::{
     assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
@@ -47,8 +45,15 @@ fn check<const W: usize, T>(
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
         for &p in partitions {
-            let got = propagate_partitioned(circuit, sum.clone(), policy, direction, &config(p))
-                .expect("topology resolves");
+            let got = propagate_partitioned(
+                circuit,
+                sum.clone(),
+                policy,
+                direction,
+                &config(p),
+                PropagateOptions::default(),
+            )
+            .expect("topology resolves");
             let what = format!("{name} P={p} {direction:?}");
             assert_terms_close(&got, &want, TOL, &what);
             assert_eq!(got.len(), want.len(), "{what}: term count");
@@ -145,6 +150,7 @@ fn one_partition_matches_propagate_bitwise() {
             &ApproxTopN(2_000),
             direction,
             &config(1),
+            PropagateOptions::default(),
         )
         .expect("topology resolves");
         assert_eq!(
@@ -161,8 +167,15 @@ fn one_partition_matches_propagate_bitwise() {
     }
     let small = rand_sum::<1>(500, 8, 0x71A3);
     let want = propagate(&short, small.clone(), &KeepAll, Direction::Forward);
-    let got = propagate_partitioned(&short, small, &KeepAll, Direction::Forward, &config(1))
-        .expect("topology resolves");
+    let got = propagate_partitioned(
+        &short,
+        small,
+        &KeepAll,
+        Direction::Forward,
+        &config(1),
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
     assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 keep-all");
 }
 
@@ -179,7 +192,7 @@ fn options_are_honoured() {
     };
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for &p in &PS {
-        let got = propagate_partitioned_with_options(
+        let got = propagate_partitioned(
             &circuit,
             sum.clone(),
             &KeepAll,
@@ -198,15 +211,29 @@ fn edge_cases() {
     let circuit = random_circuit::<1>(6, 8, 0x9AA1, true);
     for &p in &PS {
         let empty = PauliSum::<1>::empty(6);
-        let out = propagate_partitioned(&circuit, empty, &KeepAll, Direction::Forward, &config(p))
-            .expect("topology resolves");
+        let out = propagate_partitioned(
+            &circuit,
+            empty,
+            &KeepAll,
+            Direction::Forward,
+            &config(p),
+            PropagateOptions::default(),
+        )
+        .expect("topology resolves");
         assert!(out.is_empty(), "P={p}: an empty sum stays empty");
 
         let one = rand_sum::<1>(1, 6, 0x1);
         assert_eq!(one.len(), 1);
         let want = propagate(&circuit, one.clone(), &KeepAll, Direction::Forward);
-        let got = propagate_partitioned(&circuit, one, &KeepAll, Direction::Forward, &config(p))
-            .expect("topology resolves");
+        let got = propagate_partitioned(
+            &circuit,
+            one,
+            &KeepAll,
+            Direction::Forward,
+            &config(p),
+            PropagateOptions::default(),
+        )
+        .expect("topology resolves");
         assert_terms_close(&got, &want, TOL, &format!("single term P={p}"));
 
         // A zero-layer circuit is the identity, bit for bit.
@@ -218,6 +245,7 @@ fn edge_cases() {
             &KeepAll,
             Direction::Heisenberg,
             &config(p),
+            PropagateOptions::default(),
         )
         .expect("topology resolves");
         assert_eq!(
@@ -243,8 +271,15 @@ fn auto_placement_agrees() {
         partition_row_seed: None,
     };
     let want = propagate(&circuit, sum.clone(), &ApproxTopN(400), Direction::Forward);
-    let got = propagate_partitioned(&circuit, sum, &ApproxTopN(400), Direction::Forward, &config)
-        .expect("topology resolves");
+    let got = propagate_partitioned(
+        &circuit,
+        sum,
+        &ApproxTopN(400),
+        Direction::Forward,
+        &config,
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
     assert_terms_close(&got, &want, TOL, "auto placement");
 }
 
@@ -265,7 +300,14 @@ fn a_finalizing_policy_without_a_collective_form_panics() {
 
     let circuit = random_circuit::<1>(6, 3, 0x9AA1, false);
     let sum = rand_sum::<1>(100, 6, 0x9AA2);
-    let _ = propagate_partitioned(&circuit, sum, &Liar, Direction::Forward, &config(2));
+    let _ = propagate_partitioned(
+        &circuit,
+        sum,
+        &Liar,
+        Direction::Forward,
+        &config(2),
+        PropagateOptions::default(),
+    );
 }
 
 /// A partition that dies mid-run must not leave its partners blocked in a
@@ -305,7 +347,14 @@ fn partner_panic_does_not_hang() {
             seen: (0..2).map(|_| AtomicUsize::new(0)).collect(),
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            propagate_partitioned(&circuit, sum, &policy, Direction::Forward, &config(2))
+            propagate_partitioned(
+                &circuit,
+                sum,
+                &policy,
+                Direction::Forward,
+                &config(2),
+                PropagateOptions::default(),
+            )
         }));
         let _ = tx.send(outcome.is_err());
     });

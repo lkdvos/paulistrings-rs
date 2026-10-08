@@ -3,7 +3,7 @@
 //! One layer is a coset walk over the GF(2)-linear bucket partition (the crate-private `coset` module), with the per-run sort and fused merge kernels in the crate-private `merge` module.
 //! See ARCHITECTURE.md §Engine for the layer and this module's propagation loop.
 //!
-//! The crate-private `direct` module is an **additive** second layer path for sums small enough that the bucketed layer's per-layer fixed cost dominates: off unless a caller asks for it through [`propagate_with_options`], never reached by [`propagate`], and canonical for nothing.
+//! The crate-private `direct` module is an **additive** second layer path for sums small enough that the bucketed layer's per-layer fixed cost dominates: off unless a caller asks for it through [`propagate_with`], never reached by [`propagate`], and canonical for nothing.
 //! See `research/FINDINGS.md`.
 
 pub mod bucketed;
@@ -41,7 +41,7 @@ pub enum Direction {
     Heisenberg,
 }
 
-/// Which layer engine [`propagate_with_options`] uses.
+/// Which layer engine [`propagate_with`] uses.
 ///
 /// The bucketed sorting engine ([`bucketed`]) is canonical at every term count; the alternative is a strictly additive small-sum path (`engine::direct`) that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`] and the bucketed machinery.
 /// See `research/FINDINGS.md`.
@@ -71,7 +71,7 @@ pub enum EngineSelection {
 /// It also sits below `desired_bits`'s `worth_splitting` floor (`DEFAULT_MIN_BUCKETS × MIN_TERMS_PER_TASK = 8192`), so a sum on this path is one the sorting engine would have run in few buckets anyway.
 pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 2048;
 
-/// Tuning knobs for [`propagate_with_options`].
+/// Tuning knobs for [`propagate_with`].
 ///
 /// [`Default`] is exactly today's behaviour — the sorting engine for every layer — so `PropagateOptions::default()` and [`propagate`] agree bit for bit.
 ///
@@ -126,8 +126,8 @@ impl Default for PropagateOptions {
 impl PropagateOptions {
     /// Whether a propagation starting at `len` terms under a policy that answers `policy_finalizes` to [`TruncationPolicy::finalizes_layer`] starts on the direct path.
     ///
-    /// Evaluated once per [`propagate_with_options`] call, outside the layer loop.
-    /// The direct path is entered only here: once the sum outgrows the threshold the run continues on the sorting engine and never comes back (see [`propagate_with_options`]).
+    /// Evaluated once per [`propagate_with`] call, outside the layer loop.
+    /// The direct path is entered only here: once the sum outgrows the threshold the run continues on the sorting engine and never comes back (see [`propagate_with`]).
     fn starts_direct(&self, len: usize, policy_finalizes: bool) -> bool {
         match self.engine {
             EngineSelection::SortedOnly => false,
@@ -189,50 +189,36 @@ where
     T: TruncationPolicy<W> + ?Sized,
 {
     let mut scratch = LayerScratch::<W>::new();
-    propagate_with_scratch(circuit, sum, policy, direction, &mut scratch)
+    propagate_with(
+        circuit,
+        sum,
+        policy,
+        direction,
+        &mut scratch,
+        PropagateOptions::default(),
+    )
 }
 
-/// [`propagate`] with a caller-held [`LayerScratch`].
+/// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`] — the implementation [`propagate`] delegates to.
 ///
-/// Behaves identically to [`propagate`] — it *is* the implementation — but lets the caller retain the scratch's high-water buffer capacity across calls (a Trotter driver stepping an observable), and, under the `phase-timing` feature, read the per-phase counters afterwards through `LayerScratch::take_stats` (the method — and so a resolvable doc link to it — exists only when that feature is enabled).
+/// Holding the scratch lets the caller retain its high-water buffer capacity across calls (a Trotter driver stepping an observable), and, under the `phase-timing` feature, read the per-phase counters afterwards through `LayerScratch::take_stats` (the method — and so a resolvable doc link to it — exists only when that feature is enabled).
 ///
 /// It is also the only entry point that records a [`TermTrace`](bucketed::TermTrace) — the always-compiled, opt-in per-layer term counts.
 /// Call [`LayerScratch::enable_term_trace`] before propagating and [`LayerScratch::take_term_trace`] afterwards; [`propagate`], which owns its scratch, never enables it.
+///
+/// `PropagateOptions::default()` is [`propagate`]'s choice — same code path, same bits — so the options are only interesting for opting into a non-default [`EngineSelection`] or bucket policy.
 ///
 /// # Progress logging
 ///
 /// This is where the events described under [`propagate`] are emitted: target `paulistrings::propagate`, `INFO` on entry and exit, `DEBUG` per layer.
 /// Every event is emitted on the calling thread, outside the engine's Rayon region, so a logger implementation never runs inside a parallel layer.
-pub fn propagate_with_scratch<const W: usize, T>(
-    circuit: &Circuit<W>,
-    sum: PauliSum<W>,
-    policy: &T,
-    direction: Direction,
-    scratch: &mut LayerScratch<W>,
-) -> PauliSum<W>
-where
-    T: TruncationPolicy<W> + ?Sized,
-{
-    propagate_with_scratch_and_options(
-        circuit,
-        sum,
-        policy,
-        direction,
-        scratch,
-        PropagateOptions::default(),
-    )
-}
-
-/// [`propagate`] with [`PropagateOptions`].
-///
-/// `PropagateOptions::default()` is [`propagate`] exactly — same code path, same bits — so this is only interesting for opting into a non-default [`EngineSelection`].
 ///
 /// # Examples
 ///
 /// ```
 /// use paulistrings::{
-///     BuildAccumulator, Circuit, Direction, EngineSelection, PauliString, Phase,
-///     PropagateOptions, TruncationPolicy, channel::Clifford1Q, propagate_with_options,
+///     BuildAccumulator, Circuit, Direction, EngineSelection, LayerScratch, PauliString, Phase,
+///     PropagateOptions, TruncationPolicy, channel::Clifford1Q, propagate_with,
 /// };
 /// use num_complex::Complex64;
 ///
@@ -253,27 +239,13 @@ where
 ///     engine: EngineSelection::Auto,
 ///     ..PropagateOptions::default()
 /// };
-/// let evolved = propagate_with_options(
-///     &circuit, acc.finalize(), &KeepAll, Direction::Heisenberg, opts,
+/// let mut scratch = LayerScratch::new();
+/// let evolved = propagate_with(
+///     &circuit, acc.finalize(), &KeepAll, Direction::Heisenberg, &mut scratch, opts,
 /// );
 /// // H conjugates Z to X, whichever engine ran the layer.
 /// assert_eq!(evolved.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
 /// ```
-pub fn propagate_with_options<const W: usize, T>(
-    circuit: &Circuit<W>,
-    sum: PauliSum<W>,
-    policy: &T,
-    direction: Direction,
-    options: PropagateOptions,
-) -> PauliSum<W>
-where
-    T: TruncationPolicy<W> + ?Sized,
-{
-    let mut scratch = LayerScratch::<W>::new();
-    propagate_with_scratch_and_options(circuit, sum, policy, direction, &mut scratch, options)
-}
-
-/// [`propagate_with_scratch`] with [`PropagateOptions`] — the implementation every other entry point delegates to.
 ///
 /// # The small-sum path, when selected
 ///
@@ -291,7 +263,7 @@ where
 /// The direct path calls only [`Channel::apply`], so it applies a channel of any support width — including the `> MAX_LOCAL_SUPPORT` channels for which `Channel::prepare` returns `None` and the sorting engine panics.
 /// It is a wider path, not a narrower one, and that asymmetry is visible: a circuit containing such a channel propagates while the sum is under the threshold and panics on the layer after it grows past it, exactly as it panics today under [`EngineSelection::SortedOnly`].
 /// The generalization design for the sorting engine is tracked in `research/FINDINGS.md`.
-pub fn propagate_with_scratch_and_options<const W: usize, T>(
+pub fn propagate_with<const W: usize, T>(
     circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
     policy: &T,

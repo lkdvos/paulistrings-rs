@@ -17,8 +17,8 @@ use paulistrings::truncation::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
 };
 use paulistrings::{
-    propagate, propagate_with_options, Circuit, Direction, PartitionRows, PartitionedTruncation,
-    PauliSum, PropagateOptions,
+    propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows,
+    PartitionedTruncation, PauliSum, PropagateOptions,
 };
 
 const TOL: f64 = 1e-11;
@@ -336,7 +336,14 @@ fn options_are_honoured() {
         min_buckets: 16,
         ..PropagateOptions::default()
     };
-    let want = propagate_with_options(&circuit, sum.clone(), &KeepAll, Direction::Forward, options);
+    let want = propagate_with(
+        &circuit,
+        sum.clone(),
+        &KeepAll,
+        Direction::Forward,
+        &mut LayerScratch::new(),
+        options,
+    );
     for &p in &PS {
         let mut split = split_of(&sum, p);
         split
@@ -518,11 +525,12 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
     let seed = input.hash().seed();
     let input = input.with_hash(paulistrings::Gf2Hash::new(64, 1, seed));
-    let want = propagate_with_options(
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         options,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");

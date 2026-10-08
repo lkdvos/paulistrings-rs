@@ -13,8 +13,8 @@ use paulistrings::channel::PauliRotation;
 use paulistrings::pauli_sum::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::test_support::{assert_same_terms, assert_terms_close, rand_sum};
 use paulistrings::{
-    propagate, propagate_with_options, Circuit, Direction, PauliString, PauliSum, PropagateOptions,
-    TruncationPolicy,
+    propagate, propagate_with, Circuit, Direction, LayerScratch, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 
 /// No truncation: the partition must not change the surviving terms, so nothing
@@ -44,7 +44,14 @@ fn zz_circuit() -> Circuit<2> {
 }
 
 fn run(sum: PauliSum<2>, options: PropagateOptions) -> PauliSum<2> {
-    propagate_with_options(&zz_circuit(), sum, &KeepAll, Direction::Forward, options)
+    propagate_with(
+        &zz_circuit(),
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut LayerScratch::new(),
+        options,
+    )
 }
 
 /// Raising both knobs coarsens the partition, and the result is the same sum.
@@ -75,11 +82,12 @@ fn default_options_reproduce_propagate_exactly() {
     let sum = rand_sum::<2>(50_000, QUBITS, 0x5EED_0002);
     let circuit = zz_circuit();
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
-    let got = propagate_with_options(
+    let got = propagate_with(
         &circuit,
         sum,
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         PropagateOptions::default(),
     );
     assert_same_terms(&got, &want, "default options vs propagate");

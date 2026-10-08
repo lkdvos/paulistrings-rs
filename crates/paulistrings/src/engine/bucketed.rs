@@ -56,7 +56,7 @@ impl<const W: usize> LayerScratch<W> {
     }
 
     /// Drain and return the accumulated phase counters (layer-level wall-clock fields plus every worker's busy-time counters), zeroing them.
-    /// Counters accumulate across layers and `propagate_with_scratch` calls until drained.
+    /// Counters accumulate across layers and `propagate_with` calls until drained.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PhaseStats {
         let mut total = std::mem::take(&mut self.stats);
@@ -68,7 +68,7 @@ impl<const W: usize> LayerScratch<W> {
         total
     }
 
-    /// Start recording a [`TermTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards counts already recorded. Always compiled: the counts come from `sum.len()` reads the layer loop already performs.
+    /// Start recording a [`TermTrace`] on every subsequent [`propagate_with`](crate::propagate_with) call driven by this scratch. Idempotent, and it never discards counts already recorded. Always compiled: the counts come from `sum.len()` reads the layer loop already performs.
     pub fn enable_term_trace(&mut self) {
         self.term_trace.get_or_insert_with(TermTrace::default);
     }
@@ -79,7 +79,7 @@ impl<const W: usize> LayerScratch<W> {
         self.term_trace.as_mut().map(std::mem::take)
     }
 
-    /// Start recording a [`GateTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards records already taken.
+    /// Start recording a [`GateTrace`] on every subsequent [`propagate_with`](crate::propagate_with) call driven by this scratch. Idempotent, and it never discards records already taken.
     /// Always compiled: enabling it costs one extra `Instant::now()` pair per traced layer, gated behind the same hoisted flag as the per-layer `DEBUG` log.
     pub fn enable_gate_trace(&mut self) {
         self.gate_trace.get_or_insert_with(GateTrace::default);
@@ -92,7 +92,7 @@ impl<const W: usize> LayerScratch<W> {
     }
 }
 
-/// Per-layer resident term counts, recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace) set.
+/// Per-layer resident term counts, recorded by [`propagate_with`](crate::propagate_with) when the driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace) set.
 /// Both vectors have one entry per layer applied, in application order (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)). Always compiled — the `phase-timing` feature gates only the timing counters.
 /// These are counts of the sum as it rests between layers, post-truncation; the transient in-layer expansion is not captured, since observing it would mean instrumenting the coset loop.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -117,7 +117,7 @@ impl TermTrace {
 
 /// Per-layer structured gate trace: application index, original circuit index, gate name, term counts, and the complete gate's elapsed wall time.
 ///
-/// Recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_gate_trace`](LayerScratch::enable_gate_trace) set.
+/// Recorded by [`propagate_with`](crate::propagate_with) when the driving [`LayerScratch`] has [`enable_gate_trace`](LayerScratch::enable_gate_trace) set.
 /// Always compiled, like [`TermTrace`]; unlike it, a traced layer pays one extra `Instant::now()` pair, gated behind the same hoisted flag that already guards the per-layer `DEBUG` log, so an untraced layer's cost is unchanged (CLAUDE.md §Performance discipline).
 /// `nanos[k]` covers the same window `propagate`'s per-layer `DEBUG` line reports: before `rebucket`/`prepare`, through the coset loop, `finalize_layer`, and any completion sync that phase needs — a complete gate application.
 ///

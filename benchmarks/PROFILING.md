@@ -181,7 +181,7 @@ The `phase-timing` Cargo feature (`crates/paulistrings/src/engine/stats.rs`) gat
 It is measurement-only and never in the default feature set — the default build carries no timing code and no stats fields at all.
 The same bitwise-identity tests (fingerprint net, thread-count/bucket-count/seed determinism) run with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
 
-Counters are read via `LayerScratch::take_stats()` after driving layers through `propagate_with_scratch`.
+Counters are read via `LayerScratch::take_stats()` after driving layers through `propagate_with`.
 Two clock domains are deliberately mixed in one `PhaseStats`:
 
 - **Wall-clock phases** (`rebucket_ns` … `finalize_ns`) — measured once per layer on the calling thread; they sum to approximately the layer's wall time.

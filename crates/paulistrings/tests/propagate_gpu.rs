@@ -15,7 +15,7 @@ use paulistrings::truncation::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff,
 };
 use paulistrings::{
-    propagate, propagate_with_options, Circuit, Direction, Gf2Hash, PartitionedTruncation,
+    propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PartitionedTruncation,
     PauliString, PauliSum, PropagateOptions,
 };
 
@@ -419,11 +419,12 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         min_buckets: 16,
         ..PropagateOptions::default()
     };
-    let want = propagate_with_options(
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         options,
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
@@ -788,11 +789,12 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         128,
         Box::new(Clifford2Q::cnot(3, 90)) as Box<dyn Channel<2>>,
     );
-    let want = propagate_with_options(
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         PropagateOptions {
             target_bucket_len: 1 << 20,
             min_buckets: 1,

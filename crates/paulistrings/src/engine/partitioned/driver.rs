@@ -1,4 +1,4 @@
-//! The partitioned propagation driver: [`PartitionedSum`] and the [`propagate_partitioned`] front doors.
+//! The partitioned propagation driver: the layer loop behind [`PartitionedSum`] and the [`propagate_partitioned`] front door.
 //!
 //! A [`PartitionedSum`] is one [`PauliSum`] split across the partitions of a [`PartitionRuntime`]; the layer loop mirrors the unpartitioned one in [`engine`](crate::engine) — rebucket → prepare → layer → finalize, once per channel, on every partition in lock-step (ARCHITECTURE.md §Partitioning).
 //!
@@ -333,6 +333,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 /// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
 ///
 /// One-shot convenience: it builds a [`PartitionRuntime`], scatters, runs and gathers.
+/// [`EngineSelection`](crate::EngineSelection) in `options` is ignored; see [`PartitionedSum::propagate_with_options`].
 /// A caller propagating repeatedly (a Trotter driver stepping an observable) should hold the runtime and a [`PartitionedSum`] instead, so the pools, the split and the scratch survive between calls.
 ///
 /// # Errors
@@ -347,7 +348,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 /// use paulistrings::engine::partitioned::{propagate_partitioned, PartitionConfig, Placement};
 /// use paulistrings::{
 ///     BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, Phase,
-///     TruncationPolicy,
+///     PropagateOptions, TruncationPolicy,
 /// };
 /// use num_complex::Complex64;
 ///
@@ -371,39 +372,17 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 ///     partition_row_seed: None,
 /// };
 /// let out = propagate_partitioned(
-///     &circuit, acc.finalize(), &KeepAll, Direction::Heisenberg, &config,
-/// ).expect("topology resolves");
+///     &circuit,
+///     acc.finalize(),
+///     &KeepAll,
+///     Direction::Heisenberg,
+///     &config,
+///     PropagateOptions::default(),
+/// )
+/// .expect("topology resolves");
 /// assert_eq!(out.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
 /// ```
 pub fn propagate_partitioned<const W: usize, T>(
-    circuit: &Circuit<W>,
-    sum: PauliSum<W>,
-    policy: &T,
-    direction: Direction,
-    config: &PartitionConfig,
-) -> Result<PauliSum<W>, TopologyError>
-where
-    T: PartitionedTruncation<W> + ?Sized,
-{
-    propagate_partitioned_with_options(
-        circuit,
-        sum,
-        policy,
-        direction,
-        config,
-        PropagateOptions::default(),
-    )
-}
-
-/// [`propagate_partitioned`] with explicit [`PropagateOptions`].
-///
-/// [`EngineSelection`](crate::EngineSelection) is ignored; see
-/// [`PartitionedSum::propagate_with_options`].
-///
-/// # Errors
-///
-/// [`TopologyError`], as [`propagate_partitioned`].
-pub fn propagate_partitioned_with_options<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
     policy: &T,

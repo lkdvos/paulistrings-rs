@@ -47,14 +47,14 @@ impl RotationAxis {
 ///
 /// It keeps the class-diagonal terms of [`rotated_overlap`](PauliSum::rotated_overlap), normalized by `Σ|c|²`; an all-zero histogram gives `NaN`.
 pub fn diagonal_echo(hist: &[f64], delta: f64) -> f64 {
-    let c = (2.0 * delta).cos();
+    let cos = (2.0 * delta).cos();
     let mut weight = 1.0;
-    let mut num = 0.0;
+    let mut numerator = 0.0;
     for &w in hist {
-        num += w * weight;
-        weight *= c;
+        numerator += w * weight;
+        weight *= cos;
     }
-    num / hist.iter().sum::<f64>()
+    numerator / hist.iter().sum::<f64>()
 }
 
 /// The bit mask of `qubits`, each asserted below `num_qubits`.
@@ -165,9 +165,9 @@ impl<const W: usize> PauliSum<W> {
         axis: RotationAxis,
     ) -> Complex64 {
         let mask = site_mask::<W>(sites, self.num_qubits());
-        let (s, c) = (2.0 * delta).sin_cos();
-        let cos_pow: Vec<f64> = (0..=sites.len()).map(|k| c.powi(k as i32)).collect();
-        let sin_pow: Vec<f64> = (0..=sites.len()).map(|k| s.powi(k as i32)).collect();
+        let (sin, cos) = (2.0 * delta).sin_cos();
+        let cos_pow: Vec<f64> = (0..=sites.len()).map(|k| cos.powi(k as i32)).collect();
+        let sin_pow: Vec<f64> = (0..=sites.len()).map(|k| sin.powi(k as i32)).collect();
 
         // A string commuting with every generator is its own class, and V leaves it alone.
         let (fixed, members): (Vec<f64>, Vec<Vec<Member<W>>>) = (0..self.num_buckets())
@@ -177,8 +177,8 @@ impl<const W: usize> PauliSum<W> {
                 |(mut fixed, mut members), b| {
                     let (xs, zs, cs) = self.bucket(b);
                     for ((x, z), &coeff) in xs.iter().zip(zs).zip(cs) {
-                        let (sel, flip) = axis.split(x, z);
-                        let k = and(sel, &mask);
+                        let (selector, flip) = axis.split(x, z);
+                        let k = and(selector, &mask);
                         if popcount(&k) == 0 {
                             fixed += coeff.norm_sqr();
                             continue;
@@ -207,15 +207,17 @@ impl<const W: usize> PauliSum<W> {
                 for p in class {
                     for q in class {
                         let d: [u64; W] = std::array::from_fn(|i| p.flip[i] ^ q.flip[i]);
-                        let nd = popcount(&d);
+                        let num_flipped = popcount(&d);
                         // R[P, Q] is `−sin 2δ` where P holds Y against Q's X (Z axis), or P holds Z against Q's Y (X axis).
                         let negative = match axis {
                             RotationAxis::Z => popcount(&and(&p.flip, &d)),
                             RotationAxis::X => popcount(&and(&q.flip, &d)),
                         } % 2
                             == 1;
-                        let m = cos_pow[sites_k - nd] * sin_pow[nd];
-                        partial += p.coeff.conj() * q.coeff * if negative { -m } else { m };
+                        let magnitude = cos_pow[sites_k - num_flipped] * sin_pow[num_flipped];
+                        partial += p.coeff.conj()
+                            * q.coeff
+                            * if negative { -magnitude } else { magnitude };
                     }
                 }
                 partial

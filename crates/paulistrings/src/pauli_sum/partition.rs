@@ -9,14 +9,14 @@ use super::storage::{merge_two, BucketCols, PauliSum, DEFAULT_MIN_BUCKETS, MIN_T
 /// Copy the terms of one bucket whose partition rank is `rank`.
 // Not reserved up front: research/FINDINGS.md §Reserving a safe upper bound in the merge.
 fn filter_bucket<const W: usize>(
-    cols: &BucketCols<W>,
+    columns: &BucketCols<W>,
     rows: &PartitionRows<W>,
     rank: u32,
 ) -> BucketCols<W> {
     let mut out = BucketCols::<W>::new();
-    for i in 0..cols.len() {
-        if rows.partition_of(&cols.x[i], &cols.z[i]) == rank {
-            out.push(cols.x[i], cols.z[i], cols.coeff[i]);
+    for i in 0..columns.len() {
+        if rows.partition_of(&columns.x[i], &columns.z[i]) == rank {
+            out.push(columns.x[i], columns.z[i], columns.coeff[i]);
         }
     }
     out
@@ -26,9 +26,9 @@ fn filter_bucket<const W: usize>(
 fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
     while runs.len() > 1 {
         let mut next: Vec<BucketCols<W>> = Vec::with_capacity(runs.len().div_ceil(2));
-        let mut it = runs.into_iter();
-        while let Some(a) = it.next() {
-            match it.next() {
+        let mut remaining = runs.into_iter();
+        while let Some(a) = remaining.next() {
+            match remaining.next() {
                 Some(b) => next.push(merge_two(&a, &b)),
                 None => next.push(a),
             }
@@ -75,12 +75,12 @@ impl<const W: usize> PauliSum<W> {
         let buckets: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
             self.buckets
                 .iter()
-                .map(|cols| filter_bucket(cols, rows, rank))
+                .map(|columns| filter_bucket(columns, rows, rank))
                 .collect()
         } else {
             self.buckets
                 .par_iter()
-                .map(|cols| filter_bucket(cols, rows, rank))
+                .map(|columns| filter_bucket(columns, rows, rank))
                 .collect()
         };
         let len = buckets.iter().map(|c| c.len()).sum();
@@ -111,14 +111,16 @@ impl<const W: usize> PauliSum<W> {
             );
         }
 
-        let nb = hash.num_buckets();
-        let k = parts.len();
+        let num_buckets = hash.num_buckets();
+        let num_parts = parts.len();
         let len: usize = parts.iter().map(|p| p.len).sum();
 
-        let mut runs: Vec<Vec<BucketCols<W>>> = (0..nb).map(|_| Vec::with_capacity(k)).collect();
+        let mut runs: Vec<Vec<BucketCols<W>>> = (0..num_buckets)
+            .map(|_| Vec::with_capacity(num_parts))
+            .collect();
         for p in parts {
-            for (b, cols) in p.buckets.into_iter().enumerate() {
-                runs[b].push(cols);
+            for (b, columns) in p.buckets.into_iter().enumerate() {
+                runs[b].push(columns);
             }
         }
 

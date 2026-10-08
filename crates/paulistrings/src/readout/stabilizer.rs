@@ -272,20 +272,20 @@ impl<const W: usize> PauliSum<W> {
         );
         self.buckets()
             .par_iter()
-            .map(|cols| {
-                let mut acc = Complex64::new(0.0, 0.0);
-                for i in 0..cols.len() {
+            .map(|columns| {
+                let mut partial = Complex64::new(0.0, 0.0);
+                for i in 0..columns.len() {
                     let key = PauliString::<W> {
-                        x: cols.x[i],
-                        z: cols.z[i],
+                        x: columns.x[i],
+                        z: columns.z[i],
                     };
                     match state.sign_of(&key) {
                         None => {}
-                        Some(false) => acc += cols.coeff[i],
-                        Some(true) => acc -= cols.coeff[i],
+                        Some(false) => partial += columns.coeff[i],
+                        Some(true) => partial -= columns.coeff[i],
                     }
                 }
-                acc
+                partial
             })
             .collect::<Vec<_>>()
             .into_iter()

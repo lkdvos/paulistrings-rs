@@ -24,13 +24,13 @@ fn row_word(seed: u64, row: usize, attempt: u32, word: usize, half: u64) -> u64 
 /// Mask of the live qubit bits in word `word`, given `num_qubits` total.
 #[inline]
 fn word_mask(num_qubits: usize, word: usize) -> u64 {
-    let lo = 64 * word;
-    if num_qubits >= lo + 64 {
+    let first_qubit = 64 * word;
+    if num_qubits >= first_qubit + 64 {
         !0u64
-    } else if num_qubits <= lo {
+    } else if num_qubits <= first_qubit {
         0
     } else {
-        (1u64 << (num_qubits - lo)) - 1
+        (1u64 << (num_qubits - first_qubit)) - 1
     }
 }
 
@@ -47,23 +47,23 @@ fn draw_rows<const W: usize>(
     let has_live_columns = num_qubits > 0;
     for row in 0..n_rows {
         let mut attempt = 0u32;
-        let (rx, rz) = loop {
-            let mut rx = [0u64; W];
-            let mut rz = [0u64; W];
+        let (row_x, row_z) = loop {
+            let mut row_x = [0u64; W];
+            let mut row_z = [0u64; W];
             let mut any = false;
             for w in 0..W {
                 let mask = word_mask(num_qubits, w);
-                rx[w] = row_word(seed, row, attempt, w, 0) & mask & !exclude_x[w];
-                rz[w] = row_word(seed, row, attempt, w, 1) & mask & !exclude_z[w];
-                any |= (rx[w] | rz[w]) != 0;
+                row_x[w] = row_word(seed, row, attempt, w, 0) & mask & !exclude_x[w];
+                row_z[w] = row_word(seed, row, attempt, w, 1) & mask & !exclude_z[w];
+                any |= (row_x[w] | row_z[w]) != 0;
             }
             if any || !has_live_columns {
-                break (rx, rz);
+                break (row_x, row_z);
             }
             attempt += 1;
         };
-        rows_x.push(rx);
-        rows_z.push(rz);
+        rows_x.push(row_x);
+        rows_z.push(row_z);
     }
     (rows_x, rows_z)
 }
@@ -139,23 +139,23 @@ impl<const W: usize> Gf2Hash<W> {
     /// `h(v)` for a key given as separate `x` and `z` words.
     #[inline]
     pub fn bucket_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
-        let mut acc: u32 = 0;
+        let mut index: u32 = 0;
         for i in 0..self.bits as usize {
-            acc |= self.row_parity(x, z, i as u8) << i;
+            index |= self.row_parity(x, z, i as u8) << i;
         }
-        acc
+        index
     }
 
     /// Bit `row` of `H·v`, as `0` or `1`.
     #[inline]
     pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
-        let rx = &self.rows_x[row as usize];
-        let rz = &self.rows_z[row as usize];
-        let mut acc: u64 = 0;
+        let row_x = &self.rows_x[row as usize];
+        let row_z = &self.rows_z[row as usize];
+        let mut folded: u64 = 0;
         for w in 0..W {
-            acc ^= (x[w] & rx[w]) ^ (z[w] & rz[w]);
+            folded ^= (x[w] & row_x[w]) ^ (z[w] & row_z[w]);
         }
-        acc.count_ones() & 1
+        folded.count_ones() & 1
     }
 
     /// `h(v)` for a [`PauliString`].
@@ -364,19 +364,19 @@ impl<const W: usize> PartitionRows<W> {
         let mut rows_z = vec![[0u64; W]; bits as usize];
         for (b, qubits) in blocks.iter().enumerate() {
             for &q in qubits {
-                let qi = q as usize;
+                let qubit_index = q as usize;
                 assert!(
-                    qi < num_qubits,
+                    qubit_index < num_qubits,
                     "PartitionRows::cut: qubit {q} in block {b} is outside 0..{num_qubits}",
                 );
                 assert!(
-                    !seen[qi],
+                    !seen[qubit_index],
                     "PartitionRows::cut: blocks must be disjoint, qubit {q} appears twice",
                 );
-                seen[qi] = true;
+                seen[qubit_index] = true;
                 for (i, row) in rows_z.iter_mut().enumerate() {
                     if (b >> i) & 1 == 1 {
-                        row[qi / 64] |= 1u64 << (qi % 64);
+                        row[qubit_index / 64] |= 1u64 << (qubit_index % 64);
                     }
                 }
             }
@@ -424,17 +424,17 @@ impl<const W: usize> PartitionRows<W> {
     /// `part(v)` for a key given as separate `x` and `z` words.
     #[inline]
     pub fn partition_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
-        let mut acc: u32 = 0;
+        let mut index: u32 = 0;
         for i in 0..self.bits as usize {
-            let rx = &self.rows_x[i];
-            let rz = &self.rows_z[i];
+            let row_x = &self.rows_x[i];
+            let row_z = &self.rows_z[i];
             let mut fold: u64 = 0;
             for w in 0..W {
-                fold ^= (x[w] & rx[w]) ^ (z[w] & rz[w]);
+                fold ^= (x[w] & row_x[w]) ^ (z[w] & row_z[w]);
             }
-            acc |= (fold.count_ones() & 1) << i;
+            index |= (fold.count_ones() & 1) << i;
         }
-        acc
+        index
     }
 
     /// `part(v)` for a [`PauliString`].
@@ -451,10 +451,9 @@ impl<const W: usize> PartitionRows<W> {
 
     /// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.
     pub fn avoids(&self, mask_x: &[u64; W], mask_z: &[u64; W]) -> bool {
-        self.rows_x
-            .iter()
-            .zip(&self.rows_z)
-            .all(|(rx, rz)| (0..W).all(|w| rx[w] & mask_x[w] == 0 && rz[w] & mask_z[w] == 0))
+        self.rows_x.iter().zip(&self.rows_z).all(|(row_x, row_z)| {
+            (0..W).all(|w| row_x[w] & mask_x[w] == 0 && row_z[w] & mask_z[w] == 0)
+        })
     }
 
     /// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent.
@@ -478,21 +477,21 @@ type KeyRow<const W: usize> = ([u64; W], [u64; W]);
 fn gf2_rank_wide<const W: usize>(rows: &[KeyRow<W>]) -> usize {
     let mut pivots: Vec<(usize, KeyRow<W>)> = Vec::with_capacity(rows.len());
     for row in rows {
-        let mut cur = *row;
+        let mut reduced = *row;
         'reduce: loop {
-            let Some(lead) = leading_column(&cur) else {
+            let Some(lead) = leading_column(&reduced) else {
                 break;
             };
-            for (pl, prow) in pivots.iter() {
-                if *pl == lead {
+            for (pivot_column, pivot_row) in pivots.iter() {
+                if *pivot_column == lead {
                     for w in 0..W {
-                        cur.0[w] ^= prow.0[w];
-                        cur.1[w] ^= prow.1[w];
+                        reduced.0[w] ^= pivot_row.0[w];
+                        reduced.1[w] ^= pivot_row.1[w];
                     }
                     continue 'reduce;
                 }
             }
-            pivots.push((lead, cur));
+            pivots.push((lead, reduced));
             break;
         }
     }

@@ -61,11 +61,11 @@ impl<const W: usize> ProductBasis<W> {
             ProductState::YPlus => PauliAxis::Y,
             ProductState::ZPlus => PauliAxis::Z,
         };
-        let (bx, bz) = axis.bits();
+        let (axis_x, axis_z) = axis.bits();
         let all = |b: bool| if b { [!0u64; W] } else { [0u64; W] };
         Self {
-            ax_x: all(bx),
-            ax_z: all(bz),
+            ax_x: all(axis_x),
+            ax_z: all(axis_z),
             neg: [0u64; W],
         }
     }
@@ -93,11 +93,11 @@ impl<const W: usize> ProductBasis<W> {
             );
             let word = q / 64;
             let bit = 1u64 << (q % 64);
-            let (bx, bz) = axis.bits();
-            if bx {
+            let (axis_x, axis_z) = axis.bits();
+            if axis_x {
                 out.ax_x[word] |= bit;
             }
-            if bz {
+            if axis_z {
                 out.ax_z[word] |= bit;
             }
             if minus {
@@ -118,28 +118,29 @@ impl<const W: usize> PauliSum<W> {
     pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.buckets()
             .par_iter()
-            .map(|cols| {
-                let mut acc = Complex64::new(0.0, 0.0);
-                for i in 0..cols.len() {
+            .map(|columns| {
+                let mut partial = Complex64::new(0.0, 0.0);
+                for i in 0..columns.len() {
                     // An equality on both key halves, not a subset test: an X factor on a Y-axis qubit must not match.
                     let mut mismatch = 0u64;
                     let mut sign_bits = 0u32;
                     for w in 0..W {
-                        let x = cols.x[i][w];
-                        let z = cols.z[i][w];
-                        let sup = x | z;
-                        mismatch |= (x ^ (sup & basis.ax_x[w])) | (z ^ (sup & basis.ax_z[w]));
-                        sign_bits += (sup & basis.neg[w]).count_ones();
+                        let x = columns.x[i][w];
+                        let z = columns.z[i][w];
+                        let support = x | z;
+                        mismatch |=
+                            (x ^ (support & basis.ax_x[w])) | (z ^ (support & basis.ax_z[w]));
+                        sign_bits += (support & basis.neg[w]).count_ones();
                     }
                     if mismatch == 0 {
                         if sign_bits & 1 == 0 {
-                            acc += cols.coeff[i];
+                            partial += columns.coeff[i];
                         } else {
-                            acc -= cols.coeff[i];
+                            partial -= columns.coeff[i];
                         }
                     }
                 }
-                acc
+                partial
             })
             .collect::<Vec<_>>()
             .into_iter()

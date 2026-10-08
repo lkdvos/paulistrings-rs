@@ -55,10 +55,10 @@ impl<const W: usize> PauliString<W> {
     pub fn y(qubit: u32) -> Self {
         debug_assert!((qubit as usize) < 64 * W);
         let mut p = Self::identity();
-        let w = (qubit / 64) as usize;
+        let word = (qubit / 64) as usize;
         let bit = 1u64 << (qubit % 64);
-        p.x[w] = bit;
-        p.z[w] = bit;
+        p.x[word] = bit;
+        p.z[word] = bit;
         p
     }
 
@@ -123,13 +123,13 @@ impl<const W: usize> PauliString<W> {
         debug_assert!(num_qubits <= 64 * W);
         let mut leak: u64 = 0;
         for i in 0..W {
-            let lo = 64 * i;
-            let in_bounds: u64 = if num_qubits >= lo + 64 {
+            let first_qubit = 64 * i;
+            let in_bounds: u64 = if num_qubits >= first_qubit + 64 {
                 !0u64
-            } else if num_qubits <= lo {
+            } else if num_qubits <= first_qubit {
                 0
             } else {
-                (1u64 << (num_qubits - lo)) - 1
+                (1u64 << (num_qubits - first_qubit)) - 1
             };
             leak |= (self.x[i] | self.z[i]) & !in_bounds;
         }

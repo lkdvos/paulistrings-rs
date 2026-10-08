@@ -382,8 +382,8 @@ fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
         &[0],
     );
     let image = |x: u64, z: u64| {
-        (0..64).fold(0u64, |acc, i| {
-            acc | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
+        (0..64).fold(0u64, |bits, i| {
+            bits | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
         })
     };
     // (x, z) bits of X, Z and Y on one qubit.

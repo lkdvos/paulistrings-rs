@@ -76,20 +76,20 @@ impl<const W: usize> BucketCols<W> {
 
 /// Split bucket `b` into the half kept in place and the half moving to `upper`, by the hash's new top bit `new_bit`.
 fn refine_bucket<const W: usize>(
-    cols: &mut BucketCols<W>,
-    up: &mut BucketCols<W>,
+    columns: &mut BucketCols<W>,
+    upper_half: &mut BucketCols<W>,
     hash: &Gf2Hash<W>,
     new_bit: u8,
     b: u32,
 ) {
     let _ = b;
-    let n = cols.len();
+    let n = columns.len();
     let mut keep = 0usize;
     for i in 0..n {
-        let bit = hash.row_parity(&cols.x[i], &cols.z[i], new_bit);
+        let bit = hash.row_parity(&columns.x[i], &columns.z[i], new_bit);
         #[cfg(debug_assertions)]
         {
-            let full = hash.bucket_of(&cols.x[i], &cols.z[i]);
+            let full = hash.bucket_of(&columns.x[i], &columns.z[i]);
             debug_assert_eq!(
                 full & ((1u32 << new_bit) - 1),
                 b,
@@ -97,17 +97,17 @@ fn refine_bucket<const W: usize>(
             );
         }
         if bit == 1 {
-            up.push(cols.x[i], cols.z[i], cols.coeff[i]);
+            upper_half.push(columns.x[i], columns.z[i], columns.coeff[i]);
         } else {
-            cols.x[keep] = cols.x[i];
-            cols.z[keep] = cols.z[i];
-            cols.coeff[keep] = cols.coeff[i];
+            columns.x[keep] = columns.x[i];
+            columns.z[keep] = columns.z[i];
+            columns.coeff[keep] = columns.coeff[i];
             keep += 1;
         }
     }
-    cols.x.truncate(keep);
-    cols.z.truncate(keep);
-    cols.coeff.truncate(keep);
+    columns.x.truncate(keep);
+    columns.z.truncate(keep);
+    columns.coeff.truncate(keep);
 }
 
 /// Merge two sorted runs. No coefficient combining: keys are globally unique.
@@ -237,28 +237,28 @@ impl<const W: usize> PauliSum<W> {
         num_qubits: usize,
     ) -> Self {
         let n = coeff.len();
-        let nb = hash.num_buckets();
+        let num_buckets = hash.num_buckets();
 
-        let idx: Vec<u32> = (0..n)
+        let bucket_indices: Vec<u32> = (0..n)
             .into_par_iter()
             .map(|i| hash.bucket_of(&x[i], &z[i]))
             .collect();
-        let mut counts: Vec<usize> = vec![0; nb];
-        for &b in idx.iter() {
+        let mut counts: Vec<usize> = vec![0; num_buckets];
+        for &b in bucket_indices.iter() {
             counts[b as usize] += 1;
         }
 
-        let mut buckets: Vec<BucketCols<W>> = Vec::with_capacity(nb);
+        let mut buckets: Vec<BucketCols<W>> = Vec::with_capacity(num_buckets);
         for &c in counts.iter() {
-            let mut cols = BucketCols::<W>::new();
-            cols.x.reserve_exact(c);
-            cols.z.reserve_exact(c);
-            cols.coeff.reserve_exact(c);
-            buckets.push(cols);
+            let mut columns = BucketCols::<W>::new();
+            columns.x.reserve_exact(c);
+            columns.z.reserve_exact(c);
+            columns.coeff.reserve_exact(c);
+            buckets.push(columns);
         }
 
         for i in 0..n {
-            buckets[idx[i] as usize].push(x[i], z[i], coeff[i]);
+            buckets[bucket_indices[i] as usize].push(x[i], z[i], coeff[i]);
         }
 
         Self {
@@ -281,9 +281,9 @@ impl<const W: usize> PauliSum<W> {
 
     /// An empty sum over `num_qubits`, partitioned by `hash`.
     pub(crate) fn empty_with_hash(num_qubits: usize, hash: Gf2Hash<W>) -> Self {
-        let nb = hash.num_buckets();
+        let num_buckets = hash.num_buckets();
         Self {
-            buckets: (0..nb).map(|_| BucketCols::new()).collect(),
+            buckets: (0..num_buckets).map(|_| BucketCols::new()).collect(),
             hash,
             num_qubits,
             len: 0,
@@ -325,8 +325,8 @@ impl<const W: usize> PauliSum<W> {
 
     /// Drop every term, keeping the hash and the bucket storage.
     pub fn clear(&mut self) {
-        for cols in self.buckets.iter_mut() {
-            cols.clear();
+        for columns in self.buckets.iter_mut() {
+            columns.clear();
         }
         self.len = 0;
     }
@@ -364,8 +364,8 @@ impl<const W: usize> PauliSum<W> {
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.
     #[inline]
     pub fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
-        let cols = &self.buckets[b];
-        (&cols.x, &cols.z, &cols.coeff)
+        let columns = &self.buckets[b];
+        (&columns.x, &columns.z, &columns.coeff)
     }
 
     /// Number of terms in bucket `b`.
@@ -376,24 +376,25 @@ impl<const W: usize> PauliSum<W> {
 
     /// Double the bucket count, splitting each bucket in two by the hash's new row.
     pub fn refine(&mut self) {
-        let old_nb = self.buckets.len();
+        let old_num_buckets = self.buckets.len();
         self.hash.refine();
         let new_bit = self.hash.bits() - 1;
         let hash = &self.hash;
 
         let mut old = std::mem::take(&mut self.buckets);
-        let mut upper: Vec<BucketCols<W>> = (0..old_nb).map(|_| BucketCols::new()).collect();
+        let mut upper: Vec<BucketCols<W>> =
+            (0..old_num_buckets).map(|_| BucketCols::new()).collect();
 
         if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
-            for (b, (cols, up)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
-                refine_bucket(cols, up, hash, new_bit, b as u32);
+            for (b, (columns, upper_half)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
+                refine_bucket(columns, upper_half, hash, new_bit, b as u32);
             }
         } else {
             old.par_iter_mut()
                 .zip(upper.par_iter_mut())
                 .enumerate()
-                .for_each(|(b, (cols, up))| {
-                    refine_bucket(cols, up, hash, new_bit, b as u32);
+                .for_each(|(b, (columns, upper_half))| {
+                    refine_bucket(columns, upper_half, hash, new_bit, b as u32);
                 });
         }
 
@@ -404,22 +405,22 @@ impl<const W: usize> PauliSum<W> {
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
     pub fn coarsen(&mut self) {
         self.hash.coarsen();
-        let new_nb = self.buckets.len() / 2;
+        let new_num_buckets = self.buckets.len() / 2;
 
         let old = std::mem::take(&mut self.buckets);
-        let (lower, upper) = old.split_at(new_nb);
+        let (lower, upper) = old.split_at(new_num_buckets);
 
         let merged: Vec<BucketCols<W>> = if self.len < DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK {
             lower
                 .iter()
                 .zip(upper.iter())
-                .map(|(lo, hi)| merge_two(lo, hi))
+                .map(|(low, high)| merge_two(low, high))
                 .collect()
         } else {
             lower
                 .par_iter()
                 .zip(upper.par_iter())
-                .map(|(lo, hi)| merge_two(lo, hi))
+                .map(|(low, high)| merge_two(low, high))
                 .collect()
         };
 
@@ -454,11 +455,12 @@ impl<const W: usize> PauliSum<W> {
 
     /// Iterate every term in canonical order, which is not globally key-sorted.
     pub fn iter(&self) -> impl Iterator<Item = (&[u64; W], &[u64; W], Complex64)> + '_ {
-        self.buckets.iter().flat_map(|cols| {
-            cols.x
+        self.buckets.iter().flat_map(|columns| {
+            columns
+                .x
                 .iter()
-                .zip(cols.z.iter())
-                .zip(cols.coeff.iter())
+                .zip(columns.z.iter())
+                .zip(columns.coeff.iter())
                 .map(|((x, z), c)| (x, z, *c))
         })
     }
@@ -468,25 +470,25 @@ impl<const W: usize> PauliSum<W> {
         let mut x = Vec::with_capacity(self.len);
         let mut z = Vec::with_capacity(self.len);
         let mut coeff = Vec::with_capacity(self.len);
-        for cols in self.buckets.iter() {
-            x.extend_from_slice(&cols.x);
-            z.extend_from_slice(&cols.z);
-            coeff.extend_from_slice(&cols.coeff);
+        for columns in self.buckets.iter() {
+            x.extend_from_slice(&columns.x);
+            z.extend_from_slice(&columns.z);
+            coeff.extend_from_slice(&columns.coeff);
         }
         (x, z, coeff)
     }
 
     /// Coefficient of the term with key `(x, z)`, or `None` if absent.
     pub fn get(&self, x: &[u64; W], z: &[u64; W]) -> Option<Complex64> {
-        let cols = &self.buckets[self.hash.bucket_of(x, z) as usize];
-        let mut lo = 0usize;
-        let mut hi = cols.len();
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match (&cols.x[mid], &cols.z[mid]).cmp(&(x, z)) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => return Some(cols.coeff[mid]),
+        let columns = &self.buckets[self.hash.bucket_of(x, z) as usize];
+        let mut low = 0usize;
+        let mut high = columns.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match (&columns.x[mid], &columns.z[mid]).cmp(&(x, z)) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+                std::cmp::Ordering::Equal => return Some(columns.coeff[mid]),
             }
         }
         None
@@ -501,8 +503,8 @@ impl<const W: usize> PauliSum<W> {
 
     /// Multiply every coefficient by `c` in place.
     pub fn scale(&mut self, c: Complex64) {
-        self.buckets.par_iter_mut().for_each(|cols| {
-            for coeff in cols.coeff.iter_mut() {
+        self.buckets.par_iter_mut().for_each(|columns| {
+            for coeff in columns.coeff.iter_mut() {
                 *coeff *= c;
             }
         });
@@ -510,22 +512,22 @@ impl<const W: usize> PauliSum<W> {
 
     /// Keep only the terms for which `f(x, z, coeff)` is `true`; `f` may run on several threads at once.
     pub fn retain(&mut self, f: impl Fn(&[u64; W], &[u64; W], Complex64) -> bool + Sync) {
-        self.buckets.par_iter_mut().for_each(|cols| {
-            let n = cols.len();
+        self.buckets.par_iter_mut().for_each(|columns| {
+            let n = columns.len();
             let mut w = 0usize;
             for r in 0..n {
-                if f(&cols.x[r], &cols.z[r], cols.coeff[r]) {
+                if f(&columns.x[r], &columns.z[r], columns.coeff[r]) {
                     if w != r {
-                        cols.x[w] = cols.x[r];
-                        cols.z[w] = cols.z[r];
-                        cols.coeff[w] = cols.coeff[r];
+                        columns.x[w] = columns.x[r];
+                        columns.z[w] = columns.z[r];
+                        columns.coeff[w] = columns.coeff[r];
                     }
                     w += 1;
                 }
             }
-            cols.x.truncate(w);
-            cols.z.truncate(w);
-            cols.coeff.truncate(w);
+            columns.x.truncate(w);
+            columns.z.truncate(w);
+            columns.coeff.truncate(w);
         });
         self.recount();
     }
@@ -549,20 +551,20 @@ impl<const W: usize> PauliSum<W> {
             .par_iter()
             .zip(other.buckets.par_iter())
             .map(|(a, b)| {
-                let mut acc = Complex64::new(0.0, 0.0);
+                let mut partial = Complex64::new(0.0, 0.0);
                 let (mut i, mut j) = (0usize, 0usize);
                 while i < a.len() && j < b.len() {
                     match (&a.x[i], &a.z[i]).cmp(&(&b.x[j], &b.z[j])) {
                         std::cmp::Ordering::Less => i += 1,
                         std::cmp::Ordering::Greater => j += 1,
                         std::cmp::Ordering::Equal => {
-                            acc += a.coeff[i].conj() * b.coeff[j];
+                            partial += a.coeff[i].conj() * b.coeff[j];
                             i += 1;
                             j += 1;
                         }
                     }
                 }
-                acc
+                partial
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -605,28 +607,28 @@ impl<const W: usize> PauliSum<W> {
             "PauliSum: bucket count disagrees with hash",
         );
         let mut total = 0usize;
-        for (b, cols) in self.buckets.iter().enumerate() {
-            assert_eq!(cols.x.len(), cols.z.len());
-            assert_eq!(cols.x.len(), cols.coeff.len());
-            total += cols.len();
-            for i in 0..cols.len() {
-                let got = self.hash.bucket_of(&cols.x[i], &cols.z[i]);
+        for (b, columns) in self.buckets.iter().enumerate() {
+            assert_eq!(columns.x.len(), columns.z.len());
+            assert_eq!(columns.x.len(), columns.coeff.len());
+            total += columns.len();
+            for i in 0..columns.len() {
+                let got = self.hash.bucket_of(&columns.x[i], &columns.z[i]);
                 assert_eq!(
                     got as usize, b,
                     "PauliSum: term {i} of bucket {b} hashes to {got}",
                 );
                 let term = PauliString::<W> {
-                    x: cols.x[i],
-                    z: cols.z[i],
+                    x: columns.x[i],
+                    z: columns.z[i],
                 };
                 assert!(
                     term.is_within(self.num_qubits),
                     "PauliSum: term {i} of bucket {b} exceeds num_qubits",
                 );
             }
-            for i in 1..cols.len() {
-                let prev = (&cols.x[i - 1], &cols.z[i - 1]);
-                let cur = (&cols.x[i], &cols.z[i]);
+            for i in 1..columns.len() {
+                let prev = (&columns.x[i - 1], &columns.z[i - 1]);
+                let cur = (&columns.x[i], &columns.z[i]);
                 assert!(prev < cur, "PauliSum: bucket {b} out of order at {i}");
             }
         }

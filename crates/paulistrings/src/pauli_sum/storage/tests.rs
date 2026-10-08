@@ -59,7 +59,7 @@ fn rand_low_weight_sum<const W: usize>(
     seed: u64,
 ) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    let mut accumulator = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
         let mut p = PauliString::<W> {
             x: [0u64; W],
@@ -78,9 +78,9 @@ fn rand_low_weight_sum<const W: usize>(
             }
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
+        accumulator.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
     }
-    acc.finalize()
+    accumulator.finalize()
 }
 
 /// Same multiset of terms, coefficients bitwise — partition forgotten.
@@ -579,20 +579,20 @@ fn get_hits_and_misses_across_bucket_counts() {
 #[test]
 fn get_w2_word_boundary() {
     // Keys live entirely in word 1, so a lookup that only compared word 0 would confuse them.
-    let mut acc = BuildAccumulator::<2>::new(128);
+    let mut accumulator = BuildAccumulator::<2>::new(128);
     for q in [64u32, 65, 100, 127] {
-        acc.add_term(
+        accumulator.add_term(
             PauliString::<2>::x(q),
             Phase::ONE,
             Complex64::new(q as f64, 0.0),
         );
-        acc.add_term(
+        accumulator.add_term(
             PauliString::<2>::z(q),
             Phase::ONE,
             Complex64::new(0.0, q as f64),
         );
     }
-    let sum = acc.finalize();
+    let sum = accumulator.finalize();
     for bits in [0u8, 4] {
         let h = Gf2Hash::<2>::new(128, bits, 0xFA);
         let b = sum.clone().with_hash(h);
@@ -686,20 +686,20 @@ fn retain_filters_in_place_and_keeps_invariants() {
 fn flat_overlap<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) -> Complex64 {
     let ta = sorted_triples(a);
     let tb = sorted_triples(b);
-    let mut acc = Complex64::new(0.0, 0.0);
+    let mut overlap = Complex64::new(0.0, 0.0);
     let (mut i, mut j) = (0usize, 0usize);
     while i < ta.len() && j < tb.len() {
         match (ta[i].0, ta[i].1).cmp(&(tb[j].0, tb[j].1)) {
             std::cmp::Ordering::Less => i += 1,
             std::cmp::Ordering::Greater => j += 1,
             std::cmp::Ordering::Equal => {
-                acc += ta[i].2.conj() * tb[j].2;
+                overlap += ta[i].2.conj() * tb[j].2;
                 i += 1;
                 j += 1;
             }
         }
     }
-    acc
+    overlap
 }
 
 #[test]
@@ -948,14 +948,14 @@ fn b10_build<const W: usize>(
     num_qubits: usize,
     terms: &[(PauliString<W>, Complex64)],
 ) -> PauliSum<W> {
-    let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<W>::with_capacity(
+    let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<W>::with_capacity(
         num_qubits,
         terms.len(),
     );
     for &(pp, c) in terms {
-        acc.add_term(pp, crate::phase::Phase::ONE, c);
+        accumulator.add_term(pp, crate::phase::Phase::ONE, c);
     }
-    acc.finalize()
+    accumulator.finalize()
 }
 
 #[test]
@@ -1115,16 +1115,17 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
         rng ^= rng << 17;
         rng
     };
-    let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
+    let mut accumulator =
+        crate::pauli_sum::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
     for _ in 0..500 {
         let pp = PauliString::<1> {
             x: [next() & 0xFFFF],
             z: [next() & 0xFFFF],
         };
         let c = Complex64::new((next() as i64 as f64) / (i64::MAX as f64), 0.0);
-        acc.add_term(pp, crate::phase::Phase::ONE, c);
+        accumulator.add_term(pp, crate::phase::Phase::ONE, c);
     }
-    let sum = acc.finalize();
+    let sum = accumulator.finalize();
 
     let mut want = 0.0f64;
     for i in 0..sum.len() {
@@ -2038,15 +2039,15 @@ mod props {
     const NQ: usize = 6;
 
     fn build(terms: &[(u64, u64, i32, i32)]) -> PauliSum<1> {
-        let mut acc = BuildAccumulator::<1>::new(NQ);
+        let mut accumulator = BuildAccumulator::<1>::new(NQ);
         for &(x, z, re, im) in terms {
-            acc.add_term(
+            accumulator.add_term(
                 PauliString::<1> { x: [x], z: [z] },
                 Phase::ONE,
                 Complex64::new(re as f64, im as f64),
             );
         }
-        acc.finalize()
+        accumulator.finalize()
     }
 
     proptest! {
@@ -2106,7 +2107,7 @@ mod props {
             for (x, z, c) in b.iter() {
                 model
                     .entry((*x, *z))
-                    .and_modify(|acc| *acc += c)
+                    .and_modify(|existing| *existing += c)
                     .or_insert(c);
             }
             let zero = Complex64::new(0.0, 0.0);

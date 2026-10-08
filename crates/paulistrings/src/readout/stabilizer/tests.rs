@@ -36,8 +36,8 @@ fn state<const W: usize>(num_qubits: usize, gens: &[&str]) -> StabilizerState<W>
 }
 
 /// `⟨ψ|P|ψ⟩` for a single Pauli string given as a label.
-fn expect<const W: usize>(st: &StabilizerState<W>, label: &str) -> f64 {
-    st.expectation_of(&gen_of::<W>(label).0)
+fn expect<const W: usize>(stabilizer: &StabilizerState<W>, label: &str) -> f64 {
+    stabilizer.expectation_of(&gen_of::<W>(label).0)
 }
 
 /// `XX·ZZ = (X·Z)⊗(X·Z) = (-iY)⊗(-iY) = -YY`, so the group is `{+II, +XX, +ZZ, -YY}` and `⟨YY⟩ = -1`. Single-qubit Paulis are outside the group, hence `0`.
@@ -231,17 +231,20 @@ fn a_bell_pair_across_the_word_boundary() {
             _ => gens.push((PauliString::<2>::z(q), false)),
         }
     }
-    let st = StabilizerState::<2>::from_generators(n, &gens).expect("valid generators");
+    let stabilizer = StabilizerState::<2>::from_generators(n, &gens).expect("valid generators");
 
-    assert_eq!(st.expectation_of(&xx), 1.0);
-    assert_eq!(st.expectation_of(&zz), 1.0);
-    assert_eq!(st.expectation_of(&yy), -1.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(63)), 0.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(64)), 0.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(0)), 1.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(65)), 1.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::x(65)), 0.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::identity()), 1.0);
+    assert_eq!(stabilizer.expectation_of(&xx), 1.0);
+    assert_eq!(stabilizer.expectation_of(&zz), 1.0);
+    assert_eq!(stabilizer.expectation_of(&yy), -1.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(63)), 0.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(64)), 0.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(0)), 1.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(65)), 1.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::x(65)), 0.0);
+    assert_eq!(
+        stabilizer.expectation_of(&PauliString::<2>::identity()),
+        1.0
+    );
 }
 
 /// A minus sign on qubit 64's generator: `|0…0 1 0…⟩` with the flip in the second word.
@@ -252,12 +255,12 @@ fn a_minus_generator_in_the_second_word() {
     for q in 0..n as u32 {
         gens.push((PauliString::<2>::z(q), q == 64));
     }
-    let st = StabilizerState::<2>::from_generators(n, &gens).unwrap();
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(64)), -1.0);
-    assert_eq!(st.expectation_of(&PauliString::<2>::z(63)), 1.0);
+    let stabilizer = StabilizerState::<2>::from_generators(n, &gens).unwrap();
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(64)), -1.0);
+    assert_eq!(stabilizer.expectation_of(&PauliString::<2>::z(63)), 1.0);
     let mut z63_64 = PauliString::<2>::z(63);
     z63_64.mul_assign(&PauliString::<2>::z(64));
-    assert_eq!(st.expectation_of(&z63_64), -1.0);
+    assert_eq!(stabilizer.expectation_of(&z63_64), -1.0);
 }
 
 /// Diagonal generators `+Z_q` describe `|0…0⟩`, whose expectation the existing product-state scan already computes — an independent oracle.
@@ -278,14 +281,14 @@ fn product_generators<const W: usize>(num_qubits: usize, axis: char) -> Stabiliz
 #[test]
 fn uniform_product_generators_agree_with_the_product_state_scan_w1() {
     let sum = rand_sum::<1>(4000, 20, 0xB0);
-    for (axis, st) in [
+    for (axis, stabilizer) in [
         ('X', ProductState::XPlus),
         ('Y', ProductState::YPlus),
         ('Z', ProductState::ZPlus),
     ] {
         let stab = product_generators::<1>(20, axis);
         let got = sum.expectation_stabilizer(&stab);
-        let want = sum.expectation_product_state(st);
+        let want = sum.expectation_product_state(stabilizer);
         assert!(
             (got - want).norm() < 1e-12,
             "axis {axis}: {got} vs {want} (product-state oracle)",
@@ -296,14 +299,14 @@ fn uniform_product_generators_agree_with_the_product_state_scan_w1() {
 #[test]
 fn uniform_product_generators_agree_with_the_product_state_scan_w2() {
     let sum = rand_sum::<2>(8000, 100, 0xB1);
-    for (axis, st) in [
+    for (axis, stabilizer) in [
         ('X', ProductState::XPlus),
         ('Y', ProductState::YPlus),
         ('Z', ProductState::ZPlus),
     ] {
         let stab = product_generators::<2>(100, axis);
         let got = sum.expectation_stabilizer(&stab);
-        let want = sum.expectation_product_state(st);
+        let want = sum.expectation_product_state(stabilizer);
         assert!(
             (got - want).norm() < 1e-12,
             "axis {axis}: {got} vs {want} (product-state oracle)",
